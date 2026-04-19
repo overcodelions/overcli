@@ -1,0 +1,307 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Theme palettes. Every semantic color (surface, ink, accent, backend
+ * tints) is driven by a CSS custom property so the whole app switches
+ * theme by toggling `html.dark`. Tailwind's colors map to these vars in
+ * tailwind.config.mjs. */
+:root {
+  /* Light palette — soft off-white with cool gray ink. */
+  --c-surface: #f6f6f8;
+  --c-surface-muted: #ececf0;
+  --c-surface-elevated: #ffffff;
+  --c-ink: #17171c;
+  --c-ink-muted: #4a4a52;
+  --c-ink-faint: #8c8c94;
+  --c-accent: #5d72ff;
+  --c-accent-strong: #4355e0;
+  --c-backend-claude: #8a5cf0;
+  --c-backend-codex: #3d82e8;
+  --c-backend-gemini: #0d9488;
+  /* Chrome tints for scrollbar + diff backgrounds in light mode. */
+  --c-chrome-track: rgba(0, 0, 0, 0.06);
+  --c-chrome-hover: rgba(0, 0, 0, 0.14);
+  --c-code-bg: rgba(0, 0, 0, 0.05);
+  --c-code-border: rgba(0, 0, 0, 0.08);
+  /* Card/container fills and borders. The hardcoded rgba(255,255,255,…)
+   * values littered across components are invisible on a near-white
+   * surface, so every themed card reads off these instead. The border
+   * picks the same tone family as the fill (both darker-gray in light,
+   * both lighter-white in dark) so borders blend instead of high-
+   * contrasting against the card. */
+  --c-card-bg: rgba(0, 0, 0, 0.03);
+  --c-card-bg-strong: rgba(0, 0, 0, 0.06);
+  /* Muted gray border — reads as a quiet line, not a dark stroke over
+   * an alpha-tinted fill. Solid color so the border tone stays
+   * consistent regardless of what's beneath it. */
+  --c-card-border: #dcdce2;
+  --c-card-border-strong: #c2c2cb;
+  --c-card-tint-mix: #000;
+  --c-link-file: #0d8a8f;
+  /* Diff tints. Light mode needs darker ink + a slightly stronger
+   * background saturation; the old Tailwind green-400/500-at-10% read as
+   * pale-green-on-pale-green and the +/- sigils disappeared. */
+  --c-diff-add-bg: rgba(22, 163, 74, 0.18);
+  --c-diff-add-ink: #166534;
+  --c-diff-remove-bg: rgba(220, 38, 38, 0.14);
+  --c-diff-remove-ink: #b91c1c;
+  --c-diff-hunk-ink: #0e7490;
+  --c-diff-file-ink: #7c3aed;
+  /* Sidebar running-activity pulse. Green-400 washes to near-white on a
+   * light surface, so light mode steps down to a saturated green-600. */
+  --c-running-pulse: #16a34a;
+}
+
+:root.dark {
+  /* Dark palette — matches the Swift build's Overcli look. */
+  --c-surface: #1c1c21;
+  --c-surface-muted: #24242b;
+  --c-surface-elevated: #2a2a33;
+  --c-ink: #e8e8ee;
+  --c-ink-muted: #a0a0a8;
+  --c-ink-faint: #666670;
+  --c-accent: #7c8bff;
+  --c-accent-strong: #5d72ff;
+  --c-backend-claude: #b587ff;
+  --c-backend-codex: #5b9cff;
+  --c-backend-gemini: #3dced7;
+  --c-chrome-track: rgba(255, 255, 255, 0.08);
+  --c-chrome-hover: rgba(255, 255, 255, 0.16);
+  --c-code-bg: rgba(0, 0, 0, 0.32);
+  --c-code-border: rgba(255, 255, 255, 0.08);
+  /* Dark mode keeps borders extremely muted — they should feel like a
+   * hairline separator, not a contrasting frame. */
+  /* Original hardcoded baseline before the theme sweep. */
+  /* Muted gray borders — never white-alpha (reads harsh). The resting
+   * border sits just barely above the surface color so rows of bordered
+   * cards don't look framed. Strong (hover/focus) steps up to a visible
+   * mid-gray. */
+  --c-card-bg: rgba(255, 255, 255, 0.02);
+  --c-card-bg-strong: rgba(255, 255, 255, 0.04);
+  --c-card-border: #25252a;
+  --c-card-border-strong: #34343b;
+  --c-card-tint-mix: #fff;
+  --c-link-file: #5cd6dc;
+  --c-diff-add-bg: rgba(34, 197, 94, 0.12);
+  --c-diff-add-ink: #4ade80;
+  --c-diff-remove-bg: rgba(239, 68, 68, 0.12);
+  --c-diff-remove-ink: #f87171;
+  --c-diff-hunk-ink: #22d3ee;
+  --c-diff-file-ink: #c4b5fd;
+  --c-running-pulse: #4ade80;
+}
+
+/* Diff rows share one set of semantic classes across every renderer
+ * (ChatView's inline diff, the worktree diff sheet, patch previews) so a
+ * single palette change in the :root blocks updates the whole app. */
+.diff-add-row { background: var(--c-diff-add-bg); }
+.diff-remove-row { background: var(--c-diff-remove-bg); }
+.diff-add-ink { color: var(--c-diff-add-ink); }
+.diff-remove-ink { color: var(--c-diff-remove-ink); }
+.diff-hunk-ink { color: var(--c-diff-hunk-ink); }
+.diff-file-ink { color: var(--c-diff-file-ink); }
+
+/* Root body background + text follow the variables so first paint doesn't
+ * flash a wrong-theme background while React boots. */
+html, body {
+  background: var(--c-surface);
+  color: var(--c-ink);
+}
+
+/* Reusable form field. Tailwind's `bg-white/5` disappears on light
+ * surfaces — this utility swaps in theme-aware fill + border so inputs
+ * always have a visible boundary. Used by settings, agent sheets,
+ * sidebar search, etc. */
+.field {
+  background: var(--c-card-bg);
+  border: 1px solid var(--c-card-border);
+  border-radius: 4px;
+  outline: none;
+  color: var(--c-ink);
+  transition: background 120ms, border-color 120ms;
+}
+.field::placeholder {
+  color: var(--c-ink-faint);
+}
+.field:hover {
+  border-color: var(--c-card-border-strong);
+}
+.field:focus, .field:focus-within {
+  background: var(--c-card-bg-strong);
+  border-color: var(--c-card-border-strong);
+}
+
+/* Sidebar row selection needs a stronger anchor than a faint tint alone.
+ * Use a persistent accent rail plus a clearer themed fill/border so the
+ * active conversation reads immediately in both light and dark themes. */
+.sidebar-row {
+  border: 1px solid transparent;
+  transition: background 120ms, border-color 120ms, box-shadow 120ms, color 120ms, opacity 120ms;
+}
+.sidebar-row-selected {
+  background: color-mix(in srgb, var(--c-accent) 18%, var(--c-card-bg-strong));
+  border-color: color-mix(in srgb, var(--c-accent) 34%, var(--c-card-border));
+  box-shadow: inset 2px 0 0 var(--c-accent), 0 0 0 1px color-mix(in srgb, var(--c-accent) 8%, transparent);
+}
+.sidebar-row-selected:hover {
+  background: color-mix(in srgb, var(--c-accent) 22%, var(--c-card-bg-strong));
+}
+
+/* Allow text selection inside anything marked selectable; default is to
+ * disable selection so the UI chrome feels native. */
+.select-text,
+.select-text * {
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+/* Drag the window from the title bar region. */
+.draggable {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Custom scrollbar — thin, theme-aware via CSS vars. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--c-chrome-track);
+  border-radius: 10px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--c-chrome-hover);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+/* Markdown output — tuned to match the Swift app's MarkdownText look. */
+.md {
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md h1 { font-size: 1.15em; font-weight: 600; margin-top: 0.9rem; margin-bottom: 0.4rem; }
+.md h2 { font-size: 1.08em; font-weight: 600; margin-top: 0.8rem; margin-bottom: 0.35rem; }
+.md h3 { font-size: 1em; font-weight: 600; margin-top: 0.7rem; margin-bottom: 0.3rem; }
+.md p { margin: 0.4rem 0; }
+.md ul, .md ol { margin: 0.3rem 0 0.3rem 1.3rem; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 0.15rem 0; }
+.md li::marker { color: color-mix(in srgb, var(--c-ink-muted) 60%, var(--c-ink-faint)); }
+.md strong { font-weight: 600; }
+.md em { font-style: italic; }
+.md a { color: var(--c-accent); text-decoration: underline; text-underline-offset: 2px; }
+
+/* File-path codespans render as clickable chips with a distinct teal tint
+ * so they're obviously linked-to-file rather than plain inline code. The
+ * tint reads in both light and dark themes. */
+.md code.file-path {
+  color: var(--c-link-file);
+  background: color-mix(in srgb, var(--c-link-file) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-link-file) 40%, transparent);
+  text-decoration: none;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.82em;
+}
+.md code.file-path:hover {
+  background: color-mix(in srgb, var(--c-link-file) 24%, transparent);
+  border-color: color-mix(in srgb, var(--c-link-file) 60%, transparent);
+}
+.md code {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 0.82em;
+  background: var(--c-code-bg);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.md pre {
+  font-family: 'SF Mono', Menlo, monospace;
+  font-size: 0.8em;
+  background: var(--c-code-bg);
+  border: 1px solid var(--c-code-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+.md pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 1em;
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid var(--c-card-border-strong);
+  margin: 0.8rem 0;
+}
+.md blockquote {
+  border-left: 3px solid color-mix(in srgb, var(--c-accent) 50%, transparent);
+  padding-left: 10px;
+  color: var(--c-ink-muted);
+  margin: 0.4rem 0;
+}
+.md table {
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  font-size: 0.9em;
+}
+.md th, .md td {
+  border: 1px solid var(--c-code-border);
+  padding: 4px 10px;
+  text-align: left;
+}
+.md th {
+  background: var(--c-code-bg);
+  font-weight: 600;
+}
+
+/* Transient reveal card — shown briefly in the chat when tool activity
+ * is hidden, so edits/writes still flash by before disappearing. Duration
+ * (4200ms) must stay in sync with REVEAL_MS in ChatView.tsx — the JS
+ * timer is what actually unmounts the element; this animation just paints
+ * the fade over the same window. */
+.transient-reveal {
+  animation: transient-reveal-fade 4200ms ease-out forwards;
+}
+@keyframes transient-reveal-fade {
+  0% { opacity: 0; transform: translateY(3px); }
+  8% { opacity: 1; transform: translateY(0); }
+  78% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-2px); }
+}
+
+/* highlight.js palette — dark and light variants. We swap at the :root
+ * level so every .hljs token inherits the correct color automatically. */
+.hljs { background: transparent !important; color: var(--c-ink); }
+:root.dark .hljs-keyword, :root.dark .hljs-built_in { color: #c586c0; }
+:root.dark .hljs-string { color: #ce9178; }
+:root.dark .hljs-number { color: #b5cea8; }
+:root.dark .hljs-comment { color: #6a9955; font-style: italic; }
+:root.dark .hljs-title, :root.dark .hljs-function { color: #dcdcaa; }
+:root.dark .hljs-type, :root.dark .hljs-class { color: #4ec9b0; }
+:root.dark .hljs-variable, :root.dark .hljs-attr { color: #9cdcfe; }
+:root.dark .hljs-tag { color: #569cd6; }
+
+:root:not(.dark) .hljs-keyword, :root:not(.dark) .hljs-built_in { color: #af00db; }
+:root:not(.dark) .hljs-string { color: #a31515; }
+:root:not(.dark) .hljs-number { color: #098658; }
+:root:not(.dark) .hljs-comment { color: #008000; font-style: italic; }
+:root:not(.dark) .hljs-title, :root:not(.dark) .hljs-function { color: #795e26; }
+:root:not(.dark) .hljs-type, :root:not(.dark) .hljs-class { color: #267f99; }
+:root:not(.dark) .hljs-variable, :root:not(.dark) .hljs-attr { color: #001080; }
+:root:not(.dark) .hljs-tag { color: #800000; }
