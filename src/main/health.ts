@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Backend, BackendHealth } from '../shared/types';
-import { buildBackendEnv, resolveBackendPath } from './backendPaths';
+import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
 
 export { resolveBackendPath };
 
@@ -49,10 +49,11 @@ export function probeBackendHealth(backend: Backend, override?: string): Backend
   const bin = resolveBackendPath(backend, override);
   if (!bin) return { kind: 'missing', message: `${backend} CLI not found on disk` };
   const env = buildBackendEnv(process.env, bin);
+  const shell = backendNeedsShell(bin);
 
   // Fast check: does the binary execute and print a version? This also
   // verifies PATH/entitlement issues before we trust the CLI at all.
-  const versionRes = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 4000, env });
+  const versionRes = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 4000, env, shell });
   if (versionRes.error) {
     return { kind: 'error', message: versionRes.error.message };
   }
@@ -66,7 +67,7 @@ export function probeBackendHealth(backend: Backend, override?: string): Backend
   if (backend === 'claude') {
     if (hasAnyEnv(['ANTHROPIC_API_KEY'])) return { kind: 'ready' };
 
-    const statusRes = spawnSync(bin, ['auth', 'status'], { encoding: 'utf-8', timeout: 4000, env });
+    const statusRes = spawnSync(bin, ['auth', 'status'], { encoding: 'utf-8', timeout: 4000, env, shell });
     if (!statusRes.error && statusRes.status === 0) {
       return { kind: 'ready' };
     }

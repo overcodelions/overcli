@@ -1,4 +1,5 @@
-import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { backendNeedsShell } from './backendPaths';
 
 type JsonRpcId = string | number | null;
 
@@ -28,6 +29,7 @@ interface JsonRpcFailure {
 }
 
 type JsonRpcMessage = JsonRpcRequest | JsonRpcNotification | JsonRpcSuccess | JsonRpcFailure;
+const geminiAcpFlagCache = new Map<string, '--acp' | '--experimental-acp'>();
 
 export class GeminiAcpClient {
   readonly proc: ChildProcessWithoutNullStreams;
@@ -45,9 +47,11 @@ export class GeminiAcpClient {
     onStderr?: (chunk: string) => void;
     onClose?: (code: number | null) => void;
   }) {
-    this.proc = spawn(args.binary, ['--acp'], {
+    const acpFlag = resolveGeminiAcpFlag(args.binary, args.env);
+    this.proc = spawn(args.binary, [acpFlag], {
       cwd: args.cwd,
       env: args.env,
+      shell: backendNeedsShell(args.binary),
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -150,4 +154,21 @@ export class GeminiAcpClient {
       this.proc.stdin.write(line, (err) => (err ? reject(err) : resolve()));
     });
   }
+}
+
+function resolveGeminiAcpFlag(binary: string, env: NodeJS.ProcessEnv): '--acp' | '--experimental-acp' {
+  const cached = geminiAcpFlagCache.get(binary);
+  if (cached) return cached;
+  const help = spawnSync(binary, ['--help'], {
+    encoding: 'utf-8',
+    timeout: 3000,
+    env,
+    shell: backendNeedsShell(binary),
+  });
+  const text = `${help.stdout ?? ''}\n${help.stderr ?? ''}`.toLowerCase();
+  const flag: '--acp' | '--experimental-acp' = text.includes('--experimental-acp')
+    ? '--experimental-acp'
+    : '--acp';
+  geminiAcpFlagCache.set(binary, flag);
+  return flag;
 }
