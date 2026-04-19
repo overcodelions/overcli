@@ -1,0 +1,982 @@
+import { CSSProperties, ReactNode, useEffect, useRef, useState } from 'react';
+import { useStore } from '../store';
+import { Backend, PermissionMode, UUID, EffortLevel } from '@shared/types';
+import { backendColor, backendName, shortModel } from '../theme';
+import { useConversation } from '../hooks';
+
+/// Full-featured header matching the Swift ConversationHeader:
+/// backend picker, permission mode picker, effort picker (claude),
+/// rebound (reviewer) popover, tool-activity toggle, file-tree toggle,
+/// conversation settings popover, overflow menu.
+export function ConversationHeader({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  const backendHealth = useStore((s) => s.backendHealth);
+  const installedReviewers = useStore((s) => s.installedReviewers);
+  const setPrimary = useStore((s) => s.setPrimaryBackend);
+  const setPermission = useStore((s) => s.setPermissionMode);
+  const setEffort = useStore((s) => s.setEffortLevel);
+  const setModel = useStore((s) => s.setBackendModel);
+  const setReviewBackend = useStore((s) => s.setReviewBackend);
+  const setReviewMode = useStore((s) => s.setReviewMode);
+  const setReviewOllamaModel = useStore((s) => s.setReviewOllamaModel);
+  const runnerIsRunning = useStore((s) => s.runners[conversationId]?.isRunning ?? false);
+  const runnerModel = useStore((s) => s.runners[conversationId]?.currentModel ?? '');
+  const settings = useStore((s) => s.settings);
+  const resetConversation = useStore((s) => s.resetConversation);
+  const openSheet = useStore((s) => s.openSheet);
+  const showToolActivity = useStore((s) => s.showToolActivity);
+  const toggleToolActivity = useStore((s) => s.toggleToolActivity);
+  const showFileTree = useStore((s) => s.showFileTree);
+  const toggleFileTree = useStore((s) => s.toggleFileTree);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  if (!conv) return null;
+  const locked = runnerIsRunning || !!conv.sessionId || conv.turnCount > 0;
+  const backend: Backend = conv.primaryBackend ?? 'claude';
+  const configuredModel =
+    backend === 'codex'
+      ? conv.codexModel ?? conv.currentModel
+      : backend === 'gemini'
+      ? conv.geminiModel ?? conv.currentModel
+      : conv.claudeModel ?? conv.currentModel;
+  const sessionModel = runnerModel || configuredModel || settings.backendDefaultModels[backend] || '';
+
+  return (
+    <header className="flex items-center gap-2 px-4 py-2 border-b border-card">
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          {conv.worktreePath && <span className="text-xs text-ink-faint">⎇</span>}
+          <div className="text-sm font-medium truncate">{conv.name}</div>
+          {locked ? (
+            <>
+              <HeaderBadge
+                title={`Session backend: ${backendName(backend)} CLI`}
+                style={{ color: backendColor(backend) }}
+              >
+                {backendName(backend)} CLI
+              </HeaderBadge>
+              {sessionModel && (
+                <HeaderBadge title={`Session model: ${sessionModel}`} pulse={runnerIsRunning}>
+                  {shortModel(sessionModel)}
+                </HeaderBadge>
+              )}
+            </>
+          ) : configuredModel ? (
+            <span className="text-[10px] text-ink-faint">{shortModel(configuredModel)}</span>
+          ) : null}
+        </div>
+        {conv.worktreePath && (
+          <div className="text-[10px] text-ink-faint truncate">
+            {conv.branchName} · {conv.worktreePath}
+          </div>
+        )}
+      </div>
+
+      <div className="flex items-center gap-1.5 text-xs">
+        {!locked && (
+          <IconPicker
+            icon={<BackendDot color={backendColor(backend)} />}
+            label={backendName(backend)}
+            items={(['claude', 'codex', 'gemini', 'ollama'] as Backend[]).map((b) => ({
+              value: b,
+              label: backendName(b),
+              disabled: backendHealth[b]?.kind !== 'ready',
+              note:
+                backendHealth[b]?.kind === 'unauthenticated'
+                  ? 'auth needed'
+                  : b === 'ollama' && backendHealth[b]?.kind === 'missing'
+                  ? 'set up'
+                  : undefined,
+              leading: <BackendDot color={backendColor(b)} />,
+            }))}
+            onPick={(v) => void setPrimary(conversationId, v as Backend)}
+          />
+        )}
+
+        <ForkPicker conversationId={conversationId} />
+
+
+        <IconPicker
+          icon={<ShieldIcon tone={permissionTone(conv.permissionMode ?? 'default')} />}
+          label={modeLabel(conv.permissionMode ?? 'default')}
+          tone={permissionTone(conv.permissionMode ?? 'default')}
+          items={(['plan', 'default', 'acceptEdits', 'bypassPermissions'] as PermissionMode[]).map((m) => ({
+            value: m,
+            label: modeLabel(m),
+          }))}
+          onPick={(v) => void setPermission(conversationId, v as PermissionMode)}
+        />
+
+        {backend === 'claude' && (
+          <IconPicker
+            icon={<BrainIcon />}
+            label={effortLabel(conv.effortLevel ?? '')}
+            items={([
+              { value: '', label: 'Default' },
+              { value: 'low', label: 'Low' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'high', label: 'High' },
+              { value: 'max', label: 'Max' },
+            ] as { value: EffortLevel; label: string }[]).map((o) => ({
+              value: o.value,
+              label: o.label,
+            }))}
+            onPick={(v) => void setEffort(conversationId, v as EffortLevel)}
+          />
+        )}
+
+        <ReboundPicker
+          conv={conv}
+          installedReviewers={installedReviewers}
+          onSelectBackend={(b) => void setReviewBackend(conversationId, b)}
+          onSelectMode={(m) => void setReviewMode(conversationId, m)}
+          onSelectOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
+        />
+
+        <IconButton
+          active={showToolActivity}
+          onClick={toggleToolActivity}
+          title={showToolActivity ? 'Hide tool activity' : 'Show tool activity'}
+        >
+          {showToolActivity ? <EyeIcon /> : <EyeOffIcon />}
+        </IconButton>
+
+        <IconButton
+          active={showFileTree}
+          onClick={toggleFileTree}
+          title={showFileTree ? 'Hide file tree' : 'Show file tree'}
+        >
+          <FolderIcon />
+        </IconButton>
+
+        {(conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0) && (
+          <button
+            onClick={() =>
+              openSheet(
+                (conv.workspaceAgentMemberIds?.length ?? 0) > 0
+                  ? { type: 'workspaceAgentReview', coordinatorId: conversationId }
+                  : { type: 'worktreeDiff', convId: conversationId },
+              )
+            }
+            className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink"
+            title={
+              (conv.workspaceAgentMemberIds?.length ?? 0) > 0
+                ? 'Review each project and merge independently'
+                : `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
+            }
+          >
+            <DiffIcon />
+            <span>Diff</span>
+          </button>
+        )}
+
+        <ConversationSettingsButton
+          conversationId={conversationId}
+          locked={locked}
+          onModelChange={(b, m) => void setModel(conversationId, b, m)}
+        />
+
+        <MoreMenu
+          onReset={() => setConfirmingReset(true)}
+          onArchive={() =>
+            openSheet({ type: 'archiveConversation', convId: conversationId })
+          }
+          onRevealInFinder={() => {
+            const p = conv.worktreePath;
+            if (p) window.overcli.invoke('fs:openInFinder', p);
+          }}
+          worktreeAvailable={!!conv.worktreePath}
+        />
+
+        {confirmingReset && (
+          <div className="flex items-center gap-1 ml-1">
+            <span className="text-xs text-ink-muted">Reset?</span>
+            <button
+              onClick={() => {
+                void resetConversation(conversationId);
+                setConfirmingReset(false);
+              }}
+              className="text-xs px-2 py-1 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30"
+            >
+              Reset
+            </button>
+            <button
+              onClick={() => setConfirmingReset(false)}
+              className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+    </header>
+  );
+}
+
+function HeaderBadge({
+  children,
+  title,
+  style,
+  pulse,
+}: {
+  children: ReactNode;
+  title?: string;
+  style?: CSSProperties;
+  pulse?: boolean;
+}) {
+  return (
+    <span
+      title={title}
+      style={style}
+      className={
+        'shrink-0 rounded-full border border-card bg-card px-2 py-0.5 text-[10px] font-medium' +
+        (pulse ? ' animate-pulse' : '')
+      }
+    >
+      {children}
+    </span>
+  );
+}
+
+function BackendDot({ color }: { color: string }) {
+  return (
+    <span
+      className="w-2 h-2 rounded-full"
+      style={{ background: color }}
+    />
+  );
+}
+
+/// Used for permission tone (amber for acceptEdits, red for bypass, etc.)
+function ShieldIcon({ tone }: { tone?: string }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M8 1.5L13 3.5v4c0 3-2 5.5-5 7-3-1.5-5-4-5-7v-4L8 1.5z"
+        stroke={tone ?? 'currentColor'}
+        strokeWidth="1.2"
+      />
+    </svg>
+  );
+}
+
+function BrainIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M5.5 3a2 2 0 012-2c1 0 1.8.7 2 1.6.3-.4.8-.6 1.3-.6a2 2 0 012 2c0 .3-.1.6-.2.8a2 2 0 01-.3 3.8 2 2 0 01-2.8 2A2 2 0 018 12c-.5 0-1 -.2-1.3-.5A2 2 0 013.5 9.6 2 2 0 012.7 6a2 2 0 01.3-3.8A2 2 0 015.5 3z"
+        stroke="currentColor"
+        strokeWidth="1.1"
+      />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5z" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function EyeOffIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M1 8s2.5-5 7-5c1.3 0 2.4.4 3.3.9" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M15 8s-2.5 5-7 5c-1.3 0-2.4-.4-3.3-.9" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="1" y1="15" x2="15" y2="1" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M1.5 4.5A1 1 0 012.5 3.5h3l1 1.5h6A1 1 0 0113.5 6v6A1 1 0 0112.5 13h-10A1 1 0 011.5 12V4.5z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+      />
+    </svg>
+  );
+}
+
+function ReboundIcon({ tint }: { tint?: string }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M4 8 L8 4 L12 8 M8 4 V13 M13 13 H3"
+        stroke={tint ?? 'currentColor'}
+        strokeWidth="1.2"
+      />
+    </svg>
+  );
+}
+
+function IconButton({
+  onClick,
+  title,
+  active,
+  children,
+}: {
+  onClick: () => void;
+  title: string;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={
+        'w-7 h-7 flex items-center justify-center rounded ' +
+        (active
+          ? 'bg-accent/20 text-ink'
+          : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+interface PickerItem {
+  value: string;
+  label: string;
+  disabled?: boolean;
+  note?: string;
+  leading?: React.ReactNode;
+}
+
+function IconPicker({
+  icon,
+  label,
+  items,
+  onPick,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  items: PickerItem[];
+  onPick: (v: string) => void;
+  tone?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-card-strong"
+        style={tone ? { color: tone } : undefined}
+      >
+        {icon}
+        <span className="text-xs">{label}</span>
+        <span className="text-[9px] opacity-70">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 min-w-[200px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
+          {items.map((it) => (
+            <button
+              key={it.value}
+              disabled={it.disabled}
+              onClick={() => {
+                setOpen(false);
+                onPick(it.value);
+              }}
+              className={
+                'w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 ' +
+                (it.disabled
+                  ? 'text-ink-faint cursor-not-allowed'
+                  : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+              }
+            >
+              {it.leading}
+              <span className="flex-1">{it.label}</span>
+              {it.note && <span className="text-[10px] text-amber-400">{it.note}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// Fork picker: creates a sibling conversation in the same project,
+/// optionally targeting a different backend. Designed for the case where
+/// a CLI is down or rate-limited and the user wants to continue the same
+/// line of thought on a different one. The last user prompt the active
+/// conversation had queued becomes the new conversation's draft so it's
+/// one click away from being re-sent.
+function ForkPicker({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  const backendHealth = useStore((s) => s.backendHealth);
+  const projects = useStore((s) => s.projects);
+  const newConversation = useStore((s) => s.newConversation);
+  const selectConversation = useStore((s) => s.selectConversation);
+  const setPrimary = useStore((s) => s.setPrimaryBackend);
+  const setDraft = useStore((s) => s.setDraft);
+  const runners = useStore((s) => s.runners);
+  if (!conv) return null;
+  const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
+  const currentBackend = conv.primaryBackend ?? 'claude';
+
+  const lastUserPrompt = (() => {
+    const events = runners[conversationId]?.events ?? [];
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      if (e.kind.type === 'localUser') return e.kind.text;
+    }
+    return '';
+  })();
+
+  const forkTo = async (targetBackend: Backend) => {
+    if (!ownerProject) return;
+    const forked = await newConversation(ownerProject.id);
+    // Rename to make the relationship obvious in the sidebar.
+    useStore.setState((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === ownerProject.id
+          ? {
+              ...p,
+              conversations: p.conversations.map((c) =>
+                c.id === forked.id
+                  ? { ...c, name: `${conv.name} (fork → ${backendName(targetBackend)})` }
+                  : c,
+              ),
+            }
+          : p,
+      ),
+    }));
+    await setPrimary(forked.id, targetBackend);
+    if (lastUserPrompt) setDraft(forked.id, lastUserPrompt);
+    selectConversation(forked.id);
+  };
+
+  const items: PickerItem[] = (['claude', 'codex', 'gemini', 'ollama'] as Backend[]).map((b) => ({
+    value: b,
+    label:
+      b === currentBackend
+        ? `${backendName(b)} (same backend)`
+        : `Fork to ${backendName(b)}`,
+    leading: <BackendDot color={backendColor(b)} />,
+    disabled: backendHealth[b]?.kind !== 'ready',
+    note: backendHealth[b]?.kind === 'unauthenticated' ? 'auth needed' : undefined,
+  }));
+
+  return (
+    <IconPicker
+      icon={<ForkIcon />}
+      label="fork"
+      items={items}
+      onPick={(v) => void forkTo(v as Backend)}
+    />
+  );
+}
+
+function ForkIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <circle cx="4" cy="3" r="1.5" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="12" cy="3" r="1.5" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="8" cy="13" r="1.5" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M4 4.5 V7 Q4 9 6.5 10 L8 11 M12 4.5 V7 Q12 9 9.5 10 L8 11" stroke="currentColor" strokeWidth="1.2" fill="none" />
+    </svg>
+  );
+}
+
+/// Anchored popover for the rebound feature. Rebound runs a *second* CLI
+/// after every primary turn — either as a one-shot reviewer ("what do you
+/// think of this response?") or as a ping-pong collab loop. The popover
+/// presents those as two separate decisions — pick a reviewer backend,
+/// pick a mode — instead of cramming backend+mode into one dropdown
+/// line which was hard to scan.
+function ReboundPicker({
+  conv,
+  installedReviewers,
+  onSelectBackend,
+  onSelectMode,
+  onSelectOllamaModel,
+}: {
+  conv: {
+    id: UUID;
+    reviewBackend?: string | null;
+    reviewMode?: 'review' | 'collab' | null;
+    collabMaxTurns?: number | null;
+    reviewOllamaModel?: string | null;
+    primaryBackend?: Backend;
+  };
+  installedReviewers: Record<string, boolean>;
+  onSelectBackend: (b: string | null) => void;
+  onSelectMode: (m: 'review' | 'collab') => void;
+  onSelectOllamaModel: (m: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pulled, setPulled] = useState<string[]>([]);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  // Load pulled Ollama models whenever the popover opens so the model
+  // picker below can show one-click choices.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void window.overcli.invoke('ollama:detect').then((det) => {
+      if (cancelled) return;
+      setPulled(det.models.map((m) => m.name));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const active = !!conv.reviewBackend;
+  const tint = active ? '#c29bff' : undefined;
+  const primary = conv.primaryBackend ?? 'claude';
+  const candidates = (['claude', 'codex', 'gemini', 'ollama'] as Backend[]).filter((b) => b !== primary);
+
+  const label = active
+    ? `rebound · ${conv.reviewBackend}${conv.reviewMode === 'collab' ? ' · collab' : ''}`
+    : 'rebound';
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-card-strong"
+        style={tint ? { color: tint } : undefined}
+      >
+        <ReboundIcon tint={tint} />
+        <span className="text-xs">{label}</span>
+        <span className="text-[9px] opacity-70">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-[300px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Reviewer</div>
+            <div className="flex flex-col gap-1">
+              <ReboundRow
+                label="Off"
+                description="No secondary review."
+                selected={!active}
+                onSelect={() => onSelectBackend(null)}
+              />
+              {candidates.map((b) => {
+                const ready = installedReviewers[b];
+                const isLocal = b === 'ollama';
+                return (
+                  <ReboundRow
+                    key={b}
+                    label={backendName(b) + (isLocal ? '  (local)' : '')}
+                    labelColor={backendColor(b)}
+                    description={
+                      ready
+                        ? isLocal
+                          ? `Fast, private, but lighter-weight critique than Claude/Codex. Uses your default Ollama model.`
+                          : `Run ${backendName(b)} after each ${backendName(primary)} turn.`
+                        : isLocal
+                        ? 'Ollama not installed — set it up in the Local tab.'
+                        : `${backendName(b)} CLI not installed or not authenticated.`
+                    }
+                    selected={conv.reviewBackend === b}
+                    disabled={!ready}
+                    onSelect={() => onSelectBackend(b)}
+                  />
+                );
+              })}
+            </div>
+          </div>
+
+          {active && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Mode</div>
+              <div className="flex flex-col gap-1">
+                <ReboundRow
+                  label="Review"
+                  description="One-shot: reviewer reads each turn and comments."
+                  selected={conv.reviewMode !== 'collab'}
+                  onSelect={() => onSelectMode('review')}
+                />
+                <ReboundRow
+                  label="Collab"
+                  description="Ping-pong: primary and reviewer take turns until the budget is spent."
+                  selected={conv.reviewMode === 'collab'}
+                  onSelect={() => onSelectMode('collab')}
+                />
+              </div>
+            </div>
+          )}
+
+          {active && conv.reviewBackend === 'ollama' && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                Ollama model
+              </div>
+              {pulled.length === 0 ? (
+                <div className="text-[10px] text-amber-400">
+                  No models pulled. Open the Local tab to pull one.
+                </div>
+              ) : (
+                <div className="flex flex-col gap-0.5">
+                  <button
+                    onClick={() => onSelectOllamaModel(null)}
+                    className={
+                      'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                      (!conv.reviewOllamaModel
+                        ? 'bg-accent/15 text-ink'
+                        : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                    }
+                  >
+                    (use default)
+                  </button>
+                  {pulled.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => onSelectOllamaModel(m)}
+                      className={
+                        'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                        (conv.reviewOllamaModel === m
+                          ? 'bg-accent/15 text-ink'
+                          : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                      }
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {active && conv.reviewMode === 'collab' && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                Collab rounds per burst
+              </div>
+              <CollabRoundsInput conversationId={conv.id} />
+              <div className="text-[10px] text-ink-faint mt-1">
+                Max back-and-forth turns before we stop and return to you.
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReboundRow({
+  label,
+  labelColor,
+  description,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  label: string;
+  labelColor?: string;
+  description: string;
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      disabled={disabled}
+      onClick={onSelect}
+      className={
+        'w-full text-left px-2 py-1.5 rounded flex items-start gap-2 ' +
+        (selected
+          ? 'bg-accent/15 ring-1 ring-accent/30'
+          : disabled
+          ? 'opacity-40 cursor-not-allowed'
+          : 'hover:bg-card-strong')
+      }
+    >
+      <div className="mt-0.5">
+        {selected ? (
+          <div className="w-3 h-3 rounded-full border-2 border-accent bg-accent" />
+        ) : (
+          <div className="w-3 h-3 rounded-full border border-card-strong" />
+        )}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div
+          className={selected ? 'text-ink' : 'text-ink-muted'}
+          style={labelColor ? { color: labelColor } : undefined}
+        >
+          {label}
+        </div>
+        <div className="text-[10px] text-ink-faint">{description}</div>
+      </div>
+    </button>
+  );
+}
+
+function CollabRoundsInput({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  const setRounds = (v: number) =>
+    useStore.setState((s) => ({
+      projects: s.projects.map((p) => ({
+        ...p,
+        conversations: p.conversations.map((c) =>
+          c.id === conversationId ? { ...c, collabMaxTurns: v } : c,
+        ),
+      })),
+    }));
+  // Default 3 pongs — the Swift build found that deeper collab loops
+  // burned a lot of tokens without meaningfully improving the result.
+  const v = conv?.collabMaxTurns ?? 3;
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="range"
+        min={2}
+        max={20}
+        step={1}
+        value={v}
+        onChange={(e) => setRounds(parseInt(e.target.value, 10))}
+        className="flex-1 accent-accent"
+      />
+      <span className="text-[10px] text-ink w-6 text-right">{v}</span>
+    </div>
+  );
+}
+
+function ConversationSettingsButton({
+  conversationId,
+  locked,
+  onModelChange,
+}: {
+  conversationId: UUID;
+  locked: boolean;
+  onModelChange: (backend: Backend, model: string) => void;
+}) {
+  const conv = useConversation(conversationId);
+  const settings = useStore((s) => s.settings);
+  const [open, setOpen] = useState(false);
+  const [ollamaPulled, setOllamaPulled] = useState<string[]>([]);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const backend: Backend = conv?.primaryBackend ?? 'claude';
+
+  // Fetch the list of pulled Ollama models whenever the popover opens on
+  // an Ollama conversation — gives the user one-click picks instead of
+  // having to remember `qwen2.5-coder:14b-instruct-q4_K_M`.
+  useEffect(() => {
+    if (!open || backend !== 'ollama') return;
+    let cancelled = false;
+    void window.overcli.invoke('ollama:detect').then((det) => {
+      if (cancelled) return;
+      setOllamaPulled(det.models.map((m) => m.name));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, backend]);
+
+  if (!conv) return null;
+  const current =
+    backend === 'claude'
+      ? conv.claudeModel ?? ''
+      : backend === 'codex'
+      ? conv.codexModel ?? ''
+      : backend === 'ollama'
+      ? conv.ollamaModel ?? ''
+      : conv.geminiModel ?? '';
+  return (
+    <div ref={ref} className="relative">
+      <IconButton active={open} onClick={() => setOpen((o) => !o)} title="Conversation settings">
+        <SlidersIcon />
+      </IconButton>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-[280px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint">Model override</div>
+          <input
+            value={current}
+            onChange={(e) => onModelChange(backend, e.target.value)}
+            placeholder={settings.backendDefaultModels[backend] ?? '(default)'}
+            className="field px-2 py-1 font-mono text-[11px]"
+          />
+          {backend === 'ollama' && ollamaPulled.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mt-1">Pulled locally</div>
+              {ollamaPulled.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => onModelChange(backend, m)}
+                  className={
+                    'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                    (current === m ? 'bg-accent/15 text-ink' : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                  }
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
+          {backend === 'ollama' && ollamaPulled.length === 0 && (
+            <div className="text-[10px] text-amber-400">
+              No models pulled. Open the Local tab to pull one.
+            </div>
+          )}
+          <div className="text-[10px] text-ink-faint">
+            Leave blank to use the app's default model for {backend}.
+          </div>
+          {locked && (
+            <div className="text-[10px] text-amber-400">
+              Session already started — model changes apply to the next turn.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiffIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M4 2v4H2l3 3 3-3H6V2H4zm6 3 3 3h-2v4h-2V8H7l3-3z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+function SlidersIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <line x1="2" y1="4" x2="9" y2="4" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="11" y1="4" x2="14" y2="4" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="10" cy="4" r="1.3" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="2" y1="8" x2="5" y2="8" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="7" y1="8" x2="14" y2="8" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="6" cy="8" r="1.3" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="2" y1="12" x2="10" y2="12" stroke="currentColor" strokeWidth="1.2" />
+      <line x1="12" y1="12" x2="14" y2="12" stroke="currentColor" strokeWidth="1.2" />
+      <circle cx="11" cy="12" r="1.3" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+function MoreMenu({
+  onReset,
+  onArchive,
+  onRevealInFinder,
+  worktreeAvailable,
+}: {
+  onReset: () => void;
+  onArchive: () => void;
+  onRevealInFinder: () => void;
+  worktreeAvailable: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+  return (
+    <div ref={ref} className="relative">
+      <IconButton active={open} onClick={() => setOpen((o) => !o)} title="More">
+        <span className="text-[14px] leading-none">⋯</span>
+      </IconButton>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 min-w-[220px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 text-xs">
+          <MenuRow
+            label="Reset conversation"
+            onClick={() => {
+              setOpen(false);
+              onReset();
+            }}
+          />
+          {worktreeAvailable && (
+            <MenuRow
+              label="Reveal worktree in Finder"
+              onClick={() => {
+                setOpen(false);
+                onRevealInFinder();
+              }}
+            />
+          )}
+          <div className="border-t border-card my-1" />
+          <MenuRow
+            label="Rename, archive, or delete…"
+            onClick={() => {
+              setOpen(false);
+              onArchive();
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuRow({ label, onClick, danger }: { label: string; onClick: () => void; danger?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'w-full text-left px-3 py-1.5 hover:bg-card-strong ' +
+        (danger ? 'text-red-400 hover:text-red-300' : 'text-ink-muted hover:text-ink')
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+function modeLabel(mode: PermissionMode): string {
+  switch (mode) {
+    case 'plan':
+      return 'Plan';
+    case 'acceptEdits':
+      return 'Accept edits';
+    case 'bypassPermissions':
+      return 'Bypass (dangerous)';
+    default:
+      return 'Default';
+  }
+}
+
+function permissionTone(mode: PermissionMode): string | undefined {
+  if (mode === 'bypassPermissions') return '#f97a5a';
+  if (mode === 'acceptEdits') return '#f7b267';
+  return undefined;
+}
+
+function effortLabel(effort: EffortLevel): string {
+  if (!effort) return 'Effort';
+  return effort.charAt(0).toUpperCase() + effort.slice(1);
+}

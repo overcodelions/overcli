@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Launching external CLI binaries (claude, codex, gemini) is the
+       whole point of the app — allow-jit/allow-unsigned-executable-memory
+       let Electron's V8 run normally, and allow-dyld-environment-variables
+       plus disable-library-validation let us inherit the user's PATH so
+       /opt/homebrew/bin/claude resolves the way it does in their shell. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+  <key>com.apple.security.cs.allow-executable-page-protection-bypass</key>
+  <true/>
+  <!-- Network for the CLI's own API calls. -->
+  <key>com.apple.security.network.client</key>
+  <true/>
+  <key>com.apple.security.network.server</key>
+  <true/>
+  <!-- The user picks a project directory at runtime; we write
+       conversation metadata into userData and read their chosen source
+       tree. Document access is broad so the file editor + git worktree
+       flow works anywhere they point us. -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <key>com.apple.security.files.downloads.read-write</key>
+  <true/>
+</dict>
+</plist>
