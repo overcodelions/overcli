@@ -6,7 +6,7 @@
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { Backend, MainToRendererEvent, ReviewInfo, StreamEvent, UUID } from '../shared/types';
-import { buildBackendEnv, resolveBackendPath } from './backendPaths';
+import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
 import { OllamaChatMessage, streamChat } from './ollama';
 
 type Emit = (event: MainToRendererEvent) => void;
@@ -114,9 +114,11 @@ export class ReviewerManager {
     return new Promise<ReviewInfo>((resolve) => {
       const childArgs = buildReviewerArgs(args.reviewBackend);
       const env = buildBackendEnv(process.env, bin);
+      const shell = backendNeedsShell(bin);
       const proc = spawn(bin, childArgs, {
         cwd: args.cwd,
         env,
+        shell,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       this.inFlight.set(args.conversationId, proc);

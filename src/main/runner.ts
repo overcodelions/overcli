@@ -4,7 +4,7 @@
 // supplied at construction, and buffers a writer handle on stdin so we can
 // feed new user turns without respawning.
 
-import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -29,7 +29,7 @@ import {
   makeResultEvent,
   makeSystemInitEvent,
 } from './parsers/ollama';
-import { buildBackendEnv, resolveBackendPath } from './backendPaths';
+import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
 import { OllamaChatMessage, detectOllama, streamChat } from './ollama';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
@@ -62,9 +62,14 @@ interface ActiveProcess {
   proc: ChildProcessWithoutNullStreams;
   backend: Backend;
   sessionId?: string;
+  launchModel: string;
+  launchPermissionMode: PermissionMode;
   stdoutBuffer: string;
   stderrBuffer: string;
   codexState?: CodexParserState;
+  codexMode?: 'proto' | 'exec';
+  codexExecEventId?: string;
+  codexExecRevision: number;
   /// Codex proto: maps our internal request id onto the proto `id` field
   /// so resuming codex exec responses route back to the live subprocess.
   lastCodexMsgId: number;
@@ -165,6 +170,7 @@ export class RunnerManager {
   private emit: Emit;
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
+  private codexProtoSupport = new Map<string, boolean>();
 
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
     this.emit = emit;
@@ -313,6 +319,15 @@ export class RunnerManager {
     }
 
     try {
+      const existing = this.procs.get(convId);
+      if (
+        existing &&
+        (existing.launchPermissionMode !== args.permissionMode ||
+          existing.launchModel !== args.model ||
+          existing.cwd !== args.cwd)
+      ) {
+        this.killProc(convId);
+      }
       const active = this.procs.get(convId) ?? this.spawnFor(args);
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
@@ -326,13 +341,15 @@ export class RunnerManager {
       active.geminiAssistantText = '';
       active.geminiAssistantToolUses = [];
       active.geminiAssistantNeedsSplit = false;
+      active.codexExecEventId = undefined;
+      active.codexExecRevision = 0;
       if (!options.syntheticFromCollab) {
         active.collabBurst += 1;
         active.collabRoundsInBurst = 0;
       }
       this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
       const envelope = this.buildEnvelope(args, active);
-      if (args.backend === 'gemini') {
+      if (args.backend === 'gemini' || (args.backend === 'codex' && active.codexMode === 'exec')) {
         active.proc.stdin.end(envelope + '\n');
       } else {
         active.proc.stdin.write(envelope + '\n');
@@ -1085,19 +1102,32 @@ export class RunnerManager {
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
     const env = this.buildEnv(binary);
-    const spawnArgs = this.buildArgs(args);
+    const codexMode =
+      args.backend === 'codex'
+        ? process.platform === 'win32' && !this.supportsCodexProto(binary, env)
+          ? 'exec'
+          : 'proto'
+        : undefined;
+    const spawnArgs = this.buildArgs(args, codexMode);
+    const shell = backendNeedsShell(binary);
     const proc = spawn(binary, spawnArgs, {
       cwd: args.cwd,
       env,
+      shell,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const active: ActiveProcess = {
       proc,
       backend: args.backend,
       sessionId: args.sessionId,
+      launchModel: args.model,
+      launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
       codexState: args.backend === 'codex' ? makeCodexParserState() : undefined,
+      codexMode,
+      codexExecEventId: undefined,
+      codexExecRevision: 0,
       lastCodexMsgId: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
@@ -1132,8 +1162,35 @@ export class RunnerManager {
         conversationId: args.conversationId,
         isRunning: false,
       });
+      if (active.backend === 'codex' && active.codexMode === 'exec') {
+        this.emit({
+          type: 'stream',
+          conversationId: args.conversationId,
+          events: [
+            {
+              id: randomUUID(),
+              timestamp: Date.now(),
+              raw: '',
+              kind: {
+                type: 'result',
+                info: {
+                  subtype: code === 0 ? 'success' : 'error',
+                  isError: code !== 0,
+                  durationMs: 0,
+                  totalCostUSD: 0,
+                  modelUsage: {},
+                },
+              },
+              revision: 0,
+            } as StreamEvent,
+          ],
+        });
+        if (code === 0) {
+          void this.maybeRunReviewer(args.conversationId, active);
+        }
+      }
       if (code != null && code !== 0 && code !== 143) {
-        const tail = active.stderrBuffer.slice(-500);
+        const tail = (active.stderrBuffer || active.stdoutBuffer || active.currentAssistantText || '').slice(-500);
         this.emit({
           type: 'error',
           conversationId: args.conversationId,
@@ -1146,7 +1203,7 @@ export class RunnerManager {
     return active;
   }
 
-  private buildArgs(args: SendArgs): string[] {
+  private buildArgs(args: SendArgs, codexMode?: 'proto' | 'exec'): string[] {
     switch (args.backend) {
       case 'claude': {
         const a: string[] = [
@@ -1167,11 +1224,15 @@ export class RunnerManager {
         return a;
       }
       case 'codex': {
-        const a: string[] = ['proto'];
-        if (args.model) {
-          a.push('-c', `model=${args.model}`);
-        }
         const { sandbox, approval } = codexPermissionMapping(args.permissionMode);
+        if (codexMode === 'exec') {
+          const a: string[] = [];
+          if (args.model) a.push('-m', args.model);
+          a.push('-s', sandbox, '-a', approval, 'exec', '-');
+          return a;
+        }
+        const a: string[] = ['proto'];
+        if (args.model) a.push('-c', `model=${args.model}`);
         a.push('-c', `sandbox_mode="${sandbox}"`);
         a.push('-c', `approval_policy="${approval}"`);
         return a;
@@ -1215,6 +1276,9 @@ export class RunnerManager {
         });
       }
       case 'codex': {
+        if (active.codexMode === 'exec') {
+          return args.prompt;
+        }
         active.lastCodexMsgId += 1;
         // codex proto wants local file paths, not base64. Write each
         // attachment to a temp file and reference by path.
@@ -1239,6 +1303,50 @@ export class RunnerManager {
   }
 
   private handleStdout(convId: UUID, active: ActiveProcess, chunk: string): void {
+    if (active.backend === 'codex' && active.codexMode === 'exec') {
+      active.currentAssistantText += chunk;
+      if (!active.sessionId) {
+        const m = active.currentAssistantText.match(/session id:\s*([0-9a-f-]{8,})/i);
+        if (m?.[1]) {
+          active.sessionId = m[1];
+          this.emit({
+            type: 'sessionConfigured',
+            conversationId: convId,
+            sessionId: active.sessionId,
+          });
+        }
+      }
+      if (!active.codexExecEventId) active.codexExecEventId = randomUUID();
+      active.codexExecRevision += 1;
+      this.emit({
+        type: 'stream',
+        conversationId: convId,
+        events: [
+          {
+            id: active.codexExecEventId,
+            timestamp: Date.now(),
+            raw: chunk,
+            kind: {
+              type: 'assistant',
+              info: {
+                model: 'codex',
+                text: active.currentAssistantText,
+                toolUses: [],
+                thinking: [],
+              },
+            },
+            revision: active.codexExecRevision,
+          } as StreamEvent,
+        ],
+      });
+      this.emit({
+        type: 'running',
+        conversationId: convId,
+        isRunning: true,
+        activityLabel: 'Writing…',
+      });
+      return;
+    }
     active.stdoutBuffer += chunk;
     const lines = active.stdoutBuffer.split('\n');
     active.stdoutBuffer = lines.pop() ?? '';
@@ -1359,6 +1467,26 @@ export class RunnerManager {
     if (resolved) return resolved;
     // Last resort: hope it's on PATH (which we extend via buildEnv).
     return backend;
+  }
+
+  private supportsCodexProto(binary: string, env: NodeJS.ProcessEnv): boolean {
+    const cached = this.codexProtoSupport.get(binary);
+    if (cached != null) return cached;
+    const shell = backendNeedsShell(binary);
+    const probe = spawnSync(binary, ['help', 'proto'], {
+      encoding: 'utf-8',
+      timeout: 3000,
+      env,
+      shell,
+    });
+    let supports = probe.status === 0;
+    if (!supports) {
+      const res = spawnSync(binary, ['--help'], { encoding: 'utf-8', timeout: 3000, env, shell });
+      const text = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+      supports = /^\s*proto\s+/m.test(text);
+    }
+    this.codexProtoSupport.set(binary, supports);
+    return supports;
   }
 
   /// Pick a model tag for the Ollama reviewer. Priority: per-conversation

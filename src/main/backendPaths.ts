@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { Backend } from '../shared/types';
 
 function existsExecutable(p: string): boolean {
@@ -27,7 +28,7 @@ function unique(values: string[]): string[] {
 
 function commandNames(backend: Backend): string[] {
   if (process.platform !== 'win32') return [backend];
-  return [`${backend}.cmd`, `${backend}.exe`, backend];
+  return [`${backend}.cmd`, `${backend}.exe`, `${backend}.bat`, backend];
 }
 
 function nodeVersionBins(root: string, binFromVersionDir: (versionDir: string) => string): string[] {
@@ -94,12 +95,29 @@ function commonBinDirs(backend: Backend): string[] {
 }
 
 function pathBinCandidates(backend: Backend, env: NodeJS.ProcessEnv = process.env): string[] {
-  const dirs = (env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const dirs = (env.PATH ?? '')
+    .split(path.delimiter)
+    .map((dir) => dir.trim().replace(/^"(.*)"$/, '$1'))
+    .filter(Boolean);
   return dirs.flatMap((dir) => commandNames(backend).map((name) => path.join(dir, name)));
 }
 
 function commonBinCandidates(backend: Backend): string[] {
   return commonBinDirs(backend).flatMap((dir) => commandNames(backend).map((name) => path.join(dir, name)));
+}
+
+function whereCandidates(backend: Backend, env: NodeJS.ProcessEnv = process.env): string[] {
+  if (process.platform !== 'win32') return [];
+  const out: string[] = [];
+  for (const name of commandNames(backend)) {
+    const res = spawnSync('where', [name], { encoding: 'utf-8', timeout: 2000, env });
+    if (res.status !== 0 || !res.stdout) continue;
+    for (const line of res.stdout.split(/\r?\n/)) {
+      const candidate = line.trim();
+      if (candidate) out.push(candidate);
+    }
+  }
+  return out;
 }
 
 export function resolveBackendPath(
@@ -109,7 +127,11 @@ export function resolveBackendPath(
 ): string | null {
   if (override && existsExecutable(override)) return override;
 
-  for (const candidate of unique([...pathBinCandidates(backend, env), ...commonBinCandidates(backend)])) {
+  for (const candidate of unique([
+    ...pathBinCandidates(backend, env),
+    ...commonBinCandidates(backend),
+    ...whereCandidates(backend, env),
+  ])) {
     if (existsExecutable(candidate)) return candidate;
   }
   return null;
@@ -132,4 +154,10 @@ export function buildBackendEnv(
     ...env,
     PATH: unique([...extra, ...current.split(path.delimiter)]).join(path.delimiter),
   };
+}
+
+export function backendNeedsShell(binary: string): boolean {
+  if (process.platform !== 'win32') return false;
+  const ext = path.extname(binary).toLowerCase();
+  return ext === '.cmd' || ext === '.bat';
 }
