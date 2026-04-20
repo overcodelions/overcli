@@ -1,8 +1,8 @@
 import { useStore } from '../store';
 
 /// Custom title bar region. `hiddenInset` window style shows the traffic
-/// lights overlaid on our content, so we pad the left 70pt to clear them
-/// and give the rest of the bar the `draggable` hint.
+/// lights overlaid on our content; pad the left enough to clear them and
+/// leave breathing room before the sidebar toggle.
 export function TitleBar() {
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const detailMode = useStore((s) => s.detailMode);
@@ -11,7 +11,7 @@ export function TitleBar() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform;
   const isMac = platform.toLowerCase().includes('mac');
-  const leadingInsetClass = isMac ? 'pl-[72px]' : 'pl-2';
+  const leadingInsetClass = isMac ? 'pl-[92px]' : 'pl-2';
   return (
     <div className={`draggable flex items-center h-[38px] ${leadingInsetClass} pr-3 bg-surface border-b border-card select-none`}>
       <button
