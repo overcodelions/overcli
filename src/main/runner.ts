@@ -25,12 +25,21 @@ import { parseClaudeLine } from './parsers/claude';
 import { parseCodexProtoLine, makeCodexParserState, CodexParserState } from './parsers/codex';
 import {
   makeAssistantEvent,
+  makeAssistantEventWithTools,
   makeErrorEvent,
   makeResultEvent,
   makeSystemInitEvent,
+  makeToolResultEvent,
 } from './parsers/ollama';
 import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
-import { OllamaChatMessage, detectOllama, streamChat } from './ollama';
+import {
+  OLLAMA_CATALOG,
+  OllamaChatMessage,
+  OllamaToolCall,
+  detectOllama,
+  streamChat,
+} from './ollama';
+import { OLLAMA_BUILTIN_TOOLS, executeOllamaTool } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
@@ -457,25 +466,22 @@ export class RunnerManager {
 
     this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
 
-    let acc = '';
-    // One assistant event id per turn — each token emits the same id
-    // with a bumped revision so the renderer mutates that row in place
-    // instead of appending a new bubble per chunk.
-    const assistantEventId = randomUUID();
-    let assistantRevision = 0;
+    const tools = modelSupportsTools(model) ? OLLAMA_BUILTIN_TOOLS : undefined;
+    // Cap the tool-call ping-pong. Models occasionally get stuck re-calling
+    // read_file on the same path; bailing out after 8 rounds surfaces the
+    // bug instead of hanging the UI.
+    const MAX_TOOL_ROUNDS = 8;
+
     const startedAt = Date.now();
     let finished = false;
-    const finishWith = (final: StreamEvent | null, opts?: { err?: string }) => {
+    // Accumulated text from the FINAL (non-tool-calling) assistant reply.
+    // Reviewer hook uses this; mid-turn text between tool calls is shown
+    // but not fed to the reviewer (noise).
+    let finalAssistantText = '';
+    const finishWith = (opts?: { err?: string }) => {
       if (finished) return;
       finished = true;
       const events: StreamEvent[] = [];
-      if (final) events.push(final);
-      if (!opts?.err && acc) {
-        assistantRevision += 1;
-        events.push(
-          makeAssistantEvent(model, acc, assistantEventId, assistantRevision),
-        );
-      }
       const result = makeResultEvent({
         durationMs: Date.now() - startedAt,
         error: opts?.err,
@@ -483,12 +489,8 @@ export class RunnerManager {
       events.push(result);
       this.emit({ type: 'stream', conversationId: convId, events });
       this.emit({ type: 'running', conversationId: convId, isRunning: false });
-      if (!opts?.err && acc) {
-        session!.messages.push({ role: 'assistant', content: acc });
-        session!.messageTimestamps.push(Date.now());
-        // Persist after each successful turn. Writing on every token
-        // would be wasteful (atomic rename per chunk); one write per turn
-        // is cheap and gives us full crash-safety at turn boundaries.
+      if (!opts?.err) {
+        // Persist after the whole turn (including tool rounds) finishes.
         saveOllamaSession({
           sessionId: session!.sessionId,
           lastModel: session!.lastModel,
@@ -498,16 +500,12 @@ export class RunnerManager {
       }
       if (session!.inFlight === controller) session!.inFlight = undefined;
 
-      // Fire the reviewer ("rebound") for this turn if the user
-      // configured one. Mirrors maybeRunReviewer in the subprocess
-      // path; runs both for plain review and as the first leg of collab
-      // ping-pong.
-      if (!opts?.err && acc && args.reviewBackend) {
+      if (!opts?.err && finalAssistantText && args.reviewBackend) {
         void this.runOllamaReviewHook({
           convId,
           session: session!,
           userPrompt: args.prompt,
-          assistantText: acc,
+          assistantText: finalAssistantText,
           reviewBackend: args.reviewBackend as Backend,
           reviewMode: args.reviewMode ?? null,
           collabMaxTurns: args.collabMaxTurns ?? 3,
@@ -517,42 +515,143 @@ export class RunnerManager {
       }
     };
 
-    void streamChat(
-      { model, messages: session.messages, signal: controller.signal },
-      (ev) => {
-        if (ev.type === 'token') {
-          acc += ev.text;
-          assistantRevision += 1;
+    // Runs one streamChat call. Returns the collected tool calls (empty
+    // if the model finished with plain text). Emits assistant tokens and
+    // the final assistant event for this sub-turn.
+    const runOneRound = async (): Promise<
+      { ok: true; toolCalls: OllamaToolCall[]; text: string } | { ok: false; error: string }
+    > => {
+      let acc = '';
+      let pendingToolCalls: OllamaToolCall[] = [];
+      const assistantEventId = randomUUID();
+      let assistantRevision = 0;
+      let streamError: string | null = null;
+
+      await streamChat(
+        { model, messages: session!.messages, tools, signal: controller.signal },
+        (ev) => {
+          if (ev.type === 'token') {
+            acc += ev.text;
+            assistantRevision += 1;
+            this.emit({
+              type: 'stream',
+              conversationId: convId,
+              events: [makeAssistantEvent(model, acc, assistantEventId, assistantRevision)],
+            });
+          } else if (ev.type === 'toolCalls') {
+            pendingToolCalls = pendingToolCalls.concat(ev.calls);
+          } else if (ev.type === 'done') {
+            // If this round ends with tool_calls, finalize the assistant
+            // bubble with the tool uses attached so the UI can render
+            // them inline with the intermediate text.
+            if (pendingToolCalls.length > 0) {
+              assistantRevision += 1;
+              this.emit({
+                type: 'stream',
+                conversationId: convId,
+                events: [
+                  makeAssistantEventWithTools(
+                    model,
+                    acc,
+                    assistantEventId,
+                    assistantRevision,
+                    pendingToolCalls,
+                  ),
+                ],
+              });
+            }
+          } else if (ev.type === 'error') {
+            streamError = ollamaFriendlyError(ev.message);
+          }
+        },
+      ).catch((err: any) => {
+        streamError = err?.message ?? String(err);
+      });
+
+      if (streamError) return { ok: false, error: streamError };
+      return { ok: true, toolCalls: pendingToolCalls, text: acc };
+    };
+
+    const runLoop = async () => {
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        const res = await runOneRound();
+        if (!res.ok) {
           this.emit({
             type: 'stream',
             conversationId: convId,
-            events: [
-              makeAssistantEvent(model, acc, assistantEventId, assistantRevision),
-            ],
+            events: [makeErrorEvent(res.error)],
           });
-        } else if (ev.type === 'done') {
-          finishWith(null);
-        } else if (ev.type === 'error') {
-          const friendly = ollamaFriendlyError(ev.message);
-          this.emit({
-            type: 'stream',
-            conversationId: convId,
-            events: [makeErrorEvent(friendly)],
-          });
-          // Roll back the just-sent user message from the session
-          // transcript so the next retry doesn't double-count it.
+          // Roll back the just-sent user message so the next retry
+          // doesn't double-count it — matches prior behaviour.
           if (session!.messages[session!.messages.length - 1]?.role === 'user') {
             session!.messages.pop();
             session!.messageTimestamps.pop();
           }
-          finishWith(null, { err: friendly });
+          finishWith({ err: res.error });
+          return;
         }
-      },
-    ).catch((err: any) => {
-      const message = err?.message ?? String(err);
-      finishWith(null, { err: message });
-    });
 
+        if (res.toolCalls.length === 0) {
+          // Clean finish: append the assistant reply to the transcript.
+          if (res.text) {
+            session!.messages.push({ role: 'assistant', content: res.text });
+            session!.messageTimestamps.push(Date.now());
+            finalAssistantText = res.text;
+          }
+          finishWith();
+          return;
+        }
+
+        // Tool-call round — persist the assistant's partial reply (with
+        // tool_calls attached so the transcript keeps the call/result
+        // pairing Ollama expects on replay) and execute each call.
+        session!.messages.push({
+          role: 'assistant',
+          content: res.text,
+          tool_calls: res.toolCalls.map((c) => ({
+            function: { name: c.name, arguments: c.arguments },
+          })),
+        });
+        session!.messageTimestamps.push(Date.now());
+
+        for (const call of res.toolCalls) {
+          const result = executeOllamaTool({
+            name: call.name,
+            arguments: call.arguments,
+            cwd: args.cwd,
+          });
+          // Surface the tool result in the UI the same way the Claude
+          // parser does — as a toolResult event correlated by id.
+          this.emit({
+            type: 'stream',
+            conversationId: convId,
+            events: [
+              makeToolResultEvent([
+                { id: call.id, content: result.content, isError: result.isError },
+              ]),
+            ],
+          });
+          session!.messages.push({
+            role: 'tool',
+            content: result.content,
+            tool_name: call.name,
+          });
+          session!.messageTimestamps.push(Date.now());
+        }
+      }
+
+      // Hit the tool-round cap — the model is likely stuck. Bail with a
+      // visible error rather than looping forever.
+      const capMsg = `Reached tool-call limit (${MAX_TOOL_ROUNDS} rounds) without a final answer.`;
+      this.emit({
+        type: 'stream',
+        conversationId: convId,
+        events: [makeErrorEvent(capMsg)],
+      });
+      finishWith({ err: capMsg });
+    };
+
+    void runLoop();
     return { ok: true };
   }
 
@@ -1999,6 +2098,15 @@ function evenlySpreadTimestamps(end: number, count: number): number[] {
     out.push(end - (count - 1 - i) * 1000);
   }
   return out;
+}
+
+/// True iff `tag` is in the curated catalog AND its family is trained on
+/// the Ollama tool-calling protocol. Unknown/custom tags get `false` —
+/// passing `tools` to a model that wasn't trained for them typically
+/// produces garbage or outright JSON-mode refusals.
+function modelSupportsTools(tag: string): boolean {
+  const hit = OLLAMA_CATALOG.find((m) => m.tag === tag);
+  return !!hit?.supportsTools;
 }
 
 function ollamaFriendlyError(raw: string): string {

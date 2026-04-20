@@ -33,6 +33,7 @@ import {
   OLLAMA_CATALOG,
   detectHardware,
   detectOllama,
+  deleteModel,
   installOllama,
   ollamaServer,
   pullModel,
@@ -234,6 +235,9 @@ function registerIpc(): void {
   ipcMain.handle('ollama:cancelPull', (_e, { tag }: { tag: string }) => {
     pendingPulls.get(tag)?.abort();
     pendingPulls.delete(tag);
+  });
+  ipcMain.handle('ollama:deleteModel', async (_e, { tag }: { tag: string }) => {
+    return deleteModel(tag);
   });
   ipcMain.handle('ollama:deleteSession', (_e, sessionId: string) => {
     deleteOllamaSession(sessionId);

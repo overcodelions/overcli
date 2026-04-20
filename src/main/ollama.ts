@@ -52,6 +52,10 @@ export interface RecommendedModel {
   country: string;
   releasedAt?: string;
   note?: string;
+  /// Set on entries whose underlying model family is trained for Ollama's
+  /// tool-calling protocol. `recommendationsForTier` promotes these and
+  /// the LocalPane shows a "Tools" badge next to them.
+  supportsTools?: boolean;
 }
 
 const OLLAMA_HOST = '127.0.0.1';
@@ -235,12 +239,13 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
     country: 'CN',
     releasedAt: '2024-11',
     note: 'Non-commercial license — check terms before commercial use.',
+    supportsTools: true,
   },
-  { tag: 'qwen2.5-coder:7b', displayName: 'Qwen2.5-Coder 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11' },
-  { tag: 'qwen2.5-coder:14b', displayName: 'Qwen2.5-Coder 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11' },
-  { tag: 'qwen2.5-coder:32b', displayName: 'Qwen2.5-Coder 32B', sizeGB: 20.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11' },
-  { tag: 'qwen2.5:7b', displayName: 'Qwen2.5 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09' },
-  { tag: 'qwen2.5:14b', displayName: 'Qwen2.5 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09' },
+  { tag: 'qwen2.5-coder:7b', displayName: 'Qwen2.5-Coder 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11', supportsTools: true },
+  { tag: 'qwen2.5-coder:14b', displayName: 'Qwen2.5-Coder 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11', supportsTools: true },
+  { tag: 'qwen2.5-coder:32b', displayName: 'Qwen2.5-Coder 32B', sizeGB: 20.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11', supportsTools: true },
+  { tag: 'qwen2.5:7b', displayName: 'Qwen2.5 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09', supportsTools: true },
+  { tag: 'qwen2.5:14b', displayName: 'Qwen2.5 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09', supportsTools: true },
 
   // --- DeepSeek (China) ---
   {
@@ -258,10 +263,10 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
   { tag: 'deepseek-r1:32b', displayName: 'DeepSeek-R1 32B', sizeGB: 20.0, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
 
   // --- Meta (US) ---
-  { tag: 'llama4:scout', displayName: 'Llama 4 Scout', sizeGB: 65.0, license: 'Llama 4 License', company: 'Meta', country: 'US', releasedAt: '2025-04', note: 'Mixture-of-experts: 17B active × 16 experts (~109B total).' },
-  { tag: 'llama3.3:70b', displayName: 'Llama 3.3 70B', sizeGB: 43.0, license: 'Llama 3.3 License', company: 'Meta', country: 'US', releasedAt: '2024-12' },
-  { tag: 'llama3.2:3b', displayName: 'Llama 3.2 3B', sizeGB: 2.0, license: 'Llama 3.2 License', company: 'Meta', country: 'US', releasedAt: '2024-09' },
-  { tag: 'llama3.1:8b', displayName: 'Llama 3.1 8B', sizeGB: 4.7, license: 'Llama 3.1 License', company: 'Meta', country: 'US', releasedAt: '2024-07' },
+  { tag: 'llama4:scout', displayName: 'Llama 4 Scout', sizeGB: 65.0, license: 'Llama 4 License', company: 'Meta', country: 'US', releasedAt: '2025-04', note: 'Mixture-of-experts: 17B active × 16 experts (~109B total).', supportsTools: true },
+  { tag: 'llama3.3:70b', displayName: 'Llama 3.3 70B', sizeGB: 43.0, license: 'Llama 3.3 License', company: 'Meta', country: 'US', releasedAt: '2024-12', supportsTools: true },
+  { tag: 'llama3.2:3b', displayName: 'Llama 3.2 3B', sizeGB: 2.0, license: 'Llama 3.2 License', company: 'Meta', country: 'US', releasedAt: '2024-09', supportsTools: true },
+  { tag: 'llama3.1:8b', displayName: 'Llama 3.1 8B', sizeGB: 4.7, license: 'Llama 3.1 License', company: 'Meta', country: 'US', releasedAt: '2024-07', supportsTools: true },
   { tag: 'codellama:7b', displayName: 'Code Llama 7B', sizeGB: 3.8, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
   { tag: 'codellama:13b', displayName: 'Code Llama 13B', sizeGB: 7.4, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
   { tag: 'codellama:34b', displayName: 'Code Llama 34B', sizeGB: 19.0, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
@@ -288,8 +293,8 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
   { tag: 'granite-code:20b', displayName: 'Granite Code 20B', sizeGB: 12.0, license: 'Apache 2.0', company: 'IBM', country: 'US', releasedAt: '2024-05' },
 
   // --- Mistral AI (France) ---
-  { tag: 'mistral:7b', displayName: 'Mistral 7B', sizeGB: 4.1, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-09' },
-  { tag: 'mixtral:8x7b', displayName: 'Mixtral 8x7B', sizeGB: 26.0, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-12' },
+  { tag: 'mistral:7b', displayName: 'Mistral 7B', sizeGB: 4.1, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-09', supportsTools: true },
+  { tag: 'mixtral:8x7b', displayName: 'Mixtral 8x7B', sizeGB: 26.0, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-12', supportsTools: true },
   {
     tag: 'codestral:22b',
     displayName: 'Codestral 22B',
@@ -299,6 +304,7 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
     country: 'FR',
     releasedAt: '2024-05',
     note: 'Non-commercial license — check terms before commercial use.',
+    supportsTools: true,
   },
 
   // --- BigCode consortium (EU-led, multi-national) ---
@@ -324,13 +330,16 @@ function ramCeilingForTier(tier: OllamaTier): number {
 
 function recommendationsForTier(tier: OllamaTier): RecommendedModel[] {
   const cap = ramCeilingForTier(tier);
-  // Top N that fit the user's RAM, ranked by release recency first.
-  // Frontier models from the last ~12 months usually beat older coder-
-  // specific fine-tunes on both general and coding benchmarks, so we
-  // lead with "newest that fits" and only break ties with the coder
-  // heuristic + size.
+  // Top N that fit the user's RAM. Tool-capable models come first so an
+  // agentic workflow (read files, grep, etc.) works out of the box; within
+  // each tool/no-tool group we rank by release recency, then coder focus,
+  // then size. Frontier models from the last ~12 months usually beat older
+  // coder-specific fine-tunes on both general and coding benchmarks.
   const fit = OLLAMA_CATALOG.filter((m) => m.sizeGB <= cap);
   const ranked = fit.slice().sort((a, b) => {
+    const aTools = a.supportsTools ? 0 : 1;
+    const bTools = b.supportsTools ? 0 : 1;
+    if (aTools !== bTools) return aTools - bTools;
     const aDate = a.releasedAt ?? '0000-00';
     const bDate = b.releasedAt ?? '0000-00';
     if (aDate !== bDate) return bDate.localeCompare(aDate);
@@ -611,32 +620,111 @@ export function pullModel(
   });
 }
 
+/// DELETE /api/delete. Removes a pulled model from the local Ollama store.
+export function deleteModel(
+  tag: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ name: tag });
+    const req = http.request(
+      {
+        host: OLLAMA_HOST,
+        port: OLLAMA_PORT,
+        path: '/api/delete',
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(Buffer.from(c)));
+        res.on('end', () => {
+          if (res.statusCode && res.statusCode >= 400) {
+            const text = Buffer.concat(chunks).toString('utf-8').slice(0, 400);
+            resolve({ ok: false, error: text || `status ${res.statusCode}` });
+            return;
+          }
+          resolve({ ok: true });
+        });
+        res.on('error', (err) => resolve({ ok: false, error: err.message }));
+      },
+    );
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.write(body);
+    req.end();
+  });
+}
+
+export interface OllamaToolCall {
+  /// Ollama does not always emit an id for tool calls; we synthesize one
+  /// when absent so the runner can correlate the call with its result.
+  id: string;
+  name: string;
+  /// Arguments as returned by the model. Already an object — Ollama parses
+  /// the model's JSON before streaming it back. We keep it unknown because
+  /// each tool validates its own schema.
+  arguments: Record<string, unknown>;
+}
+
 export interface OllamaChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /// Populated on assistant messages that issued tool calls, so the next
+  /// turn's transcript preserves the call/result pairing Ollama expects.
+  tool_calls?: Array<{ function: { name: string; arguments: Record<string, unknown> } }>;
+  /// Required on `role: "tool"` replies — the name of the tool whose
+  /// output this message carries.
+  tool_name?: string;
+}
+
+/// Tool schema in the shape Ollama's /api/chat accepts (a subset of the
+/// OpenAI function-calling schema). Kept loose — the runner defines the
+/// concrete tools and we just forward them on the wire.
+export interface OllamaToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: 'object';
+      properties: Record<string, unknown>;
+      required?: string[];
+    };
+  };
 }
 
 export type ChatStreamEvent =
   | { type: 'token'; text: string }
+  | { type: 'toolCalls'; calls: OllamaToolCall[] }
   | { type: 'done'; totalDurationMs?: number; evalCount?: number; promptEvalCount?: number }
   | { type: 'error'; message: string };
 
-/// POST /api/chat with stream=true. Emits tokens as they arrive, then a
+/// POST /api/chat with stream=true. Emits tokens as they arrive, a
+/// `toolCalls` event if the model issued one or more tool calls, then a
 /// terminal `done` event. Abort via the signal to stop mid-response.
+///
+/// When `tools` is set, Ollama switches into tool-calling mode for models
+/// trained on it (qwen2.5, llama3.1+, mistral, codestral, llama4). Models
+/// without tool support ignore the field and reply in plain text.
 export function streamChat(
   args: {
     model: string;
     messages: OllamaChatMessage[];
+    tools?: OllamaToolDefinition[];
     signal?: AbortSignal;
   },
   onEvent: (ev: ChatStreamEvent) => void,
 ): Promise<void> {
   return new Promise((resolve) => {
-    const body = JSON.stringify({
+    const payload: Record<string, unknown> = {
       model: args.model,
       messages: args.messages,
       stream: true,
-    });
+    };
+    if (args.tools && args.tools.length > 0) payload.tools = args.tools;
+    const body = JSON.stringify(payload);
     const req = http.request(
       {
         host: OLLAMA_HOST,
@@ -672,6 +760,33 @@ export function streamChat(
               const evt = JSON.parse(trimmed);
               if (evt.message?.content) {
                 onEvent({ type: 'token', text: String(evt.message.content) });
+              }
+              const rawCalls = evt.message?.tool_calls;
+              if (Array.isArray(rawCalls) && rawCalls.length > 0) {
+                const calls: OllamaToolCall[] = rawCalls
+                  .map((c: any, i: number) => {
+                    const name = c?.function?.name;
+                    if (typeof name !== 'string' || !name) return null;
+                    const rawArgs = c?.function?.arguments;
+                    let parsedArgs: Record<string, unknown> = {};
+                    if (rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)) {
+                      parsedArgs = rawArgs as Record<string, unknown>;
+                    } else if (typeof rawArgs === 'string' && rawArgs.trim()) {
+                      try {
+                        const p = JSON.parse(rawArgs);
+                        if (p && typeof p === 'object' && !Array.isArray(p)) parsedArgs = p;
+                      } catch {
+                        // leave args empty; tool executor will surface the schema error
+                      }
+                    }
+                    return {
+                      id: typeof c?.id === 'string' && c.id ? c.id : `call_${Date.now()}_${i}`,
+                      name,
+                      arguments: parsedArgs,
+                    } satisfies OllamaToolCall;
+                  })
+                  .filter((c): c is OllamaToolCall => c !== null);
+                if (calls.length > 0) onEvent({ type: 'toolCalls', calls });
               }
               if (evt.done) {
                 onEvent({

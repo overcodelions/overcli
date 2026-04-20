@@ -25,6 +25,9 @@ export function LocalPane() {
   >({});
   const [countryFilter, setCountryFilter] = useState<string | 'all'>('all');
   const [companyFilter, setCompanyFilter] = useState<string | 'all'>('all');
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const refresh = async () => {
@@ -122,6 +125,19 @@ export function LocalPane() {
 
   const cancelPull = (tag: string) => {
     void window.overcli.invoke('ollama:cancelPull', { tag });
+  };
+
+  const deleteModel = async (tag: string) => {
+    setDeleting(tag);
+    setDeleteError(null);
+    const res = await window.overcli.invoke('ollama:deleteModel', { tag });
+    setDeleting(null);
+    setConfirmDelete(null);
+    if (!res.ok) {
+      setDeleteError(`${tag}: ${res.error}`);
+    } else {
+      void refresh();
+    }
   };
 
   if (loading) {
@@ -259,16 +275,52 @@ export function LocalPane() {
       {detection?.installed && detection.models.length > 0 && (
         <Card title="Installed models">
           <div className="flex flex-col gap-1 text-xs">
-            {detection.models.map((m) => (
-              <div
-                key={m.name}
-                className="flex items-center justify-between py-1 px-2 rounded hover:bg-card-strong"
-              >
-                <span className="font-mono text-ink">{m.name}</span>
-                <span className="text-ink-faint">{formatBytes(m.sizeBytes)}</span>
-              </div>
-            ))}
+            {detection.models.map((m) => {
+              const isConfirming = confirmDelete === m.name;
+              const isDeleting = deleting === m.name;
+              return (
+                <div
+                  key={m.name}
+                  className="flex items-center justify-between gap-3 py-1 px-2 rounded hover:bg-card-strong"
+                >
+                  <span className="font-mono text-ink flex-1 truncate">{m.name}</span>
+                  <span className="text-ink-faint">{formatBytes(m.sizeBytes)}</span>
+                  {isConfirming ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => void deleteModel(m.name)}
+                        disabled={isDeleting}
+                        className="text-[11px] px-2 py-0.5 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:opacity-50"
+                      >
+                        {isDeleting ? 'Removing…' : 'Confirm'}
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(null)}
+                        disabled={isDeleting}
+                        className="text-[11px] px-2 py-0.5 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-ink disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setDeleteError(null);
+                        setConfirmDelete(m.name);
+                      }}
+                      className="text-[11px] px-2 py-0.5 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-red-300"
+                      title="Remove this model from disk"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
+          {deleteError && (
+            <div className="text-xs text-red-300 mt-2">Error: {deleteError}</div>
+          )}
         </Card>
       )}
 
@@ -514,9 +566,19 @@ function ModelRow({
     <div className="flex flex-col gap-1 p-2.5 rounded bg-card/60">
       <div className="flex items-center gap-2">
         <div className="flex-1">
-          <div className="text-sm text-ink">
-            {model.displayName}{' '}
-            <span className="text-ink-muted font-mono text-xs">· {model.tag}</span>
+          <div className="text-sm text-ink flex items-center gap-2 flex-wrap">
+            <span>
+              {model.displayName}{' '}
+              <span className="text-ink-muted font-mono text-xs">· {model.tag}</span>
+            </span>
+            {model.supportsTools && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded bg-accent/15 text-accent font-medium"
+                title="This model supports tool calling — it can read files, run searches, and take other actions you wire up."
+              >
+                Tools
+              </span>
+            )}
           </div>
           <div className="text-xs text-ink-muted mt-0.5">
             ~{model.sizeGB} GB · {model.license} · {model.company} ({countryLabel(model.country)})
