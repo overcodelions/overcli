@@ -1056,13 +1056,18 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
                 onClick={onCommit}
                 disabled={busy || !message.trim()}
                 className={
-                  'text-[11px] px-2.5 py-1 rounded ' +
+                  'text-xs px-3 py-1.5 rounded border flex items-center gap-2 ' +
                   (busy || !message.trim()
-                    ? 'bg-card text-ink-faint cursor-not-allowed'
-                    : 'bg-accent/20 text-ink hover:bg-accent/30')
+                    ? 'bg-card text-ink-faint border-card cursor-not-allowed'
+                    : 'bg-accent/20 text-ink border-accent/40 hover:bg-accent/30')
                 }
               >
-                {busy ? 'Committing…' : 'Commit'}
+                <span>{busy ? 'Committing…' : 'Commit'}</span>
+                {!busy && (
+                  <kbd className="font-mono text-xs text-ink bg-card px-1.5 py-0.5 rounded leading-none">
+                    {shortcutLabel()}
+                  </kbd>
+                )}
               </button>
             )}
           </div>
@@ -1076,6 +1081,14 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
 /// directory → "Update <dir>". Otherwise a file count. Intentionally
 /// dumb — anything smarter would need to read the diff, which is more
 /// work than drafting-from-scratch is worth.
+/// OS-aware label for the commit submit shortcut. Mac gets the native
+/// glyph pair (⌘⏎), other platforms get the written form so Windows/
+/// Linux users don't puzzle over the symbol.
+function shortcutLabel(): string {
+  const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
+  return isMac ? '⌘⏎' : 'Ctrl+⏎';
+}
+
 function draftCommitMessage(changes: Array<{ path: string }>): string {
   if (changes.length === 0) return '';
   if (changes.length === 1) {

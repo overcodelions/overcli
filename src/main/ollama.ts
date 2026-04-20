@@ -258,6 +258,8 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
   { tag: 'deepseek-r1:32b', displayName: 'DeepSeek-R1 32B', sizeGB: 20.0, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
 
   // --- Meta (US) ---
+  { tag: 'llama4:scout', displayName: 'Llama 4 Scout', sizeGB: 65.0, license: 'Llama 4 License', company: 'Meta', country: 'US', releasedAt: '2025-04', note: 'Mixture-of-experts: 17B active × 16 experts (~109B total).' },
+  { tag: 'llama3.3:70b', displayName: 'Llama 3.3 70B', sizeGB: 43.0, license: 'Llama 3.3 License', company: 'Meta', country: 'US', releasedAt: '2024-12' },
   { tag: 'llama3.2:3b', displayName: 'Llama 3.2 3B', sizeGB: 2.0, license: 'Llama 3.2 License', company: 'Meta', country: 'US', releasedAt: '2024-09' },
   { tag: 'llama3.1:8b', displayName: 'Llama 3.1 8B', sizeGB: 4.7, license: 'Llama 3.1 License', company: 'Meta', country: 'US', releasedAt: '2024-07' },
   { tag: 'codellama:7b', displayName: 'Code Llama 7B', sizeGB: 3.8, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
@@ -265,11 +267,21 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
   { tag: 'codellama:34b', displayName: 'Code Llama 34B', sizeGB: 19.0, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
 
   // --- Microsoft (US) ---
+  { tag: 'phi4:14b', displayName: 'Phi 4 14B', sizeGB: 9.1, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2025-01' },
+  { tag: 'phi4-mini:3.8b', displayName: 'Phi 4 Mini 3.8B', sizeGB: 2.5, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2025-02' },
   { tag: 'phi3.5:3.8b', displayName: 'Phi 3.5 3.8B', sizeGB: 2.2, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2024-08' },
 
   // --- Google (US) ---
+  { tag: 'gemma4:31b', displayName: 'Gemma 4 31B', sizeGB: 20.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04' },
+  { tag: 'gemma4:26b', displayName: 'Gemma 4 26B', sizeGB: 18.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Mixture-of-experts: 3.8B active params out of ~25B total.' },
+  { tag: 'gemma4:e4b', displayName: 'Gemma 4 E4B', sizeGB: 9.6, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 4.5B effective params.' },
+  { tag: 'gemma4:e2b', displayName: 'Gemma 4 E2B', sizeGB: 7.2, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 2.3B effective params.' },
+  { tag: 'gemma3:27b', displayName: 'Gemma 3 27B', sizeGB: 17.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
+  { tag: 'gemma3:12b', displayName: 'Gemma 3 12B', sizeGB: 8.1, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
+  { tag: 'gemma3:4b', displayName: 'Gemma 3 4B', sizeGB: 3.3, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
   { tag: 'gemma2:9b', displayName: 'Gemma 2 9B', sizeGB: 5.4, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-06' },
   { tag: 'codegemma:7b', displayName: 'CodeGemma 7B', sizeGB: 5.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-04' },
+  { tag: 'codegemma:2b', displayName: 'CodeGemma 2B', sizeGB: 1.6, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-04' },
 
   // --- IBM (US) ---
   { tag: 'granite-code:8b', displayName: 'Granite Code 8B', sizeGB: 4.6, license: 'Apache 2.0', company: 'IBM', country: 'US', releasedAt: '2024-05' },
@@ -312,15 +324,22 @@ function ramCeilingForTier(tier: OllamaTier): number {
 
 function recommendationsForTier(tier: OllamaTier): RecommendedModel[] {
   const cap = ramCeilingForTier(tier);
-  // Top N that fit, preferring coder-tuned models for this use case.
+  // Top N that fit the user's RAM, ranked by release recency first.
+  // Frontier models from the last ~12 months usually beat older coder-
+  // specific fine-tunes on both general and coding benchmarks, so we
+  // lead with "newest that fits" and only break ties with the coder
+  // heuristic + size.
   const fit = OLLAMA_CATALOG.filter((m) => m.sizeGB <= cap);
-  const coderFirst = fit.slice().sort((a, b) => {
+  const ranked = fit.slice().sort((a, b) => {
+    const aDate = a.releasedAt ?? '0000-00';
+    const bDate = b.releasedAt ?? '0000-00';
+    if (aDate !== bDate) return bDate.localeCompare(aDate);
     const aCoder = /coder|code/i.test(a.tag) ? 0 : 1;
     const bCoder = /coder|code/i.test(b.tag) ? 0 : 1;
     if (aCoder !== bCoder) return aCoder - bCoder;
     return b.sizeGB - a.sizeGB;
   });
-  return coderFirst.slice(0, 6);
+  return ranked.slice(0, 6);
 }
 
 /// Kicks off an Ollama install. On macOS with Homebrew we open Terminal.app
