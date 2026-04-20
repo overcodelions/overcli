@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { AssistantEventInfo, ToolResultBlock } from '@shared/types';
 import { backendColor, backendFromModel, shortModel } from '../theme';
 import { Markdown } from './Markdown';
@@ -24,7 +24,8 @@ export function AssistantBubble({
 }) {
   const openFile = useStore((s) => s.openFile);
   const showToolActivity = useStore((s) => s.showToolActivity);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'plain' | 'raw' | null>(null);
+  const renderedRef = useRef<HTMLDivElement>(null);
   const backend = backendFromModel(info.model);
   const tint = backendColor(backend);
 
@@ -57,7 +58,7 @@ export function AssistantBubble({
             className="absolute left-0 top-0 bottom-0 w-[2px]"
             style={{ background: tint + 'cc' }}
           />
-          <div className="px-4 py-2.5 pl-[14px]">
+          <div className="px-4 py-2.5 pl-[14px]" ref={renderedRef}>
             {info.model && (
               <div className="text-[10px] font-medium mb-1" style={{ color: tint }}>
                 {shortModel(info.model)}
@@ -65,16 +66,29 @@ export function AssistantBubble({
             )}
             <Markdown source={info.text} onOpenPath={(p) => handleOpenPath(p, openFile)} />
           </div>
-          <button
-            onClick={() => {
-              navigator.clipboard.writeText(info.text);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }}
-            className="absolute top-1.5 right-2.5 text-[10px] text-ink-faint hover:text-ink"
-          >
-            {copied ? 'copied' : 'copy'}
-          </button>
+          <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
+            <button
+              onClick={() => {
+                const plain = renderedRef.current?.innerText ?? info.text;
+                navigator.clipboard.writeText(plain);
+                setCopied('plain');
+                setTimeout(() => setCopied(null), 1200);
+              }}
+              className="text-[10px] text-ink-faint hover:text-ink"
+            >
+              {copied === 'plain' ? 'copied' : 'copy'}
+            </button>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(info.text);
+                setCopied('raw');
+                setTimeout(() => setCopied(null), 1200);
+              }}
+              className="text-[10px] text-ink-faint hover:text-ink"
+            >
+              {copied === 'raw' ? 'copied' : 'copy raw'}
+            </button>
+          </div>
         </div>
       )}
       {/* Tool-use cards render INSIDE the assistant bubble so they're

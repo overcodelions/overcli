@@ -27,6 +27,7 @@ function SingleResult({ result, source }: { result: ToolResultBlock; source?: To
   // hide entirely until the user expands. Everything else gets a 3-line
   // peek so the outcome is visible at a glance.
   const [expanded, setExpanded] = useState(isAgent);
+  const [copied, setCopied] = useState(false);
   const content = result.content;
   const hideByDefault =
     source?.name === 'Read' ||
@@ -55,10 +56,22 @@ function SingleResult({ result, source }: { result: ToolResultBlock; source?: To
           {result.isError ? 'Error' : 'Result'}
         </span>
         {source?.name && <span className="text-[10px] text-ink-faint">{source.name}</span>}
+        {isAgent && content.length > 0 && (
+          <button
+            onClick={() => {
+              navigator.clipboard.writeText(content);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+            className="ml-auto text-[10px] text-ink-faint hover:text-ink"
+          >
+            {copied ? 'copied' : 'copy raw'}
+          </button>
+        )}
         {expandable && (
           <button
             onClick={() => setExpanded((e) => !e)}
-            className="ml-auto text-[10px] text-ink-faint hover:text-ink"
+            className={(isAgent && content.length > 0 ? '' : 'ml-auto ') + 'text-[10px] text-ink-faint hover:text-ink'}
           >
             {expanded ? 'collapse' : 'expand'}
           </button>
