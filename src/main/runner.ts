@@ -369,7 +369,20 @@ export class RunnerManager {
     options: { syntheticFromCollab?: boolean } = {},
   ): { ok: true } | { ok: false; error: string } {
     const convId = args.conversationId;
-    const model = args.model || this.settingsProvider().backendDefaultModels.ollama || 'qwen2.5-coder:7b';
+    // The renderer resolves a pulled model tag before calling us (see
+    // `pickInstalledOllamaModel`). The settings-level default is a last-
+    // resort fallback — we deliberately don't hardcode a tag here,
+    // because invented tags lead to runtime 404s on the pull list.
+    const model = args.model || this.settingsProvider().backendDefaultModels.ollama;
+    if (!model) {
+      this.emit({
+        type: 'error',
+        conversationId: convId,
+        message:
+          'No Ollama model selected. Pick one in the conversation header, or pull one from Settings → Local models.',
+      });
+      return { ok: false, error: 'no ollama model selected' };
+    }
 
     let session = this.ollamaSessions.get(convId);
     if (!session) {

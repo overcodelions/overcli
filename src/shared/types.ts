@@ -493,6 +493,7 @@ export interface IPCInvokeMap {
     workspaceId: UUID;
     projects: Array<{ name: string; path: string }>;
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
+  'auth:openCliLogin': (backend: Backend) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;

@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { runInTerminal } from './terminal';
 
 export type OllamaTier = 'tiny' | 'small' | 'medium' | 'large';
 
@@ -441,17 +442,6 @@ export class OllamaServerManager {
 
 /// Singleton — main/index.ts owns the lifecycle.
 export const ollamaServer = new OllamaServerManager();
-
-function runInTerminal(command: string): void {
-  // AppleScript opens Terminal.app with the command pre-typed and run.
-  // Kept as a fallback for the install flow (brew output benefits from a
-  // real terminal so the user can enter their sudo password if asked).
-  const script = `tell application "Terminal"
-  activate
-  do script "${command.replace(/"/g, '\\"')}"
-end tell`;
-  spawn('osascript', ['-e', script], { detached: true, stdio: 'ignore' }).unref();
-}
 
 export type PullProgressEvent =
   | { type: 'status'; message: string }
