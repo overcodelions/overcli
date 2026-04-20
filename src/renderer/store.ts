@@ -67,6 +67,10 @@ export interface RunnerState {
   /// loading indicator in ChatView.
   historyLoaded: boolean;
   historyLoading: boolean;
+  /// Codex runtime mode/flags for the currently running subprocess.
+  codexRuntimeMode?: 'proto' | 'exec';
+  codexSandboxMode?: string;
+  codexApprovalPolicy?: string;
 }
 
 interface StoreState {
@@ -215,6 +219,9 @@ function newRunnerState(): RunnerState {
     currentModel: '',
     historyLoaded: false,
     historyLoading: false,
+    codexRuntimeMode: undefined,
+    codexSandboxMode: undefined,
+    codexApprovalPolicy: undefined,
   };
 }
 
@@ -1266,6 +1273,21 @@ export const useStore = create<StoreState>((set, get) => ({
         return next;
       });
       void saveConversationState(get);
+    } else if (event.type === 'codexRuntimeMode') {
+      set((s) => {
+        const runner = s.runners[event.conversationId] ?? newRunnerState();
+        return {
+          runners: {
+            ...s.runners,
+            [event.conversationId]: {
+              ...runner,
+              codexRuntimeMode: event.mode,
+              codexSandboxMode: event.sandbox,
+              codexApprovalPolicy: event.approval,
+            },
+          },
+        };
+      });
     } else if (event.type === 'ollamaServerStatus') {
       set({ ollamaServerStatus: event.status });
     }

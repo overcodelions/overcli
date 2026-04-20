@@ -21,6 +21,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const setReviewOllamaModel = useStore((s) => s.setReviewOllamaModel);
   const runnerIsRunning = useStore((s) => s.runners[conversationId]?.isRunning ?? false);
   const runnerModel = useStore((s) => s.runners[conversationId]?.currentModel ?? '');
+  const codexRuntimeMode = useStore((s) => s.runners[conversationId]?.codexRuntimeMode);
+  const codexSandboxMode = useStore((s) => s.runners[conversationId]?.codexSandboxMode ?? '');
+  const codexApprovalPolicy = useStore((s) => s.runners[conversationId]?.codexApprovalPolicy ?? '');
   const settings = useStore((s) => s.settings);
   const resetConversation = useStore((s) => s.resetConversation);
   const openSheet = useStore((s) => s.openSheet);
@@ -59,6 +62,13 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
               {sessionModel && (
                 <HeaderBadge title={`Session model: ${sessionModel}`} pulse={runnerIsRunning}>
                   {shortModel(sessionModel)}
+                </HeaderBadge>
+              )}
+              {backend === 'codex' && codexRuntimeMode === 'exec' && (
+                <HeaderBadge
+                  title={`Codex exec compatibility mode. Spawn flags: -s ${codexSandboxMode} -a ${codexApprovalPolicy}`}
+                >
+                  exec · -s {codexSandboxMode} · -a {codexApprovalPolicy}
                 </HeaderBadge>
               )}
             </>

@@ -1104,6 +1104,7 @@ export class RunnerManager {
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
     const env = this.buildEnv(binary);
+    const codexPerms = args.backend === 'codex' ? codexPermissionMapping(args.permissionMode) : null;
     const codexMode =
       args.backend === 'codex'
         ? process.platform === 'win32' && !this.supportsCodexProto(binary, env)
@@ -1149,6 +1150,15 @@ export class RunnerManager {
       geminiAssistantNeedsSplit: false,
     };
     this.procs.set(args.conversationId, active);
+    if (args.backend === 'codex' && codexMode && codexPerms) {
+      this.emit({
+        type: 'codexRuntimeMode',
+        conversationId: args.conversationId,
+        mode: codexMode,
+        sandbox: codexPerms.sandbox,
+        approval: codexPerms.approval,
+      });
+    }
 
     proc.stdout.setEncoding('utf-8');
     proc.stdout.on('data', (chunk: string) => this.handleStdout(args.conversationId, active, chunk));
