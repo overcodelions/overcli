@@ -9,8 +9,11 @@ export function TitleBar() {
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const platform = typeof navigator === 'undefined' ? '' : navigator.platform;
+  const isMac = platform.toLowerCase().includes('mac');
+  const leadingInsetClass = isMac ? 'pl-[72px]' : 'pl-2';
   return (
-    <div className="draggable flex items-center h-[38px] pl-[72px] pr-3 bg-surface border-b border-card select-none">
+    <div className={`draggable flex items-center h-[38px] ${leadingInsetClass} pr-3 bg-surface border-b border-card select-none`}>
       <button
         onClick={toggleSidebar}
         className="no-drag p-1 mr-2 text-ink-muted hover:text-ink rounded hover:bg-card-strong"
