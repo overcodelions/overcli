@@ -29,7 +29,15 @@ import {
 } from './git';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
-import { detectHardware, detectOllama, installOllama, ollamaServer, pullModel } from './ollama';
+import {
+  OLLAMA_CATALOG,
+  detectHardware,
+  detectOllama,
+  installOllama,
+  ollamaServer,
+  pullModel,
+} from './ollama';
+import { deleteOllamaSession } from './ollamaStore';
 import { ensureWorkspaceSymlinkRoot } from './workspace';
 import { runInTerminal } from './terminal';
 import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
@@ -195,6 +203,7 @@ function registerIpc(): void {
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
+  ipcMain.handle('ollama:catalog', () => OLLAMA_CATALOG);
   ipcMain.handle('ollama:install', () => installOllama((url) => shell.openExternal(url)));
   ipcMain.handle('ollama:startServer', () => ollamaServer.start());
   ipcMain.handle('ollama:stopServer', () => ollamaServer.stop());
@@ -225,6 +234,9 @@ function registerIpc(): void {
   ipcMain.handle('ollama:cancelPull', (_e, { tag }: { tag: string }) => {
     pendingPulls.get(tag)?.abort();
     pendingPulls.delete(tag);
+  });
+  ipcMain.handle('ollama:deleteSession', (_e, sessionId: string) => {
+    deleteOllamaSession(sessionId);
   });
 }
 

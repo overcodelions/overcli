@@ -31,6 +31,7 @@ import {
 } from './parsers/ollama';
 import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
 import { OllamaChatMessage, detectOllama, streamChat } from './ollama';
+import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 
@@ -151,6 +152,11 @@ interface GeminiAcpSession {
 /// (Ollama has no server-side session state of its own).
 interface OllamaSession {
   messages: OllamaChatMessage[];
+  /// Parallel to `messages` — index-aligned per-message wallclock
+  /// timestamps used when we write the persisted transcript. Necessary
+  /// so `loadHistory` can replay messages with monotonically increasing
+  /// StreamEvent timestamps after an app restart.
+  messageTimestamps: number[];
   inFlight?: AbortController;
   sessionId: string;
   lastModel: string;
@@ -386,11 +392,23 @@ export class RunnerManager {
 
     let session = this.ollamaSessions.get(convId);
     if (!session) {
+      // Try to hydrate from the on-disk transcript if the renderer
+      // recorded a sessionId last time. `args.sessionId` is persisted
+      // onto the conversation via the `sessionConfigured` event we emit
+      // on first turn, so after an app restart it comes back in here.
+      const persisted = args.sessionId ? loadOllamaSession(args.sessionId) : null;
       session = {
-        messages: [],
-        sessionId: randomUUID(),
-        lastModel: model,
-        initEmitted: false,
+        messages: persisted?.messages ?? [],
+        messageTimestamps:
+          persisted?.messageTimestamps && persisted.messageTimestamps.length === persisted.messages.length
+            ? [...persisted.messageTimestamps]
+            : evenlySpreadTimestamps(persisted?.updatedAt ?? Date.now(), persisted?.messages.length ?? 0),
+        sessionId: persisted?.sessionId ?? args.sessionId ?? randomUUID(),
+        lastModel: persisted?.lastModel ?? model,
+        // If we loaded transcript from disk, the renderer already has the
+        // events via `loadHistory` at conversation open — don't re-emit
+        // the systemInit, it would duplicate the row in chat.
+        initEmitted: !!persisted,
         collabBurst: 0,
         collabRoundsInBurst: 0,
       };
@@ -431,6 +449,7 @@ export class RunnerManager {
 
     session.lastModel = model;
     session.messages.push({ role: 'user', content: args.prompt });
+    session.messageTimestamps.push(Date.now());
 
     const controller = new AbortController();
     session.inFlight?.abort();
@@ -466,6 +485,16 @@ export class RunnerManager {
       this.emit({ type: 'running', conversationId: convId, isRunning: false });
       if (!opts?.err && acc) {
         session!.messages.push({ role: 'assistant', content: acc });
+        session!.messageTimestamps.push(Date.now());
+        // Persist after each successful turn. Writing on every token
+        // would be wasteful (atomic rename per chunk); one write per turn
+        // is cheap and gives us full crash-safety at turn boundaries.
+        saveOllamaSession({
+          sessionId: session!.sessionId,
+          lastModel: session!.lastModel,
+          messages: session!.messages,
+          messageTimestamps: session!.messageTimestamps,
+        });
       }
       if (session!.inFlight === controller) session!.inFlight = undefined;
 
@@ -514,6 +543,7 @@ export class RunnerManager {
           // transcript so the next retry doesn't double-count it.
           if (session!.messages[session!.messages.length - 1]?.role === 'user') {
             session!.messages.pop();
+            session!.messageTimestamps.pop();
           }
           finishWith(null, { err: friendly });
         }
@@ -1956,6 +1986,19 @@ function geminiAcpResultInfo(result: any, durationMs: number) {
     totalCostUSD: 0,
     modelUsage,
   };
+}
+
+/// Backfills per-message timestamps for legacy persisted sessions that
+/// were saved before we tracked them individually. Spreads N points
+/// ending at `end` across one second apart each, so replay order is
+/// stable even if the real timing is lost.
+function evenlySpreadTimestamps(end: number, count: number): number[] {
+  if (count <= 0) return [];
+  const out: number[] = [];
+  for (let i = 0; i < count; i++) {
+    out.push(end - (count - 1 - i) * 1000);
+  }
+  return out;
 }
 
 function ollamaFriendlyError(raw: string): string {

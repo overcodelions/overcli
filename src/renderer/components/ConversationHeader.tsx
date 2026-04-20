@@ -1023,9 +1023,16 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
                   setMessage(e.target.value);
                   setMessageEdited(true);
                 }}
-                placeholder="Commit message"
+                onKeyDown={(e) => {
+                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    if (!busy && message.trim()) void onCommit();
+                  }
+                }}
+                placeholder="Commit message (⌘⏎ to commit)"
                 rows={3}
                 className="field px-2 py-1.5 text-[11px] leading-5 resize-none"
+                autoFocus
               />
               <div className="text-[10px] text-ink-faint">
                 Runs <span className="font-mono">git add -A</span> then{' '}

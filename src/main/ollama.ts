@@ -48,6 +48,9 @@ export interface RecommendedModel {
   displayName: string;
   sizeGB: number;
   license: string;
+  company: string;
+  country: string;
+  releasedAt?: string;
   note?: string;
 }
 
@@ -214,51 +217,110 @@ function detectGpu(): string | undefined {
   return undefined;
 }
 
-function recommendationsForTier(tier: OllamaTier): RecommendedModel[] {
-  // Tags are pull-on-demand from ollama.com. Licenses reflect the model
-  // card as of 2026-04 — verify before shipping copy changes.
-  const qwenCoder7 = {
-    tag: 'qwen2.5-coder:7b',
-    displayName: 'Qwen2.5-Coder 7B',
-    sizeGB: 4.7,
-    license: 'Apache 2.0',
-  };
-  const qwenCoder14 = {
-    tag: 'qwen2.5-coder:14b',
-    displayName: 'Qwen2.5-Coder 14B',
-    sizeGB: 9.0,
-    license: 'Apache 2.0',
-  };
-  const qwenCoder32 = {
-    tag: 'qwen2.5-coder:32b',
-    displayName: 'Qwen2.5-Coder 32B',
-    sizeGB: 20.0,
-    license: 'Apache 2.0',
-  };
-  const qwenCoder3 = {
+/// Curated catalog of coder-relevant Ollama tags with maker + country +
+/// license metadata. Ollama itself has no API to list the library and
+/// carries no origin info on model cards, so this list is hand-
+/// maintained. Licenses and sizes reflect the model card as of 2026-04;
+/// verify before shipping copy changes. Tags not in this catalog still
+/// work end-to-end — users can `ollama pull` anything — they just won't
+/// appear in the in-app browser.
+export const OLLAMA_CATALOG: RecommendedModel[] = [
+  // --- Alibaba Cloud (China) ---
+  {
     tag: 'qwen2.5-coder:3b',
     displayName: 'Qwen2.5-Coder 3B',
     sizeGB: 1.9,
     license: 'Qwen Research',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2024-11',
     note: 'Non-commercial license — check terms before commercial use.',
-  };
-  const deepseekCoder = {
+  },
+  { tag: 'qwen2.5-coder:7b', displayName: 'Qwen2.5-Coder 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11' },
+  { tag: 'qwen2.5-coder:14b', displayName: 'Qwen2.5-Coder 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11' },
+  { tag: 'qwen2.5-coder:32b', displayName: 'Qwen2.5-Coder 32B', sizeGB: 20.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11' },
+  { tag: 'qwen2.5:7b', displayName: 'Qwen2.5 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09' },
+  { tag: 'qwen2.5:14b', displayName: 'Qwen2.5 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09' },
+
+  // --- DeepSeek (China) ---
+  {
     tag: 'deepseek-coder-v2:16b',
     displayName: 'DeepSeek-Coder-V2 16B',
     sizeGB: 8.9,
     license: 'DeepSeek License',
+    company: 'DeepSeek',
+    country: 'CN',
+    releasedAt: '2024-07',
     note: 'Permits commercial use; review license terms.',
-  };
+  },
+  { tag: 'deepseek-r1:7b', displayName: 'DeepSeek-R1 7B', sizeGB: 4.7, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
+  { tag: 'deepseek-r1:14b', displayName: 'DeepSeek-R1 14B', sizeGB: 9.0, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
+  { tag: 'deepseek-r1:32b', displayName: 'DeepSeek-R1 32B', sizeGB: 20.0, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
+
+  // --- Meta (US) ---
+  { tag: 'llama3.2:3b', displayName: 'Llama 3.2 3B', sizeGB: 2.0, license: 'Llama 3.2 License', company: 'Meta', country: 'US', releasedAt: '2024-09' },
+  { tag: 'llama3.1:8b', displayName: 'Llama 3.1 8B', sizeGB: 4.7, license: 'Llama 3.1 License', company: 'Meta', country: 'US', releasedAt: '2024-07' },
+  { tag: 'codellama:7b', displayName: 'Code Llama 7B', sizeGB: 3.8, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
+  { tag: 'codellama:13b', displayName: 'Code Llama 13B', sizeGB: 7.4, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
+  { tag: 'codellama:34b', displayName: 'Code Llama 34B', sizeGB: 19.0, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
+
+  // --- Microsoft (US) ---
+  { tag: 'phi3.5:3.8b', displayName: 'Phi 3.5 3.8B', sizeGB: 2.2, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2024-08' },
+
+  // --- Google (US) ---
+  { tag: 'gemma2:9b', displayName: 'Gemma 2 9B', sizeGB: 5.4, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-06' },
+  { tag: 'codegemma:7b', displayName: 'CodeGemma 7B', sizeGB: 5.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-04' },
+
+  // --- IBM (US) ---
+  { tag: 'granite-code:8b', displayName: 'Granite Code 8B', sizeGB: 4.6, license: 'Apache 2.0', company: 'IBM', country: 'US', releasedAt: '2024-05' },
+  { tag: 'granite-code:20b', displayName: 'Granite Code 20B', sizeGB: 12.0, license: 'Apache 2.0', company: 'IBM', country: 'US', releasedAt: '2024-05' },
+
+  // --- Mistral AI (France) ---
+  { tag: 'mistral:7b', displayName: 'Mistral 7B', sizeGB: 4.1, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-09' },
+  { tag: 'mixtral:8x7b', displayName: 'Mixtral 8x7B', sizeGB: 26.0, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-12' },
+  {
+    tag: 'codestral:22b',
+    displayName: 'Codestral 22B',
+    sizeGB: 13.0,
+    license: 'Mistral AI Non-Production License',
+    company: 'Mistral AI',
+    country: 'FR',
+    releasedAt: '2024-05',
+    note: 'Non-commercial license — check terms before commercial use.',
+  },
+
+  // --- BigCode consortium (EU-led, multi-national) ---
+  { tag: 'starcoder2:7b', displayName: 'StarCoder2 7B', sizeGB: 4.0, license: 'BigCode OpenRAIL-M', company: 'BigCode', country: 'EU', releasedAt: '2024-02' },
+  { tag: 'starcoder2:15b', displayName: 'StarCoder2 15B', sizeGB: 9.0, license: 'BigCode OpenRAIL-M', company: 'BigCode', country: 'EU', releasedAt: '2024-02' },
+];
+
+/// Approximate RAM headroom required to run a model comfortably. Ollama
+/// itself will happily pull a model that's too big and then thrash, so
+/// we filter the catalog against available RAM in `recommendationsForTier`.
+function ramCeilingForTier(tier: OllamaTier): number {
   switch (tier) {
     case 'tiny':
-      return [qwenCoder3];
+      return 4;
     case 'small':
-      return [qwenCoder7, qwenCoder3];
+      return 8;
     case 'medium':
-      return [qwenCoder14, qwenCoder7, deepseekCoder];
+      return 14;
     case 'large':
-      return [qwenCoder32, qwenCoder14, deepseekCoder];
+      return 32;
   }
+}
+
+function recommendationsForTier(tier: OllamaTier): RecommendedModel[] {
+  const cap = ramCeilingForTier(tier);
+  // Top N that fit, preferring coder-tuned models for this use case.
+  const fit = OLLAMA_CATALOG.filter((m) => m.sizeGB <= cap);
+  const coderFirst = fit.slice().sort((a, b) => {
+    const aCoder = /coder|code/i.test(a.tag) ? 0 : 1;
+    const bCoder = /coder|code/i.test(b.tag) ? 0 : 1;
+    if (aCoder !== bCoder) return aCoder - bCoder;
+    return b.sizeGB - a.sizeGB;
+  });
+  return coderFirst.slice(0, 6);
 }
 
 /// Kicks off an Ollama install. On macOS with Homebrew we open Terminal.app

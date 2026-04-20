@@ -727,6 +727,9 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async removeConversation(id) {
+    // Snapshot before we drop the row so we can clean up sidecar state
+    // that lives outside overcli.json (currently just Ollama transcripts).
+    const conv = findConversation(get(), id);
     set((s) => ({
       projects: s.projects.map((p) => ({
         ...p,
@@ -741,6 +744,9 @@ export const useStore = create<StoreState>((set, get) => ({
     }));
     await get().saveProjects();
     await get().saveWorkspaces();
+    if (conv?.primaryBackend === 'ollama' && conv.sessionId) {
+      await window.overcli.invoke('ollama:deleteSession', conv.sessionId);
+    }
   },
 
   async removeAgent(id) {

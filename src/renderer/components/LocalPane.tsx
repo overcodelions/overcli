@@ -15,6 +15,7 @@ import {
 export function LocalPane() {
   const [detection, setDetection] = useState<OllamaDetectionReport | null>(null);
   const [hardware, setHardware] = useState<OllamaHardwareReport | null>(null);
+  const [catalog, setCatalog] = useState<OllamaRecommendedModel[]>([]);
   const [loading, setLoading] = useState(true);
   const [serverStatus, setServerStatus] = useState<OllamaServerStatus>('stopped');
   const [serverLog, setServerLog] = useState<OllamaServerLogLine[]>([]);
@@ -22,18 +23,22 @@ export function LocalPane() {
   const [pulls, setPulls] = useState<
     Record<string, { percent: number; message?: string; done?: boolean; error?: string }>
   >({});
+  const [countryFilter, setCountryFilter] = useState<string | 'all'>('all');
+  const [companyFilter, setCompanyFilter] = useState<string | 'all'>('all');
   const pollRef = useRef<number | null>(null);
 
   const refresh = async () => {
-    const [det, hw, srv] = await Promise.all([
+    const [det, hw, srv, cat] = await Promise.all([
       window.overcli.invoke('ollama:detect'),
       window.overcli.invoke('ollama:hardware'),
       window.overcli.invoke('ollama:serverStatus'),
+      window.overcli.invoke('ollama:catalog'),
     ]);
     setDetection(det);
     setHardware(hw);
     setServerStatus(srv.status);
     setServerLog(srv.log);
+    setCatalog(cat);
     setLoading(false);
   };
 
@@ -130,7 +135,7 @@ export function LocalPane() {
         <StatusPill detection={detection} serverStatus={serverStatus} />
         <button
           onClick={() => void refresh()}
-          className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
+          className="text-xs text-ink-muted hover:text-ink ml-auto hover:bg-card px-2 py-1 rounded"
         >
           ↻ Refresh
         </button>
@@ -160,14 +165,14 @@ export function LocalPane() {
             {!detection?.installed ? (
               <button
                 onClick={() => void install()}
-                className="text-xs px-3 py-1 rounded bg-accent/30 border border-accent/60 text-accent hover:bg-accent/40"
+                className="text-xs px-3 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25"
               >
                 Install Ollama
               </button>
             ) : serverStatus === 'running' || detection.running ? (
               <button
                 onClick={stopServer}
-                className="text-xs px-3 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+                className="text-xs px-3 py-1 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-ink"
               >
                 Stop server
               </button>
@@ -175,7 +180,7 @@ export function LocalPane() {
               <button
                 onClick={() => void startServer()}
                 disabled={serverStatus === 'starting'}
-                className="text-xs px-3 py-1 rounded bg-accent/30 border border-accent/60 text-accent hover:bg-accent/40 disabled:opacity-50"
+                className="text-xs px-3 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-50"
               >
                 {serverStatus === 'starting' ? 'Starting…' : 'Start server'}
               </button>
@@ -215,6 +220,37 @@ export function LocalPane() {
                 onCancel={() => cancelPull(m.tag)}
               />
             ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Browse full catalog */}
+      {detection?.installed && catalog.length > 0 && (
+        <Card
+          title="Browse models"
+          description="Curated catalog with maker and country of origin. Not exhaustive — any Ollama tag still pulls via the CLI."
+        >
+          <CatalogFilters
+            catalog={catalog}
+            country={countryFilter}
+            company={companyFilter}
+            onCountry={setCountryFilter}
+            onCompany={setCompanyFilter}
+          />
+          <div className="flex flex-col gap-2 mt-3">
+            {filterCatalog(catalog, countryFilter, companyFilter).map((m) => (
+              <ModelRow
+                key={m.tag}
+                model={m}
+                installed={installedTags.has(m.tag)}
+                pullState={pulls[m.tag]}
+                onPull={() => pullModel(m.tag)}
+                onCancel={() => cancelPull(m.tag)}
+              />
+            ))}
+            {filterCatalog(catalog, countryFilter, companyFilter).length === 0 && (
+              <div className="text-[11px] text-ink-faint">No models match the current filters.</div>
+            )}
           </div>
         </Card>
       )}
@@ -355,6 +391,111 @@ function formatBytes(n: number): string {
   return `${n} B`;
 }
 
+function formatReleasedAt(ym: string): string {
+  // Expected YYYY-MM; render as "MMM YYYY" (e.g. "2024-11" → "Nov 2024").
+  // If the string doesn't match, fall through and show it as-is so a
+  // future format (YYYY-MM-DD, say) still reads sensibly.
+  const match = /^(\d{4})-(\d{2})$/.exec(ym);
+  if (!match) return ym;
+  const year = match[1];
+  const monthIdx = Number.parseInt(match[2], 10) - 1;
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  if (monthIdx < 0 || monthIdx > 11) return ym;
+  return `${months[monthIdx]} ${year}`;
+}
+
+function countryLabel(code: string): string {
+  switch (code) {
+    case 'US':
+      return '🇺🇸 US';
+    case 'CN':
+      return '🇨🇳 China';
+    case 'FR':
+      return '🇫🇷 France';
+    case 'EU':
+      return '🇪🇺 EU';
+    case 'UK':
+      return '🇬🇧 UK';
+    default:
+      return code;
+  }
+}
+
+function filterCatalog(
+  catalog: OllamaRecommendedModel[],
+  country: string,
+  company: string,
+): OllamaRecommendedModel[] {
+  return catalog.filter(
+    (m) => (country === 'all' || m.country === country) && (company === 'all' || m.company === company),
+  );
+}
+
+function CatalogFilters({
+  catalog,
+  country,
+  company,
+  onCountry,
+  onCompany,
+}: {
+  catalog: OllamaRecommendedModel[];
+  country: string;
+  company: string;
+  onCountry: (value: string) => void;
+  onCompany: (value: string) => void;
+}) {
+  const countries = useMemo(
+    () => Array.from(new Set(catalog.map((m) => m.country))).sort(),
+    [catalog],
+  );
+  // Companies available under the current country filter — keeps the
+  // dropdown from listing makers whose entries would all be filtered out.
+  const companies = useMemo(
+    () =>
+      Array.from(
+        new Set(catalog.filter((m) => country === 'all' || m.country === country).map((m) => m.company)),
+      ).sort(),
+    [catalog, country],
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-3 text-[11px]">
+      <label className="flex items-center gap-1.5 text-ink-faint">
+        Country
+        <select
+          value={country}
+          onChange={(e) => {
+            onCountry(e.target.value);
+            onCompany('all');
+          }}
+          className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-ink"
+        >
+          <option value="all">All</option>
+          {countries.map((c) => (
+            <option key={c} value={c}>
+              {countryLabel(c)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-1.5 text-ink-faint">
+        Company
+        <select
+          value={company}
+          onChange={(e) => onCompany(e.target.value)}
+          className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-ink"
+        >
+          <option value="all">All</option>
+          {companies.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+}
+
 function ModelRow({
   model,
   installed,
@@ -370,15 +511,16 @@ function ModelRow({
 }) {
   const pulling = !!pullState && !pullState.done;
   return (
-    <div className="flex flex-col gap-1 p-2 rounded bg-card-strong/40">
+    <div className="flex flex-col gap-1 p-2.5 rounded bg-card/60">
       <div className="flex items-center gap-2">
         <div className="flex-1">
-          <div className="text-xs text-ink">
+          <div className="text-sm text-ink">
             {model.displayName}{' '}
-            <span className="text-ink-faint font-mono">· {model.tag}</span>
+            <span className="text-ink-muted font-mono text-xs">· {model.tag}</span>
           </div>
-          <div className="text-[10px] text-ink-faint">
-            ~{model.sizeGB} GB · {model.license}
+          <div className="text-xs text-ink-muted mt-0.5">
+            ~{model.sizeGB} GB · {model.license} · {model.company} ({countryLabel(model.country)})
+            {model.releasedAt && ` · released ${formatReleasedAt(model.releasedAt)}`}
             {model.note && ` · ${model.note}`}
           </div>
         </div>
@@ -387,14 +529,14 @@ function ModelRow({
         ) : pulling ? (
           <button
             onClick={onCancel}
-            className="text-[10px] px-2 py-0.5 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+            className="text-xs px-2.5 py-1 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-ink"
           >
             Cancel
           </button>
         ) : (
           <button
             onClick={onPull}
-            className="text-[10px] px-2 py-0.5 rounded border border-accent/50 text-accent hover:bg-accent/20"
+            className="text-xs px-2.5 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25"
           >
             Pull
           </button>
@@ -408,13 +550,13 @@ function ModelRow({
               style={{ width: `${pullState!.percent}%` }}
             />
           </div>
-          <div className="text-[10px] text-ink-faint">
+          <div className="text-xs text-ink-muted">
             {pullState!.message ?? 'Starting…'} · {pullState!.percent}%
           </div>
         </div>
       )}
       {pullState?.error && (
-        <div className="text-[10px] text-red-300">Error: {pullState.error}</div>
+        <div className="text-xs text-red-300">Error: {pullState.error}</div>
       )}
     </div>
   );
