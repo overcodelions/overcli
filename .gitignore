@@ -1,2 +1,13 @@
-dist/
 node_modules/
+dist/
+coverage/
+release/
+
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.DS_Store
+Thumbs.db
