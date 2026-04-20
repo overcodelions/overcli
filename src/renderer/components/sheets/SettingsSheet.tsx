@@ -157,8 +157,8 @@ function Toggle({
       >
         <div
           className={
-            'absolute top-0.5 w-3 h-3 rounded-full transition-all shadow ' +
-            (value ? 'left-3.5 bg-white' : 'left-0.5 bg-ink-muted')
+            'absolute top-px w-3 h-3 rounded-full transition-all shadow ' +
+            (value ? 'left-[13px] bg-white' : 'left-px bg-ink-muted')
           }
         />
       </div>
