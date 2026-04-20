@@ -171,6 +171,7 @@ export class RunnerManager {
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
   private codexProtoSupport = new Map<string, boolean>();
+  private codexExecNoticeByConversation = new Set<UUID>();
 
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
     this.emit = emit;
@@ -225,6 +226,7 @@ export class RunnerManager {
     this.killProc(conversationId);
     this.killOllama(conversationId);
     this.killGeminiAcp(conversationId);
+    this.codexExecNoticeByConversation.delete(conversationId);
   }
 
   respondPermission(conversationId: UUID, requestId: string, approved: boolean): void {
@@ -1304,6 +1306,26 @@ export class RunnerManager {
 
   private handleStdout(convId: UUID, active: ActiveProcess, chunk: string): void {
     if (active.backend === 'codex' && active.codexMode === 'exec') {
+      if (!this.codexExecNoticeByConversation.has(convId)) {
+        this.codexExecNoticeByConversation.add(convId);
+        this.emit({
+          type: 'stream',
+          conversationId: convId,
+          events: [
+            {
+              id: randomUUID(),
+              timestamp: Date.now(),
+              raw: '',
+              kind: {
+                type: 'systemNotice',
+                text:
+                  'Codex is running in compatibility mode (exec). Tool cards/approvals are limited on this CLI build. Install a proto-capable Codex build for full Overcli tooling.',
+              },
+              revision: 0,
+            },
+          ],
+        });
+      }
       active.currentAssistantText += chunk;
       if (!active.sessionId) {
         const m = active.currentAssistantText.match(/session id:\s*([0-9a-f-]{8,})/i);
@@ -1316,6 +1338,7 @@ export class RunnerManager {
           });
         }
       }
+      const snap = extractCodexExecSnapshot(active.currentAssistantText);
       if (!active.codexExecEventId) active.codexExecEventId = randomUUID();
       active.codexExecRevision += 1;
       this.emit({
@@ -1330,9 +1353,9 @@ export class RunnerManager {
               type: 'assistant',
               info: {
                 model: 'codex',
-                text: active.currentAssistantText,
+                text: snap.text,
                 toolUses: [],
-                thinking: [],
+                thinking: snap.thinking ? [snap.thinking] : [],
               },
             },
             revision: active.codexExecRevision,
@@ -1675,6 +1698,56 @@ export class RunnerManager {
       },
     };
   }
+}
+
+function extractCodexExecSnapshot(raw: string): { text: string; thinking: string } {
+  if (!raw.trim()) return { text: '', thinking: '' };
+
+  // Timestamped blocks (newer codex exec):
+  // [2026-... ] thinking
+  // <body>
+  // [2026-... ] codex
+  // <body>
+  const tsLine = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\][ \t]*(.*?)[ \t]*$/gm;
+  const sections: Array<{ tag: string; bodyStart: number; markerStart: number }> = [];
+  for (const m of raw.matchAll(tsLine)) {
+    const idx = m.index ?? 0;
+    sections.push({ tag: (m[1] ?? '').trim().toLowerCase(), bodyStart: idx + m[0].length, markerStart: idx });
+  }
+  if (sections.length > 0) {
+    const textBlocks: string[] = [];
+    const thinkingBlocks: string[] = [];
+    for (let i = 0; i < sections.length; i++) {
+      const cur = sections[i]!;
+      const end = sections[i + 1]?.markerStart ?? raw.length;
+      const body = raw.slice(cur.bodyStart, end).trim();
+      if (!body) continue;
+      if (cur.tag === 'codex') textBlocks.push(body);
+      else if (cur.tag.includes('thinking') || cur.tag.includes('reasoning')) thinkingBlocks.push(body);
+    }
+    const text = textBlocks.join('\n\n').trim();
+    const thinking = thinkingBlocks.join('\n\n').trim();
+    if (text || thinking) return { text, thinking };
+  }
+
+  // Plain sections (older/alternate codex exec):
+  // thinking\n...\n
+  // codex\n...\n
+  const thinking = extractSection(raw, 'thinking').trim();
+  const text = extractSection(raw, 'codex').trim();
+  if (text || thinking) return { text, thinking };
+
+  // Last resort: avoid dumping headers/config in the chat bubble.
+  return { text: raw.trim(), thinking: '' };
+}
+
+function extractSection(raw: string, label: string): string {
+  const re = new RegExp(
+    String.raw`(?:^|\r?\n)${label}\r?\n([\s\S]*?)(?=(?:\r?\n(?:tokens used|user|codex|thinking|reasoning)\r?\n)|$)`,
+    'i',
+  );
+  const m = raw.match(re);
+  return m?.[1] ?? '';
 }
 
 /// One-line digest of a tool use for the reviewer prompt. Ideally the

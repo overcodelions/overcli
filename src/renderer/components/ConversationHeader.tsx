@@ -31,7 +31,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const [confirmingReset, setConfirmingReset] = useState(false);
   if (!conv) return null;
   const locked = runnerIsRunning || !!conv.sessionId || conv.turnCount > 0;
-  const backend: Backend = conv.primaryBackend ?? 'claude';
+  const enabled = enabledBackends(settings);
+  const fallbackBackend = enabled[0] ?? 'claude';
+  const backend: Backend = conv.primaryBackend ?? fallbackBackend;
   const configuredModel =
     backend === 'codex'
       ? conv.codexModel ?? conv.currentModel
@@ -76,7 +78,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           <IconPicker
             icon={<BackendDot color={backendColor(backend)} />}
             label={backendName(backend)}
-            items={(['claude', 'codex', 'gemini', 'ollama'] as Backend[]).map((b) => ({
+            items={enabled.map((b) => ({
               value: b,
               label: backendName(b),
               disabled: backendHealth[b]?.kind !== 'ready',
@@ -420,6 +422,7 @@ function IconPicker({
 function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
   const backendHealth = useStore((s) => s.backendHealth);
+  const settings = useStore((s) => s.settings);
   const projects = useStore((s) => s.projects);
   const newConversation = useStore((s) => s.newConversation);
   const selectConversation = useStore((s) => s.selectConversation);
@@ -428,7 +431,7 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const runners = useStore((s) => s.runners);
   if (!conv) return null;
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
-  const currentBackend = conv.primaryBackend ?? 'claude';
+  const currentBackend = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
   const lastUserPrompt = (() => {
     const events = runners[conversationId]?.events ?? [];
@@ -462,7 +465,7 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
     selectConversation(forked.id);
   };
 
-  const items: PickerItem[] = (['claude', 'codex', 'gemini', 'ollama'] as Backend[]).map((b) => ({
+  const items: PickerItem[] = enabledBackends(settings).map((b) => ({
     value: b,
     label:
       b === currentBackend
@@ -522,6 +525,7 @@ function ReboundPicker({
 }) {
   const [open, setOpen] = useState(false);
   const [pulled, setPulled] = useState<string[]>([]);
+  const settings = useStore((s) => s.settings);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -548,8 +552,8 @@ function ReboundPicker({
 
   const active = !!conv.reviewBackend;
   const tint = active ? '#c29bff' : undefined;
-  const primary = conv.primaryBackend ?? 'claude';
-  const candidates = (['claude', 'codex', 'gemini', 'ollama'] as Backend[]).filter((b) => b !== primary);
+  const primary = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
+  const candidates = enabledBackends(settings).filter((b) => b !== primary);
 
   const label = active
     ? `rebound · ${conv.reviewBackend}${conv.reviewMode === 'collab' ? ' · collab' : ''}`
@@ -782,7 +786,7 @@ function ConversationSettingsButton({
     return () => window.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const backend: Backend = conv?.primaryBackend ?? 'claude';
+  const backend: Backend = conv?.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
   // Fetch the list of pulled Ollama models whenever the popover opens on
   // an Ollama conversation — gives the user one-click picks instead of
@@ -979,4 +983,16 @@ function permissionTone(mode: PermissionMode): string | undefined {
 function effortLabel(effort: EffortLevel): string {
   if (!effort) return 'Effort';
   return effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function isBackendEnabled(
+  settings: { disabledBackends?: Partial<Record<Backend, boolean>> },
+  backend: Backend,
+): boolean {
+  return settings.disabledBackends?.[backend] !== true;
+}
+
+function enabledBackends(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend[] {
+  const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  return all.filter((b) => isBackendEnabled(settings, b));
 }

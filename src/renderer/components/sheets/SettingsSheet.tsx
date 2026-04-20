@@ -128,16 +128,26 @@ function Toggle({
   value,
   onChange,
   help,
+  disabled,
 }: {
   label: string;
   value: boolean;
   onChange: (v: boolean) => void;
   help?: string;
+  disabled?: boolean;
 }) {
   return (
-    <label className="flex items-start gap-3 cursor-pointer select-none group">
+    <label
+      className={
+        'flex items-start gap-3 select-none group ' +
+        (disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer')
+      }
+    >
       <div
-        onClick={() => onChange(!value)}
+        onClick={() => {
+          if (disabled) return;
+          onChange(!value);
+        }}
         className={
           'mt-0.5 w-7 h-4 rounded-full flex-shrink-0 relative transition-colors border ' +
           (value
@@ -165,7 +175,7 @@ function Toggle({
 function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
   return (
     <div>
-      <Group title="Appearance" description="Choose how Overcli looks. System follows your OS setting.">
+      <Group title="Appearance" description="Choose how OverCLI looks. System follows your OS setting.">
         <ThemePicker value={local.theme} onChange={(v) => patch({ theme: v })} />
       </Group>
       <Group title="Chat display">
@@ -258,14 +268,36 @@ function BackendsPane({
   health: Record<string, BackendHealth>;
   refresh: () => void;
 }) {
-  const backends: Backend[] = ['claude', 'codex', 'gemini'];
+  const backends: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  const enabledCount = backends.filter((b) => local.disabledBackends?.[b] !== true).length;
   return (
     <div>
       <Group
-        title="CLI paths"
-        description="Overcli auto-discovers CLIs in common install locations. Override here if yours is elsewhere."
+        title="Enabled backends"
+        description="Disabled backends are hidden from pickers and won't be used as defaults."
       >
-        {backends.map((b) => {
+        {backends.map((b) => (
+          <Toggle
+            key={b}
+            label={b}
+            value={local.disabledBackends?.[b] !== true}
+            disabled={enabledCount <= 1 && local.disabledBackends?.[b] !== true}
+            onChange={(v) =>
+              patch({
+                disabledBackends: {
+                  ...(local.disabledBackends ?? {}),
+                  [b]: !v,
+                },
+              })
+            }
+          />
+        ))}
+      </Group>
+      <Group
+        title="CLI paths"
+        description="OverCLI auto-discovers CLIs in common install locations. Override here if yours is elsewhere."
+      >
+        {(['claude', 'codex', 'gemini'] as Backend[]).map((b) => {
           const h = health[b];
           return (
             <div key={b} className="grid grid-cols-[80px_1fr_auto] items-center gap-2">
@@ -339,7 +371,7 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
 
 function placeholderFor(b: Backend): string {
   if (b === 'claude') return 'e.g. claude-opus-4-7';
-  if (b === 'codex') return 'e.g. gpt-5';
+  if (b === 'codex') return 'e.g. gpt-5.4';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
   return 'e.g. gemini-2.5-pro';
 }

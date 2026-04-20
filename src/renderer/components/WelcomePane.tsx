@@ -35,7 +35,7 @@ export function WelcomePane() {
   const [selectedProjectId, setSelectedProjectId] = useState<UUID | null>(
     () => focusedProjectId ?? projects[0]?.id ?? null,
   );
-  const [backend, setBackend] = useState<Backend>('claude');
+  const [backend, setBackend] = useState<Backend>(() => firstEnabledBackend(settings));
   const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(
     settings.defaultPermissionMode,
   );
@@ -78,6 +78,11 @@ export function WelcomePane() {
   useEffect(() => {
     if (focusedProjectId) setSelectedProjectId(focusedProjectId);
   }, [focusedProjectId]);
+
+  useEffect(() => {
+    if (isBackendEnabled(settings, backend)) return;
+    setBackend(firstEnabledBackend(settings));
+  }, [settings, backend]);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
@@ -128,7 +133,7 @@ export function WelcomePane() {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="max-w-md w-full text-center">
-          <div className="text-2xl font-semibold mb-1">Overcli</div>
+          <div className="text-2xl font-semibold mb-1">OverCLI</div>
           <div className="text-sm text-ink-muted mb-6">
             GUI around the Claude, Codex, and Gemini CLIs. Add your first project to start.
           </div>
@@ -147,7 +152,7 @@ export function WelcomePane() {
     <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
       <div className="w-full max-w-[680px]">
         <div className="text-center text-2xl font-semibold mb-5">
-          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'overcli'}?
+          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'OverCLI'}?
         </div>
         <Composer
           draftKey={WELCOME_KEY}
@@ -169,7 +174,7 @@ export function WelcomePane() {
               <Pill
                 label={backendName(backend)}
                 color={backendColor(backend)}
-                items={(['claude', 'codex', 'gemini', 'ollama'] as Backend[]).map((b) => ({
+                items={enabledBackends(settings).map((b) => ({
                   value: b,
                   label: backendName(b),
                 }))}
@@ -222,6 +227,19 @@ export function WelcomePane() {
       </div>
     </div>
   );
+}
+
+function isBackendEnabled(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }, backend: Backend): boolean {
+  return settings.disabledBackends?.[backend] !== true;
+}
+
+function enabledBackends(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend[] {
+  const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  return all.filter((b) => isBackendEnabled(settings, b));
+}
+
+function firstEnabledBackend(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend {
+  return enabledBackends(settings)[0] ?? 'claude';
 }
 
 function WorkspacePill({
@@ -316,7 +334,7 @@ function modelOptionsFor(
   }
   const base: Record<Exclude<Backend, 'ollama'>, string[]> = {
     claude: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-5', 'gpt-5.4', 'o3'],
+    codex: ['gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   };
   const list = base[backend];

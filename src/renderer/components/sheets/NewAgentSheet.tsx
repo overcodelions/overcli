@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
-import { UUID } from '@shared/types';
+import { Backend, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { BaseBranchSelect } from './BaseBranchSelect';
 
@@ -16,6 +16,7 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!project) return null;
+  const preferredBackend = firstEnabledBackend(settings);
 
   const go = async () => {
     const agentName = slugify(name.trim());
@@ -41,7 +42,7 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
       turnCount: 0,
       currentModel: '',
       permissionMode: settings.defaultPermissionMode,
-      primaryBackend: 'claude' as const,
+      primaryBackend: preferredBackend,
       worktreePath: res.worktreePath,
       branchName: res.branchName,
       baseBranch,
@@ -99,4 +100,11 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
 
 function slugify(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+function firstEnabledBackend(settings: {
+  disabledBackends?: Partial<Record<Backend, boolean>>;
+}): Backend {
+  const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  return all.find((b) => settings.disabledBackends?.[b] !== true) ?? 'claude';
 }

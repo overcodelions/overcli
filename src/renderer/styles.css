@@ -131,6 +131,14 @@ html, body {
   background: var(--c-card-bg-strong);
   border-color: var(--c-card-border-strong);
 }
+.field option {
+  background: var(--c-surface-elevated);
+  color: var(--c-ink);
+}
+.field:disabled {
+  color: var(--c-ink-muted);
+  opacity: 1;
+}
 
 /* Sidebar row selection needs a stronger anchor than a faint tint alone.
  * Use a persistent accent rail plus a clearer themed fill/border so the
