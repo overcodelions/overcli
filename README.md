@@ -1,6 +1,6 @@
-# Overcli
+# OverCLI
 
-Overcli is a cross-platform desktop app that puts a real GUI in front of the
+OverCLI is a cross-platform desktop app that puts a real GUI in front of the
 command-line coding agents you already use — `claude`, `codex`, and `gemini`.
 Instead of juggling three terminals with three different output formats, you
 get one window with conversations, projects, diffs, tool cards, file editing,
@@ -13,7 +13,7 @@ code, side-by-side diff views, permission prompts, and approval cards.
 
 ## A father–son project
 
-This is a collaboration between **Lionel Farr** and his son **Owen Farr**.
+This is a collaboration between **[Lionel Farr](https://github.com/lionelfarr)** and his son **[Owen Farr](https://github.com/owenlfarr)**.
 It started as a way to spend time building something real together — Owen
 learning how a production app is actually put together (IPC, state, streaming,
 diffs, packaging) and Lionel getting to teach by doing instead of explaining
@@ -94,7 +94,7 @@ code-signing docs.
 ### Icon
 
 `build/icon.icns` and `build/icon.png` are shared with the earlier Swift
-build of Overcli so the two apps have the same identity.
+build of OverCLI so the two apps have the same identity.
 
 ## Layout
 
