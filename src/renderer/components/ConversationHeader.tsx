@@ -1029,7 +1029,7 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
                     if (!busy && message.trim()) void onCommit();
                   }
                 }}
-                placeholder="Commit message (⌘⏎ to commit)"
+                placeholder={`Commit message (${shortcutLabel()} to commit)`}
                 rows={3}
                 className="field px-2 py-1.5 text-[11px] leading-5 resize-none"
                 autoFocus
@@ -1064,9 +1064,7 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
               >
                 <span>{busy ? 'Committing…' : 'Commit'}</span>
                 {!busy && (
-                  <kbd className="font-mono text-xs text-ink bg-card px-1.5 py-0.5 rounded leading-none">
-                    {shortcutLabel()}
-                  </kbd>
+                  <span className="text-xs text-ink-muted">{shortcutLabel()}</span>
                 )}
               </button>
             )}
@@ -1082,11 +1080,12 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
 /// dumb — anything smarter would need to read the diff, which is more
 /// work than drafting-from-scratch is worth.
 /// OS-aware label for the commit submit shortcut. Mac gets the native
-/// glyph pair (⌘⏎), other platforms get the written form so Windows/
-/// Linux users don't puzzle over the symbol.
+/// ⌘ glyph + the word "Return" (the ⏎ / ↵ Unicode chars render
+/// inconsistently in most mono/sans stacks and look visually wrong at
+/// small sizes). Other platforms get the fully spelled form.
 function shortcutLabel(): string {
   const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-  return isMac ? '⌘⏎' : 'Ctrl+⏎';
+  return isMac ? '⌘ Return' : 'Ctrl + Enter';
 }
 
 function draftCommitMessage(changes: Array<{ path: string }>): string {
