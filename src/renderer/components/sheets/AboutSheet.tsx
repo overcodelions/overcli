@@ -91,17 +91,15 @@ export function AboutSheet() {
 function AppMark() {
   return (
     <div className="flex h-[84px] w-[84px] items-center justify-center rounded-[22px] border border-card-strong bg-gradient-to-br from-accent/45 to-accent/10 shadow-[0_10px_24px_rgba(0,0,0,0.2)]">
-      <svg width="42" height="42" viewBox="0 0 42 42" fill="none">
-        <rect x="7" y="9" width="21" height="5" rx="2" fill="currentColor" className="text-ink" />
-        <rect x="7" y="18" width="27" height="5" rx="2" fill="currentColor" className="text-ink/80" />
-        <rect x="7" y="27" width="16" height="5" rx="2" fill="currentColor" className="text-ink/60" />
+      <svg width="46" height="46" viewBox="0 0 42 42" fill="none">
+        <rect x="11" y="9" width="20" height="5" rx="2.5" fill="currentColor" className="text-ink" />
         <path
-          d="M30 25.5 35 28l-5 2.5"
+          d="M14 20 L28 27 L14 34"
           stroke="currentColor"
-          strokeWidth="1.8"
+          strokeWidth="5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className="text-accent"
+          className="text-ink"
         />
       </svg>
     </div>
