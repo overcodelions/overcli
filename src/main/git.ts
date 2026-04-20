@@ -620,11 +620,15 @@ export function commitStatus(cwd: string): {
   isRepo: boolean;
   currentBranch: string;
   changes: Array<{ path: string; status: string }>;
+  insertions: number;
+  deletions: number;
 } {
-  if (!cwd) return { isRepo: false, currentBranch: '', changes: [] };
+  if (!cwd) {
+    return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
+  }
   const check = runGit(['rev-parse', '--is-inside-work-tree'], cwd);
   if (check.exitCode !== 0 || check.stdout.trim() !== 'true') {
-    return { isRepo: false, currentBranch: '', changes: [] };
+    return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
   }
   const branch = runGit(['branch', '--show-current'], cwd);
   const status = runGit(['status', '--porcelain=v1'], cwd);
@@ -637,10 +641,32 @@ export function commitStatus(cwd: string): {
       if (p) changes.push({ path: p, status: code });
     }
   }
+
+  // `git diff HEAD --numstat` covers both staged + unstaged churn on
+  // tracked files. Untracked files aren't counted — we'd have to wc -l
+  // them individually, and the popover already lists them so the user
+  // knows they're there.
+  let insertions = 0;
+  let deletions = 0;
+  const numstat = runGit(['diff', 'HEAD', '--numstat'], cwd);
+  if (numstat.exitCode === 0) {
+    for (const line of numstat.stdout.split('\n')) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 2) continue;
+      // Binary files show '-' — skip so we don't NaN the total.
+      const add = parseInt(parts[0], 10);
+      const del = parseInt(parts[1], 10);
+      if (!Number.isNaN(add)) insertions += add;
+      if (!Number.isNaN(del)) deletions += del;
+    }
+  }
+
   return {
     isRepo: true,
     currentBranch: branch.stdout.trim(),
     changes,
+    insertions,
+    deletions,
   };
 }
 

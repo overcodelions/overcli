@@ -887,6 +887,8 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
   const [isRepo, setIsRepo] = useState(false);
   const [currentBranch, setCurrentBranch] = useState('');
   const [changes, setChanges] = useState<Array<{ path: string; status: string }>>([]);
+  const [insertions, setInsertions] = useState(0);
+  const [deletions, setDeletions] = useState(0);
   const [message, setMessage] = useState('');
   const [messageEdited, setMessageEdited] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -905,6 +907,8 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
     setIsRepo(res.isRepo);
     setCurrentBranch(res.currentBranch);
     setChanges(res.changes);
+    setInsertions(res.insertions);
+    setDeletions(res.deletions);
   }, [cwd]);
 
   // One probe when the header mounts / cwd changes. Cheap (~5ms spawnSync)
@@ -961,15 +965,28 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
     }
   };
 
+  const diffstatTitle = hasChanges
+    ? `Commit · ${changes.length} file${changes.length === 1 ? '' : 's'} · +${insertions} −${deletions}`
+    : 'Working tree clean';
+
   return (
     <div ref={ref} className="relative">
-      <IconButton
-        active={open}
+      <button
         onClick={() => setOpen((o) => !o)}
-        title={hasChanges ? `Commit ${changes.length} change(s)` : 'Nothing to commit'}
+        title={diffstatTitle}
+        className={
+          'h-7 px-1.5 flex items-center gap-1.5 rounded text-ink-muted hover:bg-card-strong hover:text-ink ' +
+          (open ? 'bg-accent/20 text-ink' : '')
+        }
       >
         <CommitIcon />
-      </IconButton>
+        {hasChanges && (
+          <span className="flex items-center gap-1 text-[10px] font-mono leading-none">
+            <span className="text-emerald-400">+{insertions}</span>
+            <span className="text-red-400">−{deletions}</span>
+          </span>
+        )}
+      </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 w-[340px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">
           <div className="flex items-center justify-between">
