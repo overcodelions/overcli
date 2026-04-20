@@ -198,6 +198,12 @@ export interface Conversation {
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
+  /// Set on workspace-agent coordinators: a synthetic directory whose
+  /// symlinks point at each member's worktree. Used as the coordinator's
+  /// cwd so the agent's file-system tools land in the worktrees, not the
+  /// projects' main trees. Absent on single-project conversations and on
+  /// plain workspace conversations.
+  coordinatorRootPath?: string;
   /// Read-only agents check out someone else's branch into a
   /// detached-HEAD worktree so the user can read + converse about the
   /// changes without touching their main project tree. The flag drives
@@ -570,6 +576,13 @@ export interface IPCInvokeMap {
     insertions: number;
     deletions: number;
   };
+  'git:workspaceCommitStatus': (args: { projects: Array<{ name: string; path: string }> }) => {
+    isRepo: boolean;
+    currentBranch: string;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+    insertions: number;
+    deletions: number;
+  };
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
     | { ok: false; error: string };
@@ -578,6 +591,13 @@ export interface IPCInvokeMap {
     projects: Array<{ name: string; path: string }>;
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
   'workspace:removeSymlinkRoot': (workspaceId: UUID) => { ok: true } | { ok: false; error: string };
+  'workspace:ensureCoordinatorSymlinkRoot': (args: {
+    coordinatorId: UUID;
+    members: Array<{ name: string; worktreePath: string }>;
+  }) => { ok: true; rootPath: string } | { ok: false; error: string };
+  'workspace:removeCoordinatorSymlinkRoot': (
+    coordinatorId: UUID,
+  ) => { ok: true } | { ok: false; error: string };
   'auth:openCliLogin': (backend: Backend) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;

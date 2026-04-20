@@ -897,6 +897,41 @@ export function commitStatus(cwd: string): {
   };
 }
 
+/// Aggregate `commitStatus` across a workspace's member projects. Each
+/// returned path is prefixed with the project's symlink name so it
+/// resolves through the workspace root via the on-disk symlinks, and so
+/// the ChangesBar shows which project a file belongs to.
+export function workspaceCommitStatus(
+  members: Array<{ name: string; path: string }>,
+): {
+  isRepo: boolean;
+  currentBranch: string;
+  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  insertions: number;
+  deletions: number;
+} {
+  let insertions = 0;
+  let deletions = 0;
+  const changes: Array<{ path: string; status: string; additions: number; deletions: number }> = [];
+  let anyRepo = false;
+  // Names come pre-assigned by the caller (workspace members use the
+  // shared basename-dedup rule; coordinator members use the project
+  // name), so `name` is used verbatim as the path prefix.
+  for (const { name, path: projPath } of members) {
+    if (!name || !projPath) continue;
+    const res = commitStatus(projPath);
+    if (!res.isRepo) continue;
+    anyRepo = true;
+    insertions += res.insertions;
+    deletions += res.deletions;
+    for (const c of res.changes) {
+      changes.push({ ...c, path: `${name}/${c.path}` });
+    }
+  }
+  changes.sort((a, b) => a.path.localeCompare(b.path));
+  return { isRepo: anyRepo, currentBranch: '', changes, insertions, deletions };
+}
+
 /// Count non-empty lines in a file. Used for untracked-file additions,
 /// which `git diff --numstat` doesn't surface. Strips `\r` first so
 /// CRLF-terminated files on Windows don't count each line as empty.

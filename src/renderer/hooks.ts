@@ -29,8 +29,9 @@ export function useConversationRoot(id: UUID | null | undefined): string | null 
     }
     for (const w of s.workspaces) {
       const c = (w.conversations ?? []).find((x) => x.id === id);
-      if (c) return c.worktreePath ?? w.rootPath;
+      if (c) return c.coordinatorRootPath ?? c.worktreePath ?? w.rootPath;
     }
     return null;
   });
 }
+
