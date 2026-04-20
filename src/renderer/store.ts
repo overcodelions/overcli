@@ -237,6 +237,24 @@ function findConversation(state: StoreState, id: UUID): Conversation | null {
   return null;
 }
 
+/// Ask the main process which Ollama models are actually pulled locally
+/// and pick one. Prefers the configured default *only* if it's installed —
+/// otherwise falls back to whatever is on disk. Returns null if Ollama
+/// detection fails or no models are pulled, so callers can surface a
+/// clear error instead of blindly using a tag the server doesn't have.
+async function pickInstalledOllamaModel(settings: AppSettings): Promise<string | null> {
+  try {
+    const det = await window.overcli.invoke('ollama:detect');
+    const names = det.models.map((m) => m.name);
+    if (names.length === 0) return null;
+    const configured = settings.backendDefaultModels.ollama;
+    if (configured && names.includes(configured)) return configured;
+    return names[0];
+  } catch {
+    return null;
+  }
+}
+
 async function ensureWorkspaceRoot(
   projects: Project[],
   workspaceId: UUID,
@@ -848,28 +866,19 @@ export const useStore = create<StoreState>((set, get) => ({
     mutateConversation(set, get, id, (c) => ({ ...c, primaryBackend: backend }));
     await saveConversationState(get);
     // Auto-pick an Ollama model on first switch if none is set, so the
-    // user doesn't hit "model required" on the first send. Prefer the
-    // user's configured default, else the first pulled tag.
+    // user doesn't hit "model required" on the first send.
     if (backend === 'ollama') {
       const s = get();
       const conv = findConversation(s, id);
       if (conv && !conv.ollamaModel) {
-        try {
-          const det = await window.overcli.invoke('ollama:detect');
-          const names = det.models.map((m) => m.name);
-          const configured = s.settings.backendDefaultModels.ollama;
-          const pick =
-            configured && names.includes(configured) ? configured : names[0];
-          if (pick) {
-            mutateConversation(set, get, id, (c) => ({
-              ...c,
-              ollamaModel: pick,
-              currentModel: pick,
-            }));
-            await saveConversationState(get);
-          }
-        } catch {
-          // Detection failed — user can still set the model manually.
+        const pick = await pickInstalledOllamaModel(s.settings);
+        if (pick) {
+          mutateConversation(set, get, id, (c) => ({
+            ...c,
+            ollamaModel: pick,
+            currentModel: pick,
+          }));
+          await saveConversationState(get);
         }
       }
     }
@@ -990,7 +999,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }));
       return;
     }
-    const model =
+    let model =
       backend === 'codex'
         ? conv.codexModel ?? conv.currentModel
         : backend === 'gemini'
@@ -998,6 +1007,34 @@ export const useStore = create<StoreState>((set, get) => ({
         : backend === 'ollama'
         ? conv.ollamaModel ?? conv.currentModel
         : conv.claudeModel ?? conv.currentModel;
+
+    // Ollama has no account-level "default model" — the user must name a
+    // pulled tag explicitly. If the conversation still has none (common
+    // on a fresh convo where Ollama is the default backend), resolve one
+    // from the local pull list now so we don't ship the request with an
+    // empty model and rely on a hardcoded fallback.
+    if (backend === 'ollama' && !model) {
+      const pick = await pickInstalledOllamaModel(state.settings);
+      if (!pick) {
+        set((s) => ({
+          runners: {
+            ...s.runners,
+            [conversationId]: {
+              ...(s.runners[conversationId] ?? newRunnerState()),
+              errorMessage:
+                'No Ollama models pulled yet. Open Settings → Local models to pull one.',
+            },
+          },
+        }));
+        return;
+      }
+      model = pick;
+      mutateConversation(set, get, conversationId, (c) => ({
+        ...c,
+        ollamaModel: pick,
+        currentModel: pick,
+      }));
+    }
 
     await window.overcli.invoke('runner:send', {
       conversationId,

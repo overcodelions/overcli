@@ -8,6 +8,8 @@ import { FileEditorPane } from './FileEditorPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar, computeChangedFiles } from './ChangesBar';
 import { useConversation } from '../hooks';
+import { Backend } from '@shared/types';
+import { backendName } from '../theme';
 
 const EDITOR_MIN = 320;
 // Chat must keep at least this many px; editor caps at (container - CHAT_MIN).
@@ -21,6 +23,8 @@ export function ConversationPane() {
   const saveSettings = useStore((s) => s.saveSettings);
   const ollamaServerStatus = useStore((s) => s.ollamaServerStatus);
   const setDetailMode = useStore((s) => s.setDetailMode);
+  const backendHealth = useStore((s) => s.backendHealth);
+  const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
   const conv = useConversation(convId);
   const events = useStore((s) => (convId ? s.runners[convId]?.events : null)) ?? null;
   const changedFiles = useMemo(
@@ -47,9 +51,14 @@ export function ConversationPane() {
 
   if (!convId) return null;
   const editorVisible = !!openFilePath || showFileTree;
-  const isOllamaConv = conv?.primaryBackend === 'ollama';
+  const convBackend = conv?.primaryBackend;
+  const isOllamaConv = convBackend === 'ollama';
   const showOllamaWarning =
     isOllamaConv && ollamaServerStatus !== 'running' && ollamaServerStatus !== 'starting';
+  const showAuthBanner =
+    !!convBackend &&
+    convBackend !== 'ollama' &&
+    backendHealth[convBackend]?.kind === 'unauthenticated';
   return (
     <div ref={containerRef} className="flex flex-1 min-h-0">
       <div className="flex flex-col flex-1 min-w-0">
@@ -61,6 +70,12 @@ export function ConversationPane() {
               await window.overcli.invoke('ollama:startServer');
             }}
             onOpenLocalTab={() => setDetailMode('local')}
+          />
+        )}
+        {showAuthBanner && convBackend && (
+          <BackendAuthBanner
+            backend={convBackend}
+            onRefresh={() => void refreshBackendHealth()}
           />
         )}
         <ChatView conversationId={convId} />
@@ -128,6 +143,64 @@ function OllamaServerDownBanner({
         className="px-2 py-1 rounded text-amber-200/70 hover:text-amber-100"
       >
         Open Local tab
+      </button>
+    </div>
+  );
+}
+
+/// Shown above the chat when the selected backend's CLI is installed but
+/// not authenticated. Clicking "Sign in" opens Terminal.app with the
+/// backend's login command pre-typed so the user completes the flow
+/// (usually a browser OAuth round-trip) outside Electron. While the banner
+/// is visible we poll health every few seconds so it disappears on its
+/// own the moment auth succeeds.
+function BackendAuthBanner({
+  backend,
+  onRefresh,
+}: {
+  backend: Backend;
+  onRefresh: () => void;
+}) {
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [launched, setLaunched] = useState(false);
+
+  useEffect(() => {
+    if (!launched) return;
+    const id = setInterval(onRefresh, 3000);
+    return () => clearInterval(id);
+  }, [launched, onRefresh]);
+
+  const label = launched
+    ? `Finish signing into ${backendName(backend)} in the Terminal window, then come back.`
+    : `You're signed out of ${backendName(backend)}. Sign in to send messages.`;
+
+  return (
+    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-center gap-3">
+      <span className="flex-1">{label}</span>
+      {launchError && <span className="text-amber-300/80">{launchError}</span>}
+      <button
+        onClick={async () => {
+          setLaunching(true);
+          setLaunchError(null);
+          try {
+            const res = await window.overcli.invoke('auth:openCliLogin', backend);
+            if (res.ok) setLaunched(true);
+            else setLaunchError(res.error);
+          } finally {
+            setLaunching(false);
+          }
+        }}
+        disabled={launching}
+        className="px-2 py-1 rounded border border-amber-400/50 text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
+      >
+        {launching ? 'Opening Terminal…' : launched ? 'Reopen Terminal' : 'Sign in'}
+      </button>
+      <button
+        onClick={onRefresh}
+        className="px-2 py-1 rounded text-amber-200/70 hover:text-amber-100"
+      >
+        Refresh
       </button>
     </div>
   );

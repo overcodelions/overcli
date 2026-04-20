@@ -31,7 +31,8 @@ import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
 import { detectHardware, detectOllama, installOllama, ollamaServer, pullModel } from './ollama';
 import { ensureWorkspaceSymlinkRoot } from './workspace';
-import { MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
+import { runInTerminal } from './terminal';
+import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
 
 // Dev vs prod: we go to the Vite dev server ONLY when VITE_DEV_SERVER_URL
 // is explicitly set (the `dev:electron` npm script sets it). Anything else
@@ -176,6 +177,21 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle('app:reloadStats', () => computeStats());
+
+  ipcMain.handle('auth:openCliLogin', (_e, backend: Backend) => {
+    if (backend === 'ollama') {
+      return { ok: false, error: 'Ollama does not need CLI login — start the server from the banner.' };
+    }
+    const settings = Store.load().settings;
+    const bin = resolveBackendPath(backend, settings.backendPaths[backend]);
+    // Prefer the resolved absolute path so Terminal.app (which inherits a
+    // different PATH than Electron) still finds the binary. If we couldn't
+    // resolve it, fall back to the bare command — better than nothing.
+    const cmd = bin ?? backend;
+    const quoted = cmd.includes(' ') ? `"${cmd}"` : cmd;
+    const args = backend === 'claude' ? 'auth login' : backend === 'codex' ? 'login' : 'auth login';
+    return runInTerminal(`${quoted} ${args}`);
+  });
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
