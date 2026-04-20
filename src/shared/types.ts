@@ -587,6 +587,13 @@ export type MainToRendererEvent =
       rolloutPath?: string;
     }
   | {
+      type: 'codexRuntimeMode';
+      conversationId: UUID;
+      mode: 'proto' | 'exec';
+      sandbox: string;
+      approval: string;
+    }
+  | {
       type: 'ollamaPull';
       event: OllamaPullEvent;
     }
