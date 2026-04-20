@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useConversationRoot } from '../hooks';
+import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import hljs from 'highlight.js';
 import { canPreviewFile } from '../filePreview';
 import { FileTree } from './FileTree';
@@ -10,6 +11,16 @@ import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 export function FileEditorPane() {
   const convId = useStore((s) => s.selectedConversationId);
   const rootPath = useConversationRoot(convId);
+  // Pull the raw store slices (stable references when unchanged) rather
+  // than a derived array, so the useMemo below doesn't rebuild every
+  // render — if `workspaceMembers` churned, the diff useEffect would
+  // re-fire each render and pin the CPU.
+  const workspaces = useStore((s) => s.workspaces);
+  const projects = useStore((s) => s.projects);
+  const workspaceMembers = useMemo(
+    () => resolveWorkspaceMembers(convId, workspaces, projects),
+    [convId, workspaces, projects],
+  );
   const path = useStore((s) => s.openFilePath);
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
@@ -39,7 +50,13 @@ export function FileEditorPane() {
           // Tool results often pass a hint (`store.ts`, `src/main/index.ts`)
           // that the resolver expanded to an absolute path. Upgrade the
           // store so subsequent save/diff ops target the real file.
-          if (res.resolvedPath && res.resolvedPath !== path) {
+          // Skip the upgrade for workspace-member paths ("<member>/…") —
+          // the relative form is already canonical and carries the
+          // project prefix that the diff view needs to strip.
+          const isWorkspaceMemberPath =
+            !!workspaceMembers &&
+            workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
+          if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
             openFile(res.resolvedPath, highlight ?? undefined, mode);
           }
         } else setError(res.error);
@@ -52,8 +69,16 @@ export function FileEditorPane() {
     };
   }, [path, rootPath]);
 
+  // For workspace conversations the display root is a symlink dir and
+  // not a git repo, so paths in the ChangesBar come in as
+  // "<member>/…path". Peel that prefix to run git in the real project.
+  const diffTarget = useMemo(() => resolveDiffTarget(path, rootPath, workspaceMembers), [
+    path,
+    rootPath,
+    workspaceMembers,
+  ]);
   useEffect(() => {
-    if (!path || mode !== 'diff' || !rootPath) return;
+    if (!path || mode !== 'diff' || !diffTarget) return;
     setLoading(true);
     setError(null);
     (async () => {
@@ -61,14 +86,14 @@ export function FileEditorPane() {
       // the last commit. Untracked/new files need `--no-index` since they
       // have no HEAD entry to diff against.
       const tracked = await window.overcli.invoke('git:run', {
-        args: ['diff', 'HEAD', '--', path],
-        cwd: rootPath,
+        args: ['diff', 'HEAD', '--', diffTarget.path],
+        cwd: diffTarget.cwd,
       });
       let text = tracked.stdout ?? '';
       if (!text.trim()) {
         const untracked = await window.overcli.invoke('git:run', {
-          args: ['diff', '--no-index', '--', '/dev/null', path],
-          cwd: rootPath,
+          args: ['diff', '--no-index', '--', '/dev/null', diffTarget.path],
+          cwd: diffTarget.cwd,
         });
         // `--no-index` exits 1 when there's a diff; stdout still holds it.
         text = untracked.stdout ?? '';
@@ -77,7 +102,7 @@ export function FileEditorPane() {
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, rootPath]);
+  }, [path, mode, diffTarget]);
 
   // When the file tree is requested but no file is open, show the tree
   // alone. When a file is open, show the tree on top and the file below
@@ -305,4 +330,79 @@ function detectLanguage(path: string): string | null {
   if (name === 'cmakelists.txt') return 'cmake';
   const ext = name.includes('.') ? name.split('.').pop()! : '';
   return LANGUAGE_BY_EXT[ext] ?? null;
+}
+
+/// Workspace conversations show paths like "<member>/src/foo.ts" — the
+/// ChangesBar prefix matches the symlink name under the workspace root.
+/// Strip it to get a cwd that's a real git repo; the remaining path is
+/// what `git diff` wants.
+function resolveDiffTarget(
+  path: string | null,
+  rootPath: string | null,
+  members: Array<{ name: string; path: string }> | null,
+): { cwd: string; path: string } | null {
+  if (!path || !rootPath) return null;
+  if (members && members.length > 0) {
+    for (const m of members) {
+      const prefix = `${m.name}/`;
+      if (path.startsWith(prefix)) {
+        return { cwd: m.path, path: path.slice(prefix.length) };
+      }
+    }
+  }
+  return { cwd: rootPath, path };
+}
+
+function resolveWorkspaceMembers(
+  convId: string | null,
+  workspaces: Array<{
+    projectIds: string[];
+    conversations?: Array<{
+      id: string;
+      worktreePath?: string;
+      workspaceAgentMemberIds?: string[];
+    }>;
+  }>,
+  projects: Array<{
+    id: string;
+    name: string;
+    path: string;
+    conversations: Array<{ id: string; worktreePath?: string }>;
+  }>,
+): Array<{ name: string; path: string }> | null {
+  if (!convId) return null;
+  for (const w of workspaces) {
+    const c = (w.conversations ?? []).find((x) => x.id === convId);
+    if (!c) continue;
+    if (c.worktreePath) return null;
+    // Coordinator: map symlinks to member WORKTREES so the diff view
+    // runs git from the right repo. Use the same project-name + numeric
+    // suffix dedup that `ensureCoordinatorSymlinkRoot` uses on disk.
+    if (c.workspaceAgentMemberIds?.length) {
+      const out: Array<{ name: string; path: string }> = [];
+      const used = new Set<string>();
+      for (const memberId of c.workspaceAgentMemberIds) {
+        for (const proj of projects) {
+          const member = proj.conversations.find((x) => x.id === memberId);
+          if (!member?.worktreePath) continue;
+          let name = proj.name;
+          let i = 2;
+          while (used.has(name)) {
+            name = `${proj.name}-${i}`;
+            i += 1;
+          }
+          used.add(name);
+          out.push({ name, path: member.worktreePath });
+          break;
+        }
+      }
+      return out;
+    }
+    const projs = w.projectIds
+      .map((pid) => projects.find((p) => p.id === pid))
+      .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
+      .map((p) => ({ name: p.name, path: p.path }));
+    return workspaceSymlinkNames(projs);
+  }
+  return null;
 }

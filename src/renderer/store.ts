@@ -25,6 +25,7 @@ import {
   MainToRendererEvent,
 } from '@shared/types';
 import { FileViewMode, defaultFileViewMode } from './filePreview';
+import { workspaceSymlinkNames } from '@shared/workspaceNames';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
 
 export type ActiveSheet =
@@ -339,6 +340,34 @@ async function ensureWorkspaceRoot(
   return res.rootPath;
 }
 
+/// For a coordinator's memberIds, return the list of
+/// `{name, worktreePath}` records the main-process helper wants. The
+/// name is the project's human name (with numeric dedup on collision)
+/// so it matches what the on-disk symlink gets called.
+function collectCoordinatorMembers(
+  projects: Array<{ name: string; conversations: Array<{ id: string; worktreePath?: string }> }>,
+  memberIds: UUID[],
+): Array<{ name: string; worktreePath: string }> {
+  const out: Array<{ name: string; worktreePath: string }> = [];
+  const used = new Set<string>();
+  for (const memberId of memberIds) {
+    for (const proj of projects) {
+      const member = proj.conversations.find((x) => x.id === memberId);
+      if (!member?.worktreePath) continue;
+      let name = proj.name;
+      let i = 2;
+      while (used.has(name)) {
+        name = `${proj.name}-${i}`;
+        i += 1;
+      }
+      used.add(name);
+      out.push({ name, worktreePath: member.worktreePath });
+      break;
+    }
+  }
+  return out;
+}
+
 function findContainerPath(state: StoreState, convId: UUID): string | null {
   for (const p of state.projects) {
     const c = p.conversations.find((x) => x.id === convId);
@@ -346,7 +375,13 @@ function findContainerPath(state: StoreState, convId: UUID): string | null {
   }
   for (const w of state.workspaces) {
     const c = w.conversations?.find((x) => x.id === convId);
-    if (c) return c.worktreePath ?? w.rootPath;
+    if (c) {
+      // Workspace-agent coordinators run out of a dedicated root whose
+      // symlinks point at each member's worktree — never the workspace's
+      // main-tree symlinks, or edits would land on main and bypass the
+      // agent branches.
+      return c.coordinatorRootPath ?? c.worktreePath ?? w.rootPath;
+    }
   }
   return null;
 }
@@ -369,10 +404,24 @@ function computeAllowedDirs(state: StoreState, convId: UUID): string[] {
   for (const w of state.workspaces) {
     const c = w.conversations?.find((x) => x.id === convId);
     if (c) {
-      dirs.push(w.rootPath);
-      for (const pid of w.projectIds) {
-        const proj = state.projects.find((p) => p.id === pid);
-        if (proj) dirs.push(proj.path);
+      if (c.coordinatorRootPath) {
+        // Coordinator: cwd is a root of symlinks to member worktrees.
+        // Add the member worktrees explicitly — the main project paths
+        // are intentionally NOT listed so the agent doesn't escape back
+        // to the main tree.
+        dirs.push(c.coordinatorRootPath);
+        for (const memberId of c.workspaceAgentMemberIds ?? []) {
+          for (const proj of state.projects) {
+            const member = proj.conversations.find((x) => x.id === memberId);
+            if (member?.worktreePath) dirs.push(member.worktreePath);
+          }
+        }
+      } else {
+        dirs.push(w.rootPath);
+        for (const pid of w.projectIds) {
+          const proj = state.projects.find((p) => p.id === pid);
+          if (proj) dirs.push(proj.path);
+        }
       }
       if (c.worktreePath) dirs.push(c.worktreePath);
       for (const d of c.allowedDirs ?? []) dirs.push(d);
@@ -430,9 +479,40 @@ export const useStore = create<StoreState>((set, get) => ({
     const workspaces: Workspace[] = [];
     for (const ws of state.workspaces) {
       const rootPath = await ensureWorkspaceRoot(state.projects, ws.id, ws.projectIds);
-      if (rootPath && rootPath !== ws.rootPath) {
-        workspaces.push({ ...ws, rootPath });
+      // Backfill coordinator symlink roots for agents saved before the
+      // per-coordinator root existed. Without this, existing workspace
+      // agents keep writing via workspace-level symlinks into the main
+      // tree. We also reconcile links in case a member's worktree moved.
+      const reconciledConvs: Conversation[] = [];
+      let convsChanged = false;
+      for (const conv of ws.conversations ?? []) {
+        const memberIds = conv.workspaceAgentMemberIds;
+        if (!memberIds?.length) {
+          reconciledConvs.push(conv);
+          continue;
+        }
+        const members = collectCoordinatorMembers(state.projects, memberIds);
+        if (members.length === 0) {
+          reconciledConvs.push(conv);
+          continue;
+        }
+        const res = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
+          coordinatorId: conv.id,
+          members,
+        });
+        if (res.ok && res.rootPath !== conv.coordinatorRootPath) {
+          reconciledConvs.push({ ...conv, coordinatorRootPath: res.rootPath });
+          convsChanged = true;
+        } else {
+          reconciledConvs.push(conv);
+        }
+      }
+      const nextWs: Workspace = { ...ws };
+      if (convsChanged) nextWs.conversations = reconciledConvs;
+      if (rootPath && rootPath !== ws.rootPath) nextWs.rootPath = rootPath;
+      if (convsChanged || (rootPath && rootPath !== ws.rootPath)) {
         workspacesChanged = true;
+        workspaces.push(nextWs);
       } else {
         workspaces.push(ws);
       }
@@ -824,6 +904,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!agentSlug) return null;
     const coordinatorId = uuid();
     const memberIds: UUID[] = [];
+    const coordinatorMembers: Array<{ name: string; worktreePath: string }> = [];
 
     // Spawn a git worktree in each member project and create a child
     // agent conversation there. The coordinator itself has no worktree
@@ -849,6 +930,10 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       const memberId = uuid();
       memberIds.push(memberId);
+      coordinatorMembers.push({
+        name: project.name,
+        worktreePath: res.worktreePath,
+      });
       const memberConv: Conversation = {
         id: memberId,
         name: `${name} · ${project.name}`,
@@ -875,6 +960,19 @@ export const useStore = create<StoreState>((set, get) => ({
       return null;
     }
 
+    // Build the coordinator's synthetic cwd: symlinks into each member
+    // worktree so agent edits land on the agent branches, not on main.
+    let coordinatorRootPath: string | undefined;
+    const rootRes = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
+      coordinatorId,
+      members: coordinatorMembers,
+    });
+    if (rootRes.ok) {
+      coordinatorRootPath = rootRes.rootPath;
+    } else {
+      console.warn(`Coordinator root create failed: ${rootRes.error}`);
+    }
+
     const coordinator: Conversation = {
       id: coordinatorId,
       name,
@@ -886,6 +984,7 @@ export const useStore = create<StoreState>((set, get) => ({
       primaryBackend: preferred,
       workspaceAgentMemberIds: memberIds,
       branchName: `${state.settings.agentBranchPrefix}${agentSlug}`,
+      coordinatorRootPath,
       // No coordinator-level baseBranch: each member branches off its
       // own base, stored on the member conversation.
     };
@@ -1022,8 +1121,9 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!conv) return { ok: false, error: 'conversation not found' };
 
     const errors: string[] = [];
-    // Workspace-agent coordinator: remove every member's worktree. The
-    // coordinator itself has no worktree, just a bookkeeping row.
+    // Workspace-agent coordinator: remove every member's worktree, then
+    // the coordinator's own symlink root. The coordinator itself has no
+    // worktree, just a bookkeeping row + the synthetic root.
     if (conv.workspaceAgentMemberIds && conv.workspaceAgentMemberIds.length > 0) {
       for (const memberId of conv.workspaceAgentMemberIds) {
         for (const p of state.projects) {
@@ -1041,6 +1141,7 @@ export const useStore = create<StoreState>((set, get) => ({
           break;
         }
       }
+      await window.overcli.invoke('workspace:removeCoordinatorSymlinkRoot', id);
       await get().removeConversation(id);
       return { ok: errors.length === 0, error: errors.join('; ') || undefined };
     }
@@ -1617,17 +1718,57 @@ export const useStore = create<StoreState>((set, get) => ({
         break;
       }
     }
+    // Either the workspace's member projects (plain workspace conv) or
+    // the coordinator's member worktrees (workspace agent). Both are
+    // aggregated by `git:workspaceCommitStatus`, which runs commitStatus
+    // in each listed path and prefixes the returned paths with `name/`.
+    let workspaceProjects: Array<{ name: string; path: string }> | null = null;
     if (!cwd) {
       for (const w of s.workspaces) {
         const c = (w.conversations ?? []).find((x) => x.id === conversationId);
-        if (c) {
-          cwd = c.worktreePath ?? w.rootPath;
-          break;
+        if (!c) continue;
+        if (c.worktreePath) {
+          cwd = c.worktreePath;
+        } else if (c.workspaceAgentMemberIds?.length) {
+          const seen = new Set<string>();
+          const usedNames = new Set<string>();
+          const out: Array<{ name: string; path: string }> = [];
+          for (const memberId of c.workspaceAgentMemberIds) {
+            for (const proj of s.projects) {
+              const member = proj.conversations.find((x) => x.id === memberId);
+              if (!member?.worktreePath || seen.has(member.worktreePath)) continue;
+              seen.add(member.worktreePath);
+              let name = proj.name;
+              let i = 2;
+              while (usedNames.has(name)) {
+                name = `${proj.name}-${i}`;
+                i += 1;
+              }
+              usedNames.add(name);
+              out.push({ name, path: member.worktreePath });
+            }
+          }
+          workspaceProjects = out;
+        } else {
+          const projs = w.projectIds
+            .map((pid) => s.projects.find((p) => p.id === pid))
+            .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
+            .map((p) => ({ name: p.name, path: p.path }));
+          workspaceProjects = workspaceSymlinkNames(projs);
         }
+        break;
       }
     }
-    if (!cwd) return;
-    const res = await window.overcli.invoke('git:commitStatus', { cwd });
+    let res;
+    if (workspaceProjects) {
+      res = await window.overcli.invoke('git:workspaceCommitStatus', {
+        projects: workspaceProjects,
+      });
+    } else if (cwd) {
+      res = await window.overcli.invoke('git:commitStatus', { cwd });
+    } else {
+      return;
+    }
     set((state) => ({
       gitStatusByConv: { ...state.gitStatusByConv, [conversationId]: res },
     }));

@@ -8,10 +8,36 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
+import { workspaceSymlinkNames } from '../shared/workspaceNames';
+
+export { workspaceSymlinkNames };
 
 interface ProjectRef {
   name: string;
   path: string;
+}
+
+/// Create a link from `linkPath` → `target` that works on Windows too.
+/// On macOS/Linux plain directory symlinks are fine. On Windows,
+/// `fs.symlinkSync(target, link, 'dir')` needs Developer Mode or admin
+/// rights, which most users don't have — so try a junction first
+/// (privilege-free for absolute dir targets on the same volume) and
+/// fall back to a symlink. On POSIX, 'junction' is silently treated as
+/// 'dir' by libuv, so there's no downside to preferring it everywhere
+/// for dir targets, but we keep the platform check explicit for clarity.
+function linkDir(target: string, linkPath: string): void {
+  if (process.platform === 'win32') {
+    try {
+      fs.symlinkSync(target, linkPath, 'junction');
+      return;
+    } catch (err) {
+      // Junction creation is nearly always allowed on Windows; if it
+      // still fails (e.g. cross-volume target), fall through and try a
+      // real symlink so the user sees the privilege error rather than
+      // a silent no-op.
+    }
+  }
+  fs.symlinkSync(target, linkPath, 'dir');
 }
 
 /// Context files (CLAUDE.md / AGENTS.md / GEMINI.md) live in the root
@@ -33,23 +59,9 @@ export function ensureWorkspaceSymlinkRoot(
   try {
     fs.mkdirSync(rootPath, { recursive: true });
 
-    // Build the desired set of symlinks: { linkName -> targetPath }.
-    // Naming: project basename, deduplicated with a numeric suffix on
-    // collision so two projects sharing a folder name (e.g. "frontend")
-    // both get a usable link.
     const desired = new Map<string, string>();
-    const usedNames = new Set<string>();
-    for (const p of projects) {
-      if (!p.path) continue;
-      const base = path.basename(p.path) || slugify(p.name) || 'project';
-      let name = base;
-      let i = 2;
-      while (usedNames.has(name)) {
-        name = `${base}-${i}`;
-        i += 1;
-      }
-      usedNames.add(name);
-      desired.set(name, p.path);
+    for (const { name, path: target } of workspaceSymlinkNames(projects)) {
+      desired.set(name, target);
     }
 
     // Reconcile: drop entries not in `desired` (or pointing elsewhere),
@@ -69,19 +81,19 @@ export function ensureWorkspaceSymlinkRoot(
         const current = fs.readlinkSync(full);
         if (current !== target) {
           fs.unlinkSync(full);
-          fs.symlinkSync(target, full, 'dir');
+          linkDir(target, full);
         }
       } catch {
         // Not a symlink, or unreadable — replace it.
         try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
-        fs.symlinkSync(target, full, 'dir');
+        linkDir(target, full);
       }
     }
 
     const present = new Set(existing.map((e) => e.name));
     for (const [name, target] of desired) {
       if (present.has(name)) continue;
-      fs.symlinkSync(target, path.join(rootPath, name), 'dir');
+      linkDir(target, path.join(rootPath, name));
     }
 
     writeWorkspaceContextFiles(rootPath, projects);
@@ -101,6 +113,119 @@ export function removeWorkspaceSymlinkRoot(
     return { ok: true };
   } catch (err: any) {
     return { ok: false, error: err?.message ?? 'Could not remove workspace root' };
+  }
+}
+
+export function coordinatorRootPath(coordinatorId: string): string {
+  return path.join(app.getPath('userData'), 'coordinators', coordinatorId);
+}
+
+/// A workspace-agent coordinator needs its own synthetic root whose
+/// symlinks point at each member's per-project WORKTREE rather than the
+/// main project tree. Without this the agent would edit files via the
+/// workspace's symlinks-to-main-tree, bypassing the worktree branch
+/// entirely. Returns the created root path so the coordinator
+/// conversation can set it as cwd.
+export function ensureCoordinatorSymlinkRoot(
+  coordinatorId: string,
+  members: Array<{ name: string; worktreePath: string }>,
+): { ok: true; rootPath: string } | { ok: false; error: string } {
+  if (!coordinatorId) return { ok: false, error: 'Missing coordinatorId' };
+  const rootPath = coordinatorRootPath(coordinatorId);
+  try {
+    fs.mkdirSync(rootPath, { recursive: true });
+
+    const desired = new Map<string, string>();
+    const usedNames = new Set<string>();
+    for (const m of members) {
+      if (!m.worktreePath || !m.name) continue;
+      let name = m.name;
+      let i = 2;
+      while (usedNames.has(name)) {
+        name = `${m.name}-${i}`;
+        i += 1;
+      }
+      usedNames.add(name);
+      desired.set(name, m.worktreePath);
+    }
+
+    const preserved = new Set<string>(CONTEXT_FILES);
+    const existing = fs.readdirSync(rootPath, { withFileTypes: true });
+    for (const entry of existing) {
+      if (preserved.has(entry.name)) continue;
+      const full = path.join(rootPath, entry.name);
+      const target = desired.get(entry.name);
+      if (!target) {
+        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        continue;
+      }
+      try {
+        const current = fs.readlinkSync(full);
+        if (current !== target) {
+          fs.unlinkSync(full);
+          linkDir(target, full);
+        }
+      } catch {
+        try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
+        linkDir(target, full);
+      }
+    }
+
+    const present = new Set(existing.map((e) => e.name));
+    for (const [name, target] of desired) {
+      if (present.has(name)) continue;
+      linkDir(target, path.join(rootPath, name));
+    }
+
+    writeCoordinatorContextFiles(rootPath, [...desired.entries()].map(([name, target]) => ({
+      name,
+      worktreePath: target,
+    })));
+
+    return { ok: true, rootPath };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not create coordinator root' };
+  }
+}
+
+export function removeCoordinatorSymlinkRoot(
+  coordinatorId: string,
+): { ok: true } | { ok: false; error: string } {
+  if (!coordinatorId) return { ok: false, error: 'Missing coordinatorId' };
+  try {
+    fs.rmSync(coordinatorRootPath(coordinatorId), { recursive: true, force: true });
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not remove coordinator root' };
+  }
+}
+
+function writeCoordinatorContextFiles(
+  rootPath: string,
+  members: Array<{ name: string; worktreePath: string }>,
+): void {
+  const list = members
+    .map((m) => `- **${m.name}** → \`${m.worktreePath}\``)
+    .join('\n');
+  const content = `# Workspace agent context
+
+This directory is a synthetic overcli coordinator root for a workspace agent. Each entry listed under "Member worktrees" is a symlink to a per-project git worktree on this agent's branch — edits you make here land on that branch, not on the project's main tree.
+
+## Member worktrees
+
+${list || '_(no members)_'}
+
+Guidelines:
+- File paths you read or edit resolve through the symlinks above, into per-project worktrees.
+- Each member is an independent git repo on its own agent branch.
+- Do NOT reach out to the projects' main trees (e.g. under \`~/git-services/<project>\`) — those are the user's working copies. Stick to the paths under this cwd.
+`;
+  for (const name of CONTEXT_FILES) {
+    try {
+      fs.writeFileSync(path.join(rootPath, name), content, 'utf8');
+    } catch {
+      // Non-fatal.
+    }
   }
 }
 
@@ -137,6 +262,3 @@ Guidelines:
   }
 }
 
-function slugify(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-}

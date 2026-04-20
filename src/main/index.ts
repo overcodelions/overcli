@@ -29,6 +29,7 @@ import {
   worktreeStatus,
   rescueMainTree,
   commitStatus,
+  workspaceCommitStatus,
   commitAll,
 } from './git';
 import { computeStats } from './stats';
@@ -43,7 +44,12 @@ import {
   pullModel,
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
-import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from './workspace';
+import {
+  ensureWorkspaceSymlinkRoot,
+  removeWorkspaceSymlinkRoot,
+  ensureCoordinatorSymlinkRoot,
+  removeCoordinatorSymlinkRoot,
+} from './workspace';
 import { runInTerminal } from './terminal';
 import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
 
@@ -239,6 +245,7 @@ function registerIpc(): void {
   ipcMain.handle('git:worktreeStatus', (_e, args) => worktreeStatus(args));
   ipcMain.handle('git:rescueMainTree', (_e, args) => rescueMainTree(args));
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
+  ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
 
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects }) =>
@@ -246,6 +253,12 @@ function registerIpc(): void {
   );
   ipcMain.handle('workspace:removeSymlinkRoot', (_e, workspaceId: string) =>
     removeWorkspaceSymlinkRoot(workspaceId),
+  );
+  ipcMain.handle('workspace:ensureCoordinatorSymlinkRoot', (_e, { coordinatorId, members }) =>
+    ensureCoordinatorSymlinkRoot(coordinatorId, members),
+  );
+  ipcMain.handle('workspace:removeCoordinatorSymlinkRoot', (_e, coordinatorId: string) =>
+    removeCoordinatorSymlinkRoot(coordinatorId),
   );
 
   ipcMain.handle('app:openExternal', (_e, url: string) => {
@@ -340,6 +353,7 @@ function registeredRoots(): string[] {
     if (workspace.rootPath) roots.add(workspace.rootPath);
     for (const c of workspace.conversations ?? []) {
       if (c.worktreePath) roots.add(c.worktreePath);
+      if (c.coordinatorRootPath) roots.add(c.coordinatorRootPath);
     }
   }
   return [...roots];
