@@ -611,6 +611,75 @@ export function worktreeStatus(args: {
   };
 }
 
+/// Quick probe for the header commit button. Returns `isRepo: false` when
+/// `cwd` isn't a git working tree (missing `.git`, git binary missing, or
+/// the path doesn't exist) so the renderer can hide the button entirely.
+/// Porcelain v1 status codes are preserved in `.status` (e.g. ` M`, `??`,
+/// `A `) so the UI can show staged vs unstaged vs untracked.
+export function commitStatus(cwd: string): {
+  isRepo: boolean;
+  currentBranch: string;
+  changes: Array<{ path: string; status: string }>;
+} {
+  if (!cwd) return { isRepo: false, currentBranch: '', changes: [] };
+  const check = runGit(['rev-parse', '--is-inside-work-tree'], cwd);
+  if (check.exitCode !== 0 || check.stdout.trim() !== 'true') {
+    return { isRepo: false, currentBranch: '', changes: [] };
+  }
+  const branch = runGit(['branch', '--show-current'], cwd);
+  const status = runGit(['status', '--porcelain=v1'], cwd);
+  const changes: Array<{ path: string; status: string }> = [];
+  if (status.exitCode === 0) {
+    for (const line of status.stdout.split('\n')) {
+      if (line.length < 3) continue;
+      const code = line.slice(0, 2);
+      const p = line.slice(3).trim();
+      if (p) changes.push({ path: p, status: code });
+    }
+  }
+  return {
+    isRepo: true,
+    currentBranch: branch.stdout.trim(),
+    changes,
+  };
+}
+
+/// `git add -A && git commit -m <msg>` on the conversation's cwd. Kept
+/// intentionally simple — no push, no hook bypass. The header popover uses
+/// this for the "commit" button; anything fancier (partial staging,
+/// signing, amending) is out of scope for a one-click action.
+export function commitAll(
+  args: { cwd: string; message: string },
+): { ok: true; sha: string; subject: string } | { ok: false; error: string } {
+  const message = args.message.trim();
+  if (!message) return { ok: false, error: 'Commit message is empty.' };
+  const repoCheck = runGit(['rev-parse', '--is-inside-work-tree'], args.cwd);
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== 'true') {
+    return { ok: false, error: `${args.cwd} isn't a git working tree.` };
+  }
+  const add = runGit(['add', '-A'], args.cwd);
+  if (add.exitCode !== 0) {
+    return { ok: false, error: `git add failed: ${add.stderr || add.stdout}` };
+  }
+  const status = runGit(['status', '--porcelain'], args.cwd);
+  if (status.exitCode !== 0) {
+    return { ok: false, error: `git status failed: ${status.stderr || status.stdout}` };
+  }
+  if (!status.stdout.trim()) {
+    return { ok: false, error: 'Nothing to commit — working tree clean.' };
+  }
+  const commit = runGit(['commit', '-m', message], args.cwd);
+  if (commit.exitCode !== 0) {
+    return { ok: false, error: `git commit failed: ${commit.stderr || commit.stdout}` };
+  }
+  const sha = runGit(['rev-parse', 'HEAD'], args.cwd);
+  return {
+    ok: true,
+    sha: sha.stdout.trim(),
+    subject: message.split('\n')[0],
+  };
+}
+
 /// Stash any dirty files in the *main* project checkout and pop them into
 /// the agent's worktree. Used when the agent wrote to the wrong tree —
 /// common when a CLI ignored its spawn-time cwd.

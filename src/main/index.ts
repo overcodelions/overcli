@@ -24,6 +24,8 @@ import {
   openPR,
   worktreeStatus,
   rescueMainTree,
+  commitStatus,
+  commitAll,
 } from './git';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
@@ -157,6 +159,8 @@ function registerIpc(): void {
   ipcMain.handle('git:openPR', (_e, args) => openPR(args));
   ipcMain.handle('git:worktreeStatus', (_e, args) => worktreeStatus(args));
   ipcMain.handle('git:rescueMainTree', (_e, args) => rescueMainTree(args));
+  ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
+  ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
 
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects }) =>
     ensureWorkspaceSymlinkRoot(workspaceId, projects),

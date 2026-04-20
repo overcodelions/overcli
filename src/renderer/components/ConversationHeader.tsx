@@ -1,8 +1,9 @@
-import { CSSProperties, ReactNode, useEffect, useRef, useState } from 'react';
+import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { Backend, PermissionMode, UUID, EffortLevel } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation } from '../hooks';
+import { findOwningProjectPath } from '../diff-utils';
 
 /// Full-featured header matching the Swift ConversationHeader:
 /// backend picker, permission mode picker, effort picker (claude),
@@ -159,6 +160,8 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
         >
           <FolderIcon />
         </IconButton>
+
+        <CommitButton conversationId={conversationId} />
 
         {(conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0) && (
           <button
@@ -869,6 +872,212 @@ function ConversationSettingsButton({
         </div>
       )}
     </div>
+  );
+}
+
+/// One-click commit for the conversation's cwd. Hides itself when the
+/// cwd isn't a git working tree (git missing, not a repo, etc.) so the
+/// header stays clean for non-git projects. Always `git add -A` + commit —
+/// no partial staging, no push. Pushing is one decision too far for a
+/// single header button; the worktree Diff sheet handles that case.
+function CommitButton({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  const projects = useStore((s) => s.projects);
+  const [open, setOpen] = useState(false);
+  const [isRepo, setIsRepo] = useState(false);
+  const [currentBranch, setCurrentBranch] = useState('');
+  const [changes, setChanges] = useState<Array<{ path: string; status: string }>>([]);
+  const [message, setMessage] = useState('');
+  const [messageEdited, setMessageEdited] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [successSubject, setSuccessSubject] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const cwd = conv?.worktreePath ?? findOwningProjectPath(projects, conversationId) ?? null;
+
+  const refresh = useCallback(async () => {
+    if (!cwd) {
+      setIsRepo(false);
+      return;
+    }
+    const res = await window.overcli.invoke('git:commitStatus', { cwd });
+    setIsRepo(res.isRepo);
+    setCurrentBranch(res.currentBranch);
+    setChanges(res.changes);
+  }, [cwd]);
+
+  // One probe when the header mounts / cwd changes. Cheap (~5ms spawnSync)
+  // and only runs for the active conversation.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  // Re-probe and seed a draft message every time the popover opens so the
+  // user sees the current state + a fresh suggestion, not whatever was
+  // there five minutes ago.
+  useEffect(() => {
+    if (!open) return;
+    setError(null);
+    setSuccessSubject(null);
+    void refresh().then(() => {
+      // Seed draft only if the user hasn't typed their own — preserves
+      // in-progress edits when they accidentally click outside.
+      if (!messageEdited) {
+        setMessage(draftCommitMessage(changes));
+      }
+    });
+    // We intentionally don't add `changes` / `messageEdited` to deps —
+    // the draft seeds on popover-open only, not on every state tick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, refresh]);
+
+  if (!isRepo) return null;
+
+  const hasChanges = changes.length > 0;
+
+  const onCommit = async () => {
+    if (!cwd || busy) return;
+    setBusy(true);
+    setError(null);
+    const res = await window.overcli.invoke('git:commitAll', { cwd, message });
+    setBusy(false);
+    if (res.ok) {
+      setSuccessSubject(res.subject);
+      setMessageEdited(false);
+      setMessage('');
+      await refresh();
+    } else {
+      setError(res.error);
+    }
+  };
+
+  return (
+    <div ref={ref} className="relative">
+      <IconButton
+        active={open}
+        onClick={() => setOpen((o) => !o)}
+        title={hasChanges ? `Commit ${changes.length} change(s)` : 'Nothing to commit'}
+      >
+        <CommitIcon />
+      </IconButton>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-[340px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <div className="text-[10px] uppercase tracking-wider text-ink-faint">Commit</div>
+            {currentBranch && (
+              <div className="text-[10px] font-mono text-ink-faint truncate max-w-[180px]" title={currentBranch}>
+                ⎇ {currentBranch}
+              </div>
+            )}
+          </div>
+
+          {successSubject ? (
+            <div className="text-[11px] text-emerald-400">
+              Committed: <span className="font-mono">{successSubject}</span>
+            </div>
+          ) : !hasChanges ? (
+            <div className="text-[11px] text-ink-muted">Working tree clean — nothing to commit.</div>
+          ) : (
+            <>
+              <div className="rounded border border-card bg-card px-2 py-1.5 text-[10px] font-mono text-ink-muted max-h-[96px] overflow-y-auto">
+                {changes.slice(0, 30).map((c) => (
+                  <div key={c.path} className="truncate" title={c.path}>
+                    <span className="text-ink-faint mr-1.5">{c.status.trim() || '??'}</span>
+                    {c.path}
+                  </div>
+                ))}
+                {changes.length > 30 && (
+                  <div className="text-ink-faint">… {changes.length - 30} more</div>
+                )}
+              </div>
+              <textarea
+                value={message}
+                onChange={(e) => {
+                  setMessage(e.target.value);
+                  setMessageEdited(true);
+                }}
+                placeholder="Commit message"
+                rows={3}
+                className="field px-2 py-1.5 text-[11px] leading-5 resize-none"
+              />
+              <div className="text-[10px] text-ink-faint">
+                Runs <span className="font-mono">git add -A</span> then{' '}
+                <span className="font-mono">git commit</span>. Push separately from the Diff sheet.
+              </div>
+            </>
+          )}
+
+          {error && <div className="text-[11px] text-red-400 whitespace-pre-wrap">{error}</div>}
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              onClick={() => setOpen(false)}
+              className="text-[11px] px-2 py-1 rounded text-ink-muted hover:text-ink"
+            >
+              Close
+            </button>
+            <div className="flex-1" />
+            {hasChanges && !successSubject && (
+              <button
+                onClick={onCommit}
+                disabled={busy || !message.trim()}
+                className={
+                  'text-[11px] px-2.5 py-1 rounded ' +
+                  (busy || !message.trim()
+                    ? 'bg-card text-ink-faint cursor-not-allowed'
+                    : 'bg-accent/20 text-ink hover:bg-accent/30')
+                }
+              >
+                {busy ? 'Committing…' : 'Commit'}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// Simple draft: one file → "Update <basename>". Files all under one
+/// directory → "Update <dir>". Otherwise a file count. Intentionally
+/// dumb — anything smarter would need to read the diff, which is more
+/// work than drafting-from-scratch is worth.
+function draftCommitMessage(changes: Array<{ path: string }>): string {
+  if (changes.length === 0) return '';
+  if (changes.length === 1) {
+    const name = changes[0].path.split('/').pop() || changes[0].path;
+    return `Update ${name}`;
+  }
+  const dirs = new Set(
+    changes.map((c) => {
+      const parts = c.path.split('/');
+      return parts.length > 1 ? parts[0] : '.';
+    }),
+  );
+  if (dirs.size === 1) {
+    const only = Array.from(dirs)[0];
+    return only === '.' ? `Update ${changes.length} files` : `Update ${only}`;
+  }
+  return `Update ${changes.length} files`;
+}
+
+function CommitIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.3" />
+      <line x1="1.5" y1="8" x2="5" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="11" y1="8" x2="14.5" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
   );
 }
 
