@@ -319,6 +319,10 @@ export interface OllamaRecommendedModel {
   /// that a 2-year-old coder model is usually not the right default.
   releasedAt?: string;
   note?: string;
+  /// True if the model's training supports Ollama's tool-calling protocol.
+  /// Used to promote agentic-capable models in the picker and to show a
+  /// "Tools" badge in the UI. Models without this still work as chat-only.
+  supportsTools?: boolean;
 }
 
 export interface OllamaHardwareReport {
@@ -518,6 +522,7 @@ export interface IPCInvokeMap {
   'ollama:serverStatus': () => { status: OllamaServerStatus; log: OllamaServerLogLine[] };
   'ollama:pullModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:cancelPull': (args: { tag: string }) => void;
+  'ollama:deleteModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:deleteSession': (sessionId: string) => void;
 }
 

@@ -4,7 +4,8 @@
 // payloads.
 
 import { randomUUID } from 'node:crypto';
-import { StreamEvent, StreamEventKind } from '../../shared/types';
+import { OllamaToolCall } from '../ollama';
+import { StreamEvent, StreamEventKind, ToolResultBlock, ToolUseBlock } from '../../shared/types';
 
 export function makeSystemInitEvent(model: string, cwd: string, sessionId: string): StreamEvent {
   return event(
@@ -44,6 +45,40 @@ export function makeAssistantEvent(
     },
     revision,
   };
+}
+
+/// Same as `makeAssistantEvent` but attaches pending tool uses so the UI
+/// can render the tool-call blocks inline with the assistant bubble,
+/// matching how claude/codex tool uses are displayed.
+export function makeAssistantEventWithTools(
+  model: string,
+  text: string,
+  id: string,
+  revision: number,
+  toolCalls: OllamaToolCall[],
+): StreamEvent {
+  const toolUses: ToolUseBlock[] = toolCalls.map((c) => ({
+    id: c.id,
+    name: c.name,
+    inputJSON: JSON.stringify(c.arguments),
+  }));
+  return {
+    id,
+    timestamp: Date.now(),
+    raw: text,
+    kind: {
+      type: 'assistant',
+      info: { model, text, toolUses, thinking: [] },
+    },
+    revision,
+  };
+}
+
+/// Emit a toolResult event in the same shape the Claude parser uses
+/// (`type: 'toolResult'` with id-correlated result blocks) so renderers
+/// already handling Claude's tool output work unchanged for Ollama.
+export function makeToolResultEvent(results: ToolResultBlock[]): StreamEvent {
+  return event({ type: 'toolResult', results }, `ollama:toolResult ${results.length}`);
 }
 
 export function makeResultEvent(args: {
