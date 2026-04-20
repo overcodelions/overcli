@@ -479,6 +479,14 @@ export interface IPCInvokeMap {
     worktreePath: string;
     branchName: string;
   }) => { ok: true; message: string } | { ok: false; error: string };
+  'git:commitStatus': (args: { cwd: string }) => {
+    isRepo: boolean;
+    currentBranch: string;
+    changes: Array<{ path: string; status: string }>;
+  };
+  'git:commitAll': (args: { cwd: string; message: string }) =>
+    | { ok: true; sha: string; subject: string }
+    | { ok: false; error: string };
   'workspace:ensureSymlinkRoot': (args: {
     workspaceId: UUID;
     projects: Array<{ name: string; path: string }>;
