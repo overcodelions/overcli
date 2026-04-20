@@ -306,6 +306,18 @@ export interface OllamaRecommendedModel {
   displayName: string;
   sizeGB: number;
   license: string;
+  /// Maker of the model (e.g. "Alibaba Cloud", "Meta", "Mistral AI"). The
+  /// UI groups/filters by this and we surface it on the pull card so it's
+  /// clear whose weights you're downloading.
+  company: string;
+  /// ISO-3166 alpha-2 of the maker's primary jurisdiction. "EU" is used
+  /// for pan-European consortia. Useful for users with data-sovereignty
+  /// or regulatory constraints.
+  country: string;
+  /// Approximate public release of this model family/size in `YYYY-MM`.
+  /// Helps users spot stale models at a glance — AI moves fast enough
+  /// that a 2-year-old coder model is usually not the right default.
+  releasedAt?: string;
   note?: string;
 }
 
@@ -499,12 +511,14 @@ export interface IPCInvokeMap {
   'app:reloadStats': () => StatsReport;
   'ollama:detect': () => OllamaDetectionReport;
   'ollama:hardware': () => OllamaHardwareReport;
+  'ollama:catalog': () => OllamaRecommendedModel[];
   'ollama:install': () => { started: 'brew' | 'browser'; detail?: string };
   'ollama:startServer': () => { ok: boolean; message: string };
   'ollama:stopServer': () => void;
   'ollama:serverStatus': () => { status: OllamaServerStatus; log: OllamaServerLogLine[] };
   'ollama:pullModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:cancelPull': (args: { tag: string }) => void;
+  'ollama:deleteSession': (sessionId: string) => void;
 }
 
 export interface DailyBackendBucket {

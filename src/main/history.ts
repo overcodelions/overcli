@@ -7,6 +7,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/types';
 import { randomUUID } from 'node:crypto';
+import { loadOllamaSession } from './ollamaStore';
 
 export function loadHistory(args: {
   backend: Backend;
@@ -30,9 +31,40 @@ export function loadHistory(args: {
     case 'gemini':
       return loadGeminiHistory(args.sessionId, args.projectPath);
     case 'ollama':
-      // Ollama has no on-disk transcript — sessions are in-memory only.
-      return [];
+      return loadOllamaHistory(args.sessionId);
   }
+}
+
+function loadOllamaHistory(sessionId: string | undefined): StreamEvent[] {
+  if (!sessionId) return [];
+  const persisted = loadOllamaSession(sessionId);
+  if (!persisted) return [];
+  const out: StreamEvent[] = [];
+  const model = persisted.lastModel ?? 'ollama';
+  const fallbackEnd = persisted.updatedAt ?? Date.now();
+  for (let i = 0; i < persisted.messages.length; i++) {
+    const msg = persisted.messages[i];
+    const ts =
+      persisted.messageTimestamps?.[i] ??
+      fallbackEnd - (persisted.messages.length - 1 - i) * 1000;
+    if (msg.role === 'user') {
+      out.push(event({ type: 'localUser', text: msg.content }, msg.content, ts));
+    } else if (msg.role === 'assistant') {
+      out.push(
+        event(
+          {
+            type: 'assistant',
+            info: { model, text: msg.content, toolUses: [], thinking: [] },
+          },
+          msg.content,
+          ts,
+        ),
+      );
+    }
+    // `system` messages exist only if the runner ever seeds one — skip
+    // them from replay since they're not chat content.
+  }
+  return out;
 }
 
 function loadClaudeHistory(sessionId: string | undefined, projectPath: string): StreamEvent[] {
