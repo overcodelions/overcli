@@ -483,6 +483,8 @@ export interface IPCInvokeMap {
     isRepo: boolean;
     currentBranch: string;
     changes: Array<{ path: string; status: string }>;
+    insertions: number;
+    deletions: number;
   };
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
