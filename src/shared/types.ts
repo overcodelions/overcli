@@ -338,6 +338,9 @@ export type ThemePreference = 'light' | 'dark' | 'system';
 export interface AppSettings {
   backendPaths: Partial<Record<Backend, string>>;
   backendDefaultModels: Partial<Record<Backend, string>>;
+  /// Backends hidden/disabled in the UI. Disabled backends are not used as
+  /// defaults and are skipped by health probes.
+  disabledBackends: Partial<Record<Backend, boolean>>;
   defaultPermissionMode: PermissionMode;
   defaultEffort: EffortLevel;
   agentBranchPrefix: string;
@@ -406,6 +409,8 @@ export interface IPCInvokeMap {
     projectPath: string;
     sessionId?: string;
     codexRolloutPaths?: string[];
+    conversationCreatedAt?: number;
+    conversationLastActiveAt?: number;
   }) => StreamEvent[];
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
@@ -597,6 +602,7 @@ export type MainToRendererEvent =
 export const DEFAULT_SETTINGS: AppSettings = {
   backendPaths: {},
   backendDefaultModels: {},
+  disabledBackends: {},
   defaultPermissionMode: 'plan',
   defaultEffort: '',
   agentBranchPrefix: 'agent/',

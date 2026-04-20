@@ -144,7 +144,7 @@ async function loadBaseBranchesFallback(projectPath: string): Promise<string[]> 
   if (remote.exitCode === 0) {
     for (const ref of remote.stdout.split(/\r?\n/)) {
       const trimmed = ref.trim();
-      if (!trimmed || trimmed.endsWith('/HEAD')) continue;
+      if (!trimmed || trimmed === 'origin' || trimmed.endsWith('/HEAD')) continue;
       push(trimmed);
       if (trimmed.startsWith('origin/')) push(trimmed.slice('origin/'.length));
     }

@@ -13,12 +13,20 @@ export function loadHistory(args: {
   projectPath: string;
   sessionId?: string;
   codexRolloutPaths?: string[];
+  conversationCreatedAt?: number;
+  conversationLastActiveAt?: number;
 }): StreamEvent[] {
   switch (args.backend) {
     case 'claude':
       return loadClaudeHistory(args.sessionId, args.projectPath);
     case 'codex':
-      return loadCodexHistory(args.codexRolloutPaths ?? [], args.sessionId);
+      return loadCodexHistory(
+        args.codexRolloutPaths ?? [],
+        args.sessionId,
+        args.projectPath,
+        args.conversationCreatedAt,
+        args.conversationLastActiveAt,
+      );
     case 'gemini':
       return loadGeminiHistory(args.sessionId, args.projectPath);
     case 'ollama':
@@ -148,8 +156,16 @@ function numberOrZero(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
-function loadCodexHistory(paths: string[], sessionId?: string): StreamEvent[] {
-  const allPaths = paths.length ? paths : findCodexRolloutPaths(sessionId);
+function loadCodexHistory(
+  paths: string[],
+  sessionId: string | undefined,
+  projectPath: string,
+  conversationCreatedAt?: number,
+  conversationLastActiveAt?: number,
+): StreamEvent[] {
+  const allPaths = paths.length
+    ? paths
+    : findCodexRolloutPaths(sessionId, projectPath, conversationCreatedAt, conversationLastActiveAt);
   if (!allPaths.length) return [];
   const merged: StreamEvent[] = [];
   for (const p of allPaths) {
@@ -161,14 +177,19 @@ function loadCodexHistory(paths: string[], sessionId?: string): StreamEvent[] {
     }
   }
   merged.sort((a, b) => a.timestamp - b.timestamp);
-  return merged;
+  return dedupeCodexEvents(merged);
 }
 
-function findCodexRolloutPaths(sessionId: string | undefined): string[] {
-  if (!sessionId) return [];
+function findCodexRolloutPaths(
+  sessionId: string | undefined,
+  projectPath: string,
+  conversationCreatedAt?: number,
+  conversationLastActiveAt?: number,
+): string[] {
   const root = path.join(os.homedir(), '.codex', 'sessions');
   if (!fs.existsSync(root)) return [];
   const out: string[] = [];
+  const candidates: string[] = [];
   const stack: string[] = [root];
   while (stack.length) {
     const dir = stack.pop()!;
@@ -182,12 +203,36 @@ function findCodexRolloutPaths(sessionId: string | undefined): string[] {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         stack.push(full);
-      } else if (entry.isFile() && entry.name.includes(sessionId)) {
-        out.push(full);
+      } else if (entry.isFile()) {
+        if (sessionId) {
+          if (entry.name.includes(sessionId)) out.push(full);
+        } else if (entry.name.startsWith('rollout-') && entry.name.endsWith('.jsonl')) {
+          candidates.push(full);
+        }
       }
     }
   }
-  return out.sort();
+  if (sessionId) return out.sort();
+
+  // No session id available (common with codex exec fallback). Recover by
+  // selecting rollout files for this project nearest the conversation time.
+  const target = conversationLastActiveAt ?? conversationCreatedAt ?? Date.now();
+  const normalizedProject = normalizePathKey(projectPath);
+  const scored: Array<{ file: string; ts: number }> = [];
+  for (const file of candidates) {
+    const meta = readCodexSessionMeta(file);
+    if (!meta) continue;
+    if (normalizePathKey(meta.cwd) !== normalizedProject) continue;
+    const ts = Number.isFinite(meta.timestampMs) ? meta.timestampMs : 0;
+    scored.push({ file, ts });
+  }
+  if (scored.length === 0) return [];
+  scored.sort((a, b) => Math.abs(a.ts - target) - Math.abs(b.ts - target));
+  const near = scored.filter((s) => Math.abs(s.ts - target) <= 2 * 60 * 60 * 1000);
+  const source = near.length > 0 ? near : scored;
+  // Include a small neighborhood so multi-turn conversations (multiple exec
+  // sessions) still load when no stable session id exists.
+  return source.slice(0, 3).map((s) => s.file).sort();
 }
 
 function parseCodexHistoryLine(line: string): StreamEvent | null {
@@ -207,10 +252,10 @@ function parseCodexHistoryLine(line: string): StreamEvent | null {
   switch (kind) {
     case 'message': {
       const content = Array.isArray(payload.content) ? payload.content : [];
-      const text = content
-        .map((b: any) => (typeof b?.text === 'string' ? b.text : ''))
-        .join('');
-      if (text.includes('<environment_context>')) return null;
+      const text = codexContentText(content);
+      if (!text) return null;
+      if (text.includes('<environment_context>') || text.includes('<permissions instructions>')) return null;
+      if (payload.role === 'developer' || payload.role === 'system') return null;
       if (!text) return null;
       if (payload.role === 'user') return event({ type: 'localUser', text }, trimmed, timestamp);
       return event(
@@ -284,9 +329,126 @@ function parseCodexHistoryLine(line: string): StreamEvent | null {
         timestamp,
       );
     }
+    case 'user_message': {
+      const text = typeof payload.message === 'string' ? payload.message : '';
+      if (!text || text.includes('<environment_context>')) return null;
+      return event({ type: 'localUser', text }, trimmed, timestamp);
+    }
+    case 'agent_message': {
+      const text = typeof payload.message === 'string' ? payload.message : '';
+      if (!text) return null;
+      return event(
+        {
+          type: 'assistant',
+          info: { model: 'codex', text, toolUses: [], thinking: [] },
+        },
+        trimmed,
+        timestamp,
+      );
+    }
+    case 'token_count': {
+      const usage = payload.info?.total_token_usage ?? payload.info?.last_token_usage;
+      if (!usage) return null;
+      return event(
+        {
+          type: 'result',
+          info: {
+            subtype: 'success',
+            isError: false,
+            durationMs: 0,
+            totalCostUSD: 0,
+            modelUsage: {
+              codex: {
+                inputTokens: numberOrZero(usage.input_tokens),
+                outputTokens: numberOrZero(usage.output_tokens),
+                cacheReadInputTokens: numberOrZero(usage.cached_input_tokens),
+                cacheCreationInputTokens: 0,
+              },
+            },
+          },
+        },
+        trimmed,
+        timestamp,
+      );
+    }
     default:
       return null;
   }
+}
+
+function codexContentText(content: any[]): string {
+  return content
+    .map((b: any) => {
+      if (typeof b?.text === 'string') return b.text;
+      if (typeof b?.input_text === 'string') return b.input_text;
+      if (typeof b?.output_text === 'string') return b.output_text;
+      return '';
+    })
+    .filter(Boolean)
+    .join('');
+}
+
+function normalizePathKey(p: string): string {
+  return p.replace(/\//g, '\\').toLowerCase();
+}
+
+function readCodexSessionMeta(file: string): { cwd: string; timestampMs: number } | null {
+  try {
+    const firstLine = fs.readFileSync(file, 'utf-8').split('\n')[0]?.trim();
+    if (!firstLine) return null;
+    const parsed = JSON.parse(firstLine);
+    if (parsed?.type !== 'session_meta' || !parsed?.payload) return null;
+    const cwd = typeof parsed.payload.cwd === 'string' ? parsed.payload.cwd : '';
+    if (!cwd) return null;
+    const tsRaw = parsed.timestamp ?? parsed.payload.timestamp;
+    const timestampMs = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw) || 0;
+    return { cwd, timestampMs };
+  } catch {
+    return null;
+  }
+}
+
+function dedupeCodexEvents(events: StreamEvent[]): StreamEvent[] {
+  const out: StreamEvent[] = [];
+  const seen = new Set<string>();
+  for (const ev of events) {
+    const sig = codexEventSignature(ev);
+    if (!sig) {
+      out.push(ev);
+      continue;
+    }
+    // Bucket timestamp to the nearest second so equivalent events emitted
+    // through different codex record channels collapse cleanly.
+    const key = `${Math.floor(ev.timestamp / 1000)}|${sig}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ev);
+  }
+  return out;
+}
+
+function codexEventSignature(ev: StreamEvent): string | null {
+  switch (ev.kind.type) {
+    case 'localUser':
+      return `u:${normalizeSigText(ev.kind.text)}`;
+    case 'assistant':
+      return `a:${normalizeSigText(ev.kind.info.text)}|t:${normalizeSigText(ev.kind.info.thinking.join('\n'))}`;
+    case 'toolResult':
+      return `r:${ev.kind.results
+        .map((r) => `${r.id}:${normalizeSigText(r.content)}:${r.isError ? 1 : 0}`)
+        .join('|')}`;
+    case 'result': {
+      const usage = ev.kind.info.modelUsage.codex;
+      if (!usage) return null;
+      return `res:${usage.inputTokens}:${usage.outputTokens}:${usage.cacheReadInputTokens}`;
+    }
+    default:
+      return null;
+  }
+}
+
+function normalizeSigText(s: string): string {
+  return (s || '').trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 
 function loadGeminiHistory(sessionId: string | undefined, projectPath: string): StreamEvent[] {

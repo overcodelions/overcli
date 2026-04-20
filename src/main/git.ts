@@ -17,15 +17,30 @@ export interface GitResult {
 }
 
 function resolveGitBinary(): string {
-  // `/usr/bin/git` is the shim Apple ships — always present on macOS but
-  // triggers Xcode install if the Command Line Tools aren't set up, which
-  // at that point is the user's problem, not ours.
-  const candidates = [
-    '/opt/homebrew/bin/git',
-    '/usr/local/bin/git',
-    '/usr/bin/git',
-    `${os.homedir()}/.local/bin/git`,
-  ];
+  const home = os.homedir();
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          process.env['ProgramFiles'] ? path.join(process.env['ProgramFiles'], 'Git', 'cmd', 'git.exe') : '',
+          process.env['ProgramFiles'] ? path.join(process.env['ProgramFiles'], 'Git', 'bin', 'git.exe') : '',
+          process.env['ProgramFiles(x86)']
+            ? path.join(process.env['ProgramFiles(x86)'], 'Git', 'cmd', 'git.exe')
+            : '',
+          process.env['LOCALAPPDATA']
+            ? path.join(process.env['LOCALAPPDATA'], 'Programs', 'Git', 'cmd', 'git.exe')
+            : '',
+          path.join(home, 'scoop', 'apps', 'git', 'current', 'cmd', 'git.exe'),
+          path.join(home, 'AppData', 'Local', 'Programs', 'Git', 'cmd', 'git.exe'),
+          'C:\\ProgramData\\chocolatey\\bin\\git.exe',
+          'C:\\Program Files\\Git\\cmd\\git.exe',
+          'C:\\Program Files\\Git\\bin\\git.exe',
+        ]
+      : [
+          '/opt/homebrew/bin/git',
+          '/usr/local/bin/git',
+          '/usr/bin/git',
+          `${home}/.local/bin/git`,
+        ];
   for (const p of candidates) {
     if (existsSync(p)) return p;
   }
@@ -35,12 +50,25 @@ function resolveGitBinary(): string {
 function gitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   const home = os.homedir();
-  const extras = [
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    '/usr/bin',
-    `${home}/.local/bin`,
-  ];
+  const extras =
+    process.platform === 'win32'
+      ? [
+          process.env['ProgramFiles'] ? path.join(process.env['ProgramFiles'], 'Git', 'cmd') : '',
+          process.env['ProgramFiles'] ? path.join(process.env['ProgramFiles'], 'Git', 'bin') : '',
+          process.env['ProgramFiles(x86)']
+            ? path.join(process.env['ProgramFiles(x86)'], 'Git', 'cmd')
+            : '',
+          process.env['LOCALAPPDATA'] ? path.join(process.env['LOCALAPPDATA'], 'Programs', 'Git', 'cmd') : '',
+          'C:\\ProgramData\\chocolatey\\bin',
+          path.join(home, 'scoop', 'shims'),
+          path.join(home, 'AppData', 'Roaming', 'npm'),
+        ]
+      : [
+          '/opt/homebrew/bin',
+          '/usr/local/bin',
+          '/usr/bin',
+          `${home}/.local/bin`,
+        ];
   const current = env.PATH ?? '';
   env.PATH = [...extras, ...current.split(path.delimiter)].filter(Boolean).join(path.delimiter);
   return env;
@@ -92,7 +120,7 @@ export function listBaseBranches(projectPath: string): string[] {
   if (remote.exitCode === 0) {
     for (const ref of remote.stdout.split(/\r?\n/)) {
       const trimmed = ref.trim();
-      if (!trimmed || trimmed.endsWith('/HEAD')) continue;
+      if (!trimmed || trimmed === 'origin' || trimmed.endsWith('/HEAD')) continue;
       push(trimmed);
       if (trimmed.startsWith('origin/')) push(trimmed.slice('origin/'.length));
     }
@@ -247,10 +275,10 @@ export function removeWorktree(args: {
 let ghAvailableCache: boolean | null = null;
 function ghAvailable(): boolean {
   if (ghAvailableCache != null) return ghAvailableCache;
-  const res = spawnSync('/usr/bin/env', ['gh', '--version'], {
-    encoding: 'utf-8',
-    env: gitEnv(),
-  });
+  const res =
+    process.platform === 'win32'
+      ? spawnSync('gh', ['--version'], { encoding: 'utf-8', env: gitEnv() })
+      : spawnSync('/usr/bin/env', ['gh', '--version'], { encoding: 'utf-8', env: gitEnv() });
   ghAvailableCache = res.status === 0;
   return ghAvailableCache;
 }
@@ -472,27 +500,26 @@ export function openPR(args: {
     commitBody: args.commitBody,
   });
   if (!push.ok) return push;
-  const res = spawnSync(
-    '/usr/bin/env',
-    [
-      'gh',
-      'pr',
-      'create',
-      '--title',
-      args.title,
-      '--body',
-      args.body,
-      '--head',
-      args.branchName,
-      '--base',
-      args.baseBranch,
-    ],
-    {
-      cwd: args.worktreePath,
-      encoding: 'utf-8',
-      env: gitEnv(),
-    },
-  );
+  const ghArgs = [
+    'pr',
+    'create',
+    '--title',
+    args.title,
+    '--body',
+    args.body,
+    '--head',
+    args.branchName,
+    '--base',
+    args.baseBranch,
+  ];
+  const res =
+    process.platform === 'win32'
+      ? spawnSync('gh', ghArgs, { cwd: args.worktreePath, encoding: 'utf-8', env: gitEnv() })
+      : spawnSync('/usr/bin/env', ['gh', ...ghArgs], {
+          cwd: args.worktreePath,
+          encoding: 'utf-8',
+          env: gitEnv(),
+        });
   const stdout = (res.stdout ?? '').trim();
   const stderr = res.stderr ?? '';
   if (res.status !== 0) {
@@ -620,3 +647,4 @@ export function rescueMainTree(args: {
   }
   return { ok: true, message: `Moved dirty files into worktree ${args.worktreePath}` };
 }
+

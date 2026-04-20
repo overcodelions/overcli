@@ -25,6 +25,7 @@ import {
   MainToRendererEvent,
 } from '@shared/types';
 import { FileViewMode, defaultFileViewMode } from './filePreview';
+const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
 
 export type ActiveSheet =
   | { type: 'settings' }
@@ -262,6 +263,18 @@ function findContainerPath(state: StoreState, convId: UUID): string | null {
   return null;
 }
 
+function isBackendEnabled(settings: AppSettings, backend: Backend): boolean {
+  return settings.disabledBackends?.[backend] !== true;
+}
+
+function enabledBackends(settings: AppSettings): Backend[] {
+  return ALL_BACKENDS.filter((b) => isBackendEnabled(settings, b));
+}
+
+function defaultBackend(settings: AppSettings): Backend {
+  return enabledBackends(settings)[0] ?? 'claude';
+}
+
 export const useStore = create<StoreState>((set, get) => ({
   projects: [],
   workspaces: [],
@@ -479,6 +492,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async newConversation(projectId) {
+    const preferred = defaultBackend(get().settings);
     const conv: Conversation = {
       id: uuid(),
       name: 'New conversation',
@@ -487,7 +501,7 @@ export const useStore = create<StoreState>((set, get) => ({
       turnCount: 0,
       currentModel: '',
       permissionMode: get().settings.defaultPermissionMode,
-      primaryBackend: 'claude',
+      primaryBackend: preferred,
     };
     set((s) => ({
       projects: s.projects.map((p) =>
@@ -540,6 +554,7 @@ export const useStore = create<StoreState>((set, get) => ({
   async newConversationInWorkspace(workspaceId) {
     const ws = get().workspaces.find((w) => w.id === workspaceId);
     if (!ws) return null;
+    const preferred = defaultBackend(get().settings);
     const conv: Conversation = {
       id: uuid(),
       name: 'New conversation',
@@ -548,7 +563,7 @@ export const useStore = create<StoreState>((set, get) => ({
       turnCount: 0,
       currentModel: '',
       permissionMode: get().settings.defaultPermissionMode,
-      primaryBackend: 'claude',
+      primaryBackend: preferred,
     };
     set((s) => ({
       workspaces: s.workspaces.map((w) =>
@@ -564,6 +579,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async newWorkspaceAgent(args) {
     const state = get();
+    const preferred = defaultBackend(state.settings);
     const ws = state.workspaces.find((w) => w.id === args.workspaceId);
     if (!ws) return null;
     const name = args.name.trim();
@@ -605,7 +621,7 @@ export const useStore = create<StoreState>((set, get) => ({
         turnCount: 0,
         currentModel: '',
         permissionMode: state.settings.defaultPermissionMode,
-        primaryBackend: 'claude',
+        primaryBackend: preferred,
         worktreePath: res.worktreePath,
         branchName: res.branchName,
         baseBranch,
@@ -631,7 +647,7 @@ export const useStore = create<StoreState>((set, get) => ({
       turnCount: 0,
       currentModel: '',
       permissionMode: state.settings.defaultPermissionMode,
-      primaryBackend: 'claude',
+      primaryBackend: preferred,
       workspaceAgentMemberIds: memberIds,
       branchName: `${state.settings.agentBranchPrefix}${agentSlug}`,
       // No coordinator-level baseBranch: each member branches off its
@@ -954,7 +970,19 @@ export const useStore = create<StoreState>((set, get) => ({
       };
     });
 
-    const backend = conv.primaryBackend ?? 'claude';
+    const backend = conv.primaryBackend ?? defaultBackend(state.settings);
+    if (!isBackendEnabled(state.settings, backend)) {
+      set((s) => ({
+        runners: {
+          ...s.runners,
+          [conversationId]: {
+            ...(s.runners[conversationId] ?? newRunnerState()),
+            errorMessage: `${backend} is disabled in Settings > Backends.`,
+          },
+        },
+      }));
+      return;
+    }
     const model =
       backend === 'codex'
         ? conv.codexModel ?? conv.currentModel
@@ -1085,10 +1113,12 @@ export const useStore = create<StoreState>((set, get) => ({
     }));
     const events = await window.overcli.invoke('runner:loadHistory', {
       conversationId,
-      backend: conv.primaryBackend ?? 'claude',
+      backend: conv.primaryBackend ?? defaultBackend(state.settings),
       projectPath: cwd,
       sessionId: conv.sessionId,
       codexRolloutPaths: conv.codexRolloutPaths,
+      conversationCreatedAt: conv.createdAt,
+      conversationLastActiveAt: conv.lastActiveAt,
     });
     set((s) => {
       const existingRunner = s.runners[conversationId] ?? newRunnerState();
@@ -1112,11 +1142,16 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async refreshBackendHealth() {
-    const backends: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
     const out: Record<string, BackendHealth> = {};
-    for (const backend of backends) {
-      out[backend] = await window.overcli.invoke('runner:probeHealth', backend);
-    }
+    await Promise.all(
+      ALL_BACKENDS.map(async (backend) => {
+        if (!isBackendEnabled(get().settings, backend)) {
+          out[backend] = { kind: 'unknown', message: 'Disabled in settings' };
+          return;
+        }
+        out[backend] = await window.overcli.invoke('runner:probeHealth', backend);
+      }),
+    );
     set({ backendHealth: out });
   },
 

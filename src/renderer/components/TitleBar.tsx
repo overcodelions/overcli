@@ -30,7 +30,7 @@ export function TitleBar() {
       <button
         onClick={() => openSheet({ type: 'about' })}
         className="no-drag p-1 mr-1 text-ink-muted hover:text-ink rounded hover:bg-card-strong"
-        title="About Overcli"
+        title="About OverCLI"
       >
         <svg width="16" height="16" viewBox="0 0 20 20" fill="none" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.4" />
