@@ -56,8 +56,12 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           {conv.worktreePath && (
-            <span className="text-xs text-ink-faint">
-              {conv.reviewAgent ? (conv.reviewAgentKind === 'docs' ? '📄' : '👁') : '⎇'}
+            <span className="text-xs text-ink-faint inline-flex items-center">
+              {conv.reviewAgent ? (
+                conv.reviewAgentKind === 'docs' ? <DocsIcon /> : <EyeIcon />
+              ) : (
+                '⎇'
+              )}
             </span>
           )}
           <div className="text-sm font-medium truncate">{conv.name}</div>
@@ -1230,7 +1234,7 @@ function ReviewAgentActions({
 
   const short = stripOriginPrefix(targetBranch);
   const label = kind === 'docs' ? 'Docs' : 'Review';
-  const glyph = kind === 'docs' ? '📄' : '👁';
+  const GlyphIcon = kind === 'docs' ? DocsIcon : EyeIcon;
   const dismissHint = hasWorktree
     ? 'Remove the worktree and delete the conversation.'
     : 'Delete the conversation.';
@@ -1243,7 +1247,7 @@ function ReviewAgentActions({
         title={hasWorktree ? `${label} actions for ${short}` : `${label} actions`}
         data-conv={conversationId}
       >
-        <span className="text-[11px]">{glyph}</span>
+        <GlyphIcon />
         <span>{label}</span>
         <span className="text-[9px] opacity-70">▾</span>
       </button>
@@ -1440,4 +1444,19 @@ function isBackendEnabled(
 function enabledBackends(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend[] {
   const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
   return all.filter((b) => isBackendEnabled(settings, b));
+}
+
+function DocsIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path
+        d="M4 2.5h5l3 3v8A1 1 0 0 1 11 14.5H4A1 1 0 0 1 3 13.5v-10A1 1 0 0 1 4 2.5Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <path d="M9 2.5v3h3" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      <path d="M5.5 8.5h5M5.5 10.5h5M5.5 12.5h3" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+    </svg>
+  );
 }
