@@ -193,6 +193,14 @@ export class RunnerManager {
   private reviewer: ReviewerManager;
   private codexProtoSupport = new Map<string, boolean>();
   private codexExecNoticeByConversation = new Set<UUID>();
+  /// codex exec has no --resume: every turn spawns a fresh session that
+  /// knows nothing about prior exchanges. On Windows (where proto isn't
+  /// available) we stitch context back by prepending the accumulated
+  /// transcript to the next prompt. Cleared on newConversation().
+  private codexExecTranscriptByConversation = new Map<
+    UUID,
+    { user: string; assistant: string }[]
+  >();
   private claudeBroker: ClaudePermissionBroker;
   /// Per-conversation temp --mcp-config path for Claude's permission-prompt-tool.
   /// Present while the Claude subprocess is alive; cleared on close/kill.
@@ -351,6 +359,7 @@ export class RunnerManager {
     this.killOllama(conversationId);
     this.killGeminiAcp(conversationId);
     this.codexExecNoticeByConversation.delete(conversationId);
+    this.codexExecTranscriptByConversation.delete(conversationId);
   }
 
   respondPermission(
@@ -1515,6 +1524,15 @@ export class RunnerManager {
           ],
         });
         if (code === 0) {
+          const snap = extractCodexExecSnapshot(active.currentAssistantText);
+          const userText = active.currentUserPrompt.trim();
+          const assistantText = snap.text.trim();
+          if (userText && assistantText) {
+            const transcript =
+              this.codexExecTranscriptByConversation.get(args.conversationId) ?? [];
+            transcript.push({ user: userText, assistant: assistantText });
+            this.codexExecTranscriptByConversation.set(args.conversationId, transcript);
+          }
           void this.maybeRunReviewer(args.conversationId, active);
         }
       }
@@ -1614,7 +1632,12 @@ export class RunnerManager {
       }
       case 'codex': {
         if (active.codexMode === 'exec') {
-          return args.prompt;
+          const transcript = this.codexExecTranscriptByConversation.get(args.conversationId);
+          if (!transcript || transcript.length === 0) return args.prompt;
+          const history = transcript
+            .map((t) => `User: ${t.user}\n\nAssistant: ${t.assistant}`)
+            .join('\n\n---\n\n');
+          return `Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
         }
         active.lastCodexMsgId += 1;
         // codex proto wants local file paths, not base64. Write each
