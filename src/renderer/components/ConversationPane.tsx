@@ -6,7 +6,7 @@ import { InputBar } from './InputBar';
 import { StatsFooter } from './StatsFooter';
 import { FileEditorPane } from './FileEditorPane';
 import { ResizableDivider } from './ResizableDivider';
-import { ChangesBar, computeChangedFiles } from './ChangesBar';
+import { ChangesBar } from './ChangesBar';
 import { useConversation } from '../hooks';
 import { Backend } from '@shared/types';
 import { backendName } from '../theme';
@@ -27,10 +27,29 @@ export function ConversationPane() {
   const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
   const conv = useConversation(convId);
   const events = useStore((s) => (convId ? s.runners[convId]?.events : null)) ?? null;
-  const changedFiles = useMemo(
-    () => (events ? computeChangedFiles(events) : []),
-    [events],
-  );
+  const gitStatus = useStore((s) => (convId ? s.gitStatusByConv[convId] : undefined));
+  const refreshGitStatus = useStore((s) => s.refreshGitStatus);
+  // Count of file-modifying tool uses in this conversation. When it
+  // changes we re-probe git — that keeps the ChangesBar and the
+  // header +/- badge in lockstep with the working tree.
+  const editCount = useMemo(() => {
+    if (!events) return 0;
+    let n = 0;
+    for (const e of events) {
+      if (e.kind.type === 'assistant') {
+        for (const u of e.kind.info.toolUses) {
+          if (u.name === 'Edit' || u.name === 'MultiEdit' || u.name === 'Write') n += 1;
+        }
+      } else if (e.kind.type === 'patchApply') {
+        n += 1;
+      }
+    }
+    return n;
+  }, [events]);
+  useEffect(() => {
+    if (!convId) return;
+    void refreshGitStatus(convId);
+  }, [convId, editCount, refreshGitStatus]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(() => window.innerWidth);
   useEffect(() => {
@@ -80,7 +99,7 @@ export function ConversationPane() {
         )}
         <ChatView conversationId={convId} />
         <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
-          <ChangesBar files={changedFiles} />
+          <ChangesBar files={gitStatus?.changes ?? []} />
           <InputBar conversationId={convId} />
           <StatsFooter conversationId={convId} />
         </div>

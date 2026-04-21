@@ -279,18 +279,41 @@ html, body {
 }
 
 /* Transient reveal card — shown briefly in the chat when tool activity
- * is hidden, so edits/writes still flash by before disappearing. Duration
- * (4200ms) must stay in sync with REVEAL_MS in ChatView.tsx — the JS
- * timer is what actually unmounts the element; this animation just paints
- * the fade over the same window. */
+ * is hidden, so quick tool calls still flash by before disappearing.
+ * Duration (10000ms) must stay in sync with REVEAL_MS in ChatView.tsx —
+ * the JS timer is what actually unmounts the element; this animation
+ * just paints the fade over the same window. */
 .transient-reveal {
-  animation: transient-reveal-fade 4200ms ease-out forwards;
+  animation: transient-reveal-fade 10000ms ease-out forwards;
 }
 @keyframes transient-reveal-fade {
   0% { opacity: 0; transform: translateY(3px); }
-  8% { opacity: 1; transform: translateY(0); }
-  78% { opacity: 1; transform: translateY(0); }
+  4% { opacity: 1; transform: translateY(0); }
+  85% { opacity: 1; transform: translateY(0); }
   100% { opacity: 0; transform: translateY(-2px); }
+}
+/* Exit variant — applied when a reveal is pushed out of the newest
+ * MAX_REVEALS slots. It stays visible briefly so bursts of tool calls
+ * can overlap on screen, then fades. Duration (3000ms) must stay in
+ * sync with ROLL_OFF_MS in ChatView.tsx. */
+.transient-reveal-exit {
+  animation: transient-reveal-exit-fade 3000ms ease-out forwards;
+}
+@keyframes transient-reveal-exit-fade {
+  0% { opacity: 1; transform: translateY(0); }
+  55% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-2px); }
+}
+
+/* Brief pulse applied to the commit-button +/- badge whenever the
+ * insertions/deletions change. Makes new edits visible at a glance. */
+.git-stats-flash {
+  animation: git-stats-flash-pulse 900ms ease-out;
+  transform-origin: center;
+}
+@keyframes git-stats-flash-pulse {
+  0%, 100% { transform: scale(1); }
+  20% { transform: scale(1.25); }
 }
 
 /* highlight.js palette — dark and light variants. We swap at the :root

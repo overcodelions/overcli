@@ -883,39 +883,38 @@ function ConversationSettingsButton({
 function CommitButton({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
   const projects = useStore((s) => s.projects);
+  const gitStatus = useStore((s) => s.gitStatusByConv[conversationId]);
+  const refreshGitStatus = useStore((s) => s.refreshGitStatus);
   const [open, setOpen] = useState(false);
-  const [isRepo, setIsRepo] = useState(false);
-  const [currentBranch, setCurrentBranch] = useState('');
-  const [changes, setChanges] = useState<Array<{ path: string; status: string }>>([]);
-  const [insertions, setInsertions] = useState(0);
-  const [deletions, setDeletions] = useState(0);
   const [message, setMessage] = useState('');
   const [messageEdited, setMessageEdited] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successSubject, setSuccessSubject] = useState<string | null>(null);
+  const [flashKey, setFlashKey] = useState(0);
+  const prevStatsRef = useRef<{ insertions: number; deletions: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   const cwd = conv?.worktreePath ?? findOwningProjectPath(projects, conversationId) ?? null;
+  const isRepo = gitStatus?.isRepo ?? false;
+  const currentBranch = gitStatus?.currentBranch ?? '';
+  const changes = gitStatus?.changes ?? [];
+  const insertions = gitStatus?.insertions ?? 0;
+  const deletions = gitStatus?.deletions ?? 0;
 
-  const refresh = useCallback(async () => {
-    if (!cwd) {
-      setIsRepo(false);
+  // Flash the +/- badge whenever the numbers change (other than on the
+  // initial probe). Bumping flashKey remounts the span so the CSS
+  // animation replays from the start.
+  useEffect(() => {
+    const prev = prevStatsRef.current;
+    if (!prev) {
+      prevStatsRef.current = { insertions, deletions };
       return;
     }
-    const res = await window.overcli.invoke('git:commitStatus', { cwd });
-    setIsRepo(res.isRepo);
-    setCurrentBranch(res.currentBranch);
-    setChanges(res.changes);
-    setInsertions(res.insertions);
-    setDeletions(res.deletions);
-  }, [cwd]);
-
-  // One probe when the header mounts / cwd changes. Cheap (~5ms spawnSync)
-  // and only runs for the active conversation.
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (prev.insertions === insertions && prev.deletions === deletions) return;
+    prevStatsRef.current = { insertions, deletions };
+    setFlashKey((k) => k + 1);
+  }, [insertions, deletions]);
 
   useEffect(() => {
     if (!open) return;
@@ -933,7 +932,7 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
     if (!open) return;
     setError(null);
     setSuccessSubject(null);
-    void refresh().then(() => {
+    void refreshGitStatus(conversationId).then(() => {
       // Seed draft only if the user hasn't typed their own — preserves
       // in-progress edits when they accidentally click outside.
       if (!messageEdited) {
@@ -943,7 +942,7 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
     // We intentionally don't add `changes` / `messageEdited` to deps —
     // the draft seeds on popover-open only, not on every state tick.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, refresh]);
+  }, [open, conversationId, refreshGitStatus]);
 
   if (!isRepo) return null;
 
@@ -959,7 +958,7 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
       setSuccessSubject(res.subject);
       setMessageEdited(false);
       setMessage('');
-      await refresh();
+      await refreshGitStatus(conversationId);
     } else {
       setError(res.error);
     }
@@ -981,7 +980,13 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
       >
         <CommitIcon />
         {hasChanges && (
-          <span className="flex items-center gap-1 text-[10px] font-mono leading-none">
+          <span
+            key={flashKey}
+            className={
+              'flex items-center gap-1 text-[10px] font-mono leading-none ' +
+              (flashKey > 0 ? 'git-stats-flash' : '')
+            }
+          >
             <span className="text-emerald-400">+{insertions}</span>
             <span className="text-red-400">−{deletions}</span>
           </span>
