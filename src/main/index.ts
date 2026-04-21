@@ -16,6 +16,7 @@ import {
   runGit,
   createWorktree,
   removeWorktree,
+  checkoutAgentLocally,
   detectBaseBranch,
   listBaseBranches,
   mergeAgent,
@@ -201,6 +202,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('git:createWorktree', (_e, args) => createWorktree(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
+  ipcMain.handle('git:checkoutAgentLocally', (_e, args) => checkoutAgentLocally(args));
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));
   ipcMain.handle('git:detectBaseBranch', (_e, projectPath: string) =>
     detectBaseBranch(projectPath),

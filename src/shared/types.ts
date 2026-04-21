@@ -474,6 +474,15 @@ export interface IPCInvokeMap {
     ok: boolean;
     error?: string;
   };
+  'git:checkoutAgentLocally': (args: {
+    projectPath: string;
+    worktreePath: string;
+    branchName: string;
+    commitSubject: string;
+    commitBody?: string;
+  }) =>
+    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
+    | { ok: false; error: string };
   'git:listBaseBranches': (projectPath: string) => string[];
   'git:detectBaseBranch': (projectPath: string) => string;
   'git:mergeAgent': (args: {

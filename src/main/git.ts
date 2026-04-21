@@ -270,6 +270,78 @@ export function removeWorktree(args: {
   return { ok: true };
 }
 
+/// Auto-commit dirty worktree state, stash any uncommitted changes in the
+/// project repo, remove the worktree (keeping the branch), then
+/// `git switch` the project repo onto it — so the user can keep working on
+/// the agent's branch in their normal IDE / GitHub Desktop. The project-side
+/// stash is left on the stack (not popped) since those changes belong to
+/// the previous branch, not this one; the user can `git stash pop` later
+/// when they switch back.
+export function checkoutAgentLocally(args: {
+  projectPath: string;
+  worktreePath: string;
+  branchName: string;
+  commitSubject: string;
+  commitBody?: string;
+}): {
+  ok: true;
+  message: string;
+  stashed: boolean;
+  autoCommitted: boolean;
+} | { ok: false; error: string } {
+  const projectStatus = runGit(['status', '--porcelain'], args.projectPath);
+  if (projectStatus.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `git status failed in project repo: ${projectStatus.stderr || projectStatus.stdout}`,
+    };
+  }
+
+  const commit = autoCommitIfDirty(args.worktreePath, args.commitSubject, args.commitBody);
+  if (!commit.ok) return commit;
+
+  let stashed = false;
+  if (projectStatus.stdout.trim()) {
+    // `-u` so untracked files come along too — otherwise `git switch` can
+    // still fail on an untracked file that would be overwritten.
+    const stashMessage = `overcli: auto-stash before checking out ${args.branchName}`;
+    const stash = runGit(['stash', 'push', '-u', '-m', stashMessage], args.projectPath);
+    if (stash.exitCode !== 0) {
+      return {
+        ok: false,
+        error: `git stash failed in project repo: ${stash.stderr || stash.stdout}`,
+      };
+    }
+    stashed = true;
+  }
+
+  const remove = runGit(['worktree', 'remove', '--force', args.worktreePath], args.projectPath);
+  if (remove.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `git worktree remove failed: ${remove.stderr || remove.stdout}`,
+    };
+  }
+
+  const switchRes = runGit(['switch', args.branchName], args.projectPath);
+  if (switchRes.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `git switch failed: ${switchRes.stderr || switchRes.stdout}`,
+    };
+  }
+
+  const parts = [`Checked out ${args.branchName} in ${args.projectPath}.`];
+  if (commit.committed) parts.push('Auto-committed uncommitted worktree changes first.');
+  if (stashed) parts.push('Your previous branch changes are saved in `git stash` — run `git stash pop` to restore them.');
+  return {
+    ok: true,
+    message: parts.join(' '),
+    stashed,
+    autoCommitted: commit.committed,
+  };
+}
+
 /// Cached `gh --version` probe — checking every worktree row is wasteful
 /// and `gh` isn't getting installed mid-session.
 let ghAvailableCache: boolean | null = null;
