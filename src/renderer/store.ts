@@ -408,7 +408,7 @@ export const useStore = create<StoreState>((set, get) => ({
   showFileTree: false,
   showHiddenConversations: false,
   sidebarVisible: true,
-  showToolActivity: true,
+  showToolActivity: false,
   pendingFinderQuery: '',
   conversationDrafts: {},
   conversationAttachments: {},
@@ -1104,6 +1104,7 @@ export const useStore = create<StoreState>((set, get) => ({
       branchName: conv.branchName,
       commitSubject,
       commitBody,
+      sessionId: conv.sessionId,
     });
     if (!res.ok) return res;
     // Transfer: strip agent-specific fields so the conversation shows up

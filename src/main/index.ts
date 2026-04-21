@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { Store } from './store';
 import { RunnerManager } from './runner';
-import { loadHistory } from './history';
+import { loadHistory, migrateClaudeSessionCwd } from './history';
 import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
 import {
   runGit,
@@ -208,7 +208,22 @@ function registerIpc(): void {
   ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
-  ipcMain.handle('git:checkoutAgentLocally', (_e, args) => checkoutAgentLocally(args));
+  ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
+    const res = checkoutAgentLocally(args);
+    if (!res.ok) return res;
+    // Re-home the Claude session file from the worktree's cwd slug to the
+    // project's cwd slug, so history replay and `--resume` still find it
+    // now that the conversation's cwd has changed. No-op for non-Claude
+    // backends (no file under that slug).
+    if (args.sessionId) {
+      migrateClaudeSessionCwd({
+        worktreePath: args.worktreePath,
+        projectPath: args.projectPath,
+        sessionId: args.sessionId,
+      });
+    }
+    return res;
+  });
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));
   ipcMain.handle('git:detectBaseBranch', (_e, projectPath: string) =>
     detectBaseBranch(projectPath),

@@ -68,16 +68,56 @@ function loadOllamaHistory(sessionId: string | undefined): StreamEvent[] {
   return out;
 }
 
+/// Turn an absolute path into Claude CLI's project-dir slug (same rules
+/// Claude itself uses: canonicalize, then replace `/`, `.`, and spaces
+/// with `-`). Exported so callers that need to re-home a session file
+/// between cwds (worktree → project on "Check out locally") stay in sync.
+export function claudeProjectSlug(projectPath: string): string {
+  let canonical = projectPath;
+  try {
+    canonical = fs.realpathSync.native(projectPath);
+  } catch {
+    /* path may not exist — fall back to the raw string */
+  }
+  return canonical.replaceAll('/', '-').replaceAll('.', '-').replaceAll(' ', '-');
+}
+
+/// Move the Claude session file (plus its companion sidecar dir, if any)
+/// from the worktree's slug dir to the project's slug dir, so
+/// `loadClaudeHistory` and `--resume` find it after the worktree is gone.
+/// Silently no-ops when the source file isn't present — e.g. when the
+/// conversation used a non-Claude backend or Claude never wrote a
+/// session yet. Failures are swallowed because the checkout itself has
+/// already succeeded on disk; we'd rather report success with missing
+/// history than roll back a working git state.
+export function migrateClaudeSessionCwd(args: {
+  worktreePath: string;
+  projectPath: string;
+  sessionId: string;
+}): { moved: boolean } {
+  const root = path.join(os.homedir(), '.claude', 'projects');
+  const fromDir = path.join(root, claudeProjectSlug(args.worktreePath));
+  const toDir = path.join(root, claudeProjectSlug(args.projectPath));
+  const fromFile = path.join(fromDir, `${args.sessionId}.jsonl`);
+  if (!fs.existsSync(fromFile)) return { moved: false };
+  try {
+    fs.mkdirSync(toDir, { recursive: true });
+    fs.renameSync(fromFile, path.join(toDir, `${args.sessionId}.jsonl`));
+    // Claude sometimes parks a sidecar directory next to the .jsonl
+    // (e.g. for attachments). Move it too when present.
+    const fromSidecar = path.join(fromDir, args.sessionId);
+    if (fs.existsSync(fromSidecar)) {
+      fs.renameSync(fromSidecar, path.join(toDir, args.sessionId));
+    }
+    return { moved: true };
+  } catch {
+    return { moved: false };
+  }
+}
+
 function loadClaudeHistory(sessionId: string | undefined, projectPath: string): StreamEvent[] {
   if (!sessionId) return [];
-  // claude slugs its project dir by replacing `/`, `.`, and spaces with `-`.
-  // It also canonicalizes the cwd first, which matters on macOS where our
-  // stored rootPath can be `.../overcli/...` (package name) but the real
-  // directory is `.../Overcli/...` (productName) — Claude writes under the
-  // canonical case, so we must too or `existsSync` misses.
-  let canonical = projectPath;
-  try { canonical = fs.realpathSync.native(projectPath); } catch { /* path may not exist */ }
-  const slug = canonical.replaceAll('/', '-').replaceAll('.', '-').replaceAll(' ', '-');
+  const slug = claudeProjectSlug(projectPath);
   const file = path.join(os.homedir(), '.claude', 'projects', slug, `${sessionId}.jsonl`);
   if (!fs.existsSync(file)) return [];
   const lines = fs.readFileSync(file, 'utf-8').split('\n');
