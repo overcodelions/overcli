@@ -11,6 +11,8 @@ export function Sidebar() {
   const selectConversation = useStore((s) => s.selectConversation);
   const pickProject = useStore((s) => s.pickProject);
   const openSheet = useStore((s) => s.openSheet);
+  const removeProject = useStore((s) => s.removeProject);
+  const removeWorkspace = useStore((s) => s.removeWorkspace);
   const startNewConversation = useStore((s) => s.startNewConversation);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const [search, setSearch] = useState('');
@@ -70,6 +72,7 @@ export function Sidebar() {
               selectConversation(id);
             }}
             onNewConversation={() => startNewConversation(project.id)}
+            onRemove={() => void removeProject(project.id)}
             onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
             onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
           />
@@ -100,6 +103,7 @@ export function Sidebar() {
               openSheet({ type: 'newWorkspaceAgent', workspaceId: ws.id })
             }
             onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
+            onRemove={() => void removeWorkspace(ws.id)}
           />
         ))}
 
@@ -149,6 +153,7 @@ function ProjectGroup({
   selectedId,
   onSelect,
   onNewConversation,
+  onRemove,
   onNewAgent,
   onNewColosseum,
 }: {
@@ -159,10 +164,12 @@ function ProjectGroup({
   selectedId: UUID | null;
   onSelect: (id: UUID) => void;
   onNewConversation: () => void;
+  onRemove: () => void;
   onNewAgent: () => void;
   onNewColosseum: () => void;
 }) {
   const openSheet = useStore((s) => s.openSheet);
+  const workspaces = useStore((s) => s.workspaces);
   const runners = useStore((s) => s.runners);
   const visible = project.conversations.filter(
     (c) => !isAgentConversation(c) && !c.hidden,
@@ -177,6 +184,35 @@ function ProjectGroup({
   const archivableCount = project.conversations.filter(
     (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
   ).length;
+  const workspaceRefs = workspaces.filter((w) => w.projectIds.includes(project.id));
+
+  const handleRemove = () => {
+    const colosseumCount = colosseums.length;
+    const workspaceCount = workspaceRefs.length;
+    const deletedWorkspaceCount = workspaceRefs.filter(
+      (w) => w.projectIds.filter((pid) => pid !== project.id).length === 0,
+    ).length;
+    const message = [
+      `Remove project "${project.name}" from Overcli?`,
+      'This keeps the repo on disk, but removes it from the app.',
+      project.conversations.length
+        ? `${project.conversations.length} conversation${project.conversations.length === 1 ? '' : 's'} and agent${project.conversations.length === 1 ? '' : 's'} will be removed.`
+        : '',
+      colosseumCount
+        ? `${colosseumCount} colosseum${colosseumCount === 1 ? '' : 's'} will be removed.`
+        : '',
+      workspaceCount
+        ? `${workspaceCount} workspace${workspaceCount === 1 ? '' : 's'} will be updated.`
+        : '',
+      deletedWorkspaceCount
+        ? `${deletedWorkspaceCount} workspace${deletedWorkspaceCount === 1 ? '' : 's'} with no projects left will also be removed.`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    if (!window.confirm(message)) return;
+    onRemove();
+  };
 
   return (
     <div className="mt-1">
@@ -188,10 +224,19 @@ function ProjectGroup({
         </button>
         <button
           onClick={onNewConversation}
-          className="text-[13px] text-ink-faint hover:text-ink w-5 h-5 leading-none flex items-center justify-center rounded hover:bg-card-strong"
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
           title="New conversation"
+          aria-label={`New conversation in ${project.name}`}
         >
-          +
+          <PlusIcon />
+        </button>
+        <button
+          onClick={handleRemove}
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
+          title="Remove project from Overcli"
+          aria-label={`Remove project ${project.name}`}
+        >
+          <TrashIcon />
         </button>
       </div>
       {expanded && (
@@ -527,6 +572,7 @@ function WorkspaceGroup({
   onNewConversation,
   onNewAgent,
   onEdit,
+  onRemove,
 }: {
   workspace: Workspace;
   expanded: boolean;
@@ -536,10 +582,29 @@ function WorkspaceGroup({
   onNewConversation: () => void;
   onNewAgent: () => void;
   onEdit: () => void;
+  onRemove: () => void;
 }) {
   const convs = (workspace.conversations ?? []).filter((c) => !c.hidden);
   const plain = convs.filter((c) => !isAgentConversation(c));
   const agents = convs.filter(isAgentConversation);
+
+  const handleRemove = () => {
+    const message = [
+      `Remove workspace "${workspace.name}" from Overcli?`,
+      'This removes the synthetic workspace and its conversations, but keeps member repos on disk and in the app.',
+      convs.length
+        ? `${convs.length} workspace conversation${convs.length === 1 ? '' : 's'} will be removed.`
+        : 'This workspace has no conversations yet.',
+      workspace.projectIds.length
+        ? `${workspace.projectIds.length} member project${workspace.projectIds.length === 1 ? '' : 's'} will stay available individually.`
+        : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+    if (!window.confirm(message)) return;
+    onRemove();
+  };
+
   return (
     <div className="mt-1">
       <div className="group flex items-center px-2 py-1 rounded hover:bg-card-strong">
@@ -550,17 +615,27 @@ function WorkspaceGroup({
         </button>
         <button
           onClick={onEdit}
-          className="text-[11px] text-ink-faint hover:text-ink w-5 h-5 leading-none flex items-center justify-center rounded hover:bg-card-strong opacity-0 group-hover:opacity-100"
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-muted opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
           title="Edit workspace member projects"
+          aria-label={`Edit workspace ${workspace.name}`}
         >
-          ✎
+          <PencilIcon />
         </button>
         <button
           onClick={onNewConversation}
-          className="text-[13px] text-ink-faint hover:text-ink w-5 h-5 leading-none flex items-center justify-center rounded hover:bg-card-strong"
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
           title="New conversation"
+          aria-label={`New conversation in ${workspace.name}`}
         >
-          +
+          <PlusIcon />
+        </button>
+        <button
+          onClick={handleRemove}
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
+          title="Remove workspace from Overcli"
+          aria-label={`Remove workspace ${workspace.name}`}
+        >
+          <TrashIcon />
         </button>
       </div>
       {expanded && (
@@ -733,6 +808,55 @@ function WorkspaceIcon() {
         stroke="currentColor"
         strokeWidth="1.2"
         strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 20 20"
+      fill="currentColor"
+      className="flex-shrink-0"
+      aria-hidden="true"
+    >
+      <path
+        d="M12.793 2.793a1 1 0 0 1 1.414 0l2 2a1 1 0 0 1 0 1.414l-8.2 8.2a2.5 2.5 0 0 1-1.14.63l-2.26.566a.75.75 0 0 1-.91-.91l.566-2.26a2.5 2.5 0 0 1 .63-1.14l8.2-8.2Z"
+      />
+    </svg>
+  );
+}
+
+function PlusIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      className="flex-shrink-0"
+      aria-hidden="true"
+    >
+      <path d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      className="flex-shrink-0"
+      aria-hidden="true"
+    >
+      <path
+        d="M6 2.5A1.5 1.5 0 0 1 7.5 1h1A1.5 1.5 0 0 1 10 2.5V3h2.25a.75.75 0 0 1 0 1.5h-.386l-.558 7.253A1.75 1.75 0 0 1 9.56 13.5H6.44a1.75 1.75 0 0 1-1.746-1.747L4.136 4.5H3.75a.75.75 0 0 1 0-1.5H6v-.5Zm1.5 0V3h1v-.5a.5.5 0 0 0-.5-.5h-.5a.5.5 0 0 0-.5.5Zm-.25 3.25a.75.75 0 0 0-1.5 0v4a.75.75 0 0 0 1.5 0v-4Zm3 0a.75.75 0 0 0-1.5 0v4a.75.75 0 0 0 1.5 0v-4Z"
       />
     </svg>
   );

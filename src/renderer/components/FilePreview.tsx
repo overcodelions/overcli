@@ -28,7 +28,7 @@ export function FilePreview({ path, content }: { path: string; content: string }
   return (
     <iframe
       title={`${path} preview`}
-      sandbox="allow-same-origin"
+      sandbox=""
       srcDoc={srcDoc}
       className="block w-full h-full border-0 bg-transparent"
     />

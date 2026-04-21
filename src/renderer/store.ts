@@ -142,6 +142,7 @@ interface StoreState {
   addProject(project: Project): Promise<void>;
   renameProject(id: UUID, name: string): Promise<void>;
   removeProject(id: UUID): Promise<void>;
+  removeWorkspace(id: UUID): Promise<void>;
   pickProject(): Promise<void>;
   newConversation(projectId: UUID): Promise<Conversation>;
   newConversationInWorkspace(workspaceId: UUID): Promise<Conversation | null>;
@@ -178,7 +179,12 @@ interface StoreState {
   send(conversationId: UUID, prompt: string): Promise<void>;
   stop(conversationId: UUID): Promise<void>;
   resetConversation(conversationId: UUID): Promise<void>;
-  respondPermission(conversationId: UUID, requestId: string, approved: boolean): Promise<void>;
+  respondPermission(
+    conversationId: UUID,
+    requestId: string,
+    approved: boolean,
+    addDir?: string,
+  ): Promise<void>;
   respondCodexApproval(
     conversationId: UUID,
     callId: string,
@@ -237,6 +243,10 @@ function findConversation(state: StoreState, id: UUID): Conversation | null {
   return null;
 }
 
+function isAgentConversation(conv: Conversation): boolean {
+  return !!conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+}
+
 /// Ask the main process which Ollama models are actually pulled locally
 /// and pick one. Prefers the configured default *only* if it's installed —
 /// otherwise falls back to whatever is on disk. Returns null if Ollama
@@ -286,6 +296,37 @@ function findContainerPath(state: StoreState, convId: UUID): string | null {
     if (c) return c.worktreePath ?? w.rootPath;
   }
   return null;
+}
+
+/// Directories we pass to Claude as `--add-dir` so its session-scope check
+/// admits them. Covers the conversation's container (project/workspace
+/// root + workspace-member projects) plus any dirs the user approved
+/// on-the-fly via the permission card.
+function computeAllowedDirs(state: StoreState, convId: UUID): string[] {
+  const dirs: string[] = [];
+  for (const p of state.projects) {
+    const c = p.conversations.find((x) => x.id === convId);
+    if (c) {
+      dirs.push(p.path);
+      if (c.worktreePath) dirs.push(c.worktreePath);
+      for (const d of c.allowedDirs ?? []) dirs.push(d);
+      return dirs;
+    }
+  }
+  for (const w of state.workspaces) {
+    const c = w.conversations?.find((x) => x.id === convId);
+    if (c) {
+      dirs.push(w.rootPath);
+      for (const pid of w.projectIds) {
+        const proj = state.projects.find((p) => p.id === pid);
+        if (proj) dirs.push(proj.path);
+      }
+      if (c.worktreePath) dirs.push(c.worktreePath);
+      for (const d of c.allowedDirs ?? []) dirs.push(d);
+      return dirs;
+    }
+  }
+  return dirs;
 }
 
 function isBackendEnabled(settings: AppSettings, backend: Backend): boolean {
@@ -497,8 +538,124 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async removeProject(id) {
-    set((s) => ({ projects: s.projects.filter((p) => p.id !== id) }));
+    const state = get();
+    const project = state.projects.find((p) => p.id === id);
+    if (!project) return;
+
+    const removedConversationIds = new Set(project.conversations.map((c) => c.id));
+    const impactedWorkspaces = state.workspaces.filter((w) => w.projectIds.includes(id));
+    const deletedWorkspaceIds = new Set(
+      impactedWorkspaces
+        .filter((w) => w.projectIds.filter((pid) => pid !== id).length === 0)
+        .map((w) => w.id),
+    );
+
+    const runningIds = new Set<UUID>();
+    for (const conv of project.conversations) {
+      if (state.runners[conv.id]?.isRunning) runningIds.add(conv.id);
+    }
+    for (const ws of impactedWorkspaces) {
+      for (const conv of ws.conversations ?? []) {
+        const touchesProject =
+          deletedWorkspaceIds.has(ws.id) ||
+          conv.workspaceAgentMemberIds?.some((memberId) => removedConversationIds.has(memberId));
+        if (touchesProject && state.runners[conv.id]?.isRunning) runningIds.add(conv.id);
+      }
+    }
+    for (const convId of runningIds) {
+      await get().stop(convId);
+    }
+
+    for (const colosseum of state.colosseums.filter((c) => c.projectId === id)) {
+      await get().removeColosseum(colosseum.id);
+    }
+
+    const remainingProject = get().projects.find((p) => p.id === id);
+    for (const conv of [...(remainingProject?.conversations ?? [])]) {
+      if (isAgentConversation(conv)) await get().removeAgent(conv.id);
+      else await get().removeConversation(conv.id);
+    }
+
+    for (const ws of impactedWorkspaces.filter((w) => deletedWorkspaceIds.has(w.id))) {
+      for (const conv of [...(ws.conversations ?? [])]) {
+        if (isAgentConversation(conv)) await get().removeAgent(conv.id);
+        else await get().removeConversation(conv.id);
+      }
+    }
+    for (const ws of impactedWorkspaces.filter((w) => deletedWorkspaceIds.has(w.id))) {
+      const res = await window.overcli.invoke('workspace:removeSymlinkRoot', ws.id);
+      if (!res.ok) console.warn(`Failed to remove workspace root for ${ws.name}: ${res.error}`);
+    }
+
+    const current = get();
+    const remainingProjects = current.projects.filter((p) => p.id !== id);
+    const nextWorkspaces: Workspace[] = [];
+    for (const ws of current.workspaces) {
+      const nextProjectIds = ws.projectIds.filter((pid) => pid !== id);
+      if (nextProjectIds.length === 0) continue;
+
+      const nextConversations = (ws.conversations ?? []).flatMap((conv) => {
+        const memberIds = conv.workspaceAgentMemberIds;
+        if (!memberIds?.length) return [conv];
+        const filtered = memberIds.filter((memberId) => !removedConversationIds.has(memberId));
+        if (filtered.length === 0) return [];
+        if (filtered.length === memberIds.length) return [conv];
+        return [{ ...conv, workspaceAgentMemberIds: filtered }];
+      });
+
+      let rootPath = ws.rootPath;
+      if (ws.projectIds.includes(id)) {
+        rootPath =
+          (await ensureWorkspaceRoot(remainingProjects, ws.id, nextProjectIds)) ?? rootPath;
+      }
+
+      nextWorkspaces.push({
+        ...ws,
+        projectIds: nextProjectIds,
+        conversations: nextConversations,
+        rootPath,
+      });
+    }
+
+    set((s) => ({
+      projects: s.projects.filter((p) => p.id !== id),
+      workspaces: nextWorkspaces,
+      focusedProjectId: s.focusedProjectId === id ? null : s.focusedProjectId,
+      focusedWorkspaceId:
+        s.focusedWorkspaceId && !nextWorkspaces.some((w) => w.id === s.focusedWorkspaceId)
+          ? null
+          : s.focusedWorkspaceId,
+    }));
     await get().saveProjects();
+    await get().saveWorkspaces();
+  },
+
+  async removeWorkspace(id) {
+    const workspace = get().workspaces.find((w) => w.id === id);
+    if (!workspace) return;
+
+    const runningIds = (workspace.conversations ?? [])
+      .filter((conv) => get().runners[conv.id]?.isRunning)
+      .map((conv) => conv.id);
+    for (const convId of runningIds) {
+      await get().stop(convId);
+    }
+
+    for (const conv of [...(workspace.conversations ?? [])]) {
+      if (isAgentConversation(conv)) await get().removeAgent(conv.id);
+      else await get().removeConversation(conv.id);
+    }
+
+    const res = await window.overcli.invoke('workspace:removeSymlinkRoot', id);
+    if (!res.ok) {
+      console.warn(`Failed to remove workspace root for ${workspace.name}: ${res.error}`);
+    }
+
+    set((s) => ({
+      workspaces: s.workspaces.filter((w) => w.id !== id),
+      focusedWorkspaceId: s.focusedWorkspaceId === id ? null : s.focusedWorkspaceId,
+    }));
+    await get().saveWorkspaces();
   },
 
   async pickProject() {
@@ -1057,6 +1214,7 @@ export const useStore = create<StoreState>((set, get) => ({
       reviewMode: conv.reviewMode ?? null,
       collabMaxTurns: conv.collabMaxTurns ?? null,
       reviewOllamaModel: conv.reviewOllamaModel ?? null,
+      allowedDirs: backend === 'claude' ? computeAllowedDirs(get(), conversationId) : undefined,
     });
 
     mutateConversation(set, get, conversationId, (c) => ({
@@ -1091,12 +1249,21 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
 
-  async respondPermission(conversationId, requestId, approved) {
+  async respondPermission(conversationId, requestId, approved, addDir) {
     await window.overcli.invoke('runner:respondPermission', {
       conversationId,
       requestId,
       approved,
+      addDir,
     });
+    if (approved && addDir) {
+      mutateConversation(set, get, conversationId, (c) => {
+        const existing = c.allowedDirs ?? [];
+        if (existing.includes(addDir)) return c;
+        return { ...c, allowedDirs: [...existing, addDir] };
+      });
+      await saveConversationState(get);
+    }
     set((s) => {
       const runner = s.runners[conversationId];
       if (!runner) return s;

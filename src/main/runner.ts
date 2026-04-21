@@ -39,10 +39,11 @@ import {
   detectOllama,
   streamChat,
 } from './ollama';
-import { OLLAMA_BUILTIN_TOOLS, executeOllamaTool } from './ollamaTools';
+import { OLLAMA_BUILTIN_TOOLS, executeOllamaTool, extractInlineToolCalls } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
+import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -61,6 +62,7 @@ interface SendArgs {
   reviewMode?: 'review' | 'collab' | null;
   collabMaxTurns?: number | null;
   reviewOllamaModel?: string | null;
+  allowedDirs?: string[];
 }
 
 interface PermissionResponse {
@@ -118,6 +120,10 @@ interface ActiveProcess {
   geminiAssistantText: string;
   geminiAssistantToolUses: ToolUseBlock[];
   geminiAssistantNeedsSplit: boolean;
+  /// Directories this Claude subprocess was launched with `--add-dir` for.
+  /// Used by handleClaudeApproval to decide whether a requested path is
+  /// already inside the session's scope.
+  allowedDirs: string[];
 }
 
 interface GeminiAcpSession {
@@ -187,11 +193,93 @@ export class RunnerManager {
   private reviewer: ReviewerManager;
   private codexProtoSupport = new Map<string, boolean>();
   private codexExecNoticeByConversation = new Set<UUID>();
+  private claudeBroker: ClaudePermissionBroker;
+  /// Per-conversation temp --mcp-config path for Claude's permission-prompt-tool.
+  /// Present while the Claude subprocess is alive; cleared on close/kill.
+  private claudeMcpByConv = new Map<UUID, string>();
 
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
     this.emit = emit;
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
+    this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
+  }
+
+  /// Broker handler: a Claude-hosted MCP helper asked us for permission.
+  /// Emit a PermissionRequest the renderer can show, and register a
+  /// resolver in pendingPermissions so the user's Allow/Deny routes back
+  /// through respondPermission → broker → helper → Claude.
+  private handleClaudeApproval(req: ApprovalRequest): void {
+    const active = this.procs.get(req.conversationId);
+    if (!active) {
+      this.claudeBroker.resolve(req.conversationId, req.requestId, {
+        behavior: 'deny',
+        message: 'no active overcli session',
+      });
+      return;
+    }
+    active.pendingPermissions.set(req.requestId, (approved: boolean) => {
+      this.claudeBroker.resolve(
+        req.conversationId,
+        req.requestId,
+        approved
+          ? { behavior: 'allow', updatedInput: req.toolInput }
+          : { behavior: 'deny', message: 'denied by user' },
+      );
+    });
+    const toolInputStr =
+      typeof req.toolInput === 'string' ? req.toolInput : JSON.stringify(req.toolInput, null, 2);
+    const requestedPath = extractRequestedPath(req.toolName, req.toolInput);
+    const outsideAllowedDirs =
+      !!requestedPath && !isInsideAllowedDirs(requestedPath, active.cwd, active.allowedDirs);
+    this.emit({
+      type: 'stream',
+      conversationId: req.conversationId,
+      events: [
+        {
+          id: randomUUID(),
+          timestamp: Date.now(),
+          raw: JSON.stringify({ toolName: req.toolName, toolInput: req.toolInput }),
+          kind: {
+            type: 'permissionRequest',
+            info: {
+              backend: 'claude',
+              requestId: req.requestId,
+              toolName: req.toolName,
+              description: '',
+              toolInput: toolInputStr,
+              requestedPath: requestedPath ?? undefined,
+              outsideAllowedDirs: outsideAllowedDirs || undefined,
+            },
+          },
+          revision: 0,
+        },
+      ],
+    });
+  }
+
+  /// Ensure the Claude subprocess we're about to spawn has a registered
+  /// MCP permission broker session. Idempotent when the existing proc's
+  /// launch parameters still match.
+  private async prepareClaudeBroker(args: SendArgs): Promise<void> {
+    if (args.backend !== 'claude') return;
+    const convId = args.conversationId;
+    const existing = this.procs.get(convId);
+    const paramsMatch =
+      !!existing &&
+      existing.backend === 'claude' &&
+      existing.launchPermissionMode === args.permissionMode &&
+      existing.launchModel === args.model &&
+      existing.cwd === args.cwd;
+    if (paramsMatch && this.claudeMcpByConv.has(convId)) return;
+    const helperScript = path.join(__dirname, 'claudePermissionHelper.js');
+    const { configPath } = await this.claudeBroker.registerSession(
+      convId,
+      helperScript,
+      process.execPath,
+      { ELECTRON_RUN_AS_NODE: '1' },
+    );
+    this.claudeMcpByConv.set(convId, configPath);
   }
 
   /// Spawn (or reuse) a subprocess for this conversation, write the prompt
@@ -226,6 +314,27 @@ export class RunnerManager {
       return { ok: true };
     }
 
+    if (args.backend === 'claude') {
+      // Claude needs an MCP permission-prompt server registered before the
+      // subprocess starts so `--permission-prompt-tool` has something to
+      // call. Do that async, then hand off to the standard subprocess path.
+      void (async () => {
+        try {
+          await this.prepareClaudeBroker(args);
+        } catch (err) {
+          this.emit({
+            type: 'error',
+            conversationId: args.conversationId,
+            message: `Failed to set up Claude permission broker: ${(err as Error).message}`,
+          });
+          this.emit({ type: 'running', conversationId: args.conversationId, isRunning: false });
+          return;
+        }
+        this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted: false });
+      })();
+      return { ok: true };
+    }
+
     return this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted: false });
   }
 
@@ -244,7 +353,12 @@ export class RunnerManager {
     this.codexExecNoticeByConversation.delete(conversationId);
   }
 
-  respondPermission(conversationId: UUID, requestId: string, approved: boolean): void {
+  respondPermission(
+    conversationId: UUID,
+    requestId: string,
+    approved: boolean,
+    addDir?: string,
+  ): void {
     const gemini = this.geminiAcpSessions.get(conversationId);
     if (gemini) {
       const pending = gemini.pendingPermissions.get(requestId);
@@ -261,17 +375,30 @@ export class RunnerManager {
       cb(approved);
       active.pendingPermissions.delete(requestId);
     }
-    // Write the decision envelope to the CLI's stdin. claude's permission
-    // protocol expects a JSON object with request_id + decision.
-    const msg = JSON.stringify({
-      type: 'permission_response',
-      request_id: requestId,
-      decision: approved ? 'allow' : 'deny',
-    });
-    try {
-      active.proc.stdin.write(msg + '\n');
-    } catch {
-      // Subprocess died — nothing to do.
+    // When the user granted a new session directory, Claude's directory
+    // gate is checked at launch — not by the permission-prompt-tool — so
+    // the current subprocess can't pick it up mid-run. Kill the proc and
+    // surface a notice; the next user turn will respawn with --add-dir.
+    if (approved && addDir && active.backend === 'claude') {
+      const abs = path.resolve(addDir);
+      if (!active.allowedDirs.includes(abs)) active.allowedDirs.push(abs);
+      this.killProc(conversationId);
+      this.emit({
+        type: 'stream',
+        conversationId,
+        events: [
+          {
+            id: randomUUID(),
+            timestamp: Date.now(),
+            raw: '',
+            kind: {
+              type: 'systemNotice',
+              text: `Added ${abs} to session. Send your next message to retry with access.`,
+            },
+            revision: 0,
+          },
+        ],
+      });
     }
   }
 
@@ -303,6 +430,7 @@ export class RunnerManager {
     for (const id of Array.from(this.procs.keys())) this.killProc(id);
     for (const id of Array.from(this.ollamaSessions.keys())) this.killOllama(id);
     for (const id of Array.from(this.geminiAcpSessions.keys())) this.killGeminiAcp(id);
+    this.claudeBroker.shutdown();
   }
 
   // --- Internals ---
@@ -317,6 +445,10 @@ export class RunnerManager {
       active.proc.kill('SIGTERM');
     } catch {}
     this.procs.delete(conversationId);
+    if (active.backend === 'claude') {
+      this.claudeBroker.unregisterSession(conversationId);
+      this.claudeMcpByConv.delete(conversationId);
+    }
   }
 
   private killOllama(conversationId: UUID): void {
@@ -467,6 +599,11 @@ export class RunnerManager {
     this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
 
     const tools = modelSupportsTools(model) ? OLLAMA_BUILTIN_TOOLS : undefined;
+    // Qwen/Llama-coder models default to refusing file questions unless a
+    // system message explicitly tells them tools are real. Prepended to
+    // every tool-enabled call; not persisted to the transcript so cwd and
+    // the tool list stay fresh if either changes mid-conversation.
+    const toolSystemPrompt = tools ? buildOllamaToolSystemPrompt(args.cwd) : null;
     // Cap the tool-call ping-pong. Models occasionally get stuck re-calling
     // read_file on the same path; bailing out after 8 rounds surfaces the
     // bug instead of hanging the UI.
@@ -527,8 +664,11 @@ export class RunnerManager {
       let assistantRevision = 0;
       let streamError: string | null = null;
 
+      const wireMessages: OllamaChatMessage[] = toolSystemPrompt
+        ? [{ role: 'system', content: toolSystemPrompt }, ...session!.messages]
+        : session!.messages;
       await streamChat(
-        { model, messages: session!.messages, tools, signal: controller.signal },
+        { model, messages: wireMessages, tools, signal: controller.signal },
         (ev) => {
           if (ev.type === 'token') {
             acc += ev.text;
@@ -569,7 +709,37 @@ export class RunnerManager {
       });
 
       if (streamError) return { ok: false, error: streamError };
-      return { ok: true, toolCalls: pendingToolCalls, text: acc };
+
+      // Text-fallback parser. Some tool-capable models (notably smaller
+      // Qwen/Llama coder variants, but occasionally the 14B+ too) emit
+      // tool calls as JSON in the content channel instead of via Ollama's
+      // structured `tool_calls`. When tools were sent but nothing came
+      // back structurally, sniff the content. If we find a call, strip it
+      // from the visible bubble so the user sees the cleaned-up reply.
+      let finalText = acc;
+      if (tools && pendingToolCalls.length === 0) {
+        const extracted = extractInlineToolCalls(acc);
+        if (extracted.calls.length > 0) {
+          pendingToolCalls = extracted.calls;
+          finalText = extracted.cleanedText;
+          assistantRevision += 1;
+          this.emit({
+            type: 'stream',
+            conversationId: convId,
+            events: [
+              makeAssistantEventWithTools(
+                model,
+                finalText,
+                assistantEventId,
+                assistantRevision,
+                pendingToolCalls,
+              ),
+            ],
+          });
+        }
+      }
+
+      return { ok: true, toolCalls: pendingToolCalls, text: finalText };
     };
 
     const runLoop = async () => {
@@ -1290,6 +1460,7 @@ export class RunnerManager {
       geminiAssistantText: '',
       geminiAssistantToolUses: [],
       geminiAssistantNeedsSplit: false,
+      allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1310,6 +1481,10 @@ export class RunnerManager {
       // Only clear if this is still the current process for this conversation
       if (this.procs.get(args.conversationId) === active) {
         this.procs.delete(args.conversationId);
+      }
+      if (active.backend === 'claude') {
+        this.claudeBroker.unregisterSession(args.conversationId);
+        this.claudeMcpByConv.delete(args.conversationId);
       }
       this.emit({
         type: 'running',
@@ -1375,6 +1550,14 @@ export class RunnerManager {
           a.push('--permission-mode', args.permissionMode);
         }
         if (args.effortLevel) a.push('--thinking-effort', args.effortLevel);
+        const mcpConfigPath = this.claudeMcpByConv.get(args.conversationId);
+        if (mcpConfigPath) {
+          a.push('--mcp-config', mcpConfigPath);
+          a.push('--permission-prompt-tool', 'mcp__overcli__approve');
+        }
+        for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
+          a.push('--add-dir', dir);
+        }
         return a;
       }
       case 'codex': {
@@ -1563,9 +1746,7 @@ export class RunnerManager {
       let turnEnded = false;
       let nextActivity: string | undefined;
       for (const e of emitted) {
-        if (e.kind.type === 'permissionRequest') {
-          active.pendingPermissions.set(e.kind.info.requestId, () => {});
-        } else if (e.kind.type === 'codexApproval') {
+        if (e.kind.type === 'codexApproval') {
           active.pendingCodexApprovals.set(e.kind.info.callId, () => {});
         } else if (e.kind.type === 'result') {
           turnEnded = true;
@@ -2109,6 +2290,28 @@ function modelSupportsTools(tag: string): boolean {
   return !!hit?.supportsTools;
 }
 
+/// System prompt prepended on every tool-enabled Ollama call. Qwen-coder
+/// and (less often) Llama variants default to "I can't access your
+/// files" refusals unless told outright that the tools are real. The
+/// phrasing is deliberately blunt: these models respond to explicit
+/// "do X, not Y" instructions much better than to polite hints.
+function buildOllamaToolSystemPrompt(cwd: string): string {
+  return [
+    'You are a local coding assistant running inside OverCLI on the user\'s machine.',
+    `You have real, working access to the user's project directory at: ${cwd}`,
+    '',
+    'The following tools are available and will return real results from disk:',
+    '- read_file(path): read a text file relative to the project root.',
+    '- list_dir(path): list files and subdirectories; use "." for the project root.',
+    '- grep(pattern, path?, caseInsensitive?): regex-search across the project.',
+    '',
+    'When the user asks to read a file, list a directory, search the code, or otherwise inspect the project — CALL THE TOOL. Do not reply that you cannot access files. Do not refuse. The tools work.',
+    '',
+    'Call tools through your native tool-calling channel. Do not emit JSON tool-call blobs as plain text.',
+    'After receiving tool results, answer the user\'s question concisely using what you learned.',
+  ].join('\n');
+}
+
 function ollamaFriendlyError(raw: string): string {
   const lower = raw.toLowerCase();
   if (lower.includes('econnrefused') || lower.includes('connect enoent')) {
@@ -2146,6 +2349,58 @@ function geminiPermissionMapping(mode: PermissionMode): string {
     default:
       return 'default';
   }
+}
+
+/// Dedupe + absolute-ify the directory list we'll pass as `--add-dir` to
+/// Claude. The cwd is always implicitly allowed, so drop it; remove
+/// duplicates and non-absolute entries to avoid confusing Claude Code.
+function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[] {
+  if (!dirs || dirs.length === 0) return [];
+  const cwdReal = path.resolve(cwd);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const d of dirs) {
+    if (!d) continue;
+    const abs = path.resolve(d);
+    if (abs === cwdReal) continue;
+    if (seen.has(abs)) continue;
+    seen.add(abs);
+    out.push(abs);
+  }
+  return out;
+}
+
+/// Best-effort: pluck a filesystem path out of a Claude tool's input so
+/// the renderer can show "Allow + add this directory" when it lies
+/// outside the session's current scope. Returns null for tools that don't
+/// carry a path (or a shell command we can't parse confidently).
+function extractRequestedPath(toolName: string, input: unknown): string | null {
+  if (!input || typeof input !== 'object') return null;
+  const obj = input as Record<string, unknown>;
+  const candidates: Array<string | undefined> = [
+    typeof obj.file_path === 'string' ? obj.file_path : undefined,
+    typeof obj.path === 'string' ? obj.path : undefined,
+    typeof obj.notebook_path === 'string' ? obj.notebook_path : undefined,
+  ];
+  for (const c of candidates) if (c && path.isAbsolute(c)) return c;
+  if (toolName === 'Bash' && typeof obj.command === 'string') {
+    const match = obj.command.match(/(^|[\s'"])(\/[\w.\-/]+)/);
+    if (match) return match[2];
+  }
+  return null;
+}
+
+/// True when `p` is inside the cwd or any of the session's explicit
+/// allowed dirs. We compare resolved paths so symlinks and trailing
+/// slashes don't cause false negatives.
+function isInsideAllowedDirs(p: string, cwd: string, allowed: string[]): boolean {
+  const abs = path.resolve(p);
+  const roots = [path.resolve(cwd), ...allowed.map((d) => path.resolve(d))];
+  for (const root of roots) {
+    if (abs === root) return true;
+    if (abs.startsWith(root + path.sep)) return true;
+  }
+  return false;
 }
 
 function geminiAssistantIsDelta(raw: string): boolean {

@@ -92,6 +92,18 @@ export function ensureWorkspaceSymlinkRoot(
   }
 }
 
+export function removeWorkspaceSymlinkRoot(
+  workspaceId: string,
+): { ok: true } | { ok: false; error: string } {
+  if (!workspaceId) return { ok: false, error: 'Missing workspaceId' };
+  try {
+    fs.rmSync(workspaceRootPath(workspaceId), { recursive: true, force: true });
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not remove workspace root' };
+  }
+}
+
 /// Write CLAUDE.md / AGENTS.md / GEMINI.md describing this workspace's
 /// member projects, so whichever CLI the user runs has an accurate map
 /// of what lives under cwd. Without this, asking "what projects are

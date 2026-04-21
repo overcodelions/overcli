@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { OllamaToolDefinition } from './ollama';
+import { OllamaToolCall, OllamaToolDefinition } from './ollama';
 
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_LIST_ENTRIES = 500;
@@ -102,6 +102,106 @@ export const OLLAMA_BUILTIN_TOOLS: OllamaToolDefinition[] = [
 export interface ToolExecutionResult {
   content: string;
   isError: boolean;
+}
+
+/// Some models (especially the smaller Qwen/Llama coder variants) emit
+/// tool calls as plain text in `message.content` instead of using
+/// Ollama's structured `tool_calls` field. We sniff the content for
+/// `{"name": "...", "arguments": {...}}` blocks (optionally wrapped in
+/// ```json fences) and promote them to real tool calls.
+///
+/// Returns `cleanedText` with the extracted blocks (and their fences)
+/// stripped out so the user doesn't see the raw JSON in the chat bubble.
+export function extractInlineToolCalls(text: string): {
+  calls: OllamaToolCall[];
+  cleanedText: string;
+} {
+  const calls: OllamaToolCall[] = [];
+  const removed: Array<{ start: number; end: number }> = [];
+
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] !== '{') {
+      i += 1;
+      continue;
+    }
+    const closeIdx = findBalancedBrace(text, i);
+    if (closeIdx < 0) break;
+    const candidate = text.slice(i, closeIdx + 1);
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(candidate);
+    } catch {
+      // Not JSON — advance past the open brace so we don't re-scan it.
+      i += 1;
+      continue;
+    }
+    const name = parsed?.name;
+    const argsObj = parsed?.arguments;
+    const isToolCall =
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof name === 'string' &&
+      name.length > 0 &&
+      argsObj &&
+      typeof argsObj === 'object' &&
+      !Array.isArray(argsObj);
+    if (!isToolCall) {
+      i = closeIdx + 1;
+      continue;
+    }
+    // Widen the strip range to swallow a surrounding ```json … ``` fence
+    // so the cleaned bubble reads naturally.
+    const fenceBefore = text.slice(0, i).match(/```(?:json)?\s*$/);
+    const fenceAfter = text.slice(closeIdx + 1).match(/^\s*```/);
+    const start = fenceBefore ? i - fenceBefore[0].length : i;
+    const end = closeIdx + 1 + (fenceAfter ? fenceAfter[0].length : 0);
+    calls.push({
+      id: `call_fallback_${calls.length}_${Date.now()}`,
+      name,
+      arguments: argsObj as Record<string, unknown>,
+    });
+    removed.push({ start, end });
+    i = end;
+  }
+
+  if (removed.length === 0) return { calls: [], cleanedText: text };
+
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const r of removed) {
+    parts.push(text.slice(cursor, r.start));
+    cursor = r.end;
+  }
+  parts.push(text.slice(cursor));
+  return { calls, cleanedText: parts.join('').replace(/\n{3,}/g, '\n\n').trim() };
+}
+
+/// Walks forward from an open brace and returns the index of the matching
+/// close brace, respecting string literals. Returns -1 if unbalanced.
+function findBalancedBrace(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i += 1) {
+    const c = text[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (c === '\\') escape = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === '{') depth += 1;
+    else if (c === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }
 
 /// Run a tool call against the project root. Never throws — every failure
