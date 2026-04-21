@@ -38,6 +38,8 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const enabled = enabledBackends(settings);
   const fallbackBackend = enabled[0] ?? 'claude';
   const backend: Backend = conv.primaryBackend ?? fallbackBackend;
+  const activePermissionMode = conv.permissionMode ?? 'default';
+  const pendingPermissionMode = conv.pendingPermissionMode;
   const configuredModel =
     backend === 'codex'
       ? conv.codexModel ?? conv.currentModel
@@ -65,6 +67,14 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
                   {shortModel(sessionModel)}
                 </HeaderBadge>
               )}
+              {pendingPermissionMode && (
+                <HeaderBadge
+                  title={`Permission mode changes to ${modeLabel(pendingPermissionMode)} on the next turn.`}
+                  style={{ color: permissionTone(pendingPermissionMode) ?? '#f7b267' }}
+                >
+                  Next turn: {modeLabel(pendingPermissionMode)}
+                </HeaderBadge>
+              )}
               {backend === 'codex' && codexRuntimeMode === 'exec' && (
                 <HeaderBadge
                   title={`Codex exec compatibility mode. Spawn flags: -s ${codexSandboxMode} -a ${codexApprovalPolicy}`}
@@ -76,6 +86,14 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           ) : configuredModel ? (
             <span className="text-[10px] text-ink-faint">{shortModel(configuredModel)}</span>
           ) : null}
+          {!locked && pendingPermissionMode && (
+            <HeaderBadge
+              title={`Permission mode changes to ${modeLabel(pendingPermissionMode)} on the next turn.`}
+              style={{ color: permissionTone(pendingPermissionMode) ?? '#f7b267' }}
+            >
+              Next turn: {modeLabel(pendingPermissionMode)}
+            </HeaderBadge>
+          )}
         </div>
         {conv.worktreePath && (
           <div className="text-[10px] text-ink-faint truncate">
@@ -109,9 +127,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 
 
         <IconPicker
-          icon={<ShieldIcon tone={permissionTone(conv.permissionMode ?? 'default')} />}
-          label={modeLabel(conv.permissionMode ?? 'default')}
-          tone={permissionTone(conv.permissionMode ?? 'default')}
+          icon={<ShieldIcon tone={permissionTone(pendingPermissionMode ?? activePermissionMode)} />}
+          label={modeLabel(pendingPermissionMode ?? activePermissionMode)}
+          tone={permissionTone(pendingPermissionMode ?? activePermissionMode)}
           items={(['plan', 'default', 'acceptEdits', 'bypassPermissions'] as PermissionMode[]).map((m) => ({
             value: m,
             label: modeLabel(m),

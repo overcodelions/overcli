@@ -5,6 +5,19 @@
 import { StreamEvent, StreamEventKind, ToolUseBlock } from '../../shared/types';
 import { randomUUID } from 'node:crypto';
 
+export function claudeToolResultText(raw: unknown): string {
+  if (typeof raw === 'string') return raw;
+  if (Array.isArray(raw)) {
+    return raw
+      .map((item: any) => (typeof item === 'string' ? item : typeof item?.text === 'string' ? item.text : ''))
+      .join('\n');
+  }
+  if (raw && typeof raw === 'object' && typeof (raw as any).text === 'string') {
+    return (raw as any).text;
+  }
+  return '';
+}
+
 /// Incoming JSON shape varies by `type`. We keep it loose (`any`) at the
 /// boundary and narrow as we branch — the real contract is with Anthropic's
 /// CLI, not our types.
@@ -90,26 +103,11 @@ export function parseClaudeLine(line: string): StreamEvent | null {
       const content: any[] = Array.isArray(msg.content) ? msg.content : [];
       const results = content
         .filter((b: any) => b?.type === 'tool_result')
-        .map((b: any) => {
-          const raw = b.content;
-          let text: string;
-          if (typeof raw === 'string') {
-            text = raw;
-          } else if (Array.isArray(raw)) {
-            text = raw
-              .map((r: any) => (typeof r === 'string' ? r : typeof r?.text === 'string' ? r.text : ''))
-              .join('\n');
-          } else if (raw && typeof raw === 'object' && typeof raw.text === 'string') {
-            text = raw.text;
-          } else {
-            text = '';
-          }
-          return {
-            id: b.tool_use_id ?? b.id ?? '',
-            content: text,
-            isError: !!b.is_error,
-          };
-        });
+        .map((b: any) => ({
+          id: b.tool_use_id ?? b.id ?? '',
+          content: claudeToolResultText(b.content),
+          isError: !!b.is_error,
+        }));
       if (results.length === 0) {
         // Plain user message echo — not useful to display again.
         return null;

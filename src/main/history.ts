@@ -8,6 +8,7 @@ import os from 'node:os';
 import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/types';
 import { randomUUID } from 'node:crypto';
 import { loadOllamaSession } from './ollamaStore';
+import { claudeToolResultText } from './parsers/claude';
 
 export function loadHistory(args: {
   backend: Backend;
@@ -109,7 +110,7 @@ function parseClaudeHistoryLine(line: string): StreamEvent[] {
       .filter((b: any) => b?.type === 'tool_result')
       .map((b: any) => ({
         id: b.tool_use_id ?? '',
-        content: typeof b.content === 'string' ? b.content : JSON.stringify(b.content ?? ''),
+        content: claudeToolResultText(b.content),
         isError: !!b.is_error,
       }));
     if (results.length) return [event({ type: 'toolResult', results }, trimmed, timestamp)];

@@ -170,6 +170,10 @@ export interface Conversation {
   turnCount: number;
   currentModel: string;
   permissionMode: PermissionMode;
+  /// When set, the user has queued a permission-mode change that should
+  /// apply the next time they send a turn instead of interrupting the
+  /// current or idle session immediately.
+  pendingPermissionMode?: PermissionMode;
   worktreePath?: string;
   branchName?: string;
   baseBranch?: string;
