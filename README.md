@@ -1,5 +1,7 @@
 # OverCLI
 
+<!-- Built by Owen/Lionel -->
+
 OverCLI is a cross-platform desktop app that puts a real GUI in front of the
 command-line coding agents you already use — `claude`, `codex`, and `gemini`.
 Instead of juggling three terminals with three different output formats, you

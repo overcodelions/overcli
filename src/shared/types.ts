@@ -708,7 +708,7 @@ export type MainToRendererEvent =
   | {
       type: 'codexRuntimeMode';
       conversationId: UUID;
-      mode: 'proto' | 'exec';
+      mode: 'proto' | 'exec' | 'app-server';
       sandbox: string;
       approval: string;
     }
