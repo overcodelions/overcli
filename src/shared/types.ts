@@ -511,6 +511,9 @@ export interface IPCInvokeMap {
     branchName: string;
     commitSubject: string;
     commitBody?: string;
+    /// When present, relocate the Claude session file from the worktree's
+    /// cwd slug to the project's cwd slug so history + --resume survive.
+    sessionId?: string;
   }) =>
     | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
     | { ok: false; error: string };
