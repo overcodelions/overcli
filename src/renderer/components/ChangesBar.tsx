@@ -37,8 +37,8 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
         <span className="text-ink font-medium">
           {files.length} file{files.length === 1 ? '' : 's'} changed
         </span>
-        <span className="text-green-400">+{totals.additions}</span>
-        <span className="text-red-400">-{totals.deletions}</span>
+        <span className="diff-add-ink">+{totals.additions}</span>
+        <span className="diff-remove-ink">-{totals.deletions}</span>
       </button>
       {expanded && (
         <div className="border-t border-card">
@@ -52,8 +52,8 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
                 {f.status.trim() || '??'}
               </span>
               <code className="text-ink flex-1 truncate">{f.path}</code>
-              <span className="text-green-400 text-[11px]">+{Number(f.additions) || 0}</span>
-              <span className="text-red-400 text-[11px]">-{Number(f.deletions) || 0}</span>
+              <span className="diff-add-ink text-[11px]">+{Number(f.additions) || 0}</span>
+              <span className="diff-remove-ink text-[11px]">-{Number(f.deletions) || 0}</span>
             </button>
           ))}
         </div>

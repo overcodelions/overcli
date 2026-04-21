@@ -1050,8 +1050,8 @@ function CommitButton({ conversationId }: { conversationId: UUID }) {
               (flashKey > 0 ? 'git-stats-flash' : '')
             }
           >
-            <span className="text-emerald-400">+{insertions}</span>
-            <span className="text-red-400">−{deletions}</span>
+            <span className="diff-add-ink">+{insertions}</span>
+            <span className="diff-remove-ink">−{deletions}</span>
           </span>
         )}
       </button>
