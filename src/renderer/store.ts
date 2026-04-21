@@ -1066,45 +1066,22 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
   async setPermissionMode(id, mode) {
-    const prevMode = (() => {
+    const prev = (() => {
       const s = get();
       const c = findConversation(s, id);
-      return c?.permissionMode ?? 'default';
+      return {
+        mode: c?.permissionMode ?? 'default',
+        pending: c?.pendingPermissionMode,
+      };
     })();
-    mutateConversation(set, get, id, (c) => ({ ...c, permissionMode: mode }));
-    await saveConversationState(get);
-
-    // claude's --permission-mode is a spawn-time flag; changing it
-    // mid-session without respawning leaves the running CLI in the old
-    // mode. Tell the runner to tear down its subprocess so the next
-    // `send` spawns fresh with the new flag. The CLI's --resume logic
-    // in send() restores the conversation transcript on that respawn
-    // so the user doesn't lose context.
-    if (prevMode !== mode) {
-      await window.overcli.invoke('runner:newConversation', { conversationId: id });
-    }
-
-    // If the user flipped to a permissive mode while a permission card
-    // is waiting for an answer, treat the flip as implicit approval —
-    // otherwise claude stays blocked because the card's Allow button
-    // was never clicked.
-    if (mode === 'acceptEdits' || mode === 'bypassPermissions') {
-      const runner = get().runners[id];
-      if (runner) {
-        for (const e of runner.events) {
-          if (e.kind.type === 'permissionRequest' && !e.kind.info.decided) {
-            void get().respondPermission(id, e.kind.info.requestId, true);
-          } else if (e.kind.type === 'codexApproval' && !e.kind.info.decided) {
-            void get().respondCodexApproval(
-              id,
-              e.kind.info.callId,
-              e.kind.info.kind,
-              true,
-            );
-          }
-        }
+    mutateConversation(set, get, id, (c) => {
+      if (prev.mode === mode) {
+        if (!prev.pending) return c;
+        return { ...c, pendingPermissionMode: undefined };
       }
-    }
+      return { ...c, pendingPermissionMode: mode };
+    });
+    await saveConversationState(get);
   },
   async setBackendModel(id, backend, model) {
     mutateConversation(set, get, id, (c) => {
@@ -1181,6 +1158,8 @@ export const useStore = create<StoreState>((set, get) => ({
       }));
       return;
     }
+    const effectivePermissionMode = conv.pendingPermissionMode ?? conv.permissionMode ?? 'default';
+
     let model =
       backend === 'codex'
         ? conv.codexModel ?? conv.currentModel
@@ -1218,13 +1197,21 @@ export const useStore = create<StoreState>((set, get) => ({
       }));
     }
 
+    if (conv.pendingPermissionMode) {
+      mutateConversation(set, get, conversationId, (c) => ({
+        ...c,
+        permissionMode: c.pendingPermissionMode ?? c.permissionMode,
+        pendingPermissionMode: undefined,
+      }));
+    }
+
     await window.overcli.invoke('runner:send', {
       conversationId,
       prompt,
       backend,
       cwd,
       model: model ?? '',
-      permissionMode: conv.permissionMode ?? 'default',
+      permissionMode: effectivePermissionMode,
       sessionId: conv.sessionId,
       effortLevel: conv.effortLevel,
       codexRolloutPaths: conv.codexRolloutPaths,
