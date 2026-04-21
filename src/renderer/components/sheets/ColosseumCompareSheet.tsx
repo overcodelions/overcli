@@ -116,8 +116,8 @@ export function ColosseumCompareSheet({ colosseumId }: { colosseumId: UUID }) {
                     View chat
                   </button>
                   <div className="text-xs">
-                    <span className="text-green-400">+{add}</span>{' '}
-                    <span className="text-red-400">-{del}</span>
+                    <span className="diff-add-ink">+{add}</span>{' '}
+                    <span className="diff-remove-ink">-{del}</span>
                   </div>
                   <button
                     onClick={() => openSheet({ type: 'worktreeDiff', convId: c.id })}
@@ -136,8 +136,8 @@ export function ColosseumCompareSheet({ colosseumId }: { colosseumId: UUID }) {
                   files.map((f) => (
                     <div key={f.path} className="flex items-center gap-2 px-3 py-1 text-[11px] border-b border-card last:border-b-0">
                       <code className="flex-1 truncate">{f.path}</code>
-                      <span className="text-green-400">+{f.additions}</span>
-                      <span className="text-red-400">-{f.deletions}</span>
+                      <span className="diff-add-ink">+{f.additions}</span>
+                      <span className="diff-remove-ink">-{f.deletions}</span>
                     </div>
                   ))
                 )}

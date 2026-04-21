@@ -325,7 +325,7 @@ function filterRendered(
   showToolActivity: boolean,
   toolUseIndex: Map<string, ToolUseBlock>,
 ): StreamEvent[] {
-  return events.filter((e) => {
+  const keep = events.map((e) => {
     const t = e.kind.type;
     if (
       t === 'rateLimit' ||
@@ -361,9 +361,14 @@ function filterRendered(
       }
       if (t === 'assistant') {
         const info = e.kind.info;
+        // Match AssistantBubble's own render-gate — an assistant event
+        // with `thinking: [""]` or whitespace-only thinking passes a naive
+        // length check but renders nothing, and that phantom peer kept
+        // lonely `result` captions on screen.
+        const hasRenderableThinking = info.thinking.some((x) => x.trim().length > 0);
         if (
           !info.text.trim() &&
-          info.thinking.length === 0 &&
+          !hasRenderableThinking &&
           !info.hasOpaqueReasoning &&
           !hasAlwaysVisibleTool(info.toolUses)
         ) {
@@ -373,6 +378,39 @@ function filterRendered(
     }
     return true;
   });
+
+  // Hide the per-turn usage caption when its entire turn is hidden.
+  // Counts anything produced by the assistant side of the turn
+  // (assistant bubbles, tool results, permission prompts, notices, …) —
+  // `localUser` is excluded since it belongs to the preceding turn from
+  // the caption's perspective. Error results always stay visible so a
+  // failure isn't silently dropped.
+  if (!showToolActivity) {
+    let turnStart = 0;
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (ev.kind.type === 'localUser') {
+        turnStart = i + 1;
+        continue;
+      }
+      if (ev.kind.type !== 'result') continue;
+      if (!keep[i] || ev.kind.info.isError) {
+        turnStart = i + 1;
+        continue;
+      }
+      let hasVisiblePeer = false;
+      for (let j = turnStart; j < i; j++) {
+        if (keep[j] && events[j].kind.type !== 'localUser') {
+          hasVisiblePeer = true;
+          break;
+        }
+      }
+      if (!hasVisiblePeer) keep[i] = false;
+      turnStart = i + 1;
+    }
+  }
+
+  return events.filter((_, i) => keep[i]);
 }
 
 /// Friendly short label for the most recently-started tool_use that

@@ -42,6 +42,7 @@ export type ActiveSheet =
   | { type: 'workspaceAgentReview'; coordinatorId: UUID }
   | { type: 'archiveConversation'; convId: UUID }
   | { type: 'archiveAllInProject'; projectId: UUID }
+  | { type: 'archiveAllInWorkspace'; workspaceId: UUID }
   | { type: 'fileFinder'; rootPath: string }
   | { type: 'quickSwitcher' };
 
@@ -216,6 +217,7 @@ interface StoreState {
   >;
   setConversationHidden(id: UUID, hidden: boolean): Promise<void>;
   archiveInactiveInProject(projectId: UUID): Promise<number>;
+  archiveInactiveInWorkspace(workspaceId: UUID): Promise<number>;
   setPrimaryBackend(id: UUID, backend: Backend): Promise<void>;
   setPermissionMode(id: UUID, mode: PermissionMode): Promise<void>;
   setBackendModel(id: UUID, backend: Backend, model: string): Promise<void>;
@@ -1227,6 +1229,37 @@ export const useStore = create<StoreState>((set, get) => ({
       ),
     }));
     await get().saveProjects();
+    return ids.length;
+  },
+
+  async archiveInactiveInWorkspace(workspaceId) {
+    const state = get();
+    const workspace = state.workspaces.find((w) => w.id === workspaceId);
+    if (!workspace) return 0;
+    const selectedId = state.selectedConversationId;
+    const ids = (workspace.conversations ?? [])
+      .filter(
+        (c) =>
+          !c.hidden &&
+          c.id !== selectedId &&
+          !(state.runners[c.id]?.isRunning ?? false),
+      )
+      .map((c) => c.id);
+    if (!ids.length) return 0;
+    const idSet = new Set(ids);
+    set((s) => ({
+      workspaces: s.workspaces.map((w) =>
+        w.id === workspaceId
+          ? {
+              ...w,
+              conversations: (w.conversations ?? []).map((c) =>
+                idSet.has(c.id) ? { ...c, hidden: true } : c,
+              ),
+            }
+          : w,
+      ),
+    }));
+    await get().saveWorkspaces();
     return ids.length;
   },
 

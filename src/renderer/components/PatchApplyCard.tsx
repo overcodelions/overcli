@@ -31,8 +31,8 @@ export function PatchApplyCard({ info }: { info: PatchApplyInfo }) {
         </span>
         <span className="text-ink-faint">{info.files.length} file{info.files.length === 1 ? '' : 's'}</span>
         <span className="ml-auto text-[10px]">
-          <span className="text-green-400">+{totalAdd}</span>{' '}
-          <span className="text-red-400">-{totalDel}</span>
+          <span className="diff-add-ink">+{totalAdd}</span>{' '}
+          <span className="diff-remove-ink">-{totalDel}</span>
         </span>
       </button>
       {expanded && (
@@ -81,8 +81,8 @@ function PatchFileRow({ file }: { file: PatchFileChange }) {
           <span className="text-[10px] text-ink-faint">from {file.movedFrom}</span>
         )}
         <span className="text-[10px]">
-          <span className="text-green-400">+{file.additions}</span>{' '}
-          <span className="text-red-400">-{file.deletions}</span>
+          <span className="diff-add-ink">+{file.additions}</span>{' '}
+          <span className="diff-remove-ink">-{file.deletions}</span>
         </span>
       </div>
       {hasDiff && open && (

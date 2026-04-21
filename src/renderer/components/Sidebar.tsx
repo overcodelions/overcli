@@ -587,6 +587,11 @@ function WorkspaceGroup({
   const convs = (workspace.conversations ?? []).filter((c) => !c.hidden);
   const plain = convs.filter((c) => !isAgentConversation(c));
   const agents = convs.filter(isAgentConversation);
+  const openSheet = useStore((s) => s.openSheet);
+  const runners = useStore((s) => s.runners);
+  const archivableCount = (workspace.conversations ?? []).filter(
+    (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
+  ).length;
 
   const handleRemove = () => {
     const message = [
@@ -672,6 +677,15 @@ function WorkspaceGroup({
             >
               + agent
             </button>
+            {archivableCount > 0 && (
+              <button
+                onClick={() => openSheet({ type: 'archiveAllInWorkspace', workspaceId: workspace.id })}
+                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong ml-auto"
+                title="Archive all inactive conversations in this workspace"
+              >
+                archive all
+              </button>
+            )}
           </div>
         </div>
       )}

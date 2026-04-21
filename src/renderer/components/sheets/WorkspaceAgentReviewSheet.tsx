@@ -308,8 +308,8 @@ function MemberCard({
           )}
           {status && (status.insertions > 0 || status.deletions > 0) && (
             <div>
-              <span className="text-green-400">+{status.insertions}</span>{' '}
-              <span className="text-red-400">−{status.deletions}</span>
+              <span className="diff-add-ink">+{status.insertions}</span>{' '}
+              <span className="diff-remove-ink">−{status.deletions}</span>
             </div>
           )}
           {status && status.commitsAhead > 0 && (

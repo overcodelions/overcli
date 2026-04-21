@@ -60,6 +60,9 @@ export function SheetHost() {
         {sheet.type === 'archiveAllInProject' && (
           <ArchiveAllSheet projectId={sheet.projectId} />
         )}
+        {sheet.type === 'archiveAllInWorkspace' && (
+          <ArchiveAllSheet workspaceId={sheet.workspaceId} />
+        )}
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet />}
       </div>

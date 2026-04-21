@@ -4,19 +4,33 @@ import { Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { isAgentConversation } from '../Sidebar';
 
-export function ArchiveAllSheet({ projectId }: { projectId: UUID }) {
-  const project = useStore((s) => s.projects.find((p) => p.id === projectId));
+type Props =
+  | { projectId: UUID; workspaceId?: undefined }
+  | { workspaceId: UUID; projectId?: undefined };
+
+export function ArchiveAllSheet(props: Props) {
+  const project = useStore((s) =>
+    props.projectId ? s.projects.find((p) => p.id === props.projectId) : undefined,
+  );
+  const workspace = useStore((s) =>
+    props.workspaceId ? s.workspaces.find((w) => w.id === props.workspaceId) : undefined,
+  );
   const runners = useStore((s) => s.runners);
   const selectedId = useStore((s) => s.selectedConversationId);
   const archiveInactiveInProject = useStore((s) => s.archiveInactiveInProject);
+  const archiveInactiveInWorkspace = useStore((s) => s.archiveInactiveInWorkspace);
   const openSheet = useStore((s) => s.openSheet);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const owner = project ?? workspace;
+  const ownerLabel = project ? 'project' : 'workspace';
+  const conversations = project?.conversations ?? workspace?.conversations ?? [];
+
   const { targets, skipped } = useMemo(() => {
     const targets: Conversation[] = [];
     const skipped: Array<{ conv: Conversation; reason: string }> = [];
-    for (const c of project?.conversations ?? []) {
+    for (const c of conversations) {
       if (c.hidden) continue;
       if (c.id === selectedId) {
         skipped.push({ conv: c, reason: 'open' });
@@ -29,9 +43,9 @@ export function ArchiveAllSheet({ projectId }: { projectId: UUID }) {
       targets.push(c);
     }
     return { targets, skipped };
-  }, [project, selectedId, runners]);
+  }, [conversations, selectedId, runners]);
 
-  if (!project) return null;
+  if (!owner) return null;
 
   const agentCount = targets.filter(isAgentConversation).length;
   const plainCount = targets.length - agentCount;
@@ -40,7 +54,11 @@ export function ArchiveAllSheet({ projectId }: { projectId: UUID }) {
     setWorking(true);
     setError(null);
     try {
-      await archiveInactiveInProject(projectId);
+      if (props.projectId) {
+        await archiveInactiveInProject(props.projectId);
+      } else {
+        await archiveInactiveInWorkspace(props.workspaceId);
+      }
       openSheet(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -53,7 +71,8 @@ export function ArchiveAllSheet({ projectId }: { projectId: UUID }) {
       <div>
         <div className="text-lg font-semibold">Archive inactive conversations</div>
         <div className="text-xs text-ink-faint">
-          Hides conversations in <span className="text-ink-muted">{project.name}</span> from the sidebar.
+          Hides conversations in the {ownerLabel}{' '}
+          <span className="text-ink-muted">{owner.name}</span> from the sidebar.
           You can restore them later from the Archived section. Agent worktrees and branches are left untouched.
         </div>
       </div>
