@@ -81,7 +81,7 @@ export interface RunnerState {
   historyLoaded: boolean;
   historyLoading: boolean;
   /// Codex runtime mode/flags for the currently running subprocess.
-  codexRuntimeMode?: 'proto' | 'exec';
+  codexRuntimeMode?: 'proto' | 'exec' | 'app-server';
   codexSandboxMode?: string;
   codexApprovalPolicy?: string;
 }

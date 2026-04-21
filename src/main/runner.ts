@@ -22,7 +22,17 @@ import {
   Attachment,
 } from '../shared/types';
 import { parseClaudeLine } from './parsers/claude';
-import { parseCodexProtoLine, makeCodexParserState, CodexParserState } from './parsers/codex';
+import {
+  CodexAppServerParserState,
+  makeCodexAppServerParserState,
+  parseCodexAppServerNotification,
+  translateApprovalRequest,
+} from './parsers/codex-app-server';
+import {
+  CodexAppServerApprovalPolicy,
+  CodexAppServerClient,
+  CodexAppServerSandboxMode,
+} from './codex-app-server';
 import {
   makeAssistantEvent,
   makeAssistantEventWithTools,
@@ -71,20 +81,18 @@ interface PermissionResponse {
 }
 
 interface ActiveProcess {
-  proc: ChildProcessWithoutNullStreams;
+  proc?: ChildProcessWithoutNullStreams;
   backend: Backend;
   sessionId?: string;
   launchModel: string;
   launchPermissionMode: PermissionMode;
   stdoutBuffer: string;
   stderrBuffer: string;
-  codexState?: CodexParserState;
-  codexMode?: 'proto' | 'exec';
+  codexAppServerState?: CodexAppServerParserState;
+  codexAppServer?: CodexAppServerClient;
+  codexMode?: 'exec' | 'app-server';
   codexExecEventId?: string;
   codexExecRevision: number;
-  /// Codex proto: maps our internal request id onto the proto `id` field
-  /// so resuming codex exec responses route back to the live subprocess.
-  lastCodexMsgId: number;
   /// Pending permission/approval handlers indexed by requestId / callId.
   /// We look them up on response so the renderer's allow/deny decisions
   /// reach the live subprocess.
@@ -191,12 +199,13 @@ export class RunnerManager {
   private emit: Emit;
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
-  private codexProtoSupport = new Map<string, boolean>();
+  private codexCapabilities = new Map<string, { hasAppServer: boolean }>();
   private codexExecNoticeByConversation = new Set<UUID>();
   /// codex exec has no --resume: every turn spawns a fresh session that
-  /// knows nothing about prior exchanges. On Windows (where proto isn't
-  /// available) we stitch context back by prepending the accumulated
-  /// transcript to the next prompt. Cleared on newConversation().
+  /// knows nothing about prior exchanges. The exec fallback (used for
+  /// pre-0.30 codex binaries that lack app-server) stitches context back
+  /// by prepending the accumulated transcript to the next prompt.
+  /// Cleared on newConversation().
   private codexExecTranscriptByConversation = new Map<
     UUID,
     { user: string; assistant: string }[]
@@ -424,15 +433,10 @@ export class RunnerManager {
       cb(approved);
       active.pendingCodexApprovals.delete(callId);
     }
-    active.lastCodexMsgId += 1;
-    const op =
-      kind === 'exec'
-        ? { type: 'exec_approval', id: callId, decision: approved ? 'approved' : 'denied' }
-        : { type: 'apply_patch_approval', id: callId, decision: approved ? 'approved' : 'denied' };
-    const msg = JSON.stringify({ id: String(active.lastCodexMsgId), op });
-    try {
-      active.proc.stdin.write(msg + '\n');
-    } catch {}
+    // The pendingCodexApprovals callback (registered in
+    // handleCodexAppServerRequest) already routed the JSON-RPC response
+    // through the app-server client. Other codex modes (exec) don't have
+    // an approval surface, so there's nothing more to do here.
   }
 
   killAll(): void {
@@ -447,12 +451,16 @@ export class RunnerManager {
   private killProc(conversationId: UUID): void {
     const active = this.procs.get(conversationId);
     if (!active) return;
-    try {
-      active.proc.stdin.end();
-    } catch {}
-    try {
-      active.proc.kill('SIGTERM');
-    } catch {}
+    if (active.codexMode === 'app-server' && active.codexAppServer) {
+      active.codexAppServer.kill();
+    } else if (active.proc) {
+      try {
+        active.proc.stdin.end();
+      } catch {}
+      try {
+        active.proc.kill('SIGTERM');
+      } catch {}
+    }
     this.procs.delete(conversationId);
     if (active.backend === 'claude') {
       this.claudeBroker.unregisterSession(conversationId);
@@ -478,15 +486,39 @@ export class RunnerManager {
 
     try {
       const existing = this.procs.get(convId);
-      if (
-        existing &&
+      const paramsChanged =
+        !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchModel !== args.model ||
-          existing.cwd !== args.cwd)
-      ) {
+          existing.cwd !== args.cwd);
+      // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
+      // per turn via turn/start params, so a permission-mode (or model/cwd) change
+      // should NOT kill the thread — that would lose conversation history.
+      // The runtime stamp on the active record is updated below so subsequent
+      // change-detection compares against the latest values.
+      const canHotSwap =
+        !!existing &&
+        existing.backend === 'codex' &&
+        existing.codexMode === 'app-server';
+      if (paramsChanged && !canHotSwap) {
         this.killProc(convId);
       }
       const active = this.procs.get(convId) ?? this.spawnFor(args);
+      // App-server hot-swap: refresh the launch stamp so subsequent
+      // sends compare against the latest params, and re-emit codexRuntimeMode
+      // so the header shows the new sandbox/approval pair immediately.
+      if (canHotSwap && paramsChanged) {
+        active.launchPermissionMode = args.permissionMode;
+        active.launchModel = args.model;
+        const perms = codexTransportPermissions(args.permissionMode);
+        this.emit({
+          type: 'codexRuntimeMode',
+          conversationId: convId,
+          mode: 'app-server',
+          sandbox: perms.sandbox,
+          approval: perms.approval,
+        });
+      }
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
@@ -506,7 +538,14 @@ export class RunnerManager {
         active.collabRoundsInBurst = 0;
       }
       this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
+      if (args.backend === 'codex' && active.codexMode === 'app-server' && active.codexAppServer) {
+        void this.sendCodexAppServerTurn(convId, active, args);
+        return { ok: true };
+      }
       const envelope = this.buildEnvelope(args, active);
+      if (!active.proc) {
+        throw new Error('subprocess transport is not available');
+      }
       if (args.backend === 'gemini' || (args.backend === 'codex' && active.codexMode === 'exec')) {
         active.proc.stdin.end(envelope + '\n');
       } else {
@@ -1425,13 +1464,12 @@ export class RunnerManager {
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
     const env = this.buildEnv(binary);
-    const codexPerms = args.backend === 'codex' ? codexPermissionMapping(args.permissionMode) : null;
-    const codexMode =
-      args.backend === 'codex'
-        ? process.platform === 'win32' && !this.supportsCodexProto(binary, env)
-          ? 'exec'
-          : 'proto'
-        : undefined;
+    const codexPerms = args.backend === 'codex' ? codexTransportPermissions(args.permissionMode) : null;
+    const codexMode: 'exec' | 'app-server' | undefined =
+      args.backend === 'codex' ? this.pickCodexMode(binary, env) : undefined;
+    if (args.backend === 'codex' && codexMode === 'app-server' && codexPerms) {
+      return this.spawnCodexAppServer(args, binary, env, codexPerms);
+    }
     const spawnArgs = this.buildArgs(args, codexMode);
     const shell = backendNeedsShell(binary);
     const proc = spawn(binary, spawnArgs, {
@@ -1448,11 +1486,9 @@ export class RunnerManager {
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
-      codexState: args.backend === 'codex' ? makeCodexParserState() : undefined,
       codexMode,
       codexExecEventId: undefined,
       codexExecRevision: 0,
-      lastCodexMsgId: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
       currentUserPrompt: args.prompt,
@@ -1486,71 +1522,12 @@ export class RunnerManager {
     proc.stdout.on('data', (chunk: string) => this.handleStdout(args.conversationId, active, chunk));
     proc.stderr.setEncoding('utf-8');
     proc.stderr.on('data', (chunk: string) => this.handleStderr(args.conversationId, active, chunk));
-    proc.on('close', (code) => {
-      // Only clear if this is still the current process for this conversation
-      if (this.procs.get(args.conversationId) === active) {
-        this.procs.delete(args.conversationId);
-      }
-      if (active.backend === 'claude') {
-        this.claudeBroker.unregisterSession(args.conversationId);
-        this.claudeMcpByConv.delete(args.conversationId);
-      }
-      this.emit({
-        type: 'running',
-        conversationId: args.conversationId,
-        isRunning: false,
-      });
-      if (active.backend === 'codex' && active.codexMode === 'exec') {
-        this.emit({
-          type: 'stream',
-          conversationId: args.conversationId,
-          events: [
-            {
-              id: randomUUID(),
-              timestamp: Date.now(),
-              raw: '',
-              kind: {
-                type: 'result',
-                info: {
-                  subtype: code === 0 ? 'success' : 'error',
-                  isError: code !== 0,
-                  durationMs: 0,
-                  totalCostUSD: 0,
-                  modelUsage: {},
-                },
-              },
-              revision: 0,
-            } as StreamEvent,
-          ],
-        });
-        if (code === 0) {
-          const snap = extractCodexExecSnapshot(active.currentAssistantText);
-          const userText = active.currentUserPrompt.trim();
-          const assistantText = snap.text.trim();
-          if (userText && assistantText) {
-            const transcript =
-              this.codexExecTranscriptByConversation.get(args.conversationId) ?? [];
-            transcript.push({ user: userText, assistant: assistantText });
-            this.codexExecTranscriptByConversation.set(args.conversationId, transcript);
-          }
-          void this.maybeRunReviewer(args.conversationId, active);
-        }
-      }
-      if (code != null && code !== 0 && code !== 143) {
-        const tail = (active.stderrBuffer || active.stdoutBuffer || active.currentAssistantText || '').slice(-500);
-        this.emit({
-          type: 'error',
-          conversationId: args.conversationId,
-          message:
-            `${args.backend} exited with status ${code}. ` +
-            (tail ? `Recent stderr: ${tail}` : 'Run the CLI manually for details.'),
-        });
-      }
-    });
+    proc.on('close', (code) => this.handleActiveClose(args.conversationId, active, code));
     return active;
   }
 
-  private buildArgs(args: SendArgs, codexMode?: 'proto' | 'exec'): string[] {
+
+  private buildArgs(args: SendArgs, codexMode?: 'proto' | 'exec' | 'app-server'): string[] {
     switch (args.backend) {
       case 'claude': {
         const a: string[] = [
@@ -1579,17 +1556,13 @@ export class RunnerManager {
         return a;
       }
       case 'codex': {
-        const { sandbox, approval } = codexPermissionMapping(args.permissionMode);
-        if (codexMode === 'exec') {
-          const a: string[] = [];
-          if (args.model) a.push('-m', args.model);
-          a.push('-s', sandbox, '-a', approval, 'exec', '-');
-          return a;
-        }
-        const a: string[] = ['proto'];
-        if (args.model) a.push('-c', `model=${args.model}`);
-        a.push('-c', `sandbox_mode="${sandbox}"`);
-        a.push('-c', `approval_policy="${approval}"`);
+        // app-server is handled in spawnFor and never reaches buildArgs.
+        // The remaining path is the exec --json fallback for binaries that
+        // don't support app-server.
+        const { sandbox, approval } = codexTransportPermissions(args.permissionMode);
+        const a: string[] = [];
+        if (args.model) a.push('-m', args.model);
+        a.push('-s', sandbox, '-a', approval, 'exec', '-');
         return a;
       }
       case 'gemini': {
@@ -1631,27 +1604,15 @@ export class RunnerManager {
         });
       }
       case 'codex': {
-        if (active.codexMode === 'exec') {
-          const transcript = this.codexExecTranscriptByConversation.get(args.conversationId);
-          if (!transcript || transcript.length === 0) return args.prompt;
-          const history = transcript
-            .map((t) => `User: ${t.user}\n\nAssistant: ${t.assistant}`)
-            .join('\n\n---\n\n');
-          return `Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
-        }
-        active.lastCodexMsgId += 1;
-        // codex proto wants local file paths, not base64. Write each
-        // attachment to a temp file and reference by path.
-        const items: any[] = [];
-        if (args.prompt) items.push({ type: 'text', text: args.prompt });
-        for (const a of attachments) {
-          const p = writeAttachmentToTemp(a);
-          items.push({ type: 'local_image', path: p });
-        }
-        return JSON.stringify({
-          id: String(active.lastCodexMsgId),
-          op: { type: 'user_input', items },
-        });
+        // app-server has its own send path (sendCodexAppServerTurn) and
+        // never reaches buildEnvelope. Only exec mode lands here, and exec
+        // has no --resume so we prepend the local transcript for context.
+        const transcript = this.codexExecTranscriptByConversation.get(args.conversationId);
+        if (!transcript || transcript.length === 0) return args.prompt;
+        const history = transcript
+          .map((t) => `User: ${t.user}\n\nAssistant: ${t.assistant}`)
+          .join('\n\n---\n\n');
+        return `Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
       }
       case 'gemini':
         // Gemini headless mode here is text-only for now, so image
@@ -1739,9 +1700,9 @@ export class RunnerManager {
         const evt = parseClaudeLine(raw);
         if (evt) emitted.push(evt);
       } else if (active.backend === 'codex') {
-        const result = parseCodexProtoLine(raw, active.codexState!);
-        for (const evt of result.events) emitted.push(evt);
-        if (result.sessionConfigured) sessionConfigured = result.sessionConfigured;
+        // codex stdout in app-server mode is consumed by CodexAppServerClient;
+        // exec mode produces a text stream that's handled in the early-return
+        // branch above (extractCodexExecSnapshot). Nothing to do here.
       } else {
         const { parseGeminiLine } = require('./parsers/gemini');
         const evt = parseGeminiLine(raw);
@@ -1762,10 +1723,16 @@ export class RunnerManager {
         sessionConfigured = { sessionId: e.kind.info.sessionId };
       }
     }
+    this.handleParsedEvents(convId, active, emitted, sessionConfigured);
+  }
+
+  private handleParsedEvents(
+    convId: UUID,
+    active: ActiveProcess,
+    emitted: StreamEvent[],
+    sessionConfigured?: { sessionId: string; rolloutPath?: string },
+  ): void {
     if (emitted.length) {
-      // Walk the new events once to update permission maps, activity
-      // label, turn-end signal, and the per-turn digest the reviewer
-      // hook consumes.
       let turnEnded = false;
       let nextActivity: string | undefined;
       for (const e of emitted) {
@@ -1774,22 +1741,16 @@ export class RunnerManager {
         } else if (e.kind.type === 'result') {
           turnEnded = true;
         } else if (e.kind.type === 'assistant') {
-          if (e.kind.info.text) {
-            // Accumulate assistant text for the reviewer digest. Claude
-            // emits partial assistants as streaming deltas plus one full
-            // snapshot on finish; we take whichever is longer so we
-            // don't truncate.
-            if (e.kind.info.text.length > active.currentAssistantText.length) {
-              active.currentAssistantText = e.kind.info.text;
-            }
+          if (e.kind.info.text && e.kind.info.text.length > active.currentAssistantText.length) {
+            active.currentAssistantText = e.kind.info.text;
           }
           for (const t of e.kind.info.toolUses) {
             const line = summarizeToolUse(t.name, t.inputJSON, t.filePath);
             if (line) active.currentToolActivity.push(line);
           }
           if (e.kind.info.toolUses.length > 0) nextActivity = 'Running tools…';
-          else if (e.kind.info.text.length > 0) nextActivity = 'Writing…';
-        } else if (e.kind.type === 'toolResult') {
+          else if (e.kind.info.text.length > 0 || e.kind.info.thinking.length > 0) nextActivity = 'Writing…';
+        } else if (e.kind.type === 'toolResult' || e.kind.type === 'patchApply') {
           nextActivity = 'Reading tool output…';
         }
       }
@@ -1814,6 +1775,66 @@ export class RunnerManager {
         conversationId: convId,
         sessionId: sessionConfigured.sessionId,
         rolloutPath: sessionConfigured.rolloutPath,
+      });
+    }
+  }
+
+  private handleActiveClose(conversationId: UUID, active: ActiveProcess, code: number | null): void {
+    if (this.procs.get(conversationId) === active) {
+      this.procs.delete(conversationId);
+    }
+    if (active.backend === 'claude') {
+      this.claudeBroker.unregisterSession(conversationId);
+      this.claudeMcpByConv.delete(conversationId);
+    }
+    this.emit({
+      type: 'running',
+      conversationId,
+      isRunning: false,
+    });
+    if (active.backend === 'codex' && active.codexMode === 'exec') {
+      this.emit({
+        type: 'stream',
+        conversationId,
+        events: [
+          {
+            id: randomUUID(),
+            timestamp: Date.now(),
+            raw: '',
+            kind: {
+              type: 'result',
+              info: {
+                subtype: code === 0 ? 'success' : 'error',
+                isError: code !== 0,
+                durationMs: 0,
+                totalCostUSD: 0,
+                modelUsage: {},
+              },
+            },
+            revision: 0,
+          } as StreamEvent,
+        ],
+      });
+      if (code === 0) {
+        const snap = extractCodexExecSnapshot(active.currentAssistantText);
+        const userText = active.currentUserPrompt.trim();
+        const assistantText = snap.text.trim();
+        if (userText && assistantText) {
+          const transcript = this.codexExecTranscriptByConversation.get(conversationId) ?? [];
+          transcript.push({ user: userText, assistant: assistantText });
+          this.codexExecTranscriptByConversation.set(conversationId, transcript);
+        }
+        void this.maybeRunReviewer(conversationId, active);
+      }
+    }
+    if (code != null && code !== 0 && code !== 143) {
+      const tail = (active.stderrBuffer || active.stdoutBuffer || active.currentAssistantText || '').slice(-500);
+      this.emit({
+        type: 'error',
+        conversationId,
+        message:
+          `${active.backend} exited with status ${code}. ` +
+          (tail ? `Recent stderr: ${tail}` : 'Run the CLI manually for details.'),
       });
     }
   }
@@ -1848,24 +1869,175 @@ export class RunnerManager {
     return backend;
   }
 
-  private supportsCodexProto(binary: string, env: NodeJS.ProcessEnv): boolean {
-    const cached = this.codexProtoSupport.get(binary);
-    if (cached != null) return cached;
+  private detectCodexCapabilities(
+    binary: string,
+    env: NodeJS.ProcessEnv,
+  ): { hasAppServer: boolean } {
+    const cached = this.codexCapabilities.get(binary);
+    if (cached) return cached;
     const shell = backendNeedsShell(binary);
-    const probe = spawnSync(binary, ['help', 'proto'], {
+    const help = spawnSync(binary, ['--help'], {
       encoding: 'utf-8',
       timeout: 3000,
       env,
       shell,
     });
-    let supports = probe.status === 0;
-    if (!supports) {
-      const res = spawnSync(binary, ['--help'], { encoding: 'utf-8', timeout: 3000, env, shell });
-      const text = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
-      supports = /^\s*proto\s+/m.test(text);
+    const helpText = `${help.stdout ?? ''}\n${help.stderr ?? ''}`;
+    // app-server arrived in codex 0.30+ (still marked experimental). Older
+    // binaries fall back to the `exec --json` one-shot path.
+    const hasAppServer = /^\s*app-server\s+/m.test(helpText);
+    const caps = { hasAppServer };
+    this.codexCapabilities.set(binary, caps);
+    return caps;
+  }
+
+  private pickCodexMode(
+    binary: string,
+    env: NodeJS.ProcessEnv,
+  ): 'exec' | 'app-server' {
+    return this.detectCodexCapabilities(binary, env).hasAppServer
+      ? 'app-server'
+      : 'exec';
+  }
+
+  private spawnCodexAppServer(
+    args: SendArgs,
+    binary: string,
+    env: NodeJS.ProcessEnv,
+    codexPerms: { sandbox: string; approval: string },
+  ): ActiveProcess {
+    const client = new CodexAppServerClient({ binary, cwd: args.cwd, env });
+    const active: ActiveProcess = {
+      proc: undefined,
+      backend: args.backend,
+      sessionId: args.sessionId,
+      launchModel: args.model,
+      launchPermissionMode: args.permissionMode,
+      stdoutBuffer: '',
+      stderrBuffer: '',
+      codexAppServerState: makeCodexAppServerParserState(),
+      codexAppServer: client,
+      codexMode: 'app-server',
+      codexExecEventId: undefined,
+      codexExecRevision: 0,
+      pendingPermissions: new Map(),
+      pendingCodexApprovals: new Map(),
+      currentUserPrompt: args.prompt,
+      currentAssistantText: '',
+      currentToolActivity: [],
+      reviewBackend: (args.reviewBackend as Backend | null) ?? null,
+      reviewMode: args.reviewMode ?? null,
+      collabMaxTurns: args.collabMaxTurns ?? 3,
+      reviewOllamaModel: args.reviewOllamaModel ?? null,
+      collabBurst: 0,
+      collabRoundsInBurst: 0,
+      cwd: args.cwd,
+      geminiAssistantEventId: undefined,
+      geminiAssistantText: '',
+      geminiAssistantToolUses: [],
+      geminiAssistantNeedsSplit: false,
+      allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
+    };
+    this.procs.set(args.conversationId, active);
+    this.emit({
+      type: 'codexRuntimeMode',
+      conversationId: args.conversationId,
+      mode: 'app-server',
+      sandbox: codexPerms.sandbox,
+      approval: codexPerms.approval,
+    });
+
+    client.on('notification', ({ method, params, raw }) => {
+      const result = parseCodexAppServerNotification(method, params, active.codexAppServerState!, raw);
+      this.handleParsedEvents(args.conversationId, active, result.events, result.sessionConfigured);
+    });
+    client.on('request', ({ id, method }) => {
+      void this.handleCodexAppServerRequest(args.conversationId, active, id, method);
+    });
+    client.on('stderr', (chunk) => this.handleStderr(args.conversationId, active, chunk));
+    client.on('close', (code) => this.handleActiveClose(args.conversationId, active, code));
+    return active;
+  }
+
+  private async sendCodexAppServerTurn(
+    convId: UUID,
+    active: ActiveProcess,
+    args: SendArgs,
+  ): Promise<void> {
+    try {
+      const transport = codexTransportPermissions(args.permissionMode);
+      const result = await active.codexAppServer!.sendUserInput(args.prompt, {
+        cwd: args.cwd,
+        model: args.model,
+        sandbox: transport.sandbox as CodexAppServerSandboxMode,
+        approval: transport.approval as CodexAppServerApprovalPolicy,
+        effortLevel: args.effortLevel,
+        attachments: args.attachments,
+      });
+      if (!active.sessionId && result.threadId) {
+        active.sessionId = result.threadId;
+        this.emit({
+          type: 'sessionConfigured',
+          conversationId: convId,
+          sessionId: result.threadId,
+        });
+      }
+    } catch (err: any) {
+      const message = err?.message ?? String(err);
+      this.emit({ type: 'error', conversationId: convId, message });
+      this.emit({ type: 'running', conversationId: convId, isRunning: false });
     }
-    this.codexProtoSupport.set(binary, supports);
-    return supports;
+  }
+
+  private async handleCodexAppServerRequest(
+    conversationId: UUID,
+    active: ActiveProcess,
+    id: string | number | null,
+    method: string,
+    params?: any,
+  ): Promise<void> {
+    const client = active.codexAppServer;
+    if (!client) return;
+    const translated = translateApprovalRequest(method, params);
+    if (translated) {
+      // Route the user's eventual decision through the JSON-RPC channel
+      // with the right method-specific decision shape. The existing
+      // pendingCodexApprovals/respondCodexApproval pipeline (used by proto)
+      // is reused so the renderer surface is unchanged.
+      active.pendingCodexApprovals.set(translated.callId, (approved: boolean) => {
+        void client.respondToServerRequest(id, translated.buildResult(approved));
+      });
+      this.emit({ type: 'stream', conversationId, events: [translated.event] });
+      return;
+    }
+    // Unknown request type — surface a notice and respond with a benign
+    // default so the agent doesn't hang.
+    this.emit({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: randomUUID(),
+          timestamp: Date.now(),
+          raw: method,
+          kind: {
+            type: 'systemNotice',
+            text: `codex requested ${method} (auto-handled; not yet wired to UI)`,
+          },
+          revision: 0,
+        },
+      ],
+    });
+    switch (method) {
+      case 'item/permissions/requestApproval':
+        await client.respondToServerRequest(id, { permissions: {}, scope: 'turn' });
+        return;
+      case 'item/tool/requestUserInput':
+        await client.respondToServerRequest(id, { answers: {} });
+        return;
+      default:
+        await client.rejectServerRequest(id, `Unhandled server request: ${method}`);
+    }
   }
 
   /// Pick a model tag for the Ollama reviewer. Priority: per-conversation
@@ -1978,6 +2150,21 @@ export class RunnerManager {
         isRunning: true,
         activityLabel: `Collab round ${capturedRound + 1}…`,
       });
+      if (active.codexMode === 'app-server' && active.codexAppServer) {
+        void this.sendCodexAppServerTurn(
+          convId,
+          active,
+          {
+            conversationId: convId,
+            prompt: pingPrompt,
+            backend: active.backend,
+            cwd: active.cwd,
+            model: active.launchModel,
+            permissionMode: active.launchPermissionMode,
+          },
+        );
+        return;
+      }
       const envelope = this.buildEnvelope(
         {
           conversationId: convId,
@@ -1989,6 +2176,7 @@ export class RunnerManager {
         },
         active,
       );
+      if (!active.proc) return;
       active.proc.stdin.write(envelope + '\n');
     } catch {
       // If stdin died, skip silently; the session already reported the
@@ -2358,6 +2546,11 @@ function codexPermissionMapping(mode: PermissionMode): { sandbox: string; approv
     default:
       return { sandbox: 'workspace-write', approval: 'on-request' };
   }
+}
+
+function codexTransportPermissions(mode: PermissionMode): { sandbox: string; approval: string } {
+  const { sandbox } = codexPermissionMapping(mode);
+  return { sandbox, approval: 'never' };
 }
 
 function geminiPermissionMapping(mode: PermissionMode): string {

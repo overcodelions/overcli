@@ -79,8 +79,6 @@ function commonBinDirs(backend: Backend): string[] {
     `${home}/.local/bin`,
     ...(backend === 'claude' ? [`${home}/.claude/local`] : []),
     ...(backend === 'codex' ? [`${home}/.codex/bin`] : []),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
     `${home}/.npm-global/bin`,
     `${home}/.volta/bin`,
     `${home}/.asdf/shims`,
@@ -91,6 +89,8 @@ function commonBinDirs(backend: Backend): string[] {
       path.join(dir, 'installation', 'bin'),
     ),
     ...nodeVersionBins(`${home}/.asdf/installs/nodejs`, (dir) => path.join(dir, 'bin')),
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
   ]);
 }
 
