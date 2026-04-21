@@ -619,7 +619,7 @@ export function worktreeStatus(args: {
 export function commitStatus(cwd: string): {
   isRepo: boolean;
   currentBranch: string;
-  changes: Array<{ path: string; status: string }>;
+  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
   insertions: number;
   deletions: number;
 } {
@@ -632,34 +632,65 @@ export function commitStatus(cwd: string): {
   }
   const branch = runGit(['branch', '--show-current'], cwd);
   const status = runGit(['status', '--porcelain=v1'], cwd);
-  const changes: Array<{ path: string; status: string }> = [];
+  const statusByPath = new Map<string, string>();
   if (status.exitCode === 0) {
     for (const line of status.stdout.split('\n')) {
       if (line.length < 3) continue;
       const code = line.slice(0, 2);
       const p = line.slice(3).trim();
-      if (p) changes.push({ path: p, status: code });
+      if (p) statusByPath.set(p, code);
     }
   }
 
-  // `git diff HEAD --numstat` covers both staged + unstaged churn on
-  // tracked files. Untracked files aren't counted — we'd have to wc -l
-  // them individually, and the popover already lists them so the user
-  // knows they're there.
+  // `git diff HEAD --numstat` covers staged + unstaged churn on tracked
+  // files. Untracked files don't appear here, so we tally their line
+  // counts from disk below — keeping the badge honest vs. the working
+  // tree the user is about to commit.
+  const additionsByPath = new Map<string, number>();
+  const deletionsByPath = new Map<string, number>();
   let insertions = 0;
   let deletions = 0;
   const numstat = runGit(['diff', 'HEAD', '--numstat'], cwd);
   if (numstat.exitCode === 0) {
     for (const line of numstat.stdout.split('\n')) {
       const parts = line.trim().split(/\s+/);
-      if (parts.length < 2) continue;
+      if (parts.length < 3) continue;
       // Binary files show '-' — skip so we don't NaN the total.
       const add = parseInt(parts[0], 10);
       const del = parseInt(parts[1], 10);
-      if (!Number.isNaN(add)) insertions += add;
-      if (!Number.isNaN(del)) deletions += del;
+      // numstat's 3rd column is the path; for renames it may be
+      // "old -> new" which porcelain surfaces as the new path. Take the
+      // last whitespace-separated token as the final path.
+      const p = parts.slice(2).join(' ');
+      if (!p) continue;
+      if (!Number.isNaN(add)) {
+        insertions += add;
+        additionsByPath.set(p, (additionsByPath.get(p) ?? 0) + add);
+      }
+      if (!Number.isNaN(del)) {
+        deletions += del;
+        deletionsByPath.set(p, (deletionsByPath.get(p) ?? 0) + del);
+      }
     }
   }
+
+  for (const [p, code] of statusByPath) {
+    if (code !== '??') continue;
+    const lines = countLinesOnDisk(path.join(cwd, p));
+    if (lines > 0) {
+      insertions += lines;
+      additionsByPath.set(p, (additionsByPath.get(p) ?? 0) + lines);
+    }
+  }
+
+  const changes = Array.from(statusByPath.entries())
+    .map(([p, code]) => ({
+      path: p,
+      status: code,
+      additions: additionsByPath.get(p) ?? 0,
+      deletions: deletionsByPath.get(p) ?? 0,
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path));
 
   return {
     isRepo: true,
@@ -668,6 +699,31 @@ export function commitStatus(cwd: string): {
     insertions,
     deletions,
   };
+}
+
+/// Count non-empty lines in a file. Used for untracked-file additions,
+/// which `git diff --numstat` doesn't surface. Strips `\r` first so
+/// CRLF-terminated files on Windows don't count each line as empty.
+function countLinesOnDisk(filePath: string): number {
+  try {
+    const stat = fs.statSync(filePath);
+    // Skip directories (status shows untracked dirs with a trailing /)
+    // and binary blobs >1 MB so we don't freeze reading huge lockfiles.
+    if (stat.isDirectory()) return 0;
+    if (stat.size > 1024 * 1024) return 0;
+    const buf = fs.readFileSync(filePath);
+    // Cheap binary sniff: any NUL in the first 8 KB → skip.
+    const sniffEnd = Math.min(buf.length, 8192);
+    for (let i = 0; i < sniffEnd; i++) if (buf[i] === 0) return 0;
+    const text = buf.toString('utf8');
+    let n = 0;
+    for (const raw of text.split('\n')) {
+      if (raw.replace(/\r$/, '').length > 0) n++;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
 }
 
 /// `git add -A && git commit -m <msg>` on the conversation's cwd. Kept

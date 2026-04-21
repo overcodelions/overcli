@@ -53,6 +53,17 @@ export interface OpenFileHighlight {
   requestId: string;
 }
 
+/// Working-tree snapshot for a conversation's cwd (main project or
+/// worktree). Mirrors the `git:commitStatus` IPC response so renderer
+/// components can consume it directly without reshaping.
+export interface GitStatus {
+  isRepo: boolean;
+  currentBranch: string;
+  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  insertions: number;
+  deletions: number;
+}
+
 /// Per-conversation runtime state. Keyed off conversation id.
 export interface RunnerState {
   events: StreamEvent[];
@@ -113,6 +124,12 @@ interface StoreState {
 
   // Runtime
   runners: Record<UUID, RunnerState>;
+  /// Cached git working-tree status per conversation. Populated on
+  /// demand via `refreshGitStatus`. Both the header CommitButton and
+  /// the ChangesBar above the composer read from this so they show
+  /// the same numbers — the earlier, event-derived count in ChangesBar
+  /// could drift from real git state during edit-then-revert loops.
+  gitStatusByConv: Record<UUID, GitStatus>;
 
   // Actions
   init(): Promise<void>;
@@ -197,6 +214,7 @@ interface StoreState {
   refreshBackendHealth(): Promise<void>;
   refreshInstalledReviewers(): Promise<void>;
   refreshCapabilities(): Promise<void>;
+  refreshGitStatus(conversationId: UUID): Promise<void>;
 
   // Event routing — called from the preload's onMainEvent bridge.
   ingestMainEvent(event: MainToRendererEvent): void;
@@ -366,6 +384,7 @@ export const useStore = create<StoreState>((set, get) => ({
   capabilities: null,
   ollamaServerStatus: 'unknown',
   runners: {},
+  gitStatusByConv: {},
 
   async init() {
     const state = await window.overcli.invoke('store:load');
@@ -1380,6 +1399,32 @@ export const useStore = create<StoreState>((set, get) => ({
   async refreshCapabilities() {
     const report = await window.overcli.invoke('capabilities:scan');
     set({ capabilities: report });
+  },
+
+  async refreshGitStatus(conversationId) {
+    const s = get();
+    let cwd: string | null = null;
+    for (const p of s.projects) {
+      const c = p.conversations.find((x) => x.id === conversationId);
+      if (c) {
+        cwd = c.worktreePath ?? p.path;
+        break;
+      }
+    }
+    if (!cwd) {
+      for (const w of s.workspaces) {
+        const c = (w.conversations ?? []).find((x) => x.id === conversationId);
+        if (c) {
+          cwd = c.worktreePath ?? w.rootPath;
+          break;
+        }
+      }
+    }
+    if (!cwd) return;
+    const res = await window.overcli.invoke('git:commitStatus', { cwd });
+    set((state) => ({
+      gitStatusByConv: { ...state.gitStatusByConv, [conversationId]: res },
+    }));
   },
 
   ingestMainEvent(event) {

@@ -10,9 +10,10 @@ import { ToolUseCard } from './ToolUseCard';
 const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 /// Tool names whose cards stay visible even when tool activity is hidden
-/// — edits and writes are meaningful output, not tool noise. Keep in
-/// sync with PERSISTENT_TOOLS in ChatView.tsx.
-const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write']);
+/// — edits and writes are meaningful output, and TodoWrite is live state
+/// the user is tracking against, not tool noise. Keep in sync with
+/// PERSISTENT_TOOLS in ChatView.tsx.
+const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
 
 export function AssistantBubble({
   info,

@@ -103,7 +103,10 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         {reveals.length > 0 && (
           <div className="flex flex-col gap-1.5">
             {reveals.map((r) => (
-              <div key={r.id} className="transient-reveal">
+              <div
+                key={r.id}
+                className={r.rollingOff ? 'transient-reveal-exit' : 'transient-reveal'}
+              >
                 <ToolUseCard use={r.use} result={toolResultIndex.get(r.id)} />
               </div>
             ))}
@@ -182,8 +185,10 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 // Tool names whose cards stay *fully* visible even when tool activity is
 // hidden — edits/writes are the meaningful output of a turn, not noise.
+// TodoWrite stays visible too: the todo list is live state the user is
+// tracking against, not a transient lookup.
 // Keep in sync with the matching list in AssistantBubble.tsx.
-export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write']);
+export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
 
 // Tool names that get a transient flash card while tool activity is
 // hidden. These are quick lookups (Read/Grep/Glob/web search) or
@@ -200,12 +205,20 @@ const FLASH_TOOLS = new Set([
 ]);
 
 // Keep in sync with the `transient-reveal` keyframe duration in styles.css.
-const REVEAL_MS = 4200;
+const REVEAL_MS = 10000;
+// Soft cap: we don't hide extra reveals, but once more than this are
+// active the oldest ones are switched to an accelerated fade so the
+// stack drains instead of piling up forever. Keep ROLL_OFF_MS in sync
+// with the `transient-reveal-exit` keyframe in styles.css.
+const MAX_REVEALS = 3;
+const ROLL_OFF_MS = 3000;
 
 interface RevealEntry {
   id: string;
   use: ToolUseBlock;
   startedAt: number;
+  expireAt: number;
+  rollingOff: boolean;
 }
 
 /// Watches the event stream for new tool_use blocks of interest and keeps
@@ -238,6 +251,7 @@ function useTransientToolReveals(
     const firstRun = !hasInitializedRef.current;
     hasInitializedRef.current = true;
     const additions: RevealEntry[] = [];
+    const now = Date.now();
     for (const ev of events) {
       if (ev.kind.type !== 'assistant') continue;
       for (const use of ev.kind.info.toolUses) {
@@ -245,22 +259,38 @@ function useTransientToolReveals(
         processed.add(use.id);
         if (firstRun) continue;
         if (!FLASH_TOOLS.has(use.name)) continue;
-        additions.push({ id: use.id, use, startedAt: Date.now() });
+        additions.push({
+          id: use.id,
+          use,
+          startedAt: now,
+          expireAt: now + REVEAL_MS,
+          rollingOff: false,
+        });
       }
     }
-    if (additions.length) {
-      setReveals((prev) => [...prev, ...additions]);
-    }
+    if (!additions.length) return;
+    setReveals((prev) => {
+      const merged = [...prev, ...additions];
+      const activeCount = merged.reduce((n, r) => n + (r.rollingOff ? 0 : 1), 0);
+      if (activeCount <= MAX_REVEALS) return merged;
+      let extras = activeCount - MAX_REVEALS;
+      const rollExpireAt = now + ROLL_OFF_MS;
+      return merged.map((r) => {
+        if (r.rollingOff || extras <= 0) return r;
+        extras -= 1;
+        return { ...r, rollingOff: true, expireAt: Math.min(r.expireAt, rollExpireAt) };
+      });
+    });
   }, [events, showToolActivity]);
 
   useEffect(() => {
     if (reveals.length === 0) return;
     const now = Date.now();
-    const nextDeadline = Math.min(...reveals.map((r) => r.startedAt + REVEAL_MS - now));
+    const nextDeadline = Math.min(...reveals.map((r) => r.expireAt - now));
     const wait = Math.max(50, nextDeadline + 30);
     const t = setTimeout(() => {
       const at = Date.now();
-      setReveals((prev) => prev.filter((r) => at - r.startedAt < REVEAL_MS));
+      setReveals((prev) => prev.filter((r) => r.expireAt > at));
     }, wait);
     return () => clearTimeout(t);
   }, [reveals]);

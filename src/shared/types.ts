@@ -517,7 +517,7 @@ export interface IPCInvokeMap {
   'git:commitStatus': (args: { cwd: string }) => {
     isRepo: boolean;
     currentBranch: string;
-    changes: Array<{ path: string; status: string }>;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
     insertions: number;
     deletions: number;
   };
