@@ -69,8 +69,14 @@ function loadOllamaHistory(sessionId: string | undefined): StreamEvent[] {
 
 function loadClaudeHistory(sessionId: string | undefined, projectPath: string): StreamEvent[] {
   if (!sessionId) return [];
-  // claude slugs its project dir by replacing both `/` and `.` with `-`.
-  const slug = projectPath.replaceAll('/', '-').replaceAll('.', '-');
+  // claude slugs its project dir by replacing `/`, `.`, and spaces with `-`.
+  // It also canonicalizes the cwd first, which matters on macOS where our
+  // stored rootPath can be `.../overcli/...` (package name) but the real
+  // directory is `.../Overcli/...` (productName) — Claude writes under the
+  // canonical case, so we must too or `existsSync` misses.
+  let canonical = projectPath;
+  try { canonical = fs.realpathSync.native(projectPath); } catch { /* path may not exist */ }
+  const slug = canonical.replaceAll('/', '-').replaceAll('.', '-').replaceAll(' ', '-');
   const file = path.join(os.homedir(), '.claude', 'projects', slug, `${sessionId}.jsonl`);
   if (!fs.existsSync(file)) return [];
   const lines = fs.readFileSync(file, 'utf-8').split('\n');
