@@ -20,6 +20,7 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
   const workspaces = useStore((s) => s.workspaces);
   const runner = useStore((s) => s.runners[convId]);
   const openSheet = useStore((s) => s.openSheet);
+  const checkoutAgentLocally = useStore((s) => s.checkoutAgentLocally);
 
   // Locate the conversation + its owning project. Workspace-agent members
   // live inside a project's conversation list (not under the workspace),
@@ -209,6 +210,43 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
     setWorking(false);
   };
 
+  const runCheckoutLocally = async () => {
+    if (!conv.worktreePath || !conv.branchName) return;
+    const dirty = status?.mainTreeDirtyFiles ?? 0;
+    const stashNote =
+      dirty > 0
+        ? ` Your ${dirty} uncommitted project file${dirty === 1 ? '' : 's'} will be stashed (recover with \`git stash pop\`).`
+        : '';
+    if (
+      !window.confirm(
+        `Check out ${branchShort} locally? The agent's worktree will be removed and your main project repo switched to this branch.${stashNote} Uncommitted worktree changes will be auto-committed first. The conversation will be kept (demoted to a regular chat under this project).`,
+      )
+    )
+      return;
+    setWorking(true);
+    setActionError(null);
+    setActionMessage(null);
+    const desc = description();
+    const res = await checkoutAgentLocally(convId, desc.subject, desc.body);
+    if (res.ok) {
+      setActionMessage(res.message);
+      openSheet(null);
+    } else {
+      setActionError(res.error);
+      setWorking(false);
+    }
+  };
+
+  const checkoutLocallyHelp = (() => {
+    if (loading) return 'Loading project branch state…';
+    const dirty = status?.mainTreeDirtyFiles ?? 0;
+    const stashHint =
+      dirty > 0
+        ? ` Your ${dirty} dirty project file${dirty === 1 ? '' : 's'} will be stashed first.`
+        : '';
+    return `Remove the worktree, switch the project repo to ${branchShort}, and demote the agent to a normal conversation.${stashHint}`;
+  })();
+
   const runOpenPR = async () => {
     if (!conv.worktreePath || !conv.branchName) return;
     setWorking(true);
@@ -276,6 +314,12 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
             disabled={loading || working || !status || status.remoteKind === 'none'}
             label={working ? 'Working…' : 'Push branch'}
             title={pushHelp}
+          />
+          <ActionButton
+            onClick={() => void runCheckoutLocally()}
+            disabled={loading || working || !projectPath || !conv.worktreePath || !conv.branchName}
+            label="Check out locally"
+            title={checkoutLocallyHelp}
           />
           {status?.remoteKind === 'github' && (
             <ActionButton

@@ -181,6 +181,18 @@ interface StoreState {
   /// then remove the conversation entry. For workspace-agent
   /// coordinators, removes every member's worktree too.
   removeAgent(id: UUID): Promise<{ ok: boolean; error?: string }>;
+  /// Auto-commit the dirty worktree, stash any project-side changes,
+  /// remove the worktree (keeping the branch), switch the project repo
+  /// onto that branch, and demote the conversation from agent to a normal
+  /// project conversation (history preserved, worktree fields cleared).
+  checkoutAgentLocally(
+    id: UUID,
+    commitSubject: string,
+    commitBody?: string,
+  ): Promise<
+    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
+    | { ok: false; error: string }
+  >;
   setConversationHidden(id: UUID, hidden: boolean): Promise<void>;
   archiveInactiveInProject(projectId: UUID): Promise<number>;
   setPrimaryBackend(id: UUID, backend: Backend): Promise<void>;
@@ -1006,6 +1018,43 @@ export const useStore = create<StoreState>((set, get) => ({
       await get().saveColosseums();
     }
     return { ok: errors.length === 0, error: errors.join('; ') || undefined };
+  },
+
+  async checkoutAgentLocally(id, commitSubject, commitBody) {
+    const state = get();
+    let conv: Conversation | null = null;
+    let ownerProjectPath: string | null = null;
+    for (const p of state.projects) {
+      const match = p.conversations.find((c) => c.id === id);
+      if (match) {
+        conv = match;
+        ownerProjectPath = p.path;
+        break;
+      }
+    }
+    if (!conv || !ownerProjectPath) {
+      return { ok: false, error: 'conversation not found' };
+    }
+    if (!conv.worktreePath || !conv.branchName) {
+      return { ok: false, error: 'agent has no worktree to check out' };
+    }
+    const res = await window.overcli.invoke('git:checkoutAgentLocally', {
+      projectPath: ownerProjectPath,
+      worktreePath: conv.worktreePath,
+      branchName: conv.branchName,
+      commitSubject,
+      commitBody,
+    });
+    if (!res.ok) return res;
+    // Transfer: strip agent-specific fields so the conversation shows up
+    // as a normal project conversation. History and session are preserved
+    // so the user can keep chatting about the work they just promoted.
+    mutateConversation(set, get, id, (c) => {
+      const { worktreePath: _wt, branchName: _bn, baseBranch: _bb, orphaned: _or, ...rest } = c;
+      return rest;
+    });
+    await saveConversationState(get);
+    return res;
   },
 
   async setConversationHidden(id, hidden) {
