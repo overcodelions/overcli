@@ -280,7 +280,7 @@ function ProjectGroup({
             <button
               onClick={onNewAgent}
               className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-              title="New agent worktree"
+              title="New agent (build, review, docs, …)"
             >
               + agent
             </button>

@@ -20,6 +20,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const setReviewBackend = useStore((s) => s.setReviewBackend);
   const setReviewMode = useStore((s) => s.setReviewMode);
   const setReviewOllamaModel = useStore((s) => s.setReviewOllamaModel);
+  const promoteReviewAgent = useStore((s) => s.promoteReviewAgent);
+  const checkoutReviewBranchLocally = useStore((s) => s.checkoutReviewBranchLocally);
+  const removeAgent = useStore((s) => s.removeAgent);
   const runnerIsRunning = useStore((s) => s.runners[conversationId]?.isRunning ?? false);
   const runnerModel = useStore((s) => s.runners[conversationId]?.currentModel ?? '');
   const codexRuntimeMode = useStore((s) => s.runners[conversationId]?.codexRuntimeMode);
@@ -52,8 +55,24 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     <header className="flex items-center gap-2 px-4 py-2 border-b border-card">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          {conv.worktreePath && <span className="text-xs text-ink-faint">⎇</span>}
+          {conv.worktreePath && (
+            <span className="text-xs text-ink-faint">
+              {conv.reviewAgent ? (conv.reviewAgentKind === 'docs' ? '📄' : '👁') : '⎇'}
+            </span>
+          )}
           <div className="text-sm font-medium truncate">{conv.name}</div>
+          {conv.reviewAgent && (
+            <HeaderBadge
+              title={
+                conv.reviewAgentKind === 'docs'
+                  ? `Docs for ${conv.reviewTargetBranch} (vs ${conv.baseBranch})`
+                  : `Reviewing ${conv.reviewTargetBranch} against ${conv.baseBranch}`
+              }
+              style={{ color: '#c29bff' }}
+            >
+              {conv.reviewAgentKind === 'docs' ? 'docs' : 'review'}
+            </HeaderBadge>
+          )}
           {locked ? (
             <>
               <HeaderBadge
@@ -181,25 +200,51 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 
         <CommitButton conversationId={conversationId} />
 
-        {(conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0) && (
-          <button
-            onClick={() =>
-              openSheet(
+        {conv.reviewAgent ? (
+          <ReviewAgentActions
+            conversationId={conversationId}
+            targetBranch={conv.reviewTargetBranch ?? ''}
+            hasWorktree={!!conv.worktreePath}
+            kind={conv.reviewAgentKind === 'docs' ? 'docs' : 'review'}
+            onPromote={async () => {
+              const res = await promoteReviewAgent(conversationId);
+              if (!res.ok) window.alert(res.error);
+            }}
+            onCheckoutLocally={async () => {
+              const target = conv.reviewTargetBranch ?? '';
+              if (!window.confirm(
+                `Check out ${stripOriginPrefix(target)} in your main project repo? The review worktree will be removed and any WIP in the project tree will be auto-stashed.`,
+              )) return;
+              const res = await checkoutReviewBranchLocally(conversationId);
+              if (!res.ok) window.alert(res.error);
+            }}
+            onDismiss={async () => {
+              if (!window.confirm('Remove this agent? The conversation and any worktree will be deleted.')) return;
+              const res = await removeAgent(conversationId);
+              if (!res.ok && res.error) window.alert(res.error);
+            }}
+          />
+        ) : (
+          (conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0) && (
+            <button
+              onClick={() =>
+                openSheet(
+                  (conv.workspaceAgentMemberIds?.length ?? 0) > 0
+                    ? { type: 'workspaceAgentReview', coordinatorId: conversationId }
+                    : { type: 'worktreeDiff', convId: conversationId },
+                )
+              }
+              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink"
+              title={
                 (conv.workspaceAgentMemberIds?.length ?? 0) > 0
-                  ? { type: 'workspaceAgentReview', coordinatorId: conversationId }
-                  : { type: 'worktreeDiff', convId: conversationId },
-              )
-            }
-            className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink"
-            title={
-              (conv.workspaceAgentMemberIds?.length ?? 0) > 0
-                ? 'Review each project and merge independently'
-                : `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
-            }
-          >
-            <DiffIcon />
-            <span>Diff</span>
-          </button>
+                  ? 'Review each project and merge independently'
+                  : `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
+              }
+            >
+              <DiffIcon />
+              <span>Diff</span>
+            </button>
+          )
         )}
 
         <ConversationSettingsButton
@@ -1137,6 +1182,128 @@ function CommitIcon() {
       <line x1="1.5" y1="8" x2="5" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <line x1="11" y1="8" x2="14.5" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
     </svg>
+  );
+}
+
+function stripOriginPrefix(branch: string): string {
+  return branch.startsWith('origin/') ? branch.slice('origin/'.length) : branch;
+}
+
+function ReviewAgentActions({
+  conversationId,
+  targetBranch,
+  hasWorktree,
+  kind,
+  onPromote,
+  onCheckoutLocally,
+  onDismiss,
+}: {
+  conversationId: UUID;
+  targetBranch: string;
+  hasWorktree: boolean;
+  kind: 'review' | 'docs';
+  onPromote: () => Promise<void>;
+  onCheckoutLocally: () => Promise<void>;
+  onDismiss: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await fn();
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  };
+
+  const short = stripOriginPrefix(targetBranch);
+  const label = kind === 'docs' ? 'Docs' : 'Review';
+  const glyph = kind === 'docs' ? '📄' : '👁';
+  const dismissHint = hasWorktree
+    ? 'Remove the worktree and delete the conversation.'
+    : 'Delete the conversation.';
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-card-strong text-xs text-ink-muted hover:text-ink"
+        title={hasWorktree ? `${label} actions for ${short}` : `${label} actions`}
+        data-conv={conversationId}
+      >
+        <span className="text-[11px]">{glyph}</span>
+        <span>{label}</span>
+        <span className="text-[9px] opacity-70">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-1 w-[280px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 text-xs">
+          {hasWorktree && (
+            <>
+              <ReviewMenuRow
+                label="Promote to working agent"
+                hint="Keep the worktree, create a branch, and drop the read-only framing so the agent can start making changes."
+                onClick={() => void run(onPromote)}
+                disabled={busy}
+              />
+              <ReviewMenuRow
+                label={`Check out ${short} locally`}
+                hint="Remove the worktree and switch your main project repo onto this branch. WIP will be auto-stashed."
+                onClick={() => void run(onCheckoutLocally)}
+                disabled={busy}
+              />
+              <div className="border-t border-card my-1" />
+            </>
+          )}
+          <ReviewMenuRow
+            label={kind === 'docs' ? 'Dismiss docs agent' : 'Dismiss review'}
+            hint={dismissHint}
+            onClick={() => void run(onDismiss)}
+            disabled={busy}
+            danger
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewMenuRow({
+  label,
+  hint,
+  onClick,
+  disabled,
+  danger,
+}: {
+  label: string;
+  hint: string;
+  onClick: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={
+        'w-full text-left px-3 py-1.5 hover:bg-card-strong disabled:opacity-40 disabled:cursor-not-allowed ' +
+        (danger ? 'text-red-400 hover:text-red-300' : 'text-ink-muted hover:text-ink')
+      }
+    >
+      <div>{label}</div>
+      <div className="text-[10px] text-ink-faint mt-0.5 leading-snug">{hint}</div>
+    </button>
   );
 }
 

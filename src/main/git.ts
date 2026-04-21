@@ -255,6 +255,127 @@ export function createWorktree(
   return { ok: true, worktreePath, branchName };
 }
 
+/// Create a detached-HEAD worktree pointing at `targetBranch` — used by
+/// the review agent so the user can examine someone else's branch
+/// without disturbing their main checkout. We don't create a new branch
+/// here; the worktree lives at the same commit the target points to and
+/// will show as detached in `git status`. Resolves local refs first,
+/// then `origin/<branch>`. Fetches from origin before resolving so newly
+/// pushed branches show up without the user having to `git fetch` first.
+export function createReviewWorktree(args: {
+  projectPath: string;
+  agentName: string;
+  targetBranch: string;
+}): { ok: true; worktreePath: string; resolvedTarget: string } | { ok: false; error: string } {
+  const repoCheck = runGit(['rev-parse', '--is-inside-work-tree'], args.projectPath);
+  if (repoCheck.exitCode !== 0) {
+    return { ok: false, error: `${args.projectPath} isn't a git repo.` };
+  }
+  // Best-effort fetch so a remote branch that exists on origin but
+  // hasn't been mirrored locally is resolvable.
+  const hasOrigin = runGit(['remote', 'get-url', 'origin'], args.projectPath).exitCode === 0;
+  if (hasOrigin) runGitNoPrompt(['fetch', 'origin', '--prune'], args.projectPath);
+  const resolved = resolveBaseBranchStartPoint(args.projectPath, args.targetBranch);
+  if (!resolved) {
+    return {
+      ok: false,
+      error: `Branch "${args.targetBranch}" doesn't exist locally or on origin.`,
+    };
+  }
+  const slug = path.basename(args.projectPath);
+  const root = path.join(os.homedir(), '.overcli', 'worktrees', slug);
+  fs.mkdirSync(root, { recursive: true });
+  const worktreePath = path.join(root, `review-${args.agentName}`);
+  if (fs.existsSync(worktreePath)) {
+    return {
+      ok: false,
+      error: `A worktree already exists at ${worktreePath}. Dismiss the existing review first.`,
+    };
+  }
+  const res = runGit(['worktree', 'add', '--detach', worktreePath, resolved], args.projectPath);
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() || `git exited with ${res.exitCode}` };
+  }
+  return { ok: true, worktreePath, resolvedTarget: resolved };
+}
+
+/// Turn a detached review worktree into a regular branch-owning worktree
+/// by creating `<branchPrefix><agentName>` at HEAD and switching onto it.
+/// No-op if the worktree is already on a branch.
+export function promoteReviewWorktree(args: {
+  projectPath: string;
+  worktreePath: string;
+  agentName: string;
+  branchPrefix: string;
+}): { ok: true; branchName: string } | { ok: false; error: string } {
+  const currentBranch = runGit(['branch', '--show-current'], args.worktreePath);
+  if (currentBranch.exitCode === 0 && currentBranch.stdout.trim()) {
+    return { ok: true, branchName: currentBranch.stdout.trim() };
+  }
+  const branchName = `${args.branchPrefix}${args.agentName}`;
+  // If the branch already exists (user promoted, dismissed, then
+  // re-created with the same name) switch to it instead of re-creating.
+  const existing = runGit(['rev-parse', '--verify', branchName], args.projectPath);
+  const switchRes =
+    existing.exitCode === 0
+      ? runGit(['switch', branchName], args.worktreePath)
+      : runGit(['switch', '-c', branchName], args.worktreePath);
+  if (switchRes.exitCode !== 0) {
+    return { ok: false, error: switchRes.stderr.trim() || switchRes.stdout.trim() };
+  }
+  return { ok: true, branchName };
+}
+
+/// "Check out locally" for a review worktree: switch the main project
+/// repo onto the same branch the review was inspecting, auto-stashing
+/// any WIP in the project tree, then remove the worktree. The review
+/// worktree itself is detached so there's no auto-commit step — any
+/// accidental edits in the worktree are discarded on removal.
+export function switchProjectToBranch(args: {
+  projectPath: string;
+  worktreePath: string;
+  targetBranch: string;
+}): { ok: true; message: string; stashed: boolean } | { ok: false; error: string } {
+  const projectStatus = runGit(['status', '--porcelain'], args.projectPath);
+  if (projectStatus.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `git status failed in project repo: ${projectStatus.stderr || projectStatus.stdout}`,
+    };
+  }
+  let stashed = false;
+  if (projectStatus.stdout.trim()) {
+    const stash = runGit(
+      ['stash', 'push', '-u', '-m', `overcli: auto-stash before reviewing ${args.targetBranch}`],
+      args.projectPath,
+    );
+    if (stash.exitCode !== 0) {
+      return { ok: false, error: `git stash failed: ${stash.stderr || stash.stdout}` };
+    }
+    stashed = true;
+  }
+  // Remove the worktree before we move the project onto the target
+  // branch — git won't allow the same branch in two worktrees.
+  const remove = runGit(['worktree', 'remove', '--force', args.worktreePath], args.projectPath);
+  if (remove.exitCode !== 0) {
+    return { ok: false, error: `git worktree remove failed: ${remove.stderr || remove.stdout}` };
+  }
+  // `git switch <branch>` handles both local-tracking and remote-only
+  // branches (creates a local tracking branch automatically in the
+  // latter case). Strip a leading `origin/` so the local branch name
+  // matches what the user expects.
+  const short = args.targetBranch.startsWith('origin/')
+    ? args.targetBranch.slice('origin/'.length)
+    : args.targetBranch;
+  const switchRes = runGit(['switch', short], args.projectPath);
+  if (switchRes.exitCode !== 0) {
+    return { ok: false, error: `git switch failed: ${switchRes.stderr || switchRes.stdout}` };
+  }
+  const parts = [`Checked out ${short} in ${args.projectPath}.`];
+  if (stashed) parts.push('Your previous changes are in `git stash` — run `git stash pop` to restore.');
+  return { ok: true, message: parts.join(' '), stashed };
+}
+
 export function removeWorktree(args: {
   projectPath: string;
   worktreePath: string;
@@ -265,8 +386,11 @@ export function removeWorktree(args: {
     return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
   }
   // Prune the branch too. If it still has commits we want, users can
-  // recover via reflog; this matches the Swift app's behavior.
-  runGit(['branch', '-D', args.branchName], args.projectPath);
+  // recover via reflog; this matches the Swift app's behavior. Review
+  // worktrees are detached so branchName may be empty — skip in that case.
+  if (args.branchName) {
+    runGit(['branch', '-D', args.branchName], args.projectPath);
+  }
   return { ok: true };
 }
 
