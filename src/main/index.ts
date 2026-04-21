@@ -15,6 +15,9 @@ import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from '
 import {
   runGit,
   createWorktree,
+  createReviewWorktree,
+  promoteReviewWorktree,
+  switchProjectToBranch,
   removeWorktree,
   checkoutAgentLocally,
   detectBaseBranch,
@@ -201,6 +204,9 @@ function registerIpc(): void {
     return runGit(args, cwd);
   });
   ipcMain.handle('git:createWorktree', (_e, args) => createWorktree(args));
+  ipcMain.handle('git:createReviewWorktree', (_e, args) => createReviewWorktree(args));
+  ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));
+  ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => checkoutAgentLocally(args));
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));

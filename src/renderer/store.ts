@@ -173,6 +173,16 @@ interface StoreState {
     /// `main` and one on `master` can coexist in the same workspace agent.
     baseBranches: Record<UUID, string>;
   }): Promise<Conversation | null>;
+  /// Read-only docs agent that spans every member repo in a workspace.
+  /// Creates no worktrees — the coordinator runs in the workspace's
+  /// symlink root so it can read every member project at HEAD, and the
+  /// auto-fired prompt instructs it to output docs as markdown in chat
+  /// for the specific `topic` the user described.
+  newWorkspaceDocsAgent(args: {
+    workspaceId: UUID;
+    name: string;
+    topic: string;
+  }): Promise<Conversation | null>;
   cancelColosseum(id: UUID): Promise<void>;
   resolveColosseum(id: UUID, winnerId: UUID): Promise<void>;
   removeColosseum(id: UUID): Promise<void>;
@@ -191,6 +201,17 @@ interface StoreState {
     commitBody?: string,
   ): Promise<
     | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
+    | { ok: false; error: string }
+  >;
+  /// Turn a review agent (detached-HEAD worktree) into a regular agent
+  /// by creating a branch at HEAD. Clears the review flag so the header
+  /// drops the review-specific buttons.
+  promoteReviewAgent(id: UUID): Promise<{ ok: true } | { ok: false; error: string }>;
+  /// Switch the main project checkout onto the branch the review was
+  /// inspecting and remove the review worktree. The conversation is
+  /// demoted to a normal project conversation.
+  checkoutReviewBranchLocally(id: UUID): Promise<
+    | { ok: true; message: string; stashed: boolean }
     | { ok: false; error: string }
   >;
   setConversationHidden(id: UUID, hidden: boolean): Promise<void>;
@@ -879,6 +900,43 @@ export const useStore = create<StoreState>((set, get) => ({
     return coordinator;
   },
 
+  async newWorkspaceDocsAgent(args) {
+    const state = get();
+    const preferred = defaultBackend(state.settings);
+    const ws = state.workspaces.find((w) => w.id === args.workspaceId);
+    if (!ws) return null;
+    const name = args.name.trim();
+    const topic = args.topic.trim();
+    if (!name || !topic) return null;
+    const coordinatorId = uuid();
+    const projectNames = ws.projectIds
+      .map((pid) => state.projects.find((p) => p.id === pid)?.name)
+      .filter((n): n is string => !!n);
+    const coordinator: Conversation = {
+      id: coordinatorId,
+      name: `docs · ${name}`,
+      createdAt: Date.now(),
+      totalCostUSD: 0,
+      turnCount: 0,
+      currentModel: '',
+      permissionMode: state.settings.defaultPermissionMode,
+      primaryBackend: preferred,
+      reviewAgent: true,
+      reviewAgentKind: 'docs',
+    };
+    set((s) => ({
+      workspaces: s.workspaces.map((w) =>
+        w.id === args.workspaceId
+          ? { ...w, conversations: [...(w.conversations ?? []), coordinator] }
+          : w,
+      ),
+    }));
+    await get().saveWorkspaces();
+    get().selectConversation(coordinatorId);
+    void get().send(coordinatorId, buildWorkspaceDocsPrompt({ topic, projectNames }));
+    return coordinator;
+  },
+
   async cancelColosseum(id) {
     const colosseum = get().colosseums.find((c) => c.id === id);
     if (!colosseum) return;
@@ -986,11 +1044,13 @@ export const useStore = create<StoreState>((set, get) => ({
     }
 
     // Single-project agent: git worktree remove + drop the conversation.
-    if (conv.worktreePath && conv.branchName && ownerProjectPath) {
+    // Review agents live on a detached HEAD with no branch, so we pass
+    // an empty branchName and let git skip the branch-delete step.
+    if (conv.worktreePath && ownerProjectPath) {
       const res = await window.overcli.invoke('git:removeWorktree', {
         projectPath: ownerProjectPath,
         worktreePath: conv.worktreePath,
-        branchName: conv.branchName,
+        branchName: conv.branchName ?? '',
       });
       if (!res.ok && res.error) errors.push(res.error);
     }
@@ -1051,6 +1111,82 @@ export const useStore = create<StoreState>((set, get) => ({
     // so the user can keep chatting about the work they just promoted.
     mutateConversation(set, get, id, (c) => {
       const { worktreePath: _wt, branchName: _bn, baseBranch: _bb, orphaned: _or, ...rest } = c;
+      return rest;
+    });
+    await saveConversationState(get);
+    return res;
+  },
+
+  async promoteReviewAgent(id) {
+    const state = get();
+    let conv: Conversation | null = null;
+    let ownerProjectPath: string | null = null;
+    for (const p of state.projects) {
+      const match = p.conversations.find((c) => c.id === id);
+      if (match) {
+        conv = match;
+        ownerProjectPath = p.path;
+        break;
+      }
+    }
+    if (!conv || !ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    if (!conv.worktreePath || !conv.reviewAgent) {
+      return { ok: false, error: 'not a review agent' };
+    }
+    const agentName = conv.name
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '') || 'review';
+    const res = await window.overcli.invoke('git:promoteReviewWorktree', {
+      projectPath: ownerProjectPath,
+      worktreePath: conv.worktreePath,
+      agentName,
+      branchPrefix: state.settings.agentBranchPrefix,
+    });
+    if (!res.ok) return res;
+    mutateConversation(set, get, id, (c) => ({
+      ...c,
+      branchName: res.branchName,
+      baseBranch: c.reviewTargetBranch ?? c.baseBranch,
+      reviewAgent: false,
+      reviewTargetBranch: undefined,
+    }));
+    await saveConversationState(get);
+    return { ok: true };
+  },
+
+  async checkoutReviewBranchLocally(id) {
+    const state = get();
+    let conv: Conversation | null = null;
+    let ownerProjectPath: string | null = null;
+    for (const p of state.projects) {
+      const match = p.conversations.find((c) => c.id === id);
+      if (match) {
+        conv = match;
+        ownerProjectPath = p.path;
+        break;
+      }
+    }
+    if (!conv || !ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    if (!conv.worktreePath || !conv.reviewTargetBranch) {
+      return { ok: false, error: 'not a review agent' };
+    }
+    const res = await window.overcli.invoke('git:switchProjectToBranch', {
+      projectPath: ownerProjectPath,
+      worktreePath: conv.worktreePath,
+      targetBranch: conv.reviewTargetBranch,
+    });
+    if (!res.ok) return res;
+    mutateConversation(set, get, id, (c) => {
+      const {
+        worktreePath: _wt,
+        branchName: _bn,
+        baseBranch: _bb,
+        reviewAgent: _ra,
+        reviewTargetBranch: _rt,
+        orphaned: _or,
+        ...rest
+      } = c;
       return rest;
     });
     await saveConversationState(get);
@@ -1584,6 +1720,41 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 }));
+
+function buildWorkspaceDocsPrompt(args: { topic: string; projectNames: string[] }): string {
+  const repoList = args.projectNames.length
+    ? args.projectNames.map((n) => `- \`${n}\``).join('\n')
+    : '- (the repos in this workspace)';
+  return [
+    `You are a documentation agent. The user wants end-user documentation for the following feature/topic:`,
+    ``,
+    `> ${args.topic.split('\n').join('\n> ')}`,
+    ``,
+    `Your cwd is a workspace symlink root containing these member repos (each reachable as a top-level directory):`,
+    ``,
+    repoList,
+    ``,
+    `This feature likely spans more than one repo. **Do not edit files and do not commit anywhere.** Output everything as markdown in this chat.`,
+    ``,
+    `Investigate first:`,
+    ``,
+    `1. Search each repo for code related to the topic — names, routes, types, config keys, migrations, UI components. Cast a wide net, then narrow.`,
+    `2. For each piece you find, read enough surrounding code to understand what the user-facing contract is: CLI flags, HTTP endpoints, UI controls, library exports, config shape.`,
+    `3. Work out how the pieces connect across repos (who calls whom, shared schemas, published packages consumed by siblings).`,
+    `4. If you can't find the feature in any repo, say so plainly and ask the user for a hint (a file path, a function name, a branch) rather than inventing content.`,
+    ``,
+    `Then produce **end-user documentation for this feature**. Structure:`,
+    ``,
+    `- **Overview** — what the feature is and why it exists, in plain language (2–4 sentences).`,
+    `- **How to use it** — the concrete steps an end user follows, end-to-end. Call out which repo/service each step touches when it matters.`,
+    `- **Configuration / options** — every user-facing setting or flag the feature exposes. Name, default, effect, which repo it lives in.`,
+    `- **Cross-repo flow** — a brief diagram-in-prose (or fenced sketch) showing how the repos cooperate for this feature.`,
+    `- **What changed for existing users** — migration notes, behavior deltas, anything that could surprise someone who knew the old flow.`,
+    `- **Limitations & known edge cases** — what it doesn't do, rough edges, follow-ups.`,
+    ``,
+    `Write for end users of the product, not contributors. Keep it skimmable and well-formatted markdown. Cite file:line for specific behavior.`,
+  ].join('\n');
+}
 
 /// Persist both the projects and workspaces slices. Every path that
 /// calls `mutateConversation` needs this, since the conversation might

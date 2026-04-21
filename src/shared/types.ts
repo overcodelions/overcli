@@ -198,6 +198,21 @@ export interface Conversation {
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
+  /// Read-only agents check out someone else's branch into a
+  /// detached-HEAD worktree so the user can read + converse about the
+  /// changes without touching their main project tree. The flag drives
+  /// header actions (Promote to agent, Dismiss) and selecting a canned
+  /// first-turn prompt via `reviewAgentKind`.
+  reviewAgent?: boolean;
+  /// Branch being reviewed — only set when `reviewAgent` is true. Kept
+  /// separate from `branchName` because the worktree is detached and
+  /// doesn't own its own branch.
+  reviewTargetBranch?: string;
+  /// Which read-only flow this agent was spawned for. 'review' = PR-style
+  /// code review; 'docs' = produce user-facing documentation for the
+  /// feature in the target branch. Defaults to 'review' when absent for
+  /// back-compat with conversations saved before `docs` existed.
+  reviewAgentKind?: 'review' | 'docs';
   /// Directories the user has granted this conversation access to beyond
   /// its cwd. Passed to Claude as `--add-dir` on every spawn so mid-turn
   /// cross-project approvals persist across process restarts.
@@ -470,6 +485,22 @@ export interface IPCInvokeMap {
     baseBranch: string;
     branchPrefix: string;
   }) => { ok: true; worktreePath: string; branchName: string } | { ok: false; error: string };
+  'git:createReviewWorktree': (args: {
+    projectPath: string;
+    agentName: string;
+    targetBranch: string;
+  }) => { ok: true; worktreePath: string; resolvedTarget: string } | { ok: false; error: string };
+  'git:promoteReviewWorktree': (args: {
+    projectPath: string;
+    worktreePath: string;
+    agentName: string;
+    branchPrefix: string;
+  }) => { ok: true; branchName: string } | { ok: false; error: string };
+  'git:switchProjectToBranch': (args: {
+    projectPath: string;
+    worktreePath: string;
+    targetBranch: string;
+  }) => { ok: true; message: string; stashed: boolean } | { ok: false; error: string };
   'git:removeWorktree': (args: { projectPath: string; worktreePath: string; branchName: string }) => {
     ok: boolean;
     error?: string;
