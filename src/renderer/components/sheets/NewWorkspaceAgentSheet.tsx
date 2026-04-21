@@ -140,7 +140,7 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
               className={
                 'text-xs px-3 py-1 rounded transition-colors ' +
                 (kind === k.id
-                  ? 'bg-accent/20 text-ink'
+                  ? 'bg-accent text-white shadow-sm'
                   : 'text-ink-muted hover:bg-card-strong hover:text-ink')
               }
             >

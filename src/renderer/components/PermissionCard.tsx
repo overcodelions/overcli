@@ -13,7 +13,7 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
   return (
     <div className="rounded-lg border border-blue-500/30 bg-blue-500/8 px-3 py-2 text-xs">
       <div className="flex items-center gap-2 text-blue-400 font-medium">
-        <span>🔒</span>
+        <LockIcon />
         <span>{label} wants to use {info.toolName}</span>
         {decided && (
           <span className={'ml-auto text-[10px] ' + (decided === 'allow' ? 'text-green-400' : 'text-red-400')}>
@@ -57,6 +57,35 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
         </div>
       )}
     </div>
+  );
+}
+
+function LockIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      className="flex-shrink-0"
+      aria-hidden="true"
+    >
+      <rect
+        x="3"
+        y="7"
+        width="10"
+        height="7"
+        rx="1.2"
+        stroke="currentColor"
+        strokeWidth="1.2"
+      />
+      <path
+        d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
   );
 }
 

@@ -353,7 +353,7 @@ function ColosseumSidebarGroup({
           className="flex flex-1 min-w-0 items-center gap-1.5 py-1 text-left"
           title={`Open ${colosseum.name}`}
         >
-          <span className="text-[11px]">🏆</span>
+          <TrophyIcon />
           <span className="truncate text-xs font-medium">{colosseum.name}</span>
         </button>
         <ColosseumStatusBadge
@@ -385,7 +385,9 @@ function ColosseumSidebarGroup({
                   {conv.currentModel ? ` · ${conv.currentModel}` : ''}
                 </span>
                 {isWinner ? (
-                  <span className="text-[10px]">👑</span>
+                  <span className="text-amber-300/80">
+                    <CrownIcon />
+                  </span>
                 ) : null}
               </button>
             );
@@ -872,6 +874,61 @@ function TrashIcon() {
       <path
         d="M6 2.5A1.5 1.5 0 0 1 7.5 1h1A1.5 1.5 0 0 1 10 2.5V3h2.25a.75.75 0 0 1 0 1.5h-.386l-.558 7.253A1.75 1.75 0 0 1 9.56 13.5H6.44a1.75 1.75 0 0 1-1.746-1.747L4.136 4.5H3.75a.75.75 0 0 1 0-1.5H6v-.5Zm1.5 0V3h1v-.5a.5.5 0 0 0-.5-.5h-.5a.5.5 0 0 0-.5.5Zm-.25 3.25a.75.75 0 0 0-1.5 0v4a.75.75 0 0 0 1.5 0v-4Zm3 0a.75.75 0 0 0-1.5 0v4a.75.75 0 0 0 1.5 0v-4Z"
       />
+    </svg>
+  );
+}
+
+function TrophyIcon() {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      className="text-ink-muted flex-shrink-0"
+      aria-hidden="true"
+    >
+      <path
+        d="M4 2.5h8v3.5a4 4 0 0 1-8 0V2.5Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4 3.5H2.5v1.5a2 2 0 0 0 2 2M12 3.5h1.5v1.5a2 2 0 0 1-2 2"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 10v2.5M5.5 13.5h5"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function CrownIcon() {
+  return (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 16 16"
+      fill="none"
+      className="flex-shrink-0"
+      aria-hidden="true"
+    >
+      <path
+        d="M2 5.5l2 5h8l2-5-3 2-3-4-3 4-3-2Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+        fill="currentColor"
+        fillOpacity="0.2"
+      />
+      <path d="M4 12.5h8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
     </svg>
   );
 }
