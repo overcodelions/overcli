@@ -294,24 +294,26 @@ function findCodexRolloutPaths(
   if (sessionId) return out.sort();
 
   // No session id available (common with codex exec fallback). Recover by
-  // selecting rollout files for this project nearest the conversation time.
-  const target = conversationLastActiveAt ?? conversationCreatedAt ?? Date.now();
+  // selecting rollout files for this project that fall inside this
+  // conversation's own lifetime. Files created before the conversation
+  // belong to a prior conversation — picking them up by proximity alone
+  // cross-contaminates history across conversations in the same project.
+  if (!conversationCreatedAt) return [];
+  const lowerBound = conversationCreatedAt - 30 * 1000; // 30s clock-skew slack
+  const upperBound = (conversationLastActiveAt ?? Date.now()) + 5 * 60 * 1000;
   const normalizedProject = normalizePathKey(projectPath);
-  const scored: Array<{ file: string; ts: number }> = [];
+  const scoped: Array<{ file: string; ts: number }> = [];
   for (const file of candidates) {
     const meta = readCodexSessionMeta(file);
     if (!meta) continue;
     if (normalizePathKey(meta.cwd) !== normalizedProject) continue;
     const ts = Number.isFinite(meta.timestampMs) ? meta.timestampMs : 0;
-    scored.push({ file, ts });
+    if (ts < lowerBound || ts > upperBound) continue;
+    scoped.push({ file, ts });
   }
-  if (scored.length === 0) return [];
-  scored.sort((a, b) => Math.abs(a.ts - target) - Math.abs(b.ts - target));
-  const near = scored.filter((s) => Math.abs(s.ts - target) <= 2 * 60 * 60 * 1000);
-  const source = near.length > 0 ? near : scored;
-  // Include a small neighborhood so multi-turn conversations (multiple exec
-  // sessions) still load when no stable session id exists.
-  return source.slice(0, 3).map((s) => s.file).sort();
+  if (scoped.length === 0) return [];
+  scoped.sort((a, b) => a.ts - b.ts);
+  return scoped.map((s) => s.file);
 }
 
 function parseCodexHistoryLine(line: string): StreamEvent | null {
