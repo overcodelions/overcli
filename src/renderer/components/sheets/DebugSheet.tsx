@@ -11,6 +11,7 @@ export function DebugSheet() {
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
 
   const typeCounts = useMemo(() => {
     const m = new Map<string, number>();
@@ -55,6 +56,17 @@ export function DebugSheet() {
     setAllExpanded(false);
     setExpanded(new Set());
   };
+  const copyAll = () => {
+    const text = filtered
+      .map((e) => {
+        const time = new Date(e.timestamp).toISOString().slice(11, 23);
+        return `[${time}] ${e.kind.type}\n${e.raw}`;
+      })
+      .join('\n\n');
+    navigator.clipboard.writeText(text);
+    setCopiedAll(true);
+    setTimeout(() => setCopiedAll(false), 1200);
+  };
 
   return (
     <div className="flex flex-col max-h-[85vh] min-h-[60vh]">
@@ -80,6 +92,13 @@ export function DebugSheet() {
               className="px-2 py-1 rounded bg-card hover:bg-card-strong text-ink-muted hover:text-ink"
             >
               collapse all
+            </button>
+            <button
+              onClick={copyAll}
+              disabled={filtered.length === 0}
+              className="px-2 py-1 rounded bg-card hover:bg-card-strong text-ink-muted hover:text-ink disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {copiedAll ? 'copied' : 'copy all'}
             </button>
           </div>
         </div>

@@ -73,6 +73,13 @@ export interface PermissionRequestInfo {
   description: string;
   toolInput: string;
   decided?: 'allow' | 'deny';
+  /// Filesystem path the request references (when the main process can
+  /// pick one out of toolInput). Used by the card to offer an "Allow +
+  /// add this directory for the session" action.
+  requestedPath?: string;
+  /// True when requestedPath is outside the conversation's current set of
+  /// allowed directories (cwd + projects + workspaces + prior grants).
+  outsideAllowedDirs?: boolean;
 }
 
 export interface CodexApprovalInfo {
@@ -187,6 +194,10 @@ export interface Conversation {
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
+  /// Directories the user has granted this conversation access to beyond
+  /// its cwd. Passed to Claude as `--add-dir` on every spawn so mid-turn
+  /// cross-project approvals persist across process restarts.
+  allowedDirs?: string[];
 }
 
 export interface Project {
@@ -405,6 +416,10 @@ export interface IPCInvokeMap {
     reviewMode?: 'review' | 'collab' | null;
     collabMaxTurns?: number | null;
     reviewOllamaModel?: string | null;
+    /// Absolute paths Claude should be allowed to read beyond its cwd.
+    /// Renderer fills this from the conversation's project/workspace and
+    /// the persisted `conversation.allowedDirs`.
+    allowedDirs?: string[];
   }) => { ok: true } | { ok: false; error: string };
   'runner:stop': (args: { conversationId: UUID }) => void;
   'runner:newConversation': (args: { conversationId: UUID }) => void;
@@ -412,6 +427,10 @@ export interface IPCInvokeMap {
     conversationId: UUID;
     requestId: string;
     approved: boolean;
+    /// When present, persist the directory on the conversation's
+    /// allowedDirs and respawn Claude with it on the next turn so the
+    /// directory gate admits it.
+    addDir?: string;
   }) => void;
   'runner:respondCodexApproval': (args: {
     conversationId: UUID;
@@ -509,6 +528,7 @@ export interface IPCInvokeMap {
     workspaceId: UUID;
     projects: Array<{ name: string; path: string }>;
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
+  'workspace:removeSymlinkRoot': (workspaceId: UUID) => { ok: true } | { ok: false; error: string };
   'auth:openCliLogin': (backend: Backend) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;

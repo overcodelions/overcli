@@ -39,7 +39,7 @@ import {
   pullModel,
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
-import { ensureWorkspaceSymlinkRoot } from './workspace';
+import { ensureWorkspaceSymlinkRoot, removeWorkspaceSymlinkRoot } from './workspace';
 import { runInTerminal } from './terminal';
 import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
 
@@ -81,6 +81,33 @@ function createWindow(): void {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // Lock the renderer to its initial origin. Any attempt to navigate (a
+  // rogue link, a redirect in an iframe, a window.open) is denied and
+  // bounced to the user's default browser if it's a plain http(s) URL.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    const current = mainWindow?.webContents.getURL();
+    if (url === current) return;
+    event.preventDefault();
+    if (isSafeExternalUrl(url)) shell.openExternal(url);
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isSafeExternalUrl(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+}
+
+// Allowlist for URLs handed to `shell.openExternal` — anywhere a URL
+// flows from the renderer (or from in-page markdown) to the OS. Custom
+// URI schemes can trigger privileged actions in other apps (itms-services,
+// slack://, file://, etc.), so we only allow plain web + mail + tel.
+function isSafeExternalUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' || u.protocol === 'http:' || u.protocol === 'mailto:' || u.protocol === 'tel:';
+  } catch {
+    return false;
+  }
 }
 
 function emitToRenderer(event: MainToRendererEvent): void {
@@ -104,8 +131,8 @@ function registerIpc(): void {
   ipcMain.handle('runner:newConversation', (_e, { conversationId }) =>
     runner!.newConversation(conversationId),
   );
-  ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved }) =>
-    runner!.respondPermission(conversationId, requestId, approved),
+  ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved, addDir }) =>
+    runner!.respondPermission(conversationId, requestId, approved, addDir),
   );
   ipcMain.handle(
     'runner:respondCodexApproval',
@@ -129,6 +156,9 @@ function registerIpc(): void {
     return res.filePaths[0];
   });
   ipcMain.handle('fs:readFile', (_e, filePath: string) => {
+    if (!isPathUnderRegisteredRoot(filePath)) {
+      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    }
     try {
       const stat = fs.statSync(filePath);
       if (stat.size > 5 * 1024 * 1024) {
@@ -144,6 +174,9 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('fs:writeFile', (_e, { path: p, content }) => {
+    if (!isPathUnderRegisteredRoot(p)) {
+      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    }
     try {
       fs.writeFileSync(p, content, 'utf-8');
       return { ok: true };
@@ -151,12 +184,21 @@ function registerIpc(): void {
       return { ok: false, error: err?.message ?? 'Could not write file' };
     }
   });
-  ipcMain.handle('fs:listFiles', (_e, root: string) => listFilesRecursive(root));
+  ipcMain.handle('fs:listFiles', (_e, root: string) => {
+    if (!isPathUnderRegisteredRoot(root)) return [];
+    return listFilesRecursive(root);
+  });
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
+    if (!isPathUnderRegisteredRoot(p)) return;
     shell.showItemInFolder(p);
   });
 
-  ipcMain.handle('git:run', (_e, { args, cwd }) => runGit(args, cwd));
+  ipcMain.handle('git:run', (_e, { args, cwd }) => {
+    if (!isRendererSafeGitInvocation(args, cwd)) {
+      return { stdout: '', stderr: 'Refused: git args outside the renderer allowlist.', exitCode: 1 };
+    }
+    return runGit(args, cwd);
+  });
   ipcMain.handle('git:createWorktree', (_e, args) => createWorktree(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));
@@ -175,8 +217,14 @@ function registerIpc(): void {
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects }) =>
     ensureWorkspaceSymlinkRoot(workspaceId, projects),
   );
+  ipcMain.handle('workspace:removeSymlinkRoot', (_e, workspaceId: string) =>
+    removeWorkspaceSymlinkRoot(workspaceId),
+  );
 
-  ipcMain.handle('app:openExternal', (_e, url: string) => shell.openExternal(url));
+  ipcMain.handle('app:openExternal', (_e, url: string) => {
+    if (!isSafeExternalUrl(url)) return;
+    return shell.openExternal(url);
+  });
   ipcMain.handle('app:showAbout', () => {
     dialog.showMessageBox({
       type: 'info',
@@ -247,6 +295,102 @@ function registerIpc(): void {
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting
 // the HTTP request we opened in pullModel.
 const pendingPulls = new Map<string, AbortController>();
+
+// Collect every directory the user has explicitly registered with the app
+// (projects, workspaces, worktrees). Filesystem IPC handlers treat these
+// as the only legal roots — a compromised renderer can't reach into
+// `~/.ssh/` or `~/Library/LaunchAgents/` because those aren't registered.
+function registeredRoots(): string[] {
+  const state = Store.load();
+  const roots = new Set<string>();
+  for (const project of state.projects) {
+    if (project.path) roots.add(project.path);
+    for (const c of project.conversations ?? []) {
+      if (c.worktreePath) roots.add(c.worktreePath);
+    }
+  }
+  for (const workspace of state.workspaces) {
+    if (workspace.rootPath) roots.add(workspace.rootPath);
+    for (const c of workspace.conversations ?? []) {
+      if (c.worktreePath) roots.add(c.worktreePath);
+    }
+  }
+  return [...roots];
+}
+
+// The renderer only needs a handful of read-oriented git subcommands to
+// power the file editor, diff sheets, and branch pickers. Anything else —
+// `clone`, `fetch`, `push`, `-c core.sshCommand=…`, `-C /some/dir` — is
+// refused here and routed instead through the typed worktree helpers
+// (git.ts exports like `mergeAgent`, `pushBranch`), which build argv
+// themselves and never take free-form input.
+const RENDERER_GIT_ALLOWLIST = new Set([
+  'status',
+  'branch',
+  'diff',
+  'for-each-ref',
+  'rev-parse',
+  'log',
+  'show',
+]);
+function isRendererSafeGitInvocation(args: unknown, cwd: unknown): boolean {
+  if (!Array.isArray(args) || args.length === 0) return false;
+  if (typeof cwd !== 'string' || !cwd) return false;
+  if (!isPathUnderRegisteredRoot(cwd)) return false;
+  const first = args[0];
+  if (typeof first !== 'string') return false;
+  // Reject pre-subcommand flags that alter git's behavior globally
+  // (`-c core.sshCommand=…` is the classic RCE, `-C dir` hops cwd,
+  // `--exec-path` points at an attacker binary).
+  if (first.startsWith('-')) return false;
+  if (!RENDERER_GIT_ALLOWLIST.has(first)) return false;
+  for (const a of args) {
+    if (typeof a !== 'string') return false;
+  }
+  return true;
+}
+
+// Validate that `target` resolves inside one of the registered roots.
+// Resolves symlinks via realpath on the nearest existing ancestor so a
+// symlink planted inside a project can't point out to an unrelated file.
+function isPathUnderRegisteredRoot(target: string): boolean {
+  if (!target) return false;
+  const roots = registeredRoots();
+  if (roots.length === 0) return false;
+  const resolvedTarget = resolveExistingAncestor(path.resolve(target));
+  for (const root of roots) {
+    let resolvedRoot: string;
+    try {
+      resolvedRoot = fs.realpathSync(path.resolve(root));
+    } catch {
+      continue;
+    }
+    const rel = path.relative(resolvedRoot, resolvedTarget);
+    if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
+  }
+  return false;
+}
+
+// `fs.realpathSync` throws if any segment is missing (e.g. a file about
+// to be created). Walk up the chain until a realpathable ancestor is
+// found, resolve that, then re-attach the non-existing tail. Uses
+// `path.dirname` rather than splitting on `path.sep` so Windows drive
+// roots (`C:\`) and POSIX root (`/`) both terminate cleanly.
+function resolveExistingAncestor(p: string): string {
+  const absolute = path.resolve(p);
+  const tail: string[] = [];
+  let current = absolute;
+  while (true) {
+    try {
+      return path.join(fs.realpathSync(current), ...tail);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return absolute;
+      tail.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
 
 function listFilesRecursive(root: string): string[] {
   const skipDirs = new Set([

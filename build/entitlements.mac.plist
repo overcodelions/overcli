@@ -20,8 +20,6 @@
   <!-- Network for the CLI's own API calls. -->
   <key>com.apple.security.network.client</key>
   <true/>
-  <key>com.apple.security.network.server</key>
-  <true/>
   <!-- The user picks a project directory at runtime; we write
        conversation metadata into userData and read their chosen source
        tree. Document access is broad so the file editor + git worktree

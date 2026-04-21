@@ -1,6 +1,21 @@
 import { useMemo } from 'react';
 import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
+import DOMPurify from 'dompurify';
+
+// hljs-produced <span class="hljs-...">, <code class="file-path" data-path="…">,
+// and standard markdown tags are the only HTML we generate. Everything else
+// (script, iframe, object, on* handlers, javascript: URLs) is stripped so a
+// malicious CLAUDE.md, tool result, or model output can't XSS the renderer.
+const SANITIZE_CONFIG = {
+  ALLOWED_TAGS: [
+    'a', 'b', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3',
+    'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'ol', 'p', 'pre', 's', 'span',
+    'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+  ],
+  ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class', 'data-path'],
+  ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel):/i,
+};
 
 // Configure `marked` once per module load. Code fences go through
 // highlight.js; the theme stylesheet (github-dark) imported from the
@@ -55,7 +70,8 @@ export function renderMarkdownHtml(
       block ? `<pre><code>${escapeHtml(text)}</code></pre>` : escapeHtml(text);
   }
 
-  return marked.parse(source ?? '', { async: false, renderer }) as string;
+  const raw = marked.parse(source ?? '', { async: false, renderer }) as string;
+  return DOMPurify.sanitize(raw, SANITIZE_CONFIG) as string;
 }
 
 /// Render a single assistant / review bubble's markdown as HTML. We purposely
