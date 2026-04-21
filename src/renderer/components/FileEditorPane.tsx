@@ -23,6 +23,7 @@ export function FileEditorPane() {
   const [dirty, setDirty] = useState(false);
   const previewable = canPreviewFile(path);
 
+  const openFile = useStore((s) => s.openFile);
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
@@ -30,11 +31,18 @@ export function FileEditorPane() {
     setError(null);
     setDirty(false);
     window.overcli
-      .invoke('fs:readFile', path)
+      .invoke('fs:readFile', { path, rootPath: rootPath ?? undefined })
       .then((res) => {
         if (cancelled) return;
-        if (res.ok) setContent(res.content);
-        else setError(res.error);
+        if (res.ok) {
+          setContent(res.content);
+          // Tool results often pass a hint (`store.ts`, `src/main/index.ts`)
+          // that the resolver expanded to an absolute path. Upgrade the
+          // store so subsequent save/diff ops target the real file.
+          if (res.resolvedPath && res.resolvedPath !== path) {
+            openFile(res.resolvedPath, highlight ?? undefined, mode);
+          }
+        } else setError(res.error);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -42,7 +50,7 @@ export function FileEditorPane() {
     return () => {
       cancelled = true;
     };
-  }, [path]);
+  }, [path, rootPath]);
 
   useEffect(() => {
     if (!path || mode !== 'diff' || !rootPath) return;

@@ -470,7 +470,9 @@ export interface IPCInvokeMap {
   'runner:listInstalledReviewers': () => Record<string, boolean>;
   'capabilities:scan': () => CapabilitiesReport;
   'fs:pickDirectory': () => string | null;
-  'fs:readFile': (path: string) => { ok: true; content: string } | { ok: false; error: string };
+  'fs:readFile': (args: { path: string; rootPath?: string }) =>
+    | { ok: true; content: string; resolvedPath: string }
+    | { ok: false; error: string };
   'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
   'fs:openInFinder': (path: string) => void;
