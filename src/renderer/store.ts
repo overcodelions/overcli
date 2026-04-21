@@ -307,16 +307,27 @@ function isAgentConversation(conv: Conversation): boolean {
 /// detection fails or no models are pulled, so callers can surface a
 /// clear error instead of blindly using a tag the server doesn't have.
 async function pickInstalledOllamaModel(settings: AppSettings): Promise<string | null> {
-  try {
-    const det = await window.overcli.invoke('ollama:detect');
-    const names = det.models.map((m) => m.name);
-    if (names.length === 0) return null;
-    const configured = settings.backendDefaultModels.ollama;
-    if (configured && names.includes(configured)) return configured;
-    return names[0];
-  } catch {
-    return null;
+  // The Ollama server can bind :11434 a beat before `/api/tags` lists the
+  // on-disk models, so a send right after a "start server" prompt may race
+  // an empty list. One short retry covers that without blocking any other
+  // failure mode (no models pulled, server truly down) for long.
+  const detectOnce = async (): Promise<string[]> => {
+    try {
+      const det = await window.overcli.invoke('ollama:detect');
+      return det.models.map((m) => m.name);
+    } catch {
+      return [];
+    }
+  };
+  let names = await detectOnce();
+  if (names.length === 0) {
+    await new Promise((r) => setTimeout(r, 800));
+    names = await detectOnce();
   }
+  if (names.length === 0) return null;
+  const configured = settings.backendDefaultModels.ollama;
+  if (configured && names.includes(configured)) return configured;
+  return names[0];
 }
 
 async function ensureWorkspaceRoot(
@@ -1456,12 +1467,26 @@ export const useStore = create<StoreState>((set, get) => ({
     const attachments = state.conversationAttachments[conversationId] ?? [];
 
     // Clear the draft + attachments immediately so the input box resets.
+    // Also clear any stale error notice from a prior attempt and flip the
+    // runner to running optimistically so the Composer swaps to Stop before
+    // the backend's first `running: true` event lands (avoids a double-send
+    // window on slow first turns like Gemini ACP startup).
     set((s) => {
       const nextAtts = { ...s.conversationAttachments };
       delete nextAtts[conversationId];
+      const runner = s.runners[conversationId] ?? newRunnerState();
       return {
         conversationDrafts: { ...s.conversationDrafts, [conversationId]: '' },
         conversationAttachments: nextAtts,
+        runners: {
+          ...s.runners,
+          [conversationId]: {
+            ...runner,
+            errorMessage: undefined,
+            isRunning: true,
+            activityLabel: runner.activityLabel ?? 'Thinking…',
+          },
+        },
       };
     });
 
@@ -1473,6 +1498,8 @@ export const useStore = create<StoreState>((set, get) => ({
           [conversationId]: {
             ...(s.runners[conversationId] ?? newRunnerState()),
             errorMessage: `${backend} is disabled in Settings > Backends.`,
+            isRunning: false,
+            activityLabel: undefined,
           },
         },
       }));
@@ -1504,6 +1531,8 @@ export const useStore = create<StoreState>((set, get) => ({
               ...(s.runners[conversationId] ?? newRunnerState()),
               errorMessage:
                 'No Ollama models pulled yet. Open Settings → Local models to pull one.',
+              isRunning: false,
+              activityLabel: undefined,
             },
           },
         }));

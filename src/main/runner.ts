@@ -139,6 +139,11 @@ interface GeminiAcpSession {
   sessionId?: string;
   initialized: boolean;
   promptInFlight: boolean;
+  /// Follow-up prompts typed while `promptInFlight` is true queue here
+  /// instead of racing a second session/prompt alongside the first (Gemini
+  /// ACP serializes prompts per-session; an overlapping call would reset
+  /// the streaming snapshot and confuse the UI).
+  queuedPrompt?: { args: SendArgs; syntheticFromCollab: boolean };
   closing: boolean;
   stderrBuffer: string;
   currentModelId: string;
@@ -966,6 +971,22 @@ export class RunnerManager {
     options: { syntheticFromCollab: boolean; userEventAlreadyEmitted: boolean },
   ): Promise<void> {
     const convId = args.conversationId;
+    // If a prompt is still streaming, stash this turn and drain it when
+    // the current one resolves. Without this guard, resetting session
+    // state (currentAssistantText etc.) mid-stream would blank the bubble
+    // and a second session/prompt would race the first.
+    const inFlight = this.geminiAcpSessions.get(convId);
+    if (inFlight?.promptInFlight) {
+      if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
+        this.emitLocalUser(convId, args.prompt, args.attachments);
+      }
+      inFlight.queuedPrompt = {
+        args,
+        syntheticFromCollab: options.syntheticFromCollab,
+      };
+      return;
+    }
+
     let session: GeminiAcpSession;
     try {
       session = await this.ensureGeminiAcpSession(args);
@@ -1039,12 +1060,28 @@ export class RunnerManager {
       });
       this.emit({ type: 'running', conversationId: convId, isRunning: false });
       void this.maybeRunGeminiAcpReviewer(convId, session, resultInfo.isError);
+      this.drainGeminiAcpQueue(convId);
     } catch (err: any) {
       session.promptInFlight = false;
       const message = err?.message ?? String(err);
       this.emit({ type: 'error', conversationId: convId, message });
       this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      this.drainGeminiAcpQueue(convId);
     }
+  }
+
+  private drainGeminiAcpQueue(convId: UUID): void {
+    const session = this.geminiAcpSessions.get(convId);
+    if (!session) return;
+    const queued = session.queuedPrompt;
+    if (!queued) return;
+    session.queuedPrompt = undefined;
+    // The local user bubble was already emitted when the prompt queued, so
+    // pass `userEventAlreadyEmitted: true` to avoid a duplicate.
+    void this.sendGeminiAcp(queued.args, {
+      syntheticFromCollab: queued.syntheticFromCollab,
+      userEventAlreadyEmitted: true,
+    });
   }
 
   private async ensureGeminiAcpSession(args: SendArgs): Promise<GeminiAcpSession> {
@@ -1341,13 +1378,16 @@ export class RunnerManager {
 
   private cancelGeminiAcp(conversationId: UUID): void {
     const session = this.geminiAcpSessions.get(conversationId);
-    if (!session?.promptInFlight || !session.sessionId) return;
+    if (!session) return;
+    session.queuedPrompt = undefined;
+    if (!session.promptInFlight || !session.sessionId) return;
     void session.client.notify('session/cancel', { sessionId: session.sessionId });
   }
 
   private killGeminiAcp(conversationId: UUID): void {
     const session = this.geminiAcpSessions.get(conversationId);
     if (!session) return;
+    session.queuedPrompt = undefined;
     session.closing = true;
     if (session.sessionId) {
       void session.client.request('session/close', { sessionId: session.sessionId }).catch(() => {});

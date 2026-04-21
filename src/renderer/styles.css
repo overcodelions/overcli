@@ -316,6 +316,16 @@ html, body {
   20% { transform: scale(1.25); }
 }
 
+/* Soft downward breath on the empty-state tether chevron — draws the eye
+ * toward the composer without looking like a broken UI line. */
+.intro-tether {
+  animation: intro-tether-breathe 2400ms ease-in-out infinite;
+}
+@keyframes intro-tether-breathe {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  50%      { opacity: 0.7;  transform: translateY(3px); }
+}
+
 /* highlight.js palette — dark and light variants. We swap at the :root
  * level so every .hljs token inherits the correct color automatically. */
 .hljs { background: transparent !important; color: var(--c-ink); }
