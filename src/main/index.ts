@@ -159,20 +159,24 @@ function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths[0];
   });
-  ipcMain.handle('fs:readFile', (_e, filePath: string) => {
-    if (!isPathUnderRegisteredRoot(filePath)) {
+  ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
+    const resolved = resolveFilePath(args?.path ?? '', args?.rootPath);
+    if (!resolved) {
+      return { ok: false, error: `Could not find "${args?.path ?? ''}" in any registered project.` };
+    }
+    if (!isPathUnderRegisteredRoot(resolved)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
     }
     try {
-      const stat = fs.statSync(filePath);
+      const stat = fs.statSync(resolved);
       if (stat.size > 5 * 1024 * 1024) {
         return { ok: false, error: `File is ${Math.round(stat.size / 1024 / 1024)} MB. Editor only opens files under 5 MB.` };
       }
-      const content = fs.readFileSync(filePath, 'utf-8');
+      const content = fs.readFileSync(resolved, 'utf-8');
       if (content.includes('\0')) {
         return { ok: false, error: 'Binary file — editor only opens text.' };
       }
-      return { ok: true, content };
+      return { ok: true, content, resolvedPath: resolved };
     } catch (err: any) {
       return { ok: false, error: err?.message ?? 'Could not read file' };
     }
@@ -413,6 +417,87 @@ function resolveExistingAncestor(p: string): string {
       current = parent;
     }
   }
+}
+
+// Tool output (grep, glob, etc.) emits paths relative to the conversation
+// cwd — and the renderer's path-link handler strips trailing `:LINE`
+// suffixes, so by the time a click lands here we often get something like
+// `src/main/index.ts` or even just `store.ts`. Neither resolves against
+// Electron's cwd, so `fs.readFileSync` ENOENTs.
+//
+// Resolution cascade:
+//   1. absolute + exists,
+//   2. join against the caller's rootPath (conversation cwd),
+//   3. join against each registered root,
+//   4. Command-P-style basename search across registered roots, tie-broken
+//      by how many trailing path segments match the hint (so a hint of
+//      `renderer/store.ts` prefers `.../src/renderer/store.ts` over
+//      `.../some/other/store.ts`), then by shortest full path.
+function resolveFilePath(hint: string, rootPath?: string): string | null {
+  if (!hint) return null;
+  if (path.isAbsolute(hint) && fs.existsSync(hint)) return hint;
+
+  const tried = new Set<string>();
+  const tryCandidate = (c: string): string | null => {
+    if (tried.has(c)) return null;
+    tried.add(c);
+    return fs.existsSync(c) ? c : null;
+  };
+
+  if (rootPath) {
+    const direct = tryCandidate(path.resolve(rootPath, hint));
+    if (direct) return direct;
+  }
+  const roots = registeredRoots();
+  for (const root of roots) {
+    const direct = tryCandidate(path.resolve(root, hint));
+    if (direct) return direct;
+  }
+
+  const hintSegments = hint.split(/[\\/]/).filter(Boolean);
+  const basename = hintSegments[hintSegments.length - 1];
+  if (!basename) return null;
+
+  const searchRoots: string[] = [];
+  const seenRoot = new Set<string>();
+  const pushRoot = (r: string | undefined) => {
+    if (!r || seenRoot.has(r)) return;
+    seenRoot.add(r);
+    searchRoots.push(r);
+  };
+  pushRoot(rootPath);
+  for (const r of roots) pushRoot(r);
+
+  type Match = { file: string; suffixScore: number };
+  let best: Match | null = null;
+  for (const root of searchRoots) {
+    let files: string[];
+    try {
+      files = listFilesRecursive(root);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (path.basename(file) !== basename) continue;
+      const fileSegments = file.split(path.sep);
+      let score = 0;
+      for (let i = 0; i < hintSegments.length && i < fileSegments.length; i++) {
+        if (fileSegments[fileSegments.length - 1 - i] === hintSegments[hintSegments.length - 1 - i]) {
+          score++;
+        } else {
+          break;
+        }
+      }
+      if (
+        !best ||
+        score > best.suffixScore ||
+        (score === best.suffixScore && file.length < best.file.length)
+      ) {
+        best = { file, suffixScore: score };
+      }
+    }
+  }
+  return best?.file ?? null;
 }
 
 function listFilesRecursive(root: string): string[] {
