@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
+import { Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { UserBubble } from './UserBubble';
 import { AssistantBubble } from './AssistantBubble';
 import { ToolUseCard } from './ToolUseCard';
@@ -12,6 +12,7 @@ import { PatchApplyCard } from './PatchApplyCard';
 import { TurnCaption } from './TurnCaption';
 import { SystemNotice } from './SystemNotice';
 import { ActivityStrip } from './ActivityStrip';
+import { useConversation } from '../hooks';
 
 export function ChatView({ conversationId }: { conversationId: UUID }) {
   const runner = useStore((s) => s.runners[conversationId]);
@@ -89,7 +90,9 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         onScroll={updateBottomState}
         className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
       >
-        {visibleEvents.length === 0 && !runner?.historyLoading && <EmptyHint />}
+        {visibleEvents.length === 0 && !runner?.historyLoading && (
+          <NewAgentIntro conversationId={conversationId} />
+        )}
         {runner?.historyLoading && <div className="text-xs text-ink-faint">Loading history…</div>}
         {visibleEvents.map((event) => (
           <EventRow
@@ -167,15 +170,224 @@ const EventRow = memo(function EventRow({
   }
 });
 
-function EmptyHint() {
+function NewAgentIntro({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  if (!conv) return null;
+  const intro = introCopy(conv);
   return (
-    <div className="text-center text-ink-muted py-12">
-      <div className="text-sm">Type a message below to start.</div>
-      <div className="text-xs text-ink-faint mt-1">
-        Your message is sent to the active agent in this project directory. ⌘⏎ to send.
+    <div className="flex flex-col items-center text-center justify-end min-h-full pb-6 gap-4">
+      <AgentSparkIcon />
+      <div className="max-w-[520px]">
+        <div className="text-base font-semibold text-ink">{intro.heading}</div>
+        {intro.sub && (
+          <div className="text-sm text-ink-muted mt-1.5">{intro.sub}</div>
+        )}
+      </div>
+      <IntroPills conv={conv} />
+      <div className="flex flex-col items-center gap-1.5 mt-1">
+        <div className="text-[11px] text-ink-faint">
+          ⌘⏎ to send · @ to reference files
+        </div>
+        <IntroTether />
       </div>
     </div>
   );
+}
+
+function IntroTether() {
+  return (
+    <svg
+      width="14"
+      height="8"
+      viewBox="0 0 14 8"
+      fill="none"
+      aria-hidden
+      className="intro-tether text-ink-muted"
+    >
+      <path
+        d="M1 1.5l6 5 6-5"
+        stroke="currentColor"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+interface IntroCopy {
+  heading: string;
+  sub?: string;
+}
+
+function introCopy(conv: Conversation): IntroCopy {
+  const name = conv.name || 'this agent';
+  if (conv.reviewAgent) {
+    const target = stripOrigin(conv.reviewTargetBranch ?? 'the branch');
+    if (conv.reviewAgentKind === 'docs') {
+      return {
+        heading: `Read-only checkout of ${target} — ready to draft docs.`,
+        sub: 'Say "go" and I\'ll start writing, or ask anything about the changes first.',
+      };
+    }
+    return {
+      heading: `Read-only checkout of ${target} — standing by for the review.`,
+      sub: 'Say "go" for a PR-style review, or point me at what to look at first.',
+    };
+  }
+  if (conv.worktreePath && conv.branchName) {
+    return {
+      heading: `Fresh worktree on ${conv.branchName}.`,
+      sub: `What should ${name} build?`,
+    };
+  }
+  return {
+    heading: 'New agent, fresh slate.',
+    sub: `What’s on your mind for ${name}?`,
+  };
+}
+
+function IntroPills({ conv }: { conv: Conversation }) {
+  const pills: Array<{ icon: JSX.Element; label: string; title?: string }> = [];
+  if (conv.reviewAgent) {
+    pills.push({
+      icon: <EyeIcon />,
+      label: 'read-only',
+      title: 'Detached HEAD — this agent won\'t commit or edit files.',
+    });
+  }
+  if (conv.worktreePath) {
+    pills.push({
+      icon: <WorktreeIcon />,
+      label: shortenPath(conv.worktreePath),
+      title: conv.worktreePath,
+    });
+  }
+  const branchLabel = conv.reviewAgent
+    ? stripOrigin(conv.reviewTargetBranch ?? '')
+    : conv.branchName ?? '';
+  if (branchLabel) {
+    pills.push({
+      icon: <BranchIcon />,
+      label: branchLabel,
+      title: conv.reviewAgent ? 'Branch under review' : 'Working branch',
+    });
+  }
+  if (conv.baseBranch) {
+    pills.push({
+      icon: <BaseIcon />,
+      label: `from ${conv.baseBranch}`,
+      title: 'Base branch',
+    });
+  }
+  if (pills.length === 0) return null;
+  return (
+    <div className="flex flex-wrap justify-center gap-1.5 mt-1">
+      {pills.map((p, i) => (
+        <span
+          key={i}
+          title={p.title}
+          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-card border border-card-strong text-[11px] text-ink-muted"
+        >
+          {p.icon}
+          <span className="font-mono truncate max-w-[220px]">{p.label}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AgentSparkIcon() {
+  return (
+    <svg
+      width="28"
+      height="28"
+      viewBox="0 0 32 32"
+      fill="none"
+      className="text-accent"
+      aria-hidden
+    >
+      <path
+        d="M16 4l2.2 7.1 7.1 2.2-7.1 2.2L16 22.6l-2.2-7.1-7.1-2.2 7.1-2.2L16 4z"
+        fill="currentColor"
+        fillOpacity="0.18"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+      <circle cx="25" cy="25" r="2" fill="currentColor" fillOpacity="0.7" />
+      <circle cx="7" cy="26" r="1.3" fill="currentColor" fillOpacity="0.5" />
+    </svg>
+  );
+}
+
+function WorktreeIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M2 4.5A1 1 0 013 3.5h3l1 1.3h6A1 1 0 0114 5.8v6A1 1 0 0113 12.8H3A1 1 0 012 11.8V4.5z"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function BranchIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="5" cy="3.5" r="1.6" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="5" cy="12.5" r="1.6" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="11" cy="7" r="1.6" stroke="currentColor" strokeWidth="1.1" />
+      <path
+        d="M5 5.1v5.8M6.4 3.9c2.5.3 4.6 1.1 4.6 3.1"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function BaseIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M4 3.5v9M4 12.5l-2-2M4 12.5l2-2M11 12.5v-9M11 3.5l-2 2M11 3.5l2 2"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <path
+        d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8s-2.4 4.5-6.5 4.5S1.5 8 1.5 8z"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+      <circle cx="8" cy="8" r="1.6" stroke="currentColor" strokeWidth="1.1" />
+    </svg>
+  );
+}
+
+function stripOrigin(branch: string): string {
+  return branch.startsWith('origin/') ? branch.slice('origin/'.length) : branch;
+}
+
+function shortenPath(p: string): string {
+  const home = p.replace(/^\/Users\/[^/]+\//, '~/');
+  if (home.length <= 44) return home;
+  const parts = home.split('/');
+  if (parts.length <= 3) return home;
+  return `${parts[0]}/…/${parts.slice(-2).join('/')}`;
 }
 
 // Tool names that represent user-blocking interactive prompts. These must

@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { Composer } from './Composer';
 import { Backend, PermissionMode, EffortLevel, Project, UUID, Attachment, Workspace } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
+import { useSlashCommands } from '../hooks';
 
 const WELCOME_KEY = '__welcome__';
 
@@ -43,6 +44,7 @@ export function WelcomePane() {
   const [model, setModel] = useState<string>('');
   const [branch, setBranch] = useState<string>('');
   const [ollamaPulledModels, setOllamaPulledModels] = useState<string[]>([]);
+  const slashCommands = useSlashCommands(backend);
 
   // When Ollama is the chosen backend, pull the list of installed models
   // from the local server so the model dropdown shows real options
@@ -158,7 +160,9 @@ export function WelcomePane() {
           draftKey={WELCOME_KEY}
           autoFocus
           variant="welcome"
-          placeholder={`Ask ${backendName(backend)} anything. @ to use plugins or use files`}
+          rootPath={selectedProject?.path}
+          slashCommands={slashCommands}
+          placeholder={`Ask ${backendName(backend)} anything. @ to reference files · / for commands`}
           onSend={handleSend}
           footer={
             <>
