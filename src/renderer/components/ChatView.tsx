@@ -11,6 +11,7 @@ import { ReviewCard } from './ReviewCard';
 import { PatchApplyCard } from './PatchApplyCard';
 import { TurnCaption } from './TurnCaption';
 import { SystemNotice } from './SystemNotice';
+import { MetaReminder } from './MetaReminder';
 import { ActivityStrip } from './ActivityStrip';
 import { useConversation } from '../hooks';
 
@@ -165,6 +166,8 @@ const EventRow = memo(function EventRow({
       return <ReviewCard info={event.kind.info} />;
     case 'systemNotice':
       return <SystemNotice text={event.kind.text} />;
+    case 'metaReminder':
+      return <MetaReminder text={event.kind.text} />;
     default:
       return null;
   }
@@ -612,7 +615,8 @@ function filterRendered(
       }
       let hasVisiblePeer = false;
       for (let j = turnStart; j < i; j++) {
-        if (keep[j] && events[j].kind.type !== 'localUser') {
+        const t = events[j].kind.type;
+        if (keep[j] && t !== 'localUser' && t !== 'metaReminder') {
           hasVisiblePeer = true;
           break;
         }

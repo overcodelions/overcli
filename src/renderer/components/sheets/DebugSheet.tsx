@@ -217,6 +217,7 @@ function getPreview(e: StreamEvent): string {
   if (k.type === 'localUser') return k.text.slice(0, 200);
   if (k.type === 'assistant') return (k.info.text ?? '').slice(0, 200);
   if (k.type === 'systemNotice') return k.text.slice(0, 200);
+  if (k.type === 'metaReminder') return k.text.slice(0, 200);
   if (k.type === 'stderr') return k.line.slice(0, 200);
   if (k.type === 'parseError') return k.message.slice(0, 200);
   if (k.type === 'other') return k.label;

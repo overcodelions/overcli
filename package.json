@@ -35,6 +35,12 @@
     "extraMetadata": {
       "main": "dist/main/index.js"
     },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false
+    },
     "mac": {
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",

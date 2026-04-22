@@ -91,7 +91,7 @@ export class ClaudePermissionBroker {
         },
       },
     };
-    fs.writeFileSync(configPath, JSON.stringify(config), 'utf8');
+    fs.writeFileSync(configPath, JSON.stringify(config), { encoding: 'utf8', mode: 0o600 });
     const session: Session = { conversationId, token, configPath };
     this.sessionsByToken.set(token, session);
     this.sessionsByConvId.set(conversationId, session);

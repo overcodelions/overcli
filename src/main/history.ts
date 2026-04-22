@@ -142,7 +142,13 @@ function parseClaudeHistoryLine(line: string): StreamEvent[] {
   const timestamp = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw) || Date.now();
   const type = json.type ?? json.message?.type;
   if (type === 'user' && typeof json.message?.content === 'string') {
-    return [event({ type: 'localUser', text: json.message.content }, trimmed, timestamp)];
+    const content = json.message.content;
+    if (json.isMeta === true) {
+      const match = content.match(/^\s*<system-reminder>([\s\S]*?)<\/system-reminder>\s*$/);
+      const text = match ? match[1].trim() : content;
+      return [event({ type: 'metaReminder', text }, trimmed, timestamp)];
+    }
+    return [event({ type: 'localUser', text: content }, trimmed, timestamp)];
   }
   if (type === 'user' && Array.isArray(json.message?.content)) {
     // tool_result blocks

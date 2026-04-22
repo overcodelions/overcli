@@ -334,9 +334,9 @@ function writeAttachmentToTemp(a: Attachment): string {
   const { randomUUID } = require('node:crypto') as typeof import('node:crypto');
 
   const dir = path.join(os.homedir(), '.overcli', 'attachments');
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const file = path.join(dir, `${a.id || randomUUID()}${mimeToExt(a.mimeType)}`);
-  fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'));
+  fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
   return file;
 }
 

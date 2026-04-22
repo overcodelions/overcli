@@ -145,6 +145,7 @@ export type StreamEventKind =
   | { type: 'patchApply'; info: PatchApplyInfo }
   | { type: 'reviewResult'; info: ReviewInfo }
   | { type: 'systemNotice'; text: string }
+  | { type: 'metaReminder'; text: string }
   | { type: 'stderr'; line: string }
   | { type: 'parseError'; message: string }
   | { type: 'streamDelta' }
