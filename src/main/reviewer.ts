@@ -356,8 +356,10 @@ function buildReviewerArgs(backend: Backend): string[] {
       return ['-p', '-'];
     case 'codex':
       // codex exec: one-shot version of codex proto. `-` tells it to
-      // read the user prompt from stdin.
-      return ['exec', '-'];
+      // read the user prompt from stdin. --skip-git-repo-check lets the
+      // reviewer run when cwd is a synthetic workspace/coordinator root
+      // (a dir of symlinks that isn't itself a git repo).
+      return ['exec', '--skip-git-repo-check', '-'];
     case 'gemini':
       // gemini CLI also supports stdin prompt via `-p -`.
       return ['-p', '-'];
