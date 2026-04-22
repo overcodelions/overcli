@@ -53,9 +53,9 @@ export function AboutSheet() {
       <div className="flex items-center gap-5 border-b border-card px-7 py-7 bg-gradient-to-b from-accent/10 to-transparent">
         <AppMark />
         <div className="min-w-0 flex-1">
-          <div className="text-[32px] font-bold leading-none text-ink">OverCLI</div>
+          <div className="text-[32px] font-bold leading-none text-ink">overcli</div>
           <div className="mt-2 text-lg text-ink-muted">
-            A desktop interface for AI coding agents.
+            over·CLI — a GUI that sits over your CLIs. Yes, that's the name.
           </div>
         </div>
       </div>
