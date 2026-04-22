@@ -199,6 +199,13 @@ export interface Conversation {
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
+  /// Set on a workspace-agent member after the user runs "Check out
+  /// locally" on it: the worktree was removed and the project repo was
+  /// switched onto `branchName`. The coordinator keeps the member in
+  /// `workspaceAgentMemberIds` so the review sheet can render a
+  /// "demoted to local" card instead of a perpetual spinner — the other
+  /// members remain reviewable as usual.
+  checkedOutLocally?: boolean;
   /// Set on workspace-agent coordinators: a synthetic directory whose
   /// symlinks point at each member's worktree. Used as the coordinator's
   /// cwd so the agent's file-system tools land in the worktrees, not the

@@ -61,7 +61,16 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
   const branchShort = conv?.branchName ?? '?';
 
   const reload = async () => {
-    if (!conv?.worktreePath || !projectPath || !conv.branchName) return;
+    if (!conv?.worktreePath || !projectPath || !conv.branchName) {
+      // Demoted/stripped conv — nothing to diff. Clear the spinner so
+      // the sheet shows "No changes" instead of "Running git diff…"
+      // forever (seen when a workspace-agent member gets "Check out
+      // locally" invoked on it).
+      setLoading(false);
+      setFiles([]);
+      setStatus(null);
+      return;
+    }
     setLoading(true);
     // `git diff <base>` (two-dot, working-tree-vs-base) rolls committed
     // and uncommitted changes into one view — the most useful

@@ -1221,12 +1221,14 @@ export const useStore = create<StoreState>((set, get) => ({
       sessionId: conv.sessionId,
     });
     if (!res.ok) return res;
-    // Transfer: strip agent-specific fields so the conversation shows up
-    // as a normal project conversation. History and session are preserved
-    // so the user can keep chatting about the work they just promoted.
+    // Transfer: drop worktree-specific fields so the conversation shows
+    // up as a normal project conversation. `branchName` is preserved
+    // (the project repo is now ON that branch) and `checkedOutLocally`
+    // is set so a workspace-agent coordinator's review sheet can render
+    // a "demoted" card for this member instead of a stuck spinner.
     mutateConversation(set, get, id, (c) => {
-      const { worktreePath: _wt, branchName: _bn, baseBranch: _bb, orphaned: _or, ...rest } = c;
-      return rest;
+      const { worktreePath: _wt, baseBranch: _bb, orphaned: _or, ...rest } = c;
+      return { ...rest, checkedOutLocally: true };
     });
     await saveConversationState(get);
     return res;
