@@ -129,7 +129,7 @@ function loadClaudeHistory(sessionId: string | undefined, projectPath: string): 
   return out;
 }
 
-function parseClaudeHistoryLine(line: string): StreamEvent[] {
+export function parseClaudeHistoryLine(line: string): StreamEvent[] {
   const trimmed = line.trim();
   if (!trimmed) return [];
   let json: any;
@@ -237,7 +237,7 @@ function parseClaudeHistoryLine(line: string): StreamEvent[] {
   return [];
 }
 
-function numberOrZero(v: unknown): number {
+export function numberOrZero(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
@@ -322,7 +322,7 @@ function findCodexRolloutPaths(
   return scoped.map((s) => s.file);
 }
 
-function parseCodexHistoryLine(line: string): StreamEvent | null {
+export function parseCodexHistoryLine(line: string): StreamEvent | null {
   const trimmed = line.trim();
   if (!trimmed) return null;
   let json: any;
@@ -463,7 +463,7 @@ function parseCodexHistoryLine(line: string): StreamEvent | null {
   }
 }
 
-function codexContentText(content: any[]): string {
+export function codexContentText(content: any[]): string {
   return content
     .map((b: any) => {
       if (typeof b?.text === 'string') return b.text;
@@ -475,7 +475,7 @@ function codexContentText(content: any[]): string {
     .join('');
 }
 
-function normalizePathKey(p: string): string {
+export function normalizePathKey(p: string): string {
   return p.replace(/\//g, '\\').toLowerCase();
 }
 
@@ -495,7 +495,7 @@ function readCodexSessionMeta(file: string): { cwd: string; timestampMs: number 
   }
 }
 
-function dedupeCodexEvents(events: StreamEvent[]): StreamEvent[] {
+export function dedupeCodexEvents(events: StreamEvent[]): StreamEvent[] {
   const out: StreamEvent[] = [];
   const seen = new Set<string>();
   for (const ev of events) {
@@ -534,7 +534,7 @@ function codexEventSignature(ev: StreamEvent): string | null {
   }
 }
 
-function normalizeSigText(s: string): string {
+export function normalizeSigText(s: string): string {
   return (s || '').trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 

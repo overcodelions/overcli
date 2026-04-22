@@ -2298,7 +2298,7 @@ export class RunnerManager {
   }
 }
 
-function extractCodexExecSnapshot(raw: string): { text: string; thinking: string } {
+export function extractCodexExecSnapshot(raw: string): { text: string; thinking: string } {
   if (!raw.trim()) return { text: '', thinking: '' };
 
   // Timestamped blocks (newer codex exec):
@@ -2351,7 +2351,7 @@ function extractSection(raw: string, label: string): string {
 /// One-line digest of a tool use for the reviewer prompt. Ideally the
 /// reviewer sees enough to reconstruct what happened without us dumping
 /// the full tool_use JSON (which can be many KB for patch / file writes).
-function summarizeToolUse(name: string, inputJSON: string, filePath?: string): string {
+export function summarizeToolUse(name: string, inputJSON: string, filePath?: string): string {
   let parsed: any = null;
   try {
     parsed = JSON.parse(inputJSON);
@@ -2588,7 +2588,7 @@ function ollamaFriendlyError(raw: string): string {
   return raw;
 }
 
-function codexPermissionMapping(mode: PermissionMode): { sandbox: string; approval: string } {
+export function codexPermissionMapping(mode: PermissionMode): { sandbox: string; approval: string } {
   switch (mode) {
     case 'plan':
       return { sandbox: 'read-only', approval: 'on-request' };
@@ -2602,12 +2602,12 @@ function codexPermissionMapping(mode: PermissionMode): { sandbox: string; approv
   }
 }
 
-function codexTransportPermissions(mode: PermissionMode): { sandbox: string; approval: string } {
+export function codexTransportPermissions(mode: PermissionMode): { sandbox: string; approval: string } {
   const { sandbox } = codexPermissionMapping(mode);
   return { sandbox, approval: 'never' };
 }
 
-function geminiPermissionMapping(mode: PermissionMode): string {
+export function geminiPermissionMapping(mode: PermissionMode): string {
   switch (mode) {
     case 'plan':
       return 'plan';
@@ -2624,7 +2624,7 @@ function geminiPermissionMapping(mode: PermissionMode): string {
 /// Dedupe + absolute-ify the directory list we'll pass as `--add-dir` to
 /// Claude. The cwd is always implicitly allowed, so drop it; remove
 /// duplicates and non-absolute entries to avoid confusing Claude Code.
-function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[] {
+export function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[] {
   if (!dirs || dirs.length === 0) return [];
   const cwdReal = path.resolve(cwd);
   const seen = new Set<string>();
@@ -2644,7 +2644,7 @@ function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[]
 /// the renderer can show "Allow + add this directory" when it lies
 /// outside the session's current scope. Returns null for tools that don't
 /// carry a path (or a shell command we can't parse confidently).
-function extractRequestedPath(toolName: string, input: unknown): string | null {
+export function extractRequestedPath(toolName: string, input: unknown): string | null {
   if (!input || typeof input !== 'object') return null;
   const obj = input as Record<string, unknown>;
   const candidates: Array<string | undefined> = [
@@ -2663,7 +2663,7 @@ function extractRequestedPath(toolName: string, input: unknown): string | null {
 /// True when `p` is inside the cwd or any of the session's explicit
 /// allowed dirs. We compare resolved paths so symlinks and trailing
 /// slashes don't cause false negatives.
-function isInsideAllowedDirs(p: string, cwd: string, allowed: string[]): boolean {
+export function isInsideAllowedDirs(p: string, cwd: string, allowed: string[]): boolean {
   const abs = path.resolve(p);
   const roots = [path.resolve(cwd), ...allowed.map((d) => path.resolve(d))];
   for (const root of roots) {

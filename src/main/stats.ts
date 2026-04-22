@@ -641,7 +641,7 @@ function addRolling(
   if (isSameDay(ts, now)) agg.sessionsToday.add(sessionKey);
 }
 
-function isSameDay(a: number, b: number): boolean {
+export function isSameDay(a: number, b: number): boolean {
   const d1 = new Date(a);
   const d2 = new Date(b);
   return (
@@ -705,7 +705,7 @@ function addToDaily(
   daily.set(key, cur);
 }
 
-function dayKey(ts: number): string {
+export function dayKey(ts: number): string {
   const d = new Date(ts);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -713,7 +713,7 @@ function dayKey(ts: number): string {
   return `${y}-${m}-${day}`;
 }
 
-function fillDays(daily: Map<string, DailyBucket>, count: number, now: number): DailyBucket[] {
+export function fillDays(daily: Map<string, DailyBucket>, count: number, now: number): DailyBucket[] {
   const out: DailyBucket[] = [];
   const cursor = new Date(now);
   cursor.setHours(0, 0, 0, 0);
@@ -775,7 +775,7 @@ function ensureProject(
   return fresh;
 }
 
-function intVal(v: any): number {
+export function intVal(v: any): number {
   if (typeof v === 'number' && isFinite(v)) return Math.trunc(v);
   if (typeof v === 'string') {
     const n = parseInt(v, 10);
@@ -784,13 +784,13 @@ function intVal(v: any): number {
   return 0;
 }
 
-function minNum(a: number | null, b: number | null): number | null {
+export function minNum(a: number | null, b: number | null): number | null {
   if (a === null) return b;
   if (b === null) return a;
   return a < b ? a : b;
 }
 
-function maxNum(a: number | null, b: number | null): number | null {
+export function maxNum(a: number | null, b: number | null): number | null {
   if (a === null) return b;
   if (b === null) return a;
   return a > b ? a : b;
@@ -853,7 +853,7 @@ function walkJsonl(root: string): ClaudeJsonlEntry[] {
 /// rehydrates the original path. Double dashes can't be perfectly
 /// recovered (they may come from `.` in a component or adjacent `/` +
 /// `-`), but the result is far more readable than the raw slug.
-function unslug(slug: string): string {
+export function unslug(slug: string): string {
   if (slug.startsWith('-')) {
     return '/' + slug.slice(1).replace(/-/g, '/');
   }
