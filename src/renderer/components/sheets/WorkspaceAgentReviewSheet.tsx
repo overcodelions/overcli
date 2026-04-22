@@ -62,17 +62,27 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
 
   const refreshAll = async () => {
     if (!members.length) return;
-    setLoadingIds(new Set(members.map((m) => m.member.id)));
+    // Only the members that still have a worktree need a git status
+    // query. Two states get skipped: `checkedOutLocally` (set by the
+    // current checkout flow) AND legacy demoted members whose fields
+    // were stripped before the flag existed — both render the
+    // DemotedMemberCard instead of leaking a null `status` that reads
+    // as a perpetual "Loading…" in `statusLabel`.
+    const queryable = members.filter(
+      (m) =>
+        !isDemoted(m.member) &&
+        m.member.worktreePath &&
+        m.member.branchName &&
+        m.member.baseBranch,
+    );
+    setLoadingIds(new Set(queryable.map((m) => m.member.id)));
     const entries = await Promise.all(
-      members.map(async (m) => {
-        if (!m.member.worktreePath || !m.member.branchName || !m.member.baseBranch) {
-          return [m.member.id, null] as const;
-        }
+      queryable.map(async (m) => {
         const stat = await window.overcli.invoke('git:worktreeStatus', {
           projectPath: m.projectPath,
-          worktreePath: m.member.worktreePath,
-          branchName: m.member.branchName,
-          baseBranch: m.member.baseBranch,
+          worktreePath: m.member.worktreePath!,
+          branchName: m.member.branchName!,
+          baseBranch: m.member.baseBranch!,
         });
         return [m.member.id, stat] as const;
       }),
@@ -231,23 +241,33 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
             No participating projects found for this workspace agent.
           </div>
         )}
-        {members.map((view) => (
-          <MemberCard
-            key={view.member.id}
-            view={view}
-            busy={workingId === view.member.id}
-            busyGlobal={workingId != null}
-            onViewDiff={() => openSheet({ type: 'worktreeDiff', convId: view.member.id })}
-            onMerge={() => void runMerge(view)}
-            onPush={() => void runPush(view)}
-            onOpenPR={() => void runOpenPR(view)}
-            onRescue={() => void runRescue(view)}
-            onReveal={() => {
-              if (view.member.worktreePath)
-                void window.overcli.invoke('fs:openInFinder', view.member.worktreePath);
-            }}
-          />
-        ))}
+        {members.map((view) =>
+          isDemoted(view.member) ? (
+            <DemotedMemberCard
+              key={view.member.id}
+              view={view}
+              onReveal={() =>
+                void window.overcli.invoke('fs:openInFinder', view.projectPath)
+              }
+            />
+          ) : (
+            <MemberCard
+              key={view.member.id}
+              view={view}
+              busy={workingId === view.member.id}
+              busyGlobal={workingId != null}
+              onViewDiff={() => openSheet({ type: 'worktreeDiff', convId: view.member.id })}
+              onMerge={() => void runMerge(view)}
+              onPush={() => void runPush(view)}
+              onOpenPR={() => void runOpenPR(view)}
+              onRescue={() => void runRescue(view)}
+              onReveal={() => {
+                if (view.member.worktreePath)
+                  void window.overcli.invoke('fs:openInFinder', view.member.worktreePath);
+              }}
+            />
+          ),
+        )}
       </div>
     </div>
   );
@@ -372,6 +392,50 @@ function MemberCard({
           </button>
         )}
         <div className="flex-1" />
+        <button
+          onClick={onReveal}
+          className="px-2 py-1 text-[10px] text-ink-faint hover:text-ink"
+        >
+          Reveal
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/// A member is "demoted" (user ran "Check out locally" on it) when the
+/// flag is set OR — for members stripped before the flag existed — when
+/// both the worktree path and the branch name are gone. A regular
+/// member always has both, so the fallback is safe.
+function isDemoted(member: Conversation): boolean {
+  if (member.checkedOutLocally) return true;
+  return !member.worktreePath && !member.branchName;
+}
+
+function DemotedMemberCard({
+  view,
+  onReveal,
+}: {
+  view: MemberView;
+  onReveal: () => void;
+}) {
+  const { member } = view;
+  const branch = member.branchName ?? '?';
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.02] p-3 opacity-80">
+      <div className="flex items-start gap-2">
+        <span
+          className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0"
+          style={{ background: '#9ca3af' }}
+        />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium truncate">{view.projectName}</div>
+          <div className="text-[11px] text-ink-faint truncate">
+            Checked out locally · on <span className="text-ink-muted">{branch}</span> in your main
+            repo
+          </div>
+          <div className="text-[10px] text-ink-faint truncate mt-0.5">{view.projectPath}</div>
+        </div>
         <button
           onClick={onReveal}
           className="px-2 py-1 text-[10px] text-ink-faint hover:text-ink"
