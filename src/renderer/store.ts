@@ -261,6 +261,11 @@ interface StoreState {
     kind: 'exec' | 'patch',
     approved: boolean,
   ): Promise<void>;
+  respondUserInput(
+    conversationId: UUID,
+    requestId: string,
+    answers: Record<string, { answers: string[] }>,
+  ): Promise<void>;
   loadHistoryIfNeeded(conversationId: UUID): Promise<void>;
 
   // Health
@@ -1769,6 +1774,37 @@ export const useStore = create<StoreState>((set, get) => ({
         return e;
       });
       return { runners: { ...s.runners, [conversationId]: { ...runner, events } } };
+    });
+  },
+
+  async respondUserInput(conversationId, requestId, answers) {
+    await window.overcli.invoke('runner:respondUserInput', {
+      conversationId,
+      requestId,
+      answers,
+    });
+    set((s) => {
+      const runner = s.runners[conversationId];
+      if (!runner) return s;
+      const events = runner.events.map((e) => {
+        if (e.kind.type === 'userInputRequest' && e.kind.info.requestId === requestId) {
+          return {
+            ...e,
+            revision: e.revision + 1,
+            kind: {
+              ...e.kind,
+              info: { ...e.kind.info, submitted: true },
+            } as typeof e.kind,
+          };
+        }
+        return e;
+      });
+      return {
+        runners: {
+          ...s.runners,
+          [conversationId]: { ...runner, events, activityLabel: 'Continuing…' },
+        },
+      };
     });
   },
 

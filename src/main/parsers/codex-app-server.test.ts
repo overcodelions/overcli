@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   makeCodexAppServerParserState,
   parseCodexAppServerNotification,
+  translateUserInputRequest,
 } from './codex-app-server';
 
 function parse(method: string, params: any, state = makeCodexAppServerParserState()) {
@@ -75,5 +76,48 @@ describe('parseCodexAppServerNotification', () => {
     const ev = parse('turn/completed', { turn: { status: 'failed', durationMs: 42 } }).result.events[0];
     if (ev.kind.type !== 'result') throw new Error();
     expect(ev.kind.info).toMatchObject({ subtype: 'failed', isError: true, durationMs: 42 });
+  });
+});
+
+describe('translateUserInputRequest', () => {
+  it('maps Codex requestUserInput into a userInputRequest event and response builder', () => {
+    const translated = translateUserInputRequest('item/tool/requestUserInput', {
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'call-1',
+      questions: [
+        {
+          id: 'confirm_path',
+          header: 'Confirm path',
+          question: 'Which path should I use?',
+          isOther: true,
+          isSecret: false,
+          options: [{ label: 'yes', description: 'Proceed with this path.' }],
+        },
+      ],
+    });
+    expect(translated).not.toBeNull();
+    expect(translated!.requestId).toBe('call-1');
+    expect(translated!.buildResult({ confirm_path: { answers: ['yes'] } })).toEqual({
+      answers: { confirm_path: { answers: ['yes'] } },
+    });
+    if (translated!.event.kind.type !== 'userInputRequest') throw new Error();
+    expect(translated!.event.kind.info).toMatchObject({
+      backend: 'codex',
+      requestId: 'call-1',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      itemId: 'call-1',
+      questions: [
+        {
+          id: 'confirm_path',
+          header: 'Confirm path',
+          question: 'Which path should I use?',
+          isOther: true,
+          isSecret: false,
+          options: [{ label: 'yes', description: 'Proceed with this path.' }],
+        },
+      ],
+    });
   });
 });

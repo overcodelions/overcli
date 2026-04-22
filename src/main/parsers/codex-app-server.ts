@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { StreamEvent, StreamEventKind, ToolUseBlock } from '../../shared/types';
+import {
+  StreamEvent,
+  StreamEventKind,
+  ToolUseBlock,
+  UserInputQuestion,
+  UserInputQuestionOption,
+} from '../../shared/types';
 
 interface PartialAssistantState {
   eventId: string;
@@ -456,6 +462,39 @@ export function translateApprovalRequest(
   }
 }
 
+export function translateUserInputRequest(
+  method: string,
+  params: any,
+  requestIdOverride?: string | number | null,
+): {
+  requestId: string;
+  buildResult: (answers: Record<string, { answers: string[] }>) => any;
+  event: StreamEvent;
+} | null {
+  if (method !== 'item/tool/requestUserInput') return null;
+  const requestId = String(requestIdOverride ?? params?.itemId ?? params?.turnId ?? randomUUID());
+  const turnId = typeof params?.turnId === 'string' ? params.turnId : requestId;
+  const itemId = typeof params?.itemId === 'string' ? params.itemId : requestId;
+  return {
+    requestId,
+    buildResult: (answers) => ({ answers }),
+    event: event(
+      {
+        type: 'userInputRequest',
+        info: {
+          backend: 'codex',
+          requestId,
+          threadId: typeof params?.threadId === 'string' ? params.threadId : undefined,
+          turnId,
+          itemId,
+          questions: normalizeUserInputQuestions(params?.questions),
+        },
+      },
+      '',
+    ),
+  };
+}
+
 function summarizeApprovalChanges(fileChanges: any): string | undefined {
   if (!fileChanges || typeof fileChanges !== 'object') return undefined;
   const lines: string[] = [];
@@ -485,4 +524,24 @@ function countDiffChanges(diff: string): { additions: number; deletions: number 
     if (line.startsWith('-')) deletions += 1;
   }
   return { additions, deletions };
+}
+
+function normalizeUserInputQuestions(input: any): UserInputQuestion[] {
+  if (!Array.isArray(input)) return [];
+  return input.map((question: any, idx: number) => ({
+    id: typeof question?.id === 'string' && question.id.trim() ? question.id : `question-${idx + 1}`,
+    header: typeof question?.header === 'string' ? question.header : '',
+    question: typeof question?.question === 'string' ? question.question : '',
+    isOther: !!question?.isOther,
+    isSecret: !!question?.isSecret,
+    options: normalizeUserInputOptions(question?.options),
+  }));
+}
+
+function normalizeUserInputOptions(input: any): UserInputQuestionOption[] | null {
+  if (!Array.isArray(input)) return null;
+  return input.map((option: any): UserInputQuestionOption => ({
+    label: typeof option?.label === 'string' ? option.label : '',
+    description: typeof option?.description === 'string' ? option.description : '',
+  }));
 }
