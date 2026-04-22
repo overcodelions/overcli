@@ -389,7 +389,11 @@ function stripOriginPrefix(branch: string): string {
 
 function firstEnabledBackend(settings: {
   disabledBackends?: Partial<Record<Backend, boolean>>;
+  preferredBackend?: Backend;
 }): Backend {
   const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
-  return all.find((b) => settings.disabledBackends?.[b] !== true) ?? 'claude';
+  const enabled = all.filter((b) => settings.disabledBackends?.[b] !== true);
+  const preferred = settings.preferredBackend;
+  if (preferred && enabled.includes(preferred)) return preferred;
+  return enabled[0] ?? 'claude';
 }

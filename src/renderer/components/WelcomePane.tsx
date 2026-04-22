@@ -239,16 +239,23 @@ export function WelcomePane() {
   );
 }
 
-function isBackendEnabled(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }, backend: Backend): boolean {
+type BackendPrefs = {
+  disabledBackends?: Partial<Record<Backend, boolean>>;
+  preferredBackend?: Backend;
+};
+
+function isBackendEnabled(settings: BackendPrefs, backend: Backend): boolean {
   return settings.disabledBackends?.[backend] !== true;
 }
 
-function enabledBackends(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend[] {
+function enabledBackends(settings: BackendPrefs): Backend[] {
   const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
   return all.filter((b) => isBackendEnabled(settings, b));
 }
 
-function firstEnabledBackend(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend {
+function firstEnabledBackend(settings: BackendPrefs): Backend {
+  const preferred = settings.preferredBackend;
+  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
   return enabledBackends(settings)[0] ?? 'claude';
 }
 

@@ -454,6 +454,8 @@ function enabledBackends(settings: AppSettings): Backend[] {
 }
 
 function defaultBackend(settings: AppSettings): Backend {
+  const preferred = settings.preferredBackend;
+  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
   return enabledBackends(settings)[0] ?? 'claude';
 }
 

@@ -269,7 +269,12 @@ function BackendsPane({
   refresh: () => void;
 }) {
   const backends: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
-  const enabledCount = backends.filter((b) => local.disabledBackends?.[b] !== true).length;
+  const enabled = backends.filter((b) => local.disabledBackends?.[b] !== true);
+  const enabledCount = enabled.length;
+  const preferredValue =
+    local.preferredBackend && enabled.includes(local.preferredBackend)
+      ? local.preferredBackend
+      : '';
   return (
     <div>
       <Group
@@ -292,6 +297,29 @@ function BackendsPane({
             }
           />
         ))}
+      </Group>
+      <Group
+        title="Default backend"
+        description="Picked when creating a new conversation or agent. Auto uses the first enabled backend."
+      >
+        <Row label="Preferred">
+          <select
+            value={preferredValue}
+            onChange={(e) =>
+              patch({
+                preferredBackend: e.target.value ? (e.target.value as Backend) : undefined,
+              })
+            }
+            className="field px-2 py-1 text-xs"
+          >
+            <option value="">Auto (first enabled)</option>
+            {enabled.map((b) => (
+              <option key={b} value={b}>
+                {b}
+              </option>
+            ))}
+          </select>
+        </Row>
       </Group>
       <Group
         title="CLI paths"

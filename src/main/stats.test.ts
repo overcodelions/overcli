@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { dayKey, fillDays, intVal, isSameDay, maxNum, minNum, unslug } from './stats';
+import {
+  countApplyPatchLines,
+  countCodexFunctionCallLines,
+  countLines,
+  countToolUseLines,
+  dayKey,
+  fillDays,
+  intVal,
+  isSameDay,
+  maxNum,
+  minNum,
+  unslug,
+} from './stats';
 
 describe('intVal', () => {
   it('returns finite numbers truncated toward zero', () => {
@@ -110,18 +122,139 @@ describe('fillDays', () => {
     const daily = new Map([
       [
         '2026-04-20',
-        { day: '2026-04-20', turns: 2, inputTokens: 10, outputTokens: 5, byBackend: {} },
+        {
+          day: '2026-04-20',
+          turns: 2,
+          inputTokens: 10,
+          outputTokens: 5,
+          linesAdded: 4,
+          linesDeleted: 1,
+          byBackend: {},
+        },
       ],
     ]);
     const out = fillDays(daily, 2, now);
     expect(out).toEqual([
-      { day: '2026-04-20', turns: 2, inputTokens: 10, outputTokens: 5, byBackend: {} },
-      { day: '2026-04-21', turns: 0, inputTokens: 0, outputTokens: 0, byBackend: {} },
+      {
+        day: '2026-04-20',
+        turns: 2,
+        inputTokens: 10,
+        outputTokens: 5,
+        linesAdded: 4,
+        linesDeleted: 1,
+        byBackend: {},
+      },
+      {
+        day: '2026-04-21',
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        linesAdded: 0,
+        linesDeleted: 0,
+        byBackend: {},
+      },
     ]);
   });
 
   it('returns [] for count 0', () => {
     const out = fillDays(new Map(), 0, Date.now());
     expect(out).toEqual([]);
+  });
+});
+
+describe('countLines', () => {
+  it('returns 0 for empty or non-string input', () => {
+    expect(countLines('')).toBe(0);
+    expect(countLines(null)).toBe(0);
+    expect(countLines(undefined)).toBe(0);
+    expect(countLines(42)).toBe(0);
+  });
+
+  it('counts newline-separated lines, including the last unterminated one', () => {
+    expect(countLines('a')).toBe(1);
+    expect(countLines('a\nb')).toBe(2);
+    expect(countLines('a\nb\n')).toBe(3); // trailing \n leaves an empty final line
+  });
+});
+
+describe('countToolUseLines', () => {
+  it('counts Edit as new_string vs old_string', () => {
+    expect(
+      countToolUseLines('Edit', { old_string: 'a\nb', new_string: 'x\ny\nz' }),
+    ).toEqual({ added: 3, deleted: 2 });
+  });
+
+  it('sums MultiEdit across its edits array', () => {
+    expect(
+      countToolUseLines('MultiEdit', {
+        edits: [
+          { old_string: 'a', new_string: 'a\nb' },
+          { old_string: 'p\nq', new_string: 'r' },
+        ],
+      }),
+    ).toEqual({ added: 3, deleted: 3 });
+  });
+
+  it('counts Write as pure additions', () => {
+    expect(countToolUseLines('Write', { content: 'a\nb\nc' })).toEqual({
+      added: 3,
+      deleted: 0,
+    });
+  });
+
+  it('ignores tools that do not modify files', () => {
+    expect(countToolUseLines('Read', { file_path: '/x' })).toEqual({ added: 0, deleted: 0 });
+    expect(countToolUseLines('Bash', { command: 'ls' })).toEqual({ added: 0, deleted: 0 });
+  });
+});
+
+describe('countApplyPatchLines', () => {
+  it('counts +/- lines inside the Begin/End Patch envelope', () => {
+    const patch = [
+      '*** Begin Patch',
+      '*** Update File: foo.ts',
+      '@@ context',
+      '-old line',
+      '+new line 1',
+      '+new line 2',
+      ' context',
+      '*** End Patch',
+    ].join('\n');
+    expect(countApplyPatchLines(patch)).toEqual({ added: 2, deleted: 1 });
+  });
+
+  it('returns zero when no patch envelope is present', () => {
+    expect(countApplyPatchLines('echo hi')).toEqual({ added: 0, deleted: 0 });
+  });
+
+  it('skips unified-diff file header lines', () => {
+    const patch = [
+      '*** Begin Patch',
+      '--- a/foo',
+      '+++ b/foo',
+      '-removed',
+      '+added',
+      '*** End Patch',
+    ].join('\n');
+    expect(countApplyPatchLines(patch)).toEqual({ added: 1, deleted: 1 });
+  });
+});
+
+describe('countCodexFunctionCallLines', () => {
+  it('extracts the patch from JSON-encoded arguments.input', () => {
+    const patch = '*** Begin Patch\n-old\n+new\n*** End Patch';
+    const payload = { type: 'function_call', arguments: JSON.stringify({ input: patch }) };
+    expect(countCodexFunctionCallLines(payload)).toEqual({ added: 1, deleted: 1 });
+  });
+
+  it('falls back to scanning raw arguments when JSON parse fails', () => {
+    const payload = { arguments: '*** Begin Patch\n+added\n*** End Patch' };
+    expect(countCodexFunctionCallLines(payload)).toEqual({ added: 1, deleted: 0 });
+  });
+
+  it('returns zero for non-patch function calls', () => {
+    expect(
+      countCodexFunctionCallLines({ arguments: JSON.stringify({ command: ['ls'] }) }),
+    ).toEqual({ added: 0, deleted: 0 });
   });
 });
