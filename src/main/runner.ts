@@ -133,6 +133,11 @@ interface ActiveProcess {
   /// Used by handleClaudeApproval to decide whether a requested path is
   /// already inside the session's scope.
   allowedDirs: string[];
+  /// Tool names the user "always allowed" during this subprocess's life.
+  /// The settings.json write takes effect on the NEXT spawn; this set
+  /// covers the narrower case where Claude re-invokes the same tool later
+  /// in the current turn.
+  sessionAllowedTools: Set<string>;
 }
 
 interface GeminiAcpSession {
@@ -238,6 +243,13 @@ export class RunnerManager {
       this.claudeBroker.resolve(req.conversationId, req.requestId, {
         behavior: 'deny',
         message: 'no active overcli session',
+      });
+      return;
+    }
+    if (active.sessionAllowedTools.has(req.toolName)) {
+      this.claudeBroker.resolve(req.conversationId, req.requestId, {
+        behavior: 'allow',
+        updatedInput: req.toolInput,
       });
       return;
     }
@@ -382,6 +394,8 @@ export class RunnerManager {
     requestId: string,
     approved: boolean,
     addDir?: string,
+    scope?: 'once' | 'always',
+    toolName?: string,
   ): void {
     const gemini = this.geminiAcpSessions.get(conversationId);
     if (gemini) {
@@ -394,6 +408,19 @@ export class RunnerManager {
 
     const active = this.procs.get(conversationId);
     if (!active) return;
+    // "Always allow" persists by appending to Claude Code's own allow list
+    // in <cwd>/.claude/settings.json. Claude Code reads that on every spawn
+    // and auto-allows matching tools without calling our permission-prompt-
+    // tool, so the grant survives subprocess restarts and is shared across
+    // every conversation rooted at the same project directory.
+    if (approved && scope === 'always' && toolName) {
+      active.sessionAllowedTools.add(toolName);
+      try {
+        appendClaudeAllowRule(active.cwd, toolName);
+      } catch (err) {
+        console.warn('[runner] failed to persist always-allow rule', err);
+      }
+    }
     const cb = active.pendingPermissions.get(requestId);
     if (cb) {
       cb(approved);
@@ -1549,6 +1576,7 @@ export class RunnerManager {
       geminiAssistantToolUses: [],
       geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
+      sessionAllowedTools: new Set(),
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1588,10 +1616,15 @@ export class RunnerManager {
           a.push('--permission-mode', args.permissionMode);
         }
         if (args.effortLevel) a.push('--thinking-effort', args.effortLevel);
-        const mcpConfigPath = this.claudeMcpByConv.get(args.conversationId);
-        if (mcpConfigPath) {
-          a.push('--mcp-config', mcpConfigPath);
-          a.push('--permission-prompt-tool', 'mcp__overcli__approve');
+        // In bypassPermissions mode Claude Code auto-allows everything
+        // without prompting — wiring our permission-prompt-tool would force
+        // it to route tool checks through us anyway, defeating the mode.
+        if (args.permissionMode !== 'bypassPermissions') {
+          const mcpConfigPath = this.claudeMcpByConv.get(args.conversationId);
+          if (mcpConfigPath) {
+            a.push('--mcp-config', mcpConfigPath);
+            a.push('--permission-prompt-tool', 'mcp__overcli__approve');
+          }
         }
         for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
           a.push('--add-dir', dir);
@@ -1799,9 +1832,24 @@ export class RunnerManager {
       }
       this.emit({ type: 'stream', conversationId: convId, events: emitted });
 
+      // AskUserQuestion in headless mode: Claude Code resolves the tool
+      // with an empty result and lets the model keep talking ("I'll wait
+      // for your pick"), which is noise since the real answer arrives as
+      // the next user turn. End the turn now so the UI shows only the
+      // question card. Claude resumes naturally via --resume sessionId
+      // when the user submits.
+      const asksQuestion = emitted.some(
+        (e) =>
+          e.kind.type === 'assistant' &&
+          e.kind.info.toolUses.some((t) => t.name === 'AskUserQuestion'),
+      );
+
       if (turnEnded) {
         this.emit({ type: 'running', conversationId: convId, isRunning: false });
         void this.maybeRunReviewer(convId, active);
+      } else if (asksQuestion && active.backend === 'claude') {
+        this.killProc(convId);
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
       } else if (nextActivity) {
         this.emit({
           type: 'running',
@@ -1980,6 +2028,7 @@ export class RunnerManager {
       geminiAssistantToolUses: [],
       geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
+      sessionAllowedTools: new Set(),
     };
     this.procs.set(args.conversationId, active);
     this.emit({
@@ -2624,6 +2673,38 @@ export function geminiPermissionMapping(mode: PermissionMode): string {
 /// Dedupe + absolute-ify the directory list we'll pass as `--add-dir` to
 /// Claude. The cwd is always implicitly allowed, so drop it; remove
 /// duplicates and non-absolute entries to avoid confusing Claude Code.
+/// Append a rule to Claude Code's project-local allow list at
+/// `<cwd>/.claude/settings.json`. Creates the file (and directory) when
+/// absent; merges into `permissions.allow` without disturbing the rest of
+/// the file. Claude Code reads this on every spawn, so the grant takes
+/// effect on the next turn and is shared across every conversation rooted
+/// at the same cwd.
+export function appendClaudeAllowRule(cwd: string, rule: string): void {
+  const dir = path.join(cwd, '.claude');
+  const file = path.join(dir, 'settings.json');
+  let current: Record<string, unknown> = {};
+  if (fs.existsSync(file)) {
+    try {
+      const raw = fs.readFileSync(file, 'utf-8');
+      if (raw.trim().length > 0) current = JSON.parse(raw);
+    } catch {
+      // Malformed file — leave the user's copy alone.
+      return;
+    }
+  }
+  const perms = (current.permissions && typeof current.permissions === 'object')
+    ? (current.permissions as Record<string, unknown>)
+    : {};
+  const existing = Array.isArray(perms.allow) ? (perms.allow as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  if (existing.includes(rule)) return;
+  const next = {
+    ...current,
+    permissions: { ...perms, allow: [...existing, rule] },
+  };
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', 'utf-8');
+}
+
 export function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[] {
   if (!dirs || dirs.length === 0) return [];
   const cwdReal = path.resolve(cwd);

@@ -141,8 +141,10 @@ function registerIpc(): void {
   ipcMain.handle('runner:newConversation', (_e, { conversationId }) =>
     runner!.newConversation(conversationId),
   );
-  ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved, addDir }) =>
-    runner!.respondPermission(conversationId, requestId, approved, addDir),
+  ipcMain.handle(
+    'runner:respondPermission',
+    (_e, { conversationId, requestId, approved, addDir, scope, toolName }) =>
+      runner!.respondPermission(conversationId, requestId, approved, addDir, scope, toolName),
   );
   ipcMain.handle(
     'runner:respondCodexApproval',
