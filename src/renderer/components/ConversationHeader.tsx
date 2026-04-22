@@ -1,6 +1,6 @@
 import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { Backend, PermissionMode, UUID, EffortLevel } from '@shared/types';
+import { Backend, PermissionMode, UUID, EffortLevel, StreamEvent } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
@@ -496,9 +496,10 @@ function IconPicker({
 /// Fork picker: creates a sibling conversation in the same project,
 /// optionally targeting a different backend. Designed for the case where
 /// a CLI is down or rate-limited and the user wants to continue the same
-/// line of thought on a different one. The last user prompt the active
-/// conversation had queued becomes the new conversation's draft so it's
-/// one click away from being re-sent.
+/// line of thought on a different one. The prior transcript is packaged
+/// into a one-shot preamble that's prepended to the fork's first send,
+/// and the last user prompt becomes the fork's draft so it's one click
+/// away from being re-sent.
 function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
   const backendHealth = useStore((s) => s.backendHealth);
@@ -513,10 +514,10 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
   const currentBackend = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
+  const sourceEvents = runners[conversationId]?.events ?? [];
   const lastUserPrompt = (() => {
-    const events = runners[conversationId]?.events ?? [];
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
+    for (let i = sourceEvents.length - 1; i >= 0; i--) {
+      const e = sourceEvents[i];
       if (e.kind.type === 'localUser') return e.kind.text;
     }
     return '';
@@ -524,8 +525,11 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
 
   const forkTo = async (targetBackend: Backend) => {
     if (!ownerProject) return;
+    const { preamble, turnCount } = buildForkPreamble(sourceEvents, lastUserPrompt);
     const forked = await newConversation(ownerProject.id);
-    // Rename to make the relationship obvious in the sidebar.
+    // Rename to make the relationship obvious in the sidebar, and stash
+    // the prior-transcript preamble on the conv so `send` can ship it on
+    // the very first turn (then clear it).
     useStore.setState((s) => ({
       projects: s.projects.map((p) =>
         p.id === ownerProject.id
@@ -533,7 +537,11 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
               ...p,
               conversations: p.conversations.map((c) =>
                 c.id === forked.id
-                  ? { ...c, name: `${conv.name} (fork → ${backendName(targetBackend)})` }
+                  ? {
+                      ...c,
+                      name: `${conv.name} (fork → ${backendName(targetBackend)})`,
+                      forkPreamble: preamble || undefined,
+                    }
                   : c,
               ),
             }
@@ -542,6 +550,42 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
     }));
     await setPrimary(forked.id, targetBackend);
     if (lastUserPrompt) setDraft(forked.id, lastUserPrompt);
+    // Drop a system notice into the new conversation so the user can see
+    // what was carried over (and that anything beyond the cap was trimmed).
+    if (turnCount > 0) {
+      const notice =
+        turnCount === 1
+          ? `Forked from "${conv.name}" — attaching 1 prior turn as context on the first message.`
+          : `Forked from "${conv.name}" — attaching ${turnCount} prior turn${turnCount === 1 ? '' : 's'} as context on the first message.`;
+      useStore.setState((s) => {
+        const runner = s.runners[forked.id] ?? {
+          events: [],
+          isRunning: false,
+          pendingLocalUserIds: new Set<UUID>(),
+          currentModel: '',
+          historyLoaded: false,
+          historyLoading: false,
+        };
+        return {
+          runners: {
+            ...s.runners,
+            [forked.id]: {
+              ...runner,
+              events: [
+                ...runner.events,
+                {
+                  id: `fork-notice-${forked.id}`,
+                  timestamp: Date.now(),
+                  raw: '',
+                  kind: { type: 'systemNotice', text: notice },
+                  revision: 0,
+                },
+              ],
+            },
+          },
+        };
+      });
+    }
     selectConversation(forked.id);
   };
 
@@ -564,6 +608,89 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
       onPick={(v) => void forkTo(v as Backend)}
     />
   );
+}
+
+/// Cap for the prior-transcript blob we ship with a fork's first turn.
+/// ~20 KB ≈ a few thousand tokens — enough to re-seat context without
+/// blowing the target CLI's window (which can already be close to full
+/// on a long parent conversation). Old turns trim first; the most recent
+/// exchanges are what usually matter for the follow-up.
+const FORK_PREAMBLE_MAX_CHARS = 20_000;
+const FORK_ASSISTANT_CHAR_CAP = 2_400;
+
+function truncateForPreamble(text: string, max: number): string {
+  const t = text.trim();
+  if (t.length <= max) return t;
+  return t.slice(0, max).trimEnd() + ' …[truncated]';
+}
+
+/// Walk the source conversation's events into (user, assistant) pairs and
+/// serialize them into a single preamble string, newest turns first in the
+/// budget. The *last* user prompt is dropped from the preamble — it will
+/// be sent as the fork's first real message, so including it here would
+/// duplicate it and confuse the model.
+function buildForkPreamble(
+  events: StreamEvent[],
+  lastUserPrompt: string,
+): { preamble: string; turnCount: number } {
+  type Turn = { user: string; assistant: string };
+  const turns: Turn[] = [];
+  let pendingUser: string | null = null;
+  for (const e of events) {
+    if (e.kind.type === 'localUser') {
+      if (pendingUser !== null) {
+        turns.push({ user: pendingUser, assistant: '' });
+      }
+      pendingUser = e.kind.text;
+    } else if (e.kind.type === 'assistant' && e.kind.info.text.trim()) {
+      if (pendingUser !== null) {
+        turns.push({ user: pendingUser, assistant: e.kind.info.text });
+        pendingUser = null;
+      } else if (turns.length > 0) {
+        const last = turns[turns.length - 1];
+        last.assistant = last.assistant
+          ? `${last.assistant}\n\n${e.kind.info.text}`
+          : e.kind.info.text;
+      }
+    }
+  }
+  // Drop the dangling user turn that matches the draft we're about to send.
+  while (turns.length > 0) {
+    const tail = turns[turns.length - 1];
+    if (!tail.assistant && tail.user.trim() === lastUserPrompt.trim()) {
+      turns.pop();
+    } else {
+      break;
+    }
+  }
+  if (turns.length === 0) return { preamble: '', turnCount: 0 };
+
+  const header =
+    'Prior conversation from a sibling CLI (for context only — do not repeat work already done):\n\n';
+  const budget = FORK_PREAMBLE_MAX_CHARS - header.length - 64; // headroom for separators/marker
+  const rendered: string[] = [];
+  let used = 0;
+  let trimmedOlder = false;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const t = turns[i];
+    const chunk =
+      `User: ${truncateForPreamble(t.user, FORK_ASSISTANT_CHAR_CAP)}` +
+      (t.assistant
+        ? `\n\nAssistant: ${truncateForPreamble(t.assistant, FORK_ASSISTANT_CHAR_CAP)}`
+        : '');
+    const sepCost = rendered.length > 0 ? 7 : 0; // "\n\n---\n\n"
+    if (used + chunk.length + sepCost > budget) {
+      trimmedOlder = i > 0 || !trimmedOlder;
+      break;
+    }
+    rendered.unshift(chunk);
+    used += chunk.length + sepCost;
+  }
+  const includedCount = rendered.length;
+  if (includedCount === 0) return { preamble: '', turnCount: 0 };
+  const body = rendered.join('\n\n---\n\n');
+  const prefix = trimmedOlder ? '[earlier turns omitted for length]\n\n' : '';
+  return { preamble: `${header}${prefix}${body}`, turnCount: includedCount };
 }
 
 function ForkIcon() {

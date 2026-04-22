@@ -91,7 +91,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         onScroll={updateBottomState}
         className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
       >
-        {visibleEvents.length === 0 && !runner?.historyLoading && (
+        {visibleEvents.length === 0 && !runner?.historyLoading && !runner?.isRunning && (
           <NewAgentIntro conversationId={conversationId} />
         )}
         {runner?.historyLoading && <div className="text-xs text-ink-faint">Loading history…</div>}

@@ -73,6 +73,7 @@ interface SendArgs {
   collabMaxTurns?: number | null;
   reviewOllamaModel?: string | null;
   allowedDirs?: string[];
+  localUserId?: string;
 }
 
 interface PermissionResponse {
@@ -331,7 +332,7 @@ export class RunnerManager {
     // already bound to this conversation (fallback path), keep using it
     // until the conversation is reset or switched away.
     if (args.backend === 'gemini' && !(existing && existing.backend === 'gemini') && this.geminiAcpSupported !== false) {
-      this.emitLocalUser(convId, args.prompt, args.attachments);
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
       void this.sendGeminiAcp(args, { syntheticFromCollab: false, userEventAlreadyEmitted: true });
       return { ok: true };
     }
@@ -486,7 +487,7 @@ export class RunnerManager {
   ): { ok: true } | { ok: false; error: string } {
     const convId = args.conversationId;
     if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
-      this.emitLocalUser(convId, args.prompt, args.attachments);
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
     }
 
     try {
@@ -618,8 +619,10 @@ export class RunnerManager {
     // Push a local-user bubble into the UI up front, matching the
     // subprocess path. Attachments are dropped — vision-capable local
     // models would need a different message shape, not in scope here.
-    // Collab synthetic prompts don't show as user bubbles.
-    if (!options.syntheticFromCollab) {
+    // Collab synthetic prompts don't show as user bubbles. Human-originated
+    // sends (with a renderer-assigned localUserId) already rendered the
+    // bubble optimistically — skip to avoid double-rendering.
+    if (!options.syntheticFromCollab && !args.localUserId) {
       const userEvent: StreamEvent = {
         id: randomUUID(),
         timestamp: Date.now(),
@@ -978,7 +981,7 @@ export class RunnerManager {
     const inFlight = this.geminiAcpSessions.get(convId);
     if (inFlight?.promptInFlight) {
       if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
-        this.emitLocalUser(convId, args.prompt, args.attachments);
+        this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
       }
       inFlight.queuedPrompt = {
         args,
@@ -1008,7 +1011,7 @@ export class RunnerManager {
     }
 
     if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
-      this.emitLocalUser(convId, args.prompt, args.attachments);
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
     }
 
     session.currentUserPrompt = args.prompt;
@@ -2228,7 +2231,18 @@ export class RunnerManager {
     return buildBackendEnv(process.env, binary);
   }
 
-  private emitLocalUser(conversationId: UUID, prompt: string, attachments?: Attachment[]): void {
+  private emitLocalUser(
+    conversationId: UUID,
+    prompt: string,
+    attachments?: Attachment[],
+    id?: string,
+  ): void {
+    // When the renderer assigned an id up front, it already pushed the
+    // user bubble into the UI optimistically with the *display* prompt —
+    // no need to re-emit. This avoids a race where main's emission carries
+    // a different payload (e.g. a fork preamble the renderer intentionally
+    // excluded from the on-screen bubble) and clobbers the local version.
+    if (id) return;
     this.emit({
       type: 'stream',
       conversationId,

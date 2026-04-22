@@ -231,6 +231,11 @@ export interface Conversation {
   /// its cwd. Passed to Claude as `--add-dir` on every spawn so mid-turn
   /// cross-project approvals persist across process restarts.
   allowedDirs?: string[];
+  /// One-shot context blob prepended to the next `send` — set when this
+  /// conversation was created as a fork of another. Consumed + cleared on
+  /// the first turn so the new CLI sees the prior exchange once without
+  /// flooding every subsequent turn.
+  forkPreamble?: string;
 }
 
 export interface Project {
@@ -454,6 +459,10 @@ export interface IPCInvokeMap {
     /// Renderer fills this from the conversation's project/workspace and
     /// the persisted `conversation.allowedDirs`.
     allowedDirs?: string[];
+    /// Optimistic id the renderer assigned to the user's bubble so it can
+    /// show instantly. Main uses the same id on its emitted localUser event
+    /// so `mergeIncomingEvents` updates in place instead of double-rendering.
+    localUserId?: string;
   }) => { ok: true } | { ok: false; error: string };
   'runner:stop': (args: { conversationId: UUID }) => void;
   'runner:newConversation': (args: { conversationId: UUID }) => void;
