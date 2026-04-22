@@ -2676,10 +2676,10 @@ function geminiAssistantIsDelta(raw: string): boolean {
 /// same path if needed.
 function writeAttachmentToTemp(a: Attachment): string {
   const dir = path.join(os.homedir(), '.overcli', 'attachments');
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const ext = mimeToExt(a.mimeType);
   const file = path.join(dir, `${a.id || randomUUID()}${ext}`);
-  fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'));
+  fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
   return file;
 }
 

@@ -77,7 +77,7 @@ function createWindow(): void {
       preload: path.join(__dirname, '..', 'preload', 'index.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -601,6 +601,20 @@ function buildMenu(): void {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  // Apply navigation + window-open locks to every webContents — not just
+  // mainWindow — so any future child contents inherits the same clamps.
+  app.on('web-contents-created', (_e, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (isSafeExternalUrl(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    contents.on('will-navigate', (event, url) => {
+      const current = contents.getURL();
+      if (url === current) return;
+      event.preventDefault();
+      if (isSafeExternalUrl(url)) shell.openExternal(url);
+    });
+  });
   registerIpc();
   buildMenu();
   createWindow();
