@@ -120,10 +120,16 @@ export function WelcomePane() {
     clearAttachments(conv.id);
     for (const a of attachments) addAttachment(conv.id, a);
     // Apply the pill selections as the conversation's initial settings.
-    await setPrimaryBackend(conv.id, backend);
-    await setPermissionMode(conv.id, permissionMode);
-    if (effort) await setEffortLevel(conv.id, effort);
-    if (model) await setBackendModel(conv.id, backend, model);
+    // These setters update in-memory state synchronously (via
+    // `mutateConversation`) and only `await` the disk persistence step —
+    // awaiting them here would defer `send` by several IPC roundtrips,
+    // during which the freshly-selected conversation renders `NewAgentIntro`
+    // with empty events before `send`'s optimistic user bubble lands. Fire
+    // them without awaiting so the state is ready for `send` this tick.
+    void setPrimaryBackend(conv.id, backend);
+    void setPermissionMode(conv.id, permissionMode);
+    if (effort) void setEffortLevel(conv.id, effort);
+    if (model) void setBackendModel(conv.id, backend, model);
     // Fire the send. store.send reads draft+attachments from the store so
     // we explicitly cleared ours above and passed attachments through.
     setDraft(WELCOME_KEY, '');
