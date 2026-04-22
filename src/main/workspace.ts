@@ -53,6 +53,7 @@ export function workspaceRootPath(workspaceId: string): string {
 export function ensureWorkspaceSymlinkRoot(
   workspaceId: string,
   projects: ProjectRef[],
+  instructions?: string,
 ): { ok: true; rootPath: string } | { ok: false; error: string } {
   if (!workspaceId) return { ok: false, error: 'Missing workspaceId' };
   const rootPath = workspaceRootPath(workspaceId);
@@ -96,7 +97,7 @@ export function ensureWorkspaceSymlinkRoot(
       linkDir(target, path.join(rootPath, name));
     }
 
-    writeWorkspaceContextFiles(rootPath, projects);
+    writeWorkspaceContextFiles(rootPath, projects, instructions);
 
     return { ok: true, rootPath };
   } catch (err: any) {
@@ -234,11 +235,19 @@ Guidelines:
 /// of what lives under cwd. Without this, asking "what projects are
 /// here?" on a fresh turn returns whatever's in the user's global
 /// instructions instead of the workspace's real contents.
-function writeWorkspaceContextFiles(rootPath: string, projects: ProjectRef[]): void {
+function writeWorkspaceContextFiles(
+  rootPath: string,
+  projects: ProjectRef[],
+  instructions?: string,
+): void {
   const members = projects
     .filter((p) => p.path)
     .map((p) => `- **${path.basename(p.path) || p.name}** → \`${p.path}\``)
     .join('\n');
+  const trimmedInstructions = instructions?.trim();
+  const instructionsSection = trimmedInstructions
+    ? `\n## Workspace instructions\n\n${trimmedInstructions}\n`
+    : '';
   const content = `# Workspace context
 
 This directory is a synthetic overcli workspace root. Each entry listed under "Member projects" is a symlink to a real git repository — treat the workspace as a meta-project spanning all of them.
@@ -251,7 +260,7 @@ Guidelines:
 - File paths you read or edit resolve through the symlinks above.
 - Each member is an independent git repo with its own branches and history.
 - Before answering "what projects are here?" trust this list, not any global instructions.
-`;
+${instructionsSection}`;
   for (const name of CONTEXT_FILES) {
     try {
       fs.writeFileSync(path.join(rootPath, name), content, 'utf8');

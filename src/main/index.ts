@@ -248,8 +248,8 @@ function registerIpc(): void {
   ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
 
-  ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects }) =>
-    ensureWorkspaceSymlinkRoot(workspaceId, projects),
+  ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects, instructions }) =>
+    ensureWorkspaceSymlinkRoot(workspaceId, projects, instructions),
   );
   ipcMain.handle('workspace:removeSymlinkRoot', (_e, workspaceId: string) =>
     removeWorkspaceSymlinkRoot(workspaceId),
