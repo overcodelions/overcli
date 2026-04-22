@@ -325,7 +325,7 @@ function buildOllamaReviewSystem(): string {
   ].join(' ');
 }
 
-function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): string {
+export function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): string {
   // Tight framing — codex exec echoes the prompt in its stdout, so extra
   // words here directly bloat the raw view. First round gets the role;
   // later rounds skip it.
@@ -347,7 +347,7 @@ function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): string {
   return body.join('\n');
 }
 
-function buildReviewerArgs(backend: Backend): string[] {
+export function buildReviewerArgs(backend: Backend): string[] {
   switch (backend) {
     case 'claude':
       // `-p -` reads the prompt from stdin, returns a single final
@@ -377,7 +377,7 @@ function buildReviewerArgs(backend: Backend): string[] {
 /// echoed user instructions, thinking summaries, then the actual "codex"
 /// response, then a token-usage footer — and we want only the final
 /// response to land in the review card.
-function extractReviewerDisplay(raw: string, backend: Backend): string {
+export function extractReviewerDisplay(raw: string, backend: Backend): string {
   if (!raw) return '';
   if (backend === 'codex') return extractCodexDisplay(raw);
   return raw.trim();

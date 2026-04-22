@@ -6,6 +6,7 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS).toEqual({
       backendPaths: {},
       backendDefaultModels: {},
+      disabledBackends: {},
       defaultPermissionMode: 'plan',
       defaultEffort: '',
       agentBranchPrefix: 'agent/',
