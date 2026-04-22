@@ -20,6 +20,7 @@ import {
   MainToRendererEvent,
   AppSettings,
   Attachment,
+  UserInputAnswer,
 } from '../shared/types';
 import { parseClaudeLine } from './parsers/claude';
 import {
@@ -27,6 +28,7 @@ import {
   makeCodexAppServerParserState,
   parseCodexAppServerNotification,
   translateApprovalRequest,
+  translateUserInputRequest,
 } from './parsers/codex-app-server';
 import {
   CodexAppServerApprovalPolicy,
@@ -99,6 +101,7 @@ interface ActiveProcess {
   /// reach the live subprocess.
   pendingPermissions: Map<string, (approved: boolean) => void>;
   pendingCodexApprovals: Map<string, (approved: boolean) => void>;
+  pendingUserInputs: Map<string, (answers: Record<string, UserInputAnswer>) => void>;
   /// Accumulated context for the current turn so we can feed the
   /// reviewer ("rebound") a digest of what the primary just did when the
   /// turn completes. Reset on each `result` event.
@@ -470,6 +473,20 @@ export class RunnerManager {
     // handleCodexAppServerRequest) already routed the JSON-RPC response
     // through the app-server client. Other codex modes (exec) don't have
     // an approval surface, so there's nothing more to do here.
+  }
+
+  respondUserInput(
+    conversationId: UUID,
+    requestId: string,
+    answers: Record<string, UserInputAnswer>,
+  ): void {
+    const active = this.procs.get(conversationId);
+    if (!active) return;
+    const cb = active.pendingUserInputs.get(requestId);
+    if (cb) {
+      cb(answers);
+      active.pendingUserInputs.delete(requestId);
+    }
   }
 
   killAll(): void {
@@ -1561,6 +1578,7 @@ export class RunnerManager {
       codexExecRevision: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
+      pendingUserInputs: new Map(),
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
@@ -2013,6 +2031,7 @@ export class RunnerManager {
       codexExecRevision: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
+      pendingUserInputs: new Map(),
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
@@ -2102,6 +2121,20 @@ export class RunnerManager {
       this.emit({ type: 'stream', conversationId, events: [translated.event] });
       return;
     }
+    const userInput = translateUserInputRequest(method, params, id);
+    if (userInput) {
+      active.pendingUserInputs.set(userInput.requestId, (answers: Record<string, UserInputAnswer>) => {
+        void client.respondToServerRequest(id, userInput.buildResult(answers));
+      });
+      this.emit({ type: 'stream', conversationId, events: [userInput.event] });
+      this.emit({
+        type: 'running',
+        conversationId,
+        isRunning: true,
+        activityLabel: 'Waiting for your answer…',
+      });
+      return;
+    }
     // Unknown request type — surface a notice and respond with a benign
     // default so the agent doesn't hang.
     this.emit({
@@ -2123,9 +2156,6 @@ export class RunnerManager {
     switch (method) {
       case 'item/permissions/requestApproval':
         await client.respondToServerRequest(id, { permissions: {}, scope: 'turn' });
-        return;
-      case 'item/tool/requestUserInput':
-        await client.respondToServerRequest(id, { answers: {} });
         return;
       default:
         await client.rejectServerRequest(id, `Unhandled server request: ${method}`);

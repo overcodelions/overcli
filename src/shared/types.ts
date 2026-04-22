@@ -91,6 +91,34 @@ export interface CodexApprovalInfo {
   decided?: 'allow' | 'deny';
 }
 
+export interface UserInputQuestionOption {
+  label: string;
+  description: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  header: string;
+  question: string;
+  isOther: boolean;
+  isSecret: boolean;
+  options?: UserInputQuestionOption[] | null;
+}
+
+export interface UserInputAnswer {
+  answers: string[];
+}
+
+export interface UserInputRequestInfo {
+  backend?: Backend;
+  requestId: string;
+  threadId?: string;
+  turnId: string;
+  itemId: string;
+  questions: UserInputQuestion[];
+  submitted?: boolean;
+}
+
 export interface PatchFileChange {
   id: string;
   path: string;
@@ -142,6 +170,7 @@ export type StreamEventKind =
   | { type: 'rateLimit'; info: RateLimitInfo }
   | { type: 'permissionRequest'; info: PermissionRequestInfo }
   | { type: 'codexApproval'; info: CodexApprovalInfo }
+  | { type: 'userInputRequest'; info: UserInputRequestInfo }
   | { type: 'patchApply'; info: PatchApplyInfo }
   | { type: 'reviewResult'; info: ReviewInfo }
   | { type: 'systemNotice'; text: string }
@@ -501,6 +530,11 @@ export interface IPCInvokeMap {
     callId: string;
     kind: 'exec' | 'patch';
     approved: boolean;
+  }) => void;
+  'runner:respondUserInput': (args: {
+    conversationId: UUID;
+    requestId: string;
+    answers: Record<string, UserInputAnswer>;
   }) => void;
   'runner:loadHistory': (args: {
     conversationId: UUID;

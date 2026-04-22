@@ -151,6 +151,9 @@ function registerIpc(): void {
     (_e, { conversationId, callId, kind, approved }) =>
       runner!.respondCodexApproval(conversationId, callId, kind, approved),
   );
+  ipcMain.handle('runner:respondUserInput', (_e, { conversationId, requestId, answers }) =>
+    runner!.respondUserInput(conversationId, requestId, answers),
+  );
   ipcMain.handle('runner:loadHistory', (_e, args) => loadHistory(args));
   ipcMain.handle('runner:probeHealth', (_e, backend: 'claude' | 'codex' | 'gemini' | 'ollama') => {
     const settings = Store.load().settings;

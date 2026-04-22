@@ -7,6 +7,7 @@ import { ToolUseCard } from './ToolUseCard';
 import { ToolResultCard, AGENT_TOOLS } from './ToolResultCard';
 import { PermissionCard } from './PermissionCard';
 import { CodexApprovalCard } from './CodexApprovalCard';
+import { UserInputRequestCard } from './UserInputRequestCard';
 import { ReviewCard } from './ReviewCard';
 import { PatchApplyCard } from './PatchApplyCard';
 import { TurnCaption } from './TurnCaption';
@@ -160,6 +161,8 @@ const EventRow = memo(function EventRow({
       return <PermissionCard info={event.kind.info} conversationId={conversationId} />;
     case 'codexApproval':
       return <CodexApprovalCard info={event.kind.info} conversationId={conversationId} />;
+    case 'userInputRequest':
+      return <UserInputRequestCard info={event.kind.info} conversationId={conversationId} />;
     case 'patchApply':
       return <PatchApplyCard info={event.kind.info} />;
     case 'reviewResult':
