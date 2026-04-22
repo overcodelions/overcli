@@ -1506,11 +1506,30 @@ export const useStore = create<StoreState>((set, get) => ({
     // Also clear any stale error notice from a prior attempt and flip the
     // runner to running optimistically so the Composer swaps to Stop before
     // the backend's first `running: true` event lands (avoids a double-send
-    // window on slow first turns like Gemini ACP startup).
+    // window on slow first turns like Gemini ACP startup). We also push a
+    // local `localUser` event into events[] so the user's bubble appears
+    // instantly and the empty-conversation intro disappears — without this
+    // the intro flashes for the IPC roundtrip. The optimistic id is
+    // tracked in `pendingLocalUserIds` so `mergeIncomingEvents` can fold
+    // in the main-emitted localUser when it arrives instead of double-rendering.
+    const optimisticUserId = `local-${uuid()}`;
     set((s) => {
       const nextAtts = { ...s.conversationAttachments };
       delete nextAtts[conversationId];
       const runner = s.runners[conversationId] ?? newRunnerState();
+      const nextPending = new Set(runner.pendingLocalUserIds);
+      nextPending.add(optimisticUserId);
+      const optimisticEvent: StreamEvent = {
+        id: optimisticUserId,
+        timestamp: Date.now(),
+        raw: prompt,
+        kind: {
+          type: 'localUser',
+          text: prompt,
+          attachments: attachments.length ? attachments : undefined,
+        },
+        revision: 0,
+      };
       return {
         conversationDrafts: { ...s.conversationDrafts, [conversationId]: '' },
         conversationAttachments: nextAtts,
@@ -1518,6 +1537,8 @@ export const useStore = create<StoreState>((set, get) => ({
           ...s.runners,
           [conversationId]: {
             ...runner,
+            events: [...runner.events, optimisticEvent],
+            pendingLocalUserIds: nextPending,
             errorMessage: undefined,
             isRunning: true,
             activityLabel: runner.activityLabel ?? 'Thinking…',
@@ -1590,10 +1611,24 @@ export const useStore = create<StoreState>((set, get) => ({
       }));
     }
 
+    // If this conversation was forked from another, prepend the captured
+    // transcript so the new CLI sees the prior thread once. Cleared after
+    // this turn — subsequent sends don't re-ship it.
+    const outgoingPrompt = conv.forkPreamble
+      ? `${conv.forkPreamble}\n\nNew user message:\n\n${prompt}`
+      : prompt;
+    if (conv.forkPreamble) {
+      mutateConversation(set, get, conversationId, (c) => ({
+        ...c,
+        forkPreamble: undefined,
+      }));
+    }
+
     await window.overcli.invoke('runner:send', {
       conversationId,
-      prompt,
+      prompt: outgoingPrompt,
       backend,
+      localUserId: optimisticUserId,
       cwd,
       model: model ?? '',
       permissionMode: effectivePermissionMode,
