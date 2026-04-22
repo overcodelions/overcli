@@ -407,6 +407,9 @@ export interface AppSettings {
   /// Backends hidden/disabled in the UI. Disabled backends are not used as
   /// defaults and are skipped by health probes.
   disabledBackends: Partial<Record<Backend, boolean>>;
+  /// Preferred default backend for new conversations and agents. If unset
+  /// or disabled, falls back to the first enabled backend.
+  preferredBackend?: Backend;
   defaultPermissionMode: PermissionMode;
   defaultEffort: EffortLevel;
   agentBranchPrefix: string;
@@ -638,6 +641,8 @@ export interface DailyBackendBucket {
   turns: number;
   inputTokens: number;
   outputTokens: number;
+  linesAdded: number;
+  linesDeleted: number;
 }
 
 export interface DailyBucket {
@@ -647,6 +652,8 @@ export interface DailyBucket {
   turns: number;
   inputTokens: number;
   outputTokens: number;
+  linesAdded: number;
+  linesDeleted: number;
   /// Per-backend breakdown so the chart can render stacked bars. Keys
   /// match the `Backend` type. Missing keys = zero for that backend.
   byBackend?: Partial<Record<Backend, DailyBackendBucket>>;
@@ -660,6 +667,8 @@ export interface StatsReport {
   totalOutputTokens: number;
   totalCacheRead: number;
   totalCacheCreation: number;
+  totalLinesAdded: number;
+  totalLinesDeleted: number;
   byBackend: BackendStats[];
   byProject: ProjectStats[];
   byModel: Array<{
@@ -685,6 +694,8 @@ export interface BackendStats {
   tokensLast7d: number;
   sessionsToday: number;
   lastActive?: number;
+  linesAdded: number;
+  linesDeleted: number;
 }
 
 export interface ProjectStats {
@@ -696,6 +707,8 @@ export interface ProjectStats {
   outputTokens: number;
   cacheRead: number;
   cacheCreation: number;
+  linesAdded: number;
+  linesDeleted: number;
 }
 
 /// Main → renderer push events. The runner emits stream events here as they

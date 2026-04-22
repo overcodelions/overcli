@@ -54,7 +54,7 @@ export function ArchiveAllSheet(props: Props) {
     setWorking(true);
     setError(null);
     try {
-      if (props.projectId) {
+      if (props.projectId !== undefined) {
         await archiveInactiveInProject(props.projectId);
       } else {
         await archiveInactiveInWorkspace(props.workspaceId);

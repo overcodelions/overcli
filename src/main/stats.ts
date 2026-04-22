@@ -35,6 +35,8 @@ interface BackendAgg {
   tokensLast7d: number;
   sessionsToday: Set<string>;
   lastActive: number;
+  linesAdded: number;
+  linesDeleted: number;
 }
 
 interface ProjectAgg {
@@ -49,6 +51,8 @@ interface ProjectAgg {
   firstActivity: number | null;
   lastActivity: number | null;
   models: Set<string>;
+  linesAdded: number;
+  linesDeleted: number;
 }
 
 export function computeStats(): StatsReport {
@@ -86,6 +90,8 @@ export function computeStats(): StatsReport {
       outputTokens: p.outputTokens,
       cacheRead: p.cacheRead,
       cacheCreation: p.cacheCreation,
+      linesAdded: p.linesAdded,
+      linesDeleted: p.linesDeleted,
       models: Array.from(p.models).sort(),
       lastActivity: p.lastActivity ?? undefined,
     }))
@@ -103,6 +109,8 @@ export function computeStats(): StatsReport {
   const totalCacheRead = projectRows.reduce((s, p) => s + p.cacheRead, 0);
   const totalCacheCreation = projectRows.reduce((s, p) => s + p.cacheCreation, 0);
   const totalSessions = projectRows.reduce((s, p) => s + p.sessions, 0);
+  const totalLinesAdded = byBackend.reduce((s, b) => s + b.linesAdded, 0);
+  const totalLinesDeleted = byBackend.reduce((s, b) => s + b.linesDeleted, 0);
 
   return {
     generatedAt: now,
@@ -112,6 +120,8 @@ export function computeStats(): StatsReport {
     totalOutputTokens: totalOutput,
     totalCacheRead,
     totalCacheCreation,
+    totalLinesAdded,
+    totalLinesDeleted,
     byBackend,
     byProject: projectRows,
     byModel: modelRows,
@@ -201,7 +211,24 @@ function scanClaude(
           cacheRead: cacheR,
           cacheCreation: cacheC,
         });
-        if (tsValid !== null) addToDaily(daily, tsValid, 'claude', 1, inT, outT);
+
+        let msgAdded = 0;
+        let msgDeleted = 0;
+        if (Array.isArray(message.content)) {
+          for (const block of message.content) {
+            if (block?.type !== 'tool_use') continue;
+            const { added, deleted } = countToolUseLines(block.name, block.input);
+            msgAdded += added;
+            msgDeleted += deleted;
+          }
+        }
+        if (msgAdded || msgDeleted) {
+          proj.linesAdded += msgAdded;
+          proj.linesDeleted += msgDeleted;
+          agg.linesAdded += msgAdded;
+          agg.linesDeleted += msgDeleted;
+        }
+        if (tsValid !== null) addToDaily(daily, tsValid, 'claude', 1, inT, outT, msgAdded, msgDeleted);
       }
     }
   }
@@ -239,6 +266,8 @@ function scanCodex(
     let sessionIn = 0;
     let sessionOut = 0;
     let sessionCache = 0;
+    let sessionLinesAdded = 0;
+    let sessionLinesDeleted = 0;
     let firstTs: number | null = null;
     let lastTs: number | null = null;
     const sessionModels = new Set<string>();
@@ -281,7 +310,19 @@ function scanCodex(
             cacheRead: 0,
             cacheCreation: 0,
           });
-          if (tsValid !== null) addToDaily(daily, tsValid, 'codex', 1, 0, 0);
+          let itemAdded = 0;
+          let itemDeleted = 0;
+          if (kind === 'function_call') {
+            const { added, deleted } = countCodexFunctionCallLines(payload);
+            itemAdded = added;
+            itemDeleted = deleted;
+            if (added || deleted) {
+              sessionLinesAdded += added;
+              sessionLinesDeleted += deleted;
+            }
+          }
+          if (tsValid !== null)
+            addToDaily(daily, tsValid, 'codex', 1, 0, 0, itemAdded, itemDeleted);
         }
       } else if (type === 'event_msg' && payload?.type === 'token_count') {
         const info = payload.info?.last_token_usage;
@@ -309,6 +350,8 @@ function scanCodex(
     agg.turns += sessionTurns;
     agg.inputTokens += sessionIn;
     agg.outputTokens += sessionOut;
+    agg.linesAdded += sessionLinesAdded;
+    agg.linesDeleted += sessionLinesDeleted;
 
     const key = cwd ?? '(unknown)';
     const proj = ensureProject(projects, key, key);
@@ -317,6 +360,8 @@ function scanCodex(
     proj.inputTokens += sessionIn;
     proj.outputTokens += sessionOut;
     proj.cacheRead += sessionCache;
+    proj.linesAdded += sessionLinesAdded;
+    proj.linesDeleted += sessionLinesDeleted;
     proj.firstActivity = minNum(proj.firstActivity, firstTs);
     proj.lastActivity = maxNum(proj.lastActivity, lastTs);
     for (const m of sessionModels) proj.models.add(m);
@@ -606,6 +651,8 @@ function newBackendAgg(name: Backend): BackendAgg {
     tokensLast7d: 0,
     sessionsToday: new Set<string>(),
     lastActive: 0,
+    linesAdded: 0,
+    linesDeleted: 0,
   };
 }
 
@@ -621,6 +668,8 @@ function finalizeBackend(agg: BackendAgg): BackendStats {
     tokensLast7d: agg.tokensLast7d,
     sessionsToday: agg.sessionsToday.size,
     lastActive: agg.lastActive || undefined,
+    linesAdded: agg.linesAdded,
+    linesDeleted: agg.linesDeleted,
   };
 }
 
@@ -684,6 +733,8 @@ function addToDaily(
   turns: number,
   inputTokens: number,
   outputTokens: number,
+  linesAdded = 0,
+  linesDeleted = 0,
 ): void {
   const key = dayKey(ts);
   const cur = daily.get(key) ?? {
@@ -691,16 +742,28 @@ function addToDaily(
     turns: 0,
     inputTokens: 0,
     outputTokens: 0,
+    linesAdded: 0,
+    linesDeleted: 0,
     byBackend: {} as Partial<Record<Backend, DailyBackendBucket>>,
   };
   cur.turns += turns;
   cur.inputTokens += inputTokens;
   cur.outputTokens += outputTokens;
+  cur.linesAdded += linesAdded;
+  cur.linesDeleted += linesDeleted;
   if (!cur.byBackend) cur.byBackend = {};
-  const bb = cur.byBackend[backend] ?? { turns: 0, inputTokens: 0, outputTokens: 0 };
+  const bb = cur.byBackend[backend] ?? {
+    turns: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    linesAdded: 0,
+    linesDeleted: 0,
+  };
   bb.turns += turns;
   bb.inputTokens += inputTokens;
   bb.outputTokens += outputTokens;
+  bb.linesAdded += linesAdded;
+  bb.linesDeleted += linesDeleted;
   cur.byBackend[backend] = bb;
   daily.set(key, cur);
 }
@@ -727,6 +790,8 @@ export function fillDays(daily: Map<string, DailyBucket>, count: number, now: nu
         turns: 0,
         inputTokens: 0,
         outputTokens: 0,
+        linesAdded: 0,
+        linesDeleted: 0,
         byBackend: {},
       },
     );
@@ -770,9 +835,82 @@ function ensureProject(
     firstActivity: null,
     lastActivity: null,
     models: new Set<string>(),
+    linesAdded: 0,
+    linesDeleted: 0,
   };
   projects.set(slug, fresh);
   return fresh;
+}
+
+/// Approximate lines-changed for a Claude tool_use block. Counted at edit
+/// time from the tool arguments, so it reflects what the agent *proposed*
+/// — rejected / reverted edits still count. Accurate enough to compare
+/// workloads across projects; not a substitute for `git diff`.
+export function countToolUseLines(
+  name: string,
+  input: any,
+): { added: number; deleted: number } {
+  if (!input || typeof input !== 'object') return { added: 0, deleted: 0 };
+  if (name === 'Edit') {
+    return { added: countLines(input.new_string), deleted: countLines(input.old_string) };
+  }
+  if (name === 'MultiEdit') {
+    let added = 0;
+    let deleted = 0;
+    const edits = Array.isArray(input.edits) ? input.edits : [];
+    for (const e of edits) {
+      added += countLines(e?.new_string);
+      deleted += countLines(e?.old_string);
+    }
+    return { added, deleted };
+  }
+  if (name === 'Write') {
+    return { added: countLines(input.content), deleted: 0 };
+  }
+  if (name === 'NotebookEdit') {
+    return { added: countLines(input.new_source), deleted: countLines(input.old_source) };
+  }
+  return { added: 0, deleted: 0 };
+}
+
+export function countLines(s: any): number {
+  if (typeof s !== 'string' || s.length === 0) return 0;
+  return s.split('\n').length;
+}
+
+/// Codex writes edits through `apply_patch`, using its own V4A patch
+/// format inside the function_call arguments. Pull the patch body and
+/// count `+`/`-` prefixed lines. Context lines carry no prefix and the
+/// envelope markers start with `***` / `@@`, so this is a clean count.
+export function countCodexFunctionCallLines(payload: any): { added: number; deleted: number } {
+  if (!payload || typeof payload !== 'object') return { added: 0, deleted: 0 };
+  const args = typeof payload.arguments === 'string' ? payload.arguments : '';
+  if (!args.includes('*** Begin Patch')) return { added: 0, deleted: 0 };
+  let patch = args;
+  try {
+    const parsed = JSON.parse(args);
+    if (typeof parsed?.input === 'string') patch = parsed.input;
+    else if (typeof parsed?.patch === 'string') patch = parsed.patch;
+    else if (Array.isArray(parsed?.command)) patch = parsed.command.join('\n');
+  } catch {
+    // arguments wasn't JSON — fall back to scanning the raw string.
+  }
+  return countApplyPatchLines(patch);
+}
+
+export function countApplyPatchLines(text: string): { added: number; deleted: number } {
+  const begin = text.indexOf('*** Begin Patch');
+  if (begin < 0) return { added: 0, deleted: 0 };
+  const endIdx = text.indexOf('*** End Patch', begin);
+  const body = text.slice(begin, endIdx < 0 ? text.length : endIdx);
+  let added = 0;
+  let deleted = 0;
+  for (const line of body.split('\n')) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) added += 1;
+    else if (line.startsWith('-')) deleted += 1;
+  }
+  return { added, deleted };
 }
 
 export function intVal(v: any): number {

@@ -41,11 +41,15 @@ export function StatsPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-5 gap-3 mb-6">
         <StatCard label="Active today" value={String(activeToday)} />
         <StatCard label="Sessions" value={String(report.totalSessions)} />
         <StatCard label="Turns" value={report.totalTurns.toLocaleString()} />
         <StatCard label="Tokens (7d)" value={tokensLast7d.toLocaleString()} />
+        <StatCard
+          label="Lines changed"
+          value={`+${report.totalLinesAdded.toLocaleString()} / −${report.totalLinesDeleted.toLocaleString()}`}
+        />
       </div>
 
       <SectionHeader>
@@ -66,6 +70,7 @@ export function StatsPage() {
               <th className="text-right font-normal px-3 py-1.5">Turns</th>
               <th className="text-right font-normal px-3 py-1.5">Input</th>
               <th className="text-right font-normal px-3 py-1.5">Output</th>
+              <th className="text-right font-normal px-3 py-1.5">Lines</th>
               <th className="text-right font-normal px-3 py-1.5">5h</th>
               <th className="text-right font-normal px-3 py-1.5">24h</th>
               <th className="text-right font-normal px-3 py-1.5">7d</th>
@@ -85,6 +90,9 @@ export function StatsPage() {
                 <td className="px-3 py-1.5 text-right">{b.turns.toLocaleString()}</td>
                 <td className="px-3 py-1.5 text-right">{b.inputTokens.toLocaleString()}</td>
                 <td className="px-3 py-1.5 text-right">{b.outputTokens.toLocaleString()}</td>
+                <td className="px-3 py-1.5 text-right">
+                  <LinesCell added={b.linesAdded} deleted={b.linesDeleted} />
+                </td>
                 <td className="px-3 py-1.5 text-right">{b.tokensLast5h.toLocaleString()}</td>
                 <td className="px-3 py-1.5 text-right">{b.tokensLast24h.toLocaleString()}</td>
                 <td className="px-3 py-1.5 text-right">{b.tokensLast7d.toLocaleString()}</td>
@@ -136,6 +144,7 @@ export function StatsPage() {
               <th className="text-right font-normal px-3 py-1.5">Turns</th>
               <th className="text-right font-normal px-3 py-1.5">Input</th>
               <th className="text-right font-normal px-3 py-1.5">Output</th>
+              <th className="text-right font-normal px-3 py-1.5">Lines</th>
             </tr>
           </thead>
           <tbody>
@@ -146,12 +155,26 @@ export function StatsPage() {
                 <td className="px-3 py-1.5 text-right">{p.turns.toLocaleString()}</td>
                 <td className="px-3 py-1.5 text-right">{p.inputTokens.toLocaleString()}</td>
                 <td className="px-3 py-1.5 text-right">{p.outputTokens.toLocaleString()}</td>
+                <td className="px-3 py-1.5 text-right">
+                  <LinesCell added={p.linesAdded} deleted={p.linesDeleted} />
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
     </div>
+  );
+}
+
+function LinesCell({ added, deleted }: { added: number; deleted: number }) {
+  if (added === 0 && deleted === 0) return <span className="text-ink-faint">—</span>;
+  return (
+    <span className="font-mono">
+      <span className="text-emerald-400">+{added.toLocaleString()}</span>
+      <span className="text-ink-faint"> / </span>
+      <span className="text-rose-400">−{deleted.toLocaleString()}</span>
+    </span>
   );
 }
 
