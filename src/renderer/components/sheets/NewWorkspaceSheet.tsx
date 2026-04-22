@@ -8,6 +8,7 @@ export function NewWorkspaceSheet() {
   const openSheet = useStore((s) => s.openSheet);
   const [name, setName] = useState('');
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [instructions, setInstructions] = useState('');
 
   return (
     <div className="flex flex-col p-5 gap-3">
@@ -55,13 +56,29 @@ export function NewWorkspaceSheet() {
           ))}
         </div>
       </div>
+      <div>
+        <label className="text-xs text-ink-faint">
+          Workspace instructions <span className="text-ink-faint/70">(optional)</span>
+        </label>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          placeholder={'e.g. product name, terminology, conventions, or anything every agent in this workspace should know.'}
+          rows={4}
+          className="field mt-1 w-full px-3 py-1.5 text-sm resize-y"
+        />
+        <div className="text-[10px] text-ink-faint mt-1">
+          Appended to CLAUDE.md / AGENTS.md / GEMINI.md in this workspace — every conversation
+          and agent sees it.
+        </div>
+      </div>
       <div className="flex justify-end gap-2 mt-2">
         <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
         <SheetActionButton
           primary
           label="Create"
           onClick={async () => {
-            const ws = await newWorkspace(name, Array.from(picked));
+            const ws = await newWorkspace(name, Array.from(picked), instructions);
             if (ws) openSheet(null);
           }}
         />

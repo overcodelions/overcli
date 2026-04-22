@@ -248,6 +248,7 @@ export interface Workspace {
   rootPath: string;
   conversations: Conversation[];
   createdAt: number;
+  instructions?: string;
 }
 
 export type ColosseumStatus = 'running' | 'comparing' | 'merged' | 'cancelled';
@@ -597,6 +598,7 @@ export interface IPCInvokeMap {
   'workspace:ensureSymlinkRoot': (args: {
     workspaceId: UUID;
     projects: Array<{ name: string; path: string }>;
+    instructions?: string;
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
   'workspace:removeSymlinkRoot': (workspaceId: UUID) => { ok: true } | { ok: false; error: string };
   'workspace:ensureCoordinatorSymlinkRoot': (args: {

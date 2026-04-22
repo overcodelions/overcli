@@ -165,8 +165,9 @@ interface StoreState {
   pickProject(): Promise<void>;
   newConversation(projectId: UUID): Promise<Conversation>;
   newConversationInWorkspace(workspaceId: UUID): Promise<Conversation | null>;
-  newWorkspace(name: string, projectIds: UUID[]): Promise<Workspace | null>;
+  newWorkspace(name: string, projectIds: UUID[], instructions?: string): Promise<Workspace | null>;
   updateWorkspaceProjects(workspaceId: UUID, projectIds: UUID[]): Promise<boolean>;
+  updateWorkspaceInstructions(workspaceId: UUID, instructions: string): Promise<boolean>;
   newWorkspaceAgent(args: {
     workspaceId: UUID;
     name: string;
@@ -334,6 +335,7 @@ async function ensureWorkspaceRoot(
   projects: Project[],
   workspaceId: UUID,
   projectIds: UUID[],
+  instructions?: string,
 ): Promise<string | null> {
   const refs = projectIds
     .map((pid) => projects.find((p) => p.id === pid))
@@ -343,6 +345,7 @@ async function ensureWorkspaceRoot(
   const res = await window.overcli.invoke('workspace:ensureSymlinkRoot', {
     workspaceId,
     projects: refs,
+    instructions,
   });
   if (!res.ok) {
     console.warn(`Failed to create workspace root: ${res.error}`);
@@ -840,10 +843,11 @@ export const useStore = create<StoreState>((set, get) => ({
     return conv;
   },
 
-  async newWorkspace(name, projectIds) {
+  async newWorkspace(name, projectIds, instructions) {
     if (!name.trim() || projectIds.length === 0) return null;
     const id = uuid();
-    const rootPath = await ensureWorkspaceRoot(get().projects, id, projectIds);
+    const trimmed = instructions?.trim() || undefined;
+    const rootPath = await ensureWorkspaceRoot(get().projects, id, projectIds, trimmed);
     if (!rootPath) return null;
     const ws: Workspace = {
       id,
@@ -852,6 +856,7 @@ export const useStore = create<StoreState>((set, get) => ({
       rootPath,
       conversations: [],
       createdAt: Date.now(),
+      instructions: trimmed,
     };
     set((s) => ({ workspaces: [...s.workspaces, ws] }));
     await get().saveWorkspaces();
@@ -867,11 +872,40 @@ export const useStore = create<StoreState>((set, get) => ({
     if (projectIds.length === 0) return false;
     const ws = get().workspaces.find((w) => w.id === workspaceId);
     if (!ws) return false;
-    const rootPath = await ensureWorkspaceRoot(get().projects, workspaceId, projectIds);
+    const rootPath = await ensureWorkspaceRoot(
+      get().projects,
+      workspaceId,
+      projectIds,
+      ws.instructions,
+    );
     if (!rootPath) return false;
     set((s) => ({
       workspaces: s.workspaces.map((w) =>
         w.id === workspaceId ? { ...w, projectIds, rootPath } : w,
+      ),
+    }));
+    await get().saveWorkspaces();
+    return true;
+  },
+
+  /// Update a workspace's freeform instructions and re-materialize the
+  /// context files so the new text reaches every backend's CLAUDE.md /
+  /// AGENTS.md / GEMINI.md on disk. Future turns pick it up automatically
+  /// since the CLIs reload their instructions file per invocation.
+  async updateWorkspaceInstructions(workspaceId, instructions) {
+    const ws = get().workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return false;
+    const trimmed = instructions.trim() || undefined;
+    const rootPath = await ensureWorkspaceRoot(
+      get().projects,
+      workspaceId,
+      ws.projectIds,
+      trimmed,
+    );
+    if (!rootPath) return false;
+    set((s) => ({
+      workspaces: s.workspaces.map((w) =>
+        w.id === workspaceId ? { ...w, instructions: trimmed, rootPath } : w,
       ),
     }));
     await get().saveWorkspaces();
