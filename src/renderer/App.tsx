@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { useConversation } from './hooks';
 import { useThemeEffect } from './useThemeEffect';
+import { useShortcuts } from './useShortcuts';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
@@ -23,9 +24,6 @@ export function App() {
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
   const selectedConv = useConversation(selectedConversationId);
-  const activeSheet = useStore((s) => s.activeSheet);
-  const openSheet = useStore((s) => s.openSheet);
-  const toggleSidebar = useStore((s) => s.toggleSidebar);
   const startNewConversation = useStore((s) => s.startNewConversation);
   const projects = useStore((s) => s.projects);
   const settings = useStore((s) => s.settings);
@@ -71,36 +69,7 @@ export function App() {
     return () => unsub();
   }, [ingest, projects, startNewConversation]);
 
-  // Keyboard shortcuts: Cmd+P for file finder, Cmd+\ for sidebar toggle.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'p') {
-        e.preventDefault();
-        const convId = selectedConversationId;
-        // Resolve the project path from the store for Cmd+P.
-        const state = useStore.getState();
-        let rootPath = '';
-        for (const p of state.projects) {
-          const c = p.conversations.find((x) => x.id === convId);
-          if (c) {
-            rootPath = c.worktreePath ?? p.path;
-            break;
-          }
-        }
-        if (rootPath) openSheet({ type: 'fileFinder', rootPath });
-      } else if ((e.metaKey || e.ctrlKey) && e.key === '\\') {
-        e.preventDefault();
-        toggleSidebar();
-      } else if ((e.metaKey || e.ctrlKey) && e.key === ',') {
-        e.preventDefault();
-        openSheet({ type: 'settings' });
-      } else if (e.key === 'Escape' && activeSheet) {
-        openSheet(null);
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [openSheet, toggleSidebar, selectedConversationId, activeSheet]);
+  useShortcuts();
 
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">

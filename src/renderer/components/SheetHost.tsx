@@ -11,6 +11,7 @@ import { NewColosseumSheet } from './sheets/NewColosseumSheet';
 import { ColosseumCompareSheet } from './sheets/ColosseumCompareSheet';
 import { FileFinderSheet } from './sheets/FileFinderSheet';
 import { QuickSwitcherSheet } from './sheets/QuickSwitcherSheet';
+import { ShortcutsHelpSheet } from './sheets/ShortcutsHelpSheet';
 import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { WorkspaceAgentReviewSheet } from './sheets/WorkspaceAgentReviewSheet';
 import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
@@ -72,6 +73,7 @@ export function SheetHost() {
         {sheet.type === 'bulkConversationActions' && <BulkConversationActionsSheet />}
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet />}
+        {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}
       </div>
     </div>
   );
