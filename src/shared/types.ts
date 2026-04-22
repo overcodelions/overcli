@@ -487,6 +487,14 @@ export interface IPCInvokeMap {
     /// allowedDirs and respawn Claude with it on the next turn so the
     /// directory gate admits it.
     addDir?: string;
+    /// 'always' with approved=true marks the tool auto-approvable for
+    /// the rest of this conversation's subprocess lifetime. Future
+    /// permission requests for the same toolName resolve without
+    /// surfacing a prompt.
+    scope?: 'once' | 'always';
+    /// Paired with scope='always' so main knows which tool name to add
+    /// to the conversation's auto-approve set.
+    toolName?: string;
   }) => void;
   'runner:respondCodexApproval': (args: {
     conversationId: UUID;

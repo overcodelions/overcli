@@ -46,7 +46,8 @@ export type ActiveSheet =
   | { type: 'archiveAllInWorkspace'; workspaceId: UUID }
   | { type: 'bulkConversationActions' }
   | { type: 'fileFinder'; rootPath: string }
-  | { type: 'quickSwitcher' };
+  | { type: 'quickSwitcher' }
+  | { type: 'shortcutsHelp' };
 
 export type DetailMode = 'conversation' | 'stats' | 'local' | 'explorer';
 
@@ -134,6 +135,10 @@ interface StoreState {
 
   // Runtime
   runners: Record<UUID, RunnerState>;
+  /// Session-scoped "most recently selected" timestamps, used by the
+  /// command palette to sort its default (empty-query) ordering.
+  /// Transient; resets on app restart.
+  lastSelectedAt: Record<UUID, number>;
   /// Cached git working-tree status per conversation. Populated on
   /// demand via `refreshGitStatus`. Both the header CommitButton and
   /// the ChangesBar above the composer read from this so they show
@@ -247,6 +252,8 @@ interface StoreState {
     requestId: string,
     approved: boolean,
     addDir?: string,
+    scope?: 'once' | 'always',
+    toolName?: string,
   ): Promise<void>;
   respondCodexApproval(
     conversationId: UUID,
@@ -494,6 +501,7 @@ export const useStore = create<StoreState>((set, get) => ({
   capabilities: null,
   ollamaServerStatus: 'unknown',
   runners: {},
+  lastSelectedAt: {},
   gitStatusByConv: {},
 
   async init() {
@@ -576,6 +584,7 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: id ? 'conversation' : s.detailMode,
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
+      lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
     }));
     window.overcli.invoke('store:saveSelection', id);
     if (id) void get().loadHistoryIfNeeded(id);
@@ -1699,12 +1708,14 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
 
-  async respondPermission(conversationId, requestId, approved, addDir) {
+  async respondPermission(conversationId, requestId, approved, addDir, scope, toolName) {
     await window.overcli.invoke('runner:respondPermission', {
       conversationId,
       requestId,
       approved,
       addDir,
+      scope,
+      toolName,
     });
     if (approved && addDir) {
       mutateConversation(set, get, conversationId, (c) => {

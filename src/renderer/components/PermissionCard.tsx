@@ -10,6 +10,10 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
   // Allow is already enough and the extra button is noise.
   const canAddDir = !!info.requestedPath && !!info.outsideAllowedDirs;
   const addDirTarget = canAddDir ? deriveDirToAdd(info.requestedPath!) : null;
+  // AskUserQuestion's toolInput is just the serialized question/options
+  // payload the UI already renders as a form right above this card, so
+  // the raw JSON here is pure noise. Suppress it for that tool.
+  const showToolInput = info.toolName !== 'AskUserQuestion';
   return (
     <div className="rounded-lg border border-blue-500/30 bg-blue-500/8 px-3 py-2 text-xs">
       <div className="flex items-center gap-2 text-blue-400 font-medium">
@@ -22,7 +26,7 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
         )}
       </div>
       {info.description && <div className="mt-1 text-ink-muted">{info.description}</div>}
-      {info.toolInput && (
+      {info.toolInput && showToolInput && (
         <pre className="mt-1 text-[11px] font-mono bg-black/30 rounded px-2 py-1 overflow-x-auto select-text">
           {info.toolInput}
         </pre>
@@ -39,6 +43,15 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
             className="px-3 py-1 rounded text-xs bg-blue-500/25 text-blue-100 hover:bg-blue-500/40"
           >
             Allow
+          </button>
+          <button
+            onClick={() =>
+              void respond(conversationId, info.requestId, true, undefined, 'always', info.toolName)
+            }
+            className="px-3 py-1 rounded text-xs bg-blue-500/15 text-blue-100 hover:bg-blue-500/30 border border-blue-500/40"
+            title={`Auto-approve ${info.toolName} for the rest of this session`}
+          >
+            Always allow
           </button>
           {canAddDir && addDirTarget && (
             <button
