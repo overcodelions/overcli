@@ -33,6 +33,16 @@ export function Sidebar() {
 
   const query = search.trim().toLowerCase();
 
+  const allGroupIds = useMemo(
+    () => [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
+    [projects, workspaces],
+  );
+  const allCollapsed = allGroupIds.length > 0 && allGroupIds.every((id) => collapsed.has(id));
+  const toggleAll = () => {
+    if (allCollapsed) setCollapsed(new Set());
+    else setCollapsed(new Set(allGroupIds));
+  };
+
   const visibleProjects = useMemo(() => {
     if (!query) return projects;
     return projects
@@ -49,13 +59,22 @@ export function Sidebar() {
 
   return (
     <aside className="h-full flex-shrink-0 flex flex-col bg-surface-muted border-r border-card min-w-0" style={{ width: '100%' }}>
-      <div className="px-2 pt-2 pb-1">
+      <div className="px-2 pt-2 pb-1 flex items-center gap-1">
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search"
-          className="field w-full px-2 py-1 text-xs"
+          className="field flex-1 min-w-0 px-2 py-1 text-xs"
         />
+        <button
+          onClick={toggleAll}
+          disabled={allGroupIds.length === 0}
+          title={allCollapsed ? 'Expand all' : 'Collapse all'}
+          aria-label={allCollapsed ? 'Expand all' : 'Collapse all'}
+          className="p-1 rounded text-ink-faint hover:text-ink-muted hover:bg-card-strong disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
+        >
+          {allCollapsed ? <ExpandAllIcon /> : <CollapseAllIcon />}
+        </button>
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
@@ -131,6 +150,24 @@ export function Sidebar() {
         </div>
       </div>
     </aside>
+  );
+}
+
+function CollapseAllIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 3l4 3 4-3" />
+      <path d="M4 13l4-3 4 3" />
+    </svg>
+  );
+}
+
+function ExpandAllIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M4 6l4-3 4 3" />
+      <path d="M4 10l4 3 4-3" />
+    </svg>
   );
 }
 
