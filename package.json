@@ -1,7 +1,21 @@
 {
   "name": "overcli",
   "version": "0.1.0",
-  "description": "Electron GUI wrapper around the Claude CLI",
+  "description": "A desktop GUI that sits over your coding-agent CLIs (claude, codex, gemini, ollama).",
+  "license": "Apache-2.0",
+  "author": "Lionel Farr <lionelfarr@gmail.com>",
+  "contributors": [
+    "Lionel Farr <lionelfarr@gmail.com>",
+    "Owen Farr"
+  ],
+  "homepage": "https://github.com/lionelfarr/overcli",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lionelfarr/overcli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lionelfarr/overcli/issues"
+  },
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "concurrently -k -n vite,tsc,electron -c cyan,yellow,magenta \"npm:dev:renderer\" \"npm:dev:tsc\" \"npm:dev:electron\"",

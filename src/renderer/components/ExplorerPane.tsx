@@ -33,18 +33,21 @@ export function ExplorerPane() {
   }, [settings.explorerTreeWidth]);
 
   // Poll the working tree for branch + dirty counts whenever the root
-  // changes or the user saves a file. We refire on `openFilePath` as a
-  // cheap proxy: after a save the editor re-reads the file, so branch
-  // info should refresh too. Symlink workspace roots aren't real repos —
-  // `isRepo` will come back false and we'll hide the banner.
+  // changes or the user opens/saves a file. When a file is open we query
+  // at its enclosing directory so nested repos (e.g. a workspace that
+  // symlinks multiple projects) resolve to their own branch — git walks
+  // up to the nearest `.git` on its own. Symlink workspace roots with no
+  // file open aren't real repos; `isRepo` comes back false and we hide
+  // the banner.
   const [branch, setBranch] = useState<BranchInfo | null>(null);
   useEffect(() => {
     if (!rootPath) {
       setBranch(null);
       return;
     }
+    const cwd = openFilePath ? dirname(openFilePath) : rootPath;
     let cancelled = false;
-    void window.overcli.invoke('git:commitStatus', { cwd: rootPath }).then((res) => {
+    void window.overcli.invoke('git:commitStatus', { cwd }).then((res) => {
       if (cancelled) return;
       setBranch({
         isRepo: res.isRepo,
@@ -132,4 +135,10 @@ function BranchBanner({ info }: { info: BranchInfo }) {
 function clamp(w: number, min: number, max: number): number {
   if (!Number.isFinite(w)) return min;
   return Math.max(min, Math.min(max, w));
+}
+
+function dirname(p: string): string {
+  const sep = p.includes('\\') ? '\\' : '/';
+  const i = p.lastIndexOf(sep);
+  return i <= 0 ? p : p.slice(0, i);
 }

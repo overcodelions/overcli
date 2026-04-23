@@ -19,7 +19,7 @@
   <img alt="version" src="https://img.shields.io/badge/version-0.1.0-informational" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
   <img alt="electron" src="https://img.shields.io/badge/electron-41-47848F" />
-  <img alt="license" src="https://img.shields.io/badge/license-MIT-green" />
+  <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-green" />
 </p>
 
 <p align="center">
@@ -221,4 +221,6 @@ Overcli is a collaboration between **[Lionel Farr](https://github.com/lionelfarr
 
 ## License
 
-[MIT](LICENSE)
+Licensed under the [Apache License, Version 2.0](LICENSE). See the [`NOTICE`](NOTICE) file for third-party attributions.
+
+Copyright © 2026 Lionel Farr and Owen Farr.
