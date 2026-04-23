@@ -11,6 +11,7 @@ describe('DEFAULT_SETTINGS', () => {
       defaultEffort: '',
       agentBranchPrefix: 'agent/',
       showCost: false,
+      defaultShowToolActivity: false,
       autoDowngrade: true,
       theme: 'system',
       sidebarWidth: 260,
