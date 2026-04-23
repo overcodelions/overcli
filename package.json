@@ -50,7 +50,7 @@
       "main": "dist/main/index.js"
     },
     "electronFuses": {
-      "runAsNode": false,
+      "runAsNode": true,
       "enableCookieEncryption": true,
       "enableNodeOptionsEnvironmentVariable": false,
       "enableNodeCliInspectArguments": false
