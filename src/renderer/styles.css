@@ -278,31 +278,24 @@ html, body {
   font-weight: 600;
 }
 
-/* Transient reveal card — shown briefly in the chat when tool activity
- * is hidden, so quick tool calls still flash by before disappearing.
- * Duration (10000ms) must stay in sync with REVEAL_MS in ChatView.tsx —
- * the JS timer is what actually unmounts the element; this animation
- * just paints the fade over the same window. */
-.transient-reveal {
-  animation: transient-reveal-fade 10000ms ease-out forwards;
+/* Single-slot "now doing" card — one row that swaps content as new flash
+ * tools arrive while tool activity is hidden. Keyed on tool id in React,
+ * so each swap re-runs this fade-in for a soft transition.
+ *
+ * The fixed max-height + overflow:hidden keeps the slot's footprint
+ * identical no matter which tool's card lands in it, so the transcript
+ * doesn't shift when Bash (tall) swaps to Read (short) or vice versa.
+ * 2.5rem comfortably fits the one-line collapsed header every flash tool
+ * renders by default; anything taller gets clipped under the rounded
+ * border, which is fine for a transient indicator. */
+.transient-slot {
+  animation: transient-slot-fade-in 180ms ease-out;
+  max-height: 2.5rem;
+  overflow: hidden;
 }
-@keyframes transient-reveal-fade {
-  0% { opacity: 0; transform: translateY(3px); }
-  4% { opacity: 1; transform: translateY(0); }
-  85% { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-2px); }
-}
-/* Exit variant — applied when a reveal is pushed out of the newest
- * MAX_REVEALS slots. It stays visible briefly so bursts of tool calls
- * can overlap on screen, then fades. Duration (3000ms) must stay in
- * sync with ROLL_OFF_MS in ChatView.tsx. */
-.transient-reveal-exit {
-  animation: transient-reveal-exit-fade 3000ms ease-out forwards;
-}
-@keyframes transient-reveal-exit-fade {
-  0% { opacity: 1; transform: translateY(0); }
-  55% { opacity: 1; transform: translateY(0); }
-  100% { opacity: 0; transform: translateY(-2px); }
+@keyframes transient-slot-fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* Brief pulse applied to the commit-button +/- badge whenever the

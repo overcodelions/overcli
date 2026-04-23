@@ -35,7 +35,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     () => filterRendered(events, showToolActivity, toolUseIndex),
     [events, showToolActivity, toolUseIndex],
   );
-  const reveals = useTransientToolReveals(events, showToolActivity, conversationId);
+  const currentReveal = useLatestToolReveal(events, showToolActivity, conversationId);
   const tailEvent = visibleEvents[visibleEvents.length - 1] ?? null;
 
   const updateBottomState = () => {
@@ -83,7 +83,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     }
 
     prevTailRef.current = nextTail;
-  }, [conversationId, isRunning, tailEvent, events.length, runner?.events, reveals.length]);
+  }, [conversationId, isRunning, tailEvent, events.length, runner?.events, currentReveal?.id]);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -105,16 +105,9 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
             toolResultIndex={toolResultIndex}
           />
         ))}
-        {reveals.length > 0 && (
-          <div className="flex flex-col gap-1.5">
-            {reveals.map((r) => (
-              <div
-                key={r.id}
-                className={r.rollingOff ? 'transient-reveal-exit' : 'transient-reveal'}
-              >
-                <ToolUseCard use={r.use} result={toolResultIndex.get(r.id)} />
-              </div>
-            ))}
+        {currentReveal && (
+          <div key={currentReveal.id} className="transient-slot">
+            <ToolUseCard use={currentReveal} result={toolResultIndex.get(currentReveal.id)} />
           </div>
         )}
         {isRunning && (activityLabel || !showToolActivity) && (
@@ -422,98 +415,104 @@ const FLASH_TOOLS = new Set([
   'WebSearch',
 ]);
 
-// Keep in sync with the `transient-reveal` keyframe duration in styles.css.
-const REVEAL_MS = 10000;
-// Soft cap: we don't hide extra reveals, but once more than this are
-// active the oldest ones are switched to an accelerated fade so the
-// stack drains instead of piling up forever. Keep ROLL_OFF_MS in sync
-// with the `transient-reveal-exit` keyframe in styles.css.
-const MAX_REVEALS = 3;
-const ROLL_OFF_MS = 3000;
+// Floor on how long the slot keeps showing one tool before a newer one is
+// allowed to replace it. Protects against bursts where 5 tools fire in
+// under a second — you'd only ever see the last one, and the swaps would
+// feel like flicker. Swaps are still gated by the 180ms fade animation.
+const MIN_HOLD_MS = 400;
 
-interface RevealEntry {
-  id: string;
-  use: ToolUseBlock;
-  startedAt: number;
-  expireAt: number;
-  rollingOff: boolean;
-}
-
-/// Watches the event stream for new tool_use blocks of interest and keeps
-/// them in a short-lived list. Each entry fades out via CSS and unmounts
-/// when its timer expires. Disabled entirely when tool activity is
-/// visible (the full card is already in the chat).
+/// Watches the event stream for flash-worthy tool uses and returns the
+/// single most recent one as a "now doing…" slot. New tools swap in place
+/// (no stacking, no fade-out timers) so the transcript doesn't bounce.
+/// The slot clears when the assistant emits visible text for this turn, or
+/// when the user sends a new prompt. Disabled when tool activity is on
+/// (the full card is already rendered in the chat).
 ///
-/// On first run for a given (conversation, toggle) state we mark all
-/// existing tool uses as already-processed so opening a conversation
-/// with history doesn't flash a backlog of old edits. Only tool uses
-/// that arrive *after* that initial pass get flashed.
-function useTransientToolReveals(
+/// Baseline ids are captured on mount for a given (conversation, toggle)
+/// state so opening a conversation with history doesn't surface stale
+/// tools from earlier turns.
+function useLatestToolReveal(
   events: StreamEvent[],
   showToolActivity: boolean,
   conversationId: UUID,
-): RevealEntry[] {
-  const [reveals, setReveals] = useState<RevealEntry[]>([]);
-  const processedIdsRef = useRef<Set<string>>(new Set());
+): ToolUseBlock | null {
+  const [current, setCurrent] = useState<ToolUseBlock | null>(null);
+  const baselineIdsRef = useRef<Set<string>>(new Set());
   const hasInitializedRef = useRef(false);
+  const currentRef = useRef<ToolUseBlock | null>(null);
+  const currentStartedAtRef = useRef<number>(0);
+  const desiredRef = useRef<ToolUseBlock | null>(null);
+  const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    setReveals([]);
-    processedIdsRef.current = new Set();
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    setCurrent(null);
+    currentRef.current = null;
+    currentStartedAtRef.current = 0;
+    desiredRef.current = null;
+    baselineIdsRef.current = new Set();
     hasInitializedRef.current = false;
   }, [conversationId, showToolActivity]);
 
   useEffect(() => {
-    if (showToolActivity) return;
-    const processed = processedIdsRef.current;
-    const firstRun = !hasInitializedRef.current;
-    hasInitializedRef.current = true;
-    const additions: RevealEntry[] = [];
-    const now = Date.now();
-    for (const ev of events) {
-      if (ev.kind.type !== 'assistant') continue;
-      for (const use of ev.kind.info.toolUses) {
-        if (processed.has(use.id)) continue;
-        processed.add(use.id);
-        if (firstRun) continue;
-        if (!FLASH_TOOLS.has(use.name)) continue;
-        additions.push({
-          id: use.id,
-          use,
-          startedAt: now,
-          expireAt: now + REVEAL_MS,
-          rollingOff: false,
-        });
-      }
-    }
-    if (!additions.length) return;
-    setReveals((prev) => {
-      const merged = [...prev, ...additions];
-      const activeCount = merged.reduce((n, r) => n + (r.rollingOff ? 0 : 1), 0);
-      if (activeCount <= MAX_REVEALS) return merged;
-      let extras = activeCount - MAX_REVEALS;
-      const rollExpireAt = now + ROLL_OFF_MS;
-      return merged.map((r) => {
-        if (r.rollingOff || extras <= 0) return r;
-        extras -= 1;
-        return { ...r, rollingOff: true, expireAt: Math.min(r.expireAt, rollExpireAt) };
-      });
-    });
-  }, [events, showToolActivity]);
+    return () => {
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
-    if (reveals.length === 0) return;
-    const now = Date.now();
-    const nextDeadline = Math.min(...reveals.map((r) => r.expireAt - now));
-    const wait = Math.max(50, nextDeadline + 30);
-    const t = setTimeout(() => {
-      const at = Date.now();
-      setReveals((prev) => prev.filter((r) => r.expireAt > at));
-    }, wait);
-    return () => clearTimeout(t);
-  }, [reveals]);
+    if (showToolActivity) return;
+    if (!hasInitializedRef.current) {
+      baselineIdsRef.current = new Set(events.map((e) => e.id));
+      hasInitializedRef.current = true;
+      return;
+    }
+    const baseline = baselineIdsRef.current;
+    let next: ToolUseBlock | null = null;
+    for (const ev of events) {
+      if (baseline.has(ev.id)) continue;
+      if (ev.kind.type === 'localUser') {
+        next = null;
+        continue;
+      }
+      if (ev.kind.type !== 'assistant') continue;
+      // Text from the assistant means it has "come back" with a response —
+      // clear the slot so the bubble takes over. A later tool in the same
+      // walk will override this if the turn is still running.
+      if (ev.kind.info.text.trim()) next = null;
+      for (const use of ev.kind.info.toolUses) {
+        if (FLASH_TOOLS.has(use.name)) next = use;
+      }
+    }
+    desiredRef.current = next;
 
-  return reveals;
+    if (currentRef.current?.id === next?.id) return;
+
+    const commit = (value: ToolUseBlock | null) => {
+      currentRef.current = value;
+      currentStartedAtRef.current = Date.now();
+      pendingTimerRef.current = null;
+      setCurrent(value);
+    };
+
+    const age = Date.now() - currentStartedAtRef.current;
+    if (currentRef.current && age < MIN_HOLD_MS) {
+      if (pendingTimerRef.current) clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = setTimeout(() => commit(desiredRef.current), MIN_HOLD_MS - age);
+      return;
+    }
+
+    if (pendingTimerRef.current) {
+      clearTimeout(pendingTimerRef.current);
+      pendingTimerRef.current = null;
+    }
+    commit(next);
+  }, [events, showToolActivity]);
+
+  return current;
 }
 
 // Tool names whose `Result` card is just "I did it" — the tool_use card
