@@ -44,6 +44,7 @@ export type ActiveSheet =
   | { type: 'archiveConversation'; convId: UUID }
   | { type: 'archiveAllInProject'; projectId: UUID }
   | { type: 'archiveAllInWorkspace'; workspaceId: UUID }
+  | { type: 'bulkConversationActions' }
   | { type: 'fileFinder'; rootPath: string }
   | { type: 'quickSwitcher' };
 
