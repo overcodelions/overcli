@@ -16,6 +16,7 @@ export function Sidebar() {
   const startNewConversation = useStore((s) => s.startNewConversation);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openExplorer = useStore((s) => s.openExplorer);
+  const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const [search, setSearch] = useState('');
   // Flip the expand model: "expanded by default unless collapsed by the
   // user." We track only the IDs the user has explicitly collapsed;
@@ -147,9 +148,14 @@ export function Sidebar() {
           + New workspace
         </button>
         <div className="flex items-center gap-1 mt-1">
-          <SidebarIconButton label="Settings" onClick={() => openSheet({ type: 'settings' })} />
           <SidebarIconButton label="Extensions" onClick={() => openSheet({ type: 'capabilities' })} />
-          <SidebarIconButton label="Debug" onClick={() => openSheet({ type: 'debug' })} />
+          <SidebarIconButton
+            label="Cleanup"
+            onClick={() => openSheet({ type: 'bulkConversationActions' })}
+          />
+          {showDebug && (
+            <SidebarIconButton label="Debug" onClick={() => openSheet({ type: 'debug' })} />
+          )}
         </div>
       </div>
     </aside>
@@ -796,23 +802,35 @@ function ArchivedGroup() {
 
   return (
     <div className="mt-3">
-      <button
-        onClick={toggle}
-        className="group flex items-center gap-1.5 w-full px-2 py-1 rounded hover:bg-card-strong text-left"
-      >
-        <span
-          className={
-            'text-[9px] text-ink-faint transition-transform flex-shrink-0 ' +
-            (expanded ? 'rotate-90' : '')
-          }
+      <div className="group flex items-center gap-1.5 w-full px-2 py-1 rounded hover:bg-card-strong">
+        <button
+          onClick={toggle}
+          className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
         >
-          ▸
-        </span>
-        <span className="text-[10px] uppercase tracking-wide text-ink-faint flex-1 truncate">
-          Archived
-        </span>
-        <span className="text-[10px] text-ink-faint">{items.length}</span>
-      </button>
+          <span
+            className={
+              'text-[9px] text-ink-faint transition-transform flex-shrink-0 ' +
+              (expanded ? 'rotate-90' : '')
+            }
+          >
+            ▸
+          </span>
+          <span className="text-[10px] uppercase tracking-wide text-ink-faint flex-1 truncate">
+            Archived
+          </span>
+          <span className="text-[10px] text-ink-faint">{items.length}</span>
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            openSheet({ type: 'bulkConversationActions' });
+          }}
+          className="text-[10px] text-ink-faint hover:text-ink px-1 py-0.5 rounded hover:bg-card-strong opacity-0 group-hover:opacity-100 focus:opacity-100"
+          title="Bulk cleanup conversations"
+        >
+          Cleanup
+        </button>
+      </div>
       {expanded && (
         <div className="ml-4 border-l border-card pl-1">
           {items.map(({ conv, owner }) => {

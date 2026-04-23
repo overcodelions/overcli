@@ -500,6 +500,14 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           <div className="text-[11px] text-ink-faint">{local.editorPaneWidth}px</div>
         </Row>
       </Group>
+      <Group title="Developer">
+        <Toggle
+          label="Show Debug button in sidebar"
+          help="Adds a Debug entry to the sidebar footer that opens the diagnostics sheet."
+          value={local.showDebug ?? false}
+          onChange={(v) => patch({ showDebug: v })}
+        />
+      </Group>
     </div>
   );
 }

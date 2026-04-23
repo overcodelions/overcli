@@ -15,11 +15,17 @@ import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { WorkspaceAgentReviewSheet } from './sheets/WorkspaceAgentReviewSheet';
 import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
 import { ArchiveAllSheet } from './sheets/ArchiveAllSheet';
+import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSheet';
 
 /// The diff sheets need much more horizontal room than everything else
 /// (sidebar + full-width diff body), so we widen the container frame
 /// based on sheet type. Anything else keeps the default 680px shell.
-const WIDE_SHEETS = new Set<string>(['worktreeDiff', 'workspaceAgentReview', 'colosseumCompare']);
+const WIDE_SHEETS = new Set<string>([
+  'worktreeDiff',
+  'workspaceAgentReview',
+  'colosseumCompare',
+  'bulkConversationActions',
+]);
 
 export function SheetHost() {
   const sheet = useStore((s) => s.activeSheet);
@@ -63,6 +69,7 @@ export function SheetHost() {
         {sheet.type === 'archiveAllInWorkspace' && (
           <ArchiveAllSheet workspaceId={sheet.workspaceId} />
         )}
+        {sheet.type === 'bulkConversationActions' && <BulkConversationActionsSheet />}
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet />}
       </div>
