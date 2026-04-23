@@ -5,6 +5,10 @@
 <h1 align="center">Overcli</h1>
 
 <p align="center">
+  <sub><code>over·CLI</code> — a GUI that sits <em>over</em> your CLIs. Yes, that's the name.</sub>
+</p>
+
+<p align="center">
   <strong>Four coding agents. One honest window.</strong><br />
   A cross-platform desktop app that wraps <code>claude</code>, <code>codex</code>, <code>gemini</code>, and <code>ollama</code> in a single GUI —
   conversations, diffs, git worktrees, and usage stats in the same place.
