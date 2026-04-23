@@ -555,6 +555,7 @@ export interface IPCInvokeMap {
     worktreePath: string;
     branchName: string;
     target: string;
+    baseBranch: string;
     commitSubject: string;
     commitBody?: string;
   }) => { ok: true; message: string } | { ok: false; error: string };

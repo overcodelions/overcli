@@ -161,6 +161,7 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
       worktreePath: conv.worktreePath,
       branchName: conv.branchName,
       target,
+      baseBranch,
       commitSubject: desc.subject,
       commitBody: desc.body,
     });

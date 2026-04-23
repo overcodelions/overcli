@@ -535,11 +535,19 @@ function autoCommitIfDirty(
 /// `target` in the *project* checkout. Requires the project to be on
 /// `target` and have a clean working tree — we bail loudly rather than
 /// trying to stash or switch branches on the user's behalf.
+///
+/// Forces `--no-ff` only when `target` is the agent's `baseBranch` (i.e.
+/// the canonical integration branch like `main`), preserving the merge
+/// commit for PR archaeology. For intermediate feature branches we allow
+/// fast-forward so the target doesn't end up with a noisy merge commit on
+/// top of the work commit — which otherwise shows up as two pending
+/// pushes for a single change.
 export function mergeAgent(args: {
   projectPath: string;
   worktreePath: string;
   branchName: string;
   target: string;
+  baseBranch: string;
   commitSubject: string;
   commitBody?: string;
 }): { ok: true; message: string } | { ok: false; error: string } {
@@ -563,16 +571,11 @@ export function mergeAgent(args: {
   }
   const commit = autoCommitIfDirty(args.worktreePath, args.commitSubject, args.commitBody);
   if (!commit.ok) return commit;
-  const merge = runGit(
-    [
-      'merge',
-      '--no-ff',
-      '-m',
-      `Merge agent ${args.branchName} into ${args.target}`,
-      args.branchName,
-    ],
-    args.projectPath,
-  );
+  const forceMergeCommit = args.target === args.baseBranch;
+  const mergeArgs = forceMergeCommit
+    ? ['merge', '--no-ff', '-m', `Merge agent ${args.branchName} into ${args.target}`, args.branchName]
+    : ['merge', '--ff', '--no-edit', '-m', `Merge agent ${args.branchName} into ${args.target}`, args.branchName];
+  const merge = runGit(mergeArgs, args.projectPath);
   if (merge.exitCode !== 0) {
     return {
       ok: false,
