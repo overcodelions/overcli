@@ -39,6 +39,7 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   const selectConversation = useStore((s) => s.selectConversation);
   const openSheet = useStore((s) => s.openSheet);
   const send = useStore((s) => s.send);
+  const isGitRepo = useStore((s) => s.projectIsGitRepo[projectId]);
   const project = projects.find((p) => p.id === projectId);
 
   const [kind, setKind] = useState<AgentKind>('build');
@@ -83,6 +84,23 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   }, [needsTargetBranch, targetBranch, targetBranchOptions]);
 
   if (!project) return null;
+  if (isGitRepo === false) {
+    return (
+      <div className="flex flex-col p-5 gap-3">
+        <div className="text-sm font-medium">Agents need a git repository</div>
+        <div className="text-xs text-ink-muted leading-relaxed">
+          Agents run in isolated git worktrees, so{' '}
+          <span className="text-ink">{project.name}</span> needs to be a git
+          repo before you can create one. Run <code>git init</code> in{' '}
+          <code>{project.path}</code> (or pick a different project) and the
+          agent options will appear.
+        </div>
+        <div className="flex justify-end">
+          <SheetActionButton label="Close" onClick={() => openSheet(null)} />
+        </div>
+      </div>
+    );
+  }
   const preferredBackend = firstEnabledBackend(settings);
 
   const needsName = kind === 'build';

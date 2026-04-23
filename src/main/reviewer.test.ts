@@ -14,6 +14,23 @@ describe('buildReviewerArgs', () => {
     expect(buildReviewerArgs('codex')).toEqual(['exec', '--skip-git-repo-check', '-']);
   });
 
+  it('adds workspace-write sandbox + never-approve when yolo is on for codex', () => {
+    expect(buildReviewerArgs('codex', { yolo: true })).toEqual([
+      'exec',
+      '--skip-git-repo-check',
+      '--sandbox',
+      'workspace-write',
+      '--ask-for-approval',
+      'never',
+      '-',
+    ]);
+  });
+
+  it('ignores yolo for non-codex backends', () => {
+    expect(buildReviewerArgs('claude', { yolo: true })).toEqual(['-p', '-']);
+    expect(buildReviewerArgs('gemini', { yolo: true })).toEqual(['-p', '-']);
+  });
+
   it('reads gemini prompt from stdin', () => {
     expect(buildReviewerArgs('gemini')).toEqual(['-p', '-']);
   });

@@ -189,6 +189,112 @@ export function ensureCoordinatorSymlinkRoot(
   }
 }
 
+/// After the user ran "Check out all locally", the per-member worktrees
+/// are gone but the agent's branches are now checked out in each
+/// project's main tree. Rebind the coordinator's symlink root to point
+/// at those project roots instead of the removed worktrees — the
+/// resumed coordinator conversation then operates against real repos.
+/// Rewrites the context files to warn the agent that its prior
+/// worktree paths are stale and any per-project branch may have been
+/// switched by the user after the handoff.
+export function rebindCoordinatorRootToProjects(
+  coordinatorId: string,
+  projects: Array<{ name: string; projectPath: string; branchName?: string | null }>,
+): { ok: true; rootPath: string } | { ok: false; error: string } {
+  if (!coordinatorId) return { ok: false, error: 'Missing coordinatorId' };
+  const rootPath = coordinatorRootPath(coordinatorId);
+  try {
+    fs.mkdirSync(rootPath, { recursive: true });
+
+    const desired = new Map<string, { target: string; branchName: string | null }>();
+    const usedNames = new Set<string>();
+    for (const p of projects) {
+      if (!p.projectPath || !p.name) continue;
+      let name = p.name;
+      let i = 2;
+      while (usedNames.has(name)) {
+        name = `${p.name}-${i}`;
+        i += 1;
+      }
+      usedNames.add(name);
+      desired.set(name, { target: p.projectPath, branchName: p.branchName ?? null });
+    }
+
+    const preserved = new Set<string>(CONTEXT_FILES);
+    const existing = fs.readdirSync(rootPath, { withFileTypes: true });
+    for (const entry of existing) {
+      if (preserved.has(entry.name)) continue;
+      const full = path.join(rootPath, entry.name);
+      const spec = desired.get(entry.name);
+      if (!spec) {
+        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        continue;
+      }
+      try {
+        const current = fs.readlinkSync(full);
+        if (current !== spec.target) {
+          fs.unlinkSync(full);
+          linkDir(spec.target, full);
+        }
+      } catch {
+        try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* ignore */ }
+        linkDir(spec.target, full);
+      }
+    }
+
+    const present = new Set(existing.map((e) => e.name));
+    for (const [name, spec] of desired) {
+      if (present.has(name)) continue;
+      linkDir(spec.target, path.join(rootPath, name));
+    }
+
+    writeContinuedLocallyContextFiles(
+      rootPath,
+      [...desired.entries()].map(([name, spec]) => ({
+        name,
+        projectPath: spec.target,
+        branchName: spec.branchName,
+      })),
+    );
+
+    return { ok: true, rootPath };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not rebind coordinator root' };
+  }
+}
+
+function writeContinuedLocallyContextFiles(
+  rootPath: string,
+  projects: Array<{ name: string; projectPath: string; branchName: string | null }>,
+): void {
+  const list = projects
+    .map((p) => {
+      const branch = p.branchName ? ` (agent branch: \`${p.branchName}\`)` : '';
+      return `- **${p.name}** → \`${p.projectPath}\`${branch}`;
+    })
+    .join('\n');
+  const content = `# Workspace agent context (continued locally)
+
+This coordinator's per-project worktrees were checked out into the users's main project repos — the symlinks below now point at those main repos, NOT at worktrees. The agent branches that were previously under worktrees are now checked out in each project's main tree.
+
+## Member projects
+
+${list || '_(no members)_'}
+
+Guidelines:
+- File paths you read or edit resolve through the symlinks above into each project's main working tree.
+- Each project may or may not still be on the agent branch listed above — the user might have switched branches after the handoff. If you're about to make edits, verify the current branch with \`git -C <symlinked-path> rev-parse --abbrev-ref HEAD\` first and ask the user before writing to an unexpected branch.
+- Any paths or shell commands you remember from earlier in this conversation that reference the old worktree directories are stale; translate them to the new paths above.
+`;
+  for (const name of CONTEXT_FILES) {
+    try {
+      fs.writeFileSync(path.join(rootPath, name), content, 'utf8');
+    } catch {
+      // Non-fatal.
+    }
+  }
+}
+
 export function removeCoordinatorSymlinkRoot(
   coordinatorId: string,
 ): { ok: true } | { ok: false; error: string } {

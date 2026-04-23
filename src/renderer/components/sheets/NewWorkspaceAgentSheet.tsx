@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
+import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 
 type WorkspaceAgentKind = 'build' | 'docs';
 
@@ -42,6 +43,7 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
   const [bases, setBases] = useState<Record<UUID, string | null>>({});
   const [loadingBases, setLoadingBases] = useState(true);
   const [working, setWorking] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const members = ws
@@ -94,6 +96,7 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
   const go = async () => {
     setWorking(true);
     setError(null);
+    setProgress(null);
     try {
       if (kind === 'docs') {
         const res = await newWorkspaceDocsAgent({
@@ -112,7 +115,17 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
           const b = bases[p.id];
           if (b) baseBranches[p.id] = b;
         }
-        const res = await newWorkspaceAgent({ workspaceId, name: name.trim(), baseBranches });
+        setProgress(
+          members.length === 1
+            ? 'Creating worktree…'
+            : `Creating worktrees across ${members.length} repos…`,
+        );
+        const res = await newWorkspaceAgent({
+          workspaceId,
+          name: name.trim(),
+          baseBranches,
+          onProgress: setProgress,
+        });
         if (!res) {
           setError('All worktree creations failed. Check that each member repo has a usable branch.');
           return;
@@ -121,6 +134,7 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
       }
     } finally {
       setWorking(false);
+      setProgress(null);
     }
   };
 
@@ -213,6 +227,9 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
         </>
       )}
       {error && <div className="text-xs text-red-400">{error}</div>}
+      {working && kind === 'build' && (
+        <WorktreeCreatingStatus message={progress ?? 'Creating worktrees…'} />
+      )}
       <div className="flex justify-end gap-2 mt-2">
         <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
         <SheetActionButton

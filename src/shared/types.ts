@@ -215,6 +215,11 @@ export interface Conversation {
   /// Ollama-specific reviewer model override. When the reviewer is
   /// `ollama`, this takes precedence over the app-wide Ollama default.
   reviewOllamaModel?: string | null;
+  /// Codex-only: when the Codex reviewer fires, launch it with a
+  /// workspace-write sandbox and auto-approve so it can actually edit
+  /// files instead of bouncing off its default read-only sandbox.
+  /// Ignored for non-Codex reviewers.
+  reviewYolo?: boolean | null;
   primaryBackend?: Backend;
   claudeModel?: string;
   codexModel?: string;
@@ -235,6 +240,15 @@ export interface Conversation {
   /// "demoted to local" card instead of a perpetual spinner — the other
   /// members remain reviewable as usual.
   checkedOutLocally?: boolean;
+  /// Set on a workspace-agent coordinator after all its members were
+  /// checked out locally AND the user opted to keep conversing. The
+  /// coordinator's symlink root has been rebound to point at each
+  /// project's main repo (not the removed worktrees), so resuming the
+  /// session via --resume continues the chat against the branches that
+  /// are now checked out locally. Separate from `checkedOutLocally`
+  /// (members use that flag; the coordinator becomes
+  /// `continuedLocally` instead).
+  continuedLocally?: boolean;
   /// Set on workspace-agent coordinators: a synthetic directory whose
   /// symlinks point at each member's worktree. Used as the coordinator's
   /// cwd so the agent's file-system tools land in the worktrees, not the
@@ -497,6 +511,7 @@ export interface IPCInvokeMap {
     reviewMode?: 'review' | 'collab' | null;
     collabMaxTurns?: number | null;
     reviewOllamaModel?: string | null;
+    reviewYolo?: boolean | null;
     /// Absolute paths Claude should be allowed to read beyond its cwd.
     /// Renderer fills this from the conversation's project/workspace and
     /// the persisted `conversation.allowedDirs`.
@@ -669,6 +684,10 @@ export interface IPCInvokeMap {
   'workspace:ensureCoordinatorSymlinkRoot': (args: {
     coordinatorId: UUID;
     members: Array<{ name: string; worktreePath: string }>;
+  }) => { ok: true; rootPath: string } | { ok: false; error: string };
+  'workspace:rebindCoordinatorRootToProjects': (args: {
+    coordinatorId: UUID;
+    projects: Array<{ name: string; projectPath: string; branchName?: string | null }>;
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
   'workspace:removeCoordinatorSymlinkRoot': (
     coordinatorId: UUID,

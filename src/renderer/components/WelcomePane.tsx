@@ -138,29 +138,14 @@ export function WelcomePane() {
   };
 
   if (projects.length === 0) {
-    return (
-      <div className="flex-1 flex items-center justify-center p-8">
-        <div className="max-w-md w-full text-center">
-          <div className="text-2xl font-semibold mb-1">OverCLI</div>
-          <div className="text-sm text-ink-muted mb-6">
-            GUI around the Claude, Codex, and Gemini CLIs. Add your first project to start.
-          </div>
-          <button
-            onClick={pickProject}
-            className="px-4 py-2 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm"
-          >
-            Choose a folder
-          </button>
-        </div>
-      </div>
-    );
+    return <EmptyWelcome onPick={pickProject} />;
   }
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
       <div className="w-full max-w-[680px]">
         <div className="text-center text-2xl font-semibold mb-5">
-          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'OverCLI'}?
+          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'Overcli'}?
         </div>
         <Composer
           draftKey={WELCOME_KEY}
@@ -236,6 +221,150 @@ export function WelcomePane() {
         </div>
       </div>
     </div>
+  );
+}
+
+function EmptyWelcome({ onPick }: { onPick: () => void }) {
+  return (
+    <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
+      <div className="w-full max-w-[760px] text-center">
+        <HeroArt />
+        <div className="mt-6 text-3xl font-semibold tracking-tight">
+          Welcome to <span className="text-accent">Overcli</span>
+        </div>
+        <div className="mt-3 text-sm text-ink-muted max-w-[520px] mx-auto">
+          A native desktop home for the Claude, Codex, Gemini, and Ollama CLIs.
+          Chat with any model, run background agents on isolated git worktrees,
+          and coordinate work across multiple repos — no API keys, just the
+          CLIs you already have signed in.
+        </div>
+
+        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+          <FeatureCard
+            accent="var(--c-backend-claude)"
+            title="Projects"
+            body="A project is a git repository on your machine. Chat with it, run tools, and keep one thread per task."
+            icon={<ProjectGlyph />}
+          />
+          <FeatureCard
+            accent="var(--c-backend-codex)"
+            title="Agents"
+            body="Build, review, or doc agents run in their own git worktrees so your main checkout stays clean."
+            icon={<BranchGlyph />}
+          />
+          <FeatureCard
+            accent="var(--c-backend-gemini)"
+            title="Workspaces"
+            body="Group several projects into one workspace and fire agents that span every repo at once."
+            icon={<WorkspaceGlyph />}
+          />
+        </div>
+
+        <div className="mt-8 flex flex-col items-center gap-2">
+          <button
+            onClick={onPick}
+            className="px-5 py-2.5 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm font-medium"
+          >
+            Add your first project
+          </button>
+          <div className="text-[11px] text-ink-faint">
+            Pick a folder on disk. Git repos unlock agents; any folder works for chat.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FeatureCard({
+  accent,
+  title,
+  body,
+  icon,
+}: {
+  accent: string;
+  title: string;
+  body: string;
+  icon: React.ReactNode;
+}) {
+  return (
+    <div
+      className="rounded-lg border border-card bg-surface-elevated p-4 flex flex-col gap-2"
+      style={{ boxShadow: '0 1px 0 var(--c-card-border) inset' }}
+    >
+      <div
+        className="w-9 h-9 rounded-md flex items-center justify-center"
+        style={{ background: `color-mix(in srgb, ${accent} 18%, transparent)`, color: accent }}
+      >
+        {icon}
+      </div>
+      <div className="text-sm font-medium text-ink">{title}</div>
+      <div className="text-xs text-ink-muted leading-relaxed">{body}</div>
+    </div>
+  );
+}
+
+/// Decorative hero. Matches the app icon: a shell-prompt mark — a bar
+/// above a right-pointing chevron — sized up and rendered in the
+/// current-ink color so it inherits the light/dark theme.
+function HeroArt() {
+  return (
+    <svg
+      viewBox="0 0 120 120"
+      className="mx-auto text-ink"
+      width="120"
+      height="120"
+      aria-hidden="true"
+    >
+      <g stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" fill="none">
+        <path d="M28 34 H92" strokeWidth="12" />
+        <path d="M36 58 L76 82 L36 106" strokeWidth="12" />
+      </g>
+    </svg>
+  );
+}
+
+function ProjectGlyph() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M1.5 4.5A1 1 0 012.5 3.5h3.2l1.1 1.3h5.7A1 1 0 0113.5 5.8v5.9A1 1 0 0112.5 12.7h-10A1 1 0 011.5 11.7V4.5z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function BranchGlyph() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="4" cy="3.5" r="1.4" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="4" cy="12.5" r="1.4" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="12" cy="6" r="1.4" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M4 5v6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <path d="M4 9c0-2 2-3 4-3h2.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function WorkspaceGlyph() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path
+        d="M3.5 2.5H5.7L6.7 3.6H12.5V5.5H3.5V2.5Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M1.5 5.5H4L5 6.5H14.5V13.3A1 1 0 0113.5 14.3H2.5A1 1 0 011.5 13.3V5.5Z"
+        stroke="currentColor"
+        strokeWidth="1.3"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 

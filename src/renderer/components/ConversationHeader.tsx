@@ -20,6 +20,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const setReviewBackend = useStore((s) => s.setReviewBackend);
   const setReviewMode = useStore((s) => s.setReviewMode);
   const setReviewOllamaModel = useStore((s) => s.setReviewOllamaModel);
+  const setReviewYolo = useStore((s) => s.setReviewYolo);
   const promoteReviewAgent = useStore((s) => s.promoteReviewAgent);
   const checkoutReviewBranchLocally = useStore((s) => s.checkoutReviewBranchLocally);
   const removeAgent = useStore((s) => s.removeAgent);
@@ -185,6 +186,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           onSelectBackend={(b) => void setReviewBackend(conversationId, b)}
           onSelectMode={(m) => void setReviewMode(conversationId, m)}
           onSelectOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
+          onToggleYolo={(v) => void setReviewYolo(conversationId, v)}
         />
 
         <IconButton
@@ -750,6 +752,7 @@ function ReboundPicker({
   onSelectBackend,
   onSelectMode,
   onSelectOllamaModel,
+  onToggleYolo,
 }: {
   conv: {
     id: UUID;
@@ -757,12 +760,14 @@ function ReboundPicker({
     reviewMode?: 'review' | 'collab' | null;
     collabMaxTurns?: number | null;
     reviewOllamaModel?: string | null;
+    reviewYolo?: boolean | null;
     primaryBackend?: Backend;
   };
   installedReviewers: Record<string, boolean>;
   onSelectBackend: (b: string | null) => void;
   onSelectMode: (m: 'review' | 'collab') => void;
   onSelectOllamaModel: (m: string | null) => void;
+  onToggleYolo: (v: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [pulled, setPulled] = useState<string[]>([]);
@@ -918,6 +923,28 @@ function ReboundPicker({
               <div className="text-[10px] text-ink-faint mt-1">
                 Max back-and-forth turns before we stop and return to you.
               </div>
+            </div>
+          )}
+
+          {active && conv.reviewBackend === 'codex' && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                Codex sandbox
+              </div>
+              <label className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-card-strong cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!conv.reviewYolo}
+                  onChange={(e) => onToggleYolo(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <div className="flex flex-col">
+                  <span className="text-xs">Yolo mode</span>
+                  <span className="text-[10px] text-ink-faint">
+                    Workspace-write + auto-approve. Off = codex's default read-only sandbox.
+                  </span>
+                </div>
+              </label>
             </div>
           )}
         </div>

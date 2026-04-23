@@ -219,6 +219,10 @@ function ProjectGroup({
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
   const runners = useStore((s) => s.runners);
+  // `true`/`false` once probed, `undefined` while still unknown. Agents
+  // depend on git worktrees, so we hide the "+ agent" affordance only
+  // when we've confirmed the project isn't a git repo.
+  const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
   const visible = project.conversations.filter(
     (c) => !isAgentConversation(c) && !c.hidden,
   );
@@ -333,20 +337,24 @@ function ProjectGroup({
             />
           ))}
           <div className="flex gap-1 my-1 pl-1">
-            <button
-              onClick={onNewAgent}
-              className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-              title="New agent (build, review, docs, …)"
-            >
-              + agent
-            </button>
-            <button
-              onClick={onNewColosseum}
-              className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
-              title="New colosseum"
-            >
-              + colosseum
-            </button>
+            {isGitRepo !== false && (
+              <button
+                onClick={onNewAgent}
+                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
+                title="New agent (build, review, docs, …)"
+              >
+                + agent
+              </button>
+            )}
+            {isGitRepo !== false && (
+              <button
+                onClick={onNewColosseum}
+                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
+                title="New colosseum"
+              >
+                + colosseum
+              </button>
+            )}
             {archivableCount > 0 && (
               <button
                 onClick={() => openSheet({ type: 'archiveAllInProject', projectId: project.id })}
@@ -487,7 +495,7 @@ function ConversationRow({ conv, selected, onClick }: {
   const bgColor = backendColor(conv.primaryBackend);
   const isRunning = useStore((s) => s.runners[conv.id]?.isRunning ?? false);
   const openSheet = useStore((s) => s.openSheet);
-  const isAgent = !!conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+  const isAgent = isAgentConversation(conv);
 
   const onClose = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -524,8 +532,13 @@ function ConversationRow({ conv, selected, onClick }: {
 }
 
 /// Conversations in the store are plain objects, so we use a helper
-/// rather than extending the type with methods.
+/// rather than extending the type with methods. `continuedLocally`
+/// coordinators still carry `workspaceAgentMemberIds` (we keep the
+/// historical link), but the coordinator is no longer operating as an
+/// agent so the sidebar should list it with the workspace's plain
+/// chats, not under Agents.
 export function isAgentConversation(c: Conversation): boolean {
+  if (c.continuedLocally) return false;
   return !!c.worktreePath || (c.workspaceAgentMemberIds?.length ?? 0) > 0;
 }
 
