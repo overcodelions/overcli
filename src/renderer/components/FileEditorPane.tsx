@@ -8,18 +8,22 @@ import { FileTree } from './FileTree';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 
-export function FileEditorPane() {
+export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string | null } = {}) {
   const convId = useStore((s) => s.selectedConversationId);
-  const rootPath = useConversationRoot(convId);
+  const convRoot = useConversationRoot(convId);
+  const rootPath = rootPathOverride ?? convRoot;
   // Pull the raw store slices (stable references when unchanged) rather
   // than a derived array, so the useMemo below doesn't rebuild every
   // render — if `workspaceMembers` churned, the diff useEffect would
   // re-fire each render and pin the CPU.
   const workspaces = useStore((s) => s.workspaces);
   const projects = useStore((s) => s.projects);
+  // Workspace-member path resolution is only meaningful for a
+  // conversation-scoped file view. The explorer passes an explicit root
+  // and has no conversation, so skip the lookup.
   const workspaceMembers = useMemo(
-    () => resolveWorkspaceMembers(convId, workspaces, projects),
-    [convId, workspaces, projects],
+    () => (rootPathOverride ? null : resolveWorkspaceMembers(convId, workspaces, projects)),
+    [convId, workspaces, projects, rootPathOverride],
   );
   const path = useStore((s) => s.openFilePath);
   const highlight = useStore((s) => s.openFileHighlight);

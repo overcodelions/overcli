@@ -15,6 +15,7 @@ export function Sidebar() {
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const startNewConversation = useStore((s) => s.startNewConversation);
   const setDetailMode = useStore((s) => s.setDetailMode);
+  const openExplorer = useStore((s) => s.openExplorer);
   const [search, setSearch] = useState('');
   // Flip the expand model: "expanded by default unless collapsed by the
   // user." We track only the IDs the user has explicitly collapsed;
@@ -94,6 +95,7 @@ export function Sidebar() {
             onRemove={() => void removeProject(project.id)}
             onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
             onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
+            onExplore={() => openExplorer(project.path)}
           />
         ))}
         {workspaces.length > 0 && (
@@ -123,6 +125,7 @@ export function Sidebar() {
             }
             onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
             onRemove={() => void removeWorkspace(ws.id)}
+            onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
           />
         ))}
 
@@ -193,6 +196,7 @@ function ProjectGroup({
   onRemove,
   onNewAgent,
   onNewColosseum,
+  onExplore,
 }: {
   project: Project;
   colosseums: Colosseum[];
@@ -204,6 +208,7 @@ function ProjectGroup({
   onRemove: () => void;
   onNewAgent: () => void;
   onNewColosseum: () => void;
+  onExplore: () => void;
 }) {
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
@@ -258,6 +263,14 @@ function ProjectGroup({
           <span className={'text-[9px] text-ink-faint ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
           <ProjectIcon />
           <span className="text-xs font-medium truncate">{project.name}</span>
+        </button>
+        <button
+          onClick={onExplore}
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
+          title="Explore files"
+          aria-label={`Explore files in ${project.name}`}
+        >
+          <SearchIcon />
         </button>
         <button
           onClick={onNewConversation}
@@ -612,6 +625,7 @@ function WorkspaceGroup({
   onNewAgent,
   onEdit,
   onRemove,
+  onExplore,
 }: {
   workspace: Workspace;
   expanded: boolean;
@@ -622,6 +636,7 @@ function WorkspaceGroup({
   onNewAgent: () => void;
   onEdit: () => void;
   onRemove: () => void;
+  onExplore?: () => void;
 }) {
   const convs = (workspace.conversations ?? []).filter((c) => !c.hidden);
   const plain = convs.filter((c) => !isAgentConversation(c));
@@ -665,6 +680,16 @@ function WorkspaceGroup({
         >
           <PencilIcon />
         </button>
+        {onExplore && (
+          <button
+            onClick={onExplore}
+            className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
+            title="Explore files"
+            aria-label={`Explore files in ${workspace.name}`}
+          >
+            <SearchIcon />
+          </button>
+        )}
         <button
           onClick={onNewConversation}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
@@ -894,6 +919,25 @@ function PlusIcon() {
       aria-hidden="true"
     >
       <path d="M8 3a.75.75 0 0 1 .75.75v3.5h3.5a.75.75 0 0 1 0 1.5h-3.5v3.5a.75.75 0 0 1-1.5 0v-3.5h-3.5a.75.75 0 0 1 0-1.5h3.5v-3.5A.75.75 0 0 1 8 3Z" />
+    </svg>
+  );
+}
+
+/// Folder with a magnifier — used to launch the standalone file
+/// explorer from a project or workspace header. Kept small so it sits
+/// next to the other 14px glyphs in the row.
+function SearchIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 16 16"
+      fill="none"
+      className="flex-shrink-0"
+      aria-hidden="true"
+    >
+      <circle cx="7" cy="7" r="4" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M10.2 10.2L13 13" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
     </svg>
   );
 }

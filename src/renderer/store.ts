@@ -47,7 +47,7 @@ export type ActiveSheet =
   | { type: 'fileFinder'; rootPath: string }
   | { type: 'quickSwitcher' };
 
-export type DetailMode = 'conversation' | 'stats' | 'local';
+export type DetailMode = 'conversation' | 'stats' | 'local' | 'explorer';
 
 export interface OpenFileHighlight {
   startLine: number;
@@ -104,6 +104,11 @@ interface StoreState {
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
   showFileTree: boolean;
+  /// Root directory for the standalone file explorer view. Set by
+  /// `openExplorer`; consumed by ExplorerPane when detailMode is
+  /// 'explorer'. Unlike conversation-scoped file browsing, this is
+  /// independent of any runner/worktree.
+  explorerRootPath: string | null;
   showHiddenConversations: boolean;
   sidebarVisible: boolean;
   /// Global toggle: show tool-use / tool-result cards in chat. Off
@@ -139,6 +144,7 @@ interface StoreState {
   startNewConversation(projectId: UUID): void;
   startNewConversationInWorkspace(workspaceId: UUID): void;
   setDetailMode(mode: DetailMode): void;
+  openExplorer(rootPath: string): void;
   openSheet(sheet: ActiveSheet | null): void;
   openFile(path: string, highlight?: OpenFileHighlight, mode?: FileViewMode): void;
   setOpenFileMode(mode: FileViewMode): void;
@@ -473,6 +479,7 @@ export const useStore = create<StoreState>((set, get) => ({
   openFileHighlight: null,
   openFileMode: 'edit',
   showFileTree: false,
+  explorerRootPath: null,
   showHiddenConversations: false,
   sidebarVisible: true,
   showToolActivity: false,
@@ -595,6 +602,17 @@ export const useStore = create<StoreState>((set, get) => ({
 
   setDetailMode(mode) {
     set({ detailMode: mode });
+  },
+
+  openExplorer(rootPath) {
+    set({
+      detailMode: 'explorer',
+      explorerRootPath: rootPath,
+      selectedConversationId: null,
+      focusedProjectId: null,
+      focusedWorkspaceId: null,
+    });
+    window.overcli.invoke('store:saveSelection', null);
   },
 
   openSheet(sheet) {
