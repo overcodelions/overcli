@@ -6,6 +6,7 @@ import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
 import { LocalPane } from './components/LocalPane';
 import { WelcomePane } from './components/WelcomePane';
+import { ExplorerPane } from './components/ExplorerPane';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
@@ -116,6 +117,8 @@ export function App() {
             <StatsPage />
           ) : detailMode === 'local' ? (
             <LocalPane />
+          ) : detailMode === 'explorer' ? (
+            <ExplorerPane />
           ) : selectedConversationId ? (
             <ConversationPane />
           ) : (

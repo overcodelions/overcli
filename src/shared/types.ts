@@ -423,6 +423,8 @@ export interface AppSettings {
   /// app's content region to zero.
   sidebarWidth: number;
   editorPaneWidth: number;
+  /// Width of the file-tree column inside the standalone explorer view.
+  explorerTreeWidth: number;
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -769,4 +771,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   sidebarWidth: 260,
   editorPaneWidth: 540,
+  explorerTreeWidth: 280,
 };
