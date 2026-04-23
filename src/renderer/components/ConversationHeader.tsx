@@ -29,6 +29,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const codexSandboxMode = useStore((s) => s.runners[conversationId]?.codexSandboxMode ?? '');
   const codexApprovalPolicy = useStore((s) => s.runners[conversationId]?.codexApprovalPolicy ?? '');
   const settings = useStore((s) => s.settings);
+  const projects = useStore((s) => s.projects);
   const resetConversation = useStore((s) => s.resetConversation);
   const openSheet = useStore((s) => s.openSheet);
   const showToolActivity = useStore((s) => s.showToolActivity);
@@ -250,6 +251,27 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             </button>
           )
         )}
+
+        {backend !== 'ollama' &&
+          (() => {
+            const cwd = conv.worktreePath ?? findOwningProjectPath(projects, conversationId);
+            if (!cwd) return null;
+            return (
+              <IconButton
+                onClick={async () => {
+                  const res = await window.overcli.invoke('terminal:popConversation', {
+                    cwd,
+                    backend,
+                    sessionId: conv.sessionId,
+                  });
+                  if (!res.ok) window.alert(res.error);
+                }}
+                title={`Pop to Terminal in ${cwd}${conv.sessionId ? ` · resume ${backendName(backend)}` : ''}`}
+              >
+                <TerminalIcon />
+              </IconButton>
+            );
+          })()}
 
         <ConversationSettingsButton
           conversationId={conversationId}
@@ -1457,6 +1479,16 @@ function DiffIcon() {
         d="M4 2v4H2l3 3 3-3H6V2H4zm6 3 3 3h-2v4h-2V8H7l3-3z"
         fill="currentColor"
       />
+    </svg>
+  );
+}
+
+function TerminalIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <rect x="1.5" y="2.5" width="13" height="11" rx="1.5" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M4 6l2.5 2L4 10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="8" y1="10.5" x2="12" y2="10.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
     </svg>
   );
 }

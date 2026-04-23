@@ -185,6 +185,12 @@ function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<
           value={local.showCost}
           onChange={(v) => patch({ showCost: v })}
         />
+        <Toggle
+          label="Show tool activity by default"
+          help="Initial value for the eye toggle in the conversation header. Off keeps the chat focused on the assistant's prose; you can still flip it per session."
+          value={local.defaultShowToolActivity}
+          onChange={(v) => patch({ defaultShowToolActivity: v })}
+        />
       </Group>
     </div>
   );

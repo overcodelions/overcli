@@ -114,7 +114,9 @@ interface StoreState {
   sidebarVisible: boolean;
   /// Global toggle: show tool-use / tool-result cards in chat. Off
   /// collapses the chat to just the model's assistant text for a cleaner
-  /// reading view. Persisted the next time we save settings.
+  /// reading view. Seeded from `settings.defaultShowToolActivity` at
+  /// launch; the in-session flip is intentionally transient so users can
+  /// toggle it per task without editing Settings.
   showToolActivity: boolean;
   pendingFinderQuery: string;
   conversationDrafts: Record<UUID, string>;
@@ -548,6 +550,7 @@ export const useStore = create<StoreState>((set, get) => ({
       settings: state.settings,
       lastInit: state.lastInit,
       selectedConversationId: state.selectedConversationId ?? null,
+      showToolActivity: state.settings.defaultShowToolActivity ?? false,
     });
     if (workspacesChanged) await get().saveWorkspaces();
     await get().refreshBackendHealth();

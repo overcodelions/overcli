@@ -50,7 +50,7 @@ import {
   ensureCoordinatorSymlinkRoot,
   removeCoordinatorSymlinkRoot,
 } from './workspace';
-import { runInTerminal } from './terminal';
+import { openTerminalAt, runInTerminal } from './terminal';
 import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
 
 // Dev vs prod: we go to the Vite dev server ONLY when VITE_DEV_SERVER_URL
@@ -289,6 +289,33 @@ function registerIpc(): void {
     const args = backend === 'claude' ? 'auth login' : backend === 'codex' ? 'login' : 'auth login';
     return runInTerminal(`${quoted} ${args}`);
   });
+
+  ipcMain.handle(
+    'terminal:popConversation',
+    (_e, { cwd, backend, sessionId }: { cwd: string; backend: Backend; sessionId?: string }) => {
+      if (backend === 'ollama') {
+        return { ok: false, error: 'Ollama runs in-app — there is no CLI to resume in a terminal.' };
+      }
+      if (!isPathUnderRegisteredRoot(cwd)) {
+        return { ok: false, error: 'Workspace path is not inside a registered project root.' };
+      }
+      // Session IDs come from the backend CLIs (UUIDs for claude/gemini).
+      // Anything with shell metacharacters is rejected so it can't escape
+      // into the `do script` line as a separate command.
+      if (sessionId && !/^[A-Za-z0-9._-]+$/.test(sessionId)) {
+        return { ok: false, error: 'Session ID contains unexpected characters.' };
+      }
+      const settings = Store.load().settings;
+      const bin = resolveBackendPath(backend, settings.backendPaths[backend]);
+      const cmd = bin ?? backend;
+      const quoted = cmd.includes(' ') ? `"${cmd}"` : cmd;
+      // Codex has no --resume flag; just drop the user into the interactive
+      // TUI in the workspace and they can pick up from there.
+      const resumeSuffix =
+        sessionId && (backend === 'claude' || backend === 'gemini') ? ` --resume ${sessionId}` : '';
+      return openTerminalAt(cwd, `${quoted}${resumeSuffix}`);
+    },
+  );
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());

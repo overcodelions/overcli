@@ -414,6 +414,10 @@ export interface AppSettings {
   defaultEffort: EffortLevel;
   agentBranchPrefix: string;
   showCost: boolean;
+  /// Initial value for the chat's "show tool activity" toggle at app
+  /// launch. The toggle itself remains a per-session runtime flag so
+  /// users can flip it mid-conversation without touching Settings.
+  defaultShowToolActivity: boolean;
   autoDowngrade: boolean;
   /// Theme preference. 'system' follows the OS's dark-mode setting via
   /// the `prefers-color-scheme` media query.
@@ -628,6 +632,11 @@ export interface IPCInvokeMap {
     coordinatorId: UUID,
   ) => { ok: true } | { ok: false; error: string };
   'auth:openCliLogin': (backend: Backend) => { ok: true } | { ok: false; error: string };
+  'terminal:popConversation': (args: {
+    cwd: string;
+    backend: Backend;
+    sessionId?: string;
+  }) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
@@ -772,6 +781,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultEffort: '',
   agentBranchPrefix: 'agent/',
   showCost: false,
+  defaultShowToolActivity: false,
   autoDowngrade: true,
   theme: 'system',
   sidebarWidth: 260,
