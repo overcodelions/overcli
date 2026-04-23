@@ -22,6 +22,7 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
   const runners = useStore((s) => s.runners);
   const openSheet = useStore((s) => s.openSheet);
   const checkoutWorkspaceLocally = useStore((s) => s.checkoutWorkspaceLocally);
+  const continueWorkspaceLocally = useStore((s) => s.continueWorkspaceLocally);
 
   const coordinator = useMemo<Conversation | null>(() => {
     for (const ws of workspaces) {
@@ -237,6 +238,28 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
     (m) => !isDemoted(m.member) && m.member.worktreePath && m.member.branchName,
   ).length;
 
+  const runContinueLocally = async () => {
+    if (!coordinator) return;
+    if (
+      !window.confirm(
+        `Continue this conversation as a workspace chat? The coordinator's symlinks will be rebound to each project's main repo (on the branches you just checked out) and your next message will resume the same CLI session — so the prior chat context carries over.`,
+      )
+    )
+      return;
+    setWorkingId(coordinatorId);
+    setActionMessage(null);
+    setActionError(null);
+    const res = await continueWorkspaceLocally(coordinatorId);
+    if (res.ok) {
+      setActionMessage(
+        'Continued locally. Send a message to resume the conversation against your local project branches.',
+      );
+    } else {
+      setActionError(res.error);
+    }
+    setWorkingId(null);
+  };
+
   const branchName = coordinator.branchName ?? 'agent/?';
 
   return (
@@ -268,6 +291,20 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
                 : `Check out all (${liveMemberCount}) locally`}
             </button>
           )}
+          {liveMemberCount === 0 &&
+            coordinator.checkedOutLocally &&
+            !coordinator.continuedLocally && (
+              <button
+                onClick={() => void runContinueLocally()}
+                disabled={workingId != null}
+                title="Rebind the coordinator to each project's main repo and resume the CLI session. Next message picks up where the agent left off, now against the locally-checked-out branches."
+                className="text-xs px-2 py-1 rounded bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40"
+              >
+                {workingId === coordinatorId
+                  ? 'Working…'
+                  : 'Continue as workspace conversation'}
+              </button>
+            )}
           <button
             onClick={() => openSheet(null)}
             className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-white/5"

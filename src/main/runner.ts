@@ -74,6 +74,7 @@ interface SendArgs {
   reviewMode?: 'review' | 'collab' | null;
   collabMaxTurns?: number | null;
   reviewOllamaModel?: string | null;
+  reviewYolo?: boolean | null;
   allowedDirs?: string[];
   localUserId?: string;
 }
@@ -118,6 +119,8 @@ interface ActiveProcess {
   /// is `ollama`). When null, we fall back to the app-wide default then
   /// the first pulled model.
   reviewOllamaModel: string | null;
+  /// Codex-only yolo toggle — see SendArgs.reviewYolo.
+  reviewYolo: boolean;
   /// Bumps on each human-originated send so collab loops that kick off
   /// on a stale burst don't keep ping-ponging after the user has moved
   /// on. Reviewer completion compares this to its captured snapshot.
@@ -169,6 +172,7 @@ interface GeminiAcpSession {
   reviewMode: 'review' | 'collab' | null;
   collabMaxTurns: number;
   reviewOllamaModel: string | null;
+  reviewYolo: boolean;
   collabBurst: number;
   collabRoundsInBurst: number;
   cwd: string;
@@ -576,6 +580,7 @@ export class RunnerManager {
       active.reviewMode = args.reviewMode ?? null;
       active.collabMaxTurns = args.collabMaxTurns ?? 3;
       active.reviewOllamaModel = args.reviewOllamaModel ?? null;
+      active.reviewYolo = !!args.reviewYolo;
       active.cwd = args.cwd;
       active.geminiAssistantEventId = undefined;
       active.geminiAssistantText = '';
@@ -747,6 +752,7 @@ export class RunnerManager {
           reviewMode: args.reviewMode ?? null,
           collabMaxTurns: args.collabMaxTurns ?? 3,
           reviewOllamaModel: args.reviewOllamaModel ?? null,
+          reviewYolo: !!args.reviewYolo,
           cwd: args.cwd,
         });
       }
@@ -939,6 +945,7 @@ export class RunnerManager {
     reviewMode: 'review' | 'collab' | null;
     collabMaxTurns: number;
     reviewOllamaModel: string | null;
+    reviewYolo: boolean;
     cwd: string;
   }): Promise<void> {
     const { convId, session, reviewBackend } = params;
@@ -964,6 +971,7 @@ export class RunnerManager {
         reviewBackend === 'ollama'
           ? await this.resolveOllamaReviewerModel(params.reviewOllamaModel)
           : undefined,
+      yolo: params.reviewYolo,
     });
 
     // Plain review: done after one round.
@@ -1008,6 +1016,7 @@ export class RunnerManager {
         reviewMode: params.reviewMode,
         collabMaxTurns: params.collabMaxTurns,
         reviewOllamaModel: params.reviewOllamaModel,
+        reviewYolo: params.reviewYolo,
       },
       { syntheticFromCollab: true },
     );
@@ -1070,6 +1079,7 @@ export class RunnerManager {
     session.reviewMode = args.reviewMode ?? null;
     session.collabMaxTurns = args.collabMaxTurns ?? 3;
     session.reviewOllamaModel = args.reviewOllamaModel ?? null;
+    session.reviewYolo = !!args.reviewYolo;
     session.cwd = args.cwd;
     session.turnStartedAt = Date.now();
     if (!options.syntheticFromCollab) {
@@ -1161,6 +1171,7 @@ export class RunnerManager {
       next.reviewMode = null;
       next.collabMaxTurns = 3;
       next.reviewOllamaModel = null;
+      next.reviewYolo = false;
       next.collabBurst = 0;
       next.collabRoundsInBurst = 0;
       next.cwd = args.cwd;
@@ -1507,6 +1518,7 @@ export class RunnerManager {
         session.reviewBackend === 'ollama'
           ? await this.resolveOllamaReviewerModel(session.reviewOllamaModel)
           : undefined,
+      yolo: session.reviewYolo,
     });
 
     if (session.reviewMode !== 'collab') return;
@@ -1543,6 +1555,7 @@ export class RunnerManager {
         reviewMode: session.reviewMode,
         collabMaxTurns: session.collabMaxTurns,
         reviewOllamaModel: session.reviewOllamaModel,
+        reviewYolo: session.reviewYolo,
       },
       { syntheticFromCollab: true, userEventAlreadyEmitted: true },
     );
@@ -1586,6 +1599,7 @@ export class RunnerManager {
       reviewMode: args.reviewMode ?? null,
       collabMaxTurns: args.collabMaxTurns ?? 3,
       reviewOllamaModel: args.reviewOllamaModel ?? null,
+      reviewYolo: !!args.reviewYolo,
       collabBurst: 0,
       collabRoundsInBurst: 0,
       cwd: args.cwd,
@@ -2039,6 +2053,7 @@ export class RunnerManager {
       reviewMode: args.reviewMode ?? null,
       collabMaxTurns: args.collabMaxTurns ?? 3,
       reviewOllamaModel: args.reviewOllamaModel ?? null,
+      reviewYolo: !!args.reviewYolo,
       collabBurst: 0,
       collabRoundsInBurst: 0,
       cwd: args.cwd,
@@ -2212,6 +2227,7 @@ export class RunnerManager {
         active.reviewBackend === 'ollama'
           ? await this.resolveOllamaReviewerModel(active.reviewOllamaModel)
           : undefined,
+      yolo: active.reviewYolo,
     });
 
     // Collab mode: feed the reviewer's text back to the primary as a
@@ -2254,6 +2270,7 @@ export class RunnerManager {
             reviewMode: active.reviewMode,
             collabMaxTurns: active.collabMaxTurns,
             reviewOllamaModel: active.reviewOllamaModel,
+            reviewYolo: active.reviewYolo,
           },
           { syntheticFromCollab: true, userEventAlreadyEmitted: true },
         );

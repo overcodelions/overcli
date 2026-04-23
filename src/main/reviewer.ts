@@ -65,6 +65,10 @@ export class ReviewerManager {
     backendPathOverride?: string;
     /// Ollama reviewer model tag; ignored for other backends.
     ollamaModel?: string;
+    /// Codex-only yolo toggle: run the reviewer with a workspace-write
+    /// sandbox and auto-approval. Ignored for other backends (Claude and
+    /// Gemini reviewer CLIs don't expose an equivalent flag here).
+    yolo?: boolean;
   }): Promise<ReviewInfo> {
     // Kill any prior in-flight reviewer for this conversation. Happens
     // if the user sent a follow-up turn before the reviewer finished.
@@ -112,7 +116,7 @@ export class ReviewerManager {
     }
 
     return new Promise<ReviewInfo>((resolve) => {
-      const childArgs = buildReviewerArgs(args.reviewBackend);
+      const childArgs = buildReviewerArgs(args.reviewBackend, { yolo: !!args.yolo });
       const env = buildBackendEnv(process.env, bin);
       const shell = backendNeedsShell(bin);
       const proc = spawn(bin, childArgs, {
@@ -347,7 +351,10 @@ export function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): s
   return body.join('\n');
 }
 
-export function buildReviewerArgs(backend: Backend): string[] {
+export function buildReviewerArgs(
+  backend: Backend,
+  opts: { yolo?: boolean } = {},
+): string[] {
   switch (backend) {
     case 'claude':
       // `-p -` reads the prompt from stdin, returns a single final
@@ -359,7 +366,21 @@ export function buildReviewerArgs(backend: Backend): string[] {
       // read the user prompt from stdin. --skip-git-repo-check lets the
       // reviewer run when cwd is a synthetic workspace/coordinator root
       // (a dir of symlinks that isn't itself a git repo).
-      return ['exec', '--skip-git-repo-check', '-'];
+      // Yolo: opt into workspace-write + auto-approval so the reviewer
+      // can actually edit files. Default is codex's own read-only
+      // sandbox, which is why a review that wants to patch code
+      // previously bounced with a "read-only session" message.
+      return opts.yolo
+        ? [
+            'exec',
+            '--skip-git-repo-check',
+            '--sandbox',
+            'workspace-write',
+            '--ask-for-approval',
+            'never',
+            '-',
+          ]
+        : ['exec', '--skip-git-repo-check', '-'];
     case 'gemini':
       // gemini CLI also supports stdin prompt via `-p -`.
       return ['-p', '-'];

@@ -145,6 +145,11 @@ interface StoreState {
   /// the same numbers — the earlier, event-derived count in ChangesBar
   /// could drift from real git state during edit-then-revert loops.
   gitStatusByConv: Record<UUID, GitStatus>;
+  /// Whether a project's root path is a git working tree. Probed on
+  /// init and whenever a project is added. Agents require a worktree,
+  /// so the sidebar hides the "+ agent" affordance when this is false.
+  /// Undefined means "not yet probed" — treat as unknown, not false.
+  projectIsGitRepo: Record<UUID, boolean>;
 
   // Actions
   init(): Promise<void>;
@@ -189,6 +194,9 @@ interface StoreState {
     /// in the workspace branches off its own resolved base, so a repo on
     /// `main` and one on `master` can coexist in the same workspace agent.
     baseBranches: Record<UUID, string>;
+    /// Optional progress reporter — worktree creation across many member
+    /// repos can take seconds per repo, so the sheet shows a live status.
+    onProgress?: (message: string) => void;
   }): Promise<Conversation | null>;
   /// Read-only docs agent that spans every member repo in a workspace.
   /// Creates no worktrees — the coordinator runs in the workspace's
@@ -234,6 +242,15 @@ interface StoreState {
     ok: boolean;
     results: Array<{ memberId: UUID; projectName: string; ok: boolean; message?: string; error?: string }>;
   }>;
+  /// After a coordinator has been `checkedOutLocally`, rebind its
+  /// symlink root to point at each project's main repo and mark it
+  /// `continuedLocally`. Next message on the coordinator resumes the
+  /// prior session (via --resume on the CLI) so the chat context
+  /// carries over, while file tools now operate against the real
+  /// project repos that have the agent branches checked out.
+  continueWorkspaceLocally(
+    coordinatorId: UUID,
+  ): Promise<{ ok: true } | { ok: false; error: string }>;
   /// Turn a review agent (detached-HEAD worktree) into a regular agent
   /// by creating a branch at HEAD. Clears the review flag so the header
   /// drops the review-specific buttons.
@@ -255,6 +272,7 @@ interface StoreState {
   setReviewBackend(id: UUID, backend: string | null): Promise<void>;
   setReviewMode(id: UUID, mode: 'review' | 'collab'): Promise<void>;
   setReviewOllamaModel(id: UUID, model: string | null): Promise<void>;
+  setReviewYolo(id: UUID, yolo: boolean): Promise<void>;
   renameConversation(id: UUID, name: string): Promise<void>;
 
   // Runner
@@ -287,6 +305,7 @@ interface StoreState {
   refreshInstalledReviewers(): Promise<void>;
   refreshCapabilities(): Promise<void>;
   refreshGitStatus(conversationId: UUID): Promise<void>;
+  refreshProjectGitStatus(projectId: UUID): Promise<void>;
 
   // Event routing — called from the preload's onMainEvent bridge.
   ingestMainEvent(event: MainToRendererEvent): void;
@@ -522,6 +541,7 @@ export const useStore = create<StoreState>((set, get) => ({
   runners: {},
   lastSelectedAt: {},
   gitStatusByConv: {},
+  projectIsGitRepo: {},
 
   async init() {
     const state = await window.overcli.invoke('store:load');
@@ -583,6 +603,7 @@ export const useStore = create<StoreState>((set, get) => ({
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
+    for (const p of state.projects) void get().refreshProjectGitStatus(p.id);
     // Seed Ollama server status once at startup so the conversation
     // banner can tell on first paint whether the local server is up.
     // Live updates flow through `ingestMainEvent` after this.
@@ -728,6 +749,7 @@ export const useStore = create<StoreState>((set, get) => ({
   async addProject(project) {
     set((s) => ({ projects: [...s.projects, project] }));
     await get().saveProjects();
+    void get().refreshProjectGitStatus(project.id);
   },
 
   async renameProject(id, name) {
@@ -817,15 +839,20 @@ export const useStore = create<StoreState>((set, get) => ({
       });
     }
 
-    set((s) => ({
-      projects: s.projects.filter((p) => p.id !== id),
-      workspaces: nextWorkspaces,
-      focusedProjectId: s.focusedProjectId === id ? null : s.focusedProjectId,
-      focusedWorkspaceId:
-        s.focusedWorkspaceId && !nextWorkspaces.some((w) => w.id === s.focusedWorkspaceId)
-          ? null
-          : s.focusedWorkspaceId,
-    }));
+    set((s) => {
+      const nextGitRepo = { ...s.projectIsGitRepo };
+      delete nextGitRepo[id];
+      return {
+        projects: s.projects.filter((p) => p.id !== id),
+        workspaces: nextWorkspaces,
+        projectIsGitRepo: nextGitRepo,
+        focusedProjectId: s.focusedProjectId === id ? null : s.focusedProjectId,
+        focusedWorkspaceId:
+          s.focusedWorkspaceId && !nextWorkspaces.some((w) => w.id === s.focusedWorkspaceId)
+            ? null
+            : s.focusedWorkspaceId,
+      };
+    });
     await get().saveProjects();
     await get().saveWorkspaces();
   },
@@ -1002,19 +1029,25 @@ export const useStore = create<StoreState>((set, get) => ({
     const coordinatorId = uuid();
     const memberIds: UUID[] = [];
     const coordinatorMembers: Array<{ name: string; worktreePath: string }> = [];
+    const memberProjects = ws.projectIds
+      .map((pid) => state.projects.find((p) => p.id === pid))
+      .filter((p): p is NonNullable<typeof p> => !!p);
 
     // Spawn a git worktree in each member project and create a child
     // agent conversation there. The coordinator itself has no worktree
     // — it's a bookkeeping row that the sidebar renders as the parent
     // and that the user clicks to see the combined review sheet.
-    for (const projectId of ws.projectIds) {
-      const project = state.projects.find((p) => p.id === projectId);
-      if (!project) continue;
+    for (let i = 0; i < memberProjects.length; i++) {
+      const project = memberProjects[i];
+      const projectId = project.id;
       const baseBranch = args.baseBranches[projectId];
       if (!baseBranch) {
         console.warn(`No base branch for ${project.name}; skipping.`);
         continue;
       }
+      args.onProgress?.(
+        `Creating worktree in ${project.name} (${i + 1} of ${memberProjects.length})…`,
+      );
       const res = await window.overcli.invoke('git:createWorktree', {
         projectPath: project.path,
         agentName: agentSlug,
@@ -1059,6 +1092,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     // Build the coordinator's synthetic cwd: symlinks into each member
     // worktree so agent edits land on the agent branches, not on main.
+    args.onProgress?.('Linking coordinator workspace…');
     let coordinatorRootPath: string | undefined;
     const rootRes = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
       coordinatorId,
@@ -1384,6 +1418,63 @@ export const useStore = create<StoreState>((set, get) => ({
     return { ok: allOk, results };
   },
 
+  async continueWorkspaceLocally(coordinatorId) {
+    const state = get();
+    let coordinator: Conversation | null = null;
+    for (const ws of state.workspaces) {
+      const match = (ws.conversations ?? []).find((c) => c.id === coordinatorId);
+      if (match) {
+        coordinator = match;
+        break;
+      }
+    }
+    if (!coordinator) return { ok: false, error: 'coordinator not found' };
+    if (!coordinator.checkedOutLocally) {
+      return {
+        ok: false,
+        error: 'coordinator has not been checked out locally — run "Check out all locally" first',
+      };
+    }
+    const memberIds = coordinator.workspaceAgentMemberIds ?? [];
+    const projects: Array<{ name: string; projectPath: string; branchName?: string | null }> = [];
+    const used = new Set<string>();
+    for (const memberId of memberIds) {
+      for (const p of state.projects) {
+        const m = p.conversations.find((c) => c.id === memberId);
+        if (!m) continue;
+        let name = p.name;
+        let i = 2;
+        while (used.has(name)) {
+          name = `${p.name}-${i}`;
+          i += 1;
+        }
+        used.add(name);
+        projects.push({ name, projectPath: p.path, branchName: m.branchName ?? null });
+        break;
+      }
+    }
+    if (projects.length === 0) {
+      return { ok: false, error: 'no member projects resolved — nothing to rebind' };
+    }
+    const res = await window.overcli.invoke('workspace:rebindCoordinatorRootToProjects', {
+      coordinatorId,
+      projects,
+    });
+    if (!res.ok) return res;
+    // Keep coordinatorRootPath as-is (the path didn't change — only what
+    // its symlinks point at and its CLAUDE.md/AGENTS.md context files).
+    // Clear checkedOutLocally so the review sheet stops rendering the
+    // coordinator as wrapped up, and flip continuedLocally so the UI
+    // can show a "continued locally" label.
+    mutateConversation(set, get, coordinatorId, (c) => ({
+      ...c,
+      checkedOutLocally: false,
+      continuedLocally: true,
+    }));
+    await saveConversationState(get);
+    return { ok: true };
+  },
+
   async promoteReviewAgent(id) {
     const state = get();
     let conv: Conversation | null = null;
@@ -1599,6 +1690,10 @@ export const useStore = create<StoreState>((set, get) => ({
     mutateConversation(set, get, id, (c) => ({ ...c, reviewOllamaModel: model }));
     await saveConversationState(get);
   },
+  async setReviewYolo(id, yolo) {
+    mutateConversation(set, get, id, (c) => ({ ...c, reviewYolo: yolo }));
+    await saveConversationState(get);
+  },
   async renameConversation(id, name) {
     mutateConversation(set, get, id, (c) => ({ ...c, name }));
     await saveConversationState(get);
@@ -1756,6 +1851,7 @@ export const useStore = create<StoreState>((set, get) => ({
       reviewMode: conv.reviewMode ?? null,
       collabMaxTurns: conv.collabMaxTurns ?? null,
       reviewOllamaModel: conv.reviewOllamaModel ?? null,
+      reviewYolo: conv.reviewYolo ?? null,
       allowedDirs: backend === 'claude' ? computeAllowedDirs(get(), conversationId) : undefined,
     });
 
@@ -1955,6 +2051,21 @@ export const useStore = create<StoreState>((set, get) => ({
   async refreshCapabilities() {
     const report = await window.overcli.invoke('capabilities:scan');
     set({ capabilities: report });
+  },
+
+  async refreshProjectGitStatus(projectId) {
+    const project = get().projects.find((p) => p.id === projectId);
+    if (!project?.path) return;
+    try {
+      const res = await window.overcli.invoke('git:commitStatus', { cwd: project.path });
+      set((s) => ({
+        projectIsGitRepo: { ...s.projectIsGitRepo, [projectId]: !!res.isRepo },
+      }));
+    } catch {
+      set((s) => ({
+        projectIsGitRepo: { ...s.projectIsGitRepo, [projectId]: false },
+      }));
+    }
   },
 
   async refreshGitStatus(conversationId) {

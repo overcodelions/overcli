@@ -48,6 +48,7 @@ import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
   ensureCoordinatorSymlinkRoot,
+  rebindCoordinatorRootToProjects,
   removeCoordinatorSymlinkRoot,
 } from './workspace';
 import { openTerminalAt, runInTerminal } from './terminal';
@@ -261,6 +262,11 @@ function registerIpc(): void {
   );
   ipcMain.handle('workspace:ensureCoordinatorSymlinkRoot', (_e, { coordinatorId, members }) =>
     ensureCoordinatorSymlinkRoot(coordinatorId, members),
+  );
+  ipcMain.handle(
+    'workspace:rebindCoordinatorRootToProjects',
+    (_e, { coordinatorId, projects }) =>
+      rebindCoordinatorRootToProjects(coordinatorId, projects),
   );
   ipcMain.handle('workspace:removeCoordinatorSymlinkRoot', (_e, coordinatorId: string) =>
     removeCoordinatorSymlinkRoot(coordinatorId),
