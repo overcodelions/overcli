@@ -285,12 +285,14 @@ html, body {
  * The fixed max-height + overflow:hidden keeps the slot's footprint
  * identical no matter which tool's card lands in it, so the transcript
  * doesn't shift when Bash (tall) swaps to Read (short) or vice versa.
- * 2.5rem comfortably fits the one-line collapsed header every flash tool
- * renders by default; anything taller gets clipped under the rounded
- * border, which is fine for a transient indicator. */
+ * 3rem comfortably fits the one-line collapsed header every flash tool
+ * renders by default (border + py-1.5 padding + text-xs line), with a
+ * little breathing room so the card's bottom border isn't clipped by
+ * the fade animation's translate offset. Anything taller still gets
+ * clipped under the rounded border, which is fine here. */
 .transient-slot {
   animation: transient-slot-fade-in 180ms ease-out;
-  max-height: 2.5rem;
+  max-height: 3rem;
   overflow: hidden;
 }
 @keyframes transient-slot-fade-in {
