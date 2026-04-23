@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
+import { useConversation } from './hooks';
 import { useThemeEffect } from './useThemeEffect';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
@@ -20,6 +21,8 @@ export function App() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const detailMode = useStore((s) => s.detailMode);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
+  const selectConversation = useStore((s) => s.selectConversation);
+  const selectedConv = useConversation(selectedConversationId);
   const activeSheet = useStore((s) => s.activeSheet);
   const openSheet = useStore((s) => s.openSheet);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -40,6 +43,15 @@ export function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  // Self-heal: if the selected conversation has been deleted (e.g. the
+  // user hits Delete from ArchiveConversationSheet), fall back to the
+  // welcome pane instead of leaving a dead conversation selected.
+  useEffect(() => {
+    if (selectedConversationId && !selectedConv) {
+      selectConversation(null);
+    }
+  }, [selectedConversationId, selectedConv, selectConversation]);
 
   // Apply light/dark preference to <html>. Must run before first paint so
   // the page doesn't flash the wrong theme on load.
@@ -119,7 +131,7 @@ export function App() {
             <LocalPane />
           ) : detailMode === 'explorer' ? (
             <ExplorerPane />
-          ) : selectedConversationId ? (
+          ) : selectedConversationId && selectedConv ? (
             <ConversationPane />
           ) : (
             <WelcomePane />

@@ -1,6 +1,6 @@
 import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { Backend, PermissionMode, UUID, EffortLevel, StreamEvent } from '@shared/types';
+import { Backend, Conversation, PermissionMode, UUID, EffortLevel, StreamEvent } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
@@ -505,13 +505,18 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const backendHealth = useStore((s) => s.backendHealth);
   const settings = useStore((s) => s.settings);
   const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
   const newConversation = useStore((s) => s.newConversation);
+  const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
   const selectConversation = useStore((s) => s.selectConversation);
   const setPrimary = useStore((s) => s.setPrimaryBackend);
   const setDraft = useStore((s) => s.setDraft);
   const runners = useStore((s) => s.runners);
   if (!conv) return null;
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
+  const ownerWorkspace = ownerProject
+    ? undefined
+    : workspaces.find((w) => (w.conversations ?? []).some((c) => c.id === conversationId));
   const currentBackend = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
   const sourceEvents = runners[conversationId]?.events ?? [];
@@ -524,29 +529,36 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
   })();
 
   const forkTo = async (targetBackend: Backend) => {
-    if (!ownerProject) return;
+    if (!ownerProject && !ownerWorkspace) return;
     const { preamble, turnCount } = buildForkPreamble(sourceEvents, lastUserPrompt);
-    const forked = await newConversation(ownerProject.id);
+    const forked = ownerProject
+      ? await newConversation(ownerProject.id)
+      : await newConversationInWorkspace(ownerWorkspace!.id);
+    if (!forked) return;
     // Rename to make the relationship obvious in the sidebar, and stash
     // the prior-transcript preamble on the conv so `send` can ship it on
     // the very first turn (then clear it).
+    const patch = (c: Conversation) =>
+      c.id === forked.id
+        ? {
+            ...c,
+            name: `${conv.name} (fork → ${backendName(targetBackend)})`,
+            forkPreamble: preamble || undefined,
+          }
+        : c;
     useStore.setState((s) => ({
-      projects: s.projects.map((p) =>
-        p.id === ownerProject.id
-          ? {
-              ...p,
-              conversations: p.conversations.map((c) =>
-                c.id === forked.id
-                  ? {
-                      ...c,
-                      name: `${conv.name} (fork → ${backendName(targetBackend)})`,
-                      forkPreamble: preamble || undefined,
-                    }
-                  : c,
-              ),
-            }
-          : p,
-      ),
+      projects: ownerProject
+        ? s.projects.map((p) =>
+            p.id === ownerProject.id ? { ...p, conversations: p.conversations.map(patch) } : p,
+          )
+        : s.projects,
+      workspaces: ownerWorkspace
+        ? s.workspaces.map((w) =>
+            w.id === ownerWorkspace.id
+              ? { ...w, conversations: (w.conversations ?? []).map(patch) }
+              : w,
+          )
+        : s.workspaces,
     }));
     await setPrimary(forked.id, targetBackend);
     if (lastUserPrompt) setDraft(forked.id, lastUserPrompt);

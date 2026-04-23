@@ -125,6 +125,7 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
       worktreePath: member.worktreePath,
       branchName: member.branchName,
       target,
+      baseBranch: member.baseBranch,
       commitSubject: desc.subject,
       commitBody: desc.body,
     });

@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { Backend, Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { BaseBranchSelect } from './BaseBranchSelect';
+import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 
 type AgentKind = 'build' | 'review' | 'docs';
 
@@ -216,6 +217,17 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
       </div>
 
       {error && <div className="text-xs text-red-400">{error}</div>}
+      {working && (
+        <WorktreeCreatingStatus
+          message={
+            kind === 'review'
+              ? 'Checking out review worktree…'
+              : kind === 'docs'
+                ? 'Checking out docs worktree…'
+                : 'Creating worktree…'
+          }
+        />
+      )}
       <div className="flex justify-end gap-2 mt-2">
         <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
         <SheetActionButton

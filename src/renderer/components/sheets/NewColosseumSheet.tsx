@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { UUID, Colosseum } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { BaseBranchSelect } from './BaseBranchSelect';
+import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 
 interface Contender {
   backend: 'claude' | 'codex' | 'gemini';
@@ -24,6 +25,7 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
     { backend: 'codex', model: '', label: 'codex' },
   ]);
   const [working, setWorking] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const launchLock = useRef(false);
   if (!project) return null;
@@ -43,6 +45,7 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
       for (let i = 0; i < contenders.length; i++) {
         const c = contenders[i];
         const agentName = `${namePrefix}-${c.backend}-${i}-${suffix}`;
+        setProgress(`Creating worktree ${i + 1} of ${contenders.length} (${c.backend})…`);
         const res = await window.overcli.invoke('git:createWorktree', {
           projectPath: project.path,
           agentName,
@@ -98,6 +101,7 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
       useStore.setState((s) => ({ colosseums: [...s.colosseums, colosseum] }));
       await saveProjects();
       await saveColosseums();
+      setProgress(`Starting ${agentIds.length} agents…`);
       for (const convId of agentIds) {
         await useStore.getState().send(convId, promptText);
       }
@@ -105,6 +109,7 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
     } finally {
       launchLock.current = false;
       setWorking(false);
+      setProgress(null);
     }
   };
 
@@ -182,6 +187,7 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
         </div>
       </div>
       {error && <div className="text-xs text-red-400">{error}</div>}
+      {working && <WorktreeCreatingStatus message={progress ?? 'Creating worktrees…'} />}
       <div className="flex justify-end gap-2 mt-2">
         <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
         <SheetActionButton
