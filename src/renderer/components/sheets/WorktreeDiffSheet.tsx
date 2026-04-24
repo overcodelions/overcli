@@ -59,6 +59,20 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
 
   const baseBranch = conv?.baseBranch ?? 'main';
   const branchShort = conv?.branchName ?? '?';
+  // A workspace-agent member's coordinator lives on a workspace and
+  // lists this conv in `workspaceAgentMemberIds`. Per-member local
+  // checkout is the bug that left coordinators half-demoted, so we
+  // hide that button here and point users at the coordinator's
+  // "Check out all locally" action instead.
+  const workspaceCoordinator = useMemo<Conversation | null>(() => {
+    for (const ws of workspaces) {
+      const coord = (ws.conversations ?? []).find((c) =>
+        c.workspaceAgentMemberIds?.includes(convId),
+      );
+      if (coord) return coord;
+    }
+    return null;
+  }, [workspaces, convId]);
 
   const reload = async () => {
     if (!conv?.worktreePath || !projectPath || !conv.branchName) {
@@ -325,12 +339,23 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
             label={working ? 'Working…' : 'Push branch'}
             title={pushHelp}
           />
-          <ActionButton
-            onClick={() => void runCheckoutLocally()}
-            disabled={loading || working || !projectPath || !conv.worktreePath || !conv.branchName}
-            label="Check out locally"
-            title={checkoutLocallyHelp}
-          />
+          {workspaceCoordinator ? (
+            <ActionButton
+              onClick={() =>
+                openSheet({ type: 'workspaceAgentReview', coordinatorId: workspaceCoordinator.id })
+              }
+              disabled={working}
+              label="Check out (workspace)…"
+              title="Workspace agents check out every project at once from the coordinator's review sheet, so the workspace doesn't end up half in agents and half in local branches."
+            />
+          ) : (
+            <ActionButton
+              onClick={() => void runCheckoutLocally()}
+              disabled={loading || working || !projectPath || !conv.worktreePath || !conv.branchName}
+              label="Check out locally"
+              title={checkoutLocallyHelp}
+            />
+          )}
           {status?.remoteKind === 'github' && (
             <ActionButton
               onClick={() => void runOpenPR()}
