@@ -220,6 +220,20 @@ interface StoreState {
     | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
     | { ok: false; error: string }
   >;
+  /// Workspace-coordinator variant of checkoutAgentLocally: demote every
+  /// live member in one shot so the coordinator's members don't end up in
+  /// a mixed (partly-demoted, partly-agent) state. Collects per-member
+  /// errors but continues so a single failing project doesn't block the
+  /// rest. Marks the coordinator itself `checkedOutLocally` when all
+  /// members land successfully.
+  checkoutWorkspaceLocally(
+    coordinatorId: UUID,
+    commitSubject: string,
+    commitBody?: string,
+  ): Promise<{
+    ok: boolean;
+    results: Array<{ memberId: UUID; projectName: string; ok: boolean; message?: string; error?: string }>;
+  }>;
   /// Turn a review agent (detached-HEAD worktree) into a regular agent
   /// by creating a branch at HEAD. Clears the review flag so the header
   /// drops the review-specific buttons.
@@ -1304,6 +1318,70 @@ export const useStore = create<StoreState>((set, get) => ({
     });
     await saveConversationState(get);
     return res;
+  },
+
+  async checkoutWorkspaceLocally(coordinatorId, commitSubject, commitBody) {
+    const state = get();
+    let coordinator: Conversation | null = null;
+    for (const ws of state.workspaces) {
+      const match = (ws.conversations ?? []).find((c) => c.id === coordinatorId);
+      if (match) {
+        coordinator = match;
+        break;
+      }
+    }
+    if (!coordinator) {
+      return { ok: false, results: [] };
+    }
+    const memberIds = coordinator.workspaceAgentMemberIds ?? [];
+    const results: Array<{
+      memberId: UUID;
+      projectName: string;
+      ok: boolean;
+      message?: string;
+      error?: string;
+    }> = [];
+    // Process sequentially so checkout ops in different project repos
+    // don't race each other if they ever touch shared state (global git
+    // config, credential helper, etc.).
+    for (const memberId of memberIds) {
+      let projectName = '(unknown project)';
+      let member: Conversation | null = null;
+      for (const p of get().projects) {
+        const m = p.conversations.find((c) => c.id === memberId);
+        if (m) {
+          member = m;
+          projectName = p.name;
+          break;
+        }
+      }
+      if (!member) {
+        results.push({ memberId, projectName, ok: false, error: 'member not found' });
+        continue;
+      }
+      if (!member.worktreePath || !member.branchName) {
+        // Already demoted or never had a worktree — nothing to do, but
+        // don't fail the aggregate.
+        results.push({ memberId, projectName, ok: true, message: 'already checked out' });
+        continue;
+      }
+      const res = await get().checkoutAgentLocally(memberId, commitSubject, commitBody);
+      if (res.ok) {
+        results.push({ memberId, projectName, ok: true, message: res.message });
+      } else {
+        results.push({ memberId, projectName, ok: false, error: res.error });
+      }
+    }
+    const allOk = results.every((r) => r.ok);
+    if (allOk) {
+      // Demote the coordinator so the workspace review sheet reads as
+      // "wrapped up" and the header drops live-agent affordances. Keep
+      // the conversation + its members listed so the chat history and
+      // per-project branches remain accessible.
+      mutateConversation(set, get, coordinatorId, (c) => ({ ...c, checkedOutLocally: true }));
+      await saveConversationState(get);
+    }
+    return { ok: allOk, results };
   },
 
   async promoteReviewAgent(id) {

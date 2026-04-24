@@ -21,6 +21,7 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
   const projects = useStore((s) => s.projects);
   const runners = useStore((s) => s.runners);
   const openSheet = useStore((s) => s.openSheet);
+  const checkoutWorkspaceLocally = useStore((s) => s.checkoutWorkspaceLocally);
 
   const coordinator = useMemo<Conversation | null>(() => {
     for (const ws of workspaces) {
@@ -195,6 +196,47 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
     await refreshAll();
   };
 
+  const runCheckoutAll = async () => {
+    if (!coordinator) return;
+    const liveMembers = members.filter(
+      (m) => !isDemoted(m.member) && m.member.worktreePath && m.member.branchName,
+    );
+    if (liveMembers.length === 0) return;
+    const summary = liveMembers.map((m) => `${m.projectName} (${m.member.branchName})`).join(', ');
+    if (
+      !window.confirm(
+        `Check out all ${liveMembers.length} project${liveMembers.length === 1 ? '' : 's'} locally? Each worktree will be removed and each project repo switched to its branch. Uncommitted worktree changes will be auto-committed; dirty project trees will be stashed.\n\n${summary}`,
+      )
+    )
+      return;
+    const desc = descriptionFor(liveMembers[0].member);
+    setWorkingId(coordinatorId);
+    setActionMessage(null);
+    setActionError(null);
+    const agg = await checkoutWorkspaceLocally(coordinatorId, desc.subject, desc.body);
+    const okCount = agg.results.filter((r) => r.ok).length;
+    const failCount = agg.results.length - okCount;
+    if (agg.ok) {
+      setActionMessage(
+        `Checked out ${okCount} project${okCount === 1 ? '' : 's'} locally. Coordinator wrapped up.`,
+      );
+    } else {
+      const failures = agg.results
+        .filter((r) => !r.ok)
+        .map((r) => `${r.projectName}: ${r.error}`)
+        .join('; ');
+      setActionError(
+        `${okCount} checked out, ${failCount} failed. ${failures || '(see console)'}`,
+      );
+    }
+    setWorkingId(null);
+    await refreshAll();
+  };
+
+  const liveMemberCount = members.filter(
+    (m) => !isDemoted(m.member) && m.member.worktreePath && m.member.branchName,
+  ).length;
+
   const branchName = coordinator.branchName ?? 'agent/?';
 
   return (
@@ -214,6 +256,18 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
           >
             Refresh
           </button>
+          {liveMemberCount > 0 && (
+            <button
+              onClick={() => void runCheckoutAll()}
+              disabled={loadingIds.size > 0 || workingId != null}
+              title="Demote every project's worktree in one shot so the workspace isn't left half in agents, half in local branches."
+              className="text-xs px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
+            >
+              {workingId === coordinatorId
+                ? 'Working…'
+                : `Check out all (${liveMemberCount}) locally`}
+            </button>
+          )}
           <button
             onClick={() => openSheet(null)}
             className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-white/5"
