@@ -35,7 +35,11 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     () => filterRendered(events, showToolActivity, toolUseIndex),
     [events, showToolActivity, toolUseIndex],
   );
-  const currentReveal = useLatestToolReveal(events, showToolActivity, conversationId);
+  const currentReveal = useLatestToolReveal(events, toolResultIndex, showToolActivity, conversationId);
+  const pendingSubagents = useMemo(
+    () => countPendingSubagents(events, toolResultIndex),
+    [events, toolResultIndex],
+  );
   const tailEvent = visibleEvents[visibleEvents.length - 1] ?? null;
 
   const updateBottomState = () => {
@@ -110,17 +114,18 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
             <ToolUseCard use={currentReveal} result={toolResultIndex.get(currentReveal.id)} />
           </div>
         )}
-        {isRunning && (activityLabel || !showToolActivity) && (
+        {isRunning && (activityLabel || !showToolActivity || pendingSubagents > 0) && (
           <ActivityStrip
-            label={
+            label={withSubagentSuffix(
               // When tool activity is hidden, the user loses the visible
               // signal of which tool is running — so promote the latest
               // in-flight tool call to the strip. Falls back to whatever
               // generic label the runner set ("Thinking…", "Running
               // tools…") when no tool is currently pending.
               (!showToolActivity && latestPendingToolLabel(events, toolResultIndex)) ||
-              activityLabel
-            }
+                activityLabel,
+              pendingSubagents,
+            )}
           />
         )}
         {error && <SystemNotice text={error} />}
@@ -401,19 +406,17 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 // Keep in sync with the matching list in AssistantBubble.tsx.
 export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
 
-// Tool names that get a transient flash card while tool activity is
-// hidden. These are quick lookups (Read/Grep/Glob/web search) or
-// commands (Bash) — suppressing them entirely makes long turns feel
-// like nothing is happening, so we surface each one for a moment
-// then let it fade out.
-const FLASH_TOOLS = new Set([
-  'Bash',
-  'Read',
-  'Grep',
-  'Glob',
-  'WebFetch',
-  'WebSearch',
-]);
+// Tools handled elsewhere in the transcript and therefore skipped by
+// the transient flash slot: PERSISTENT_TOOLS render their full card in
+// the assistant bubble regardless of the toggle, so flashing them would
+// duplicate. Everything else flashes — suppressing unknown tools makes
+// long turns (subagents, MCP calls, skills) feel like nothing is
+// happening.
+const FLASH_SKIP = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
+
+function shouldFlash(name: string): boolean {
+  return !FLASH_SKIP.has(name);
+}
 
 // Floor on how long the slot keeps showing one tool before a newer one is
 // allowed to replace it. Protects against bursts where 5 tools fire in
@@ -431,8 +434,11 @@ const MIN_HOLD_MS = 400;
 /// Baseline ids are captured on mount for a given (conversation, toggle)
 /// state so opening a conversation with history doesn't surface stale
 /// tools from earlier turns.
+const SUBAGENT_TOOLS = new Set(['Task', 'Agent']);
+
 function useLatestToolReveal(
   events: StreamEvent[],
+  toolResultIndex: Map<string, ToolResultBlock>,
   showToolActivity: boolean,
   conversationId: UUID,
 ): ToolUseBlock | null {
@@ -471,22 +477,34 @@ function useLatestToolReveal(
       return;
     }
     const baseline = baselineIdsRef.current;
-    let next: ToolUseBlock | null = null;
+    let latestFlash: ToolUseBlock | null = null;
+    let pendingSubagent: ToolUseBlock | null = null;
     for (const ev of events) {
       if (baseline.has(ev.id)) continue;
       if (ev.kind.type === 'localUser') {
-        next = null;
+        latestFlash = null;
+        pendingSubagent = null;
         continue;
       }
       if (ev.kind.type !== 'assistant') continue;
+      for (const use of ev.kind.info.toolUses) {
+        if (SUBAGENT_TOOLS.has(use.name) && !toolResultIndex.has(use.id)) {
+          pendingSubagent = use;
+        }
+      }
       // Text from the assistant means it has "come back" with a response —
       // clear the slot so the bubble takes over. A later tool in the same
       // walk will override this if the turn is still running.
-      if (ev.kind.info.text.trim()) next = null;
+      if (ev.kind.info.text.trim()) latestFlash = null;
       for (const use of ev.kind.info.toolUses) {
-        if (FLASH_TOOLS.has(use.name)) next = use;
+        if (shouldFlash(use.name)) latestFlash = use;
       }
     }
+    // A subagent/Task that hasn't completed wins over newer flash tools:
+    // the Claude CLI stream goes silent while a subagent works, so we
+    // keep the Task card pinned as the "it's still doing something"
+    // indicator until its tool_result arrives.
+    const next = pendingSubagent ?? latestFlash;
     desiredRef.current = next;
 
     if (currentRef.current?.id === next?.id) return;
@@ -510,7 +528,7 @@ function useLatestToolReveal(
       pendingTimerRef.current = null;
     }
     commit(next);
-  }, [events, showToolActivity]);
+  }, [events, toolResultIndex, showToolActivity]);
 
   return current;
 }
@@ -635,6 +653,27 @@ function filterRendered(
 /// doesn't have a matching result yet. Rendered in the activity strip
 /// when `showToolActivity` is off so the user still sees *something*
 /// flicker by as each tool fires.
+function countPendingSubagents(
+  events: StreamEvent[],
+  toolResultIndex: Map<string, ToolResultBlock>,
+): number {
+  let n = 0;
+  for (const ev of events) {
+    if (ev.kind.type !== 'assistant') continue;
+    for (const use of ev.kind.info.toolUses) {
+      if (SUBAGENT_TOOLS.has(use.name) && !toolResultIndex.has(use.id)) n += 1;
+    }
+  }
+  return n;
+}
+
+function withSubagentSuffix(label: string, pending: number): string {
+  if (pending <= 0) return label;
+  const note = pending === 1 ? '1 subagent running' : `${pending} subagents running`;
+  const base = label?.trim();
+  return base ? `${base} · ${note}` : `${note}…`;
+}
+
 function latestPendingToolLabel(
   events: StreamEvent[],
   toolResultIndex: Map<string, ToolResultBlock>,
@@ -646,6 +685,9 @@ function latestPendingToolLabel(
     for (let j = uses.length - 1; j >= 0; j--) {
       const use = uses[j];
       if (toolResultIndex.has(use.id)) continue;
+      // Subagents are surfaced separately (sticky card + count suffix),
+      // so don't let a pending Task/Agent also claim the activity label.
+      if (SUBAGENT_TOOLS.has(use.name)) continue;
       return shortToolLabel(use);
     }
   }
