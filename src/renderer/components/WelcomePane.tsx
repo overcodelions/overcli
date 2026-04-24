@@ -145,7 +145,7 @@ export function WelcomePane() {
     <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
       <div className="w-full max-w-[680px]">
         <div className="text-center text-2xl font-semibold mb-5">
-          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'Overcli'}?
+          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'overcli'}?
         </div>
         <Composer
           draftKey={WELCOME_KEY}
@@ -230,7 +230,7 @@ function EmptyWelcome({ onPick }: { onPick: () => void }) {
       <div className="w-full max-w-[760px] text-center">
         <HeroArt />
         <div className="mt-6 text-3xl font-semibold tracking-tight">
-          Welcome to <span className="text-accent">Overcli</span>
+          Welcome to <span className="text-accent">overcli</span>
         </div>
         <div className="mt-3 text-sm text-ink-muted max-w-[520px] mx-auto">
           A native desktop home for the Claude, Codex, Gemini, and Ollama CLIs.

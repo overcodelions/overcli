@@ -170,7 +170,7 @@ export function LocalPane() {
                     : 'Installed but not running. Start it to chat with local models.'}
                 </>
               ) : (
-                <>Ollama isn't installed yet. OverCLI can kick off the install — nothing is bundled.</>
+                <>Ollama isn't installed yet. overcli can kick off the install — nothing is bundled.</>
               )}
             </div>
             {installStatus && (
@@ -325,7 +325,7 @@ export function LocalPane() {
       )}
 
       <div className="text-[11px] text-ink-faint leading-relaxed mt-4">
-        OverCLI does not ship or redistribute any model weights. Each model you pull
+        overcli does not ship or redistribute any model weights. Each model you pull
         is downloaded directly from Ollama and subject to its own license. Review the
         terms before using a model commercially.
       </div>

@@ -1746,7 +1746,7 @@ export class RunnerManager {
               kind: {
                 type: 'systemNotice',
                 text:
-                  'Codex is running in compatibility mode (exec). Tool cards/approvals are limited on this CLI build. Install a proto-capable Codex build for full Overcli tooling.',
+                  'Codex is running in compatibility mode (exec). Tool cards/approvals are limited on this CLI build. Install a proto-capable Codex build for full overcli tooling.',
               },
               revision: 0,
             },
@@ -2658,7 +2658,7 @@ function modelSupportsTools(tag: string): boolean {
 /// "do X, not Y" instructions much better than to polite hints.
 function buildOllamaToolSystemPrompt(cwd: string): string {
   return [
-    'You are a local coding assistant running inside OverCLI on the user\'s machine.',
+    'You are a local coding assistant running inside overcli on the user\'s machine.',
     `You have real, working access to the user's project directory at: ${cwd}`,
     '',
     'The following tools are available and will return real results from disk:',
