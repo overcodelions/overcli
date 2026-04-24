@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { useConversationRoot } from '../hooks';
+import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import hljs from 'highlight.js';
 import { canPreviewFile } from '../filePreview';
@@ -12,6 +12,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const convId = useStore((s) => s.selectedConversationId);
   const convRoot = useConversationRoot(convId);
   const rootPath = rootPathOverride ?? convRoot;
+  const conv = useConversation(rootPathOverride ? null : convId);
   // Pull the raw store slices (stable references when unchanged) rather
   // than a derived array, so the useMemo below doesn't rebuild every
   // render — if `workspaceMembers` churned, the diff useEffect would
@@ -76,21 +77,24 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
   // "<member>/…path". Peel that prefix to run git in the real project.
-  const diffTarget = useMemo(() => resolveDiffTarget(path, rootPath, workspaceMembers), [
-    path,
-    rootPath,
-    workspaceMembers,
-  ]);
+  const diffTarget = useMemo(
+    () => resolveDiffTarget(path, rootPath, workspaceMembers, conv?.baseBranch ?? null),
+    [path, rootPath, workspaceMembers, conv?.baseBranch],
+  );
   useEffect(() => {
     if (!path || mode !== 'diff' || !diffTarget) return;
     setLoading(true);
     setError(null);
     (async () => {
-      // Tracked file modifications: `git diff HEAD --` shows them against
-      // the last commit. Untracked/new files need `--no-index` since they
-      // have no HEAD entry to diff against.
+      // Agents commit as they go, so `HEAD` already includes their
+      // edits — diffing HEAD returns empty and the no-index fallback
+      // then shows the whole file as added (all green). When we know
+      // the agent's base branch, diff against it to roll committed and
+      // uncommitted changes into one view. Falls back to HEAD for
+      // non-agent file views (explorer, project root).
+      const baseRef = diffTarget.baseBranch ?? 'HEAD';
       const tracked = await window.overcli.invoke('git:run', {
-        args: ['diff', 'HEAD', '--', diffTarget.path],
+        args: ['diff', baseRef, '--', diffTarget.path],
         cwd: diffTarget.cwd,
       });
       let text = tracked.stdout ?? '';
@@ -339,22 +343,29 @@ function detectLanguage(path: string): string | null {
 /// Workspace conversations show paths like "<member>/src/foo.ts" — the
 /// ChangesBar prefix matches the symlink name under the workspace root.
 /// Strip it to get a cwd that's a real git repo; the remaining path is
-/// what `git diff` wants.
+/// what `git diff` wants. `baseBranch` is the ref the caller should
+/// diff against — each workspace member carries its own base, so we
+/// attach it when we match a member prefix.
 function resolveDiffTarget(
   path: string | null,
   rootPath: string | null,
-  members: Array<{ name: string; path: string }> | null,
-): { cwd: string; path: string } | null {
+  members: Array<{ name: string; path: string; baseBranch?: string | null }> | null,
+  convBaseBranch: string | null,
+): { cwd: string; path: string; baseBranch: string | null } | null {
   if (!path || !rootPath) return null;
   if (members && members.length > 0) {
     for (const m of members) {
       const prefix = `${m.name}/`;
       if (path.startsWith(prefix)) {
-        return { cwd: m.path, path: path.slice(prefix.length) };
+        return {
+          cwd: m.path,
+          path: path.slice(prefix.length),
+          baseBranch: m.baseBranch ?? null,
+        };
       }
     }
   }
-  return { cwd: rootPath, path };
+  return { cwd: rootPath, path, baseBranch: convBaseBranch };
 }
 
 function resolveWorkspaceMembers(
@@ -371,9 +382,9 @@ function resolveWorkspaceMembers(
     id: string;
     name: string;
     path: string;
-    conversations: Array<{ id: string; worktreePath?: string }>;
+    conversations: Array<{ id: string; worktreePath?: string; baseBranch?: string | null }>;
   }>,
-): Array<{ name: string; path: string }> | null {
+): Array<{ name: string; path: string; baseBranch?: string | null }> | null {
   if (!convId) return null;
   for (const w of workspaces) {
     const c = (w.conversations ?? []).find((x) => x.id === convId);
@@ -383,7 +394,7 @@ function resolveWorkspaceMembers(
     // runs git from the right repo. Use the same project-name + numeric
     // suffix dedup that `ensureCoordinatorSymlinkRoot` uses on disk.
     if (c.workspaceAgentMemberIds?.length) {
-      const out: Array<{ name: string; path: string }> = [];
+      const out: Array<{ name: string; path: string; baseBranch?: string | null }> = [];
       const used = new Set<string>();
       for (const memberId of c.workspaceAgentMemberIds) {
         for (const proj of projects) {
@@ -396,7 +407,7 @@ function resolveWorkspaceMembers(
             i += 1;
           }
           used.add(name);
-          out.push({ name, path: member.worktreePath });
+          out.push({ name, path: member.worktreePath, baseBranch: member.baseBranch ?? null });
           break;
         }
       }
