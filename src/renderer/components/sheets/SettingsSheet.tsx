@@ -175,7 +175,7 @@ function Toggle({
 function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
   return (
     <div>
-      <Group title="Appearance" description="Choose how OverCLI looks. System follows your OS setting.">
+      <Group title="Appearance" description="Choose how overcli looks. System follows your OS setting.">
         <ThemePicker value={local.theme} onChange={(v) => patch({ theme: v })} />
       </Group>
       <Group title="Chat display">
@@ -329,7 +329,7 @@ function BackendsPane({
       </Group>
       <Group
         title="CLI paths"
-        description="OverCLI auto-discovers CLIs in common install locations. Override here if yours is elsewhere."
+        description="overcli auto-discovers CLIs in common install locations. Override here if yours is elsewhere."
       >
         {(['claude', 'codex', 'gemini'] as Backend[]).map((b) => {
           const h = health[b];

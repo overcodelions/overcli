@@ -71,7 +71,7 @@ function createWindow(): void {
     height: 840,
     minWidth: 960,
     minHeight: 600,
-    title: 'OverCLI',
+    title: 'overcli',
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#1c1c21',
     webPreferences: {
@@ -279,8 +279,8 @@ function registerIpc(): void {
   ipcMain.handle('app:showAbout', () => {
     dialog.showMessageBox({
       type: 'info',
-      title: 'About OverCLI',
-      message: 'OverCLI',
+      title: 'About overcli',
+      message: 'overcli',
       detail: 'Electron GUI wrapper around the Claude CLI.\nPorted from the Swift/SwiftUI build.',
     });
   });

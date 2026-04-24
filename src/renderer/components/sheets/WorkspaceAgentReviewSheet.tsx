@@ -165,7 +165,7 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
     const desc = descriptionFor(member);
     const body =
       (desc.body ?? '') +
-      `\n\n—\nOpened from Overcli workspace agent · \`${member.branchName}\` → \`${member.baseBranch}\` in ${view.projectName}`;
+      `\n\n—\nOpened from overcli workspace agent · \`${member.branchName}\` → \`${member.baseBranch}\` in ${view.projectName}`;
     const res = await window.overcli.invoke('git:openPR', {
       worktreePath: member.worktreePath,
       branchName: member.branchName,

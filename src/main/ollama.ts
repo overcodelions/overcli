@@ -1,4 +1,4 @@
-// Ollama integration. Overcli talks to a locally-installed Ollama server
+// Ollama integration. overcli talks to a locally-installed Ollama server
 // (http://127.0.0.1:11434) — we don't bundle or redistribute weights.
 // Users pull models themselves via `ollama pull`, which means they accept
 // each model's license (Apache 2.0, Qwen Research, Meta CodeLlama, etc.)
@@ -374,7 +374,7 @@ export type ServerStatus = 'stopped' | 'starting' | 'running' | 'error';
 
 /// Manages an `ollama serve` child process with its stdout/stderr piped
 /// back to the main process so the UI can show live logs. One instance,
-/// created at app start. The server lives as long as Overcli does —
+/// created at app start. The server lives as long as overcli does —
 /// killed on app quit. If the user already has Ollama running (e.g. via
 /// Ollama.app or brew services), start() is a no-op once detection sees
 /// port 11434 bound, and we show a system log line explaining that.
@@ -409,7 +409,7 @@ export class OllamaServerManager {
   async start(): Promise<{ ok: boolean; message: string }> {
     // Already running in-proc.
     if (this.child && !this.child.killed) {
-      return { ok: true, message: 'Server already running under Overcli.' };
+      return { ok: true, message: 'Server already running under overcli.' };
     }
     // Someone else (Ollama.app, brew services) is bound to :11434. Don't
     // try to spawn a second one — port conflict, and the existing server

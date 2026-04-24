@@ -54,7 +54,7 @@
 }
 
 :root.dark {
-  /* Dark palette — matches the Swift build's Overcli look. */
+  /* Dark palette — matches the Swift build's overcli look. */
   --c-surface: #1c1c21;
   --c-surface-muted: #24242b;
   --c-surface-elevated: #2a2a33;

@@ -278,7 +278,7 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
     setActionMessage(null);
     const desc = description();
     const body =
-      (desc.body ?? '') + `\n\n—\nOpened from Overcli · \`${conv.branchName}\` → \`${baseBranch}\``;
+      (desc.body ?? '') + `\n\n—\nOpened from overcli · \`${conv.branchName}\` → \`${baseBranch}\``;
     const res = await window.overcli.invoke('git:openPR', {
       worktreePath: conv.worktreePath,
       branchName: conv.branchName,

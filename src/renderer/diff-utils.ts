@@ -84,7 +84,7 @@ export function summariseAssistantText(text: string, maxChars: number): string {
 
 /// Build a commit/PR description from the conversation name + the last
 /// assistant text in the runner's event stream. Falls back to a generic
-/// "Overcli: <branch> changes" subject when the conversation still has
+/// "overcli: <branch> changes" subject when the conversation still has
 /// the default name.
 export function agentDescription(
   conversationName: string,
@@ -92,7 +92,7 @@ export function agentDescription(
   branch: string,
 ): AgentDescription {
   const trimmedName = conversationName.trim();
-  const subject = trimmedName || `Overcli: ${branch} changes`;
+  const subject = trimmedName || `overcli: ${branch} changes`;
   if (!lastAssistantText) return { subject };
   const body = summariseAssistantText(lastAssistantText, 500);
   return { subject, body: body || undefined };

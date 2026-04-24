@@ -192,7 +192,7 @@ export class CodexAppServerClient extends EventEmitter {
   private async startInternal(opts: CodexAppServerStartOptions): Promise<{ threadId: string }> {
     if (!this.initialized) {
       await this.request('initialize', {
-        clientInfo: { name: 'overcli', title: 'OverCLI', version: '0.1.0' },
+        clientInfo: { name: 'overcli', title: 'overcli', version: '0.1.0' },
         capabilities: { experimentalApi: false },
       });
       await this.notify('initialized');

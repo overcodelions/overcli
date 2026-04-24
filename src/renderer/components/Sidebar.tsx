@@ -245,7 +245,7 @@ function ProjectGroup({
       (w) => w.projectIds.filter((pid) => pid !== project.id).length === 0,
     ).length;
     const message = [
-      `Remove project "${project.name}" from Overcli?`,
+      `Remove project "${project.name}" from overcli?`,
       'This keeps the repo on disk, but removes it from the app.',
       project.conversations.length
         ? `${project.conversations.length} conversation${project.conversations.length === 1 ? '' : 's'} and agent${project.conversations.length === 1 ? '' : 's'} will be removed.`
@@ -293,7 +293,7 @@ function ProjectGroup({
         <button
           onClick={handleRemove}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
-          title="Remove project from Overcli"
+          title="Remove project from overcli"
           aria-label={`Remove project ${project.name}`}
         >
           <TrashIcon />
@@ -668,7 +668,7 @@ function WorkspaceGroup({
 
   const handleRemove = () => {
     const message = [
-      `Remove workspace "${workspace.name}" from Overcli?`,
+      `Remove workspace "${workspace.name}" from overcli?`,
       'This removes the synthetic workspace and its conversations, but keeps member repos on disk and in the app.',
       convs.length
         ? `${convs.length} workspace conversation${convs.length === 1 ? '' : 's'} will be removed.`
@@ -720,7 +720,7 @@ function WorkspaceGroup({
         <button
           onClick={handleRemove}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
-          title="Remove workspace from Overcli"
+          title="Remove workspace from overcli"
           aria-label={`Remove workspace ${workspace.name}`}
         >
           <TrashIcon />
