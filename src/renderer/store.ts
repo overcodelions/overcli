@@ -464,7 +464,15 @@ function computeAllowedDirs(state: StoreState, convId: UUID): string[] {
     const c = p.conversations.find((x) => x.id === convId);
     if (c) {
       dirs.push(p.path);
-      if (c.worktreePath) dirs.push(c.worktreePath);
+      if (c.worktreePath) {
+        dirs.push(c.worktreePath);
+        // Include the sibling-worktrees container (~/.overcli/worktrees/<slug>)
+        // so subagents inspecting adjacent branches' worktrees don't trip
+        // the add-dir gate on a path the user would obviously expect to
+        // be in scope.
+        const parent = parentDir(c.worktreePath);
+        if (parent) dirs.push(parent);
+      }
       for (const d of c.allowedDirs ?? []) dirs.push(d);
       return dirs;
     }
@@ -491,12 +499,22 @@ function computeAllowedDirs(state: StoreState, convId: UUID): string[] {
           if (proj) dirs.push(proj.path);
         }
       }
-      if (c.worktreePath) dirs.push(c.worktreePath);
+      if (c.worktreePath) {
+        dirs.push(c.worktreePath);
+        const parent = parentDir(c.worktreePath);
+        if (parent) dirs.push(parent);
+      }
       for (const d of c.allowedDirs ?? []) dirs.push(d);
       return dirs;
     }
   }
   return dirs;
+}
+
+function parentDir(p: string): string | null {
+  const idx = p.lastIndexOf('/');
+  if (idx <= 0) return null;
+  return p.slice(0, idx);
 }
 
 function isBackendEnabled(settings: AppSettings, backend: Backend): boolean {
