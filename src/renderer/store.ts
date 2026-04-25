@@ -132,6 +132,13 @@ interface StoreState {
   /// `ollamaServerStatus` event. Used to warn users in-chat when they're
   /// talking to an Ollama-backed conversation and the server is down.
   ollamaServerStatus: 'stopped' | 'starting' | 'running' | 'error' | 'unknown';
+  /// Monotonic counter bumped every time the user expresses intent to
+  /// start a new conversation (sidebar "+", Cmd+N, etc.). The
+  /// WelcomePane subscribes to this so the composer textarea grabs focus
+  /// even when the pane was already mounted (e.g., user clicks "+" while
+  /// already on welcome) — the initial autoFocus on mount can't catch
+  /// that case on its own.
+  welcomeFocusToken: number;
 
   // Runtime
   runners: Record<UUID, RunnerState>;
@@ -556,6 +563,7 @@ export const useStore = create<StoreState>((set, get) => ({
   installedReviewers: {},
   capabilities: null,
   ollamaServerStatus: 'unknown',
+  welcomeFocusToken: 0,
   runners: {},
   lastSelectedAt: {},
   gitStatusByConv: {},
@@ -652,22 +660,24 @@ export const useStore = create<StoreState>((set, get) => ({
     // Show the composer-first WelcomePane for this project instead of
     // materializing an empty conversation. The conversation is created
     // when the user actually sends their first message.
-    set({
+    set((s) => ({
       selectedConversationId: null,
       detailMode: 'conversation',
       focusedProjectId: projectId,
       focusedWorkspaceId: null,
-    });
+      welcomeFocusToken: s.welcomeFocusToken + 1,
+    }));
     window.overcli.invoke('store:saveSelection', null);
   },
 
   startNewConversationInWorkspace(workspaceId) {
-    set({
+    set((s) => ({
       selectedConversationId: null,
       detailMode: 'conversation',
       focusedProjectId: null,
       focusedWorkspaceId: workspaceId,
-    });
+      welcomeFocusToken: s.welcomeFocusToken + 1,
+    }));
     window.overcli.invoke('store:saveSelection', null);
   },
 

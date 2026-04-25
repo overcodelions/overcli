@@ -23,6 +23,10 @@ export interface ComposerProps {
   footer?: React.ReactNode;
   placeholder?: string;
   autoFocus?: boolean;
+  /// Monotonic value that, when changed, re-runs the autoFocus effect.
+  /// Lets a parent re-grab focus on a user action (e.g. "+ new
+  /// conversation") even when the Composer is already mounted.
+  focusSignal?: number;
   /// Root directory for @-mention file lookup. When set, typing `@` in
   /// the textarea opens a filterable popover of project files; picking
   /// one inserts its path (relative to this root) into the draft. Omit
@@ -58,6 +62,7 @@ export function Composer({
   footer,
   placeholder,
   autoFocus,
+  focusSignal,
   rootPath,
   slashCommands,
 }: ComposerProps) {
@@ -86,7 +91,7 @@ export function Composer({
 
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
-  }, [autoFocus, draftKey]);
+  }, [autoFocus, draftKey, focusSignal]);
 
   // @-mention state. `mention` is the active trigger (position of the `@`
   // in the draft + the live query typed after it); null when no popover
