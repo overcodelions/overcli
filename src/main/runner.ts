@@ -22,7 +22,7 @@ import {
   Attachment,
   UserInputAnswer,
 } from '../shared/types';
-import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from './parsers/claude';
+import { ClaudeParserState, parseClaudeLine } from './parsers/claude';
 import {
   CodexAppServerParserState,
   makeCodexAppServerParserState,
@@ -66,6 +66,8 @@ import {
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
+import { getBackendSpec } from './backends';
+import type { BackendCtx, BackendSendArgs } from './backends';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -257,6 +259,34 @@ export class RunnerManager {
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
     this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
+  }
+
+  /// Trim a SendArgs to the subset BackendSpec implementations need. Keeps
+  /// the spec interface free of fields only the runner cares about
+  /// (reviewer config, codex rollout paths, optimistic localUserId).
+  private toBackendArgs(args: SendArgs): BackendSendArgs {
+    return {
+      conversationId: args.conversationId,
+      prompt: args.prompt,
+      cwd: args.cwd,
+      model: args.model,
+      permissionMode: args.permissionMode,
+      sessionId: args.sessionId,
+      effortLevel: args.effortLevel,
+      attachments: args.attachments,
+      allowedDirs: args.allowedDirs,
+    };
+  }
+
+  /// Lookups the runner exposes to BackendSpec implementations. Holds
+  /// the per-conv state that specs occasionally need to weave into their
+  /// args/envelope (Claude's MCP config path, Codex's transcript-replay
+  /// for the no-resume exec path).
+  private backendCtx(): BackendCtx {
+    return {
+      mcpConfigPathFor: (id) => this.claudeMcpByConv.get(id),
+      codexExecTranscriptFor: (id) => this.codexExecTranscriptByConversation.get(id),
+    };
   }
 
   /// Broker handler: a Claude-hosted MCP helper asked us for permission.
@@ -1655,7 +1685,9 @@ export class RunnerManager {
       geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
-      claudeParserState: args.backend === 'claude' ? makeClaudeParserState() : undefined,
+      claudeParserState: getBackendSpec(args.backend)?.makeParserState?.() as
+        | ClaudeParserState
+        | undefined,
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1677,105 +1709,12 @@ export class RunnerManager {
   }
 
 
-  private buildArgs(args: SendArgs, codexMode?: 'proto' | 'exec' | 'app-server'): string[] {
-    switch (args.backend) {
-      case 'claude': {
-        const a: string[] = [
-          '-p',
-          '--input-format',
-          'stream-json',
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          '--include-partial-messages',
-        ];
-        if (args.sessionId) a.push('--resume', args.sessionId);
-        if (args.model) a.push('--model', args.model);
-        if (args.permissionMode && args.permissionMode !== 'default') {
-          a.push('--permission-mode', args.permissionMode);
-        }
-        if (args.effortLevel) a.push('--thinking-effort', args.effortLevel);
-        // In bypassPermissions mode Claude Code auto-allows everything
-        // without prompting — wiring our permission-prompt-tool would force
-        // it to route tool checks through us anyway, defeating the mode.
-        if (args.permissionMode !== 'bypassPermissions') {
-          const mcpConfigPath = this.claudeMcpByConv.get(args.conversationId);
-          if (mcpConfigPath) {
-            a.push('--mcp-config', mcpConfigPath);
-            a.push('--permission-prompt-tool', 'mcp__overcli__approve');
-          }
-        }
-        for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
-          a.push('--add-dir', dir);
-        }
-        return a;
-      }
-      case 'codex': {
-        // app-server is handled in spawnFor and never reaches buildArgs.
-        // The remaining path is the exec --json fallback for binaries that
-        // don't support app-server.
-        const { sandbox, approval } = codexTransportPermissions(args.permissionMode);
-        const a: string[] = [];
-        if (args.model) a.push('-m', args.model);
-        a.push('-s', sandbox, '-a', approval, 'exec', '-');
-        return a;
-      }
-      case 'gemini': {
-        const a: string[] = ['-p', '-', '-o', 'stream-json'];
-        if (args.model) a.push('-m', args.model);
-        if (args.sessionId) a.push('--resume', args.sessionId);
-        a.push('--approval-mode', geminiPermissionMapping(args.permissionMode));
-        return a;
-      }
-      case 'ollama':
-        // Ollama never reaches the subprocess path — sendOllama handles it.
-        throw new Error('Ollama backend uses the HTTP path, not subprocess args');
-    }
+  private buildArgs(args: SendArgs, _codexMode?: 'proto' | 'exec' | 'app-server'): string[] {
+    return getBackendSpec(args.backend).buildArgs(this.toBackendArgs(args), this.backendCtx());
   }
 
-  private buildEnvelope(args: SendArgs, active: ActiveProcess): string {
-    const attachments = args.attachments ?? [];
-    switch (args.backend) {
-      case 'claude': {
-        // If we have images, send content as an array of typed blocks.
-        // Otherwise keep the plain-string form — equivalent on the wire
-        // but cheaper to eyeball in logs.
-        if (attachments.length === 0) {
-          return JSON.stringify({
-            type: 'user',
-            message: { role: 'user', content: args.prompt },
-          });
-        }
-        const content: any[] = attachments.map((a) => ({
-          type: 'image',
-          source: { type: 'base64', media_type: a.mimeType, data: a.dataBase64 },
-        }));
-        // Text always comes last so the user's words aren't buried above
-        // the screenshots.
-        content.push({ type: 'text', text: args.prompt || '(no text)' });
-        return JSON.stringify({
-          type: 'user',
-          message: { role: 'user', content },
-        });
-      }
-      case 'codex': {
-        // app-server has its own send path (sendCodexAppServerTurn) and
-        // never reaches buildEnvelope. Only exec mode lands here, and exec
-        // has no --resume so we prepend the local transcript for context.
-        const transcript = this.codexExecTranscriptByConversation.get(args.conversationId);
-        if (!transcript || transcript.length === 0) return args.prompt;
-        const history = transcript
-          .map((t) => `User: ${t.user}\n\nAssistant: ${t.assistant}`)
-          .join('\n\n---\n\n');
-        return `Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
-      }
-      case 'gemini':
-        // Gemini headless mode here is text-only for now, so image
-        // attachments are dropped even though the CLI supports image paths.
-        return args.prompt;
-      case 'ollama':
-        throw new Error('Ollama backend builds its payload in sendOllama');
-    }
+  private buildEnvelope(args: SendArgs, _active: ActiveProcess): string {
+    return getBackendSpec(args.backend).buildEnvelope(this.toBackendArgs(args), this.backendCtx());
   }
 
   private handleStdout(convId: UUID, active: ActiveProcess, chunk: string): void {
@@ -2453,7 +2392,6 @@ export class RunnerManager {
     };
   }
 }
-
 
 function buildGeminiAcpPromptBlocks(prompt: string, attachments: Attachment[]): any[] {
   const blocks: any[] = attachments
