@@ -119,8 +119,21 @@ export function parseClaudeLine(line: string, state?: ClaudeParserState): Stream
       // stop_hook_summary, turn_duration, thinking_summary, etc — noise.
       return null;
     }
-    case 'stream_event':
-      return state ? handleStreamEvent(json.event ?? {}, state, trimmed) : null;
+    case 'stream_event': {
+      if (!state) return null;
+      // Subagents emitted by Task/Agent tools stream their own deltas
+      // back on the same JSONL with `parent_tool_use_id` set. If we
+      // folded them into main-agent state the subagent's
+      // `message_start` would reset inFlightEventId, orphaning the
+      // main agent's partial snapshot so the final consolidated
+      // `assistant` line can't reuse its id — leaving a stale tool
+      // card with empty input stuck in the transcript. Drop these
+      // until we properly tail subagent streams.
+      if (json.parent_tool_use_id || json.parentToolUseId || json.isSidechain) {
+        return null;
+      }
+      return handleStreamEvent(json.event ?? {}, state, trimmed);
+    }
     case 'assistant': {
       const msg = json.message ?? {};
       const content: any[] = Array.isArray(msg.content) ? msg.content : [];
