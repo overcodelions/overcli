@@ -31,6 +31,11 @@ export interface AssistantEventInfo {
   thinking: string[];
   /// Opaque (redacted / encrypted) reasoning — visible as a pill but not rendered
   hasOpaqueReasoning?: boolean;
+  /// Set on streaming snapshots synthesized from `stream_event` deltas so
+  /// the runner can skip reviewer-digest bookkeeping that the final
+  /// non-partial `assistant` event will do once anyway. The renderer still
+  /// shows partial events — that's the whole point.
+  isPartial?: boolean;
 }
 
 export interface SystemInitInfo {

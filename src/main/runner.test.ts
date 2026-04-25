@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   codexPermissionMapping,
   codexTransportPermissions,
+  collapsePartialAssistants,
   extractCodexExecSnapshot,
   extractRequestedPath,
   geminiPermissionMapping,
@@ -10,6 +11,7 @@ import {
   normalizeAllowedDirs,
   summarizeToolUse,
 } from './runner';
+import type { StreamEvent } from '../shared/types';
 
 describe('codexPermissionMapping', () => {
   it('plan → read-only sandbox, on-request approvals', () => {
@@ -231,5 +233,63 @@ describe('extractCodexExecSnapshot', () => {
   it('uses the raw trimmed text as last resort when no markers match', () => {
     const raw = 'some unstructured output';
     expect(extractCodexExecSnapshot(raw)).toEqual({ text: 'some unstructured output', thinking: '' });
+  });
+});
+
+describe('collapsePartialAssistants', () => {
+  const mkPartial = (id: string, text: string): StreamEvent => ({
+    id,
+    timestamp: 0,
+    raw: '',
+    revision: 0,
+    kind: {
+      type: 'assistant',
+      info: { model: null, text, toolUses: [], thinking: [], isPartial: true },
+    },
+  });
+  const mkFinal = (id: string, text: string): StreamEvent => ({
+    id,
+    timestamp: 0,
+    raw: '',
+    revision: 0,
+    kind: {
+      type: 'assistant',
+      info: { model: null, text, toolUses: [], thinking: [] },
+    },
+  });
+  const mkTool = (id: string): StreamEvent => ({
+    id,
+    timestamp: 0,
+    raw: '',
+    revision: 0,
+    kind: { type: 'toolResult', results: [{ id: 't', content: '', isError: false }] },
+  });
+
+  it('returns the input untouched when there are no partials', () => {
+    const input = [mkFinal('a', 'hi'), mkTool('t')];
+    expect(collapsePartialAssistants(input)).toBe(input);
+  });
+
+  it('keeps only the last partial per id, preserving order', () => {
+    const input = [
+      mkPartial('A', 'H'),
+      mkPartial('A', 'He'),
+      mkTool('t'),
+      mkPartial('A', 'Hello'),
+      mkFinal('B', 'done'),
+    ];
+    const out = collapsePartialAssistants(input);
+    expect(out).toHaveLength(3);
+    expect(out[0]).toBe(input[2]); // tool result preserved at its position
+    expect(out[1]).toBe(input[3]); // last partial for A
+    expect(out[2]).toBe(input[4]); // B's final assistant
+  });
+
+  it('does not collapse across distinct ids', () => {
+    const input = [mkPartial('A', 'a'), mkPartial('B', 'b'), mkPartial('A', 'aa')];
+    const out = collapsePartialAssistants(input);
+    expect(out).toHaveLength(2);
+    expect(out[0]).toBe(input[1]); // B's only partial
+    expect(out[1]).toBe(input[2]); // A's latest partial
   });
 });
