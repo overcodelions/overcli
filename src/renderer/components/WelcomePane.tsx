@@ -17,6 +17,7 @@ export function WelcomePane() {
   const settings = useStore((s) => s.settings);
   const focusedProjectId = useStore((s) => s.focusedProjectId);
   const focusedWorkspaceId = useStore((s) => s.focusedWorkspaceId);
+  const welcomeFocusToken = useStore((s) => s.welcomeFocusToken);
   const pickProject = useStore((s) => s.pickProject);
   const newConversation = useStore((s) => s.newConversation);
   const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
@@ -150,6 +151,7 @@ export function WelcomePane() {
         <Composer
           draftKey={WELCOME_KEY}
           autoFocus
+          focusSignal={welcomeFocusToken}
           variant="welcome"
           rootPath={selectedProject?.path}
           slashCommands={slashCommands}
