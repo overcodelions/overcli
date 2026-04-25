@@ -364,4 +364,49 @@ describe('parseClaudeLine', () => {
     });
     expect(parseClaudeLine(line)).toBeNull();
   });
+
+  it('ignores subagent stream_events so main-agent state is not reset mid-turn', () => {
+    const state = makeClaudeParserState();
+    // Main agent starts a message and opens a text block.
+    parseClaudeLine(
+      JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: {} } }),
+      state,
+    );
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'text', text: '' },
+        },
+      }),
+      state,
+    );
+    const mainEventId = state.inFlightEventId;
+    expect(mainEventId).not.toBeNull();
+
+    // A subagent's message_start arrives on the same transport with
+    // parent_tool_use_id set. Folding it in would reset inFlightEventId.
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        parent_tool_use_id: 'toolu_abc',
+        event: { type: 'message_start', message: {} },
+      }),
+      state,
+    );
+    expect(state.inFlightEventId).toBe(mainEventId);
+
+    // Same holds for isSidechain-tagged lines (Claude Code's sidechain marker).
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        isSidechain: true,
+        event: { type: 'message_start', message: {} },
+      }),
+      state,
+    );
+    expect(state.inFlightEventId).toBe(mainEventId);
+  });
 });
