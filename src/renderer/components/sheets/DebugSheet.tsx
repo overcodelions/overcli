@@ -1,12 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import type { StreamEvent } from '../../../shared/types';
+import type { SilentLogEntry, StreamEvent } from '../../../shared/types';
+
+type Tab = 'stream' | 'diagnostics';
 
 export function DebugSheet() {
   const selectedId = useStore((s) => s.selectedConversationId);
   const runner = useStore((s) => (selectedId ? s.runners[selectedId] : null));
   const events = runner?.events ?? [];
 
+  const [tab, setTab] = useState<Tab>('stream');
   const [query, setQuery] = useState('');
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -70,6 +73,28 @@ export function DebugSheet() {
 
   return (
     <div className="flex flex-col max-h-[85vh] min-h-[60vh]">
+      <div className="px-5 pt-4 pb-2 border-b border-card flex items-center gap-3 text-xs">
+        <button
+          onClick={() => setTab('stream')}
+          className={
+            'px-2 py-1 rounded font-medium transition-colors ' +
+            (tab === 'stream' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+          }
+        >
+          Stream
+        </button>
+        <button
+          onClick={() => setTab('diagnostics')}
+          className={
+            'px-2 py-1 rounded font-medium transition-colors ' +
+            (tab === 'diagnostics' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+          }
+        >
+          Diagnostics
+        </button>
+      </div>
+      {tab === 'diagnostics' ? <DiagnosticsTab /> : (
+      <>
       <div className="px-5 pt-4 pb-3 border-b border-card">
         <div className="flex items-baseline justify-between mb-2">
           <div>
@@ -154,6 +179,86 @@ export function DebugSheet() {
               query={query.trim()}
             />
           ))
+        )}
+      </div>
+      </>
+      )}
+    </div>
+  );
+}
+
+function DiagnosticsTab() {
+  const [entries, setEntries] = useState<SilentLogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const refresh = async () => {
+    setLoading(true);
+    const next = await window.overcli.invoke('diagnostics:list');
+    setEntries(next);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const clear = async () => {
+    await window.overcli.invoke('diagnostics:clear');
+    await refresh();
+  };
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="px-5 pt-4 pb-3 border-b border-card flex items-baseline justify-between">
+        <div>
+          <div className="text-lg font-semibold">Silent failures</div>
+          <div className="text-xs text-ink-faint">
+            Errors caught and swallowed during this session. Persistent log at <code>~/.overcli/session.log</code>.
+            {' '}
+            {entries.length > 0 && `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.`}
+          </div>
+        </div>
+        <div className="flex gap-2 text-[11px]">
+          <button
+            onClick={refresh}
+            className="px-2 py-1 rounded bg-card hover:bg-card-strong text-ink-muted hover:text-ink"
+          >
+            refresh
+          </button>
+          <button
+            onClick={clear}
+            disabled={entries.length === 0}
+            className="px-2 py-1 rounded bg-card hover:bg-card-strong text-ink-muted hover:text-ink disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            clear
+          </button>
+        </div>
+      </div>
+      <div className="overflow-y-auto px-5 py-2 flex-1 font-mono text-[11px]">
+        {loading ? (
+          <div className="text-ink-faint py-3">Loading…</div>
+        ) : entries.length === 0 ? (
+          <div className="text-ink-faint py-3">No silent failures recorded this session.</div>
+        ) : (
+          entries
+            .slice()
+            .reverse()
+            .map((e, i) => (
+              <div key={i} className="border-b border-card last:border-b-0 py-1">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-ink-faint shrink-0">
+                    {new Date(e.timestamp).toISOString().slice(11, 23)}
+                  </span>
+                  <span className="text-accent font-medium">{e.scope}</span>
+                  <span className="text-ink-muted truncate">{e.message}</span>
+                </div>
+                {e.stack && (
+                  <pre className="text-ink-faint whitespace-pre-wrap break-all pl-5 pt-0.5">
+                    {e.stack}
+                  </pre>
+                )}
+              </div>
+            ))
         )}
       </div>
     </div>

@@ -26,6 +26,11 @@ import {
 } from '@shared/types';
 import { FileViewMode, defaultFileViewMode } from './filePreview';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
+import {
+  findConversation as findConversationFromIndex,
+  findContainerPath as findContainerPathFromIndex,
+  findConvWithProjectPath,
+} from './conversationLookup';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
 
 export type ActiveSheet =
@@ -348,15 +353,7 @@ function newRunnerState(): RunnerState {
 }
 
 function findConversation(state: StoreState, id: UUID): Conversation | null {
-  for (const p of state.projects) {
-    const c = p.conversations.find((x) => x.id === id);
-    if (c) return c;
-  }
-  for (const w of state.workspaces) {
-    const c = w.conversations?.find((x) => x.id === id);
-    if (c) return c;
-  }
-  return null;
+  return findConversationFromIndex(state, id);
 }
 
 function isAgentConversation(conv: Conversation): boolean {
@@ -444,21 +441,7 @@ function collectCoordinatorMembers(
 }
 
 function findContainerPath(state: StoreState, convId: UUID): string | null {
-  for (const p of state.projects) {
-    const c = p.conversations.find((x) => x.id === convId);
-    if (c) return c.worktreePath ?? p.path;
-  }
-  for (const w of state.workspaces) {
-    const c = w.conversations?.find((x) => x.id === convId);
-    if (c) {
-      // Workspace-agent coordinators run out of a dedicated root whose
-      // symlinks point at each member's worktree — never the workspace's
-      // main-tree symlinks, or edits would land on main and bypass the
-      // agent branches.
-      return c.coordinatorRootPath ?? c.worktreePath ?? w.rootPath;
-    }
-  }
-  return null;
+  return findContainerPathFromIndex(state, convId);
 }
 
 /// Directories we pass to Claude as `--add-dir` so its session-scope check
@@ -1258,26 +1241,10 @@ export const useStore = create<StoreState>((set, get) => ({
   async removeAgent(id) {
     const state = get();
     // Resolve the agent conversation and any workspace-member children.
-    let conv: Conversation | null = null;
-    let ownerProjectPath: string | null = null;
-    for (const p of state.projects) {
-      const match = p.conversations.find((c) => c.id === id);
-      if (match) {
-        conv = match;
-        ownerProjectPath = p.path;
-        break;
-      }
-    }
-    if (!conv) {
-      for (const w of state.workspaces) {
-        const match = (w.conversations ?? []).find((c) => c.id === id);
-        if (match) {
-          conv = match;
-          break;
-        }
-      }
-    }
-    if (!conv) return { ok: false, error: 'conversation not found' };
+    const hit = findConvWithProjectPath(state, id);
+    if (!hit) return { ok: false, error: 'conversation not found' };
+    const conv: Conversation = hit.conv;
+    const ownerProjectPath = hit.ownerProjectPath;
 
     const errors: string[] = [];
     // Workspace-agent coordinator: remove every member's worktree, then
@@ -1343,20 +1310,11 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async checkoutAgentLocally(id, commitSubject, commitBody) {
-    const state = get();
-    let conv: Conversation | null = null;
-    let ownerProjectPath: string | null = null;
-    for (const p of state.projects) {
-      const match = p.conversations.find((c) => c.id === id);
-      if (match) {
-        conv = match;
-        ownerProjectPath = p.path;
-        break;
-      }
-    }
-    if (!conv || !ownerProjectPath) {
+    const hit = findConvWithProjectPath(get(), id);
+    if (!hit?.ownerProjectPath) {
       return { ok: false, error: 'conversation not found' };
     }
+    const { conv, ownerProjectPath } = hit;
     if (!conv.worktreePath || !conv.branchName) {
       return { ok: false, error: 'agent has no worktree to check out' };
     }
@@ -1505,17 +1463,9 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async promoteReviewAgent(id) {
     const state = get();
-    let conv: Conversation | null = null;
-    let ownerProjectPath: string | null = null;
-    for (const p of state.projects) {
-      const match = p.conversations.find((c) => c.id === id);
-      if (match) {
-        conv = match;
-        ownerProjectPath = p.path;
-        break;
-      }
-    }
-    if (!conv || !ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    const hit = findConvWithProjectPath(state, id);
+    if (!hit?.ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    const { conv, ownerProjectPath } = hit;
     if (!conv.worktreePath || !conv.reviewAgent) {
       return { ok: false, error: 'not a review agent' };
     }
@@ -1542,18 +1492,9 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async checkoutReviewBranchLocally(id) {
-    const state = get();
-    let conv: Conversation | null = null;
-    let ownerProjectPath: string | null = null;
-    for (const p of state.projects) {
-      const match = p.conversations.find((c) => c.id === id);
-      if (match) {
-        conv = match;
-        ownerProjectPath = p.path;
-        break;
-      }
-    }
-    if (!conv || !ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    const hit = findConvWithProjectPath(get(), id);
+    if (!hit?.ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    const { conv, ownerProjectPath } = hit;
     if (!conv.worktreePath || !conv.reviewTargetBranch) {
       return { ok: false, error: 'not a review agent' };
     }

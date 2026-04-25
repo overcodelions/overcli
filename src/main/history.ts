@@ -9,6 +9,7 @@ import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/t
 import { randomUUID } from 'node:crypto';
 import { loadOllamaSession } from './ollamaStore';
 import { claudeToolResultText } from './parsers/claude';
+import { logSilent } from './diagnostics';
 
 export function loadHistory(args: {
   backend: Backend;
@@ -110,7 +111,8 @@ export function migrateClaudeSessionCwd(args: {
       fs.renameSync(fromSidecar, path.join(toDir, args.sessionId));
     }
     return { moved: true };
-  } catch {
+  } catch (e) {
+    logSilent('history.migrateClaudeSessionCwd', e);
     return { moved: false };
   }
 }
@@ -616,7 +618,8 @@ function loadGeminiHistory(sessionId: string | undefined, projectPath: string): 
       }
     }
     return out;
-  } catch {
+  } catch (e) {
+    logSilent('history.loadGemini', e);
     return [];
   }
 }
