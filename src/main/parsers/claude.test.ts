@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseClaudeLine } from './claude';
+import { makeClaudeParserState, parseClaudeLine } from './claude';
 
 function kindOf(line: string) {
   const ev = parseClaudeLine(line);
@@ -43,9 +43,29 @@ describe('parseClaudeLine', () => {
     });
   });
 
-  it('labels unknown system subtypes', () => {
-    const line = JSON.stringify({ type: 'system', subtype: 'api_retry' });
-    expect(kindOf(line)).toEqual({ type: 'other', label: 'system:api_retry' });
+  it('drops unknown system subtypes (stop_hook_summary, turn_duration, …)', () => {
+    const line = JSON.stringify({ type: 'system', subtype: 'stop_hook_summary' });
+    expect(parseClaudeLine(line)).toBeNull();
+  });
+
+  it('surfaces api_error retries as a systemNotice', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'api_error',
+      error: { status: 500 },
+      retryInMs: 547.83,
+      retryAttempt: 1,
+      maxRetries: 10,
+    });
+    expect(kindOf(line)).toEqual({
+      type: 'systemNotice',
+      text: 'API error (status 500) · retrying in 548ms · attempt 1/10',
+    });
+  });
+
+  it('surfaces compact_boundary as a systemNotice', () => {
+    const line = JSON.stringify({ type: 'system', subtype: 'compact_boundary' });
+    expect(kindOf(line)).toEqual({ type: 'systemNotice', text: 'Conversation compacted' });
   });
 
   it('collects assistant text, thinking, and tool_use blocks', () => {
@@ -194,5 +214,154 @@ describe('parseClaudeLine', () => {
       type: 'other',
       label: 'whatever',
     });
+  });
+
+  it('streams partial assistant text from content_block_delta lines', () => {
+    const state = makeClaudeParserState();
+    // Ignore message_start (no visible snapshot yet).
+    expect(
+      parseClaudeLine(
+        JSON.stringify({
+          type: 'stream_event',
+          event: { type: 'message_start', message: { model: 'claude-4' } },
+        }),
+        state,
+      ),
+    ).toBeNull();
+
+    // content_block_start flushes (so the user sees an empty bubble open
+    // instantly when the first token round-trips).
+    const started = parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+      }),
+      state,
+    );
+    expect(started?.kind.type).toBe('assistant');
+    const startedId = started!.id;
+
+    // Force the throttle gate open — real CLI output paces deltas >50ms
+    // apart naturally; the test drives them synchronously.
+    state.lastSnapshotAt = 0;
+    const deltaOne = parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello ' } },
+      }),
+      state,
+    );
+    expect(deltaOne?.kind.type).toBe('assistant');
+    if (deltaOne?.kind.type !== 'assistant') throw new Error();
+    expect(deltaOne.kind.info.text).toBe('Hello ');
+    expect(deltaOne.kind.info.isPartial).toBe(true);
+    expect(deltaOne.id).toBe(startedId);
+
+    // Second delta within the throttle window is folded into state but
+    // not emitted — the renderer would pick it up on the next flush.
+    state.lastSnapshotAt = Date.now(); // simulate "just emitted"
+    expect(
+      parseClaudeLine(
+        JSON.stringify({
+          type: 'stream_event',
+          event: {
+            type: 'content_block_delta',
+            index: 0,
+            delta: { type: 'text_delta', text: 'world' },
+          },
+        }),
+        state,
+      ),
+    ).toBeNull();
+
+    // content_block_stop forces a flush, so the suppressed "world" chunk
+    // reaches the renderer via the terminal snapshot.
+    const stopped = parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: { type: 'content_block_stop', index: 0 },
+      }),
+      state,
+    );
+    if (stopped?.kind.type !== 'assistant') throw new Error('expected assistant snapshot');
+    expect(stopped.kind.info.text).toBe('Hello world');
+    expect(stopped.id).toBe(startedId);
+
+    // Final non-stream assistant line reuses the same id so the renderer
+    // replaces the streaming preview in place instead of appending.
+    const finalLine = parseClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          model: 'claude-4',
+          content: [{ type: 'text', text: 'Hello world' }],
+        },
+      }),
+      state,
+    );
+    expect(finalLine?.id).toBe(startedId);
+    if (finalLine?.kind.type !== 'assistant') throw new Error();
+    expect(finalLine.kind.info.isPartial).toBeUndefined();
+    // State is cleared so a subsequent message gets a fresh id.
+    expect(state.inFlightEventId).toBeNull();
+  });
+
+  it('handles thinking deltas and redacted_thinking in the stream', () => {
+    const state = makeClaudeParserState();
+    parseClaudeLine(
+      JSON.stringify({ type: 'stream_event', event: { type: 'message_start', message: {} } }),
+      state,
+    );
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 0,
+          content_block: { type: 'thinking', thinking: '' },
+        },
+      }),
+      state,
+    );
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'thinking_delta', thinking: 'step 1' },
+        },
+      }),
+      state,
+    );
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'redacted_thinking' },
+        },
+      }),
+      state,
+    );
+    const snap = parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        event: { type: 'content_block_stop', index: 0 },
+      }),
+      state,
+    );
+    if (snap?.kind.type !== 'assistant') throw new Error();
+    expect(snap.kind.info.thinking).toEqual(['step 1']);
+    expect(snap.kind.info.hasOpaqueReasoning).toBe(true);
+  });
+
+  it('ignores stream_event lines when no parser state is threaded (history replay)', () => {
+    const line = JSON.stringify({
+      type: 'stream_event',
+      event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'x' } },
+    });
+    expect(parseClaudeLine(line)).toBeNull();
   });
 });

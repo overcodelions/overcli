@@ -22,7 +22,7 @@ import {
   Attachment,
   UserInputAnswer,
 } from '../shared/types';
-import { parseClaudeLine } from './parsers/claude';
+import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from './parsers/claude';
 import {
   CodexAppServerParserState,
   makeCodexAppServerParserState,
@@ -144,6 +144,10 @@ interface ActiveProcess {
   /// covers the narrower case where Claude re-invokes the same tool later
   /// in the current turn.
   sessionAllowedTools: Set<string>;
+  /// Claude stream-parser state. Kept on the process so per-token
+  /// `stream_event` deltas accumulate into a single live assistant
+  /// snapshot with a stable id. Only populated for the claude backend.
+  claudeParserState?: ClaudeParserState;
 }
 
 interface GeminiAcpSession {
@@ -1609,6 +1613,7 @@ export class RunnerManager {
       geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
+      claudeParserState: args.backend === 'claude' ? makeClaudeParserState() : undefined,
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1805,7 +1810,7 @@ export class RunnerManager {
     for (const raw of lines) {
       if (!raw) continue;
       if (active.backend === 'claude') {
-        const evt = parseClaudeLine(raw);
+        const evt = parseClaudeLine(raw, active.claudeParserState);
         if (evt) emitted.push(evt);
       } else if (active.backend === 'codex') {
         // codex stdout in app-server mode is consumed by CodexAppServerClient;
@@ -1831,7 +1836,13 @@ export class RunnerManager {
         sessionConfigured = { sessionId: e.kind.info.sessionId };
       }
     }
-    this.handleParsedEvents(convId, active, emitted, sessionConfigured);
+    // A single stdout read can carry dozens of `stream_event` deltas for
+    // the same in-flight message. Each delta produces an assistant
+    // snapshot with the same id — only the last one has useful content.
+    // Collapse intra-chunk duplicates so we ship one snapshot per id to
+    // the renderer instead of forcing it to merge + re-render each one.
+    const collapsed = collapsePartialAssistants(emitted);
+    this.handleParsedEvents(convId, active, collapsed, sessionConfigured);
   }
 
   private handleParsedEvents(
@@ -1852,9 +1863,16 @@ export class RunnerManager {
           if (e.kind.info.text && e.kind.info.text.length > active.currentAssistantText.length) {
             active.currentAssistantText = e.kind.info.text;
           }
-          for (const t of e.kind.info.toolUses) {
-            const line = summarizeToolUse(t.name, t.inputJSON, t.filePath);
-            if (line) active.currentToolActivity.push(line);
+          // Skip reviewer-digest bookkeeping for streaming snapshots —
+          // the final non-partial `assistant` event arrives with the
+          // complete tool-use list and will log it once. Without this
+          // guard a long response pushes hundreds of duplicate entries
+          // into the reviewer summary.
+          if (!e.kind.info.isPartial) {
+            for (const t of e.kind.info.toolUses) {
+              const line = summarizeToolUse(t.name, t.inputJSON, t.filePath);
+              if (line) active.currentToolActivity.push(line);
+            }
           }
           if (e.kind.info.toolUses.length > 0) nextActivity = 'Running tools…';
           else if (e.kind.info.text.length > 0 || e.kind.info.thinking.length > 0) nextActivity = 'Writing…';
@@ -2392,6 +2410,32 @@ export class RunnerManager {
       },
     };
   }
+}
+
+/// Drop all but the last partial-assistant snapshot per event id in the
+/// batch. Non-partial events (tool results, the final assistant, etc)
+/// pass through untouched. Preserves order so throttled streaming still
+/// feels live while the IPC bus carries at most one payload per id per
+/// stdout chunk.
+export function collapsePartialAssistants(events: StreamEvent[]): StreamEvent[] {
+  const latestPartialIdx = new Map<string, number>();
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e.kind.type === 'assistant' && e.kind.info.isPartial) {
+      latestPartialIdx.set(e.id, i);
+    }
+  }
+  if (latestPartialIdx.size === 0) return events;
+  const out: StreamEvent[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e.kind.type === 'assistant' && e.kind.info.isPartial) {
+      if (latestPartialIdx.get(e.id) === i) out.push(e);
+    } else {
+      out.push(e);
+    }
+  }
+  return out;
 }
 
 export function extractCodexExecSnapshot(raw: string): { text: string; thinking: string } {
