@@ -4,6 +4,11 @@
 //
 // Uses Zustand for minimal ceremony. Every UI action is a method on this
 // store; components subscribe to the slices they care about via selectors.
+//
+// Slice plan: pure-UI fields (sheets, file editor, sidebar, tool-activity
+// toggle) live in `uiSlice.ts` and are spread in below. Future slices to
+// extract: runners (events/isRunning/currentModel — the hot path), data
+// (projects/workspaces/conversations + persistence), settings.
 
 import { create } from 'zustand';
 import {
@@ -24,13 +29,14 @@ import {
   EffortLevel,
   MainToRendererEvent,
 } from '@shared/types';
-import { FileViewMode, defaultFileViewMode } from './filePreview';
+import { FileViewMode } from './filePreview';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
   findConvWithProjectPath,
 } from './conversationLookup';
+import { createUiSlice, uiSliceInitialState } from './uiSlice';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
 
 export type ActiveSheet =
@@ -529,16 +535,8 @@ export const useStore = create<StoreState>((set, get) => ({
   selectedConversationId: null,
   focusedProjectId: null,
   focusedWorkspaceId: null,
-  detailMode: 'conversation',
-  activeSheet: null,
-  openFilePath: null,
-  openFileHighlight: null,
-  openFileMode: 'edit',
-  showFileTree: false,
-  explorerRootPath: null,
+  ...uiSliceInitialState,
   showHiddenConversations: false,
-  sidebarVisible: true,
-  showToolActivity: false,
   pendingFinderQuery: '',
   conversationDrafts: {},
   conversationAttachments: {},
@@ -551,6 +549,7 @@ export const useStore = create<StoreState>((set, get) => ({
   lastSelectedAt: {},
   gitStatusByConv: {},
   projectIsGitRepo: {},
+  ...createUiSlice<StoreState>(set),
 
   async init() {
     const state = await window.overcli.invoke('store:load');
@@ -664,9 +663,9 @@ export const useStore = create<StoreState>((set, get) => ({
     window.overcli.invoke('store:saveSelection', null);
   },
 
-  setDetailMode(mode) {
-    set({ detailMode: mode });
-  },
+  // setDetailMode, openSheet, openFile/setOpenFileMode/closeFile,
+  // toggleFileTree, toggleSidebar, toggleToolActivity now live in
+  // ./uiSlice.ts and are spread into the store above.
 
   openExplorer(rootPath) {
     set({
@@ -677,38 +676,6 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedWorkspaceId: null,
     });
     window.overcli.invoke('store:saveSelection', null);
-  },
-
-  openSheet(sheet) {
-    set({ activeSheet: sheet });
-  },
-
-  openFile(path, highlight, mode) {
-    set({
-      openFilePath: path,
-      openFileHighlight: highlight ?? null,
-      openFileMode: defaultFileViewMode(path, !!highlight, mode),
-    });
-  },
-
-  setOpenFileMode(mode) {
-    set({ openFileMode: mode });
-  },
-
-  closeFile() {
-    set({ openFilePath: null, openFileHighlight: null, openFileMode: 'edit' });
-  },
-
-  toggleFileTree() {
-    set((s) => ({ showFileTree: !s.showFileTree }));
-  },
-
-  toggleSidebar() {
-    set((s) => ({ sidebarVisible: !s.sidebarVisible }));
-  },
-
-  toggleToolActivity() {
-    set((s) => ({ showToolActivity: !s.showToolActivity }));
   },
 
   setDraft(id, text) {
