@@ -11,7 +11,19 @@ interface PaletteItem {
 export function QuickSwitcherSheet() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
-  const runners = useStore((s) => s.runners);
+  // Subscribe to a stable running-IDs string (not the whole runners
+  // object) so token-by-token runner updates don't re-render the
+  // launcher while the user is typing.
+  const runningKey = useStore((s) => {
+    const ids: string[] = [];
+    for (const id in s.runners) if (s.runners[id]?.isRunning) ids.push(id);
+    ids.sort();
+    return ids.join(',');
+  });
+  const runningIds = useMemo(
+    () => new Set(runningKey ? runningKey.split(',') : []),
+    [runningKey],
+  );
   const lastSelectedAt = useStore((s) => s.lastSelectedAt);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
@@ -39,21 +51,25 @@ export function QuickSwitcherSheet() {
         out.push({ conv: c, ownerName: w.name, ownerKind: 'workspace' });
       }
     }
-    out.sort((a, b) => recency(b.conv, lastSelectedAt) - recency(a.conv, lastSelectedAt));
+    // Running first, then everything else; recency breaks ties on each side.
+    out.sort((a, b) => {
+      const ar = runningIds.has(a.conv.id) ? 1 : 0;
+      const br = runningIds.has(b.conv.id) ? 1 : 0;
+      if (ar !== br) return br - ar;
+      return recency(b.conv, lastSelectedAt) - recency(a.conv, lastSelectedAt);
+    });
     return out;
-  }, [projects, workspaces, lastSelectedAt]);
+  }, [projects, workspaces, lastSelectedAt, runningIds]);
 
   const filtered = useMemo(() => rankPalette(items, query), [items, query]);
 
-  // When the query is empty, preselect the sibling of the current
-  // conversation so ⌘K + ↵ jumps to "the other one I was just on".
+  // Preselect the top item (running first, then most recent). If the
+  // user is already on that top item, fall through to index 1 so ↵
+  // still goes somewhere useful.
   useEffect(() => {
-    if (!query && selectedConversationId) {
-      const idx = filtered.findIndex((x) => x.conv.id === selectedConversationId);
-      if (idx >= 0) {
-        setSelected((filtered.length > 1 ? (idx + 1) % filtered.length : 0));
-        return;
-      }
+    if (!query && selectedConversationId && filtered[0]?.conv.id === selectedConversationId && filtered.length > 1) {
+      setSelected(1);
+      return;
     }
     setSelected(0);
   }, [query, selectedConversationId, filtered]);
@@ -132,7 +148,7 @@ export function QuickSwitcherSheet() {
           <div className="px-5 py-3 text-xs text-ink-faint">No matching conversations.</div>
         ) : (
           filtered.map((item, i) => {
-            const running = runners[item.conv.id]?.isRunning;
+            const running = runningIds.has(item.conv.id);
             const isSelected = i === selected;
             const isRenaming = renamingId === item.conv.id;
             return (
@@ -168,7 +184,9 @@ export function QuickSwitcherSheet() {
                     />
                   ) : (
                     <div className="text-sm truncate flex items-center gap-2">
-                      {running && <span className="h-1.5 w-1.5 rounded-full bg-accent flex-shrink-0" />}
+                      {running && (
+                        <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_4px_rgba(74,222,128,0.7)] flex-shrink-0" />
+                      )}
                       <span className="truncate">{item.conv.name}</span>
                     </div>
                   )}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
@@ -98,19 +98,61 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         cwd: diffTarget.cwd,
       });
       let text = tracked.stdout ?? '';
-      if (!text.trim()) {
+      // Only fall through to `--no-index` when the tracked diff actually
+      // succeeded with no output (file matches base). A non-zero exit
+      // means git couldn't run (bad cwd, unknown ref) — falling through
+      // there would silently render the whole file as added.
+      if (tracked.exitCode === 0 && !text.trim()) {
         const untracked = await window.overcli.invoke('git:run', {
           args: ['diff', '--no-index', '--', '/dev/null', diffTarget.path],
           cwd: diffTarget.cwd,
         });
         // `--no-index` exits 1 when there's a diff; stdout still holds it.
         text = untracked.stdout ?? '';
+      } else if (tracked.exitCode !== 0) {
+        const stderr = tracked.stderr?.trim() || `exited ${tracked.exitCode}`;
+        throw new Error(
+          `git diff ${baseRef} -- ${diffTarget.path}\ncwd: ${diffTarget.cwd}\n${stderr}`,
+        );
       }
       setDiffText(text);
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
   }, [path, mode, diffTarget]);
+
+  const save = useCallback(async () => {
+    if (!path || !dirty) return;
+    const res = await window.overcli.invoke('fs:writeFile', { path, content });
+    if (res.ok) setDirty(false);
+    else setError(res.error);
+  }, [path, dirty, content]);
+
+  // Keyboard: Cmd/Ctrl+S or Cmd/Ctrl+Enter saves; Cmd/Ctrl+Shift+D
+  // toggles between Diff and File modes (Preview is button-only).
+  useEffect(() => {
+    if (!path) return;
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if ((e.key === 's' || e.key === 'S') && !e.shiftKey) {
+        e.preventDefault();
+        void save();
+        return;
+      }
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        void save();
+        return;
+      }
+      if ((e.key === 'd' || e.key === 'D') && e.shiftKey) {
+        e.preventDefault();
+        setMode(mode === 'diff' ? 'edit' : 'diff');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [path, mode, save, setMode]);
 
   // When the file tree is requested but no file is open, show the tree
   // alone. When a file is open, show the tree on top and the file below
@@ -137,14 +179,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         <div className="flex items-center justify-between px-3 py-2 border-b border-card">
           <div className="text-xs truncate text-ink-muted">{path}</div>
           <div className="flex items-center gap-2">
-            <div className="flex items-center text-[10px] uppercase tracking-wider rounded border border-card overflow-hidden">
+            <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
               <button
                 onClick={() => setMode('diff')}
+                title="Toggle Diff/File (⌘⇧D)"
                 className={
-                  'px-2 py-0.5 ' +
+                  'px-2.5 py-1 ' +
                   (mode === 'diff'
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+                    ? 'bg-accent text-surface'
+                    : 'text-ink hover:bg-card-strong')
                 }
               >
                 Diff
@@ -153,10 +196,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
                 <button
                   onClick={() => setMode('preview')}
                   className={
-                    'px-2 py-0.5 ' +
+                    'px-2.5 py-1 ' +
                     (mode === 'preview'
-                      ? 'bg-accent/20 text-accent'
-                      : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+                      ? 'bg-accent text-surface'
+                      : 'text-ink hover:bg-card-strong')
                   }
                 >
                   Preview
@@ -164,11 +207,12 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               )}
               <button
                 onClick={() => setMode('edit')}
+                title="Toggle Diff/File (⌘⇧D)"
                 className={
-                  'px-2 py-0.5 ' +
+                  'px-2.5 py-1 ' +
                   (mode === 'edit'
-                    ? 'bg-accent/20 text-accent'
-                    : 'text-ink-muted hover:text-ink hover:bg-card-strong')
+                    ? 'bg-accent text-surface'
+                    : 'text-ink hover:bg-card-strong')
                 }
               >
                 File
@@ -176,19 +220,16 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             </div>
             {dirty && (
               <button
-                onClick={async () => {
-                  const res = await window.overcli.invoke('fs:writeFile', { path, content });
-                  if (res.ok) setDirty(false);
-                  else setError(res.error);
-                }}
-                className="text-xs px-2 py-0.5 rounded bg-accent/25 text-accent hover:bg-accent/40"
+                onClick={() => void save()}
+                title="Save (⌘S or ⌘↵)"
+                className="text-xs font-medium px-2.5 py-1 rounded bg-accent text-surface hover:bg-accent/90"
               >
                 Save
               </button>
             )}
             <button
               onClick={closeFile}
-              className="text-xs px-2 py-0.5 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
+              className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
             >
               ✕
             </button>
@@ -349,19 +390,42 @@ function detectLanguage(path: string): string | null {
 function resolveDiffTarget(
   path: string | null,
   rootPath: string | null,
-  members: Array<{ name: string; path: string; baseBranch?: string | null }> | null,
+  members: Array<{
+    name: string;
+    path: string;
+    projectPath?: string | null;
+    baseBranch?: string | null;
+  }> | null,
   convBaseBranch: string | null,
 ): { cwd: string; path: string; baseBranch: string | null } | null {
   if (!path || !rootPath) return null;
   if (members && members.length > 0) {
     for (const m of members) {
-      const prefix = `${m.name}/`;
-      if (path.startsWith(prefix)) {
+      const namePrefix = `${m.name}/`;
+      if (path.startsWith(namePrefix)) {
         return {
           cwd: m.path,
-          path: path.slice(prefix.length),
+          path: path.slice(namePrefix.length),
           baseBranch: m.baseBranch ?? null,
         };
+      }
+      // Tool output often emits absolute paths; reverse-map them onto
+      // the owning member so the diff runs in the real repo (and against
+      // the member's base branch) instead of the workspace symlink root.
+      // Match against both the worktree path and the original project
+      // path — agents sometimes emit the upstream-repo path even when
+      // they edit through a worktree.
+      const candidates = [m.path, m.projectPath ?? null].filter(
+        (p): p is string => !!p,
+      );
+      for (const root of candidates) {
+        if (path === root || path.startsWith(`${root}/`)) {
+          return {
+            cwd: m.path,
+            path: path === root ? '.' : path.slice(root.length + 1),
+            baseBranch: m.baseBranch ?? null,
+          };
+        }
       }
     }
   }
@@ -384,7 +448,12 @@ function resolveWorkspaceMembers(
     path: string;
     conversations: Array<{ id: string; worktreePath?: string; baseBranch?: string | null }>;
   }>,
-): Array<{ name: string; path: string; baseBranch?: string | null }> | null {
+): Array<{
+  name: string;
+  path: string;
+  projectPath?: string | null;
+  baseBranch?: string | null;
+}> | null {
   if (!convId) return null;
   for (const w of workspaces) {
     const c = (w.conversations ?? []).find((x) => x.id === convId);
@@ -394,7 +463,12 @@ function resolveWorkspaceMembers(
     // runs git from the right repo. Use the same project-name + numeric
     // suffix dedup that `ensureCoordinatorSymlinkRoot` uses on disk.
     if (c.workspaceAgentMemberIds?.length) {
-      const out: Array<{ name: string; path: string; baseBranch?: string | null }> = [];
+      const out: Array<{
+        name: string;
+        path: string;
+        projectPath?: string | null;
+        baseBranch?: string | null;
+      }> = [];
       const used = new Set<string>();
       for (const memberId of c.workspaceAgentMemberIds) {
         for (const proj of projects) {
@@ -407,7 +481,12 @@ function resolveWorkspaceMembers(
             i += 1;
           }
           used.add(name);
-          out.push({ name, path: member.worktreePath, baseBranch: member.baseBranch ?? null });
+          out.push({
+            name,
+            path: member.worktreePath,
+            projectPath: proj.path ?? null,
+            baseBranch: member.baseBranch ?? null,
+          });
           break;
         }
       }

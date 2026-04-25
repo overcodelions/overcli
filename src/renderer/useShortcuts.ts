@@ -6,6 +6,7 @@ export function useShortcuts(): void {
     const onKey = (e: KeyboardEvent) => {
       const inInput = isEditableTarget(e.target);
       for (const def of SHORTCUTS) {
+        if (def.displayOnly) continue;
         const skip = def.skipInInput ?? !defHasMod(def);
         if (skip && inInput) continue;
         if (!matches(e, def)) continue;
