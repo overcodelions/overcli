@@ -148,6 +148,11 @@ interface ActiveProcess {
   /// `stream_event` deltas accumulate into a single live assistant
   /// snapshot with a stable id. Only populated for the claude backend.
   claudeParserState?: ClaudeParserState;
+  /// Stashed args from the most recent user-initiated send. Used by the
+  /// Allow+Add Dir auto-resume path to respawn Claude with updated
+  /// `--add-dir` flags and `--resume` the session without making the
+  /// user type a fresh message.
+  lastSendArgs?: SendArgs;
 }
 
 interface GeminiAcpSession {
@@ -331,7 +336,10 @@ export class RunnerManager {
   /// Spawn (or reuse) a subprocess for this conversation, write the prompt
   /// onto its stdin in the backend's native envelope format, and return
   /// once the write completes. All events stream back async via `emit`.
-  send(args: SendArgs): { ok: true } | { ok: false; error: string } {
+  send(
+    args: SendArgs,
+    options: { suppressLocalUser?: boolean } = {},
+  ): { ok: true } | { ok: false; error: string } {
     const convId = args.conversationId;
     // Switching backends mid-conversation tears down whatever runtime was
     // holding this conversation's state (subprocess or Ollama session).
@@ -351,11 +359,15 @@ export class RunnerManager {
       return this.sendOllama(args);
     }
 
+    const userEventAlreadyEmitted = !!options.suppressLocalUser;
+
     // Prefer Gemini ACP when available. If a legacy Gemini subprocess is
     // already bound to this conversation (fallback path), keep using it
     // until the conversation is reset or switched away.
     if (args.backend === 'gemini' && !(existing && existing.backend === 'gemini') && this.geminiAcpSupported !== false) {
-      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+      if (!userEventAlreadyEmitted) {
+        this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+      }
       void this.sendGeminiAcp(args, { syntheticFromCollab: false, userEventAlreadyEmitted: true });
       return { ok: true };
     }
@@ -376,12 +388,12 @@ export class RunnerManager {
           this.emit({ type: 'running', conversationId: args.conversationId, isRunning: false });
           return;
         }
-        this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted: false });
+        this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted });
       })();
       return { ok: true };
     }
 
-    return this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted: false });
+    return this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted });
   }
 
   stop(conversationId: UUID): void {
@@ -440,10 +452,13 @@ export class RunnerManager {
     // When the user granted a new session directory, Claude's directory
     // gate is checked at launch — not by the permission-prompt-tool — so
     // the current subprocess can't pick it up mid-run. Kill the proc and
-    // surface a notice; the next user turn will respawn with --add-dir.
+    // auto-respawn with the updated --add-dir set, resuming the session
+    // so the user doesn't have to re-send anything.
     if (approved && addDir && active.backend === 'claude') {
       const abs = path.resolve(addDir);
       if (!active.allowedDirs.includes(abs)) active.allowedDirs.push(abs);
+      const stashed = active.lastSendArgs;
+      const sessionId = active.sessionId;
       this.killProc(conversationId);
       this.emit({
         type: 'stream',
@@ -455,12 +470,28 @@ export class RunnerManager {
             raw: '',
             kind: {
               type: 'systemNotice',
-              text: `Added ${abs} to session. Send your next message to retry with access.`,
+              text: `Added ${abs} to session. Resuming…`,
             },
             revision: 0,
           },
         ],
       });
+      if (stashed) {
+        // Re-launch with the widened allowlist. --resume picks up the
+        // prior session so Claude sees the permission grant and can
+        // retry the blocked tool call on its own. Attachments are
+        // dropped — they were already delivered on the original turn;
+        // re-sending would double them.
+        const resumeArgs: SendArgs = {
+          ...stashed,
+          prompt: 'Continue with the newly granted directory access.',
+          sessionId: sessionId ?? stashed.sessionId,
+          allowedDirs: [...(stashed.allowedDirs ?? []), abs],
+          attachments: undefined,
+          localUserId: undefined,
+        };
+        this.send(resumeArgs, { suppressLocalUser: true });
+      }
     }
   }
 
@@ -586,6 +617,7 @@ export class RunnerManager {
       active.reviewOllamaModel = args.reviewOllamaModel ?? null;
       active.reviewYolo = !!args.reviewYolo;
       active.cwd = args.cwd;
+      active.lastSendArgs = args;
       active.geminiAssistantEventId = undefined;
       active.geminiAssistantText = '';
       active.geminiAssistantToolUses = [];
