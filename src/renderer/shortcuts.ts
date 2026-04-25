@@ -1,7 +1,7 @@
 import { useStore } from './store';
 import { isMac } from './platform';
 
-export type ShortcutGroup = 'Navigation' | 'View' | 'Conversation' | 'App';
+export type ShortcutGroup = 'Navigation' | 'View' | 'Conversation' | 'App' | 'Editor';
 
 export interface ShortcutKey {
   key: string;
@@ -18,6 +18,9 @@ export interface ShortcutDef {
   skipInInput?: boolean;
   run: () => void;
   hidden?: boolean;
+  // Documented in the help sheet but dispatched locally by the
+  // owning component (e.g. file editor save needs local content).
+  displayOnly?: boolean;
 }
 
 export function matches(e: KeyboardEvent, def: ShortcutDef): boolean {
@@ -158,5 +161,37 @@ export const SHORTCUTS: ShortcutDef[] = [
       const state = useStore.getState();
       if (state.activeSheet) state.openSheet(null);
     },
+  },
+  {
+    id: 'editor.save',
+    keys: [{ key: 's', mod: true }],
+    label: 'Save file',
+    group: 'Editor',
+    displayOnly: true,
+    run: () => {},
+  },
+  {
+    id: 'editor.saveAlt',
+    keys: [{ key: 'Enter', mod: true }],
+    label: 'Save file (alternate)',
+    group: 'Editor',
+    displayOnly: true,
+    run: () => {},
+  },
+  {
+    id: 'editor.toggleDiff',
+    keys: [{ key: 'd', mod: true, shift: true }],
+    label: 'Toggle Diff / File view',
+    group: 'Editor',
+    displayOnly: true,
+    run: () => {},
+  },
+  {
+    id: 'commit.submit',
+    keys: [{ key: 'Enter', mod: true }],
+    label: 'Commit (in commit dropdown)',
+    group: 'Conversation',
+    displayOnly: true,
+    run: () => {},
   },
 ];

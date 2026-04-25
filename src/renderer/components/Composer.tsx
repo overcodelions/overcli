@@ -86,7 +86,7 @@ export function Composer({
 
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
-  }, [autoFocus]);
+  }, [autoFocus, draftKey]);
 
   // @-mention state. `mention` is the active trigger (position of the `@`
   // in the draft + the live query typed after it); null when no popover

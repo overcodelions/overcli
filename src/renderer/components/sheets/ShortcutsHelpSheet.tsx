@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { SHORTCUTS, ShortcutGroup, formatShortcut } from '../../shortcuts';
 
-const GROUP_ORDER: ShortcutGroup[] = ['Navigation', 'View', 'Conversation', 'App'];
+const GROUP_ORDER: ShortcutGroup[] = ['Navigation', 'View', 'Editor', 'Conversation', 'App'];
 
 export function ShortcutsHelpSheet() {
   const [query, setQuery] = useState('');
@@ -41,7 +41,7 @@ export function ShortcutsHelpSheet() {
                       {def.keys.slice(0, 1).map((k, i) => (
                         <kbd
                           key={i}
-                          className="rounded border border-card-strong bg-card px-1.5 py-0.5 text-[11px] font-mono text-ink-muted"
+                          className="rounded border border-card-strong bg-card-strong px-2 py-0.5 text-sm font-mono text-ink"
                         >
                           {formatShortcut(k)}
                         </kbd>

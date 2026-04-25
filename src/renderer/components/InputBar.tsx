@@ -19,6 +19,7 @@ export function InputBar({ conversationId }: { conversationId: UUID }) {
       isRunning={isRunning}
       rootPath={rootPath ?? undefined}
       slashCommands={slashCommands}
+      autoFocus
       onSend={(prompt) => {
         void send(conversationId, prompt);
       }}
