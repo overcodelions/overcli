@@ -23,6 +23,7 @@ import {
   ProjectStats,
   StatsReport,
 } from '../shared/types';
+import { logSilent } from './diagnostics';
 
 interface BackendAgg {
   backend: Backend;
@@ -546,7 +547,8 @@ function scanOllama(
   let state: any;
   try {
     state = JSON.parse(raw);
-  } catch {
+  } catch (e) {
+    logSilent('stats.overcliStore', e);
     return;
   }
   const projectList: any[] = Array.isArray(state?.projects) ? state.projects : [];

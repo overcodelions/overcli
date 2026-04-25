@@ -56,6 +56,16 @@ import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
+import {
+  appendClaudeAllowRule,
+  codexTransportPermissions,
+  extractRequestedPath,
+  geminiPermissionMapping,
+  isInsideAllowedDirs,
+  normalizeAllowedDirs,
+} from './permissionRules';
+import { summarizeToolUse } from './toolDescription';
+import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -2444,121 +2454,6 @@ export class RunnerManager {
   }
 }
 
-/// Drop all but the last partial-assistant snapshot per event id in the
-/// batch. Non-partial events (tool results, the final assistant, etc)
-/// pass through untouched. Preserves order so throttled streaming still
-/// feels live while the IPC bus carries at most one payload per id per
-/// stdout chunk.
-export function collapsePartialAssistants(events: StreamEvent[]): StreamEvent[] {
-  const latestPartialIdx = new Map<string, number>();
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i];
-    if (e.kind.type === 'assistant' && e.kind.info.isPartial) {
-      latestPartialIdx.set(e.id, i);
-    }
-  }
-  if (latestPartialIdx.size === 0) return events;
-  const out: StreamEvent[] = [];
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i];
-    if (e.kind.type === 'assistant' && e.kind.info.isPartial) {
-      if (latestPartialIdx.get(e.id) === i) out.push(e);
-    } else {
-      out.push(e);
-    }
-  }
-  return out;
-}
-
-export function extractCodexExecSnapshot(raw: string): { text: string; thinking: string } {
-  if (!raw.trim()) return { text: '', thinking: '' };
-
-  // Timestamped blocks (newer codex exec):
-  // [2026-... ] thinking
-  // <body>
-  // [2026-... ] codex
-  // <body>
-  const tsLine = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\][ \t]*(.*?)[ \t]*$/gm;
-  const sections: Array<{ tag: string; bodyStart: number; markerStart: number }> = [];
-  for (const m of raw.matchAll(tsLine)) {
-    const idx = m.index ?? 0;
-    sections.push({ tag: (m[1] ?? '').trim().toLowerCase(), bodyStart: idx + m[0].length, markerStart: idx });
-  }
-  if (sections.length > 0) {
-    const textBlocks: string[] = [];
-    const thinkingBlocks: string[] = [];
-    for (let i = 0; i < sections.length; i++) {
-      const cur = sections[i]!;
-      const end = sections[i + 1]?.markerStart ?? raw.length;
-      const body = raw.slice(cur.bodyStart, end).trim();
-      if (!body) continue;
-      if (cur.tag === 'codex') textBlocks.push(body);
-      else if (cur.tag.includes('thinking') || cur.tag.includes('reasoning')) thinkingBlocks.push(body);
-    }
-    const text = textBlocks.join('\n\n').trim();
-    const thinking = thinkingBlocks.join('\n\n').trim();
-    if (text || thinking) return { text, thinking };
-  }
-
-  // Plain sections (older/alternate codex exec):
-  // thinking\n...\n
-  // codex\n...\n
-  const thinking = extractSection(raw, 'thinking').trim();
-  const text = extractSection(raw, 'codex').trim();
-  if (text || thinking) return { text, thinking };
-
-  // Last resort: avoid dumping headers/config in the chat bubble.
-  return { text: raw.trim(), thinking: '' };
-}
-
-function extractSection(raw: string, label: string): string {
-  const re = new RegExp(
-    String.raw`(?:^|\r?\n)${label}\r?\n([\s\S]*?)(?=(?:\r?\n(?:tokens used|user|codex|thinking|reasoning)\r?\n)|$)`,
-    'i',
-  );
-  const m = raw.match(re);
-  return m?.[1] ?? '';
-}
-
-/// One-line digest of a tool use for the reviewer prompt. Ideally the
-/// reviewer sees enough to reconstruct what happened without us dumping
-/// the full tool_use JSON (which can be many KB for patch / file writes).
-export function summarizeToolUse(name: string, inputJSON: string, filePath?: string): string {
-  let parsed: any = null;
-  try {
-    parsed = JSON.parse(inputJSON);
-  } catch {
-    // inputJSON might not be JSON (we pack `command.join(' ')` straight
-    // in for shell/bash from codex); treat as opaque.
-  }
-  if (name === 'Bash' || name === 'shell' || name === 'exec_command') {
-    const cmd =
-      typeof parsed?.command === 'string'
-        ? parsed.command
-        : Array.isArray(parsed?.command)
-        ? parsed.command.join(' ')
-        : inputJSON;
-    return `• Bash: ${truncate(cmd, 240)}`;
-  }
-  if (name === 'Edit' || name === 'MultiEdit') {
-    return `• Edit ${filePath ?? parsed?.file_path ?? ''}`.trim();
-  }
-  if (name === 'Write') {
-    return `• Write ${filePath ?? parsed?.file_path ?? ''}`.trim();
-  }
-  if (name === 'Read') {
-    return `• Read ${filePath ?? parsed?.file_path ?? ''}`.trim();
-  }
-  if (name === 'TodoWrite') {
-    const count = Array.isArray(parsed?.todos) ? parsed.todos.length : 0;
-    return `• TodoWrite (${count})`;
-  }
-  return `• ${name} ${truncate(inputJSON, 160)}`;
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + '…' : s;
-}
 
 function buildGeminiAcpPromptBlocks(prompt: string, attachments: Attachment[]): any[] {
   const blocks: any[] = attachments
@@ -2758,123 +2653,6 @@ function ollamaFriendlyError(raw: string): string {
     return `${raw} — pull it from the Local tab first.`;
   }
   return raw;
-}
-
-export function codexPermissionMapping(mode: PermissionMode): { sandbox: string; approval: string } {
-  switch (mode) {
-    case 'plan':
-      return { sandbox: 'read-only', approval: 'on-request' };
-    case 'acceptEdits':
-      return { sandbox: 'workspace-write', approval: 'on-failure' };
-    case 'bypassPermissions':
-      return { sandbox: 'danger-full-access', approval: 'never' };
-    case 'default':
-    default:
-      return { sandbox: 'workspace-write', approval: 'on-request' };
-  }
-}
-
-export function codexTransportPermissions(mode: PermissionMode): { sandbox: string; approval: string } {
-  const { sandbox } = codexPermissionMapping(mode);
-  return { sandbox, approval: 'never' };
-}
-
-export function geminiPermissionMapping(mode: PermissionMode): string {
-  switch (mode) {
-    case 'plan':
-      return 'plan';
-    case 'acceptEdits':
-      return 'auto_edit';
-    case 'bypassPermissions':
-      return 'yolo';
-    case 'default':
-    default:
-      return 'default';
-  }
-}
-
-/// Dedupe + absolute-ify the directory list we'll pass as `--add-dir` to
-/// Claude. The cwd is always implicitly allowed, so drop it; remove
-/// duplicates and non-absolute entries to avoid confusing Claude Code.
-/// Append a rule to Claude Code's project-local allow list at
-/// `<cwd>/.claude/settings.json`. Creates the file (and directory) when
-/// absent; merges into `permissions.allow` without disturbing the rest of
-/// the file. Claude Code reads this on every spawn, so the grant takes
-/// effect on the next turn and is shared across every conversation rooted
-/// at the same cwd.
-export function appendClaudeAllowRule(cwd: string, rule: string): void {
-  const dir = path.join(cwd, '.claude');
-  const file = path.join(dir, 'settings.json');
-  let current: Record<string, unknown> = {};
-  if (fs.existsSync(file)) {
-    try {
-      const raw = fs.readFileSync(file, 'utf-8');
-      if (raw.trim().length > 0) current = JSON.parse(raw);
-    } catch {
-      // Malformed file — leave the user's copy alone.
-      return;
-    }
-  }
-  const perms = (current.permissions && typeof current.permissions === 'object')
-    ? (current.permissions as Record<string, unknown>)
-    : {};
-  const existing = Array.isArray(perms.allow) ? (perms.allow as unknown[]).filter((x): x is string => typeof x === 'string') : [];
-  if (existing.includes(rule)) return;
-  const next = {
-    ...current,
-    permissions: { ...perms, allow: [...existing, rule] },
-  };
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', 'utf-8');
-}
-
-export function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[] {
-  if (!dirs || dirs.length === 0) return [];
-  const cwdReal = path.resolve(cwd);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const d of dirs) {
-    if (!d) continue;
-    const abs = path.resolve(d);
-    if (abs === cwdReal) continue;
-    if (seen.has(abs)) continue;
-    seen.add(abs);
-    out.push(abs);
-  }
-  return out;
-}
-
-/// Best-effort: pluck a filesystem path out of a Claude tool's input so
-/// the renderer can show "Allow + add this directory" when it lies
-/// outside the session's current scope. Returns null for tools that don't
-/// carry a path (or a shell command we can't parse confidently).
-export function extractRequestedPath(toolName: string, input: unknown): string | null {
-  if (!input || typeof input !== 'object') return null;
-  const obj = input as Record<string, unknown>;
-  const candidates: Array<string | undefined> = [
-    typeof obj.file_path === 'string' ? obj.file_path : undefined,
-    typeof obj.path === 'string' ? obj.path : undefined,
-    typeof obj.notebook_path === 'string' ? obj.notebook_path : undefined,
-  ];
-  for (const c of candidates) if (c && path.isAbsolute(c)) return c;
-  if (toolName === 'Bash' && typeof obj.command === 'string') {
-    const match = obj.command.match(/(^|[\s'"])(\/[\w.\-/]+)/);
-    if (match) return match[2];
-  }
-  return null;
-}
-
-/// True when `p` is inside the cwd or any of the session's explicit
-/// allowed dirs. We compare resolved paths so symlinks and trailing
-/// slashes don't cause false negatives.
-export function isInsideAllowedDirs(p: string, cwd: string, allowed: string[]): boolean {
-  const abs = path.resolve(p);
-  const roots = [path.resolve(cwd), ...allowed.map((d) => path.resolve(d))];
-  for (const root of roots) {
-    if (abs === root) return true;
-    if (abs.startsWith(root + path.sep)) return true;
-  }
-  return false;
 }
 
 function geminiAssistantIsDelta(raw: string): boolean {
