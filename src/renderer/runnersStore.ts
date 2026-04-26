@@ -34,6 +34,11 @@ export interface RunnerState {
   /// loading indicator in ChatView.
   historyLoaded: boolean;
   historyLoading: boolean;
+  /// Timestamp (ms) of the most recent run that finished without the
+  /// user having acknowledged it yet. Drives the green checkmark in the
+  /// sidebar — cleared once the user views the conversation (or after a
+  /// short flash if they were already viewing it when it finished).
+  completedAt: number | null;
   /// Codex runtime mode/flags for the currently running subprocess.
   codexRuntimeMode?: 'proto' | 'exec' | 'app-server';
   codexSandboxMode?: string;
@@ -48,6 +53,7 @@ export function newRunnerState(): RunnerState {
     currentModel: '',
     historyLoaded: false,
     historyLoading: false,
+    completedAt: null,
     codexRuntimeMode: undefined,
     codexSandboxMode: undefined,
     codexApprovalPolicy: undefined,
@@ -108,6 +114,10 @@ export function useRunnerEvents(id: UUID | null | undefined): StreamEvent[] | nu
 
 export function useRunnerIsRunning(id: UUID | null | undefined): boolean {
   return useRunnersStore((s) => (id ? s.runners[id]?.isRunning ?? false : false));
+}
+
+export function useRunnerCompletedAt(id: UUID | null | undefined): number | null {
+  return useRunnersStore((s) => (id ? s.runners[id]?.completedAt ?? null : null));
 }
 
 export function useRunnerCurrentModel(id: UUID | null | undefined): string {
