@@ -1935,7 +1935,15 @@ export class RunnerManager {
     env: NodeJS.ProcessEnv,
     codexPerms: { sandbox: string; approval: string },
   ): ActiveProcess {
-    const client = new CodexAppServerClient({ binary, cwd: args.cwd, env });
+    const client = new CodexAppServerClient({
+      binary,
+      cwd: args.cwd,
+      env,
+      // Re-attach to the persisted codex thread if we have one. The
+      // client tries thread/resume first and falls back to thread/start
+      // on any failure (deleted thread, older codex, sandbox change).
+      resumeId: args.sessionId,
+    });
     const active: ActiveProcess = {
       proc: undefined,
       backend: args.backend,
@@ -2003,7 +2011,13 @@ export class RunnerManager {
         effortLevel: args.effortLevel,
         attachments: args.attachments,
       });
-      if (!active.sessionId && result.threadId) {
+      // Update on any threadId we don't already have. The fresh-conv
+      // case (no prior sessionId) is the original trigger; the
+      // resume-failed-fallback case (had a sessionId, but resume
+      // failed and the client started a fresh thread with a NEW id)
+      // also matches and overwrites the now-orphaned id so the
+      // conversation re-pins to the live thread.
+      if (result.threadId && result.threadId !== active.sessionId) {
         active.sessionId = result.threadId;
         this.emit({
           type: 'sessionConfigured',
