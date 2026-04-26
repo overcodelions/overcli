@@ -36,7 +36,7 @@ describe('buildReviewerArgs', () => {
   });
 
   it('throws for ollama (uses HTTP path instead)', () => {
-    expect(() => buildReviewerArgs('ollama')).toThrow(/Ollama reviewer not implemented/);
+    expect(() => buildReviewerArgs('ollama')).toThrow(/dispatched via runOllama/);
   });
 });
 

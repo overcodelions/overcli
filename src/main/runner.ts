@@ -589,6 +589,10 @@ export class RunnerManager {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
     }
+    // Tear down any persistent reviewer too — the conversation's primary
+    // is going away, so the warm reviewer thread has nothing left to
+    // collab with.
+    this.reviewer.dispose(conversationId);
   }
 
   private killOllama(conversationId: UUID): void {
@@ -596,6 +600,7 @@ export class RunnerManager {
     if (!s) return;
     s.inFlight?.abort();
     this.ollamaSessions.delete(conversationId);
+    this.reviewer.dispose(conversationId);
   }
 
   private sendSubprocess(
@@ -1030,6 +1035,7 @@ export class RunnerManager {
     const result = await this.reviewer.run({
       conversationId: convId,
       reviewBackend,
+      reviewMode: params.reviewMode,
       cwd: params.cwd,
       summary: {
         primaryBackend: 'ollama',
@@ -1525,6 +1531,7 @@ export class RunnerManager {
     }
     session.client.close();
     this.geminiAcpSessions.delete(conversationId);
+    this.reviewer.dispose(conversationId);
   }
 
   private geminiAcpAssistantSnapshot(session: GeminiAcpSession, raw: any): StreamEvent {
@@ -1579,6 +1586,7 @@ export class RunnerManager {
     const result = await this.reviewer.run({
       conversationId: convId,
       reviewBackend: session.reviewBackend,
+      reviewMode: session.reviewMode,
       cwd: session.cwd,
       summary: {
         primaryBackend: 'gemini',
@@ -2128,6 +2136,7 @@ export class RunnerManager {
     const result = await this.reviewer.run({
       conversationId: convId,
       reviewBackend: active.reviewBackend,
+      reviewMode: active.reviewMode,
       cwd: active.cwd,
       summary: {
         primaryBackend: active.backend,

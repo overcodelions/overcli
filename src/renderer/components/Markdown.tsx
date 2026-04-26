@@ -46,6 +46,24 @@ export function renderMarkdownHtml(
     return `<code>${escapeHtml(text)}</code>`;
   };
 
+  // Markdown links whose href is itself a file path — codex collab loves
+  // to emit `[src/foo.ts](src/foo.ts)` — render as the same chip-style
+  // <code class="file-path"> as a bare codespan would. Avoids redundant
+  // underline+color styling on something that's already obviously a link,
+  // and routes clicks through the existing openFile handler. Real http(s)
+  // links fall through to the default <a> renderer.
+  if (enableFilePathLinks) {
+    renderer.link = ({ href, text }) => {
+      const target = typeof href === 'string' ? href : '';
+      const label = escapeHtml(typeof text === 'string' ? text : target);
+      if (target && FILE_PATH_RE.test(target)) {
+        return `<code class="file-path" data-path="${escapeAttr(target)}">${label}</code>`;
+      }
+      const safeHref = target ? escapeAttr(target) : '';
+      return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    };
+  }
+
   renderer.code = ({ text, lang }) => {
     const language = lang?.match(/\S+/)?.[0];
     const escapedLanguage = language ? ` language-${escapeAttr(language)}` : '';
