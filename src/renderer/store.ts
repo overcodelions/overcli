@@ -1296,8 +1296,10 @@ export const useStore = create<StoreState>((set, get) => ({
     // (the project repo is now ON that branch) and `checkedOutLocally`
     // is set so a workspace-agent coordinator's review sheet can render
     // a "demoted" card for this member instead of a stuck spinner.
+    // `baseBranch` is preserved so the file-diff view can still compare
+    // the agent's commits against where they branched from.
     mutateConversation(set, get, id, (c) => {
-      const { worktreePath: _wt, baseBranch: _bb, orphaned: _or, ...rest } = c;
+      const { worktreePath: _wt, orphaned: _or, ...rest } = c;
       return { ...rest, checkedOutLocally: true };
     });
     await saveConversationState(get);

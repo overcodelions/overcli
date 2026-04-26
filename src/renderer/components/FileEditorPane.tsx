@@ -446,7 +446,12 @@ function resolveWorkspaceMembers(
     id: string;
     name: string;
     path: string;
-    conversations: Array<{ id: string; worktreePath?: string; baseBranch?: string | null }>;
+    conversations: Array<{
+      id: string;
+      worktreePath?: string;
+      baseBranch?: string | null;
+      checkedOutLocally?: boolean;
+    }>;
   }>,
 ): Array<{
   name: string;
@@ -473,7 +478,14 @@ function resolveWorkspaceMembers(
       for (const memberId of c.workspaceAgentMemberIds) {
         for (const proj of projects) {
           const member = proj.conversations.find((x) => x.id === memberId);
-          if (!member?.worktreePath) continue;
+          if (!member) continue;
+          // Live members route through the worktree; once checked out
+          // locally, the worktree is gone but the project repo is on the
+          // agent's branch — diff against the project path instead so we
+          // run git from a real repo, not the removed worktree dir.
+          const memberPath =
+            member.worktreePath ?? (member.checkedOutLocally ? proj.path : null);
+          if (!memberPath) continue;
           let name = proj.name;
           let i = 2;
           while (used.has(name)) {
@@ -483,7 +495,7 @@ function resolveWorkspaceMembers(
           used.add(name);
           out.push({
             name,
-            path: member.worktreePath,
+            path: memberPath,
             projectPath: proj.path ?? null,
             baseBranch: member.baseBranch ?? null,
           });
