@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { useRunnerIsRunning } from '../../runnersStore';
 import { Conversation, UUID, WorktreeStatus } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { findOwningProjectPath } from '../../diff-utils';
@@ -18,7 +19,7 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
   const setConversationHidden = useStore((s) => s.setConversationHidden);
   const removeConversation = useStore((s) => s.removeConversation);
   const removeAgent = useStore((s) => s.removeAgent);
-  const isRunning = useStore((s) => s.runners[convId]?.isRunning ?? false);
+  const isRunning = useRunnerIsRunning(convId);
 
   const { conv, projectPath } = useMemo(() => {
     let c: Conversation | null = null;

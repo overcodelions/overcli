@@ -2,24 +2,15 @@ import { useMemo } from 'react';
 import { useStore } from './store';
 import { Backend, Conversation, UUID } from '@shared/types';
 import { SlashCommandEntry } from './components/Composer';
+import { findConversation, findContainerPath } from './conversationLookup';
+import { useRunnerEvents } from './runnersStore';
 
 /// Memoized lookup of a conversation anywhere in the store. Recomputes
 /// only when the underlying projects/workspaces arrays change — cheap
 /// enough because React's shallow equality via Zustand returns the same
 /// reference when nothing touched the parent arrays.
 export function useConversation(id: UUID | null | undefined): Conversation | null {
-  return useStore((s) => {
-    if (!id) return null;
-    for (const p of s.projects) {
-      const c = p.conversations.find((x) => x.id === id);
-      if (c) return c;
-    }
-    for (const w of s.workspaces) {
-      const c = (w.conversations ?? []).find((x) => x.id === id);
-      if (c) return c;
-    }
-    return null;
-  });
+  return useStore((s) => (id ? findConversation(s, id) : null));
 }
 
 /// Union of slash commands exposed to the given backend: the filesystem
@@ -36,7 +27,7 @@ export function useSlashCommands(
   conversationId?: UUID | null,
 ): SlashCommandEntry[] {
   const capabilities = useStore((s) => s.capabilities);
-  const events = useStore((s) => (conversationId ? s.runners[conversationId]?.events : null));
+  const events = useRunnerEvents(conversationId);
   return useMemo(() => {
     const byName = new Map<string, SlashCommandEntry>();
     for (const e of capabilities?.entries ?? []) {
@@ -71,17 +62,6 @@ function latestInitSlashCommands(events: readonly unknown[] | null | undefined):
 }
 
 export function useConversationRoot(id: UUID | null | undefined): string | null {
-  return useStore((s) => {
-    if (!id) return null;
-    for (const p of s.projects) {
-      const c = p.conversations.find((x) => x.id === id);
-      if (c) return c.worktreePath ?? p.path;
-    }
-    for (const w of s.workspaces) {
-      const c = (w.conversations ?? []).find((x) => x.id === id);
-      if (c) return c.coordinatorRootPath ?? c.worktreePath ?? w.rootPath;
-    }
-    return null;
-  });
+  return useStore((s) => (id ? findContainerPath(s, id) : null));
 }
 

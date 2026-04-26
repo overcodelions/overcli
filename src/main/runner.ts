@@ -22,7 +22,8 @@ import {
   Attachment,
   UserInputAnswer,
 } from '../shared/types';
-import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from './parsers/claude';
+// Claude parser internals now live behind backends/claude.ts. The runner
+// only sees opaque parserState on ActiveProcess and dispatches via spec.
 import {
   CodexAppServerParserState,
   makeCodexAppServerParserState,
@@ -56,6 +57,19 @@ import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
+import {
+  appendClaudeAllowRule,
+  codexTransportPermissions,
+  extractRequestedPath,
+  geminiPermissionMapping,
+  isInsideAllowedDirs,
+  normalizeAllowedDirs,
+} from './permissionRules';
+import { summarizeToolUse } from './toolDescription';
+import { collapsePartialAssistants } from './streamSnapshot';
+import { getBackendSpec } from './backends';
+import { codexExecSnapshotText } from './backends/codex';
+import type { BackendCtx, BackendSendArgs } from './backends';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -95,8 +109,6 @@ interface ActiveProcess {
   codexAppServerState?: CodexAppServerParserState;
   codexAppServer?: CodexAppServerClient;
   codexMode?: 'exec' | 'app-server';
-  codexExecEventId?: string;
-  codexExecRevision: number;
   /// Pending permission/approval handlers indexed by requestId / callId.
   /// We look them up on response so the renderer's allow/deny decisions
   /// reach the live subprocess.
@@ -129,12 +141,6 @@ interface ActiveProcess {
   /// stops when this hits `collabMaxTurns`.
   collabRoundsInBurst: number;
   cwd: string;
-  /// Gemini headless mode is one-shot per turn, but it still streams
-  /// assistant deltas + tool calls we want to fold into one live bubble.
-  geminiAssistantEventId?: string;
-  geminiAssistantText: string;
-  geminiAssistantToolUses: ToolUseBlock[];
-  geminiAssistantNeedsSplit: boolean;
   /// Directories this Claude subprocess was launched with `--add-dir` for.
   /// Used by handleClaudeApproval to decide whether a requested path is
   /// already inside the session's scope.
@@ -144,10 +150,12 @@ interface ActiveProcess {
   /// covers the narrower case where Claude re-invokes the same tool later
   /// in the current turn.
   sessionAllowedTools: Set<string>;
-  /// Claude stream-parser state. Kept on the process so per-token
-  /// `stream_event` deltas accumulate into a single live assistant
-  /// snapshot with a stable id. Only populated for the claude backend.
-  claudeParserState?: ClaudeParserState;
+  /// Opaque per-backend parser state, owned by the spec via
+  /// `BackendSpec.makeParserState()`. The runner only stores it; the
+  /// spec's `parseChunk` reads/writes it. Backends that haven't been
+  /// migrated to parseChunk yet (codex/gemini) continue to read their
+  /// state from named ActiveProcess fields below.
+  parserState?: unknown;
   /// Stashed args from the most recent user-initiated send. Used by the
   /// Allow+Add Dir auto-resume path to respawn Claude with updated
   /// `--add-dir` flags and `--resume` the session without making the
@@ -227,7 +235,6 @@ export class RunnerManager {
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
   private codexCapabilities = new Map<string, { hasAppServer: boolean }>();
-  private codexExecNoticeByConversation = new Set<UUID>();
   /// codex exec has no --resume: every turn spawns a fresh session that
   /// knows nothing about prior exchanges. The exec fallback (used for
   /// pre-0.30 codex binaries that lack app-server) stitches context back
@@ -247,6 +254,34 @@ export class RunnerManager {
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
     this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
+  }
+
+  /// Trim a SendArgs to the subset BackendSpec implementations need. Keeps
+  /// the spec interface free of fields only the runner cares about
+  /// (reviewer config, codex rollout paths, optimistic localUserId).
+  private toBackendArgs(args: SendArgs): BackendSendArgs {
+    return {
+      conversationId: args.conversationId,
+      prompt: args.prompt,
+      cwd: args.cwd,
+      model: args.model,
+      permissionMode: args.permissionMode,
+      sessionId: args.sessionId,
+      effortLevel: args.effortLevel,
+      attachments: args.attachments,
+      allowedDirs: args.allowedDirs,
+    };
+  }
+
+  /// Lookups the runner exposes to BackendSpec implementations. Holds
+  /// the per-conv state that specs occasionally need to weave into their
+  /// args/envelope (Claude's MCP config path, Codex's transcript-replay
+  /// for the no-resume exec path).
+  private backendCtx(): BackendCtx {
+    return {
+      mcpConfigPathFor: (id) => this.claudeMcpByConv.get(id),
+      codexExecTranscriptFor: (id) => this.codexExecTranscriptByConversation.get(id),
+    };
   }
 
   /// Broker handler: a Claude-hosted MCP helper asked us for permission.
@@ -408,7 +443,6 @@ export class RunnerManager {
     this.killProc(conversationId);
     this.killOllama(conversationId);
     this.killGeminiAcp(conversationId);
-    this.codexExecNoticeByConversation.delete(conversationId);
     this.codexExecTranscriptByConversation.delete(conversationId);
   }
 
@@ -618,12 +652,15 @@ export class RunnerManager {
       active.reviewYolo = !!args.reviewYolo;
       active.cwd = args.cwd;
       active.lastSendArgs = args;
-      active.geminiAssistantEventId = undefined;
-      active.geminiAssistantText = '';
-      active.geminiAssistantToolUses = [];
-      active.geminiAssistantNeedsSplit = false;
-      active.codexExecEventId = undefined;
-      active.codexExecRevision = 0;
+      // Per-backend turn-boundary reset. Specs that accumulate per-turn
+      // state (codex's exec snapshot, gemini's coalesce buffer) drop it
+      // here. Claude leaves resetForNewTurn undefined so its in-flight
+      // tracking survives the boundary — important when the user fires
+      // a follow-up while the previous response is still streaming;
+      // wiping inFlightEventId mid-stream would orphan the trailing
+      // chunks into a duplicate bubble. Claude's parser self-manages
+      // via message_start / message_stop instead.
+      getBackendSpec(args.backend).resetForNewTurn?.(active.parserState);
       if (!options.syntheticFromCollab) {
         active.collabBurst += 1;
         active.collabRoundsInBurst = 0;
@@ -1623,8 +1660,6 @@ export class RunnerManager {
       stdoutBuffer: '',
       stderrBuffer: '',
       codexMode,
-      codexExecEventId: undefined,
-      codexExecRevision: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1639,13 +1674,9 @@ export class RunnerManager {
       collabBurst: 0,
       collabRoundsInBurst: 0,
       cwd: args.cwd,
-      geminiAssistantEventId: undefined,
-      geminiAssistantText: '',
-      geminiAssistantToolUses: [],
-      geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
-      claudeParserState: args.backend === 'claude' ? makeClaudeParserState() : undefined,
+      parserState: getBackendSpec(args.backend).makeParserState?.({ codexMode }),
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1667,213 +1698,39 @@ export class RunnerManager {
   }
 
 
-  private buildArgs(args: SendArgs, codexMode?: 'proto' | 'exec' | 'app-server'): string[] {
-    switch (args.backend) {
-      case 'claude': {
-        const a: string[] = [
-          '-p',
-          '--input-format',
-          'stream-json',
-          '--output-format',
-          'stream-json',
-          '--verbose',
-          '--include-partial-messages',
-        ];
-        if (args.sessionId) a.push('--resume', args.sessionId);
-        if (args.model) a.push('--model', args.model);
-        if (args.permissionMode && args.permissionMode !== 'default') {
-          a.push('--permission-mode', args.permissionMode);
-        }
-        if (args.effortLevel) a.push('--thinking-effort', args.effortLevel);
-        // In bypassPermissions mode Claude Code auto-allows everything
-        // without prompting — wiring our permission-prompt-tool would force
-        // it to route tool checks through us anyway, defeating the mode.
-        if (args.permissionMode !== 'bypassPermissions') {
-          const mcpConfigPath = this.claudeMcpByConv.get(args.conversationId);
-          if (mcpConfigPath) {
-            a.push('--mcp-config', mcpConfigPath);
-            a.push('--permission-prompt-tool', 'mcp__overcli__approve');
-          }
-        }
-        for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
-          a.push('--add-dir', dir);
-        }
-        return a;
-      }
-      case 'codex': {
-        // app-server is handled in spawnFor and never reaches buildArgs.
-        // The remaining path is the exec --json fallback for binaries that
-        // don't support app-server.
-        const { sandbox, approval } = codexTransportPermissions(args.permissionMode);
-        const a: string[] = [];
-        if (args.model) a.push('-m', args.model);
-        a.push('-s', sandbox, '-a', approval, 'exec', '-');
-        return a;
-      }
-      case 'gemini': {
-        const a: string[] = ['-p', '-', '-o', 'stream-json'];
-        if (args.model) a.push('-m', args.model);
-        if (args.sessionId) a.push('--resume', args.sessionId);
-        a.push('--approval-mode', geminiPermissionMapping(args.permissionMode));
-        return a;
-      }
-      case 'ollama':
-        // Ollama never reaches the subprocess path — sendOllama handles it.
-        throw new Error('Ollama backend uses the HTTP path, not subprocess args');
-    }
+  private buildArgs(args: SendArgs, _codexMode?: 'proto' | 'exec' | 'app-server'): string[] {
+    return getBackendSpec(args.backend).buildArgs(this.toBackendArgs(args), this.backendCtx());
   }
 
-  private buildEnvelope(args: SendArgs, active: ActiveProcess): string {
-    const attachments = args.attachments ?? [];
-    switch (args.backend) {
-      case 'claude': {
-        // If we have images, send content as an array of typed blocks.
-        // Otherwise keep the plain-string form — equivalent on the wire
-        // but cheaper to eyeball in logs.
-        if (attachments.length === 0) {
-          return JSON.stringify({
-            type: 'user',
-            message: { role: 'user', content: args.prompt },
-          });
-        }
-        const content: any[] = attachments.map((a) => ({
-          type: 'image',
-          source: { type: 'base64', media_type: a.mimeType, data: a.dataBase64 },
-        }));
-        // Text always comes last so the user's words aren't buried above
-        // the screenshots.
-        content.push({ type: 'text', text: args.prompt || '(no text)' });
-        return JSON.stringify({
-          type: 'user',
-          message: { role: 'user', content },
-        });
-      }
-      case 'codex': {
-        // app-server has its own send path (sendCodexAppServerTurn) and
-        // never reaches buildEnvelope. Only exec mode lands here, and exec
-        // has no --resume so we prepend the local transcript for context.
-        const transcript = this.codexExecTranscriptByConversation.get(args.conversationId);
-        if (!transcript || transcript.length === 0) return args.prompt;
-        const history = transcript
-          .map((t) => `User: ${t.user}\n\nAssistant: ${t.assistant}`)
-          .join('\n\n---\n\n');
-        return `Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
-      }
-      case 'gemini':
-        // Gemini headless mode here is text-only for now, so image
-        // attachments are dropped even though the CLI supports image paths.
-        return args.prompt;
-      case 'ollama':
-        throw new Error('Ollama backend builds its payload in sendOllama');
-    }
+  private buildEnvelope(args: SendArgs, _active: ActiveProcess): string {
+    return getBackendSpec(args.backend).buildEnvelope(this.toBackendArgs(args), this.backendCtx());
   }
 
   private handleStdout(convId: UUID, active: ActiveProcess, chunk: string): void {
-    if (active.backend === 'codex' && active.codexMode === 'exec') {
-      if (!this.codexExecNoticeByConversation.has(convId)) {
-        this.codexExecNoticeByConversation.add(convId);
-        this.emit({
-          type: 'stream',
-          conversationId: convId,
-          events: [
-            {
-              id: randomUUID(),
-              timestamp: Date.now(),
-              raw: '',
-              kind: {
-                type: 'systemNotice',
-                text:
-                  'Codex is running in compatibility mode (exec). Tool cards/approvals are limited on this CLI build. Install a proto-capable Codex build for full overcli tooling.',
-              },
-              revision: 0,
-            },
-          ],
-        });
-      }
-      active.currentAssistantText += chunk;
-      if (!active.sessionId) {
-        const m = active.currentAssistantText.match(/session id:\s*([0-9a-f-]{8,})/i);
-        if (m?.[1]) {
-          active.sessionId = m[1];
-          this.emit({
-            type: 'sessionConfigured',
-            conversationId: convId,
-            sessionId: active.sessionId,
-          });
-        }
-      }
-      const snap = extractCodexExecSnapshot(active.currentAssistantText);
-      if (!active.codexExecEventId) active.codexExecEventId = randomUUID();
-      active.codexExecRevision += 1;
-      this.emit({
-        type: 'stream',
-        conversationId: convId,
-        events: [
-          {
-            id: active.codexExecEventId,
-            timestamp: Date.now(),
-            raw: chunk,
-            kind: {
-              type: 'assistant',
-              info: {
-                model: 'codex',
-                text: snap.text,
-                toolUses: [],
-                thinking: snap.thinking ? [snap.thinking] : [],
-              },
-            },
-            revision: active.codexExecRevision,
-          } as StreamEvent,
-        ],
-      });
+    const spec = getBackendSpec(active.backend);
+    if (!spec.parseChunk) return;
+    const result = spec.parseChunk(chunk, active.parserState);
+    const sessionConfigured = result.sessionConfigured;
+    if (sessionConfigured?.sessionId && !active.sessionId) {
+      active.sessionId = sessionConfigured.sessionId;
+    }
+    if (result.liveActivity) {
+      // Codex exec emits a single growing assistant snapshot per chunk
+      // with no end-of-turn marker on the stream itself; the runner
+      // bumps the running pill so the user sees we're still alive.
       this.emit({
         type: 'running',
         conversationId: convId,
         isRunning: true,
-        activityLabel: 'Writing…',
+        activityLabel: result.liveActivity,
       });
-      return;
-    }
-    active.stdoutBuffer += chunk;
-    const lines = active.stdoutBuffer.split('\n');
-    active.stdoutBuffer = lines.pop() ?? '';
-    const emitted: StreamEvent[] = [];
-    let sessionConfigured: { sessionId: string; rolloutPath?: string } | undefined;
-    for (const raw of lines) {
-      if (!raw) continue;
-      if (active.backend === 'claude') {
-        const evt = parseClaudeLine(raw, active.claudeParserState);
-        if (evt) emitted.push(evt);
-      } else if (active.backend === 'codex') {
-        // codex stdout in app-server mode is consumed by CodexAppServerClient;
-        // exec mode produces a text stream that's handled in the early-return
-        // branch above (extractCodexExecSnapshot). Nothing to do here.
-      } else {
-        const { parseGeminiLine } = require('./parsers/gemini');
-        const evt = parseGeminiLine(raw);
-        if (evt) {
-          if (evt.kind.type === 'assistant') {
-            emitted.push(this.coalesceGeminiAssistant(active, evt));
-          } else {
-            if (active.backend === 'gemini' && evt.kind.type === 'toolResult') {
-              active.geminiAssistantNeedsSplit = true;
-            }
-            emitted.push(evt);
-          }
-        }
-      }
-    }
-    for (const e of emitted) {
-      if (e.kind.type === 'systemInit' && e.kind.info.sessionId) {
-        sessionConfigured = { sessionId: e.kind.info.sessionId };
-      }
     }
     // A single stdout read can carry dozens of `stream_event` deltas for
     // the same in-flight message. Each delta produces an assistant
     // snapshot with the same id — only the last one has useful content.
     // Collapse intra-chunk duplicates so we ship one snapshot per id to
     // the renderer instead of forcing it to merge + re-render each one.
-    const collapsed = collapsePartialAssistants(emitted);
+    const collapsed = collapsePartialAssistants(result.events);
     this.handleParsedEvents(convId, active, collapsed, sessionConfigured);
   }
 
@@ -1989,9 +1846,8 @@ export class RunnerManager {
         ],
       });
       if (code === 0) {
-        const snap = extractCodexExecSnapshot(active.currentAssistantText);
         const userText = active.currentUserPrompt.trim();
-        const assistantText = snap.text.trim();
+        const assistantText = codexExecSnapshotText(active.parserState).trim();
         if (userText && assistantText) {
           const transcript = this.codexExecTranscriptByConversation.get(conversationId) ?? [];
           transcript.push({ user: userText, assistant: assistantText });
@@ -2001,7 +1857,7 @@ export class RunnerManager {
       }
     }
     if (code != null && code !== 0 && code !== 143) {
-      const tail = (active.stderrBuffer || active.stdoutBuffer || active.currentAssistantText || '').slice(-500);
+      const tail = (active.stderrBuffer || active.stdoutBuffer || '').slice(-500);
       this.emit({
         type: 'error',
         conversationId,
@@ -2079,7 +1935,15 @@ export class RunnerManager {
     env: NodeJS.ProcessEnv,
     codexPerms: { sandbox: string; approval: string },
   ): ActiveProcess {
-    const client = new CodexAppServerClient({ binary, cwd: args.cwd, env });
+    const client = new CodexAppServerClient({
+      binary,
+      cwd: args.cwd,
+      env,
+      // Re-attach to the persisted codex thread if we have one. The
+      // client tries thread/resume first and falls back to thread/start
+      // on any failure (deleted thread, older codex, sandbox change).
+      resumeId: args.sessionId,
+    });
     const active: ActiveProcess = {
       proc: undefined,
       backend: args.backend,
@@ -2091,8 +1955,6 @@ export class RunnerManager {
       codexAppServerState: makeCodexAppServerParserState(),
       codexAppServer: client,
       codexMode: 'app-server',
-      codexExecEventId: undefined,
-      codexExecRevision: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -2107,12 +1969,11 @@ export class RunnerManager {
       collabBurst: 0,
       collabRoundsInBurst: 0,
       cwd: args.cwd,
-      geminiAssistantEventId: undefined,
-      geminiAssistantText: '',
-      geminiAssistantToolUses: [],
-      geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
+      // app-server takes its own transport; parserState exists only for
+      // the inline handleStdout path (which app-server never reaches).
+      parserState: undefined,
     };
     this.procs.set(args.conversationId, active);
     this.emit({
@@ -2150,7 +2011,13 @@ export class RunnerManager {
         effortLevel: args.effortLevel,
         attachments: args.attachments,
       });
-      if (!active.sessionId && result.threadId) {
+      // Update on any threadId we don't already have. The fresh-conv
+      // case (no prior sessionId) is the original trigger; the
+      // resume-failed-fallback case (had a sessionId, but resume
+      // failed and the client started a fresh thread with a NEW id)
+      // also matches and overwrites the now-orphaned id so the
+      // conversation re-pins to the live thread.
+      if (result.threadId && result.threadId !== active.sessionId) {
         active.sessionId = result.threadId;
         this.emit({
           type: 'sessionConfigured',
@@ -2408,156 +2275,6 @@ export class RunnerManager {
     this.reviewer.stopAll();
   }
 
-  private coalesceGeminiAssistant(active: ActiveProcess, evt: StreamEvent): StreamEvent {
-    if (evt.kind.type !== 'assistant') return evt;
-    if (active.geminiAssistantNeedsSplit) {
-      active.geminiAssistantEventId = undefined;
-      active.geminiAssistantText = '';
-      active.geminiAssistantToolUses = [];
-      active.geminiAssistantNeedsSplit = false;
-    }
-    if (!active.geminiAssistantEventId) active.geminiAssistantEventId = randomUUID();
-    const delta = geminiAssistantIsDelta(evt.raw);
-    if (evt.kind.info.text) {
-      active.geminiAssistantText = delta
-        ? active.geminiAssistantText + evt.kind.info.text
-        : evt.kind.info.text;
-    }
-    if (evt.kind.info.toolUses.length > 0) {
-      active.geminiAssistantToolUses = [
-        ...active.geminiAssistantToolUses,
-        ...evt.kind.info.toolUses,
-      ];
-    }
-    return {
-      ...evt,
-      id: active.geminiAssistantEventId,
-      kind: {
-        type: 'assistant',
-        info: {
-          ...evt.kind.info,
-          text: active.geminiAssistantText,
-          toolUses: [...active.geminiAssistantToolUses],
-        },
-      },
-    };
-  }
-}
-
-/// Drop all but the last partial-assistant snapshot per event id in the
-/// batch. Non-partial events (tool results, the final assistant, etc)
-/// pass through untouched. Preserves order so throttled streaming still
-/// feels live while the IPC bus carries at most one payload per id per
-/// stdout chunk.
-export function collapsePartialAssistants(events: StreamEvent[]): StreamEvent[] {
-  const latestPartialIdx = new Map<string, number>();
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i];
-    if (e.kind.type === 'assistant' && e.kind.info.isPartial) {
-      latestPartialIdx.set(e.id, i);
-    }
-  }
-  if (latestPartialIdx.size === 0) return events;
-  const out: StreamEvent[] = [];
-  for (let i = 0; i < events.length; i++) {
-    const e = events[i];
-    if (e.kind.type === 'assistant' && e.kind.info.isPartial) {
-      if (latestPartialIdx.get(e.id) === i) out.push(e);
-    } else {
-      out.push(e);
-    }
-  }
-  return out;
-}
-
-export function extractCodexExecSnapshot(raw: string): { text: string; thinking: string } {
-  if (!raw.trim()) return { text: '', thinking: '' };
-
-  // Timestamped blocks (newer codex exec):
-  // [2026-... ] thinking
-  // <body>
-  // [2026-... ] codex
-  // <body>
-  const tsLine = /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\][ \t]*(.*?)[ \t]*$/gm;
-  const sections: Array<{ tag: string; bodyStart: number; markerStart: number }> = [];
-  for (const m of raw.matchAll(tsLine)) {
-    const idx = m.index ?? 0;
-    sections.push({ tag: (m[1] ?? '').trim().toLowerCase(), bodyStart: idx + m[0].length, markerStart: idx });
-  }
-  if (sections.length > 0) {
-    const textBlocks: string[] = [];
-    const thinkingBlocks: string[] = [];
-    for (let i = 0; i < sections.length; i++) {
-      const cur = sections[i]!;
-      const end = sections[i + 1]?.markerStart ?? raw.length;
-      const body = raw.slice(cur.bodyStart, end).trim();
-      if (!body) continue;
-      if (cur.tag === 'codex') textBlocks.push(body);
-      else if (cur.tag.includes('thinking') || cur.tag.includes('reasoning')) thinkingBlocks.push(body);
-    }
-    const text = textBlocks.join('\n\n').trim();
-    const thinking = thinkingBlocks.join('\n\n').trim();
-    if (text || thinking) return { text, thinking };
-  }
-
-  // Plain sections (older/alternate codex exec):
-  // thinking\n...\n
-  // codex\n...\n
-  const thinking = extractSection(raw, 'thinking').trim();
-  const text = extractSection(raw, 'codex').trim();
-  if (text || thinking) return { text, thinking };
-
-  // Last resort: avoid dumping headers/config in the chat bubble.
-  return { text: raw.trim(), thinking: '' };
-}
-
-function extractSection(raw: string, label: string): string {
-  const re = new RegExp(
-    String.raw`(?:^|\r?\n)${label}\r?\n([\s\S]*?)(?=(?:\r?\n(?:tokens used|user|codex|thinking|reasoning)\r?\n)|$)`,
-    'i',
-  );
-  const m = raw.match(re);
-  return m?.[1] ?? '';
-}
-
-/// One-line digest of a tool use for the reviewer prompt. Ideally the
-/// reviewer sees enough to reconstruct what happened without us dumping
-/// the full tool_use JSON (which can be many KB for patch / file writes).
-export function summarizeToolUse(name: string, inputJSON: string, filePath?: string): string {
-  let parsed: any = null;
-  try {
-    parsed = JSON.parse(inputJSON);
-  } catch {
-    // inputJSON might not be JSON (we pack `command.join(' ')` straight
-    // in for shell/bash from codex); treat as opaque.
-  }
-  if (name === 'Bash' || name === 'shell' || name === 'exec_command') {
-    const cmd =
-      typeof parsed?.command === 'string'
-        ? parsed.command
-        : Array.isArray(parsed?.command)
-        ? parsed.command.join(' ')
-        : inputJSON;
-    return `• Bash: ${truncate(cmd, 240)}`;
-  }
-  if (name === 'Edit' || name === 'MultiEdit') {
-    return `• Edit ${filePath ?? parsed?.file_path ?? ''}`.trim();
-  }
-  if (name === 'Write') {
-    return `• Write ${filePath ?? parsed?.file_path ?? ''}`.trim();
-  }
-  if (name === 'Read') {
-    return `• Read ${filePath ?? parsed?.file_path ?? ''}`.trim();
-  }
-  if (name === 'TodoWrite') {
-    const count = Array.isArray(parsed?.todos) ? parsed.todos.length : 0;
-    return `• TodoWrite (${count})`;
-  }
-  return `• ${name} ${truncate(inputJSON, 160)}`;
-}
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 function buildGeminiAcpPromptBlocks(prompt: string, attachments: Attachment[]): any[] {
@@ -2758,132 +2475,6 @@ function ollamaFriendlyError(raw: string): string {
     return `${raw} — pull it from the Local tab first.`;
   }
   return raw;
-}
-
-export function codexPermissionMapping(mode: PermissionMode): { sandbox: string; approval: string } {
-  switch (mode) {
-    case 'plan':
-      return { sandbox: 'read-only', approval: 'on-request' };
-    case 'acceptEdits':
-      return { sandbox: 'workspace-write', approval: 'on-failure' };
-    case 'bypassPermissions':
-      return { sandbox: 'danger-full-access', approval: 'never' };
-    case 'default':
-    default:
-      return { sandbox: 'workspace-write', approval: 'on-request' };
-  }
-}
-
-export function codexTransportPermissions(mode: PermissionMode): { sandbox: string; approval: string } {
-  const { sandbox } = codexPermissionMapping(mode);
-  return { sandbox, approval: 'never' };
-}
-
-export function geminiPermissionMapping(mode: PermissionMode): string {
-  switch (mode) {
-    case 'plan':
-      return 'plan';
-    case 'acceptEdits':
-      return 'auto_edit';
-    case 'bypassPermissions':
-      return 'yolo';
-    case 'default':
-    default:
-      return 'default';
-  }
-}
-
-/// Dedupe + absolute-ify the directory list we'll pass as `--add-dir` to
-/// Claude. The cwd is always implicitly allowed, so drop it; remove
-/// duplicates and non-absolute entries to avoid confusing Claude Code.
-/// Append a rule to Claude Code's project-local allow list at
-/// `<cwd>/.claude/settings.json`. Creates the file (and directory) when
-/// absent; merges into `permissions.allow` without disturbing the rest of
-/// the file. Claude Code reads this on every spawn, so the grant takes
-/// effect on the next turn and is shared across every conversation rooted
-/// at the same cwd.
-export function appendClaudeAllowRule(cwd: string, rule: string): void {
-  const dir = path.join(cwd, '.claude');
-  const file = path.join(dir, 'settings.json');
-  let current: Record<string, unknown> = {};
-  if (fs.existsSync(file)) {
-    try {
-      const raw = fs.readFileSync(file, 'utf-8');
-      if (raw.trim().length > 0) current = JSON.parse(raw);
-    } catch {
-      // Malformed file — leave the user's copy alone.
-      return;
-    }
-  }
-  const perms = (current.permissions && typeof current.permissions === 'object')
-    ? (current.permissions as Record<string, unknown>)
-    : {};
-  const existing = Array.isArray(perms.allow) ? (perms.allow as unknown[]).filter((x): x is string => typeof x === 'string') : [];
-  if (existing.includes(rule)) return;
-  const next = {
-    ...current,
-    permissions: { ...perms, allow: [...existing, rule] },
-  };
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', 'utf-8');
-}
-
-export function normalizeAllowedDirs(cwd: string, dirs: string[] | undefined): string[] {
-  if (!dirs || dirs.length === 0) return [];
-  const cwdReal = path.resolve(cwd);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const d of dirs) {
-    if (!d) continue;
-    const abs = path.resolve(d);
-    if (abs === cwdReal) continue;
-    if (seen.has(abs)) continue;
-    seen.add(abs);
-    out.push(abs);
-  }
-  return out;
-}
-
-/// Best-effort: pluck a filesystem path out of a Claude tool's input so
-/// the renderer can show "Allow + add this directory" when it lies
-/// outside the session's current scope. Returns null for tools that don't
-/// carry a path (or a shell command we can't parse confidently).
-export function extractRequestedPath(toolName: string, input: unknown): string | null {
-  if (!input || typeof input !== 'object') return null;
-  const obj = input as Record<string, unknown>;
-  const candidates: Array<string | undefined> = [
-    typeof obj.file_path === 'string' ? obj.file_path : undefined,
-    typeof obj.path === 'string' ? obj.path : undefined,
-    typeof obj.notebook_path === 'string' ? obj.notebook_path : undefined,
-  ];
-  for (const c of candidates) if (c && path.isAbsolute(c)) return c;
-  if (toolName === 'Bash' && typeof obj.command === 'string') {
-    const match = obj.command.match(/(^|[\s'"])(\/[\w.\-/]+)/);
-    if (match) return match[2];
-  }
-  return null;
-}
-
-/// True when `p` is inside the cwd or any of the session's explicit
-/// allowed dirs. We compare resolved paths so symlinks and trailing
-/// slashes don't cause false negatives.
-export function isInsideAllowedDirs(p: string, cwd: string, allowed: string[]): boolean {
-  const abs = path.resolve(p);
-  const roots = [path.resolve(cwd), ...allowed.map((d) => path.resolve(d))];
-  for (const root of roots) {
-    if (abs === root) return true;
-    if (abs.startsWith(root + path.sep)) return true;
-  }
-  return false;
-}
-
-function geminiAssistantIsDelta(raw: string): boolean {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed?.type === 'message' && parsed?.role === 'assistant' && parsed?.delta === true;
-  } catch {
-    return false;
-  }
 }
 
 /// Write a base64 attachment to a temp file that codex proto can read by

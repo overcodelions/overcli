@@ -1,5 +1,6 @@
 import { useStore } from './store';
 import { isMac } from './platform';
+import { findContainerPath, findOwnerProject } from './conversationLookup';
 
 export type ShortcutGroup = 'Navigation' | 'View' | 'Conversation' | 'App' | 'Editor';
 
@@ -74,15 +75,7 @@ function resolveFileFinderRoot(): string | null {
   const state = useStore.getState();
   const convId = state.selectedConversationId;
   if (!convId) return null;
-  for (const p of state.projects) {
-    const c = p.conversations.find((x) => x.id === convId);
-    if (c) return c.worktreePath ?? p.path;
-  }
-  for (const w of state.workspaces) {
-    const c = (w.conversations ?? []).find((x) => x.id === convId);
-    if (c) return c.worktreePath ?? w.rootPath;
-  }
-  return null;
+  return findContainerPath(state, convId);
 }
 
 // ⌘K belongs to the app shell (palette). If an in-app terminal is added
@@ -122,12 +115,7 @@ export const SHORTCUTS: ShortcutDef[] = [
       const convId = state.selectedConversationId;
       let projectId: string | null = null;
       if (convId) {
-        for (const p of state.projects) {
-          if (p.conversations.some((c) => c.id === convId)) {
-            projectId = p.id;
-            break;
-          }
-        }
+        projectId = findOwnerProject(state, convId)?.id ?? null;
       }
       if (!projectId) projectId = state.projects[0]?.id ?? null;
       if (projectId) state.startNewConversation(projectId);

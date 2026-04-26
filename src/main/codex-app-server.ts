@@ -81,14 +81,20 @@ export class CodexAppServerClient extends EventEmitter {
   private closed = false;
   private threadId?: string;
   private startPromise?: Promise<{ threadId: string }>;
+  /// Persisted thread id we should attempt to resume on first start.
+  /// Populated by spawnCodexAppServer from the conversation's saved
+  /// sessionId so a follow-up after app restart re-attaches to the
+  /// original codex thread instead of opening a fresh one.
+  private resumeId?: string;
   /// turnId of any turn currently in flight. Set on turn/start, cleared on
   /// turn/completed (via observation of the matching notification). Used so
   /// follow-up sends route through turn/steer (queue input mid-turn) instead
   /// of failing.
   private inFlightTurnId: string | null = null;
 
-  constructor(args: { binary: string; cwd: string; env: NodeJS.ProcessEnv }) {
+  constructor(args: { binary: string; cwd: string; env: NodeJS.ProcessEnv; resumeId?: string }) {
     super();
+    this.resumeId = args.resumeId;
     this.proc = spawn(args.binary, ['app-server'], {
       cwd: args.cwd,
       env: args.env,
@@ -199,13 +205,30 @@ export class CodexAppServerClient extends EventEmitter {
       this.initialized = true;
     }
 
-    const started = await this.request('thread/start', {
-      model: opts.model || null,
-      cwd: opts.cwd,
-      approvalPolicy: opts.approval,
-      approvalsReviewer: 'user',
-      sandbox: opts.sandbox,
-    });
+    // Try to resume the persisted thread first when we have one. Falls
+    // back to thread/start on any failure (deleted thread, codex too
+    // old to know thread/resume, etc.) so the user can keep talking
+    // even when context can't be restored.
+    if (this.resumeId) {
+      const { method, params } = buildResumeRequest(opts, this.resumeId);
+      try {
+        const resumed = await this.request(method, params);
+        const id = String(resumed?.thread?.id ?? '');
+        if (id) {
+          this.threadId = id;
+          return { threadId: id };
+        }
+      } catch {
+        // Fall through to thread/start below — the thread may have
+        // been deleted, the codex binary may not implement
+        // thread/resume, or the sandbox config may be incompatible.
+      }
+      // Don't try resume again on subsequent starts within this client.
+      this.resumeId = undefined;
+    }
+
+    const { method, params } = buildStartRequest(opts);
+    const started = await this.request(method, params);
     const threadId = String(started?.thread?.id ?? '');
     if (!threadId) throw new Error('codex app-server did not return a thread id');
     this.threadId = threadId;
@@ -273,6 +296,41 @@ export class CodexAppServerClient extends EventEmitter {
       this.proc.stdin.write(line, (err) => (err ? reject(err) : resolve()));
     });
   }
+}
+
+/// JSON-RPC request to attach to an existing codex thread. Pure for
+/// testability — the network call lives in startInternal, this just
+/// shapes the payload. Exported so the sibling test can lock in the
+/// shape without standing up a real subprocess.
+export function buildResumeRequest(
+  opts: CodexAppServerStartOptions,
+  threadId: string,
+): { method: string; params: Record<string, unknown> } {
+  return {
+    method: 'thread/resume',
+    params: {
+      threadId,
+      model: opts.model || null,
+      approvalPolicy: opts.approval,
+      sandbox: opts.sandbox,
+    },
+  };
+}
+
+/// JSON-RPC request to create a new codex thread.
+export function buildStartRequest(
+  opts: CodexAppServerStartOptions,
+): { method: string; params: Record<string, unknown> } {
+  return {
+    method: 'thread/start',
+    params: {
+      model: opts.model || null,
+      cwd: opts.cwd,
+      approvalPolicy: opts.approval,
+      approvalsReviewer: 'user',
+      sandbox: opts.sandbox,
+    },
+  };
 }
 
 function buildUserInput(text: string, attachments: Attachment[]): any[] {
