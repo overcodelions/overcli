@@ -74,6 +74,18 @@ export const codexBackend: BackendSpec = {
     };
   },
 
+  resetForNewTurn(state: unknown): void {
+    if (!state) return;
+    const s = state as CodexStreamState;
+    // Drop the previous turn's accumulator + snapshot id so the new
+    // turn paints into a fresh bubble. Subprocess-lifetime flags (mode,
+    // sessionEmitted, noticeEmitted) survive — the compat notice and
+    // session id should appear once per subprocess, not once per turn.
+    s.accumulator = '';
+    s.eventId = undefined;
+    s.revision = 0;
+  },
+
   parseChunk(chunk: string, state: unknown): ParseChunkResult {
     const s = state as CodexStreamState;
     // Non-exec transports route stdout through their own clients (the
@@ -138,3 +150,4 @@ export function codexExecSnapshotText(state: unknown): string {
   const s = state as CodexStreamState;
   return extractCodexExecSnapshot(s.accumulator).text;
 }
+
