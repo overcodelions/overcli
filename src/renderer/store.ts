@@ -2073,6 +2073,12 @@ export const useStore = create<StoreState>((set, get) => ({
       if (justCompleted && get().selectedConversationId === event.conversationId) {
         scheduleClearCompletion(event.conversationId, completedAt as number);
       }
+      if (justCompleted) {
+        // Main-side guard skips the bounce if the window is focused or
+        // we already nudged in the last 10s, so this is safe to fire on
+        // every completion regardless of view state.
+        void window.overcli.invoke('app:notifyCompleted');
+      }
       const state = get();
       const conv = findConversation(state, event.conversationId);
       const colosseumId = conv?.colosseumId;
