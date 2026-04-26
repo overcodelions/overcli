@@ -98,17 +98,26 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         cwd: diffTarget.cwd,
       });
       let text = tracked.stdout ?? '';
-      // Only fall through to `--no-index` when the tracked diff actually
-      // succeeded with no output (file matches base). A non-zero exit
-      // means git couldn't run (bad cwd, unknown ref) — falling through
-      // there would silently render the whole file as added.
+      // Only fall through to `--no-index` when the tracked diff is empty
+      // *and* the file isn't tracked — otherwise a clean tracked file
+      // (matches base, already committed) would render as a brand-new
+      // add. `git ls-files` exits 0 with the path on stdout iff git
+      // knows about the file. Untracked files print nothing, so the
+      // fallback fires only for genuine adds.
       if (tracked.exitCode === 0 && !text.trim()) {
-        const untracked = await window.overcli.invoke('git:run', {
-          args: ['diff', '--no-index', '--', '/dev/null', diffTarget.path],
+        const ls = await window.overcli.invoke('git:run', {
+          args: ['ls-files', '--', diffTarget.path],
           cwd: diffTarget.cwd,
         });
-        // `--no-index` exits 1 when there's a diff; stdout still holds it.
-        text = untracked.stdout ?? '';
+        const isTracked = ls.exitCode === 0 && !!ls.stdout?.trim();
+        if (!isTracked) {
+          const untracked = await window.overcli.invoke('git:run', {
+            args: ['diff', '--no-index', '--', '/dev/null', diffTarget.path],
+            cwd: diffTarget.cwd,
+          });
+          // `--no-index` exits 1 when there's a diff; stdout still holds it.
+          text = untracked.stdout ?? '';
+        }
       } else if (tracked.exitCode !== 0) {
         const stderr = tracked.stderr?.trim() || `exited ${tracked.exitCode}`;
         throw new Error(
