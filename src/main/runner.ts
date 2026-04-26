@@ -66,8 +66,9 @@ import {
   normalizeAllowedDirs,
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
-import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
+import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
+import { codexExecSnapshotText } from './backends/codex';
 import type { BackendCtx, BackendSendArgs } from './backends';
 
 type Emit = (event: MainToRendererEvent) => void;
@@ -108,8 +109,6 @@ interface ActiveProcess {
   codexAppServerState?: CodexAppServerParserState;
   codexAppServer?: CodexAppServerClient;
   codexMode?: 'exec' | 'app-server';
-  codexExecEventId?: string;
-  codexExecRevision: number;
   /// Pending permission/approval handlers indexed by requestId / callId.
   /// We look them up on response so the renderer's allow/deny decisions
   /// reach the live subprocess.
@@ -142,12 +141,6 @@ interface ActiveProcess {
   /// stops when this hits `collabMaxTurns`.
   collabRoundsInBurst: number;
   cwd: string;
-  /// Gemini headless mode is one-shot per turn, but it still streams
-  /// assistant deltas + tool calls we want to fold into one live bubble.
-  geminiAssistantEventId?: string;
-  geminiAssistantText: string;
-  geminiAssistantToolUses: ToolUseBlock[];
-  geminiAssistantNeedsSplit: boolean;
   /// Directories this Claude subprocess was launched with `--add-dir` for.
   /// Used by handleClaudeApproval to decide whether a requested path is
   /// already inside the session's scope.
@@ -242,7 +235,6 @@ export class RunnerManager {
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
   private codexCapabilities = new Map<string, { hasAppServer: boolean }>();
-  private codexExecNoticeByConversation = new Set<UUID>();
   /// codex exec has no --resume: every turn spawns a fresh session that
   /// knows nothing about prior exchanges. The exec fallback (used for
   /// pre-0.30 codex binaries that lack app-server) stitches context back
@@ -451,7 +443,6 @@ export class RunnerManager {
     this.killProc(conversationId);
     this.killOllama(conversationId);
     this.killGeminiAcp(conversationId);
-    this.codexExecNoticeByConversation.delete(conversationId);
     this.codexExecTranscriptByConversation.delete(conversationId);
   }
 
@@ -661,12 +652,11 @@ export class RunnerManager {
       active.reviewYolo = !!args.reviewYolo;
       active.cwd = args.cwd;
       active.lastSendArgs = args;
-      active.geminiAssistantEventId = undefined;
-      active.geminiAssistantText = '';
-      active.geminiAssistantToolUses = [];
-      active.geminiAssistantNeedsSplit = false;
-      active.codexExecEventId = undefined;
-      active.codexExecRevision = 0;
+      // Fresh per-backend parser state for the new turn (drops the
+      // previous turn's coalesce buffer / accumulator / snapshot id).
+      active.parserState = getBackendSpec(args.backend).makeParserState?.({
+        codexMode: active.codexMode,
+      });
       if (!options.syntheticFromCollab) {
         active.collabBurst += 1;
         active.collabRoundsInBurst = 0;
@@ -1666,8 +1656,6 @@ export class RunnerManager {
       stdoutBuffer: '',
       stderrBuffer: '',
       codexMode,
-      codexExecEventId: undefined,
-      codexExecRevision: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -1682,13 +1670,9 @@ export class RunnerManager {
       collabBurst: 0,
       collabRoundsInBurst: 0,
       cwd: args.cwd,
-      geminiAssistantEventId: undefined,
-      geminiAssistantText: '',
-      geminiAssistantToolUses: [],
-      geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
-      parserState: getBackendSpec(args.backend).makeParserState?.(),
+      parserState: getBackendSpec(args.backend).makeParserState?.({ codexMode }),
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1719,120 +1703,30 @@ export class RunnerManager {
   }
 
   private handleStdout(convId: UUID, active: ActiveProcess, chunk: string): void {
-    if (active.backend === 'codex' && active.codexMode === 'exec') {
-      if (!this.codexExecNoticeByConversation.has(convId)) {
-        this.codexExecNoticeByConversation.add(convId);
-        this.emit({
-          type: 'stream',
-          conversationId: convId,
-          events: [
-            {
-              id: randomUUID(),
-              timestamp: Date.now(),
-              raw: '',
-              kind: {
-                type: 'systemNotice',
-                text:
-                  'Codex is running in compatibility mode (exec). Tool cards/approvals are limited on this CLI build. Install a proto-capable Codex build for full overcli tooling.',
-              },
-              revision: 0,
-            },
-          ],
-        });
-      }
-      active.currentAssistantText += chunk;
-      if (!active.sessionId) {
-        const m = active.currentAssistantText.match(/session id:\s*([0-9a-f-]{8,})/i);
-        if (m?.[1]) {
-          active.sessionId = m[1];
-          this.emit({
-            type: 'sessionConfigured',
-            conversationId: convId,
-            sessionId: active.sessionId,
-          });
-        }
-      }
-      const snap = extractCodexExecSnapshot(active.currentAssistantText);
-      if (!active.codexExecEventId) active.codexExecEventId = randomUUID();
-      active.codexExecRevision += 1;
-      this.emit({
-        type: 'stream',
-        conversationId: convId,
-        events: [
-          {
-            id: active.codexExecEventId,
-            timestamp: Date.now(),
-            raw: chunk,
-            kind: {
-              type: 'assistant',
-              info: {
-                model: 'codex',
-                text: snap.text,
-                toolUses: [],
-                thinking: snap.thinking ? [snap.thinking] : [],
-              },
-            },
-            revision: active.codexExecRevision,
-          } as StreamEvent,
-        ],
-      });
+    const spec = getBackendSpec(active.backend);
+    if (!spec.parseChunk) return;
+    const result = spec.parseChunk(chunk, active.parserState);
+    const sessionConfigured = result.sessionConfigured;
+    if (sessionConfigured?.sessionId && !active.sessionId) {
+      active.sessionId = sessionConfigured.sessionId;
+    }
+    if (result.liveActivity) {
+      // Codex exec emits a single growing assistant snapshot per chunk
+      // with no end-of-turn marker on the stream itself; the runner
+      // bumps the running pill so the user sees we're still alive.
       this.emit({
         type: 'running',
         conversationId: convId,
         isRunning: true,
-        activityLabel: 'Writing…',
+        activityLabel: result.liveActivity,
       });
-      return;
-    }
-    const emitted: StreamEvent[] = [];
-    let sessionConfigured: { sessionId: string; rolloutPath?: string } | undefined;
-
-    // Migrated backends: spec.parseChunk owns the line buffer and the
-    // session-id extraction. Unmigrated backends (codex/gemini) keep
-    // running through the inline branches below until their specs gain
-    // a parseChunk implementation.
-    const spec = getBackendSpec(active.backend);
-    if (spec.parseChunk) {
-      const result = spec.parseChunk(chunk, active.parserState);
-      emitted.push(...result.events);
-      if (result.sessionConfigured) sessionConfigured = result.sessionConfigured;
-    } else {
-      active.stdoutBuffer += chunk;
-      const lines = active.stdoutBuffer.split('\n');
-      active.stdoutBuffer = lines.pop() ?? '';
-      for (const raw of lines) {
-        if (!raw) continue;
-        if (active.backend === 'codex') {
-          // codex stdout in app-server mode is consumed by CodexAppServerClient;
-          // exec mode produces a text stream handled in the early-return
-          // branch above (extractCodexExecSnapshot). Nothing to do here.
-        } else {
-          const { parseGeminiLine } = require('./parsers/gemini');
-          const evt = parseGeminiLine(raw);
-          if (evt) {
-            if (evt.kind.type === 'assistant') {
-              emitted.push(this.coalesceGeminiAssistant(active, evt));
-            } else {
-              if (active.backend === 'gemini' && evt.kind.type === 'toolResult') {
-                active.geminiAssistantNeedsSplit = true;
-              }
-              emitted.push(evt);
-            }
-          }
-        }
-      }
-      for (const e of emitted) {
-        if (e.kind.type === 'systemInit' && e.kind.info.sessionId) {
-          sessionConfigured = { sessionId: e.kind.info.sessionId };
-        }
-      }
     }
     // A single stdout read can carry dozens of `stream_event` deltas for
     // the same in-flight message. Each delta produces an assistant
     // snapshot with the same id — only the last one has useful content.
     // Collapse intra-chunk duplicates so we ship one snapshot per id to
     // the renderer instead of forcing it to merge + re-render each one.
-    const collapsed = collapsePartialAssistants(emitted);
+    const collapsed = collapsePartialAssistants(result.events);
     this.handleParsedEvents(convId, active, collapsed, sessionConfigured);
   }
 
@@ -1948,9 +1842,8 @@ export class RunnerManager {
         ],
       });
       if (code === 0) {
-        const snap = extractCodexExecSnapshot(active.currentAssistantText);
         const userText = active.currentUserPrompt.trim();
-        const assistantText = snap.text.trim();
+        const assistantText = codexExecSnapshotText(active.parserState).trim();
         if (userText && assistantText) {
           const transcript = this.codexExecTranscriptByConversation.get(conversationId) ?? [];
           transcript.push({ user: userText, assistant: assistantText });
@@ -1960,7 +1853,7 @@ export class RunnerManager {
       }
     }
     if (code != null && code !== 0 && code !== 143) {
-      const tail = (active.stderrBuffer || active.stdoutBuffer || active.currentAssistantText || '').slice(-500);
+      const tail = (active.stderrBuffer || active.stdoutBuffer || '').slice(-500);
       this.emit({
         type: 'error',
         conversationId,
@@ -2050,8 +1943,6 @@ export class RunnerManager {
       codexAppServerState: makeCodexAppServerParserState(),
       codexAppServer: client,
       codexMode: 'app-server',
-      codexExecEventId: undefined,
-      codexExecRevision: 0,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -2066,12 +1957,11 @@ export class RunnerManager {
       collabBurst: 0,
       collabRoundsInBurst: 0,
       cwd: args.cwd,
-      geminiAssistantEventId: undefined,
-      geminiAssistantText: '',
-      geminiAssistantToolUses: [],
-      geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
+      // app-server takes its own transport; parserState exists only for
+      // the inline handleStdout path (which app-server never reaches).
+      parserState: undefined,
     };
     this.procs.set(args.conversationId, active);
     this.emit({
@@ -2367,40 +2257,6 @@ export class RunnerManager {
     this.reviewer.stopAll();
   }
 
-  private coalesceGeminiAssistant(active: ActiveProcess, evt: StreamEvent): StreamEvent {
-    if (evt.kind.type !== 'assistant') return evt;
-    if (active.geminiAssistantNeedsSplit) {
-      active.geminiAssistantEventId = undefined;
-      active.geminiAssistantText = '';
-      active.geminiAssistantToolUses = [];
-      active.geminiAssistantNeedsSplit = false;
-    }
-    if (!active.geminiAssistantEventId) active.geminiAssistantEventId = randomUUID();
-    const delta = geminiAssistantIsDelta(evt.raw);
-    if (evt.kind.info.text) {
-      active.geminiAssistantText = delta
-        ? active.geminiAssistantText + evt.kind.info.text
-        : evt.kind.info.text;
-    }
-    if (evt.kind.info.toolUses.length > 0) {
-      active.geminiAssistantToolUses = [
-        ...active.geminiAssistantToolUses,
-        ...evt.kind.info.toolUses,
-      ];
-    }
-    return {
-      ...evt,
-      id: active.geminiAssistantEventId,
-      kind: {
-        type: 'assistant',
-        info: {
-          ...evt.kind.info,
-          text: active.geminiAssistantText,
-          toolUses: [...active.geminiAssistantToolUses],
-        },
-      },
-    };
-  }
 }
 
 function buildGeminiAcpPromptBlocks(prompt: string, attachments: Attachment[]): any[] {
@@ -2601,15 +2457,6 @@ function ollamaFriendlyError(raw: string): string {
     return `${raw} — pull it from the Local tab first.`;
   }
   return raw;
-}
-
-function geminiAssistantIsDelta(raw: string): boolean {
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed?.type === 'message' && parsed?.role === 'assistant' && parsed?.delta === true;
-  } catch {
-    return false;
-  }
 }
 
 /// Write a base64 attachment to a temp file that codex proto can read by
