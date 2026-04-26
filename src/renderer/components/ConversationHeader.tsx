@@ -1,9 +1,25 @@
 import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
+import {
+  useAllRunners,
+  useRunnerCodexFlags,
+  useRunnerCurrentModel,
+  useRunnerIsRunning,
+  useRunnersStore,
+} from '../runnersStore';
 import { Backend, Conversation, PermissionMode, UUID, EffortLevel, StreamEvent } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
+import { CommitButton } from './CommitButton';
+import {
+  effortLabel,
+  enabledBackends,
+  isBackendEnabled,
+  modeLabel,
+  permissionTone,
+} from './conversationHeaderHelpers';
 
 /// Full-featured header matching the Swift ConversationHeader:
 /// backend picker, permission mode picker, effort picker (claude),
@@ -11,32 +27,65 @@ import { findOwningProjectPath } from '../diff-utils';
 /// conversation settings popover, overflow menu.
 export function ConversationHeader({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
-  const backendHealth = useStore((s) => s.backendHealth);
-  const installedReviewers = useStore((s) => s.installedReviewers);
-  const setPrimary = useStore((s) => s.setPrimaryBackend);
-  const setPermission = useStore((s) => s.setPermissionMode);
-  const setEffort = useStore((s) => s.setEffortLevel);
-  const setModel = useStore((s) => s.setBackendModel);
-  const setReviewBackend = useStore((s) => s.setReviewBackend);
-  const setReviewMode = useStore((s) => s.setReviewMode);
-  const setReviewOllamaModel = useStore((s) => s.setReviewOllamaModel);
-  const setReviewYolo = useStore((s) => s.setReviewYolo);
-  const promoteReviewAgent = useStore((s) => s.promoteReviewAgent);
-  const checkoutReviewBranchLocally = useStore((s) => s.checkoutReviewBranchLocally);
-  const removeAgent = useStore((s) => s.removeAgent);
-  const runnerIsRunning = useStore((s) => s.runners[conversationId]?.isRunning ?? false);
-  const runnerModel = useStore((s) => s.runners[conversationId]?.currentModel ?? '');
-  const codexRuntimeMode = useStore((s) => s.runners[conversationId]?.codexRuntimeMode);
-  const codexSandboxMode = useStore((s) => s.runners[conversationId]?.codexSandboxMode ?? '');
-  const codexApprovalPolicy = useStore((s) => s.runners[conversationId]?.codexApprovalPolicy ?? '');
-  const settings = useStore((s) => s.settings);
-  const projects = useStore((s) => s.projects);
-  const resetConversation = useStore((s) => s.resetConversation);
-  const openSheet = useStore((s) => s.openSheet);
-  const showToolActivity = useStore((s) => s.showToolActivity);
-  const toggleToolActivity = useStore((s) => s.toggleToolActivity);
-  const showFileTree = useStore((s) => s.showFileTree);
-  const toggleFileTree = useStore((s) => s.toggleFileTree);
+  // One bundled subscription instead of 16. useShallow returns the same
+  // object reference when every field is reference-equal to the prior
+  // pass, so an unrelated store mutation (e.g. a sheet open) costs one
+  // selector eval per render instead of sixteen, and the component only
+  // re-renders when one of these fields actually changed.
+  const {
+    backendHealth,
+    installedReviewers,
+    settings,
+    projects,
+    showToolActivity,
+    showFileTree,
+    setPrimary,
+    setPermission,
+    setEffort,
+    setModel,
+    setReviewBackend,
+    setReviewMode,
+    setReviewOllamaModel,
+    setReviewYolo,
+    promoteReviewAgent,
+    checkoutReviewBranchLocally,
+    removeAgent,
+    resetConversation,
+    openSheet,
+    toggleToolActivity,
+    toggleFileTree,
+  } = useStore(
+    useShallow((s) => ({
+      backendHealth: s.backendHealth,
+      installedReviewers: s.installedReviewers,
+      settings: s.settings,
+      projects: s.projects,
+      showToolActivity: s.showToolActivity,
+      showFileTree: s.showFileTree,
+      setPrimary: s.setPrimaryBackend,
+      setPermission: s.setPermissionMode,
+      setEffort: s.setEffortLevel,
+      setModel: s.setBackendModel,
+      setReviewBackend: s.setReviewBackend,
+      setReviewMode: s.setReviewMode,
+      setReviewOllamaModel: s.setReviewOllamaModel,
+      setReviewYolo: s.setReviewYolo,
+      promoteReviewAgent: s.promoteReviewAgent,
+      checkoutReviewBranchLocally: s.checkoutReviewBranchLocally,
+      removeAgent: s.removeAgent,
+      resetConversation: s.resetConversation,
+      openSheet: s.openSheet,
+      toggleToolActivity: s.toggleToolActivity,
+      toggleFileTree: s.toggleFileTree,
+    })),
+  );
+  const runnerIsRunning = useRunnerIsRunning(conversationId);
+  const runnerModel = useRunnerCurrentModel(conversationId);
+  const {
+    runtimeMode: codexRuntimeMode,
+    sandboxMode: codexSandboxMode,
+    approvalPolicy: codexApprovalPolicy,
+  } = useRunnerCodexFlags(conversationId);
   const [confirmingReset, setConfirmingReset] = useState(false);
   if (!conv) return null;
   const locked = runnerIsRunning || !!conv.sessionId || conv.turnCount > 0;
@@ -526,16 +575,30 @@ function IconPicker({
 /// away from being re-sent.
 function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
-  const backendHealth = useStore((s) => s.backendHealth);
-  const settings = useStore((s) => s.settings);
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
-  const newConversation = useStore((s) => s.newConversation);
-  const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
-  const selectConversation = useStore((s) => s.selectConversation);
-  const setPrimary = useStore((s) => s.setPrimaryBackend);
-  const setDraft = useStore((s) => s.setDraft);
-  const runners = useStore((s) => s.runners);
+  const {
+    backendHealth,
+    settings,
+    projects,
+    workspaces,
+    newConversation,
+    newConversationInWorkspace,
+    selectConversation,
+    setPrimary,
+    setDraft,
+  } = useStore(
+    useShallow((s) => ({
+      backendHealth: s.backendHealth,
+      settings: s.settings,
+      projects: s.projects,
+      workspaces: s.workspaces,
+      newConversation: s.newConversation,
+      newConversationInWorkspace: s.newConversationInWorkspace,
+      selectConversation: s.selectConversation,
+      setPrimary: s.setPrimaryBackend,
+      setDraft: s.setDraft,
+    })),
+  );
+  const runners = useAllRunners();
   if (!conv) return null;
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
   const ownerWorkspace = ownerProject
@@ -593,34 +656,18 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
         turnCount === 1
           ? `Forked from "${conv.name}" — attaching 1 prior turn as context on the first message.`
           : `Forked from "${conv.name}" — attaching ${turnCount} prior turn${turnCount === 1 ? '' : 's'} as context on the first message.`;
-      useStore.setState((s) => {
-        const runner = s.runners[forked.id] ?? {
-          events: [],
-          isRunning: false,
-          pendingLocalUserIds: new Set<UUID>(),
-          currentModel: '',
-          historyLoaded: false,
-          historyLoading: false,
-        };
-        return {
-          runners: {
-            ...s.runners,
-            [forked.id]: {
-              ...runner,
-              events: [
-                ...runner.events,
-                {
-                  id: `fork-notice-${forked.id}`,
-                  timestamp: Date.now(),
-                  raw: '',
-                  kind: { type: 'systemNotice', text: notice },
-                  revision: 0,
-                },
-              ],
-            },
+      useRunnersStore.getState().patchRunner(forked.id, (runner) => ({
+        events: [
+          ...runner.events,
+          {
+            id: `fork-notice-${forked.id}`,
+            timestamp: Date.now(),
+            raw: '',
+            kind: { type: 'systemNotice', text: notice },
+            revision: 0,
           },
-        };
-      });
+        ],
+      }));
     }
     selectConversation(forked.id);
   };
@@ -1130,253 +1177,6 @@ function ConversationSettingsButton({
   );
 }
 
-/// One-click commit for the conversation's cwd. Hides itself when the
-/// cwd isn't a git working tree (git missing, not a repo, etc.) so the
-/// header stays clean for non-git projects. Always `git add -A` + commit —
-/// no partial staging, no push. Pushing is one decision too far for a
-/// single header button; the worktree Diff sheet handles that case.
-function CommitButton({ conversationId }: { conversationId: UUID }) {
-  const conv = useConversation(conversationId);
-  const projects = useStore((s) => s.projects);
-  const gitStatus = useStore((s) => s.gitStatusByConv[conversationId]);
-  const refreshGitStatus = useStore((s) => s.refreshGitStatus);
-  const [open, setOpen] = useState(false);
-  const [message, setMessage] = useState('');
-  const [messageEdited, setMessageEdited] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successSubject, setSuccessSubject] = useState<string | null>(null);
-  const [flashKey, setFlashKey] = useState(0);
-  const prevStatsRef = useRef<{ insertions: number; deletions: number } | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
-
-  const cwd = conv?.worktreePath ?? findOwningProjectPath(projects, conversationId) ?? null;
-  const isRepo = gitStatus?.isRepo ?? false;
-  const currentBranch = gitStatus?.currentBranch ?? '';
-  const changes = gitStatus?.changes ?? [];
-  const insertions = gitStatus?.insertions ?? 0;
-  const deletions = gitStatus?.deletions ?? 0;
-
-  // Flash the +/- badge whenever the numbers change (other than on the
-  // initial probe). Bumping flashKey remounts the span so the CSS
-  // animation replays from the start.
-  useEffect(() => {
-    const prev = prevStatsRef.current;
-    if (!prev) {
-      prevStatsRef.current = { insertions, deletions };
-      return;
-    }
-    if (prev.insertions === insertions && prev.deletions === deletions) return;
-    prevStatsRef.current = { insertions, deletions };
-    setFlashKey((k) => k + 1);
-  }, [insertions, deletions]);
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    window.addEventListener('mousedown', handler);
-    return () => window.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  // Re-probe and seed a draft message every time the popover opens so the
-  // user sees the current state + a fresh suggestion, not whatever was
-  // there five minutes ago.
-  useEffect(() => {
-    if (!open) return;
-    setError(null);
-    setSuccessSubject(null);
-    void refreshGitStatus(conversationId).then(() => {
-      // Seed draft only if the user hasn't typed their own — preserves
-      // in-progress edits when they accidentally click outside.
-      if (!messageEdited) {
-        setMessage(draftCommitMessage(changes));
-      }
-    });
-    // We intentionally don't add `changes` / `messageEdited` to deps —
-    // the draft seeds on popover-open only, not on every state tick.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, conversationId, refreshGitStatus]);
-
-  if (!isRepo) return null;
-
-  const hasChanges = changes.length > 0;
-
-  const onCommit = async () => {
-    if (!cwd || busy) return;
-    setBusy(true);
-    setError(null);
-    const res = await window.overcli.invoke('git:commitAll', { cwd, message });
-    setBusy(false);
-    if (res.ok) {
-      setSuccessSubject(res.subject);
-      setMessageEdited(false);
-      setMessage('');
-      await refreshGitStatus(conversationId);
-    } else {
-      setError(res.error);
-    }
-  };
-
-  const diffstatTitle = hasChanges
-    ? `Commit · ${changes.length} file${changes.length === 1 ? '' : 's'} · +${insertions} −${deletions}`
-    : 'Working tree clean';
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        title={diffstatTitle}
-        className={
-          'h-7 px-1.5 flex items-center gap-1.5 rounded text-ink-muted hover:bg-card-strong hover:text-ink ' +
-          (open ? 'bg-accent/20 text-ink' : '')
-        }
-      >
-        <CommitIcon />
-        {hasChanges && (
-          <span
-            key={flashKey}
-            className={
-              'flex items-center gap-1 text-[10px] font-mono leading-none ' +
-              (flashKey > 0 ? 'git-stats-flash' : '')
-            }
-          >
-            <span className="diff-add-ink">+{insertions}</span>
-            <span className="diff-remove-ink">−{deletions}</span>
-          </span>
-        )}
-      </button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 w-[340px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <div className="text-[10px] uppercase tracking-wider text-ink-faint">Commit</div>
-            {currentBranch && (
-              <div className="text-[10px] font-mono text-ink-faint truncate max-w-[180px]" title={currentBranch}>
-                ⎇ {currentBranch}
-              </div>
-            )}
-          </div>
-
-          {successSubject ? (
-            <div className="text-[11px] text-emerald-400">
-              Committed: <span className="font-mono">{successSubject}</span>
-            </div>
-          ) : !hasChanges ? (
-            <div className="text-[11px] text-ink-muted">Working tree clean — nothing to commit.</div>
-          ) : (
-            <>
-              <div className="rounded border border-card bg-card px-2 py-1.5 text-[10px] font-mono text-ink-muted max-h-[96px] overflow-y-auto">
-                {changes.slice(0, 30).map((c) => (
-                  <div key={c.path} className="truncate" title={c.path}>
-                    <span className="text-ink-faint mr-1.5">{c.status.trim() || '??'}</span>
-                    {c.path}
-                  </div>
-                ))}
-                {changes.length > 30 && (
-                  <div className="text-ink-faint">… {changes.length - 30} more</div>
-                )}
-              </div>
-              <textarea
-                value={message}
-                onChange={(e) => {
-                  setMessage(e.target.value);
-                  setMessageEdited(true);
-                }}
-                onKeyDown={(e) => {
-                  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                    e.preventDefault();
-                    if (!busy && message.trim()) void onCommit();
-                  }
-                }}
-                placeholder={`Commit message (${shortcutLabel()} to commit)`}
-                rows={3}
-                className="field px-2 py-1.5 text-[11px] leading-5 resize-none"
-                autoFocus
-              />
-              <div className="text-[10px] text-ink-faint">
-                Runs <span className="font-mono">git add -A</span> then{' '}
-                <span className="font-mono">git commit</span>. Push separately from the Diff sheet.
-              </div>
-            </>
-          )}
-
-          {error && <div className="text-[11px] text-red-400 whitespace-pre-wrap">{error}</div>}
-
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              onClick={() => setOpen(false)}
-              className="text-[11px] px-2 py-1 rounded text-ink-muted hover:text-ink"
-            >
-              Close
-            </button>
-            <div className="flex-1" />
-            {hasChanges && !successSubject && (
-              <button
-                onClick={onCommit}
-                disabled={busy || !message.trim()}
-                className={
-                  'text-xs px-3 py-1.5 rounded border flex items-center gap-2 ' +
-                  (busy || !message.trim()
-                    ? 'bg-card text-ink-faint border-card cursor-not-allowed'
-                    : 'bg-accent/20 text-ink border-accent/40 hover:bg-accent/30')
-                }
-              >
-                <span>{busy ? 'Committing…' : 'Commit'}</span>
-                {!busy && (
-                  <span className="text-xs text-ink-muted">{shortcutLabel()}</span>
-                )}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/// Simple draft: one file → "Update <basename>". Files all under one
-/// directory → "Update <dir>". Otherwise a file count. Intentionally
-/// dumb — anything smarter would need to read the diff, which is more
-/// work than drafting-from-scratch is worth.
-/// OS-aware label for the commit submit shortcut. Mac gets the native
-/// ⌘ glyph + the word "Return" (the ⏎ / ↵ Unicode chars render
-/// inconsistently in most mono/sans stacks and look visually wrong at
-/// small sizes). Other platforms get the fully spelled form.
-function shortcutLabel(): string {
-  const isMac = typeof navigator !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform);
-  return isMac ? '⌘ Return' : 'Ctrl + Enter';
-}
-
-function draftCommitMessage(changes: Array<{ path: string }>): string {
-  if (changes.length === 0) return '';
-  if (changes.length === 1) {
-    const name = changes[0].path.split('/').pop() || changes[0].path;
-    return `Update ${name}`;
-  }
-  const dirs = new Set(
-    changes.map((c) => {
-      const parts = c.path.split('/');
-      return parts.length > 1 ? parts[0] : '.';
-    }),
-  );
-  if (dirs.size === 1) {
-    const only = Array.from(dirs)[0];
-    return only === '.' ? `Update ${changes.length} files` : `Update ${only}`;
-  }
-  return `Update ${changes.length} files`;
-}
-
-function CommitIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
-      <circle cx="8" cy="8" r="3" stroke="currentColor" strokeWidth="1.3" />
-      <line x1="1.5" y1="8" x2="5" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <line x1="11" y1="8" x2="14.5" y2="8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  );
-}
-
 function stripOriginPrefix(branch: string): string {
   return branch.startsWith('origin/') ? branch.slice('origin/'.length) : branch;
 }
@@ -1606,42 +1406,6 @@ function MenuRow({ label, onClick, danger }: { label: string; onClick: () => voi
       {label}
     </button>
   );
-}
-
-function modeLabel(mode: PermissionMode): string {
-  switch (mode) {
-    case 'plan':
-      return 'Plan';
-    case 'acceptEdits':
-      return 'Accept edits';
-    case 'bypassPermissions':
-      return 'Bypass (dangerous)';
-    default:
-      return 'Default';
-  }
-}
-
-function permissionTone(mode: PermissionMode): string | undefined {
-  if (mode === 'bypassPermissions') return '#f97a5a';
-  if (mode === 'acceptEdits') return '#f7b267';
-  return undefined;
-}
-
-function effortLabel(effort: EffortLevel): string {
-  if (!effort) return 'Effort';
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
-}
-
-function isBackendEnabled(
-  settings: { disabledBackends?: Partial<Record<Backend, boolean>> },
-  backend: Backend,
-): boolean {
-  return settings.disabledBackends?.[backend] !== true;
-}
-
-function enabledBackends(settings: { disabledBackends?: Partial<Record<Backend, boolean>> }): Backend[] {
-  const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
-  return all.filter((b) => isBackendEnabled(settings, b));
 }
 
 function DocsIcon() {

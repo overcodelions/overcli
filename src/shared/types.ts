@@ -717,6 +717,15 @@ export interface IPCInvokeMap {
   'ollama:cancelPull': (args: { tag: string }) => void;
   'ollama:deleteModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:deleteSession': (sessionId: string) => void;
+  'diagnostics:list': () => SilentLogEntry[];
+  'diagnostics:clear': () => void;
+}
+
+export interface SilentLogEntry {
+  timestamp: number;
+  scope: string;
+  message: string;
+  stack?: string;
 }
 
 export interface DailyBackendBucket {

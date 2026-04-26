@@ -44,6 +44,7 @@ import {
   pullModel,
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
+import { clearSilentLog, listSilentLog } from './diagnostics';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
@@ -368,6 +369,8 @@ function registerIpc(): void {
   ipcMain.handle('ollama:deleteSession', (_e, sessionId: string) => {
     deleteOllamaSession(sessionId);
   });
+  ipcMain.handle('diagnostics:list', () => listSilentLog());
+  ipcMain.handle('diagnostics:clear', () => clearSilentLog());
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting

@@ -1,10 +1,11 @@
 import { useStore } from '../store';
+import { useRunner } from '../runnersStore';
 import { useConversation } from '../hooks';
 import { UUID } from '@shared/types';
 
 export function StatsFooter({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
-  const runner = useStore((s) => s.runners[conversationId]);
+  const runner = useRunner(conversationId);
   const showCost = useStore((s) => s.settings.showCost);
   if (!conv) return null;
   const turns = conv.turnCount;

@@ -23,6 +23,7 @@ import {
   ProjectStats,
   StatsReport,
 } from '../shared/types';
+import { logSilent } from './diagnostics';
 
 interface BackendAgg {
   backend: Backend;
@@ -131,6 +132,78 @@ export function computeStats(): StatsReport {
 
 // ---------- Claude ----------
 
+interface ClaudeAssistantEvent {
+  inT: number;
+  outT: number;
+  cacheR: number;
+  cacheC: number;
+  model: string;
+  ts: number | null;
+  msgAdded: number;
+  msgDeleted: number;
+}
+
+/// Mtime-keyed cache so repeat stats requests skip the line-by-line
+/// JSON.parse on transcripts that haven't changed since the last scan.
+/// Module-level — survives across IPC calls within a single app run.
+const claudeFileCache = new Map<string, { mtimeMs: number; events: ClaudeAssistantEvent[] }>();
+
+/// Parse a claude transcript file into the per-event contributions the
+/// aggregator needs. Returns the cached list when the file's mtime
+/// hasn't changed.
+export function parseClaudeFileCached(filePath: string): ClaudeAssistantEvent[] {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = fs.statSync(filePath).mtimeMs;
+  } catch {
+    return [];
+  }
+  const cached = claudeFileCache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.events;
+  const raw = readFileSafe(filePath);
+  if (!raw) {
+    claudeFileCache.set(filePath, { mtimeMs, events: [] });
+    return [];
+  }
+  const events: ClaudeAssistantEvent[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let json: any;
+    try {
+      json = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (json?.type !== 'assistant') continue;
+    const message = json.message;
+    if (!message || typeof message !== 'object') continue;
+    const usage = message.usage;
+    if (!usage || typeof usage !== 'object') continue;
+    const inT = intVal(usage.input_tokens);
+    const outT = intVal(usage.output_tokens);
+    const cacheR = intVal(usage.cache_read_input_tokens);
+    const cacheC = intVal(usage.cache_creation_input_tokens);
+    if (inT === 0 && outT === 0 && cacheR === 0 && cacheC === 0) continue;
+    const model = typeof message.model === 'string' ? message.model : 'unknown';
+    const tsRaw = json.timestamp;
+    const tsParsed = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw);
+    const ts = !isNaN(tsParsed) ? tsParsed : null;
+    let msgAdded = 0;
+    let msgDeleted = 0;
+    if (Array.isArray(message.content)) {
+      for (const block of message.content) {
+        if (block?.type !== 'tool_use') continue;
+        const { added, deleted } = countToolUseLines(block.name, block.input);
+        msgAdded += added;
+        msgDeleted += deleted;
+      }
+    }
+    events.push({ inT, outT, cacheR, cacheC, model, ts, msgAdded, msgDeleted });
+  }
+  claudeFileCache.set(filePath, { mtimeMs, events });
+  return events;
+}
+
 function scanClaude(
   projects: Map<string, ProjectAgg>,
   agg: BackendAgg,
@@ -161,74 +234,37 @@ function scanClaude(
         proj.sessions += 1;
       }
       const sessionKey = entry.path;
-      const raw = readFileSafe(entry.path);
-      if (!raw) continue;
-      for (const line of raw.split('\n')) {
-        if (!line) continue;
-        let json: any;
-        try {
-          json = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (json?.type !== 'assistant') continue;
-        const message = json.message;
-        if (!message || typeof message !== 'object') continue;
-        const usage = message.usage;
-        if (!usage || typeof usage !== 'object') continue;
-
-        const inT = intVal(usage.input_tokens);
-        const outT = intVal(usage.output_tokens);
-        const cacheR = intVal(usage.cache_read_input_tokens);
-        const cacheC = intVal(usage.cache_creation_input_tokens);
-        if (inT === 0 && outT === 0 && cacheR === 0 && cacheC === 0) continue;
-
-        const model = typeof message.model === 'string' ? message.model : 'unknown';
-        const tsRaw = json.timestamp;
-        const ts = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw);
-        const tsValid = !isNaN(ts) ? ts : null;
-
+      const events = parseClaudeFileCached(entry.path);
+      for (const e of events) {
         proj.turns += 1;
-        proj.inputTokens += inT;
-        proj.outputTokens += outT;
-        proj.cacheRead += cacheR;
-        proj.cacheCreation += cacheC;
-        proj.models.add(model);
-        if (tsValid !== null) {
-          proj.firstActivity = minNum(proj.firstActivity, tsValid);
-          proj.lastActivity = maxNum(proj.lastActivity, tsValid);
+        proj.inputTokens += e.inT;
+        proj.outputTokens += e.outT;
+        proj.cacheRead += e.cacheR;
+        proj.cacheCreation += e.cacheC;
+        proj.models.add(e.model);
+        if (e.ts !== null) {
+          proj.firstActivity = minNum(proj.firstActivity, e.ts);
+          proj.lastActivity = maxNum(proj.lastActivity, e.ts);
         }
-
         agg.turns += 1;
-        agg.inputTokens += inT;
-        agg.outputTokens += outT;
-        addRolling(agg, inT + outT, tsValid, now, sessionKey);
-
-        addModel(byModel, model, {
+        agg.inputTokens += e.inT;
+        agg.outputTokens += e.outT;
+        addRolling(agg, e.inT + e.outT, e.ts, now, sessionKey);
+        addModel(byModel, e.model, {
           turns: 1,
-          inputTokens: inT,
-          outputTokens: outT,
-          cacheRead: cacheR,
-          cacheCreation: cacheC,
+          inputTokens: e.inT,
+          outputTokens: e.outT,
+          cacheRead: e.cacheR,
+          cacheCreation: e.cacheC,
         });
-
-        let msgAdded = 0;
-        let msgDeleted = 0;
-        if (Array.isArray(message.content)) {
-          for (const block of message.content) {
-            if (block?.type !== 'tool_use') continue;
-            const { added, deleted } = countToolUseLines(block.name, block.input);
-            msgAdded += added;
-            msgDeleted += deleted;
-          }
+        if (e.msgAdded || e.msgDeleted) {
+          proj.linesAdded += e.msgAdded;
+          proj.linesDeleted += e.msgDeleted;
+          agg.linesAdded += e.msgAdded;
+          agg.linesDeleted += e.msgDeleted;
         }
-        if (msgAdded || msgDeleted) {
-          proj.linesAdded += msgAdded;
-          proj.linesDeleted += msgDeleted;
-          agg.linesAdded += msgAdded;
-          agg.linesDeleted += msgDeleted;
-        }
-        if (tsValid !== null) addToDaily(daily, tsValid, 'claude', 1, inT, outT, msgAdded, msgDeleted);
+        if (e.ts !== null)
+          addToDaily(daily, e.ts, 'claude', 1, e.inT, e.outT, e.msgAdded, e.msgDeleted);
       }
     }
   }
@@ -240,6 +276,154 @@ function scanClaude(
 }
 
 // ---------- Codex ----------
+
+type CodexCachedEvent =
+  | {
+      kind: 'modelTurn';
+      model: string;
+      ts: number | null;
+      added: number;
+      deleted: number;
+    }
+  | {
+      kind: 'tokens';
+      model: string;
+      ts: number | null;
+      inDelta: number;
+      outDelta: number;
+      cacheDelta: number;
+    };
+
+interface CodexParsedFile {
+  cwd: string | null;
+  firstTs: number | null;
+  lastTs: number | null;
+  models: string[];
+  sessionTurns: number;
+  sessionIn: number;
+  sessionOut: number;
+  sessionCache: number;
+  sessionLinesAdded: number;
+  sessionLinesDeleted: number;
+  events: CodexCachedEvent[];
+}
+
+const codexFileCache = new Map<string, { mtimeMs: number; parsed: CodexParsedFile }>();
+
+function emptyCodexParsed(): CodexParsedFile {
+  return {
+    cwd: null,
+    firstTs: null,
+    lastTs: null,
+    models: [],
+    sessionTurns: 0,
+    sessionIn: 0,
+    sessionOut: 0,
+    sessionCache: 0,
+    sessionLinesAdded: 0,
+    sessionLinesDeleted: 0,
+    events: [],
+  };
+}
+
+/// Parse a codex rollout file into per-event contributions + finalized
+/// session totals. Returns the cached parse when the file's mtime
+/// hasn't changed since the last scan.
+export function parseCodexFileCached(filePath: string): CodexParsedFile {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = fs.statSync(filePath).mtimeMs;
+  } catch {
+    return emptyCodexParsed();
+  }
+  const cached = codexFileCache.get(filePath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.parsed;
+  const raw = readFileSafe(filePath);
+  if (!raw) {
+    const parsed = emptyCodexParsed();
+    codexFileCache.set(filePath, { mtimeMs, parsed });
+    return parsed;
+  }
+  const out = emptyCodexParsed();
+  // `turn_context` events carry the active codex model; track the most
+  // recent one so any turns/token_counts until the next turn_context are
+  // attributed to that model. Most sessions stay on one model; mid-
+  // session switches are rare but handled.
+  let currentModel = 'codex';
+  const sessionModels = new Set<string>();
+
+  for (const line of raw.split('\n')) {
+    if (!line) continue;
+    let json: any;
+    try {
+      json = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const tsRaw = json?.timestamp;
+    const ts = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw);
+    const tsValid = !isNaN(ts) ? ts : null;
+    if (tsValid !== null) {
+      out.firstTs = minNum(out.firstTs, tsValid);
+      out.lastTs = maxNum(out.lastTs, tsValid);
+    }
+    const type = json?.type;
+    const payload = json?.payload;
+    if (type === 'session_meta') {
+      if (payload?.cwd && typeof payload.cwd === 'string') out.cwd = payload.cwd;
+    } else if (type === 'turn_context' && payload && typeof payload === 'object') {
+      if (typeof payload.model === 'string' && payload.model) {
+        currentModel = payload.model;
+        sessionModels.add(payload.model);
+      }
+    } else if (type === 'response_item' && payload && typeof payload === 'object') {
+      const kind = payload.type;
+      if (kind === 'function_call' || (kind === 'message' && payload.role === 'assistant')) {
+        out.sessionTurns += 1;
+        let itemAdded = 0;
+        let itemDeleted = 0;
+        if (kind === 'function_call') {
+          const { added, deleted } = countCodexFunctionCallLines(payload);
+          itemAdded = added;
+          itemDeleted = deleted;
+          if (added || deleted) {
+            out.sessionLinesAdded += added;
+            out.sessionLinesDeleted += deleted;
+          }
+        }
+        out.events.push({
+          kind: 'modelTurn',
+          model: currentModel,
+          ts: tsValid,
+          added: itemAdded,
+          deleted: itemDeleted,
+        });
+      }
+    } else if (type === 'event_msg' && payload?.type === 'token_count') {
+      const info = payload.info?.last_token_usage;
+      if (info) {
+        const rawIn = intVal(info.input_tokens);
+        const cacheDelta = intVal(info.cached_input_tokens);
+        const inDelta = Math.max(0, rawIn - cacheDelta);
+        const outDelta = intVal(info.output_tokens);
+        out.sessionIn += inDelta;
+        out.sessionOut += outDelta;
+        out.sessionCache += cacheDelta;
+        out.events.push({
+          kind: 'tokens',
+          model: currentModel,
+          ts: tsValid,
+          inDelta,
+          outDelta,
+          cacheDelta,
+        });
+      }
+    }
+  }
+  out.models = Array.from(sessionModels);
+  codexFileCache.set(filePath, { mtimeMs, parsed: out });
+  return out;
+}
 
 function scanCodex(
   projects: Map<string, ProjectAgg>,
@@ -253,118 +437,50 @@ function scanCodex(
   const files = walkCodexRollouts(root);
   for (const filePath of files) {
     agg.sessions += 1;
-    const raw = readFileSafe(filePath);
-    if (!raw) continue;
+    const parsed = parseCodexFileCached(filePath);
 
-    let cwd: string | null = null;
-    // `turn_context` events carry the active codex model; track the most
-    // recent one so any turns/token_counts until the next turn_context are
-    // attributed to that model. Most sessions stay on one model; mid-
-    // session switches are rare but handled.
-    let currentModel = 'codex';
-    let sessionTurns = 0;
-    let sessionIn = 0;
-    let sessionOut = 0;
-    let sessionCache = 0;
-    let sessionLinesAdded = 0;
-    let sessionLinesDeleted = 0;
-    let firstTs: number | null = null;
-    let lastTs: number | null = null;
-    const sessionModels = new Set<string>();
-
-    for (const line of raw.split('\n')) {
-      if (!line) continue;
-      let json: any;
-      try {
-        json = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const tsRaw = json?.timestamp;
-      const ts = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw);
-      const tsValid = !isNaN(ts) ? ts : null;
-      if (tsValid !== null) {
-        firstTs = minNum(firstTs, tsValid);
-        lastTs = maxNum(lastTs, tsValid);
-      }
-      const type = json?.type;
-      const payload = json?.payload;
-      if (type === 'session_meta') {
-        if (payload?.cwd && typeof payload.cwd === 'string') cwd = payload.cwd;
-      } else if (type === 'turn_context' && payload && typeof payload === 'object') {
-        if (typeof payload.model === 'string' && payload.model) {
-          currentModel = payload.model;
-          sessionModels.add(payload.model);
-        }
-      } else if (type === 'response_item' && payload && typeof payload === 'object') {
-        const kind = payload.type;
-        if (
-          kind === 'function_call' ||
-          (kind === 'message' && payload.role === 'assistant')
-        ) {
-          sessionTurns += 1;
-          addModel(byModel, currentModel, {
-            turns: 1,
-            inputTokens: 0,
-            outputTokens: 0,
-            cacheRead: 0,
-            cacheCreation: 0,
-          });
-          let itemAdded = 0;
-          let itemDeleted = 0;
-          if (kind === 'function_call') {
-            const { added, deleted } = countCodexFunctionCallLines(payload);
-            itemAdded = added;
-            itemDeleted = deleted;
-            if (added || deleted) {
-              sessionLinesAdded += added;
-              sessionLinesDeleted += deleted;
-            }
-          }
-          if (tsValid !== null)
-            addToDaily(daily, tsValid, 'codex', 1, 0, 0, itemAdded, itemDeleted);
-        }
-      } else if (type === 'event_msg' && payload?.type === 'token_count') {
-        const info = payload.info?.last_token_usage;
-        if (info) {
-          const rawIn = intVal(info.input_tokens);
-          const cacheDelta = intVal(info.cached_input_tokens);
-          const inDelta = Math.max(0, rawIn - cacheDelta);
-          const outDelta = intVal(info.output_tokens);
-          sessionIn += inDelta;
-          sessionOut += outDelta;
-          sessionCache += cacheDelta;
-          addModel(byModel, currentModel, {
-            turns: 0,
-            inputTokens: inDelta,
-            outputTokens: outDelta,
-            cacheRead: cacheDelta,
-            cacheCreation: 0,
-          });
-          addRolling(agg, inDelta + outDelta, tsValid, now, filePath);
-          if (tsValid !== null) addToDaily(daily, tsValid, 'codex', 0, inDelta, outDelta);
-        }
+    for (const e of parsed.events) {
+      if (e.kind === 'modelTurn') {
+        addModel(byModel, e.model, {
+          turns: 1,
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheRead: 0,
+          cacheCreation: 0,
+        });
+        if (e.ts !== null)
+          addToDaily(daily, e.ts, 'codex', 1, 0, 0, e.added, e.deleted);
+      } else {
+        addModel(byModel, e.model, {
+          turns: 0,
+          inputTokens: e.inDelta,
+          outputTokens: e.outDelta,
+          cacheRead: e.cacheDelta,
+          cacheCreation: 0,
+        });
+        addRolling(agg, e.inDelta + e.outDelta, e.ts, now, filePath);
+        if (e.ts !== null) addToDaily(daily, e.ts, 'codex', 0, e.inDelta, e.outDelta);
       }
     }
 
-    agg.turns += sessionTurns;
-    agg.inputTokens += sessionIn;
-    agg.outputTokens += sessionOut;
-    agg.linesAdded += sessionLinesAdded;
-    agg.linesDeleted += sessionLinesDeleted;
+    agg.turns += parsed.sessionTurns;
+    agg.inputTokens += parsed.sessionIn;
+    agg.outputTokens += parsed.sessionOut;
+    agg.linesAdded += parsed.sessionLinesAdded;
+    agg.linesDeleted += parsed.sessionLinesDeleted;
 
-    const key = cwd ?? '(unknown)';
+    const key = parsed.cwd ?? '(unknown)';
     const proj = ensureProject(projects, key, key);
     proj.sessions += 1;
-    proj.turns += sessionTurns;
-    proj.inputTokens += sessionIn;
-    proj.outputTokens += sessionOut;
-    proj.cacheRead += sessionCache;
-    proj.linesAdded += sessionLinesAdded;
-    proj.linesDeleted += sessionLinesDeleted;
-    proj.firstActivity = minNum(proj.firstActivity, firstTs);
-    proj.lastActivity = maxNum(proj.lastActivity, lastTs);
-    for (const m of sessionModels) proj.models.add(m);
+    proj.turns += parsed.sessionTurns;
+    proj.inputTokens += parsed.sessionIn;
+    proj.outputTokens += parsed.sessionOut;
+    proj.cacheRead += parsed.sessionCache;
+    proj.linesAdded += parsed.sessionLinesAdded;
+    proj.linesDeleted += parsed.sessionLinesDeleted;
+    proj.firstActivity = minNum(proj.firstActivity, parsed.firstTs);
+    proj.lastActivity = maxNum(proj.lastActivity, parsed.lastTs);
+    for (const m of parsed.models) proj.models.add(m);
   }
 }
 
@@ -546,7 +662,8 @@ function scanOllama(
   let state: any;
   try {
     state = JSON.parse(raw);
-  } catch {
+  } catch (e) {
+    logSilent('stats.overcliStore', e);
     return;
   }
   const projectList: any[] = Array.isArray(state?.projects) ? state.projects : [];

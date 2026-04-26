@@ -3,14 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   codexPermissionMapping,
   codexTransportPermissions,
-  collapsePartialAssistants,
-  extractCodexExecSnapshot,
   extractRequestedPath,
   geminiPermissionMapping,
   isInsideAllowedDirs,
   normalizeAllowedDirs,
-  summarizeToolUse,
-} from './runner';
+} from './permissionRules';
+import { summarizeToolUse } from './toolDescription';
+import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
 import type { StreamEvent } from '../shared/types';
 
 describe('codexPermissionMapping', () => {
