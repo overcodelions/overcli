@@ -1,14 +1,17 @@
-// Per-backend specification. Today this is the seam Claude has been
-// migrated to; Codex / Gemini / Ollama still live inline in runner.ts and
-// will be ported to this same shape one at a time.
+// Per-backend specification. The goal is that every backend-specific
+// decision (CLI args, stdin envelope, stdout parsing, permission mapping)
+// is reachable through a single registry — runner.ts becomes an
+// orchestrator that spawns, forwards stdout chunks, and emits events,
+// with no `if (backend === 'foo')` branches.
 //
-// The goal is that every backend-specific decision (CLI args, stdin
-// envelope, parser state init, permission mapping) is reachable through a
-// single registry — runner.ts becomes an orchestrator that spawns,
-// collects stdout, and forwards events, with no `if (backend === 'foo')`
-// branches.
+// Migration status:
+//   - buildArgs / buildEnvelope: all four backends.
+//   - parseChunk: claude only. Codex (exec/proto/app-server) and Gemini
+//     fall through to the inline path in runner.ts handleStdout. The
+//     `parseChunk` field is optional precisely so unmigrated backends
+//     can stay on the inline path until they're ported.
 
-import type { Attachment, Backend, EffortLevel, PermissionMode, UUID } from '../../shared/types';
+import type { Attachment, Backend, EffortLevel, PermissionMode, StreamEvent, UUID } from '../../shared/types';
 
 export interface BackendSendArgs {
   conversationId: UUID;
@@ -35,6 +38,20 @@ export interface BackendCtx {
   ): Array<{ user: string; assistant: string }> | undefined;
 }
 
+/// Result of feeding a single stdout chunk through a spec's parser.
+/// Pure: parseChunk should not emit on its own — it returns events the
+/// runner will forward to the renderer plus optional side-channel
+/// signals (session id discovered mid-stream, etc).
+export interface ParseChunkResult {
+  /// Events to forward on the main `stream` channel, in order.
+  events: StreamEvent[];
+  /// Set when this chunk surfaced the CLI's session id (claude's
+  /// `systemInit`, codex proto's `session_configured`). The runner
+  /// stashes it on the active process and emits a `sessionConfigured`
+  /// side-channel event.
+  sessionConfigured?: { sessionId: string; rolloutPath?: string };
+}
+
 /// What a backend tells the runner to do for a single send.
 export interface BackendSpec {
   name: Backend;
@@ -44,5 +61,11 @@ export interface BackendSpec {
   buildEnvelope(args: BackendSendArgs, ctx: BackendCtx): string;
   /// Fresh parser state for a new subprocess. Returned as `unknown` so the
   /// runner stores it opaquely; the spec's parseChunk owns the type.
+  /// State should encapsulate everything parseChunk needs across calls —
+  /// most notably the partial-line buffer for line-delimited backends.
   makeParserState?(): unknown;
+  /// Consume one stdout chunk, mutate state, and return the resulting
+  /// events. Optional during the migration: backends without a
+  /// parseChunk still go through runner.ts's inline switch.
+  parseChunk?(chunk: string, state: unknown): ParseChunkResult;
 }

@@ -22,7 +22,8 @@ import {
   Attachment,
   UserInputAnswer,
 } from '../shared/types';
-import { ClaudeParserState, parseClaudeLine } from './parsers/claude';
+// Claude parser internals now live behind backends/claude.ts. The runner
+// only sees opaque parserState on ActiveProcess and dispatches via spec.
 import {
   CodexAppServerParserState,
   makeCodexAppServerParserState,
@@ -156,10 +157,12 @@ interface ActiveProcess {
   /// covers the narrower case where Claude re-invokes the same tool later
   /// in the current turn.
   sessionAllowedTools: Set<string>;
-  /// Claude stream-parser state. Kept on the process so per-token
-  /// `stream_event` deltas accumulate into a single live assistant
-  /// snapshot with a stable id. Only populated for the claude backend.
-  claudeParserState?: ClaudeParserState;
+  /// Opaque per-backend parser state, owned by the spec via
+  /// `BackendSpec.makeParserState()`. The runner only stores it; the
+  /// spec's `parseChunk` reads/writes it. Backends that haven't been
+  /// migrated to parseChunk yet (codex/gemini) continue to read their
+  /// state from named ActiveProcess fields below.
+  parserState?: unknown;
   /// Stashed args from the most recent user-initiated send. Used by the
   /// Allow+Add Dir auto-resume path to respawn Claude with updated
   /// `--add-dir` flags and `--resume` the session without making the
@@ -1685,9 +1688,7 @@ export class RunnerManager {
       geminiAssistantNeedsSplit: false,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
-      claudeParserState: getBackendSpec(args.backend)?.makeParserState?.() as
-        | ClaudeParserState
-        | undefined,
+      parserState: getBackendSpec(args.backend).makeParserState?.(),
     };
     this.procs.set(args.conversationId, active);
     if (args.backend === 'codex' && codexMode && codexPerms) {
@@ -1783,38 +1784,47 @@ export class RunnerManager {
       });
       return;
     }
-    active.stdoutBuffer += chunk;
-    const lines = active.stdoutBuffer.split('\n');
-    active.stdoutBuffer = lines.pop() ?? '';
     const emitted: StreamEvent[] = [];
     let sessionConfigured: { sessionId: string; rolloutPath?: string } | undefined;
-    for (const raw of lines) {
-      if (!raw) continue;
-      if (active.backend === 'claude') {
-        const evt = parseClaudeLine(raw, active.claudeParserState);
-        if (evt) emitted.push(evt);
-      } else if (active.backend === 'codex') {
-        // codex stdout in app-server mode is consumed by CodexAppServerClient;
-        // exec mode produces a text stream that's handled in the early-return
-        // branch above (extractCodexExecSnapshot). Nothing to do here.
-      } else {
-        const { parseGeminiLine } = require('./parsers/gemini');
-        const evt = parseGeminiLine(raw);
-        if (evt) {
-          if (evt.kind.type === 'assistant') {
-            emitted.push(this.coalesceGeminiAssistant(active, evt));
-          } else {
-            if (active.backend === 'gemini' && evt.kind.type === 'toolResult') {
-              active.geminiAssistantNeedsSplit = true;
+
+    // Migrated backends: spec.parseChunk owns the line buffer and the
+    // session-id extraction. Unmigrated backends (codex/gemini) keep
+    // running through the inline branches below until their specs gain
+    // a parseChunk implementation.
+    const spec = getBackendSpec(active.backend);
+    if (spec.parseChunk) {
+      const result = spec.parseChunk(chunk, active.parserState);
+      emitted.push(...result.events);
+      if (result.sessionConfigured) sessionConfigured = result.sessionConfigured;
+    } else {
+      active.stdoutBuffer += chunk;
+      const lines = active.stdoutBuffer.split('\n');
+      active.stdoutBuffer = lines.pop() ?? '';
+      for (const raw of lines) {
+        if (!raw) continue;
+        if (active.backend === 'codex') {
+          // codex stdout in app-server mode is consumed by CodexAppServerClient;
+          // exec mode produces a text stream handled in the early-return
+          // branch above (extractCodexExecSnapshot). Nothing to do here.
+        } else {
+          const { parseGeminiLine } = require('./parsers/gemini');
+          const evt = parseGeminiLine(raw);
+          if (evt) {
+            if (evt.kind.type === 'assistant') {
+              emitted.push(this.coalesceGeminiAssistant(active, evt));
+            } else {
+              if (active.backend === 'gemini' && evt.kind.type === 'toolResult') {
+                active.geminiAssistantNeedsSplit = true;
+              }
+              emitted.push(evt);
             }
-            emitted.push(evt);
           }
         }
       }
-    }
-    for (const e of emitted) {
-      if (e.kind.type === 'systemInit' && e.kind.info.sessionId) {
-        sessionConfigured = { sessionId: e.kind.info.sessionId };
+      for (const e of emitted) {
+        if (e.kind.type === 'systemInit' && e.kind.info.sessionId) {
+          sessionConfigured = { sessionId: e.kind.info.sessionId };
+        }
       }
     }
     // A single stdout read can carry dozens of `stream_event` deltas for
