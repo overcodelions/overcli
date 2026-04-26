@@ -1,10 +1,21 @@
-// Claude CLI backend spec. Owns the CLI args and stdin envelope shape
-// for `claude -p --input-format stream-json`. The parser state is still
-// constructed via `makeClaudeParserState` from ../parsers/claude.
+// Claude CLI backend spec. Owns the CLI args, stdin envelope shape, and
+// stdout parsing for `claude -p --input-format stream-json`. State for a
+// single subprocess (line buffer + the streaming-deltas accumulator) is
+// constructed via `makeParserState` and threaded through `parseChunk` —
+// the runner stores it opaquely.
 
-import { makeClaudeParserState } from '../parsers/claude';
+import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../parsers/claude';
 import { normalizeAllowedDirs } from '../permissionRules';
-import type { BackendCtx, BackendSendArgs, BackendSpec } from './types';
+import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
+
+interface ClaudeStreamState {
+  /// Partial line carried from the previous chunk — claude emits
+  /// newline-delimited JSON and a single read can split a line in half.
+  buffer: string;
+  /// State the underlying parser keeps across lines (in-flight assistant
+  /// id, accumulated content blocks, snapshot throttle).
+  inner: ClaudeParserState;
+}
 
 export const claudeBackend: BackendSpec = {
   name: 'claude',
@@ -65,7 +76,29 @@ export const claudeBackend: BackendSpec = {
     });
   },
 
-  makeParserState(): unknown {
-    return makeClaudeParserState();
+  makeParserState(): ClaudeStreamState {
+    return { buffer: '', inner: makeClaudeParserState() };
+  },
+
+  parseChunk(chunk: string, state: unknown): ParseChunkResult {
+    const s = state as ClaudeStreamState;
+    s.buffer += chunk;
+    const lines = s.buffer.split('\n');
+    s.buffer = lines.pop() ?? '';
+    const events = [];
+    let sessionConfigured: ParseChunkResult['sessionConfigured'];
+    for (const raw of lines) {
+      if (!raw) continue;
+      const evt = parseClaudeLine(raw, s.inner);
+      if (!evt) continue;
+      events.push(evt);
+      // The sessionId arrives on the systemInit event at the start of
+      // every turn (and on resume). Hand it back so the runner can pin
+      // the conversation to it via a sessionConfigured side-channel.
+      if (evt.kind.type === 'systemInit' && evt.kind.info.sessionId) {
+        sessionConfigured = { sessionId: evt.kind.info.sessionId };
+      }
+    }
+    return sessionConfigured ? { events, sessionConfigured } : { events };
   },
 };
