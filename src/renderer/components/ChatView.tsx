@@ -136,17 +136,26 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
   );
 }
 
+type EventRowProps = {
+  event: StreamEvent;
+  conversationId: UUID;
+  toolUseIndex: Map<string, ToolUseBlock>;
+  toolResultIndex: Map<string, ToolResultBlock>;
+};
+
+/// Only `assistant` and `toolResult` rows look up their props' indices
+/// at render time; for every other row type the indices are unused and
+/// their reference churn (a fresh Map is materialized on every chunk
+/// during streaming) would needlessly invalidate React.memo. Custom
+/// equality skips index comparison for index-independent rows so a long
+/// conversation's old user / notice / permission / result rows stay
+/// memoized through the stream.
 const EventRow = memo(function EventRow({
   event,
   conversationId,
   toolUseIndex,
   toolResultIndex,
-}: {
-  event: StreamEvent;
-  conversationId: UUID;
-  toolUseIndex: Map<string, ToolUseBlock>;
-  toolResultIndex: Map<string, ToolResultBlock>;
-}) {
+}: EventRowProps) {
   switch (event.kind.type) {
     case 'localUser':
       return <UserBubble text={event.kind.text} attachments={event.kind.attachments} />;
@@ -173,7 +182,22 @@ const EventRow = memo(function EventRow({
     default:
       return null;
   }
-});
+}, areEventRowPropsEqual);
+
+/// Returns true to skip the re-render. `event` is mutated immutably
+/// (new ref per change) and conversationId is stable, so reference
+/// equality on those is enough. The indices only matter for rows that
+/// read them — index-independent rows can ignore index churn entirely.
+function areEventRowPropsEqual(prev: EventRowProps, next: EventRowProps): boolean {
+  if (prev.event !== next.event) return false;
+  if (prev.conversationId !== next.conversationId) return false;
+  const t = next.event.kind.type;
+  if (t === 'assistant' || t === 'toolResult') {
+    if (prev.toolUseIndex !== next.toolUseIndex) return false;
+    if (prev.toolResultIndex !== next.toolResultIndex) return false;
+  }
+  return true;
+}
 
 function NewAgentIntro({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
