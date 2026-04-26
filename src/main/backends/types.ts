@@ -50,6 +50,16 @@ export interface ParseChunkResult {
   /// stashes it on the active process and emits a `sessionConfigured`
   /// side-channel event.
   sessionConfigured?: { sessionId: string; rolloutPath?: string };
+  /// Set when this chunk should bump the live activity caption (codex
+  /// exec keeps `Writing…` painted while text streams in). The runner
+  /// emits a `running` side-channel event with this label.
+  liveActivity?: string;
+}
+
+/// Optional context passed to `makeParserState`. Only codex needs it
+/// today (its exec/proto/app-server transports parse very differently).
+export interface MakeParserStateOpts {
+  codexMode?: 'proto' | 'exec' | 'app-server';
 }
 
 /// What a backend tells the runner to do for a single send.
@@ -63,7 +73,9 @@ export interface BackendSpec {
   /// runner stores it opaquely; the spec's parseChunk owns the type.
   /// State should encapsulate everything parseChunk needs across calls —
   /// most notably the partial-line buffer for line-delimited backends.
-  makeParserState?(): unknown;
+  /// Opts surface the small bits of spawn-time context certain backends
+  /// need (codex's transport mode); most specs ignore the argument.
+  makeParserState?(opts?: MakeParserStateOpts): unknown;
   /// Consume one stdout chunk, mutate state, and return the resulting
   /// events. Optional during the migration: backends without a
   /// parseChunk still go through runner.ts's inline switch.
