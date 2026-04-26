@@ -287,6 +287,29 @@ function registerIpc(): void {
   });
   ipcMain.handle('app:reloadStats', () => computeStats());
 
+  // Cross-platform "an agent finished, look at me" attention nudge.
+  // Skipped when the window is focused (the sidebar checkmark is enough)
+  // and debounced so a batch of completions doesn't flash repeatedly.
+  let lastAttentionAt = 0;
+  const ATTENTION_DEBOUNCE_MS = 10_000;
+  ipcMain.handle('app:notifyCompleted', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isFocused()) return;
+    const now = Date.now();
+    if (now - lastAttentionAt < ATTENTION_DEBOUNCE_MS) return;
+    lastAttentionAt = now;
+    if (process.platform === 'darwin') {
+      // app.dock is undefined on Win/Linux; the platform check above
+      // guards this, but we keep the optional chain for safety.
+      app.dock?.bounce('informational');
+    } else {
+      // flashFrame(true) starts the flash; the OS clears it when the
+      // user focuses the window. No need to flashFrame(false) on a
+      // timer — that would steal the attention prematurely.
+      mainWindow.flashFrame(true);
+    }
+  });
+
   ipcMain.handle('auth:openCliLogin', (_e, backend: Backend) => {
     if (backend === 'ollama') {
       return { ok: false, error: 'Ollama does not need CLI login — start the server from the banner.' };

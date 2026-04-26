@@ -706,6 +706,11 @@ export interface IPCInvokeMap {
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
+  /// Notify the OS that an agent finished while the app wasn't focused.
+  /// macOS: dock bounce. Windows/Linux: taskbar flash. No-op when the
+  /// window is already focused. Debounced in main to avoid a chain of
+  /// bounces when many agents finish in quick succession.
+  'app:notifyCompleted': () => void;
   'ollama:detect': () => OllamaDetectionReport;
   'ollama:hardware': () => OllamaHardwareReport;
   'ollama:catalog': () => OllamaRecommendedModel[];
