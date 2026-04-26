@@ -652,11 +652,15 @@ export class RunnerManager {
       active.reviewYolo = !!args.reviewYolo;
       active.cwd = args.cwd;
       active.lastSendArgs = args;
-      // Fresh per-backend parser state for the new turn (drops the
-      // previous turn's coalesce buffer / accumulator / snapshot id).
-      active.parserState = getBackendSpec(args.backend).makeParserState?.({
-        codexMode: active.codexMode,
-      });
+      // Per-backend turn-boundary reset. Specs that accumulate per-turn
+      // state (codex's exec snapshot, gemini's coalesce buffer) drop it
+      // here. Claude leaves resetForNewTurn undefined so its in-flight
+      // tracking survives the boundary — important when the user fires
+      // a follow-up while the previous response is still streaming;
+      // wiping inFlightEventId mid-stream would orphan the trailing
+      // chunks into a duplicate bubble. Claude's parser self-manages
+      // via message_start / message_stop instead.
+      getBackendSpec(args.backend).resetForNewTurn?.(active.parserState);
       if (!options.syntheticFromCollab) {
         active.collabBurst += 1;
         active.collabRoundsInBurst = 0;

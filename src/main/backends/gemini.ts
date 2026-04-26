@@ -94,6 +94,18 @@ export const geminiBackend: BackendSpec = {
     };
   },
 
+  resetForNewTurn(state: unknown): void {
+    if (!state) return;
+    const s = state as GeminiStreamState;
+    // Drop the previous turn's coalesce buffer + line buffer so the
+    // first assistant event of the new turn starts a fresh bubble.
+    s.buffer = '';
+    s.assistantEventId = undefined;
+    s.assistantText = '';
+    s.assistantToolUses = [];
+    s.assistantNeedsSplit = false;
+  },
+
   parseChunk(chunk: string, state: unknown): ParseChunkResult {
     const s = state as GeminiStreamState;
     s.buffer += chunk;

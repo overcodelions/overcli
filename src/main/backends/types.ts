@@ -80,4 +80,13 @@ export interface BackendSpec {
   /// events. Optional during the migration: backends without a
   /// parseChunk still go through runner.ts's inline switch.
   parseChunk?(chunk: string, state: unknown): ParseChunkResult;
+  /// Called when a new user turn arrives on an existing subprocess
+  /// (claude / codex stay alive across turns). Specs that accumulate
+  /// per-turn state — codex's growing exec snapshot, gemini's coalesce
+  /// buffer — implement this to drop that state without losing
+  /// subprocess-lifetime flags (compatibility-mode notice, session id
+  /// once seen). Specs whose state self-manages via stream events
+  /// (claude's message_start/stop) leave it undefined and the runner
+  /// preserves the current state across the turn boundary.
+  resetForNewTurn?(state: unknown): void;
 }
