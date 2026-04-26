@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { useAllRunners, useRunnerIsRunning } from '../runnersStore';
+import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { backendColor } from '../theme';
 
@@ -432,6 +432,7 @@ function ColosseumSidebarGroup({
             const isWinner = colosseum.winnerId === conv.id;
             const runner = runners[conv.id];
             const isRunning = runner?.isRunning ?? false;
+            const completed = !isRunning && !!runner?.completedAt;
             return (
               <button
                 key={conv.id}
@@ -444,7 +445,11 @@ function ColosseumSidebarGroup({
                 }
                 title={conv.name}
               >
-                <SidebarMarker color={backendColor(conv.primaryBackend)} active={isRunning} />
+                <SidebarMarker
+                  color={backendColor(conv.primaryBackend)}
+                  active={isRunning}
+                  completed={completed}
+                />
                 <span className="truncate flex-1">
                   {conv.primaryBackend}
                   {conv.currentModel ? ` · ${conv.currentModel}` : ''}
@@ -495,6 +500,8 @@ function ConversationRow({ conv, selected, onClick }: {
 }) {
   const bgColor = backendColor(conv.primaryBackend);
   const isRunning = useRunnerIsRunning(conv.id);
+  const completedAt = useRunnerCompletedAt(conv.id);
+  const completed = !isRunning && !!completedAt;
   const openSheet = useStore((s) => s.openSheet);
   const isAgent = isAgentConversation(conv);
 
@@ -514,7 +521,7 @@ function ConversationRow({ conv, selected, onClick }: {
       title={conv.name}
     >
       <button onClick={onClick} className="flex items-center gap-1.5 flex-1 min-w-0 text-left px-2 py-1">
-        <SidebarMarker color={bgColor} active={isRunning} />
+        <SidebarMarker color={bgColor} active={isRunning} completed={completed} />
         {isAgent && <span className="text-[10px] text-ink-faint">⎇</span>}
         <span className={'truncate flex-1 ' + (selected ? 'font-medium' : '')}>{conv.name}</span>
       </button>
@@ -557,9 +564,42 @@ function effectiveColosseumStatus(
 /// was barely visible.
 const RUNNING_MARKER_COLOR = 'var(--c-running-pulse)';
 
-function SidebarMarker({ color, active }: { color: string; active: boolean }) {
+function SidebarMarker({
+  color,
+  active,
+  completed = false,
+}: {
+  color: string;
+  active: boolean;
+  completed?: boolean;
+}) {
   const pingStyle = useMemo(() => synchronizedAnimationStyle(1200), []);
   const markerColor = active ? RUNNING_MARKER_COLOR : color;
+
+  if (!active && completed) {
+    // Replaces the dot with a checkmark in the same 10px box so the row
+    // doesn't reflow. Cleared on selection (or after a brief flash if
+    // the conv was already selected when it finished) — see store.ts.
+    return (
+      <span
+        className="flex h-2.5 w-2.5 flex-shrink-0 items-center justify-center"
+        style={{ color: RUNNING_MARKER_COLOR }}
+        title="Finished"
+        aria-label="Finished"
+      >
+        <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden="true">
+          <path
+            d="M2.5 6.5l2.5 2.5 4.5-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+    );
+  }
 
   if (!active) {
     return <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: markerColor }} />;

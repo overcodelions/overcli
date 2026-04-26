@@ -332,6 +332,24 @@ function uuid(): string {
 // newRunnerState is imported from ./runnersStore — kept as a single
 // source of truth for the initial shape.
 
+/// How long the green completion checkmark stays visible after the user
+/// is on the conversation when it finishes (or selects it once finished).
+/// Long enough to register, short enough to feel like a flash.
+const COMPLETION_FLASH_MS = 3000;
+
+/// Clear the completion marker after a brief flash, but only if the
+/// conversation hasn't completed *again* in the meantime — comparing
+/// the captured timestamp avoids racing a fresh completion that landed
+/// during the timeout.
+function scheduleClearCompletion(conversationId: UUID, completedAt: number): void {
+  setTimeout(() => {
+    const runner = getRunner(conversationId);
+    if (runner?.completedAt === completedAt) {
+      useRunnersStore.getState().patchRunner(conversationId, { completedAt: null });
+    }
+  }, COMPLETION_FLASH_MS);
+}
+
 function findConversation(state: StoreState, id: UUID): Conversation | null {
   return findConversationFromIndex(state, id);
 }
@@ -608,7 +626,11 @@ export const useStore = create<StoreState>((set, get) => ({
       lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
     }));
     window.overcli.invoke('store:saveSelection', id);
-    if (id) void get().loadHistoryIfNeeded(id);
+    if (id) {
+      void get().loadHistoryIfNeeded(id);
+      const completedAt = getRunner(id)?.completedAt;
+      if (completedAt) scheduleClearCompletion(id, completedAt);
+    }
   },
 
   startNewConversation(projectId) {
@@ -1665,6 +1687,7 @@ export const useStore = create<StoreState>((set, get) => ({
         errorMessage: undefined,
         isRunning: true,
         activityLabel: runner.activityLabel ?? 'Thinking…',
+        completedAt: null,
       };
     });
 
@@ -2038,10 +2061,18 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (event.type === 'running') {
       // Ignore the menu-sentinel used for Cmd+N; routed separately.
       if (event.conversationId === '__menu_new_conversation__') return;
+      const wasRunning = getRunner(event.conversationId)?.isRunning ?? false;
+      const justCompleted = wasRunning && !event.isRunning;
+      const justStarted = !wasRunning && event.isRunning;
+      const completedAt = justCompleted ? Date.now() : justStarted ? null : undefined;
       useRunnersStore.getState().patchRunner(event.conversationId, {
         isRunning: event.isRunning,
         activityLabel: event.activityLabel,
+        ...(completedAt !== undefined ? { completedAt } : {}),
       });
+      if (justCompleted && get().selectedConversationId === event.conversationId) {
+        scheduleClearCompletion(event.conversationId, completedAt as number);
+      }
       const state = get();
       const conv = findConversation(state, event.conversationId);
       const colosseumId = conv?.colosseumId;
