@@ -1,5 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { useRunner } from '../runnersStore';
 import { Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { UserBubble } from './UserBubble';
 import { AssistantBubble } from './AssistantBubble';
@@ -17,7 +18,7 @@ import { ActivityStrip } from './ActivityStrip';
 import { useConversation } from '../hooks';
 
 export function ChatView({ conversationId }: { conversationId: UUID }) {
-  const runner = useStore((s) => s.runners[conversationId]);
+  const runner = useRunner(conversationId);
   const showToolActivity = useStore((s) => s.showToolActivity);
   const events = runner?.events ?? [];
   const isRunning = runner?.isRunning ?? false;

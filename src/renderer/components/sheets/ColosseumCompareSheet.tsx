@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
+import { useAllRunners } from '../../runnersStore';
 import { UUID } from '@shared/types';
 
 interface FileStatus {
@@ -11,7 +12,7 @@ interface FileStatus {
 export function ColosseumCompareSheet({ colosseumId }: { colosseumId: UUID }) {
   const colosseum = useStore((s) => s.colosseums.find((c) => c.id === colosseumId));
   const projects = useStore((s) => s.projects);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   const selectConversation = useStore((s) => s.selectConversation);
   const resolveColosseum = useStore((s) => s.resolveColosseum);
   const project = projects.find((p) => p.id === colosseum?.projectId);

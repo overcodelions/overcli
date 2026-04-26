@@ -3,6 +3,7 @@ import { useStore } from './store';
 import { Backend, Conversation, UUID } from '@shared/types';
 import { SlashCommandEntry } from './components/Composer';
 import { findConversation, findContainerPath } from './conversationLookup';
+import { useRunnerEvents } from './runnersStore';
 
 /// Memoized lookup of a conversation anywhere in the store. Recomputes
 /// only when the underlying projects/workspaces arrays change — cheap
@@ -26,7 +27,7 @@ export function useSlashCommands(
   conversationId?: UUID | null,
 ): SlashCommandEntry[] {
   const capabilities = useStore((s) => s.capabilities);
-  const events = useStore((s) => (conversationId ? s.runners[conversationId]?.events : null));
+  const events = useRunnerEvents(conversationId);
   return useMemo(() => {
     const byName = new Map<string, SlashCommandEntry>();
     for (const e of capabilities?.entries ?? []) {

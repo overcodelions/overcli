@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { useRunnerEvents } from '../runnersStore';
 import { ConversationHeader } from './ConversationHeader';
 import { ChatView } from './ChatView';
 import { InputBar } from './InputBar';
@@ -26,7 +27,7 @@ export function ConversationPane() {
   const backendHealth = useStore((s) => s.backendHealth);
   const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
   const conv = useConversation(convId);
-  const events = useStore((s) => (convId ? s.runners[convId]?.events : null)) ?? null;
+  const events = useRunnerEvents(convId);
   const gitStatus = useStore((s) => (convId ? s.gitStatusByConv[convId] : undefined));
   const refreshGitStatus = useStore((s) => s.refreshGitStatus);
   // Count of file-modifying tool uses in this conversation. When it

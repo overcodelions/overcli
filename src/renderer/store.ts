@@ -37,6 +37,7 @@ import {
   findConvWithProjectPath,
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
+import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
 
 export type ActiveSheet =
@@ -79,25 +80,10 @@ export interface GitStatus {
   deletions: number;
 }
 
-/// Per-conversation runtime state. Keyed off conversation id.
-export interface RunnerState {
-  events: StreamEvent[];
-  isRunning: boolean;
-  activityLabel?: string;
-  errorMessage?: string;
-  pendingLocalUserIds: Set<UUID>;
-  /// Current model as reported by system:init events. May diverge from
-  /// conv.currentModel if the user switched mid-session.
-  currentModel: string;
-  /// History load state — prevents double-loading and drives the
-  /// loading indicator in ChatView.
-  historyLoaded: boolean;
-  historyLoading: boolean;
-  /// Codex runtime mode/flags for the currently running subprocess.
-  codexRuntimeMode?: 'proto' | 'exec' | 'app-server';
-  codexSandboxMode?: string;
-  codexApprovalPolicy?: string;
-}
+// RunnerState + newRunnerState live in ./runnersStore.ts. Re-exported
+// here for now so existing imports (`import { RunnerState } from '../store'`)
+// keep working during the migration.
+export type { RunnerState } from './runnersStore';
 
 interface StoreState {
   // Persistent model
@@ -152,7 +138,8 @@ interface StoreState {
   welcomeFocusToken: number;
 
   // Runtime
-  runners: Record<UUID, RunnerState>;
+  // (per-conversation runner state has moved to ./runnersStore.ts —
+  //  components subscribe via useRunner / useRunnerEvents / etc.)
   /// Session-scoped "most recently selected" timestamps, used by the
   /// command palette to sort its default (empty-query) ordering.
   /// Transient; resets on app restart.
@@ -342,21 +329,8 @@ function uuid(): string {
   });
 }
 
-function newRunnerState(): RunnerState {
-  return {
-    events: [],
-    isRunning: false,
-    activityLabel: undefined,
-    errorMessage: undefined,
-    pendingLocalUserIds: new Set(),
-    currentModel: '',
-    historyLoaded: false,
-    historyLoading: false,
-    codexRuntimeMode: undefined,
-    codexSandboxMode: undefined,
-    codexApprovalPolicy: undefined,
-  };
-}
+// newRunnerState is imported from ./runnersStore — kept as a single
+// source of truth for the initial shape.
 
 function findConversation(state: StoreState, id: UUID): Conversation | null {
   return findConversationFromIndex(state, id);
@@ -545,7 +519,6 @@ export const useStore = create<StoreState>((set, get) => ({
   capabilities: null,
   ollamaServerStatus: 'unknown',
   welcomeFocusToken: 0,
-  runners: {},
   lastSelectedAt: {},
   gitStatusByConv: {},
   projectIsGitRepo: {},
@@ -750,16 +723,17 @@ export const useStore = create<StoreState>((set, get) => ({
         .map((w) => w.id),
     );
 
+    const allRunners = getAllRunners();
     const runningIds = new Set<UUID>();
     for (const conv of project.conversations) {
-      if (state.runners[conv.id]?.isRunning) runningIds.add(conv.id);
+      if (allRunners[conv.id]?.isRunning) runningIds.add(conv.id);
     }
     for (const ws of impactedWorkspaces) {
       for (const conv of ws.conversations ?? []) {
         const touchesProject =
           deletedWorkspaceIds.has(ws.id) ||
           conv.workspaceAgentMemberIds?.some((memberId) => removedConversationIds.has(memberId));
-        if (touchesProject && state.runners[conv.id]?.isRunning) runningIds.add(conv.id);
+        if (touchesProject && allRunners[conv.id]?.isRunning) runningIds.add(conv.id);
       }
     }
     for (const convId of runningIds) {
@@ -839,8 +813,9 @@ export const useStore = create<StoreState>((set, get) => ({
     const workspace = get().workspaces.find((w) => w.id === id);
     if (!workspace) return;
 
+    const allRunners = getAllRunners();
     const runningIds = (workspace.conversations ?? [])
-      .filter((conv) => get().runners[conv.id]?.isRunning)
+      .filter((conv) => allRunners[conv.id]?.isRunning)
       .map((conv) => conv.id);
     for (const convId of runningIds) {
       await get().stop(convId);
@@ -1497,12 +1472,13 @@ export const useStore = create<StoreState>((set, get) => ({
     const project = state.projects.find((p) => p.id === projectId);
     if (!project) return 0;
     const selectedId = state.selectedConversationId;
+    const allRunners = getAllRunners();
     const ids = project.conversations
       .filter(
         (c) =>
           !c.hidden &&
           c.id !== selectedId &&
-          !(state.runners[c.id]?.isRunning ?? false),
+          !(allRunners[c.id]?.isRunning ?? false),
       )
       .map((c) => c.id);
     if (!ids.length) return 0;
@@ -1528,12 +1504,13 @@ export const useStore = create<StoreState>((set, get) => ({
     const workspace = state.workspaces.find((w) => w.id === workspaceId);
     if (!workspace) return 0;
     const selectedId = state.selectedConversationId;
+    const allRunners = getAllRunners();
     const ids = (workspace.conversations ?? [])
       .filter(
         (c) =>
           !c.hidden &&
           c.id !== selectedId &&
-          !(state.runners[c.id]?.isRunning ?? false),
+          !(allRunners[c.id]?.isRunning ?? false),
       )
       .map((c) => c.id);
     if (!ids.length) return 0;
@@ -1660,53 +1637,44 @@ export const useStore = create<StoreState>((set, get) => ({
     // tracked in `pendingLocalUserIds` so `mergeIncomingEvents` can fold
     // in the main-emitted localUser when it arrives instead of double-rendering.
     const optimisticUserId = `local-${uuid()}`;
+    const optimisticEvent: StreamEvent = {
+      id: optimisticUserId,
+      timestamp: Date.now(),
+      raw: prompt,
+      kind: {
+        type: 'localUser',
+        text: prompt,
+        attachments: attachments.length ? attachments : undefined,
+      },
+      revision: 0,
+    };
     set((s) => {
       const nextAtts = { ...s.conversationAttachments };
       delete nextAtts[conversationId];
-      const runner = s.runners[conversationId] ?? newRunnerState();
-      const nextPending = new Set(runner.pendingLocalUserIds);
-      nextPending.add(optimisticUserId);
-      const optimisticEvent: StreamEvent = {
-        id: optimisticUserId,
-        timestamp: Date.now(),
-        raw: prompt,
-        kind: {
-          type: 'localUser',
-          text: prompt,
-          attachments: attachments.length ? attachments : undefined,
-        },
-        revision: 0,
-      };
       return {
         conversationDrafts: { ...s.conversationDrafts, [conversationId]: '' },
         conversationAttachments: nextAtts,
-        runners: {
-          ...s.runners,
-          [conversationId]: {
-            ...runner,
-            events: [...runner.events, optimisticEvent],
-            pendingLocalUserIds: nextPending,
-            errorMessage: undefined,
-            isRunning: true,
-            activityLabel: runner.activityLabel ?? 'Thinking…',
-          },
-        },
+      };
+    });
+    useRunnersStore.getState().patchRunner(conversationId, (runner) => {
+      const nextPending = new Set(runner.pendingLocalUserIds);
+      nextPending.add(optimisticUserId);
+      return {
+        events: [...runner.events, optimisticEvent],
+        pendingLocalUserIds: nextPending,
+        errorMessage: undefined,
+        isRunning: true,
+        activityLabel: runner.activityLabel ?? 'Thinking…',
       };
     });
 
     const backend = conv.primaryBackend ?? defaultBackend(state.settings);
     if (!isBackendEnabled(state.settings, backend)) {
-      set((s) => ({
-        runners: {
-          ...s.runners,
-          [conversationId]: {
-            ...(s.runners[conversationId] ?? newRunnerState()),
-            errorMessage: `${backend} is disabled in Settings > Backends.`,
-            isRunning: false,
-            activityLabel: undefined,
-          },
-        },
-      }));
+      useRunnersStore.getState().patchRunner(conversationId, {
+        errorMessage: `${backend} is disabled in Settings > Backends.`,
+        isRunning: false,
+        activityLabel: undefined,
+      });
       return;
     }
     const effectivePermissionMode = conv.pendingPermissionMode ?? conv.permissionMode ?? 'default';
@@ -1728,18 +1696,12 @@ export const useStore = create<StoreState>((set, get) => ({
     if (backend === 'ollama' && !model) {
       const pick = await pickInstalledOllamaModel(state.settings);
       if (!pick) {
-        set((s) => ({
-          runners: {
-            ...s.runners,
-            [conversationId]: {
-              ...(s.runners[conversationId] ?? newRunnerState()),
-              errorMessage:
-                'No Ollama models pulled yet. Open Settings → Local models to pull one.',
-              isRunning: false,
-              activityLabel: undefined,
-            },
-          },
-        }));
+        useRunnersStore.getState().patchRunner(conversationId, {
+          errorMessage:
+            'No Ollama models pulled yet. Open Settings → Local models to pull one.',
+          isRunning: false,
+          activityLabel: undefined,
+        });
         return;
       }
       model = pick;
@@ -1809,9 +1771,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async resetConversation(conversationId) {
     await window.overcli.invoke('runner:newConversation', { conversationId });
-    set((s) => ({
-      runners: { ...s.runners, [conversationId]: newRunnerState() },
-    }));
+    useRunnersStore.getState().resetRunner(conversationId);
     mutateConversation(set, get, conversationId, (c) => ({
       ...c,
       sessionId: undefined,
@@ -1840,10 +1800,9 @@ export const useStore = create<StoreState>((set, get) => ({
       });
       await saveConversationState(get);
     }
-    set((s) => {
-      const runner = s.runners[conversationId];
-      if (!runner) return s;
-      const events = runner.events.map((e) => {
+    const r = getRunner(conversationId);
+    if (r) {
+      const events = r.events.map((e) => {
         if (e.kind.type === 'permissionRequest' && e.kind.info.requestId === requestId) {
           return {
             ...e,
@@ -1856,8 +1815,8 @@ export const useStore = create<StoreState>((set, get) => ({
         }
         return e;
       });
-      return { runners: { ...s.runners, [conversationId]: { ...runner, events } } };
-    });
+      useRunnersStore.getState().patchRunner(conversationId, { events });
+    }
   },
 
   async respondCodexApproval(conversationId, callId, kind, approved) {
@@ -1867,10 +1826,9 @@ export const useStore = create<StoreState>((set, get) => ({
       kind,
       approved,
     });
-    set((s) => {
-      const runner = s.runners[conversationId];
-      if (!runner) return s;
-      const events = runner.events.map((e) => {
+    const r = getRunner(conversationId);
+    if (r) {
+      const events = r.events.map((e) => {
         if (e.kind.type === 'codexApproval' && e.kind.info.callId === callId) {
           return {
             ...e,
@@ -1883,8 +1841,8 @@ export const useStore = create<StoreState>((set, get) => ({
         }
         return e;
       });
-      return { runners: { ...s.runners, [conversationId]: { ...runner, events } } };
-    });
+      useRunnersStore.getState().patchRunner(conversationId, { events });
+    }
   },
 
   async respondUserInput(conversationId, requestId, answers) {
@@ -1893,10 +1851,9 @@ export const useStore = create<StoreState>((set, get) => ({
       requestId,
       answers,
     });
-    set((s) => {
-      const runner = s.runners[conversationId];
-      if (!runner) return s;
-      const events = runner.events.map((e) => {
+    const r = getRunner(conversationId);
+    if (r) {
+      const events = r.events.map((e) => {
         if (e.kind.type === 'userInputRequest' && e.kind.info.requestId === requestId) {
           return {
             ...e,
@@ -1909,32 +1866,22 @@ export const useStore = create<StoreState>((set, get) => ({
         }
         return e;
       });
-      return {
-        runners: {
-          ...s.runners,
-          [conversationId]: { ...runner, events, activityLabel: 'Continuing…' },
-        },
-      };
-    });
+      useRunnersStore.getState().patchRunner(conversationId, {
+        events,
+        activityLabel: 'Continuing…',
+      });
+    }
   },
 
   async loadHistoryIfNeeded(conversationId) {
     const state = get();
     const conv = findConversation(state, conversationId);
     if (!conv) return;
-    const existing = state.runners[conversationId];
+    const existing = getRunner(conversationId);
     if (existing && (existing.historyLoaded || existing.historyLoading)) return;
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
-    set((s) => ({
-      runners: {
-        ...s.runners,
-        [conversationId]: {
-          ...(s.runners[conversationId] ?? newRunnerState()),
-          historyLoading: true,
-        },
-      },
-    }));
+    useRunnersStore.getState().patchRunner(conversationId, { historyLoading: true });
     const events = await window.overcli.invoke('runner:loadHistory', {
       conversationId,
       backend: conv.primaryBackend ?? defaultBackend(state.settings),
@@ -1944,23 +1891,16 @@ export const useStore = create<StoreState>((set, get) => ({
       conversationCreatedAt: conv.createdAt,
       conversationLastActiveAt: conv.lastActiveAt,
     });
-    set((s) => {
-      const existingRunner = s.runners[conversationId] ?? newRunnerState();
+    useRunnersStore.getState().patchRunner(conversationId, (existingRunner) => {
       // History events are inserted at the front; live events (if any came
       // in during the load) stay at the back, in timestamp order.
       const merged = [...events, ...existingRunner.events]
         .filter((e, i, arr) => arr.findIndex((x) => x.id === e.id) === i)
         .sort((a, b) => a.timestamp - b.timestamp);
       return {
-        runners: {
-          ...s.runners,
-          [conversationId]: {
-            ...existingRunner,
-            events: merged,
-            historyLoading: false,
-            historyLoaded: true,
-          },
-        },
+        events: merged,
+        historyLoading: false,
+        historyLoaded: true,
       };
     });
   },
@@ -2080,9 +2020,7 @@ export const useStore = create<StoreState>((set, get) => ({
       for (const e of event.events) {
         if (e.kind.type === 'systemInit') initForGlobal = e.kind.info;
       }
-
-      set((s) => {
-        const runner = s.runners[event.conversationId] ?? newRunnerState();
+      useRunnersStore.getState().patchRunner(event.conversationId, (runner) => {
         const nextEvents = mergeIncomingEvents(runner.events, event.events);
         const pending = new Set(runner.pendingLocalUserIds);
         for (const e of event.events) {
@@ -2094,34 +2032,15 @@ export const useStore = create<StoreState>((set, get) => ({
             currentModel = e.kind.info.model;
           }
         }
-        return {
-          runners: {
-            ...s.runners,
-            [event.conversationId]: {
-              ...runner,
-              events: nextEvents,
-              pendingLocalUserIds: pending,
-              currentModel,
-            },
-          },
-          lastInit: initForGlobal ?? s.lastInit,
-        };
+        return { events: nextEvents, pendingLocalUserIds: pending, currentModel };
       });
+      if (initForGlobal) set({ lastInit: initForGlobal });
     } else if (event.type === 'running') {
       // Ignore the menu-sentinel used for Cmd+N; routed separately.
       if (event.conversationId === '__menu_new_conversation__') return;
-      set((s) => {
-        const runner = s.runners[event.conversationId] ?? newRunnerState();
-        return {
-          runners: {
-            ...s.runners,
-            [event.conversationId]: {
-              ...runner,
-              isRunning: event.isRunning,
-              activityLabel: event.activityLabel,
-            },
-          },
-        };
+      useRunnersStore.getState().patchRunner(event.conversationId, {
+        isRunning: event.isRunning,
+        activityLabel: event.activityLabel,
       });
       const state = get();
       const conv = findConversation(state, event.conversationId);
@@ -2129,8 +2048,9 @@ export const useStore = create<StoreState>((set, get) => ({
       if (colosseumId) {
         const colosseum = state.colosseums.find((c) => c.id === colosseumId);
         if (colosseum && colosseum.status !== 'cancelled' && colosseum.status !== 'merged') {
+          const runners = getAllRunners();
           const allStopped = colosseum.contenderIds.every(
-            (cid) => !(get().runners[cid]?.isRunning ?? false),
+            (cid) => !(runners[cid]?.isRunning ?? false),
           );
           const nextStatus = allStopped ? 'comparing' : 'running';
           if (colosseum.status !== nextStatus) {
@@ -2144,14 +2064,9 @@ export const useStore = create<StoreState>((set, get) => ({
         }
       }
     } else if (event.type === 'error') {
-      set((s) => {
-        const runner = s.runners[event.conversationId] ?? newRunnerState();
-        return {
-          runners: {
-            ...s.runners,
-            [event.conversationId]: { ...runner, errorMessage: event.message, isRunning: false },
-          },
-        };
+      useRunnersStore.getState().patchRunner(event.conversationId, {
+        errorMessage: event.message,
+        isRunning: false,
       });
     } else if (event.type === 'sessionConfigured') {
       const store = get();
@@ -2172,19 +2087,10 @@ export const useStore = create<StoreState>((set, get) => ({
       });
       void saveConversationState(get);
     } else if (event.type === 'codexRuntimeMode') {
-      set((s) => {
-        const runner = s.runners[event.conversationId] ?? newRunnerState();
-        return {
-          runners: {
-            ...s.runners,
-            [event.conversationId]: {
-              ...runner,
-              codexRuntimeMode: event.mode,
-              codexSandboxMode: event.sandbox,
-              codexApprovalPolicy: event.approval,
-            },
-          },
-        };
+      useRunnersStore.getState().patchRunner(event.conversationId, {
+        codexRuntimeMode: event.mode,
+        codexSandboxMode: event.sandbox,
+        codexApprovalPolicy: event.approval,
       });
     } else if (event.type === 'ollamaServerStatus') {
       set({ ollamaServerStatus: event.status });

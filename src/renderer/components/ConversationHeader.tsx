@@ -1,5 +1,12 @@
 import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../store';
+import {
+  useAllRunners,
+  useRunnerCodexFlags,
+  useRunnerCurrentModel,
+  useRunnerIsRunning,
+  useRunnersStore,
+} from '../runnersStore';
 import { Backend, Conversation, PermissionMode, UUID, EffortLevel, StreamEvent } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation } from '../hooks';
@@ -32,11 +39,13 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const promoteReviewAgent = useStore((s) => s.promoteReviewAgent);
   const checkoutReviewBranchLocally = useStore((s) => s.checkoutReviewBranchLocally);
   const removeAgent = useStore((s) => s.removeAgent);
-  const runnerIsRunning = useStore((s) => s.runners[conversationId]?.isRunning ?? false);
-  const runnerModel = useStore((s) => s.runners[conversationId]?.currentModel ?? '');
-  const codexRuntimeMode = useStore((s) => s.runners[conversationId]?.codexRuntimeMode);
-  const codexSandboxMode = useStore((s) => s.runners[conversationId]?.codexSandboxMode ?? '');
-  const codexApprovalPolicy = useStore((s) => s.runners[conversationId]?.codexApprovalPolicy ?? '');
+  const runnerIsRunning = useRunnerIsRunning(conversationId);
+  const runnerModel = useRunnerCurrentModel(conversationId);
+  const {
+    runtimeMode: codexRuntimeMode,
+    sandboxMode: codexSandboxMode,
+    approvalPolicy: codexApprovalPolicy,
+  } = useRunnerCodexFlags(conversationId);
   const settings = useStore((s) => s.settings);
   const projects = useStore((s) => s.projects);
   const resetConversation = useStore((s) => s.resetConversation);
@@ -543,7 +552,7 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const selectConversation = useStore((s) => s.selectConversation);
   const setPrimary = useStore((s) => s.setPrimaryBackend);
   const setDraft = useStore((s) => s.setDraft);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   if (!conv) return null;
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
   const ownerWorkspace = ownerProject
@@ -601,34 +610,18 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
         turnCount === 1
           ? `Forked from "${conv.name}" — attaching 1 prior turn as context on the first message.`
           : `Forked from "${conv.name}" — attaching ${turnCount} prior turn${turnCount === 1 ? '' : 's'} as context on the first message.`;
-      useStore.setState((s) => {
-        const runner = s.runners[forked.id] ?? {
-          events: [],
-          isRunning: false,
-          pendingLocalUserIds: new Set<UUID>(),
-          currentModel: '',
-          historyLoaded: false,
-          historyLoading: false,
-        };
-        return {
-          runners: {
-            ...s.runners,
-            [forked.id]: {
-              ...runner,
-              events: [
-                ...runner.events,
-                {
-                  id: `fork-notice-${forked.id}`,
-                  timestamp: Date.now(),
-                  raw: '',
-                  kind: { type: 'systemNotice', text: notice },
-                  revision: 0,
-                },
-              ],
-            },
+      useRunnersStore.getState().patchRunner(forked.id, (runner) => ({
+        events: [
+          ...runner.events,
+          {
+            id: `fork-notice-${forked.id}`,
+            timestamp: Date.now(),
+            raw: '',
+            kind: { type: 'systemNotice', text: notice },
+            revision: 0,
           },
-        };
-      });
+        ],
+      }));
     }
     selectConversation(forked.id);
   };

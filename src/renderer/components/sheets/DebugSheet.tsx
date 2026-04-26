@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { useRunner } from '../../runnersStore';
 import type { SilentLogEntry, StreamEvent } from '../../../shared/types';
 
 type Tab = 'stream' | 'diagnostics';
 
 export function DebugSheet() {
   const selectedId = useStore((s) => s.selectedConversationId);
-  const runner = useStore((s) => (selectedId ? s.runners[selectedId] : null));
+  const runner = useRunner(selectedId);
   const events = runner?.events ?? [];
 
   const [tab, setTab] = useState<Tab>('stream');

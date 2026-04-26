@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Conversation, UUID } from '@shared/types';
 import { useStore } from '../../store';
+import { useRunnersStore } from '../../runnersStore';
 
 interface PaletteItem {
   conv: Conversation;
@@ -14,7 +15,7 @@ export function QuickSwitcherSheet() {
   // Subscribe to a stable running-IDs string (not the whole runners
   // object) so token-by-token runner updates don't re-render the
   // launcher while the user is typing.
-  const runningKey = useStore((s) => {
+  const runningKey = useRunnersStore((s) => {
     const ids: string[] = [];
     for (const id in s.runners) if (s.runners[id]?.isRunning) ids.push(id);
     ids.sort();

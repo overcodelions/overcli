@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { useAllRunners } from '../../runnersStore';
 import { Conversation, UUID, WorktreeStatus } from '@shared/types';
 import { agentDescription, lastAssistantText } from '../../diff-utils';
 
@@ -19,7 +20,7 @@ interface MemberView {
 export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UUID }) {
   const workspaces = useStore((s) => s.workspaces);
   const projects = useStore((s) => s.projects);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   const openSheet = useStore((s) => s.openSheet);
   const checkoutWorkspaceLocally = useStore((s) => s.checkoutWorkspaceLocally);
   const continueWorkspaceLocally = useStore((s) => s.continueWorkspaceLocally);

@@ -5,6 +5,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { useRunner } from '../../runnersStore';
 import { Conversation, RemoteKind, UUID, WorktreeStatus } from '@shared/types';
 import {
   FileDiff,
@@ -18,7 +19,7 @@ import {
 export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
-  const runner = useStore((s) => s.runners[convId]);
+  const runner = useRunner(convId);
   const openSheet = useStore((s) => s.openSheet);
   const checkoutAgentLocally = useStore((s) => s.checkoutAgentLocally);
 
