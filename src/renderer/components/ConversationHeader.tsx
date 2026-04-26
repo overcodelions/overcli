@@ -1,4 +1,5 @@
 import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import {
   useAllRunners,
@@ -26,19 +27,58 @@ import {
 /// conversation settings popover, overflow menu.
 export function ConversationHeader({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
-  const backendHealth = useStore((s) => s.backendHealth);
-  const installedReviewers = useStore((s) => s.installedReviewers);
-  const setPrimary = useStore((s) => s.setPrimaryBackend);
-  const setPermission = useStore((s) => s.setPermissionMode);
-  const setEffort = useStore((s) => s.setEffortLevel);
-  const setModel = useStore((s) => s.setBackendModel);
-  const setReviewBackend = useStore((s) => s.setReviewBackend);
-  const setReviewMode = useStore((s) => s.setReviewMode);
-  const setReviewOllamaModel = useStore((s) => s.setReviewOllamaModel);
-  const setReviewYolo = useStore((s) => s.setReviewYolo);
-  const promoteReviewAgent = useStore((s) => s.promoteReviewAgent);
-  const checkoutReviewBranchLocally = useStore((s) => s.checkoutReviewBranchLocally);
-  const removeAgent = useStore((s) => s.removeAgent);
+  // One bundled subscription instead of 16. useShallow returns the same
+  // object reference when every field is reference-equal to the prior
+  // pass, so an unrelated store mutation (e.g. a sheet open) costs one
+  // selector eval per render instead of sixteen, and the component only
+  // re-renders when one of these fields actually changed.
+  const {
+    backendHealth,
+    installedReviewers,
+    settings,
+    projects,
+    showToolActivity,
+    showFileTree,
+    setPrimary,
+    setPermission,
+    setEffort,
+    setModel,
+    setReviewBackend,
+    setReviewMode,
+    setReviewOllamaModel,
+    setReviewYolo,
+    promoteReviewAgent,
+    checkoutReviewBranchLocally,
+    removeAgent,
+    resetConversation,
+    openSheet,
+    toggleToolActivity,
+    toggleFileTree,
+  } = useStore(
+    useShallow((s) => ({
+      backendHealth: s.backendHealth,
+      installedReviewers: s.installedReviewers,
+      settings: s.settings,
+      projects: s.projects,
+      showToolActivity: s.showToolActivity,
+      showFileTree: s.showFileTree,
+      setPrimary: s.setPrimaryBackend,
+      setPermission: s.setPermissionMode,
+      setEffort: s.setEffortLevel,
+      setModel: s.setBackendModel,
+      setReviewBackend: s.setReviewBackend,
+      setReviewMode: s.setReviewMode,
+      setReviewOllamaModel: s.setReviewOllamaModel,
+      setReviewYolo: s.setReviewYolo,
+      promoteReviewAgent: s.promoteReviewAgent,
+      checkoutReviewBranchLocally: s.checkoutReviewBranchLocally,
+      removeAgent: s.removeAgent,
+      resetConversation: s.resetConversation,
+      openSheet: s.openSheet,
+      toggleToolActivity: s.toggleToolActivity,
+      toggleFileTree: s.toggleFileTree,
+    })),
+  );
   const runnerIsRunning = useRunnerIsRunning(conversationId);
   const runnerModel = useRunnerCurrentModel(conversationId);
   const {
@@ -46,14 +86,6 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     sandboxMode: codexSandboxMode,
     approvalPolicy: codexApprovalPolicy,
   } = useRunnerCodexFlags(conversationId);
-  const settings = useStore((s) => s.settings);
-  const projects = useStore((s) => s.projects);
-  const resetConversation = useStore((s) => s.resetConversation);
-  const openSheet = useStore((s) => s.openSheet);
-  const showToolActivity = useStore((s) => s.showToolActivity);
-  const toggleToolActivity = useStore((s) => s.toggleToolActivity);
-  const showFileTree = useStore((s) => s.showFileTree);
-  const toggleFileTree = useStore((s) => s.toggleFileTree);
   const [confirmingReset, setConfirmingReset] = useState(false);
   if (!conv) return null;
   const locked = runnerIsRunning || !!conv.sessionId || conv.turnCount > 0;
@@ -543,15 +575,29 @@ function IconPicker({
 /// away from being re-sent.
 function ForkPicker({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
-  const backendHealth = useStore((s) => s.backendHealth);
-  const settings = useStore((s) => s.settings);
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
-  const newConversation = useStore((s) => s.newConversation);
-  const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
-  const selectConversation = useStore((s) => s.selectConversation);
-  const setPrimary = useStore((s) => s.setPrimaryBackend);
-  const setDraft = useStore((s) => s.setDraft);
+  const {
+    backendHealth,
+    settings,
+    projects,
+    workspaces,
+    newConversation,
+    newConversationInWorkspace,
+    selectConversation,
+    setPrimary,
+    setDraft,
+  } = useStore(
+    useShallow((s) => ({
+      backendHealth: s.backendHealth,
+      settings: s.settings,
+      projects: s.projects,
+      workspaces: s.workspaces,
+      newConversation: s.newConversation,
+      newConversationInWorkspace: s.newConversationInWorkspace,
+      selectConversation: s.selectConversation,
+      setPrimary: s.setPrimaryBackend,
+      setDraft: s.setDraft,
+    })),
+  );
   const runners = useAllRunners();
   if (!conv) return null;
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
