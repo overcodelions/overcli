@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { useRunnerIsRunning } from '../runnersStore';
 import { UUID } from '@shared/types';
 import { Composer } from './Composer';
 import { useConversation, useConversationRoot, useSlashCommands } from '../hooks';
@@ -6,7 +7,7 @@ import { useConversation, useConversationRoot, useSlashCommands } from '../hooks
 export function InputBar({ conversationId }: { conversationId: UUID }) {
   const send = useStore((s) => s.send);
   const stop = useStore((s) => s.stop);
-  const isRunning = useStore((s) => s.runners[conversationId]?.isRunning ?? false);
+  const isRunning = useRunnerIsRunning(conversationId);
   const rootPath = useConversationRoot(conversationId);
   const conv = useConversation(conversationId);
   const slashCommands = useSlashCommands(conv?.primaryBackend, conversationId);

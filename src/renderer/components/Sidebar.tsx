@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
+import { useAllRunners, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { backendColor } from '../theme';
 
@@ -218,7 +219,7 @@ function ProjectGroup({
 }) {
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   // `true`/`false` once probed, `undefined` while still unknown. Agents
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
@@ -385,7 +386,7 @@ function ColosseumSidebarGroup({
   const openSheet = useStore((s) => s.openSheet);
   const cancelColosseum = useStore((s) => s.cancelColosseum);
   const removeColosseum = useStore((s) => s.removeColosseum);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   const [expanded, setExpanded] = useState(true);
 
   const contenders = colosseum.contenderIds
@@ -493,7 +494,7 @@ function ConversationRow({ conv, selected, onClick }: {
   onClick: () => void;
 }) {
   const bgColor = backendColor(conv.primaryBackend);
-  const isRunning = useStore((s) => s.runners[conv.id]?.isRunning ?? false);
+  const isRunning = useRunnerIsRunning(conv.id);
   const openSheet = useStore((s) => s.openSheet);
   const isAgent = isAgentConversation(conv);
 
@@ -661,7 +662,7 @@ function WorkspaceGroup({
   const plain = convs.filter((c) => !isAgentConversation(c));
   const agents = convs.filter(isAgentConversation);
   const openSheet = useStore((s) => s.openSheet);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   const archivableCount = (workspace.conversations ?? []).filter(
     (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
   ).length;

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Conversation, UUID } from '@shared/types';
 import { useStore } from '../../store';
+import { useAllRunners } from '../../runnersStore';
 import { SheetActionButton } from './SettingsSheet';
 import { isAgentConversation } from '../Sidebar';
 import {
@@ -14,7 +15,7 @@ import {
 export function BulkConversationActionsSheet() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   const setConversationHidden = useStore((s) => s.setConversationHidden);
   const removeConversation = useStore((s) => s.removeConversation);
   const removeAgent = useStore((s) => s.removeAgent);
@@ -84,8 +85,8 @@ export function BulkConversationActionsSheet() {
 
   const runningById = useMemo(() => {
     const out: Record<UUID, boolean> = {};
-    for (const [id, runner] of Object.entries(runners)) {
-      out[id] = runner?.isRunning ?? false;
+    for (const id of Object.keys(runners)) {
+      out[id] = runners[id]?.isRunning ?? false;
     }
     return out;
   }, [runners]);

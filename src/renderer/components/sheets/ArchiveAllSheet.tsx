@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { useAllRunners } from '../../runnersStore';
 import { Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { isAgentConversation } from '../Sidebar';
@@ -15,7 +16,7 @@ export function ArchiveAllSheet(props: Props) {
   const workspace = useStore((s) =>
     props.workspaceId ? s.workspaces.find((w) => w.id === props.workspaceId) : undefined,
   );
-  const runners = useStore((s) => s.runners);
+  const runners = useAllRunners();
   const selectedId = useStore((s) => s.selectedConversationId);
   const archiveInactiveInProject = useStore((s) => s.archiveInactiveInProject);
   const archiveInactiveInWorkspace = useStore((s) => s.archiveInactiveInWorkspace);
