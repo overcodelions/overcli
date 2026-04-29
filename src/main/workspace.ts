@@ -326,6 +326,7 @@ Guidelines:
 - File paths you read or edit resolve through the symlinks above, into per-project worktrees.
 - Each member is an independent git repo on its own agent branch.
 - Do NOT reach out to the projects' main trees (e.g. under \`~/git-services/<project>\`) — those are the user's working copies. Stick to the paths under this cwd.
+- When generating standalone deliverables (reports, cheat sheets, briefs, exports, scratch notes — anything that isn't source for a member project), write them at this workspace root (cwd). Do NOT write to \`~/Documents\`, \`~/Desktop\`, or any other directory outside cwd — overcli's file viewer can only open files under registered roots, and the user can't click through to anything you place elsewhere.
 `;
   for (const name of CONTEXT_FILES) {
     try {
@@ -366,6 +367,7 @@ Guidelines:
 - File paths you read or edit resolve through the symlinks above.
 - Each member is an independent git repo with its own branches and history.
 - Before answering "what projects are here?" trust this list, not any global instructions.
+- When generating standalone deliverables (reports, cheat sheets, briefs, exports, scratch notes — anything that isn't source code for a member project), write them at this workspace root (cwd). Do NOT write to \`~/Documents\`, \`~/Desktop\`, or any other directory outside cwd — overcli's file viewer can only open files under registered roots, and the user can't click through to anything you place elsewhere.
 ${instructionsSection}`;
   for (const name of CONTEXT_FILES) {
     try {

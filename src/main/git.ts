@@ -996,6 +996,44 @@ export function commitAll(
   };
 }
 
+/// Multi-repo commit for workspace conversations that span several member
+/// worktrees (the symlink-farm root isn't itself a git repo, so a single
+/// `git add -A` won't reach the actual checkouts). Iterates each member and
+/// commits the same message in any with pending changes; reports per-member
+/// successes and skips so the UI can surface them.
+export function workspaceCommitAll(args: {
+  projects: Array<{ name: string; path: string }>;
+  message: string;
+}):
+  | {
+      ok: true;
+      committed: Array<{ name: string; sha: string }>;
+      skipped: Array<{ name: string; reason: string }>;
+      subject: string;
+    }
+  | { ok: false; error: string } {
+  const message = args.message.trim();
+  if (!message) return { ok: false, error: 'Commit message is empty.' };
+  const committed: Array<{ name: string; sha: string }> = [];
+  const skipped: Array<{ name: string; reason: string }> = [];
+  for (const { name, path: cwd } of args.projects) {
+    if (!name || !cwd) continue;
+    const res = commitAll({ cwd, message });
+    if (res.ok) {
+      committed.push({ name, sha: res.sha });
+    } else {
+      skipped.push({ name, reason: res.error });
+    }
+  }
+  if (committed.length === 0) {
+    const detail = skipped.length
+      ? skipped.map((s) => `${s.name}: ${s.reason}`).join('\n')
+      : 'No member projects had changes to commit.';
+    return { ok: false, error: detail };
+  }
+  return { ok: true, committed, skipped, subject: message.split('\n')[0] };
+}
+
 /// Stash any dirty files in the *main* project checkout and pop them into
 /// the agent's worktree. Used when the agent wrote to the wrong tree —
 /// common when a CLI ignored its spawn-time cwd.

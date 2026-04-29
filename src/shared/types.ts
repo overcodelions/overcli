@@ -680,6 +680,17 @@ export interface IPCInvokeMap {
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
     | { ok: false; error: string };
+  'git:workspaceCommitAll': (args: {
+    projects: Array<{ name: string; path: string }>;
+    message: string;
+  }) =>
+    | {
+        ok: true;
+        committed: Array<{ name: string; sha: string }>;
+        skipped: Array<{ name: string; reason: string }>;
+        subject: string;
+      }
+    | { ok: false; error: string };
   'workspace:ensureSymlinkRoot': (args: {
     workspaceId: UUID;
     projects: Array<{ name: string; path: string }>;

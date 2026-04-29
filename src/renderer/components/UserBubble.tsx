@@ -1,7 +1,7 @@
 import { Attachment } from '@shared/types';
 
 export function UserBubble({ text, attachments }: { text: string; attachments?: Attachment[] }) {
-  const hasImages = attachments && attachments.length > 0;
+  const hasAttachments = attachments && attachments.length > 0;
   const hasText = text && text.trim().length > 0;
   return (
     <div className="flex justify-end">
@@ -12,16 +12,29 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
           border: '1px solid rgba(124, 139, 255, 0.28)',
         }}
       >
-        {hasImages && (
+        {hasAttachments && (
           <div className="flex flex-wrap gap-1 p-1.5">
-            {attachments!.map((a) => (
-              <img
-                key={a.id}
-                src={`data:${a.mimeType};base64,${a.dataBase64}`}
-                alt={a.label ?? 'attached image'}
-                className="rounded-lg max-h-[220px] max-w-[320px] object-contain bg-black/30"
-              />
-            ))}
+            {attachments!.map((a) =>
+              a.mimeType.startsWith('image/') ? (
+                <img
+                  key={a.id}
+                  src={`data:${a.mimeType};base64,${a.dataBase64}`}
+                  alt={a.label ?? 'attached image'}
+                  className="rounded-lg max-h-[220px] max-w-[320px] object-contain bg-black/30"
+                />
+              ) : (
+                <div
+                  key={a.id}
+                  className="rounded-lg bg-black/30 px-2.5 py-1.5 text-xs text-ink-muted font-mono flex items-center gap-2"
+                  title={a.label ?? ''}
+                >
+                  <span className="text-[10px] uppercase tracking-wider text-ink-faint">
+                    {fileExtLabel(a)}
+                  </span>
+                  <span className="truncate max-w-[260px]">{a.label ?? 'file'}</span>
+                </div>
+              ),
+            )}
           </div>
         )}
         {hasText && (
@@ -30,4 +43,14 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
       </div>
     </div>
   );
+}
+
+function fileExtLabel(a: Attachment): string {
+  if (a.label) {
+    const dot = a.label.lastIndexOf('.');
+    if (dot > 0 && dot < a.label.length - 1) return a.label.slice(dot + 1).toLowerCase();
+  }
+  const slash = a.mimeType.indexOf('/');
+  if (slash > 0) return a.mimeType.slice(slash + 1).toLowerCase();
+  return 'file';
 }
