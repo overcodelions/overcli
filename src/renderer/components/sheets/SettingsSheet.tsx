@@ -405,7 +405,7 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
 
 function placeholderFor(b: Backend): string {
   if (b === 'claude') return 'e.g. claude-opus-4-7';
-  if (b === 'codex') return 'e.g. gpt-5.4';
+  if (b === 'codex') return 'e.g. gpt-5.5';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
   return 'e.g. gemini-2.5-pro';
 }

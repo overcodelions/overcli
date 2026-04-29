@@ -482,7 +482,7 @@ function modelOptionsFor(
   }
   const base: Record<Exclude<Backend, 'ollama'>, string[]> = {
     claude: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini'],
+    codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   };
   const list = base[backend];
