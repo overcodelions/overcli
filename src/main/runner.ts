@@ -375,6 +375,7 @@ export class RunnerManager {
     args: SendArgs,
     options: { suppressLocalUser?: boolean } = {},
   ): { ok: true } | { ok: false; error: string } {
+    args = materializeNonImageAttachments(args);
     const convId = args.conversationId;
     // Switching backends mid-conversation tears down whatever runtime was
     // holding this conversation's state (subprocess or Ollama session).
@@ -2284,6 +2285,100 @@ export class RunnerManager {
     this.reviewer.stopAll();
   }
 
+}
+
+/// Non-image attachments (CSV / text / JSON / logs / …) can't ride the
+/// per-backend image content blocks, so we land them on disk in the same
+/// `~/.overcli/attachments` dir the codex app-server already uses for
+/// images and inline a `[Attached file: <path>]` line at the head of the
+/// prompt. The agent then reads the file with whichever native filesystem
+/// tool its CLI exposes — uniform across Claude / Codex / Gemini / Ollama.
+/// Image attachments pass through unchanged so the existing typed-block
+/// envelopes keep working.
+function materializeNonImageAttachments(args: SendArgs): SendArgs {
+  const attachments = args.attachments ?? [];
+  if (attachments.length === 0) return args;
+  const imageOnly: Attachment[] = [];
+  const refs: string[] = [];
+  for (const a of attachments) {
+    if (a.mimeType.startsWith('image/')) {
+      imageOnly.push(a);
+      continue;
+    }
+    try {
+      const filePath = writeAttachmentFile(a);
+      const label = a.label ? ` (${a.label})` : '';
+      refs.push(`[Attached file: ${filePath}${label}]`);
+    } catch (err) {
+      refs.push(
+        `[Attachment ${a.label ?? a.id} couldn't be saved: ${(err as Error).message}]`,
+      );
+    }
+  }
+  if (refs.length === 0) return args;
+  const header = refs.join('\n');
+  const prompt = args.prompt ? `${header}\n\n${args.prompt}` : header;
+  return { ...args, prompt, attachments: imageOnly.length > 0 ? imageOnly : undefined };
+}
+
+function writeAttachmentFile(a: Attachment): string {
+  const dir = path.join(os.homedir(), '.overcli', 'attachments');
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const ext = attachmentExtension(a);
+  const base = a.id || randomUUID();
+  const file = path.join(dir, `${base}${ext}`);
+  fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
+  return file;
+}
+
+function attachmentExtension(a: Attachment): string {
+  if (a.label) {
+    const dot = a.label.lastIndexOf('.');
+    if (dot > 0 && dot < a.label.length - 1) {
+      const ext = a.label.slice(dot).toLowerCase();
+      if (/^\.[a-z0-9]{1,8}$/.test(ext)) return ext;
+    }
+  }
+  switch (a.mimeType) {
+    case 'text/plain':
+      return '.txt';
+    case 'text/csv':
+      return '.csv';
+    case 'text/markdown':
+      return '.md';
+    case 'application/json':
+      return '.json';
+    case 'text/yaml':
+    case 'application/x-yaml':
+      return '.yaml';
+    case 'application/xml':
+    case 'text/xml':
+      return '.xml';
+    case 'application/pdf':
+      return '.pdf';
+    case 'application/msword':
+      return '.doc';
+    case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+      return '.docx';
+    case 'application/vnd.ms-excel':
+      return '.xls';
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      return '.xlsx';
+    case 'application/vnd.ms-powerpoint':
+      return '.ppt';
+    case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+      return '.pptx';
+    case 'application/vnd.oasis.opendocument.text':
+      return '.odt';
+    case 'application/vnd.oasis.opendocument.spreadsheet':
+      return '.ods';
+    case 'application/vnd.oasis.opendocument.presentation':
+      return '.odp';
+    case 'application/rtf':
+      return '.rtf';
+    default:
+      return '.bin';
+  }
 }
 
 function buildGeminiAcpPromptBlocks(prompt: string, attachments: Attachment[]): any[] {

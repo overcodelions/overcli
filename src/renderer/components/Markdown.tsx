@@ -9,11 +9,12 @@ import DOMPurify from 'dompurify';
 // malicious CLAUDE.md, tool result, or model output can't XSS the renderer.
 const SANITIZE_CONFIG = {
   ALLOWED_TAGS: [
-    'a', 'b', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3',
-    'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'ol', 'p', 'pre', 's', 'span',
-    'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul',
+    'a', 'b', 'blockquote', 'br', 'button', 'code', 'del', 'div', 'em', 'h1',
+    'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'li', 'ol', 'p', 'pre', 's',
+    'span', 'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr',
+    'ul',
   ],
-  ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class', 'data-path'],
+  ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class', 'data-path', 'type', 'aria-label'],
   ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel):/i,
 };
 
@@ -68,19 +69,21 @@ export function renderMarkdownHtml(
     const language = lang?.match(/\S+/)?.[0];
     const escapedLanguage = language ? ` language-${escapeAttr(language)}` : '';
 
+    const copyButton = `<button type="button" class="code-copy" aria-label="Copy code">copy</button>`;
+
     if (language && hljs.getLanguage(language)) {
       try {
         const highlighted = hljs.highlight(text, {
           language,
           ignoreIllegals: true,
         }).value;
-        return `<pre><code class="hljs${escapedLanguage}">${highlighted}</code></pre>\n`;
+        return `<div class="code-block">${copyButton}<pre><code class="hljs${escapedLanguage}">${highlighted}</code></pre></div>\n`;
       } catch {
         // Fall through to plain escaped code below.
       }
     }
 
-    return `<pre><code class="hljs${escapedLanguage}">${escapeHtml(text)}</code></pre>\n`;
+    return `<div class="code-block">${copyButton}<pre><code class="hljs${escapedLanguage}">${escapeHtml(text)}</code></pre></div>\n`;
   };
 
   if (escapeRawHtml) {
@@ -108,6 +111,20 @@ export function Markdown({ source, onOpenPath }: { source: string; onOpenPath?: 
         if (target.classList.contains('file-path') && onOpenPath) {
           const p = target.getAttribute('data-path');
           if (p) onOpenPath(p);
+          return;
+        }
+        if (target.classList.contains('code-copy')) {
+          const code = target.parentElement?.querySelector('code');
+          const text = code?.textContent ?? '';
+          if (!text) return;
+          navigator.clipboard.writeText(text);
+          const prev = target.textContent;
+          target.textContent = 'copied';
+          target.classList.add('is-copied');
+          window.setTimeout(() => {
+            target.textContent = prev ?? 'copy';
+            target.classList.remove('is-copied');
+          }, 1200);
         }
       }}
       dangerouslySetInnerHTML={{ __html: html }}

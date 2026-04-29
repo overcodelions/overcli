@@ -1,12 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { UUID } from '@shared/types';
 import { useConversation } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
 
+type CommitTarget =
+  | { kind: 'cwd'; cwd: string }
+  | { kind: 'workspace'; projects: Array<{ name: string; path: string }> }
+  | { kind: 'none' };
+
 export function CommitButton({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
   const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
   const gitStatus = useStore((s) => s.gitStatusByConv[conversationId]);
   const refreshGitStatus = useStore((s) => s.refreshGitStatus);
   const [open, setOpen] = useState(false);
@@ -19,7 +26,49 @@ export function CommitButton({ conversationId }: { conversationId: UUID }) {
   const prevStatsRef = useRef<{ insertions: number; deletions: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
-  const cwd = conv?.worktreePath ?? findOwningProjectPath(projects, conversationId) ?? null;
+  // Mirror `refreshGitStatus`'s resolution order so a single click commits
+  // exactly the changes the popover lists. Worktree-bound or project-hosted
+  // convs pin one cwd; multi-project workspace convs (coordinator agents,
+  // or workspace conversations with no worktree) commit per-member because
+  // the symlink-farm root isn't itself a git repo.
+  const target = useMemo<CommitTarget>(() => {
+    if (conv?.worktreePath) return { kind: 'cwd', cwd: conv.worktreePath };
+    const owning = findOwningProjectPath(projects, conversationId);
+    if (owning) return { kind: 'cwd', cwd: owning };
+    for (const w of workspaces) {
+      const c = (w.conversations ?? []).find((x) => x.id === conversationId);
+      if (!c) continue;
+      if (c.workspaceAgentMemberIds?.length) {
+        const seen = new Set<string>();
+        const usedNames = new Set<string>();
+        const out: Array<{ name: string; path: string }> = [];
+        for (const memberId of c.workspaceAgentMemberIds) {
+          for (const proj of projects) {
+            const member = proj.conversations.find((x) => x.id === memberId);
+            if (!member?.worktreePath || seen.has(member.worktreePath)) continue;
+            seen.add(member.worktreePath);
+            let name = proj.name;
+            let i = 2;
+            while (usedNames.has(name)) {
+              name = `${proj.name}-${i}`;
+              i += 1;
+            }
+            usedNames.add(name);
+            out.push({ name, path: member.worktreePath });
+          }
+        }
+        return out.length ? { kind: 'workspace', projects: out } : { kind: 'none' };
+      }
+      const projs = w.projectIds
+        .map((pid) => projects.find((p) => p.id === pid))
+        .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
+        .map((p) => ({ name: p.name, path: p.path }));
+      return projs.length
+        ? { kind: 'workspace', projects: workspaceSymlinkNames(projs) }
+        : { kind: 'none' };
+    }
+    return { kind: 'none' };
+  }, [conv, projects, workspaces, conversationId]);
   const isRepo = gitStatus?.isRepo ?? false;
   const currentBranch = gitStatus?.currentBranch ?? '';
   const changes = gitStatus?.changes ?? [];
@@ -73,15 +122,44 @@ export function CommitButton({ conversationId }: { conversationId: UUID }) {
   const hasChanges = changes.length > 0;
 
   const onCommit = async () => {
-    if (!cwd || busy) return;
+    if (busy) return;
+    if (target.kind === 'none') {
+      setError("Couldn't resolve a working directory for this conversation.");
+      return;
+    }
     setBusy(true);
     setError(null);
-    const res = await window.overcli.invoke('git:commitAll', { cwd, message });
+    if (target.kind === 'cwd') {
+      const res = await window.overcli.invoke('git:commitAll', { cwd: target.cwd, message });
+      setBusy(false);
+      if (res.ok) {
+        setSuccessSubject(res.subject);
+        setMessageEdited(false);
+        setMessage('');
+        await refreshGitStatus(conversationId);
+      } else {
+        setError(res.error);
+      }
+      return;
+    }
+    const res = await window.overcli.invoke('git:workspaceCommitAll', {
+      projects: target.projects,
+      message,
+    });
     setBusy(false);
     if (res.ok) {
-      setSuccessSubject(res.subject);
+      const names = res.committed.map((c) => c.name).join(', ');
+      const summary = res.committed.length === 1
+        ? `${res.subject} (${names})`
+        : `${res.subject} — ${res.committed.length} repos: ${names}`;
+      setSuccessSubject(summary);
       setMessageEdited(false);
       setMessage('');
+      if (res.skipped.length > 0) {
+        setError(
+          `Skipped: ${res.skipped.map((s) => `${s.name} (${s.reason})`).join('; ')}`,
+        );
+      }
       await refreshGitStatus(conversationId);
     } else {
       setError(res.error);

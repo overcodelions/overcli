@@ -31,6 +31,7 @@ import {
   commitStatus,
   workspaceCommitStatus,
   commitAll,
+  workspaceCommitAll,
 } from './git';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
@@ -173,9 +174,17 @@ function registerIpc(): void {
     return res.filePaths[0];
   });
   ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
-    const resolved = resolveFilePath(args?.path ?? '', args?.rootPath);
+    const hint = args?.path ?? '';
+    const resolved = resolveFilePath(hint, args?.rootPath);
     if (!resolved) {
-      return { ok: false, error: `Could not find "${args?.path ?? ''}" in any registered project.` };
+      // Distinguish "file isn't on disk" from "file isn't under a known
+      // root" — the old shared message blamed the project list even when
+      // the real cause was a missing/renamed file the agent claimed to
+      // have written.
+      if (path.isAbsolute(hint) && isPathUnderRegisteredRoot(hint)) {
+        return { ok: false, error: `File not found at ${hint}.` };
+      }
+      return { ok: false, error: `Could not find "${hint}" in any registered project.` };
     }
     if (!isPathUnderRegisteredRoot(resolved)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
@@ -254,6 +263,7 @@ function registerIpc(): void {
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
   ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
+  ipcMain.handle('git:workspaceCommitAll', (_e, args) => workspaceCommitAll(args));
 
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects, instructions }) =>
     ensureWorkspaceSymlinkRoot(workspaceId, projects, instructions),
@@ -584,6 +594,7 @@ function listFilesRecursive(root: string): string[] {
     'node_modules',
     '.build',
     'build',
+    'bin',
     'dist',
     '.next',
     '.venv',
