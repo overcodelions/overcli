@@ -608,6 +608,7 @@ export interface IPCInvokeMap {
     path: string;
   }) => { ok: true } | { ok: false; error: string };
   'fs:pickDirectory': () => string | null;
+  'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
     | { ok: true; content: string; resolvedPath: string }
     | { ok: false; error: string };
@@ -803,6 +804,17 @@ export type ArtifactPreviewResult =
       convertedPdfSizeBytes?: number;
       converterPath?: string;
       conversionError?: string;
+    }
+  | { ok: false; error: string };
+
+export type FileInfoResult =
+  | {
+      ok: true;
+      resolvedPath: string;
+      sizeBytes: number;
+      tooLarge: boolean;
+      unsupportedBinary: boolean;
+      error?: string;
     }
   | { ok: false; error: string };
 

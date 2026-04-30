@@ -199,6 +199,7 @@ function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths[0];
   });
+  ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) => fileInfo(args?.path ?? '', args?.rootPath));
   ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
     const hint = args?.path ?? '';
     const resolved = resolveFilePath(hint, args?.rootPath);
@@ -464,6 +465,39 @@ function registerIpc(): void {
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting
 // the HTTP request we opened in pullModel.
 const pendingPulls = new Map<string, AbortController>();
+
+function fileInfo(hint: string, rootPath?: string) {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) {
+    if (path.isAbsolute(hint) && isPathUnderRegisteredRoot(hint)) {
+      return { ok: false, error: `File not found at ${hint}.` };
+    }
+    return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  }
+  if (!isPathUnderRegisteredRoot(resolved)) {
+    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) return { ok: false, error: 'Path is not a regular file.' };
+    const tooLarge = stat.size > MAX_OPEN_FILE_BYTES;
+    const unsupportedBinary = isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size);
+    return {
+      ok: true,
+      resolvedPath: resolved,
+      sizeBytes: stat.size,
+      tooLarge,
+      unsupportedBinary,
+      error: tooLarge
+        ? fileTooLargeMessage(stat.size)
+        : unsupportedBinary
+          ? 'Binary file — Overcli does not open archives, disk images, or compiled artifacts.'
+          : undefined,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not inspect file' };
+  }
+}
 
 async function readArtifactPreview(hint: string, rootPath?: string): Promise<ArtifactPreviewResult> {
   const resolved = resolveFilePath(hint, rootPath);
