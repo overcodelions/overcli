@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
-import type { ArtifactPreviewResult } from '@shared/types';
+import type { ArtifactPreviewResult, FileInfoResult } from '@shared/types';
 import hljs from 'highlight.js';
 import {
   canPreviewFile,
@@ -13,6 +13,8 @@ import {
 import { FileTree } from './FileTree';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
+
+type FileInfoState = FileInfoResult & { requestedPath: string };
 
 export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string | null } = {}) {
   const convId = useStore((s) => s.selectedConversationId);
@@ -41,6 +43,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const [content, setContent] = useState<string>('');
   const [diffText, setDiffText] = useState<string>('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
+  const [fileInfo, setFileInfo] = useState<FileInfoState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -67,48 +70,44 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     setError(null);
     setDirty(false);
     setArtifactPreview(null);
+    setFileInfo(null);
     const isWorkspaceMemberPath =
       !!workspaceMembers &&
       workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
-    if (binaryPreview) {
-      window.overcli
-        .invoke('fs:readArtifactPreview', { path, rootPath: rootPath ?? undefined })
-        .then((res) => {
-          if (cancelled) return;
-          if (res.ok) {
-            setArtifactPreview(res);
-            if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
-              openFile(res.resolvedPath, highlight ?? undefined, mode);
-            }
-          } else {
-            setError(res.error);
-          }
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    } else {
-      window.overcli
-        .invoke('fs:readFile', { path, rootPath: rootPath ?? undefined })
-        .then((res) => {
-          if (cancelled) return;
-          if (res.ok) {
-            setContent(res.content);
-            // Tool results often pass a hint (`store.ts`, `src/main/index.ts`)
-            // that the resolver expanded to an absolute path. Upgrade the
-            // store so subsequent save/diff ops target the real file.
-            // Skip the upgrade for workspace-member paths ("<member>/…") —
-            // the relative form is already canonical and carries the
-            // project prefix that the diff view needs to strip.
-            if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
-              openFile(res.resolvedPath, highlight ?? undefined, mode);
-            }
-          } else setError(res.error);
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    }
+    (async () => {
+      const info = await window.overcli.invoke('fs:fileInfo', { path, rootPath: rootPath ?? undefined });
+      if (cancelled) return;
+      setFileInfo({ ...info, requestedPath: path });
+      if (!info.ok) {
+        setError(info.error);
+        return;
+      }
+      if (!isWorkspaceMemberPath && info.resolvedPath && info.resolvedPath !== path) {
+        openFile(info.resolvedPath, highlight ?? undefined, mode);
+        return;
+      }
+      if (info.tooLarge || info.unsupportedBinary) {
+        setError(info.error ?? 'File is not safe to open.');
+        return;
+      }
+      if (binaryPreview) {
+        const res = await window.overcli.invoke('fs:readArtifactPreview', { path, rootPath: rootPath ?? undefined });
+        if (cancelled) return;
+        if (res.ok) setArtifactPreview(res);
+        else setError(res.error);
+      } else {
+        const res = await window.overcli.invoke('fs:readFile', { path, rootPath: rootPath ?? undefined });
+        if (cancelled) return;
+        if (res.ok) setContent(res.content);
+        else setError(res.error);
+      }
+    })()
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -123,6 +122,17 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   );
   useEffect(() => {
     if (!path || mode !== 'diff' || !diffTarget) return;
+    if (!fileInfo || fileInfo.requestedPath !== path) return;
+    if (!fileInfo.ok) {
+      setDiffText('');
+      setError(fileInfo.error);
+      return;
+    }
+    if (fileInfo.tooLarge || fileInfo.unsupportedBinary) {
+      setDiffText('');
+      setError(fileInfo.error ?? 'File is not safe to diff.');
+      return;
+    }
     if (unsupportedBinary) {
       setDiffText('');
       return;
@@ -172,7 +182,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, diffTarget, unsupportedBinary]);
+  }, [path, mode, diffTarget, unsupportedBinary, fileInfo]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
