@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { defaultFileViewMode, detectFilePreviewKind, isBinaryPreviewKind } from './filePreview';
+import {
+  defaultFileViewMode,
+  detectFilePreviewKind,
+  isBinaryPreviewKind,
+  isUnsupportedBinaryFile,
+} from './filePreview';
 
 describe('file preview detection', () => {
   it('detects text previews', () => {
@@ -20,6 +25,12 @@ describe('file preview detection', () => {
   it('keeps binary artifact handling out of the text editor path', () => {
     expect(isBinaryPreviewKind(detectFilePreviewKind('/repo/screen.png'))).toBe(true);
     expect(isBinaryPreviewKind(detectFilePreviewKind('/repo/Button.tsx'))).toBe(false);
+  });
+
+  it('rejects unsupported binary containers before reading', () => {
+    expect(isUnsupportedBinaryFile('/repo/installer.dmg')).toBe(true);
+    expect(isUnsupportedBinaryFile('/repo/archive.zip')).toBe(true);
+    expect(isUnsupportedBinaryFile('/repo/README.md')).toBe(false);
   });
 
   it('opens previewable files in preview mode unless a line highlight is requested', () => {
