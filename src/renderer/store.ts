@@ -19,7 +19,9 @@ import {
   Colosseum,
   Conversation,
   DEFAULT_SETTINGS,
+  MarketplaceSkill,
   Project,
+  SkillTarget,
   StreamEvent,
   SystemInitInfo,
   UUID,
@@ -126,6 +128,7 @@ interface StoreState {
   backendHealth: Record<string, BackendHealth>;
   installedReviewers: Record<string, boolean>;
   capabilities: CapabilitiesReport | null;
+  marketplaceSkills: MarketplaceSkill[] | null;
   /// Live Ollama server status. Pushed from main via the
   /// `ollamaServerStatus` event. Used to warn users in-chat when they're
   /// talking to an Ollama-backed conversation and the server is down.
@@ -310,6 +313,10 @@ interface StoreState {
   refreshBackendHealth(): Promise<void>;
   refreshInstalledReviewers(): Promise<void>;
   refreshCapabilities(): Promise<void>;
+  refreshMarketplaceSkills(): Promise<void>;
+  installMarketplaceSkill(skillId: string, targets: SkillTarget[]): Promise<{ ok: true } | { ok: false; error: string }>;
+  uninstallMarketplaceSkill(skillId: string, targets: SkillTarget[]): Promise<{ ok: true } | { ok: false; error: string }>;
+  removeInstalledSkill(skillPath: string): Promise<{ ok: true } | { ok: false; error: string }>;
   refreshGitStatus(conversationId: UUID): Promise<void>;
   refreshProjectGitStatus(projectId: UUID): Promise<void>;
 
@@ -562,6 +569,7 @@ export const useStore = create<StoreState>((set, get) => ({
   backendHealth: {},
   installedReviewers: {},
   capabilities: null,
+  marketplaceSkills: null,
   ollamaServerStatus: 'unknown',
   welcomeFocusToken: 0,
   lastSelectedAt: {},
@@ -629,6 +637,7 @@ export const useStore = create<StoreState>((set, get) => ({
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
+    void get().refreshMarketplaceSkills();
     for (const p of state.projects) void get().refreshProjectGitStatus(p.id);
     // Seed Ollama server status once at startup so the conversation
     // banner can tell on first paint whether the local server is up.
@@ -2041,6 +2050,38 @@ export const useStore = create<StoreState>((set, get) => ({
   async refreshCapabilities() {
     const report = await window.overcli.invoke('capabilities:scan');
     set({ capabilities: report });
+  },
+
+  async refreshMarketplaceSkills() {
+    const list = await window.overcli.invoke('skills:listMarketplace');
+    set({ marketplaceSkills: list });
+  },
+
+  async installMarketplaceSkill(skillId, targets) {
+    const res = await window.overcli.invoke('skills:installMarketplace', { skillId, targets });
+    if (res.ok) {
+      await get().refreshMarketplaceSkills();
+      await get().refreshCapabilities();
+    }
+    return res;
+  },
+
+  async uninstallMarketplaceSkill(skillId, targets) {
+    const res = await window.overcli.invoke('skills:uninstallMarketplace', { skillId, targets });
+    if (res.ok) {
+      await get().refreshMarketplaceSkills();
+      await get().refreshCapabilities();
+    }
+    return res;
+  },
+
+  async removeInstalledSkill(skillPath) {
+    const res = await window.overcli.invoke('skills:uninstallByPath', { path: skillPath });
+    if (res.ok) {
+      await get().refreshCapabilities();
+      await get().refreshMarketplaceSkills();
+    }
+    return res;
   },
 
   async refreshProjectGitStatus(projectId) {

@@ -36,6 +36,12 @@ import {
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
 import {
+  listMarketplaceSkills,
+  installMarketplaceSkill,
+  uninstallMarketplaceSkill,
+  uninstallSkillByPath,
+} from './skillsCatalog';
+import {
   OLLAMA_CATALOG,
   detectHardware,
   detectOllama,
@@ -164,6 +170,14 @@ function registerIpc(): void {
   });
   ipcMain.handle('runner:listInstalledReviewers', () => listInstalledReviewers());
   ipcMain.handle('capabilities:scan', () => scanCapabilities());
+  ipcMain.handle('skills:listMarketplace', () => listMarketplaceSkills());
+  ipcMain.handle('skills:installMarketplace', (_e, { skillId, targets }) =>
+    installMarketplaceSkill(skillId, targets),
+  );
+  ipcMain.handle('skills:uninstallMarketplace', (_e, { skillId, targets }) =>
+    uninstallMarketplaceSkill(skillId, targets),
+  );
+  ipcMain.handle('skills:uninstallByPath', (_e, { path: p }) => uninstallSkillByPath(p));
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
