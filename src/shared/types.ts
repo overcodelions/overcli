@@ -284,6 +284,12 @@ export interface Conversation {
   /// the first turn so the new CLI sees the prior exchange once without
   /// flooding every subsequent turn.
   forkPreamble?: string;
+  /// Same one-shot prepend mechanism as forkPreamble, but triggered when
+  /// the surrounding workspace's project list changes after this conv has
+  /// already started. Lets the live CLI subprocess pick up new/removed
+  /// member projects without needing a session restart — the rewritten
+  /// CLAUDE.md / AGENTS.md / GEMINI.md only matters at session start.
+  pendingContextUpdate?: string;
 }
 
 export interface Project {

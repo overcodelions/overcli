@@ -52,6 +52,7 @@ export type ActiveSheet =
   | { type: 'newColosseum'; projectId: UUID }
   | { type: 'colosseumCompare'; colosseumId: UUID }
   | { type: 'worktreeDiff'; convId: UUID }
+  | { type: 'projectDiff'; convId: UUID }
   | { type: 'workspaceAgentReview'; coordinatorId: UUID }
   | { type: 'archiveConversation'; convId: UUID }
   | { type: 'archiveAllInProject'; projectId: UUID }
@@ -408,6 +409,32 @@ async function ensureWorkspaceRoot(
     return null;
   }
   return res.rootPath;
+}
+
+/// Format the in-band notice prepended to the next user prompt when a
+/// workspace's project list changes mid-conversation. Shape mirrors the
+/// CLAUDE.md / AGENTS.md guidance so the agent treats it as authoritative
+/// context, not as a user instruction to act on.
+function buildWorkspaceUpdateNotice(
+  rootPath: string,
+  added: Array<{ name: string; path: string }>,
+  removed: Array<{ name: string; path: string }>,
+): string {
+  const lines: string[] = ['[Workspace context update]'];
+  if (added.length) {
+    lines.push('Added member projects:');
+    for (const p of added) lines.push(`- ${p.name} → ${p.path}`);
+  }
+  if (removed.length) {
+    if (added.length) lines.push('');
+    lines.push('Removed member projects:');
+    for (const p of removed) lines.push(`- ${p.name}`);
+  }
+  lines.push('');
+  lines.push(
+    `The workspace CLAUDE.md / AGENTS.md / GEMINI.md at ${rootPath} have been refreshed with the current member list. Treat the change above as the authoritative diff, since the live session was already running when the rewrite happened.`,
+  );
+  return lines.join('\n');
 }
 
 /// For a coordinator's memberIds, return the list of
@@ -933,10 +960,39 @@ export const useStore = create<StoreState>((set, get) => ({
       ws.instructions,
     );
     if (!rootPath) return false;
+
+    // Compute the project-list diff so we can queue an in-band notice for
+    // each running conversation in the workspace. The MD files have been
+    // rewritten by ensureWorkspaceRoot, but live CLI subprocesses already
+    // read them at session start and won't re-read mid-session.
+    const oldIds = new Set(ws.projectIds);
+    const newIds = new Set(projectIds);
+    const projectsById = new Map(get().projects.map((p) => [p.id, p]));
+    const added = projectIds
+      .filter((id) => !oldIds.has(id))
+      .map((id) => projectsById.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p);
+    const removed = ws.projectIds
+      .filter((id) => !newIds.has(id))
+      .map((id) => projectsById.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p);
+    const notice = added.length || removed.length
+      ? buildWorkspaceUpdateNotice(rootPath, added, removed)
+      : null;
+
     set((s) => ({
-      workspaces: s.workspaces.map((w) =>
-        w.id === workspaceId ? { ...w, projectIds, rootPath } : w,
-      ),
+      workspaces: s.workspaces.map((w) => {
+        if (w.id !== workspaceId) return w;
+        const conversations = notice
+          ? (w.conversations ?? []).map((c) => ({
+              ...c,
+              pendingContextUpdate: c.pendingContextUpdate
+                ? `${c.pendingContextUpdate}\n\n${notice}`
+                : notice,
+            }))
+          : w.conversations;
+        return { ...w, projectIds, rootPath, conversations };
+      }),
     }));
     await get().saveWorkspaces();
     return true;
@@ -957,10 +1013,23 @@ export const useStore = create<StoreState>((set, get) => ({
       trimmed,
     );
     if (!rootPath) return false;
+    const instructionsChanged = (ws.instructions ?? '') !== (trimmed ?? '');
+    const notice = instructionsChanged
+      ? `[Workspace context update]\nThe workspace instructions in CLAUDE.md / AGENTS.md / GEMINI.md at ${rootPath} have been updated. Re-read them before answering subsequent questions.`
+      : null;
     set((s) => ({
-      workspaces: s.workspaces.map((w) =>
-        w.id === workspaceId ? { ...w, instructions: trimmed, rootPath } : w,
-      ),
+      workspaces: s.workspaces.map((w) => {
+        if (w.id !== workspaceId) return w;
+        const conversations = notice
+          ? (w.conversations ?? []).map((c) => ({
+              ...c,
+              pendingContextUpdate: c.pendingContextUpdate
+                ? `${c.pendingContextUpdate}\n\n${notice}`
+                : notice,
+            }))
+          : w.conversations;
+        return { ...w, instructions: trimmed, rootPath, conversations };
+      }),
     }));
     await get().saveWorkspaces();
     return true;
@@ -1748,13 +1817,23 @@ export const useStore = create<StoreState>((set, get) => ({
     // If this conversation was forked from another, prepend the captured
     // transcript so the new CLI sees the prior thread once. Cleared after
     // this turn — subsequent sends don't re-ship it.
-    const outgoingPrompt = conv.forkPreamble
+    let outgoingPrompt = conv.forkPreamble
       ? `${conv.forkPreamble}\n\nNew user message:\n\n${prompt}`
       : prompt;
-    if (conv.forkPreamble) {
+    // Workspace-context updates queued while this conv was running (e.g.
+    // a project added to the workspace). Same one-shot prepend pattern as
+    // forkPreamble — the live CLI subprocess only reads CLAUDE.md /
+    // AGENTS.md / GEMINI.md at session start, so an in-band notice is
+    // the practical way to surface mid-session workspace edits to the
+    // agent without restarting the thread.
+    if (conv.pendingContextUpdate) {
+      outgoingPrompt = `${conv.pendingContextUpdate}\n\n${outgoingPrompt}`;
+    }
+    if (conv.forkPreamble || conv.pendingContextUpdate) {
       mutateConversation(set, get, conversationId, (c) => ({
         ...c,
         forkPreamble: undefined,
+        pendingContextUpdate: undefined,
       }));
     }
 

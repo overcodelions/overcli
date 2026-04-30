@@ -87,6 +87,22 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     approvalPolicy: codexApprovalPolicy,
   } = useRunnerCodexFlags(conversationId);
   const [confirmingReset, setConfirmingReset] = useState(false);
+  // Track header width (not viewport) since side panels can shrink the
+  // pane on a wide screen. Below the threshold, Fork/Rebound move into
+  // the conversation settings dropdown.
+  const headerRef = useRef<HTMLElement>(null);
+  const [compact, setCompact] = useState(false);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setCompact(entry.contentRect.width < 720);
+      }
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
   if (!conv) return null;
   const locked = runnerIsRunning || !!conv.sessionId || conv.turnCount > 0;
   const enabled = enabledBackends(settings);
@@ -103,7 +119,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   const sessionModel = runnerModel || configuredModel || settings.backendDefaultModels[backend] || '';
 
   return (
-    <header className="flex items-center gap-2 px-4 py-2 border-b border-card">
+    <header ref={headerRef} className="flex items-center gap-2 px-4 py-2 border-b border-card">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           {conv.worktreePath && (
@@ -197,7 +213,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           />
         )}
 
-        <ForkPicker conversationId={conversationId} />
+        {!compact && <ForkPicker conversationId={conversationId} />}
 
 
         <IconPicker
@@ -229,14 +245,16 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           />
         )}
 
-        <ReboundPicker
-          conv={conv}
-          installedReviewers={installedReviewers}
-          onSelectBackend={(b) => void setReviewBackend(conversationId, b)}
-          onSelectMode={(m) => void setReviewMode(conversationId, m)}
-          onSelectOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
-          onToggleYolo={(v) => void setReviewYolo(conversationId, v)}
-        />
+        {!compact && (
+          <ReboundPicker
+            conv={conv}
+            installedReviewers={installedReviewers}
+            onSelectBackend={(b) => void setReviewBackend(conversationId, b)}
+            onSelectMode={(m) => void setReviewMode(conversationId, m)}
+            onSelectOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
+            onToggleYolo={(v) => void setReviewYolo(conversationId, v)}
+          />
+        )}
 
         <IconButton
           active={showToolActivity}
@@ -281,26 +299,38 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             }}
           />
         ) : (
-          (conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0) && (
-            <button
-              onClick={() =>
-                openSheet(
-                  (conv.workspaceAgentMemberIds?.length ?? 0) > 0
-                    ? { type: 'workspaceAgentReview', coordinatorId: conversationId }
-                    : { type: 'worktreeDiff', convId: conversationId },
-                )
-              }
-              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink"
-              title={
-                (conv.workspaceAgentMemberIds?.length ?? 0) > 0
-                  ? 'Review each project and merge independently'
-                  : `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
-              }
-            >
-              <DiffIcon />
-              <span>Diff</span>
-            </button>
-          )
+          (() => {
+            // Worktree-bound agent → full WorktreeDiffSheet (merge/rebase/push/PR).
+            // Workspace coordinator → per-member review sheet.
+            // Plain project conv (no worktree, no agent members) → simple
+            // ProjectDiffSheet showing `git diff HEAD` in the project root,
+            // so the Diff button is consistently available wherever a git
+            // working tree exists.
+            const isCoordinator = (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+            const ownerProjectPath = findOwningProjectPath(projects, conversationId);
+            const showDiff = conv.worktreePath || isCoordinator || !!ownerProjectPath;
+            if (!showDiff) return null;
+            const targetSheet = conv.worktreePath
+              ? ({ type: 'worktreeDiff', convId: conversationId } as const)
+              : isCoordinator
+                ? ({ type: 'workspaceAgentReview', coordinatorId: conversationId } as const)
+                : ({ type: 'projectDiff', convId: conversationId } as const);
+            const tooltip = conv.worktreePath
+              ? `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
+              : isCoordinator
+                ? 'Review each project and merge independently'
+                : 'View working-tree diff vs HEAD';
+            return (
+              <button
+                onClick={() => openSheet(targetSheet)}
+                className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink"
+                title={tooltip}
+              >
+                <DiffIcon />
+                <span>Diff</span>
+              </button>
+            );
+          })()
         )}
 
         {backend !== 'ollama' &&
@@ -327,7 +357,14 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
         <ConversationSettingsButton
           conversationId={conversationId}
           locked={locked}
+          compact={compact}
+          conv={conv}
+          installedReviewers={installedReviewers}
           onModelChange={(b, m) => void setModel(conversationId, b, m)}
+          onSelectReviewBackend={(b) => void setReviewBackend(conversationId, b)}
+          onSelectReviewMode={(m) => void setReviewMode(conversationId, m)}
+          onSelectReviewOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
+          onToggleReviewYolo={(v) => void setReviewYolo(conversationId, v)}
         />
 
         <MoreMenu
@@ -573,7 +610,11 @@ function IconPicker({
 /// into a one-shot preamble that's prepended to the fork's first send,
 /// and the last user prompt becomes the fork's draft so it's one click
 /// away from being re-sent.
-function ForkPicker({ conversationId }: { conversationId: UUID }) {
+function useForkActions(conversationId: UUID): {
+  items: PickerItem[];
+  forkTo: (b: Backend) => Promise<void>;
+  ready: boolean;
+} {
   const conv = useConversation(conversationId);
   const {
     backendHealth,
@@ -599,7 +640,9 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
     })),
   );
   const runners = useAllRunners();
-  if (!conv) return null;
+  if (!conv) {
+    return { items: [], forkTo: async () => {}, ready: false };
+  }
   const ownerProject = projects.find((p) => p.conversations.some((c) => c.id === conversationId));
   const ownerWorkspace = ownerProject
     ? undefined
@@ -683,6 +726,12 @@ function ForkPicker({ conversationId }: { conversationId: UUID }) {
     note: backendHealth[b]?.kind === 'unauthenticated' ? 'auth needed' : undefined,
   }));
 
+  return { items, forkTo, ready: !!(ownerProject || ownerWorkspace) };
+}
+
+function ForkPicker({ conversationId }: { conversationId: UUID }) {
+  const { items, forkTo, ready } = useForkActions(conversationId);
+  if (!ready) return null;
   return (
     <IconPicker
       icon={<ForkIcon />}
@@ -793,32 +842,192 @@ function ForkIcon() {
 /// presents those as two separate decisions — pick a reviewer backend,
 /// pick a mode — instead of cramming backend+mode into one dropdown
 /// line which was hard to scan.
-function ReboundPicker({
+type ReboundConv = {
+  id: UUID;
+  reviewBackend?: string | null;
+  reviewMode?: 'review' | 'collab' | null;
+  collabMaxTurns?: number | null;
+  reviewOllamaModel?: string | null;
+  reviewYolo?: boolean | null;
+  primaryBackend?: Backend;
+};
+
+interface ReboundHandlers {
+  installedReviewers: Record<string, boolean>;
+  onSelectBackend: (b: string | null) => void;
+  onSelectMode: (m: 'review' | 'collab') => void;
+  onSelectOllamaModel: (m: string | null) => void;
+  onToggleYolo: (v: boolean) => void;
+}
+
+function ReboundPanel({
   conv,
   installedReviewers,
   onSelectBackend,
   onSelectMode,
   onSelectOllamaModel,
   onToggleYolo,
-}: {
-  conv: {
-    id: UUID;
-    reviewBackend?: string | null;
-    reviewMode?: 'review' | 'collab' | null;
-    collabMaxTurns?: number | null;
-    reviewOllamaModel?: string | null;
-    reviewYolo?: boolean | null;
-    primaryBackend?: Backend;
-  };
-  installedReviewers: Record<string, boolean>;
-  onSelectBackend: (b: string | null) => void;
-  onSelectMode: (m: 'review' | 'collab') => void;
-  onSelectOllamaModel: (m: string | null) => void;
-  onToggleYolo: (v: boolean) => void;
-}) {
-  const [open, setOpen] = useState(false);
+}: { conv: ReboundConv } & ReboundHandlers) {
   const [pulled, setPulled] = useState<string[]>([]);
   const settings = useStore((s) => s.settings);
+
+  // Load pulled Ollama models on mount so the model picker can show
+  // one-click choices.
+  useEffect(() => {
+    let cancelled = false;
+    void window.overcli.invoke('ollama:detect').then((det) => {
+      if (cancelled) return;
+      setPulled(det.models.map((m) => m.name));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const active = !!conv.reviewBackend;
+  const primary = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
+  const candidates = enabledBackends(settings).filter((b) => b !== primary);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Reviewer</div>
+        <div className="flex flex-col gap-1">
+          <ReboundRow
+            label="Off"
+            description="No secondary review."
+            selected={!active}
+            onSelect={() => onSelectBackend(null)}
+          />
+          {candidates.map((b) => {
+            const ready = installedReviewers[b];
+            const isLocal = b === 'ollama';
+            return (
+              <ReboundRow
+                key={b}
+                label={backendName(b) + (isLocal ? '  (local)' : '')}
+                labelColor={backendColor(b)}
+                description={
+                  ready
+                    ? isLocal
+                      ? `Fast, private, but lighter-weight critique than Claude/Codex. Uses your default Ollama model.`
+                      : `Run ${backendName(b)} after each ${backendName(primary)} turn.`
+                    : isLocal
+                    ? 'Ollama not installed — set it up in the Local tab.'
+                    : `${backendName(b)} CLI not installed or not authenticated.`
+                }
+                selected={conv.reviewBackend === b}
+                disabled={!ready}
+                onSelect={() => onSelectBackend(b)}
+              />
+            );
+          })}
+        </div>
+      </div>
+
+      {active && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Mode</div>
+          <div className="flex flex-col gap-1">
+            <ReboundRow
+              label="Review"
+              description="One-shot: reviewer reads each turn and comments."
+              selected={conv.reviewMode !== 'collab'}
+              onSelect={() => onSelectMode('review')}
+            />
+            <ReboundRow
+              label="Collab"
+              description="Ping-pong: primary and reviewer take turns until the budget is spent."
+              selected={conv.reviewMode === 'collab'}
+              onSelect={() => onSelectMode('collab')}
+            />
+          </div>
+        </div>
+      )}
+
+      {active && conv.reviewBackend === 'ollama' && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+            Ollama model
+          </div>
+          {pulled.length === 0 ? (
+            <div className="text-[10px] text-amber-400">
+              No models pulled. Open the Local tab to pull one.
+            </div>
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              <button
+                onClick={() => onSelectOllamaModel(null)}
+                className={
+                  'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                  (!conv.reviewOllamaModel
+                    ? 'bg-accent/15 text-ink'
+                    : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                }
+              >
+                (use default)
+              </button>
+              {pulled.map((m) => (
+                <button
+                  key={m}
+                  onClick={() => onSelectOllamaModel(m)}
+                  className={
+                    'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                    (conv.reviewOllamaModel === m
+                      ? 'bg-accent/15 text-ink'
+                      : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                  }
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {active && conv.reviewMode === 'collab' && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+            Collab rounds per burst
+          </div>
+          <CollabRoundsInput conversationId={conv.id} />
+          <div className="text-[10px] text-ink-faint mt-1">
+            Max back-and-forth turns before we stop and return to you.
+          </div>
+        </div>
+      )}
+
+      {active && conv.reviewBackend === 'codex' && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+            Codex sandbox
+          </div>
+          <label className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-card-strong cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!conv.reviewYolo}
+              onChange={(e) => onToggleYolo(e.target.checked)}
+              className="mt-0.5"
+            />
+            <div className="flex flex-col">
+              <span className="text-xs">Yolo mode</span>
+              <span className="text-[10px] text-ink-faint">
+                Workspace-write + auto-approve. Off = codex's default read-only sandbox.
+              </span>
+            </div>
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReboundPicker({
+  conv,
+  ...handlers
+}: { conv: ReboundConv } & ReboundHandlers) {
+  const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -829,25 +1038,8 @@ function ReboundPicker({
     return () => window.removeEventListener('mousedown', handler);
   }, [open]);
 
-  // Load pulled Ollama models whenever the popover opens so the model
-  // picker below can show one-click choices.
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    void window.overcli.invoke('ollama:detect').then((det) => {
-      if (cancelled) return;
-      setPulled(det.models.map((m) => m.name));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [open]);
-
   const active = !!conv.reviewBackend;
   const tint = active ? '#c29bff' : undefined;
-  const primary = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
-  const candidates = enabledBackends(settings).filter((b) => b !== primary);
-
   const label = active
     ? `rebound · ${conv.reviewBackend}${conv.reviewMode === 'collab' ? ' · collab' : ''}`
     : 'rebound';
@@ -864,136 +1056,8 @@ function ReboundPicker({
         <span className="text-[9px] opacity-70">▾</span>
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-[300px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-3">
-          <div>
-            <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Reviewer</div>
-            <div className="flex flex-col gap-1">
-              <ReboundRow
-                label="Off"
-                description="No secondary review."
-                selected={!active}
-                onSelect={() => onSelectBackend(null)}
-              />
-              {candidates.map((b) => {
-                const ready = installedReviewers[b];
-                const isLocal = b === 'ollama';
-                return (
-                  <ReboundRow
-                    key={b}
-                    label={backendName(b) + (isLocal ? '  (local)' : '')}
-                    labelColor={backendColor(b)}
-                    description={
-                      ready
-                        ? isLocal
-                          ? `Fast, private, but lighter-weight critique than Claude/Codex. Uses your default Ollama model.`
-                          : `Run ${backendName(b)} after each ${backendName(primary)} turn.`
-                        : isLocal
-                        ? 'Ollama not installed — set it up in the Local tab.'
-                        : `${backendName(b)} CLI not installed or not authenticated.`
-                    }
-                    selected={conv.reviewBackend === b}
-                    disabled={!ready}
-                    onSelect={() => onSelectBackend(b)}
-                  />
-                );
-              })}
-            </div>
-          </div>
-
-          {active && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Mode</div>
-              <div className="flex flex-col gap-1">
-                <ReboundRow
-                  label="Review"
-                  description="One-shot: reviewer reads each turn and comments."
-                  selected={conv.reviewMode !== 'collab'}
-                  onSelect={() => onSelectMode('review')}
-                />
-                <ReboundRow
-                  label="Collab"
-                  description="Ping-pong: primary and reviewer take turns until the budget is spent."
-                  selected={conv.reviewMode === 'collab'}
-                  onSelect={() => onSelectMode('collab')}
-                />
-              </div>
-            </div>
-          )}
-
-          {active && conv.reviewBackend === 'ollama' && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
-                Ollama model
-              </div>
-              {pulled.length === 0 ? (
-                <div className="text-[10px] text-amber-400">
-                  No models pulled. Open the Local tab to pull one.
-                </div>
-              ) : (
-                <div className="flex flex-col gap-0.5">
-                  <button
-                    onClick={() => onSelectOllamaModel(null)}
-                    className={
-                      'text-left px-2 py-1 rounded font-mono text-[11px] ' +
-                      (!conv.reviewOllamaModel
-                        ? 'bg-accent/15 text-ink'
-                        : 'text-ink-muted hover:bg-card-strong hover:text-ink')
-                    }
-                  >
-                    (use default)
-                  </button>
-                  {pulled.map((m) => (
-                    <button
-                      key={m}
-                      onClick={() => onSelectOllamaModel(m)}
-                      className={
-                        'text-left px-2 py-1 rounded font-mono text-[11px] ' +
-                        (conv.reviewOllamaModel === m
-                          ? 'bg-accent/15 text-ink'
-                          : 'text-ink-muted hover:bg-card-strong hover:text-ink')
-                      }
-                    >
-                      {m}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {active && conv.reviewMode === 'collab' && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
-                Collab rounds per burst
-              </div>
-              <CollabRoundsInput conversationId={conv.id} />
-              <div className="text-[10px] text-ink-faint mt-1">
-                Max back-and-forth turns before we stop and return to you.
-              </div>
-            </div>
-          )}
-
-          {active && conv.reviewBackend === 'codex' && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
-                Codex sandbox
-              </div>
-              <label className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-card-strong cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={!!conv.reviewYolo}
-                  onChange={(e) => onToggleYolo(e.target.checked)}
-                  className="mt-0.5"
-                />
-                <div className="flex flex-col">
-                  <span className="text-xs">Yolo mode</span>
-                  <span className="text-[10px] text-ink-faint">
-                    Workspace-write + auto-approve. Off = codex's default read-only sandbox.
-                  </span>
-                </div>
-              </label>
-            </div>
-          )}
+        <div className="absolute right-0 top-full mt-1 w-[300px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs">
+          <ReboundPanel conv={conv} {...handlers} />
         </div>
       )}
     </div>
@@ -1081,17 +1145,31 @@ function CollabRoundsInput({ conversationId }: { conversationId: UUID }) {
 function ConversationSettingsButton({
   conversationId,
   locked,
+  compact,
+  conv,
+  installedReviewers,
   onModelChange,
+  onSelectReviewBackend,
+  onSelectReviewMode,
+  onSelectReviewOllamaModel,
+  onToggleReviewYolo,
 }: {
   conversationId: UUID;
   locked: boolean;
+  compact: boolean;
+  conv: Conversation;
+  installedReviewers: Record<string, boolean>;
   onModelChange: (backend: Backend, model: string) => void;
+  onSelectReviewBackend: (b: string | null) => void;
+  onSelectReviewMode: (m: 'review' | 'collab') => void;
+  onSelectReviewOllamaModel: (m: string | null) => void;
+  onToggleReviewYolo: (v: boolean) => void;
 }) {
-  const conv = useConversation(conversationId);
   const settings = useStore((s) => s.settings);
   const [open, setOpen] = useState(false);
   const [ollamaPulled, setOllamaPulled] = useState<string[]>([]);
   const ref = useRef<HTMLDivElement>(null);
+  const fork = useForkActions(conversationId);
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
@@ -1101,7 +1179,7 @@ function ConversationSettingsButton({
     return () => window.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const backend: Backend = conv?.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
+  const backend: Backend = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
   // Fetch the list of pulled Ollama models whenever the popover opens on
   // an Ollama conversation — gives the user one-click picks instead of
@@ -1118,7 +1196,6 @@ function ConversationSettingsButton({
     };
   }, [open, backend]);
 
-  if (!conv) return null;
   const current =
     backend === 'claude'
       ? conv.claudeModel ?? ''
@@ -1133,7 +1210,12 @@ function ConversationSettingsButton({
         <SlidersIcon />
       </IconButton>
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-[280px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">
+        <div
+          className={
+            'absolute right-0 top-full mt-1 bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2 max-h-[80vh] overflow-y-auto ' +
+            (compact ? 'w-[320px]' : 'w-[280px]')
+          }
+        >
           <div className="text-[10px] uppercase tracking-wider text-ink-faint">Model override</div>
           <input
             value={current}
@@ -1170,6 +1252,50 @@ function ConversationSettingsButton({
             <div className="text-[10px] text-amber-400">
               Session already started — model changes apply to the next turn.
             </div>
+          )}
+
+          {compact && fork.ready && (
+            <>
+              <div className="border-t border-card my-1" />
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint">Fork</div>
+              <div className="flex flex-col gap-0.5">
+                {fork.items.map((it) => (
+                  <button
+                    key={it.value}
+                    disabled={it.disabled}
+                    onClick={() => {
+                      setOpen(false);
+                      void fork.forkTo(it.value as Backend);
+                    }}
+                    className={
+                      'w-full text-left px-2 py-1 rounded text-xs flex items-center gap-2 ' +
+                      (it.disabled
+                        ? 'text-ink-faint cursor-not-allowed'
+                        : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                    }
+                  >
+                    {it.leading}
+                    <span className="flex-1">{it.label}</span>
+                    {it.note && <span className="text-[10px] text-amber-400">{it.note}</span>}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+
+          {compact && (
+            <>
+              <div className="border-t border-card my-1" />
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint">Rebound</div>
+              <ReboundPanel
+                conv={conv}
+                installedReviewers={installedReviewers}
+                onSelectBackend={onSelectReviewBackend}
+                onSelectMode={onSelectReviewMode}
+                onSelectOllamaModel={onSelectReviewOllamaModel}
+                onToggleYolo={onToggleReviewYolo}
+              />
+            </>
           )}
         </div>
       )}
