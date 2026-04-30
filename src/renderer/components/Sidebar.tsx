@@ -4,21 +4,29 @@ import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runn
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { backendColor } from '../theme';
 
+const ACTIVE_CONVERSATION_WINDOW_MS = 10 * 60 * 1000;
+
 export function Sidebar() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const colosseums = useStore((s) => s.colosseums);
   const selectedId = useStore((s) => s.selectedConversationId);
+  const focusedProjectId = useStore((s) => s.focusedProjectId);
   const selectConversation = useStore((s) => s.selectConversation);
   const pickProject = useStore((s) => s.pickProject);
   const openSheet = useStore((s) => s.openSheet);
   const removeProject = useStore((s) => s.removeProject);
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const startNewConversation = useStore((s) => s.startNewConversation);
+  const startNewConversationInWorkspace = useStore((s) => s.startNewConversationInWorkspace);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openExplorer = useStore((s) => s.openExplorer);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
+  const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
+  const runners = useAllRunners();
   const [search, setSearch] = useState('');
+  const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
+  const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
   // Flip the expand model: "expanded by default unless collapsed by the
   // user." We track only the IDs the user has explicitly collapsed;
   // everything else is open. New projects that arrive later (after the
@@ -33,8 +41,24 @@ export function Sidebar() {
       else next.add(id);
       return next;
     });
+  const toggleMoreProjects = () => {
+    if (moreProjectsOpen) setExpandedMoreProjects(new Set());
+    setMoreProjectsOpen((v) => !v);
+  };
+  const closeMoreProjects = () => {
+    setMoreProjectsOpen(false);
+    setExpandedMoreProjects(new Set());
+  };
+  const toggleMoreProject = (id: UUID) =>
+    setExpandedMoreProjects((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const query = search.trim().toLowerCase();
+  const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
   const allGroupIds = useMemo(
     () => [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
@@ -60,6 +84,103 @@ export function Sidebar() {
       .filter((p) => p.name.toLowerCase().includes(query) || p.conversations.length > 0);
   }, [projects, query]);
 
+  const visibleWorkspaces = useMemo(() => {
+    if (!query) return workspaces;
+    return workspaces
+      .map((w) => ({
+        ...w,
+        conversations: (w.conversations ?? []).filter(
+          (c) =>
+            c.name.toLowerCase().includes(query) ||
+            (c.sessionId ?? '').toLowerCase().includes(query),
+        ),
+      }))
+      .filter((w) => {
+        const memberMatch = w.projectIds.some((pid) =>
+          projectsById.get(pid)?.name.toLowerCase().includes(query),
+        );
+        return w.name.toLowerCase().includes(query) || memberMatch || w.conversations.length > 0;
+      });
+  }, [projectsById, query, workspaces]);
+
+  const topConversations = useMemo(
+    () => collectTopConversations(projects, workspaces, runners).slice(0, 3),
+    [projects, runners, workspaces],
+  );
+  const sortedProjects = useMemo(
+    () =>
+      [...projects].sort(
+        (a, b) =>
+          projectActivityAt(b, colosseums, runners) - projectActivityAt(a, colosseums, runners),
+      ),
+    [colosseums, projects, runners],
+  );
+  const activeProjects = useMemo(
+    () => sortedProjects.filter((p) => hasProjectActivity(p, colosseums)),
+    [colosseums, sortedProjects],
+  );
+  const inactiveProjects = useMemo(
+    () => sortedProjects.filter((p) => !hasProjectActivity(p, colosseums)),
+    [colosseums, sortedProjects],
+  );
+  const visibleProjectGroups = activeProjects.slice(0, 5);
+  const overflowActiveProjects = activeProjects.slice(5);
+  const selectedProjectId = useMemo(
+    () =>
+      selectedId
+        ? projects.find((p) => p.conversations.some((c) => c.id === selectedId))?.id ?? null
+        : focusedProjectId,
+    [focusedProjectId, projects, selectedId],
+  );
+
+  const renderProjectShortcut = (project: Project) => (
+    <ProjectShortcutRow
+      key={project.id}
+      project={project}
+      selected={project.id === selectedProjectId}
+      onOpen={() => startNewConversation(project.id)}
+      onExplore={() => openExplorer(project.path)}
+    />
+  );
+  const renderProjectGroup = (project: Project) => (
+    <ProjectGroup
+      key={project.id}
+      project={project}
+      colosseums={colosseums.filter((c) => c.projectId === project.id)}
+      expanded={!isCollapsed(project.id)}
+      toggle={() => toggle(project.id)}
+      selectedId={selectedId}
+      onSelect={(id) => {
+        setDetailMode('conversation');
+        selectConversation(id);
+      }}
+      onNewConversation={() => startNewConversation(project.id)}
+      onRemove={() => void removeProject(project.id)}
+      onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
+      onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
+      onExplore={() => openExplorer(project.path)}
+    />
+  );
+  const renderMoreProjectGroup = (project: Project) => (
+    <ProjectGroup
+      key={project.id}
+      project={project}
+      colosseums={colosseums.filter((c) => c.projectId === project.id)}
+      expanded={expandedMoreProjects.has(project.id)}
+      toggle={() => toggleMoreProject(project.id)}
+      selectedId={selectedId}
+      onSelect={(id) => {
+        setDetailMode('conversation');
+        selectConversation(id);
+      }}
+      onNewConversation={() => startNewConversation(project.id)}
+      onRemove={() => void removeProject(project.id)}
+      onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
+      onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
+      onExplore={() => openExplorer(project.path)}
+    />
+  );
+
   return (
     <aside className="h-full flex-shrink-0 flex flex-col bg-surface-muted border-r border-card min-w-0" style={{ width: '100%' }}>
       <div className="px-2 pt-2 pb-1 flex items-center gap-1">
@@ -81,31 +202,31 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
-        {visibleProjects.map((project) => (
-          <ProjectGroup
-            key={project.id}
-            project={project}
-            colosseums={colosseums.filter((c) => c.projectId === project.id)}
-            expanded={!isCollapsed(project.id)}
-            toggle={() => toggle(project.id)}
-            selectedId={selectedId}
-            onSelect={(id) => {
-              setDetailMode('conversation');
-              selectConversation(id);
-            }}
-            onNewConversation={() => startNewConversation(project.id)}
-            onRemove={() => void removeProject(project.id)}
-            onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
-            onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
-            onExplore={() => openExplorer(project.path)}
-          />
-        ))}
-        {workspaces.length > 0 && (
-          <div className="mt-3 px-2 text-[10px] uppercase tracking-wide text-ink-faint">
-            Workspaces
-          </div>
+        {!query && showActiveSection && topConversations.length > 0 && (
+          <>
+            <SidebarSectionTitle label="Active" />
+            {topConversations.map((item) => (
+              <RecentConversationRow
+                key={item.conv.id}
+                item={item}
+                onClick={() => {
+                  setDetailMode('conversation');
+                  selectConversation(item.conv.id);
+                }}
+              />
+            ))}
+          </>
         )}
-        {workspaces.map((ws) => (
+        {query && <SidebarSectionTitle label="Search results" />}
+        {query && visibleProjects.length === 0 && visibleWorkspaces.length === 0 && (
+          <div className="px-2 py-2 text-xs text-ink-faint">No matches</div>
+        )}
+        {query &&
+          visibleProjects.map(renderProjectGroup)}
+        {(query ? visibleWorkspaces : workspaces).length > 0 && (
+          <SidebarSectionTitle label="Workspaces" />
+        )}
+        {(query ? visibleWorkspaces : workspaces).map((ws) => (
           <WorkspaceGroup
             key={ws.id}
             workspace={ws}
@@ -116,12 +237,7 @@ export function Sidebar() {
               setDetailMode('conversation');
               selectConversation(id);
             }}
-            onNewConversation={() => {
-              // Open the composer-first welcome page for this workspace;
-              // the conversation is materialized on first send so users
-              // can pick model/mode/effort up front, same as projects.
-              useStore.getState().startNewConversationInWorkspace(ws.id);
-            }}
+            onNewConversation={() => startNewConversationInWorkspace(ws.id)}
             onNewAgent={() =>
               openSheet({ type: 'newWorkspaceAgent', workspaceId: ws.id })
             }
@@ -130,6 +246,49 @@ export function Sidebar() {
             onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
           />
         ))}
+        {!query && (visibleProjectGroups.length > 0 || overflowActiveProjects.length > 0 || inactiveProjects.length > 0) && (
+          <>
+            <SidebarSectionTitle label="Projects" />
+            {visibleProjectGroups.map(renderProjectGroup)}
+            {(overflowActiveProjects.length > 0 || inactiveProjects.length > 0) && (
+              <div className="mt-1">
+                <div className="group flex items-center gap-1.5 w-full px-2 py-1 rounded hover:bg-card-strong">
+                  <button
+                    onClick={toggleMoreProjects}
+                    className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
+                  >
+                    <span
+                      className={
+                        'text-[9px] text-ink-faint transition-transform flex-shrink-0 ' +
+                        (moreProjectsOpen ? 'rotate-90' : '')
+                      }
+                    >
+                      ▸
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wide text-ink-faint flex-1 truncate">
+                      More projects
+                    </span>
+                    <span className="text-[10px] text-ink-faint">
+                      {overflowActiveProjects.length + inactiveProjects.length}
+                    </span>
+                  </button>
+                </div>
+                {moreProjectsOpen && (
+                  <div>
+                    {overflowActiveProjects.map(renderMoreProjectGroup)}
+                    {inactiveProjects.map(renderMoreProjectGroup)}
+                    <button
+                      onClick={closeMoreProjects}
+                      className="mt-1 w-full rounded px-2 py-1 text-left text-[10px] uppercase tracking-wide text-ink-faint hover:bg-card-strong hover:text-ink-muted"
+                    >
+                      Show fewer projects
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        )}
 
         <ArchivedGroup />
       </nav>
@@ -188,6 +347,162 @@ function SidebarIconButton({ label, onClick }: { label: string; onClick: () => v
       className="flex-1 text-[10px] py-1 text-ink-faint hover:text-ink-muted rounded hover:bg-card-strong"
     >
       {label}
+    </button>
+  );
+}
+
+function pathBasename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).slice(-1)[0] ?? path;
+}
+
+interface RecentConversationItem {
+  conv: Conversation;
+  ownerName: string;
+  ownerKind: 'project' | 'workspace';
+}
+
+function collectTopConversations(
+  projects: Project[],
+  workspaces: Workspace[],
+  runners: Record<UUID, { isRunning: boolean } | undefined>,
+): RecentConversationItem[] {
+  const out: RecentConversationItem[] = [];
+  const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
+  for (const project of projects) {
+    for (const conv of project.conversations) {
+      if (!conv.hidden && isActiveConversation(conv, runners, cutoff)) {
+        out.push({ conv, ownerName: project.name, ownerKind: 'project' });
+      }
+    }
+  }
+  for (const workspace of workspaces) {
+    for (const conv of workspace.conversations ?? []) {
+      if (!conv.hidden && isActiveConversation(conv, runners, cutoff)) {
+        out.push({ conv, ownerName: workspace.name, ownerKind: 'workspace' });
+      }
+    }
+  }
+  return out.sort((a, b) => {
+    const aRunning = runners[a.conv.id]?.isRunning ? 1 : 0;
+    const bRunning = runners[b.conv.id]?.isRunning ? 1 : 0;
+    if (aRunning !== bRunning) return bRunning - aRunning;
+    return conversationActivityAt(b.conv) - conversationActivityAt(a.conv);
+  });
+}
+
+function isActiveConversation(
+  conv: Conversation,
+  runners: Record<UUID, { isRunning: boolean } | undefined>,
+  cutoff: number,
+): boolean {
+  return !!runners[conv.id]?.isRunning || conversationActivityAt(conv) >= cutoff;
+}
+
+function conversationActivityAt(conv: Conversation): number {
+  return conv.lastActiveAt ?? conv.createdAt ?? 0;
+}
+
+function hasProjectActivity(project: Project, colosseums: Colosseum[]): boolean {
+  return project.conversations.some((c) => !c.hidden) || colosseums.some((c) => c.projectId === project.id);
+}
+
+function projectActivityAt(
+  project: Project,
+  colosseums: Colosseum[],
+  runners: Record<UUID, { isRunning: boolean } | undefined>,
+): number {
+  if (project.conversations.some((c) => runners[c.id]?.isRunning)) return Date.now();
+  const newestConversation = project.conversations.reduce(
+    (max, c) => (c.hidden ? max : Math.max(max, conversationActivityAt(c))),
+    0,
+  );
+  const newestColosseum = colosseums
+    .filter((c) => c.projectId === project.id)
+    .reduce((max, c) => Math.max(max, c.createdAt), 0);
+  return Math.max(project.lastOpenedAt ?? 0, newestConversation, newestColosseum);
+}
+
+function SidebarSectionTitle({ label }: { label: string }) {
+  return (
+    <div className="mt-3 px-2 text-[10px] uppercase tracking-wide text-ink-faint">
+      {label}
+    </div>
+  );
+}
+
+function ProjectShortcutRow({
+  project,
+  selected,
+  onOpen,
+  onExplore,
+}: {
+  project: Project;
+  selected: boolean;
+  onOpen: () => void;
+  onExplore: () => void;
+}) {
+  return (
+    <div
+      className={
+        'sidebar-row group mt-1 flex items-center gap-1 rounded pr-1 ' +
+        (selected
+          ? 'sidebar-row-selected text-ink'
+          : 'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card')
+      }
+      title={project.path}
+    >
+      <button onClick={onOpen} className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1 text-left">
+        <ProjectIcon />
+        <span className="min-w-0 flex-1">
+          <span className={'block truncate text-xs ' + (selected ? 'font-medium' : '')}>
+            {project.name}
+          </span>
+          <span className="block truncate text-[10px] text-ink-faint">{pathBasename(project.path)}</span>
+        </span>
+      </button>
+      <button
+        onClick={onExplore}
+        className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
+        title="Explore files"
+        aria-label={`Explore files in ${project.name}`}
+      >
+        <SearchIcon />
+      </button>
+    </div>
+  );
+}
+
+function RecentConversationRow({
+  item,
+  onClick,
+}: {
+  item: RecentConversationItem;
+  onClick: () => void;
+}) {
+  const bgColor = backendColor(item.conv.primaryBackend);
+  const isRunning = useRunnerIsRunning(item.conv.id);
+  const completedAt = useRunnerCompletedAt(item.conv.id);
+  const completed = !isRunning && !!completedAt;
+  const isAgent = isAgentConversation(item.conv);
+
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'sidebar-row group mt-0.5 flex w-full items-center gap-1 rounded px-2 py-1 text-left text-xs ' +
+        'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card'
+      }
+      title={`${item.conv.name} · ${item.ownerName}`}
+    >
+      <SidebarMarker color={bgColor} active={isRunning} completed={completed} />
+      {isAgent && <span className="text-[10px] text-ink-faint">⎇</span>}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{item.conv.name}</span>
+        <span className="block truncate text-[9px] leading-3.5 text-ink-faint">
+          {item.ownerKind === 'workspace' ? 'workspace · ' : ''}
+          {item.ownerName}
+        </span>
+      </span>
     </button>
   );
 }

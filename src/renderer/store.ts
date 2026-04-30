@@ -651,8 +651,16 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
       lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
+      projects: id
+        ? s.projects.map((p) =>
+            p.conversations.some((c) => c.id === id) ? { ...p, lastOpenedAt: Date.now() } : p,
+          )
+        : s.projects,
     }));
     window.overcli.invoke('store:saveSelection', id);
+    if (id && get().projects.some((p) => p.conversations.some((c) => c.id === id))) {
+      void get().saveProjects();
+    }
     if (id) {
       void get().loadHistoryIfNeeded(id);
       const completedAt = getRunner(id)?.completedAt;
@@ -916,7 +924,9 @@ export const useStore = create<StoreState>((set, get) => ({
     };
     set((s) => ({
       projects: s.projects.map((p) =>
-        p.id === projectId ? { ...p, conversations: [...p.conversations, conv] } : p,
+        p.id === projectId
+          ? { ...p, conversations: [...p.conversations, conv], lastOpenedAt: Date.now() }
+          : p,
       ),
     }));
     await get().saveProjects();
