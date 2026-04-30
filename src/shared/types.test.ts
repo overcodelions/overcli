@@ -17,6 +17,7 @@ describe('DEFAULT_SETTINGS', () => {
       sidebarWidth: 260,
       editorPaneWidth: 540,
       explorerTreeWidth: 280,
+      showActiveSidebarSection: true,
       showDebug: false,
     });
   });

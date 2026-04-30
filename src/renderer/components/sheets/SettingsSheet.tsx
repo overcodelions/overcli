@@ -499,6 +499,12 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         />
       </Group>
       <Group title="Layout" description="Tuning reserved for when the defaults don't fit.">
+        <Toggle
+          label="Show Active conversations in sidebar"
+          help="Adds the compact running/recent conversation shortcut strip above Workspaces."
+          value={local.showActiveSidebarSection ?? true}
+          onChange={(v) => patch({ showActiveSidebarSection: v })}
+        />
         <Row label="Sidebar width" help="Drag the sidebar edge to resize; double-click to reset.">
           <div className="text-[11px] text-ink-faint">{local.sidebarWidth}px</div>
         </Row>

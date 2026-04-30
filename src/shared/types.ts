@@ -483,6 +483,8 @@ export interface AppSettings {
   editorPaneWidth: number;
   /// Width of the file-tree column inside the standalone explorer view.
   explorerTreeWidth: number;
+  /// Sidebar shortcut strip for running/recent conversations.
+  showActiveSidebarSection?: boolean;
   /// When true, the sidebar footer shows a "Debug" button that opens the
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
@@ -884,5 +886,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarWidth: 260,
   editorPaneWidth: 540,
   explorerTreeWidth: 280,
+  showActiveSidebarSection: true,
   showDebug: false,
 };
