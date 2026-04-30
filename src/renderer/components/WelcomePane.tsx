@@ -39,6 +39,10 @@ export function WelcomePane() {
   const [selectedProjectId, setSelectedProjectId] = useState<UUID | null>(
     () => focusedProjectId ?? projects[0]?.id ?? null,
   );
+  // Local nudge added to the global welcomeFocusToken so we can re-focus
+  // the composer after the user clicks a starter prompt chip without
+  // mutating store-level state.
+  const [composerFocusNudge, setComposerFocusNudge] = useState(0);
   const [backend, setBackend] = useState<Backend>(() => firstEnabledBackend(settings));
   const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(
     settings.defaultPermissionMode,
@@ -93,6 +97,12 @@ export function WelcomePane() {
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  // `false` once probed and the folder isn't a git repo. We use this to
+  // reframe the welcome screen as a "work folder" — review data, build
+  // reports, investigate — rather than the build/code framing that fits a
+  // git project. `true`/`undefined` keep the default coding framing.
+  const projectIsGitRepo = useStore((s) => s.projectIsGitRepo);
+  const isNonGitProject = !focusedWorkspace && !!selectedProject && projectIsGitRepo[selectedProject.id] === false;
 
   // Resolve current branch for the selected project once we know which one
   // the user picked. Cheap — one git command — and updates reactively.
@@ -144,20 +154,34 @@ export function WelcomePane() {
     return <EmptyWelcome onPick={pickProject} />;
   }
 
+  const headline = isNonGitProject
+    ? `What can we dig into in ${selectedProject?.name}?`
+    : `What should we build in ${focusedWorkspace?.name ?? selectedProject?.name ?? 'overcli'}?`;
+  const placeholder = isNonGitProject
+    ? `Review data, draft a report, investigate — ask ${backendName(backend)} anything. @ to reference files · / for commands`
+    : `Ask ${backendName(backend)} anything. @ to reference files · / for commands`;
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
       <div className="w-full max-w-[680px]">
-        <div className="text-center text-2xl font-semibold mb-5">
-          What should we build in {focusedWorkspace?.name ?? selectedProject?.name ?? 'overcli'}?
-        </div>
+        <div className="text-center text-2xl font-semibold mb-5">{headline}</div>
+        {isNonGitProject && selectedProject && (
+          <StarterPrompts
+            project={selectedProject}
+            onPick={(text) => {
+              setDraft(WELCOME_KEY, text);
+              setComposerFocusNudge((n) => n + 1);
+            }}
+          />
+        )}
         <Composer
           draftKey={WELCOME_KEY}
           autoFocus
-          focusSignal={welcomeFocusToken}
+          focusSignal={welcomeFocusToken + composerFocusNudge}
           variant="welcome"
           rootPath={selectedProject?.path}
           slashCommands={slashCommands}
-          placeholder={`Ask ${backendName(backend)} anything. @ to reference files · / for commands`}
+          placeholder={placeholder}
           onSend={handleSend}
           footer={
             <>
@@ -217,11 +241,55 @@ export function WelcomePane() {
             onAdd={pickProject}
           />
           <Pill label="Work locally" items={[{ value: 'local', label: 'Work locally' }]} onPick={() => {}} />
-          {!focusedWorkspace && branch && (
+          {!focusedWorkspace && !isNonGitProject && branch && (
             <Pill label={branch} items={[{ value: branch, label: branch }]} onPick={() => {}} />
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+/// Quick-start chips shown above the composer for non-git "work folder"
+/// projects. They prefill the draft so the user can edit before sending,
+/// and frame the project as a place to investigate / report rather than
+/// a codebase to build in.
+function StarterPrompts({
+  project,
+  onPick,
+}: {
+  project: Project;
+  onPick: (text: string) => void;
+}) {
+  const prompts: { label: string; text: string }[] = [
+    {
+      label: 'Review what’s here',
+      text: `Take a look around ${project.path} and give me a quick tour: what files are here, how they’re organized, and what looks worth digging into.`,
+    },
+    {
+      label: 'Summarize the data',
+      text: `Read the data files in ${project.path} and write a short summary of what they contain — columns, sizes, any obvious patterns or anomalies.`,
+    },
+    {
+      label: 'Build a report',
+      text: `Help me build a report from the contents of ${project.path}. Start by asking what the report should cover.`,
+    },
+    {
+      label: 'Investigate something',
+      text: `I want to investigate something in ${project.path}. Ask me what I’m looking for, then dig in.`,
+    },
+  ];
+  return (
+    <div className="mb-3 flex flex-wrap items-center justify-center gap-1.5">
+      {prompts.map((p) => (
+        <button
+          key={p.label}
+          onClick={() => onPick(p.text)}
+          className="px-2.5 py-1 rounded-full bg-card-strong border border-card hover:border-card-strong text-xs text-ink-muted hover:text-ink"
+        >
+          {p.label}
+        </button>
+      ))}
     </div>
   );
 }

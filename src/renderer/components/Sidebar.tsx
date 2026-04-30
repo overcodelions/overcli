@@ -403,7 +403,12 @@ function conversationActivityAt(conv: Conversation): number {
 }
 
 function hasProjectActivity(project: Project, colosseums: Colosseum[]): boolean {
-  return project.conversations.some((c) => !c.hidden) || colosseums.some((c) => c.projectId === project.id);
+  if (project.conversations.some((c) => !c.hidden)) return true;
+  if (colosseums.some((c) => c.projectId === project.id)) return true;
+  // A freshly picked project has no conversation yet — the welcome composer
+  // creates one only on first send. Keep it in the main list for a short
+  // grace window so it doesn't immediately hide in "More projects".
+  return (project.lastOpenedAt ?? 0) > Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
 }
 
 function projectActivityAt(
