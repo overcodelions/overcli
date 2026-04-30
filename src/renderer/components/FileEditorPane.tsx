@@ -60,9 +60,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const binaryPreview = isBinaryPreviewKind(previewKind);
   const unsupportedBinary = isUnsupportedBinaryFile(path);
   const blockedFile =
-    fileInfo?.requestedPath === path &&
-    fileInfo.ok &&
-    (fileInfo.tooLarge || fileInfo.unsupportedBinary);
+    (fileInfo?.requestedPath === path &&
+      fileInfo.ok &&
+      (fileInfo.tooLarge || fileInfo.unsupportedBinary)) ||
+    (unsupportedBinary && !!error);
 
   const openFile = useStore((s) => s.openFile);
   useEffect(() => {
@@ -70,7 +71,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     let cancelled = false;
     if (unsupportedBinary) {
       setLoading(false);
-      setError('Binary file — Overcli does not open archives, disk images, or compiled artifacts.');
+      setError('This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.');
       setDirty(false);
       setArtifactPreview(null);
       setLargeTextPreview(null);
@@ -355,7 +356,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
           {loading ? (
             <div className="p-4 text-xs text-ink-faint">Loading…</div>
           ) : blockedFile ? (
-            <BlockedFilePanel path={path} message={error ?? fileInfo.error ?? 'File is not safe to open.'} />
+            <BlockedFilePanel path={path} message={error ?? 'This file cannot be previewed in Overcli.'} />
           ) : error ? (
             <div className="p-4 text-xs text-red-300">{error}</div>
           ) : mode === 'diff' ? (
@@ -404,7 +405,7 @@ function BlockedFilePanel({ path, message }: { path: string; message: string }) 
   return (
     <div className="h-full min-h-0 bg-surface-muted p-4">
       <div className="max-w-xl border border-card-strong bg-surface rounded-lg p-4">
-        <div className="text-[11px] uppercase tracking-wider text-ink-faint">External file</div>
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">Preview unavailable</div>
         <div className="mt-1 text-sm font-semibold text-ink truncate">{path.split(/[/\\]/).pop() ?? path}</div>
         <div className="mt-3 text-xs text-ink-muted leading-relaxed">{message}</div>
         <div className="mt-4 flex items-center gap-2">

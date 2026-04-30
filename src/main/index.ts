@@ -224,11 +224,11 @@ function registerIpc(): void {
         return { ok: false, error: fileTooLargeMessage(stat.size) };
       }
       if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
-        return { ok: false, error: 'Binary file — Overcli does not open archives, disk images, or compiled artifacts as text.' };
+        return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
       }
       const content = fs.readFileSync(resolved, 'utf-8');
       if (content.includes('\0')) {
-        return { ok: false, error: 'Binary file — editor only opens text.' };
+        return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
       }
       return { ok: true, content, resolvedPath: resolved };
     } catch (err: any) {
@@ -501,7 +501,7 @@ function fileInfo(hint: string, rootPath?: string) {
       error: tooLarge
         ? fileTooLargeMessage(stat.size)
         : unsupportedBinary
-          ? 'Binary file — Overcli does not open archives, disk images, or compiled artifacts.'
+          ? 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.'
           : undefined,
     };
   } catch (err: any) {
@@ -519,7 +519,7 @@ function readLargeTextPreview(hint: string, rootPath?: string) {
     const stat = fs.statSync(resolved);
     if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
     if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
-      return { ok: false, error: 'Binary file — Overcli does not open archives, disk images, or compiled artifacts.' };
+      return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
     }
     const fd = fs.openSync(resolved, 'r');
     try {
