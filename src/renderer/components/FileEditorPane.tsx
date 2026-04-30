@@ -54,6 +54,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
   const previewKind = detectFilePreviewKind(path);
   const previewable = canPreviewFile(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
@@ -265,7 +266,30 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       )}
       <div className="flex flex-col flex-1 min-h-0">
         <div className="flex items-center justify-between px-3 py-2 border-b border-card">
-          <div className="text-xs truncate text-ink-muted">{path}</div>
+          <div className="min-w-0 flex items-center gap-2">
+            <div
+              className="text-xs truncate text-ink-muted select-text cursor-text"
+              title={path}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {path}
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(path);
+                  setCopiedPath(true);
+                  window.setTimeout(() => setCopiedPath(false), 1200);
+                } catch {
+                  setCopiedPath(false);
+                }
+              }}
+              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+              title="Copy file path"
+            >
+              {copiedPath ? 'Copied' : 'Copy'}
+            </button>
+          </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
               <button
