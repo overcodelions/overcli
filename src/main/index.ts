@@ -80,6 +80,7 @@ import {
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const isDev = !!DEV_URL;
 const execFileAsync = promisify(execFile);
+const MAX_OPEN_FILE_BYTES = 5 * 1024 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 let runner: RunnerManager | null = null;
@@ -216,8 +217,11 @@ function registerIpc(): void {
     }
     try {
       const stat = fs.statSync(resolved);
-      if (stat.size > 5 * 1024 * 1024) {
-        return { ok: false, error: `File is ${Math.round(stat.size / 1024 / 1024)} MB. Editor only opens files under 5 MB.` };
+      if (stat.size > MAX_OPEN_FILE_BYTES) {
+        return { ok: false, error: fileTooLargeMessage(stat.size) };
+      }
+      if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
+        return { ok: false, error: 'Binary file — Overcli does not open archives, disk images, or compiled artifacts as text.' };
       }
       const content = fs.readFileSync(resolved, 'utf-8');
       if (content.includes('\0')) {
@@ -486,12 +490,7 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
 
     const mimeType = mimeForPreviewExtension(ext);
     if (!mimeType) return { ok: false, error: `No artifact preview available for .${ext || 'file'}.` };
-    if (stat.size > 25 * 1024 * 1024) {
-      return {
-        ok: false,
-        error: `File is ${Math.round(stat.size / 1024 / 1024)} MB. Artifact previews are capped at 25 MB.`,
-      };
-    }
+    if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
     const data = fs.readFileSync(resolved).toString('base64');
     return {
       ok: true,
@@ -530,8 +529,8 @@ async function convertOfficeToPdfPreview(
       return { converterPath, conversionError: 'LibreOffice did not produce a PDF preview.' };
     }
     const stat = fs.statSync(resolvedPdfPath);
-    if (stat.size > 25 * 1024 * 1024) {
-      return { converterPath, conversionError: 'Converted PDF is over the 25 MB preview cap.' };
+    if (stat.size > MAX_OPEN_FILE_BYTES) {
+      return { converterPath, conversionError: 'Converted PDF is over the 5 MB preview cap.' };
     }
     const data = fs.readFileSync(resolvedPdfPath).toString('base64');
     return {
@@ -543,6 +542,77 @@ async function convertOfficeToPdfPreview(
     return { converterPath, conversionError: err?.message ?? 'LibreOffice conversion failed.' };
   } finally {
     fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+function fileTooLargeMessage(bytes: number): string {
+  return `File is ${formatMegabytes(bytes)} MB. Overcli only opens files under 5 MB.`;
+}
+
+function formatMegabytes(bytes: number): string {
+  return Math.max(1, Math.ceil(bytes / 1024 / 1024)).toString();
+}
+
+const BINARY_EXTENSIONS = new Set([
+  '7z',
+  'a',
+  'app',
+  'avi',
+  'bin',
+  'bz2',
+  'class',
+  'dmg',
+  'dll',
+  'dylib',
+  'eot',
+  'exe',
+  'gz',
+  'icns',
+  'jar',
+  'mov',
+  'mp3',
+  'mp4',
+  'o',
+  'otf',
+  'pkg',
+  'rar',
+  'so',
+  'sqlite',
+  'sqlite3',
+  'tar',
+  'tgz',
+  'ttf',
+  'war',
+  'wasm',
+  'woff',
+  'woff2',
+  'xz',
+  'zip',
+]);
+
+function isKnownBinaryExtension(filePath: string): boolean {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  return BINARY_EXTENSIONS.has(ext);
+}
+
+function isLikelyBinaryFile(filePath: string, sizeBytes: number): boolean {
+  if (sizeBytes === 0) return false;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const sample = Buffer.alloc(Math.min(sizeBytes, 4096));
+    const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0);
+    if (sample.subarray(0, bytesRead).includes(0)) return true;
+    let controlBytes = 0;
+    for (let i = 0; i < bytesRead; i += 1) {
+      const byte = sample[i];
+      const allowedWhitespace = byte === 9 || byte === 10 || byte === 12 || byte === 13;
+      if (byte < 32 && !allowedWhitespace) controlBytes += 1;
+    }
+    return bytesRead > 0 && controlBytes / bytesRead > 0.08;
+  } catch {
+    return false;
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
