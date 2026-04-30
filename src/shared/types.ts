@@ -790,11 +790,20 @@ export interface IPCInvokeMap {
 export type ArtifactPreviewResult =
   | {
       ok: true;
-      kind: 'image' | 'pdf';
+      kind: 'image';
       resolvedPath: string;
       sizeBytes: number;
       mimeType: string;
       dataUrl: string;
+    }
+  | {
+      ok: true;
+      kind: 'pdf';
+      resolvedPath: string;
+      sizeBytes: number;
+      mimeType: string;
+      fileUrl: string;
+      dataUrl?: string;
     }
   | {
       ok: true;

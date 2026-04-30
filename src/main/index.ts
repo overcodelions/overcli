@@ -568,10 +568,20 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
     const mimeType = mimeForPreviewExtension(ext);
     if (!mimeType) return { ok: false, error: `No artifact preview available for .${ext || 'file'}.` };
     if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
+    if (mimeType === 'application/pdf') {
+      return {
+        ok: true,
+        kind: 'pdf',
+        resolvedPath: resolved,
+        sizeBytes: stat.size,
+        mimeType,
+        fileUrl: pathToFileUrl(resolved),
+      };
+    }
     const data = fs.readFileSync(resolved).toString('base64');
     return {
       ok: true,
-      kind: mimeType === 'application/pdf' ? 'pdf' : 'image',
+      kind: 'image',
       resolvedPath: resolved,
       sizeBytes: stat.size,
       mimeType,
@@ -580,6 +590,12 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
   } catch (err: any) {
     return { ok: false, error: err?.message ?? 'Could not read artifact preview' };
   }
+}
+
+function pathToFileUrl(filePath: string): string {
+  const normalized = path.resolve(filePath).replace(/\\/g, '/');
+  const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`;
+  return encodeURI(`file://${prefixed}`);
 }
 
 async function convertOfficeToPdfPreview(

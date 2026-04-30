@@ -38,7 +38,7 @@ export function FilePreview({
   }
 
   if (kind === 'image') {
-    return artifact?.ok && artifact.kind === 'image' ? (
+    return artifact?.ok && artifact.kind === 'image' && artifact.dataUrl ? (
       <div className="h-full min-h-0 bg-surface-muted flex items-center justify-center p-4">
         <img
           src={artifact.dataUrl}
@@ -53,7 +53,7 @@ export function FilePreview({
 
   if (kind === 'pdf') {
     return artifact?.ok && artifact.kind === 'pdf' ? (
-      <iframe title={`${path} preview`} src={artifact.dataUrl} className="block w-full h-full border-0 bg-surface" />
+      <PdfPreview artifact={artifact} path={path} />
     ) : (
       <ArtifactUnavailable artifact={artifact} />
     );
@@ -120,6 +120,45 @@ export function FilePreview({
       srcDoc={srcDoc}
       className="block w-full h-full border-0 bg-transparent"
     />
+  );
+}
+
+function PdfPreview({
+  artifact,
+  path,
+}: {
+  artifact: Extract<ArtifactPreviewResult, { ok: true; kind: 'pdf' }>;
+  path: string;
+}) {
+  const [openError, setOpenError] = useState<string | null>(null);
+  const src = artifact.fileUrl ?? artifact.dataUrl;
+  if (!src) return <ArtifactUnavailable artifact={{ ok: false, error: 'PDF preview URL is unavailable.' }} />;
+  return (
+    <div className="h-full min-h-0 flex flex-col bg-surface">
+      <div className="px-3 py-2 border-b border-card flex items-center justify-between gap-3 text-xs">
+        <span className="truncate text-ink-muted">{basename(path)} · {formatBytes(artifact.sizeBytes)}</span>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={async () => {
+              setOpenError(null);
+              const res = await window.overcli.invoke('fs:openPath', artifact.resolvedPath);
+              if (!res.ok) setOpenError(res.error);
+            }}
+            className="px-2 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+          >
+            Open
+          </button>
+          <button
+            onClick={() => window.overcli.invoke('fs:openInFinder', artifact.resolvedPath)}
+            className="px-2 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+          >
+            Reveal
+          </button>
+        </div>
+      </div>
+      {openError && <div className="px-3 py-2 text-xs text-red-300 border-b border-card">{openError}</div>}
+      <iframe title={`${path} preview`} src={src} className="block w-full flex-1 border-0 bg-surface" />
+    </div>
   );
 }
 
