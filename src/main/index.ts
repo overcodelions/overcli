@@ -82,6 +82,7 @@ const isDev = !!DEV_URL;
 const execFileAsync = promisify(execFile);
 const MAX_OPEN_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_FILE_BYTES = 1 * 1024 * 1024;
+const LARGE_TEXT_PREVIEW_BYTES = 256 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 let runner: RunnerManager | null = null;
@@ -219,8 +220,8 @@ function registerIpc(): void {
     }
     try {
       const stat = fs.statSync(resolved);
-      if (stat.size > MAX_TEXT_FILE_BYTES) {
-        return { ok: false, error: textFileTooLargeMessage(stat.size) };
+      if (stat.size > MAX_OPEN_FILE_BYTES) {
+        return { ok: false, error: fileTooLargeMessage(stat.size) };
       }
       if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
         return { ok: false, error: 'Binary file — Overcli does not open archives, disk images, or compiled artifacts as text.' };
@@ -234,6 +235,9 @@ function registerIpc(): void {
       return { ok: false, error: err?.message ?? 'Could not read file' };
     }
   });
+  ipcMain.handle('fs:readLargeTextPreview', (_e, args: { path: string; rootPath?: string }) =>
+    readLargeTextPreview(args?.path ?? '', args?.rootPath),
+  );
   ipcMain.handle('fs:readArtifactPreview', async (_e, args: { path: string; rootPath?: string }) =>
     readArtifactPreview(args?.path ?? '', args?.rootPath),
   );
@@ -482,8 +486,9 @@ function fileInfo(hint: string, rootPath?: string) {
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) return { ok: false, error: 'Path is not a regular file.' };
     const artifactPreview = isArtifactPreviewExtension(resolved);
-    const tooLarge =
-      stat.size > MAX_OPEN_FILE_BYTES || (!artifactPreview && stat.size > MAX_TEXT_FILE_BYTES);
+    const largeText =
+      !artifactPreview && stat.size > MAX_TEXT_FILE_BYTES && stat.size <= MAX_OPEN_FILE_BYTES;
+    const tooLarge = stat.size > MAX_OPEN_FILE_BYTES;
     const unsupportedBinary =
       !artifactPreview && (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size));
     return {
@@ -491,17 +496,49 @@ function fileInfo(hint: string, rootPath?: string) {
       resolvedPath: resolved,
       sizeBytes: stat.size,
       tooLarge,
+      largeText,
       unsupportedBinary,
       error: tooLarge
-        ? artifactPreview
-          ? fileTooLargeMessage(stat.size)
-          : textFileTooLargeMessage(stat.size)
+        ? fileTooLargeMessage(stat.size)
         : unsupportedBinary
           ? 'Binary file — Overcli does not open archives, disk images, or compiled artifacts.'
           : undefined,
     };
   } catch (err: any) {
     return { ok: false, error: err?.message ?? 'Could not inspect file' };
+  }
+}
+
+function readLargeTextPreview(hint: string, rootPath?: string) {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!isPathUnderRegisteredRoot(resolved)) {
+    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
+    if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
+      return { ok: false, error: 'Binary file — Overcli does not open archives, disk images, or compiled artifacts.' };
+    }
+    const fd = fs.openSync(resolved, 'r');
+    try {
+      const size = Math.min(stat.size, LARGE_TEXT_PREVIEW_BYTES);
+      const buffer = Buffer.alloc(size);
+      const bytesRead = fs.readSync(fd, buffer, 0, size, 0);
+      return {
+        ok: true,
+        content: buffer.subarray(0, bytesRead).toString('utf-8'),
+        resolvedPath: resolved,
+        truncated: stat.size > bytesRead,
+        totalBytes: stat.size,
+        previewBytes: bytesRead,
+      };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not read large text preview' };
   }
 }
 
@@ -587,10 +624,6 @@ async function convertOfficeToPdfPreview(
 
 function fileTooLargeMessage(bytes: number): string {
   return `File is ${formatMegabytes(bytes)} MB. Overcli only opens files under 5 MB.`;
-}
-
-function textFileTooLargeMessage(bytes: number): string {
-  return `Text file is ${formatMegabytes(bytes)} MB. Overcli only opens text files under 1 MB.`;
 }
 
 function formatMegabytes(bytes: number): string {

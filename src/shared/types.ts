@@ -612,6 +612,9 @@ export interface IPCInvokeMap {
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
     | { ok: true; content: string; resolvedPath: string }
     | { ok: false; error: string };
+  'fs:readLargeTextPreview': (args: { path: string; rootPath?: string }) =>
+    | { ok: true; content: string; resolvedPath: string; truncated: boolean; totalBytes: number; previewBytes: number }
+    | { ok: false; error: string };
   'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
   'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
@@ -813,6 +816,7 @@ export type FileInfoResult =
       resolvedPath: string;
       sizeBytes: number;
       tooLarge: boolean;
+      largeText: boolean;
       unsupportedBinary: boolean;
       error?: string;
     }

@@ -15,6 +15,12 @@ import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
+type LargeTextPreview = {
+  content: string;
+  truncated: boolean;
+  totalBytes: number;
+  previewBytes: number;
+};
 
 export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string | null } = {}) {
   const convId = useStore((s) => s.selectedConversationId);
@@ -44,6 +50,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const [diffText, setDiffText] = useState<string>('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
   const [fileInfo, setFileInfo] = useState<FileInfoState | null>(null);
+  const [largeTextPreview, setLargeTextPreview] = useState<LargeTextPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -61,6 +68,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       setError('Binary file — Overcli does not open archives, disk images, or compiled artifacts.');
       setDirty(false);
       setArtifactPreview(null);
+      setLargeTextPreview(null);
       setContent('');
       return () => {
         cancelled = true;
@@ -70,6 +78,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     setError(null);
     setDirty(false);
     setArtifactPreview(null);
+    setLargeTextPreview(null);
     setFileInfo(null);
     const isWorkspaceMemberPath =
       !!workspaceMembers &&
@@ -96,6 +105,22 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         if (res.ok) setArtifactPreview(res);
         else setError(res.error);
       } else {
+        if (info.largeText) {
+          const res = await window.overcli.invoke('fs:readLargeTextPreview', { path, rootPath: rootPath ?? undefined });
+          if (cancelled) return;
+          if (res.ok) {
+            setLargeTextPreview({
+              content: res.content,
+              truncated: res.truncated,
+              totalBytes: res.totalBytes,
+              previewBytes: res.previewBytes,
+            });
+            setContent(res.content);
+          } else {
+            setError(res.error);
+          }
+          return;
+        }
         const res = await window.overcli.invoke('fs:readFile', { path, rootPath: rootPath ?? undefined });
         if (cancelled) return;
         if (res.ok) setContent(res.content);
@@ -128,9 +153,9 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       setError(fileInfo.error);
       return;
     }
-    if (fileInfo.tooLarge || fileInfo.unsupportedBinary) {
+    if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
       setDiffText('');
-      setError(fileInfo.error ?? 'File is not safe to diff.');
+      setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
       return;
     }
     if (unsupportedBinary) {
@@ -321,6 +346,12 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               This artifact is not editable as text. Use Preview to inspect it, or Diff to review
               repository changes.
             </div>
+          ) : largeTextPreview ? (
+            <LargeTextViewer
+              preview={largeTextPreview}
+              path={path}
+              onOpenExternal={() => window.overcli.invoke('fs:openPath', path)}
+            />
           ) : (
             <Editor
               content={content}
@@ -336,6 +367,53 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       </div>
     </div>
   );
+}
+
+function LargeTextViewer({
+  preview,
+  path,
+  onOpenExternal,
+}: {
+  preview: LargeTextPreview;
+  path: string;
+  onOpenExternal: () => void;
+}) {
+  const safeContent = useMemo(() => clampLongLines(preview.content, 2000), [preview.content]);
+  return (
+    <div className="h-full min-h-0 flex flex-col bg-surface-muted">
+      <div className="px-3 py-2 border-b border-card text-xs text-ink-muted flex items-center justify-between gap-3">
+        <span className="truncate">
+          Previewing first {formatBytes(preview.previewBytes)} of {formatBytes(preview.totalBytes)}
+          {preview.truncated ? ' · truncated' : ''}
+        </span>
+        <button
+          onClick={onOpenExternal}
+          className="shrink-0 px-2 py-1 rounded border border-card-strong hover:bg-card-strong text-ink-muted hover:text-ink"
+        >
+          Open
+        </button>
+      </div>
+      <pre
+        className="m-0 flex-1 overflow-auto p-3 text-[12px] leading-relaxed font-mono text-ink-muted whitespace-pre"
+        title={path}
+      >
+        {safeContent}
+      </pre>
+    </div>
+  );
+}
+
+function clampLongLines(content: string, maxChars: number): string {
+  return content
+    .split('\n')
+    .map((line) => (line.length > maxChars ? `${line.slice(0, maxChars)} … [line truncated]` : line))
+    .join('\n');
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function Editor({
