@@ -553,16 +553,15 @@ function ProjectGroup({
     (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
   ).length;
   const workspaceRefs = workspaces.filter((w) => w.projectIds.includes(project.id));
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
-  const handleRemove = () => {
+  const removeDetails = useMemo(() => {
     const colosseumCount = colosseums.length;
     const workspaceCount = workspaceRefs.length;
     const deletedWorkspaceCount = workspaceRefs.filter(
       (w) => w.projectIds.filter((pid) => pid !== project.id).length === 0,
     ).length;
-    const message = [
-      `Remove project "${project.name}" from overcli?`,
-      'This keeps the repo on disk, but removes it from the app.',
+    return [
       project.conversations.length
         ? `${project.conversations.length} conversation${project.conversations.length === 1 ? '' : 's'} and agent${project.conversations.length === 1 ? '' : 's'} will be removed.`
         : '',
@@ -575,12 +574,8 @@ function ProjectGroup({
       deletedWorkspaceCount
         ? `${deletedWorkspaceCount} workspace${deletedWorkspaceCount === 1 ? '' : 's'} with no projects left will also be removed.`
         : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-    if (!window.confirm(message)) return;
-    onRemove();
-  };
+    ].filter(Boolean);
+  }, [colosseums.length, project.conversations.length, project.id, workspaceRefs]);
 
   return (
     <div className="mt-1">
@@ -607,14 +602,27 @@ function ProjectGroup({
           <PlusIcon />
         </button>
         <button
-          onClick={handleRemove}
+          onClick={() => setConfirmRemove(true)}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
-          title="Remove project from overcli"
+          title="Remove project from Overcli"
           aria-label={`Remove project ${project.name}`}
         >
           <TrashIcon />
         </button>
       </div>
+      {confirmRemove && (
+        <InlineRemoveConfirm
+          title={`Remove ${project.name} from Overcli?`}
+          body="This keeps the repo on disk, but removes it from the app."
+          details={removeDetails}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmRemove(false)}
+          onConfirm={() => {
+            setConfirmRemove(false);
+            onRemove();
+          }}
+        />
+      )}
       {expanded && (
         <div className="ml-4 border-l border-card pl-1">
           {visible.map((conv) => (
@@ -1021,23 +1029,20 @@ function WorkspaceGroup({
   const archivableCount = (workspace.conversations ?? []).filter(
     (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
   ).length;
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
-  const handleRemove = () => {
-    const message = [
-      `Remove workspace "${workspace.name}" from overcli?`,
-      'This removes the synthetic workspace and its conversations, but keeps member repos on disk and in the app.',
+  const removeDetails = useMemo(
+    () =>
+      [
       convs.length
         ? `${convs.length} workspace conversation${convs.length === 1 ? '' : 's'} will be removed.`
         : 'This workspace has no conversations yet.',
       workspace.projectIds.length
         ? `${workspace.projectIds.length} member project${workspace.projectIds.length === 1 ? '' : 's'} will stay available individually.`
         : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-    if (!window.confirm(message)) return;
-    onRemove();
-  };
+      ].filter(Boolean),
+    [convs.length, workspace.projectIds.length],
+  );
 
   return (
     <div className="mt-1">
@@ -1074,14 +1079,27 @@ function WorkspaceGroup({
           <PlusIcon />
         </button>
         <button
-          onClick={handleRemove}
+          onClick={() => setConfirmRemove(true)}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
-          title="Remove workspace from overcli"
+          title="Remove workspace from Overcli"
           aria-label={`Remove workspace ${workspace.name}`}
         >
           <TrashIcon />
         </button>
       </div>
+      {confirmRemove && (
+        <InlineRemoveConfirm
+          title={`Remove ${workspace.name} from Overcli?`}
+          body="This removes the synthetic workspace and its conversations, but keeps member repos on disk and in the app."
+          details={removeDetails}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmRemove(false)}
+          onConfirm={() => {
+            setConfirmRemove(false);
+            onRemove();
+          }}
+        />
+      )}
       {expanded && (
         <div className="ml-4 border-l border-card pl-1">
           {plain.length === 0 && agents.length === 0 && (
@@ -1128,6 +1146,50 @@ function WorkspaceGroup({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function InlineRemoveConfirm({
+  title,
+  body,
+  details,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  title: string;
+  body: string;
+  details: string[];
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="mx-2 mt-1 rounded-lg border border-red-400/30 bg-red-950/20 p-2">
+      <div className="text-xs font-semibold text-ink">{title}</div>
+      <div className="mt-1 text-[11px] leading-relaxed text-ink-muted">{body}</div>
+      {details.length > 0 && (
+        <ul className="mt-1.5 space-y-0.5 text-[10px] leading-relaxed text-ink-faint">
+          {details.map((detail) => (
+            <li key={detail}>{detail}</li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={onCancel}
+          className="flex-1 rounded border border-card-strong px-2 py-1 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onConfirm}
+          className="flex-1 rounded bg-red-400 px-2 py-1 text-xs font-medium text-surface hover:bg-red-300"
+        >
+          {confirmLabel}
+        </button>
+      </div>
     </div>
   );
 }
