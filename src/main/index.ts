@@ -569,6 +569,7 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
     if (!mimeType) return { ok: false, error: `No artifact preview available for .${ext || 'file'}.` };
     if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
     if (mimeType === 'application/pdf') {
+      const data = fs.readFileSync(resolved).toString('base64');
       return {
         ok: true,
         kind: 'pdf',
@@ -576,6 +577,7 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
         sizeBytes: stat.size,
         mimeType,
         fileUrl: pathToFileUrl(resolved),
+        dataUrl: `data:${mimeType};base64,${data}`,
       };
     }
     const data = fs.readFileSync(resolved).toString('base64');
