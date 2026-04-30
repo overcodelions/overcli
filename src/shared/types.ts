@@ -611,9 +611,16 @@ export interface IPCInvokeMap {
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
     | { ok: true; content: string; resolvedPath: string }
     | { ok: false; error: string };
+  'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
   'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
   'fs:openInFinder': (path: string) => void;
+  'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
+  'preview:runProjectCommand': (args: {
+    cwd: string;
+    command: string;
+  }) => { ok: true } | { ok: false; error: string };
   'git:run': (args: { args: string[]; cwd: string }) => {
     stdout: string;
     stderr: string;
@@ -774,6 +781,45 @@ export interface IPCInvokeMap {
   'ollama:deleteSession': (sessionId: string) => void;
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
+}
+
+export type ArtifactPreviewResult =
+  | {
+      ok: true;
+      kind: 'image' | 'pdf';
+      resolvedPath: string;
+      sizeBytes: number;
+      mimeType: string;
+      dataUrl: string;
+    }
+  | {
+      ok: true;
+      kind: 'office';
+      resolvedPath: string;
+      sizeBytes: number;
+      extension: string;
+      family: 'document' | 'spreadsheet' | 'presentation';
+      convertedPdfDataUrl?: string;
+      convertedPdfSizeBytes?: number;
+      converterPath?: string;
+      conversionError?: string;
+    }
+  | { ok: false; error: string };
+
+export type ProjectPreviewHintsResult =
+  | {
+      ok: true;
+      rootPath: string;
+      packageManager: 'npm' | 'pnpm' | 'yarn';
+      commands: ProjectPreviewCommand[];
+    }
+  | { ok: false; error: string };
+
+export interface ProjectPreviewCommand {
+  id: string;
+  label: string;
+  command: string;
+  kind: 'dev' | 'storybook' | 'preview' | 'test';
 }
 
 export interface SilentLogEntry {

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
+import type { ArtifactPreviewResult } from '@shared/types';
 import hljs from 'highlight.js';
-import { canPreviewFile } from '../filePreview';
+import { canPreviewFile, detectFilePreviewKind, isBinaryPreviewKind } from '../filePreview';
 import { FileTree } from './FileTree';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
@@ -34,10 +35,13 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const closeFile = useStore((s) => s.closeFile);
   const [content, setContent] = useState<string>('');
   const [diffText, setDiffText] = useState<string>('');
+  const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const previewKind = detectFilePreviewKind(path);
   const previewable = canPreviewFile(path);
+  const binaryPreview = isBinaryPreviewKind(previewKind);
 
   const openFile = useStore((s) => s.openFile);
   useEffect(() => {
@@ -46,33 +50,53 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     setLoading(true);
     setError(null);
     setDirty(false);
-    window.overcli
-      .invoke('fs:readFile', { path, rootPath: rootPath ?? undefined })
-      .then((res) => {
-        if (cancelled) return;
-        if (res.ok) {
-          setContent(res.content);
-          // Tool results often pass a hint (`store.ts`, `src/main/index.ts`)
-          // that the resolver expanded to an absolute path. Upgrade the
-          // store so subsequent save/diff ops target the real file.
-          // Skip the upgrade for workspace-member paths ("<member>/…") —
-          // the relative form is already canonical and carries the
-          // project prefix that the diff view needs to strip.
-          const isWorkspaceMemberPath =
-            !!workspaceMembers &&
-            workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
-          if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
-            openFile(res.resolvedPath, highlight ?? undefined, mode);
+    setArtifactPreview(null);
+    const isWorkspaceMemberPath =
+      !!workspaceMembers &&
+      workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
+    if (binaryPreview) {
+      window.overcli
+        .invoke('fs:readArtifactPreview', { path, rootPath: rootPath ?? undefined })
+        .then((res) => {
+          if (cancelled) return;
+          if (res.ok) {
+            setArtifactPreview(res);
+            if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
+              openFile(res.resolvedPath, highlight ?? undefined, mode);
+            }
+          } else {
+            setError(res.error);
           }
-        } else setError(res.error);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    } else {
+      window.overcli
+        .invoke('fs:readFile', { path, rootPath: rootPath ?? undefined })
+        .then((res) => {
+          if (cancelled) return;
+          if (res.ok) {
+            setContent(res.content);
+            // Tool results often pass a hint (`store.ts`, `src/main/index.ts`)
+            // that the resolver expanded to an absolute path. Upgrade the
+            // store so subsequent save/diff ops target the real file.
+            // Skip the upgrade for workspace-member paths ("<member>/…") —
+            // the relative form is already canonical and carries the
+            // project prefix that the diff view needs to strip.
+            if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
+              openFile(res.resolvedPath, highlight ?? undefined, mode);
+            }
+          } else setError(res.error);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }
     return () => {
       cancelled = true;
     };
-  }, [path, rootPath]);
+  }, [binaryPreview, highlight, mode, openFile, path, rootPath, workspaceMembers]);
 
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
@@ -256,7 +280,17 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               <div className="p-4 text-xs text-ink-faint">No changes against HEAD.</div>
             )
           ) : mode === 'preview' && previewable ? (
-            <FilePreview path={path} content={content} />
+            <FilePreview
+              path={path}
+              content={content}
+              artifact={artifactPreview}
+              rootPath={rootPath ?? undefined}
+            />
+          ) : binaryPreview ? (
+            <div className="p-4 text-xs text-ink-faint">
+              This artifact is not editable as text. Use Preview to inspect it, or Diff to review
+              repository changes.
+            </div>
           ) : (
             <Editor
               content={content}

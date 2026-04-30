@@ -1,9 +1,23 @@
 export type FileViewMode = 'edit' | 'preview' | 'diff';
 
-export type FilePreviewKind = 'html' | 'markdown';
+export type FilePreviewKind =
+  | 'html'
+  | 'markdown'
+  | 'image'
+  | 'pdf'
+  | 'csv'
+  | 'json'
+  | 'office'
+  | 'react';
 
 const HTML_EXTENSIONS = new Set(['html', 'htm']);
 const MARKDOWN_EXTENSIONS = new Set(['md', 'markdown']);
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
+const CSV_EXTENSIONS = new Set(['csv', 'tsv']);
+const JSON_EXTENSIONS = new Set(['json', 'jsonc']);
+const OFFICE_EXTENSIONS = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']);
+const REACT_EXTENSIONS = new Set(['tsx', 'jsx']);
+const BINARY_PREVIEW_KINDS = new Set<FilePreviewKind>(['image', 'pdf', 'office']);
 
 export function detectFilePreviewKind(filePath: string | null | undefined): FilePreviewKind | null {
   if (!filePath) return null;
@@ -11,11 +25,21 @@ export function detectFilePreviewKind(filePath: string | null | undefined): File
   const ext = name.includes('.') ? name.split('.').pop() ?? '' : '';
   if (HTML_EXTENSIONS.has(ext)) return 'html';
   if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown';
+  if (IMAGE_EXTENSIONS.has(ext)) return 'image';
+  if (ext === 'pdf') return 'pdf';
+  if (CSV_EXTENSIONS.has(ext)) return 'csv';
+  if (JSON_EXTENSIONS.has(ext)) return 'json';
+  if (OFFICE_EXTENSIONS.has(ext)) return 'office';
+  if (REACT_EXTENSIONS.has(ext)) return 'react';
   return null;
 }
 
 export function canPreviewFile(filePath: string | null | undefined): boolean {
   return detectFilePreviewKind(filePath) !== null;
+}
+
+export function isBinaryPreviewKind(kind: FilePreviewKind | null): boolean {
+  return kind != null && BINARY_PREVIEW_KINDS.has(kind);
 }
 
 export function defaultFileViewMode(
