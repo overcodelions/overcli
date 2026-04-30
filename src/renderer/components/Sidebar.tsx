@@ -711,6 +711,7 @@ function ColosseumSidebarGroup({
   const removeColosseum = useStore((s) => s.removeColosseum);
   const runners = useAllRunners();
   const [expanded, setExpanded] = useState(true);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const contenders = colosseum.contenderIds
     .map((cid) => project.conversations.find((c) => c.id === cid) ?? null)
@@ -801,15 +802,27 @@ function ColosseumSidebarGroup({
               </button>
             )}
             <button
-              onClick={() => {
-                if (!window.confirm(`Remove colosseum "${colosseum.name}" and all contender worktrees?`)) return;
-                void removeColosseum(colosseum.id);
-              }}
+              onClick={() => setConfirmRemove(true)}
               className="text-[10px] text-ink-faint hover:text-red-400 py-0.5 px-1.5 rounded hover:bg-card-strong"
             >
               Remove
             </button>
           </div>
+          {confirmRemove && (
+            <InlineRemoveConfirm
+              title={`Remove ${colosseum.name}?`}
+              body="This removes the colosseum and its contender worktrees."
+              details={[
+                `${contenders.length} contender${contenders.length === 1 ? '' : 's'} will be removed.`,
+              ]}
+              confirmLabel="Remove"
+              onCancel={() => setConfirmRemove(false)}
+              onConfirm={() => {
+                setConfirmRemove(false);
+                void removeColosseum(colosseum.id);
+              }}
+            />
+          )}
         </div>
       )}
     </div>

@@ -618,6 +618,7 @@ export interface IPCInvokeMap {
   'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
   'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
+  'fs:listFileEntries': (root: string) => FileTreeEntry[];
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
@@ -830,6 +831,11 @@ export type FileInfoResult =
       error?: string;
     }
   | { ok: false; error: string };
+
+export interface FileTreeEntry {
+  path: string;
+  sizeBytes: number;
+}
 
 export type ProjectPreviewHintsResult =
   | {

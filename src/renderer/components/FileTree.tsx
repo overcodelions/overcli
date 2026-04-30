@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
+import type { FileTreeEntry } from '@shared/types';
 
 /// Lazily-loaded file tree rooted at the current conversation's project
 /// (or worktree) directory. Reuses the main-process `fs:listFiles` IPC
@@ -7,10 +8,11 @@ import { useStore } from '../store';
 /// outputs, etc. Files are grouped into a nested shape and rendered as
 /// an expandable tree; clicking a file opens it in the editor pane.
 export function FileTree({ rootPath }: { rootPath: string }) {
-  const [files, setFiles] = useState<string[]>([]);
+  const [entries, setEntries] = useState<FileTreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState('');
+  const [showBlocked, setShowBlocked] = useState(false);
   const openFile = useStore((s) => s.openFile);
   const openFilePath = useStore((s) => s.openFilePath);
 
@@ -18,10 +20,10 @@ export function FileTree({ rootPath }: { rootPath: string }) {
     let cancelled = false;
     setLoading(true);
     window.overcli
-      .invoke('fs:listFiles', rootPath)
+      .invoke('fs:listFileEntries', rootPath)
       .then((list) => {
         if (!cancelled) {
-          setFiles(list);
+          setEntries(list);
           setLoading(false);
           // Auto-expand the top-level so the user sees immediate
           // structure without clicking to unfold the root.
@@ -36,11 +38,15 @@ export function FileTree({ rootPath }: { rootPath: string }) {
     };
   }, [rootPath]);
 
-  const tree = useMemo(() => buildTree(files, rootPath, filter.trim().toLowerCase()), [
-    files,
-    rootPath,
-    filter,
-  ]);
+  const blockedCount = useMemo(() => entries.filter(isBlockedEntry).length, [entries]);
+  const visibleEntries = useMemo(
+    () => (showBlocked ? entries : entries.filter((entry) => !isBlockedEntry(entry))),
+    [entries, showBlocked],
+  );
+  const tree = useMemo(
+    () => buildTree(visibleEntries, rootPath, filter.trim().toLowerCase()),
+    [visibleEntries, rootPath, filter],
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -56,6 +62,14 @@ export function FileTree({ rootPath }: { rootPath: string }) {
           placeholder="Filter"
           className="w-full px-2 py-1 text-xs bg-white/5 rounded outline-none focus:bg-white/10"
         />
+        {blockedCount > 0 && (
+          <button
+            onClick={() => setShowBlocked((v) => !v)}
+            className="mt-2 text-[10px] text-ink-faint hover:text-ink"
+          >
+            {showBlocked ? 'Hide' : 'Show'} {blockedCount} blocked file{blockedCount === 1 ? '' : 's'}
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto px-1 py-1">
         {loading ? (
@@ -93,6 +107,8 @@ export function FileTree({ rootPath }: { rootPath: string }) {
 interface TreeNode {
   name: string;
   fullPath: string;
+  sizeBytes: number;
+  blocked: boolean;
   /// Key used in the expanded set — relative path from root so the state
   /// is stable across re-indexes.
   key: string;
@@ -100,17 +116,20 @@ interface TreeNode {
   children: TreeNode[];
 }
 
-function buildTree(files: string[], root: string, filter: string): TreeNode {
+function buildTree(entries: FileTreeEntry[], root: string, filter: string): TreeNode {
   const sep = root.includes('\\') ? '\\' : '/';
   const rootTrim = root.endsWith(sep) ? root.slice(0, -sep.length) : root;
   const rootNode: TreeNode = {
     name: '',
     fullPath: rootTrim,
+    sizeBytes: 0,
+    blocked: false,
     key: '',
     isDir: true,
     children: [],
   };
-  for (const full of files) {
+  for (const entry of entries) {
+    const full = entry.path;
     const rel = full.startsWith(rootTrim + sep)
       ? full.slice(rootTrim.length + sep.length)
       : full;
@@ -125,6 +144,8 @@ function buildTree(files: string[], root: string, filter: string): TreeNode {
         child = {
           name: part,
           fullPath: [cursor.fullPath, part].join(sep),
+          sizeBytes: isLeaf ? entry.sizeBytes : 0,
+          blocked: isLeaf ? isBlockedEntry(entry) : false,
           key: parts.slice(0, i + 1).join('/'),
           isDir: !isLeaf,
           children: [],
@@ -141,6 +162,7 @@ function buildTree(files: string[], root: string, filter: string): TreeNode {
 function sortTreeInPlace(node: TreeNode): void {
   node.children.sort((a, b) => {
     if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    if (a.blocked !== b.blocked) return a.blocked ? 1 : -1;
     return a.name.localeCompare(b.name);
   });
   for (const c of node.children) sortTreeInPlace(c);
@@ -180,6 +202,9 @@ function TreeNode({
       >
         <FileGlyph />
         <span className="truncate">{node.name}</span>
+        <span className={'ml-auto shrink-0 text-[10px] ' + (node.blocked ? 'text-amber-300/70' : 'text-ink-faint')}>
+          {node.blocked ? 'blocked' : formatBytes(node.sizeBytes)}
+        </span>
       </button>
     );
   }
@@ -246,4 +271,36 @@ function FileGlyph() {
 
 function shortenPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+\//, '~/');
+}
+
+const BLOCKED_EXTENSIONS = new Set([
+  '7z',
+  'app',
+  'bin',
+  'bz2',
+  'dmg',
+  'exe',
+  'gz',
+  'jar',
+  'pkg',
+  'rar',
+  'tar',
+  'tgz',
+  'xz',
+  'zip',
+]);
+
+function isBlockedEntry(entry: FileTreeEntry): boolean {
+  return entry.sizeBytes > 5 * 1024 * 1024 || BLOCKED_EXTENSIONS.has(extension(entry.path));
+}
+
+function extension(filePath: string): string {
+  const name = filePath.split(/[/\\]/).pop()?.toLowerCase() ?? '';
+  return name.includes('.') ? name.split('.').pop() ?? '' : '';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${Math.round(bytes / 1024 / 1024)} MB`;
 }
