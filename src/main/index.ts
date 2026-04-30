@@ -81,6 +81,7 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const isDev = !!DEV_URL;
 const execFileAsync = promisify(execFile);
 const MAX_OPEN_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_TEXT_FILE_BYTES = 1 * 1024 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 let runner: RunnerManager | null = null;
@@ -218,8 +219,8 @@ function registerIpc(): void {
     }
     try {
       const stat = fs.statSync(resolved);
-      if (stat.size > MAX_OPEN_FILE_BYTES) {
-        return { ok: false, error: fileTooLargeMessage(stat.size) };
+      if (stat.size > MAX_TEXT_FILE_BYTES) {
+        return { ok: false, error: textFileTooLargeMessage(stat.size) };
       }
       if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
         return { ok: false, error: 'Binary file — Overcli does not open archives, disk images, or compiled artifacts as text.' };
@@ -480,8 +481,11 @@ function fileInfo(hint: string, rootPath?: string) {
   try {
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) return { ok: false, error: 'Path is not a regular file.' };
-    const tooLarge = stat.size > MAX_OPEN_FILE_BYTES;
-    const unsupportedBinary = isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size);
+    const artifactPreview = isArtifactPreviewExtension(resolved);
+    const tooLarge =
+      stat.size > MAX_OPEN_FILE_BYTES || (!artifactPreview && stat.size > MAX_TEXT_FILE_BYTES);
+    const unsupportedBinary =
+      !artifactPreview && (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size));
     return {
       ok: true,
       resolvedPath: resolved,
@@ -489,7 +493,9 @@ function fileInfo(hint: string, rootPath?: string) {
       tooLarge,
       unsupportedBinary,
       error: tooLarge
-        ? fileTooLargeMessage(stat.size)
+        ? artifactPreview
+          ? fileTooLargeMessage(stat.size)
+          : textFileTooLargeMessage(stat.size)
         : unsupportedBinary
           ? 'Binary file — Overcli does not open archives, disk images, or compiled artifacts.'
           : undefined,
@@ -583,6 +589,10 @@ function fileTooLargeMessage(bytes: number): string {
   return `File is ${formatMegabytes(bytes)} MB. Overcli only opens files under 5 MB.`;
 }
 
+function textFileTooLargeMessage(bytes: number): string {
+  return `Text file is ${formatMegabytes(bytes)} MB. Overcli only opens text files under 1 MB.`;
+}
+
 function formatMegabytes(bytes: number): string {
   return Math.max(1, Math.ceil(bytes / 1024 / 1024)).toString();
 }
@@ -627,6 +637,11 @@ const BINARY_EXTENSIONS = new Set([
 function isKnownBinaryExtension(filePath: string): boolean {
   const ext = path.extname(filePath).slice(1).toLowerCase();
   return BINARY_EXTENSIONS.has(ext);
+}
+
+function isArtifactPreviewExtension(filePath: string): boolean {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  return !!mimeForPreviewExtension(ext) || !!officeFamilyForExtension(ext);
 }
 
 function isLikelyBinaryFile(filePath: string, sizeBytes: number): boolean {
