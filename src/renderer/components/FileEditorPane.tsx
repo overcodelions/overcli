@@ -59,6 +59,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const previewable = canPreviewFile(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
   const unsupportedBinary = isUnsupportedBinaryFile(path);
+  const blockedFile =
+    fileInfo?.requestedPath === path &&
+    fileInfo.ok &&
+    (fileInfo.tooLarge || fileInfo.unsupportedBinary);
 
   const openFile = useStore((s) => s.openFile);
   useEffect(() => {
@@ -350,6 +354,8 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         <div className="flex-1 min-h-0 overflow-auto">
           {loading ? (
             <div className="p-4 text-xs text-ink-faint">Loading…</div>
+          ) : blockedFile ? (
+            <BlockedFilePanel path={path} message={error ?? fileInfo.error ?? 'File is not safe to open.'} />
           ) : error ? (
             <div className="p-4 text-xs text-red-300">{error}</div>
           ) : mode === 'diff' ? (
@@ -388,6 +394,38 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function BlockedFilePanel({ path, message }: { path: string; message: string }) {
+  const [openError, setOpenError] = useState<string | null>(null);
+  return (
+    <div className="h-full min-h-0 bg-surface-muted p-4">
+      <div className="max-w-xl border border-card-strong bg-surface rounded-lg p-4">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">External file</div>
+        <div className="mt-1 text-sm font-semibold text-ink truncate">{path.split(/[/\\]/).pop() ?? path}</div>
+        <div className="mt-3 text-xs text-ink-muted leading-relaxed">{message}</div>
+        <div className="mt-4 flex items-center gap-2">
+          <button
+            onClick={async () => {
+              setOpenError(null);
+              const res = await window.overcli.invoke('fs:openPath', path);
+              if (!res.ok) setOpenError(res.error);
+            }}
+            className="text-xs font-medium px-3 py-1.5 rounded bg-accent text-surface hover:bg-accent/90"
+          >
+            Open
+          </button>
+          <button
+            onClick={() => window.overcli.invoke('fs:openInFinder', path)}
+            className="text-xs px-3 py-1.5 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+          >
+            Reveal
+          </button>
+        </div>
+        {openError && <div className="mt-3 text-xs text-red-300">{openError}</div>}
       </div>
     </div>
   );

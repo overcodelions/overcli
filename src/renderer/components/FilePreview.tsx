@@ -131,7 +131,8 @@ function PdfPreview({
   path: string;
 }) {
   const [openError, setOpenError] = useState<string | null>(null);
-  const src = artifact.fileUrl ?? artifact.dataUrl;
+  const [source, setSource] = useState<'data' | 'file'>(artifact.dataUrl ? 'data' : 'file');
+  const src = source === 'data' ? artifact.dataUrl ?? artifact.fileUrl : artifact.fileUrl ?? artifact.dataUrl;
   if (!src) return <ArtifactUnavailable artifact={{ ok: false, error: 'PDF preview URL is unavailable.' }} />;
   return (
     <div className="h-full min-h-0 flex flex-col bg-surface">
@@ -154,10 +155,21 @@ function PdfPreview({
           >
             Reveal
           </button>
+          {artifact.dataUrl && artifact.fileUrl && (
+            <button
+              onClick={() => setSource((s) => (s === 'data' ? 'file' : 'data'))}
+              className="px-2 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+            >
+              Try {source === 'data' ? 'File' : 'Data'}
+            </button>
+          )}
         </div>
       </div>
       {openError && <div className="px-3 py-2 text-xs text-red-300 border-b border-card">{openError}</div>}
-      <iframe title={`${path} preview`} src={src} className="block w-full flex-1 border-0 bg-surface" />
+      <embed title={`${path} preview`} src={src} type="application/pdf" className="block w-full flex-1 border-0 bg-surface" />
+      <div className="px-3 py-2 text-[11px] text-ink-faint border-t border-card">
+        If the preview area is blank, use Open or Reveal. Some PDFs do not render in Electron's inline viewer.
+      </div>
     </div>
   );
 }
