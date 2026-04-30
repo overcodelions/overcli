@@ -77,6 +77,44 @@ describe('parseCodexAppServerNotification', () => {
     if (ev.kind.type !== 'result') throw new Error();
     expect(ev.kind.info).toMatchObject({ subtype: 'failed', isError: true, durationMs: 42 });
   });
+
+  it('surfaces turn/completed error.message as a system notice before the result', () => {
+    const events = parse('turn/completed', {
+      turn: {
+        status: 'failed',
+        durationMs: 15028,
+        error: {
+          message: "You've hit your usage limit. Upgrade to Pro …",
+          codexErrorInfo: 'usageLimitExceeded',
+        },
+      },
+    }).result.events;
+    expect(events).toHaveLength(2);
+    if (events[0].kind.type !== 'systemNotice') throw new Error();
+    expect(events[0].kind.text).toContain('usage limit');
+    if (events[1].kind.type !== 'result') throw new Error();
+    expect(events[1].kind.info.isError).toBe(true);
+  });
+
+  it('extracts nested error.message from a standalone error notification', () => {
+    const ev = parse('error', { error: { code: -32603, message: 'boom' } }).result.events[0];
+    if (ev.kind.type !== 'systemNotice') throw new Error();
+    expect(ev.kind.text).toBe('boom');
+  });
+
+  it('dedupes the same error text across error and turn/completed notifications', () => {
+    const state = makeCodexAppServerParserState();
+    const text = "You've hit your usage limit. Upgrade to Pro …";
+    const first = parse('error', { message: text }, state).result.events;
+    expect(first).toHaveLength(1);
+    const second = parse(
+      'turn/completed',
+      { turn: { status: 'failed', durationMs: 10, error: { message: text } } },
+      state,
+    ).result.events;
+    // result event still fires; the duplicated systemNotice does not.
+    expect(second.map((e) => e.kind.type)).toEqual(['result']);
+  });
 });
 
 describe('translateUserInputRequest', () => {
