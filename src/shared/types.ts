@@ -388,6 +388,22 @@ export interface CapabilitiesReport {
   warnings: string[];
 }
 
+/// Curated skill that can be installed into a CLI's skills/ directory.
+/// `targets` lists the backends this skill can be installed into;
+/// Gemini is intentionally excluded today because gemini-cli has no
+/// `skills/` convention to write into.
+export type SkillTarget = Extract<Backend, 'claude' | 'codex'>;
+
+export interface MarketplaceSkill {
+  /// Stable id used as the install directory name (e.g. "git-helper").
+  id: string;
+  name: string;
+  description: string;
+  targets: SkillTarget[];
+  /// Per-target installed status, set by the main process at list time.
+  installed: Partial<Record<SkillTarget, boolean>>;
+}
+
 export interface OllamaModelInfo {
   name: string;
   sizeBytes: number;
@@ -576,6 +592,21 @@ export interface IPCInvokeMap {
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
   'capabilities:scan': () => CapabilitiesReport;
+  'skills:listMarketplace': () => MarketplaceSkill[];
+  'skills:installMarketplace': (args: {
+    skillId: string;
+    targets: SkillTarget[];
+  }) => { ok: true } | { ok: false; error: string };
+  'skills:uninstallMarketplace': (args: {
+    skillId: string;
+    targets: SkillTarget[];
+  }) => { ok: true } | { ok: false; error: string };
+  /// Removes any installed skill — marketplace or hand-rolled. Validates
+  /// the path lives directly under ~/.claude/skills or ~/.codex/skills
+  /// before deleting the skill's directory.
+  'skills:uninstallByPath': (args: {
+    path: string;
+  }) => { ok: true } | { ok: false; error: string };
   'fs:pickDirectory': () => string | null;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
     | { ok: true; content: string; resolvedPath: string }
