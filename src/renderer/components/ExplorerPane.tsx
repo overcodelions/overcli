@@ -72,9 +72,11 @@ export function ExplorerPane() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0 min-w-0">
-      {branch?.isRepo && branch.currentBranch && (
+      {branch?.isRepo && branch.currentBranch ? (
         <BranchBanner info={branch} />
-      )}
+      ) : branch ? (
+        <FolderBanner />
+      ) : null}
       <div className="flex flex-1 min-h-0 min-w-0">
       <div
         style={{ width: treeWidth }}
@@ -128,6 +130,15 @@ function BranchBanner({ info }: { info: BranchInfo }) {
       ) : (
         <span className="text-ink-faint">clean</span>
       )}
+    </div>
+  );
+}
+
+function FolderBanner() {
+  return (
+    <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
+      <span className="text-ink-muted">Folder</span>
+      <span className="text-ink-faint">Not a git repo. Overcli will preview safe files and open blocked files externally.</span>
     </div>
   );
 }

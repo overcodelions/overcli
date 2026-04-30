@@ -256,6 +256,10 @@ function registerIpc(): void {
     if (!isPathUnderRegisteredRoot(root)) return [];
     return listFilesRecursive(root);
   });
+  ipcMain.handle('fs:listFileEntries', (_e, root: string) => {
+    if (!isPathUnderRegisteredRoot(root)) return [];
+    return listFileEntriesRecursive(root);
+  });
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
     if (!isPathUnderRegisteredRoot(p)) return;
     shell.showItemInFolder(p);
@@ -1015,6 +1019,10 @@ function resolveFilePath(hint: string, rootPath?: string): string | null {
 }
 
 function listFilesRecursive(root: string): string[] {
+  return listFileEntriesRecursive(root).map((entry) => entry.path);
+}
+
+function listFileEntriesRecursive(root: string): Array<{ path: string; sizeBytes: number }> {
   const skipDirs = new Set([
     '.git',
     'node_modules',
@@ -1030,7 +1038,7 @@ function listFilesRecursive(root: string): string[] {
     'DerivedData',
     '.swiftpm',
   ]);
-  const out: string[] = [];
+  const out: Array<{ path: string; sizeBytes: number }> = [];
   const stack: string[] = [root];
   while (stack.length) {
     const cur = stack.pop()!;
@@ -1052,7 +1060,7 @@ function listFilesRecursive(root: string): string[] {
       if (stat.isDirectory()) {
         stack.push(full);
       } else if (stat.isFile()) {
-        out.push(full);
+        out.push({ path: full, sizeBytes: stat.size });
         if (out.length > 20000) return out; // safety cap
       }
     }
