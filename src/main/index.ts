@@ -8,6 +8,8 @@ import { app, BrowserWindow, dialog, ipcMain, shell, Menu, nativeTheme } from 'e
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Store } from './store';
 import { RunnerManager } from './runner';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
@@ -60,7 +62,15 @@ import {
   removeCoordinatorSymlinkRoot,
 } from './workspace';
 import { openTerminalAt, runInTerminal } from './terminal';
-import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
+import {
+  ArtifactPreviewResult,
+  Backend,
+  MainToRendererEvent,
+  ProjectPreviewCommand,
+  ProjectPreviewHintsResult,
+  StreamEventKind,
+  StreamEvent,
+} from '../shared/types';
 
 // Dev vs prod: we go to the Vite dev server ONLY when VITE_DEV_SERVER_URL
 // is explicitly set (the `dev:electron` npm script sets it). Anything else
@@ -69,6 +79,7 @@ import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../s
 // incorrectly sent `npm start` at the Vite URL that wasn't running.
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const isDev = !!DEV_URL;
+const execFileAsync = promisify(execFile);
 
 let mainWindow: BrowserWindow | null = null;
 let runner: RunnerManager | null = null;
@@ -217,6 +228,9 @@ function registerIpc(): void {
       return { ok: false, error: err?.message ?? 'Could not read file' };
     }
   });
+  ipcMain.handle('fs:readArtifactPreview', async (_e, args: { path: string; rootPath?: string }) =>
+    readArtifactPreview(args?.path ?? '', args?.rootPath),
+  );
   ipcMain.handle('fs:writeFile', (_e, { path: p, content }) => {
     if (!isPathUnderRegisteredRoot(p)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
@@ -236,6 +250,29 @@ function registerIpc(): void {
     if (!isPathUnderRegisteredRoot(p)) return;
     shell.showItemInFolder(p);
   });
+  ipcMain.handle('fs:openPath', async (_e, p: string) => {
+    const resolved = resolveFilePath(p);
+    if (!resolved || !isPathUnderRegisteredRoot(resolved)) {
+      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    }
+    const error = await shell.openPath(resolved);
+    return error ? { ok: false, error } : { ok: true };
+  });
+  ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
+    projectPreviewHints(args?.path ?? '', args?.rootPath),
+  );
+  ipcMain.handle(
+    'preview:runProjectCommand',
+    (_e, { cwd, command }: { cwd: string; command: string }) => {
+      if (!isPathUnderRegisteredRoot(cwd)) {
+        return { ok: false, error: 'Preview command cwd is outside registered project roots.' };
+      }
+      if (!/^[A-Za-z0-9 .:_/-]+$/.test(command)) {
+        return { ok: false, error: 'Preview command contains unsupported characters.' };
+      }
+      return openTerminalAt(cwd, command);
+    },
+  );
 
   ipcMain.handle('git:run', (_e, { args, cwd }) => {
     if (!isRendererSafeGitInvocation(args, cwd)) {
@@ -423,6 +460,211 @@ function registerIpc(): void {
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting
 // the HTTP request we opened in pullModel.
 const pendingPulls = new Map<string, AbortController>();
+
+async function readArtifactPreview(hint: string, rootPath?: string): Promise<ArtifactPreviewResult> {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!isPathUnderRegisteredRoot(resolved)) {
+    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    const ext = path.extname(resolved).slice(1).toLowerCase();
+    const officeFamily = officeFamilyForExtension(ext);
+    if (officeFamily) {
+      const converted = await convertOfficeToPdfPreview(resolved);
+      return {
+        ok: true,
+        kind: 'office',
+        resolvedPath: resolved,
+        sizeBytes: stat.size,
+        extension: ext,
+        family: officeFamily,
+        ...converted,
+      };
+    }
+
+    const mimeType = mimeForPreviewExtension(ext);
+    if (!mimeType) return { ok: false, error: `No artifact preview available for .${ext || 'file'}.` };
+    if (stat.size > 25 * 1024 * 1024) {
+      return {
+        ok: false,
+        error: `File is ${Math.round(stat.size / 1024 / 1024)} MB. Artifact previews are capped at 25 MB.`,
+      };
+    }
+    const data = fs.readFileSync(resolved).toString('base64');
+    return {
+      ok: true,
+      kind: mimeType === 'application/pdf' ? 'pdf' : 'image',
+      resolvedPath: resolved,
+      sizeBytes: stat.size,
+      mimeType,
+      dataUrl: `data:${mimeType};base64,${data}`,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not read artifact preview' };
+  }
+}
+
+async function convertOfficeToPdfPreview(
+  filePath: string,
+): Promise<Pick<
+  Extract<ArtifactPreviewResult, { ok: true; kind: 'office' }>,
+  'convertedPdfDataUrl' | 'convertedPdfSizeBytes' | 'converterPath' | 'conversionError'
+>> {
+  const converterPath = findLibreOfficeBinary();
+  if (!converterPath) return { conversionError: 'LibreOffice/soffice was not found.' };
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-office-preview-'));
+  try {
+    await execFileAsync(
+      converterPath,
+      ['--headless', '--convert-to', 'pdf', '--outdir', outDir, filePath],
+      { timeout: 30_000, maxBuffer: 1024 * 1024 },
+    );
+    const expected = path.join(outDir, `${path.basename(filePath, path.extname(filePath))}.pdf`);
+    const pdfPath = fs.existsSync(expected)
+      ? expected
+      : fs.readdirSync(outDir).find((name) => name.toLowerCase().endsWith('.pdf'));
+    const resolvedPdfPath = pdfPath && path.isAbsolute(pdfPath) ? pdfPath : pdfPath ? path.join(outDir, pdfPath) : '';
+    if (!resolvedPdfPath || !fs.existsSync(resolvedPdfPath)) {
+      return { converterPath, conversionError: 'LibreOffice did not produce a PDF preview.' };
+    }
+    const stat = fs.statSync(resolvedPdfPath);
+    if (stat.size > 25 * 1024 * 1024) {
+      return { converterPath, conversionError: 'Converted PDF is over the 25 MB preview cap.' };
+    }
+    const data = fs.readFileSync(resolvedPdfPath).toString('base64');
+    return {
+      converterPath,
+      convertedPdfDataUrl: `data:application/pdf;base64,${data}`,
+      convertedPdfSizeBytes: stat.size,
+    };
+  } catch (err: any) {
+    return { converterPath, conversionError: err?.message ?? 'LibreOffice conversion failed.' };
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+function findLibreOfficeBinary(): string | null {
+  const candidates =
+    process.platform === 'darwin'
+      ? [
+          '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+          '/opt/homebrew/bin/soffice',
+          '/usr/local/bin/soffice',
+          'soffice',
+          'libreoffice',
+        ]
+      : ['soffice', 'libreoffice'];
+  for (const candidate of candidates) {
+    if (candidate.includes(path.sep) && fs.existsSync(candidate)) return candidate;
+    if (!candidate.includes(path.sep) && commandExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function commandExists(command: string): boolean {
+  const paths = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  return paths.some((dir) => {
+    try {
+      return fs.existsSync(path.join(dir, command));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHintsResult {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  const packageRoot = findNearestPackageRoot(path.dirname(resolved));
+  if (!packageRoot) return { ok: false, error: 'No package.json found for this component.' };
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf-8'));
+    const scripts = typeof pkg?.scripts === 'object' && pkg.scripts ? pkg.scripts : {};
+    const packageManager = detectPackageManager(packageRoot);
+    const commands = previewCommandsForScripts(scripts, packageManager);
+    if (commands.length === 0) {
+      return { ok: false, error: 'No dev, preview, Storybook, or visual test scripts found.' };
+    }
+    return { ok: true, rootPath: packageRoot, packageManager, commands };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not read package preview scripts.' };
+  }
+}
+
+function findNearestPackageRoot(start: string): string | null {
+  let current = path.resolve(start);
+  while (isPathUnderRegisteredRoot(current)) {
+    if (fs.existsSync(path.join(current, 'package.json'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function detectPackageManager(root: string): 'npm' | 'pnpm' | 'yarn' {
+  if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(root, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
+
+function previewCommandsForScripts(
+  scripts: Record<string, unknown>,
+  packageManager: 'npm' | 'pnpm' | 'yarn',
+): ProjectPreviewCommand[] {
+  const commands: ProjectPreviewCommand[] = [];
+  const add = (id: string, label: string, kind: ProjectPreviewCommand['kind']) => {
+    if (typeof scripts[id] !== 'string') return;
+    commands.push({ id, label, kind, command: scriptCommand(packageManager, id) });
+  };
+  add('dev', 'Run dev server', 'dev');
+  add('start', 'Run start', 'dev');
+  add('storybook', 'Run Storybook', 'storybook');
+  add('preview', 'Run preview server', 'preview');
+  add('test:visual', 'Run visual tests', 'test');
+  add('test:e2e', 'Run e2e tests', 'test');
+  return commands;
+}
+
+function scriptCommand(packageManager: 'npm' | 'pnpm' | 'yarn', script: string): string {
+  if (packageManager === 'yarn') return `yarn ${script}`;
+  if (packageManager === 'pnpm') return `pnpm run ${script}`;
+  return script === 'start' ? 'npm start' : `npm run ${script}`;
+}
+
+function officeFamilyForExtension(ext: string): 'document' | 'spreadsheet' | 'presentation' | null {
+  if (ext === 'doc' || ext === 'docx') return 'document';
+  if (ext === 'xls' || ext === 'xlsx') return 'spreadsheet';
+  if (ext === 'ppt' || ext === 'pptx') return 'presentation';
+  return null;
+}
+
+function mimeForPreviewExtension(ext: string): string | null {
+  switch (ext) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'bmp':
+      return 'image/bmp';
+    case 'ico':
+      return 'image/x-icon';
+    default:
+      return null;
+  }
+}
 
 // Collect every directory the user has explicitly registered with the app
 // (projects, workspaces, worktrees). Filesystem IPC handlers treat these
