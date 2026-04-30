@@ -168,7 +168,7 @@ function PdfPreview({
       {openError && <div className="px-3 py-2 text-xs text-red-300 border-b border-card">{openError}</div>}
       <embed title={`${path} preview`} src={src} type="application/pdf" className="block w-full flex-1 border-0 bg-surface" />
       <div className="px-3 py-2 text-[11px] text-ink-faint border-t border-card">
-        If the preview area is blank, use Open or Reveal. Some PDFs do not render in Electron's inline viewer.
+        If the preview area is blank, use Open or Reveal. Some PDFs do not render in Overcli's inline viewer.
       </div>
     </div>
   );
