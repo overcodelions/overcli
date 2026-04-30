@@ -21,6 +21,8 @@ export function WelcomePane() {
   const pickProject = useStore((s) => s.pickProject);
   const newConversation = useStore((s) => s.newConversation);
   const newConversationInWorkspace = useStore((s) => s.newConversationInWorkspace);
+  const startNewConversation = useStore((s) => s.startNewConversation);
+  const startNewConversationInWorkspace = useStore((s) => s.startNewConversationInWorkspace);
   const send = useStore((s) => s.send);
   const setBackendModel = useStore((s) => s.setBackendModel);
   const setPermissionMode = useStore((s) => s.setPermissionMode);
@@ -206,16 +208,14 @@ export function WelcomePane() {
           }
         />
         <div className="mt-3 flex items-center gap-2 text-xs text-ink-muted justify-center flex-wrap">
-          {focusedWorkspace ? (
-            <WorkspacePill workspace={focusedWorkspace} projects={projects} />
-          ) : (
-            <ProjectPill
-              project={selectedProject}
-              projects={projects}
-              onPick={setSelectedProjectId}
-              onAdd={pickProject}
-            />
-          )}
+          <ContextPill
+            label={focusedWorkspace?.name ?? selectedProject?.name ?? 'Pick project'}
+            projects={projects}
+            workspaces={workspaces}
+            onPickProject={(id) => startNewConversation(id)}
+            onPickWorkspace={(id) => startNewConversationInWorkspace(id)}
+            onAdd={pickProject}
+          />
           <Pill label="Work locally" items={[{ value: 'local', label: 'Work locally' }]} onPick={() => {}} />
           {!focusedWorkspace && branch && (
             <Pill label={branch} items={[{ value: branch, label: branch }]} onPick={() => {}} />
@@ -390,46 +390,43 @@ function firstEnabledBackend(settings: BackendPrefs): Backend {
   return enabledBackends(settings)[0] ?? 'claude';
 }
 
-function WorkspacePill({
-  workspace,
+function ContextPill({
+  label,
   projects,
-}: {
-  workspace: Workspace;
-  projects: Project[];
-}) {
-  const members = workspace.projectIds
-    .map((id) => projects.find((p) => p.id === id))
-    .filter((p): p is Project => !!p);
-  return (
-    <Pill
-      label={workspace.name}
-      items={members.map((p) => ({ value: p.id, label: p.name, note: shortPath(p.path) }))}
-      onPick={() => {}}
-    />
-  );
-}
-
-function ProjectPill({
-  project,
-  projects,
-  onPick,
+  workspaces,
+  onPickProject,
+  onPickWorkspace,
   onAdd,
 }: {
-  project: Project | null;
+  label: string;
   projects: Project[];
-  onPick: (id: UUID) => void;
+  workspaces: Workspace[];
+  onPickProject: (id: UUID) => void;
+  onPickWorkspace: (id: UUID) => void;
   onAdd: () => void;
 }) {
+  const items: PillItem[] = [];
+  if (workspaces.length > 0) {
+    items.push({ value: '__h_workspaces__', label: 'Workspaces', kind: 'header' });
+    for (const w of workspaces) {
+      items.push({ value: `w:${w.id}`, label: w.name, note: `${w.projectIds.length} project${w.projectIds.length === 1 ? '' : 's'}` });
+    }
+  }
+  if (projects.length > 0) {
+    items.push({ value: '__h_projects__', label: 'Projects', kind: 'header' });
+    for (const p of projects) {
+      items.push({ value: `p:${p.id}`, label: p.name, note: shortPath(p.path) });
+    }
+  }
+  items.push({ value: '__add__', label: '+ Add project…' });
   return (
     <Pill
-      label={project?.name ?? 'Pick project'}
-      items={[
-        ...projects.map((p) => ({ value: p.id, label: p.name, note: shortPath(p.path) })),
-        { value: '__add__', label: '+ Add project…' },
-      ]}
+      label={label}
+      items={items}
       onPick={(v) => {
         if (v === '__add__') onAdd();
-        else onPick(v as UUID);
+        else if (v.startsWith('w:')) onPickWorkspace(v.slice(2) as UUID);
+        else if (v.startsWith('p:')) onPickProject(v.slice(2) as UUID);
       }}
     />
   );
@@ -496,6 +493,7 @@ interface PillItem {
   value: string;
   label: string;
   note?: string;
+  kind?: 'header';
 }
 
 function Pill({
@@ -531,19 +529,28 @@ function Pill({
       </button>
       {open && (
         <div className="absolute bottom-full mb-1 left-0 min-w-[200px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
-          {items.map((it) => (
-            <button
-              key={it.value}
-              onClick={() => {
-                setOpen(false);
-                onPick(it.value);
-              }}
-              className="w-full text-left px-3 py-1.5 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
-            >
-              <div>{it.label}</div>
-              {it.note && <div className="text-[10px] text-ink-faint truncate">{it.note}</div>}
-            </button>
-          ))}
+          {items.map((it) =>
+            it.kind === 'header' ? (
+              <div
+                key={it.value}
+                className="px-3 pt-1.5 pb-0.5 text-[10px] uppercase tracking-wide text-ink-faint"
+              >
+                {it.label}
+              </div>
+            ) : (
+              <button
+                key={it.value}
+                onClick={() => {
+                  setOpen(false);
+                  onPick(it.value);
+                }}
+                className="w-full text-left px-3 py-1.5 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+              >
+                <div>{it.label}</div>
+                {it.note && <div className="text-[10px] text-ink-faint truncate">{it.note}</div>}
+              </button>
+            ),
+          )}
         </div>
       )}
     </div>
