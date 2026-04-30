@@ -659,6 +659,9 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: id ? 'conversation' : s.detailMode,
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
+      openFilePath: null,
+      openFileHighlight: null,
+      openFileMode: 'edit',
       lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
       projects: id
         ? s.projects.map((p) =>
@@ -686,6 +689,9 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: projectId,
       focusedWorkspaceId: null,
+      openFilePath: null,
+      openFileHighlight: null,
+      openFileMode: 'edit',
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -697,6 +703,9 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: null,
       focusedWorkspaceId: workspaceId,
+      openFilePath: null,
+      openFileHighlight: null,
+      openFileMode: 'edit',
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -713,6 +722,9 @@ export const useStore = create<StoreState>((set, get) => ({
       selectedConversationId: null,
       focusedProjectId: null,
       focusedWorkspaceId: null,
+      openFilePath: null,
+      openFileHighlight: null,
+      openFileMode: 'edit',
     });
     window.overcli.invoke('store:saveSelection', null);
   },
