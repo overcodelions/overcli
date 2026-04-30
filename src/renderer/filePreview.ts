@@ -18,6 +18,42 @@ const JSON_EXTENSIONS = new Set(['json', 'jsonc']);
 const OFFICE_EXTENSIONS = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']);
 const REACT_EXTENSIONS = new Set(['tsx', 'jsx']);
 const BINARY_PREVIEW_KINDS = new Set<FilePreviewKind>(['image', 'pdf', 'office']);
+const UNSUPPORTED_BINARY_EXTENSIONS = new Set([
+  '7z',
+  'a',
+  'app',
+  'avi',
+  'bin',
+  'bz2',
+  'class',
+  'dmg',
+  'dll',
+  'dylib',
+  'eot',
+  'exe',
+  'gz',
+  'icns',
+  'jar',
+  'mov',
+  'mp3',
+  'mp4',
+  'o',
+  'otf',
+  'pkg',
+  'rar',
+  'so',
+  'sqlite',
+  'sqlite3',
+  'tar',
+  'tgz',
+  'ttf',
+  'war',
+  'wasm',
+  'woff',
+  'woff2',
+  'xz',
+  'zip',
+]);
 
 export function detectFilePreviewKind(filePath: string | null | undefined): FilePreviewKind | null {
   if (!filePath) return null;
@@ -40,6 +76,13 @@ export function canPreviewFile(filePath: string | null | undefined): boolean {
 
 export function isBinaryPreviewKind(kind: FilePreviewKind | null): boolean {
   return kind != null && BINARY_PREVIEW_KINDS.has(kind);
+}
+
+export function isUnsupportedBinaryFile(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
+  const name = filePath.split(/[/\\]/).pop()?.toLowerCase() ?? '';
+  const ext = name.includes('.') ? name.split('.').pop() ?? '' : '';
+  return UNSUPPORTED_BINARY_EXTENSIONS.has(ext);
 }
 
 export function defaultFileViewMode(

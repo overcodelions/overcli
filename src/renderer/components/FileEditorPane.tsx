@@ -4,7 +4,12 @@ import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { ArtifactPreviewResult } from '@shared/types';
 import hljs from 'highlight.js';
-import { canPreviewFile, detectFilePreviewKind, isBinaryPreviewKind } from '../filePreview';
+import {
+  canPreviewFile,
+  detectFilePreviewKind,
+  isBinaryPreviewKind,
+  isUnsupportedBinaryFile,
+} from '../filePreview';
 import { FileTree } from './FileTree';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
@@ -42,11 +47,22 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const previewKind = detectFilePreviewKind(path);
   const previewable = canPreviewFile(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
+  const unsupportedBinary = isUnsupportedBinaryFile(path);
 
   const openFile = useStore((s) => s.openFile);
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
+    if (unsupportedBinary) {
+      setLoading(false);
+      setError('Binary file — Overcli does not open archives, disk images, or compiled artifacts.');
+      setDirty(false);
+      setArtifactPreview(null);
+      setContent('');
+      return () => {
+        cancelled = true;
+      };
+    }
     setLoading(true);
     setError(null);
     setDirty(false);
@@ -96,7 +112,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     return () => {
       cancelled = true;
     };
-  }, [binaryPreview, highlight, mode, openFile, path, rootPath, workspaceMembers]);
+  }, [binaryPreview, highlight, mode, openFile, path, rootPath, unsupportedBinary, workspaceMembers]);
 
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
@@ -107,6 +123,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   );
   useEffect(() => {
     if (!path || mode !== 'diff' || !diffTarget) return;
+    if (unsupportedBinary) {
+      setDiffText('');
+      return;
+    }
     setLoading(true);
     setError(null);
     (async () => {
@@ -152,7 +172,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, diffTarget]);
+  }, [path, mode, diffTarget, unsupportedBinary]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
