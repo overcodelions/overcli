@@ -117,6 +117,12 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       ? conv.geminiModel ?? conv.currentModel
       : conv.claudeModel ?? conv.currentModel;
   const sessionModel = runnerModel || configuredModel || settings.backendDefaultModels[backend] || '';
+  const refocusComposer = useCallback(() => {
+    requestAnimationFrame(() => {
+      const el = document.querySelector('textarea');
+      if (el instanceof HTMLTextAreaElement) el.focus();
+    });
+  }, []);
 
   return (
     <header ref={headerRef} className="flex items-center gap-2 px-4 py-2 border-b border-card">
@@ -339,14 +345,17 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             if (!cwd) return null;
             return (
               <IconButton
-                onClick={async () => {
-                  const res = await window.overcli.invoke('terminal:popConversation', {
-                    cwd,
-                    backend,
-                    sessionId: conv.sessionId,
-                  });
-                  if (!res.ok) window.alert(res.error);
-                }}
+	                onClick={async () => {
+	                  const res = await window.overcli.invoke('terminal:popConversation', {
+	                    cwd,
+	                    backend,
+	                    sessionId: conv.sessionId,
+	                  });
+	                  if (!res.ok) {
+	                    window.alert(res.error);
+	                    refocusComposer();
+	                  }
+	                }}
                 title={`Pop to Terminal in ${cwd}${conv.sessionId ? ` · resume ${backendName(backend)}` : ''}`}
               >
                 <TerminalIcon />

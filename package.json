@@ -18,10 +18,10 @@
   },
   "main": "dist/main/index.js",
   "scripts": {
-    "dev": "concurrently -k -n vite,tsc,electron -c cyan,yellow,magenta \"npm:dev:renderer\" \"npm:dev:tsc\" \"npm:dev:electron\"",
+    "dev": "npm run build:main && concurrently -k -n vite,tsc,electron -c cyan,yellow,magenta \"npm:dev:renderer\" \"npm:dev:tsc\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
     "dev:tsc": "tsc -p tsconfig.main.json --watch --preserveWatchOutput",
-    "dev:electron": "wait-on http://localhost:5173 dist/main/index.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "dev:electron": "wait-on http://localhost:5173 dist/main/index.js dist/main/runner.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "build": "npm run build:main && npm run build:renderer",
     "build:main": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",

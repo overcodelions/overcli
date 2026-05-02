@@ -344,10 +344,14 @@ function registerIpc(): void {
       if (!isPathUnderRegisteredRoot(cwd)) {
         return { ok: false, error: 'Workspace path is not inside a registered project root.' };
       }
-      // Session IDs come from the backend CLIs (UUIDs for claude/gemini).
+      // Only Claude/Gemini support `--resume`; Codex ignores sessionId
+      // entirely when popping to terminal. Validate only the backends that
+      // actually embed the ID into the shell command.
+      const needsResumeId = backend === 'claude' || backend === 'gemini';
+      // Session IDs come from backend CLIs (UUID-like for claude/gemini).
       // Anything with shell metacharacters is rejected so it can't escape
       // into the `do script` line as a separate command.
-      if (sessionId && !/^[A-Za-z0-9._-]+$/.test(sessionId)) {
+      if (needsResumeId && sessionId && !/^[A-Za-z0-9._-]+$/.test(sessionId)) {
         return { ok: false, error: 'Session ID contains unexpected characters.' };
       }
       const settings = Store.load().settings;
@@ -356,8 +360,7 @@ function registerIpc(): void {
       const quoted = cmd.includes(' ') ? `"${cmd}"` : cmd;
       // Codex has no --resume flag; just drop the user into the interactive
       // TUI in the workspace and they can pick up from there.
-      const resumeSuffix =
-        sessionId && (backend === 'claude' || backend === 'gemini') ? ` --resume ${sessionId}` : '';
+      const resumeSuffix = sessionId && needsResumeId ? ` --resume ${sessionId}` : '';
       return openTerminalAt(cwd, `${quoted}${resumeSuffix}`);
     },
   );
