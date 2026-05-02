@@ -877,6 +877,7 @@ const RENDERER_GIT_ALLOWLIST = new Set([
   'rev-parse',
   'log',
   'show',
+  'ls-files',
 ]);
 function isRendererSafeGitInvocation(args: unknown, cwd: unknown): boolean {
   if (!Array.isArray(args) || args.length === 0) return false;
