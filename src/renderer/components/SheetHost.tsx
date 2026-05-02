@@ -14,6 +14,7 @@ import { QuickSwitcherSheet } from './sheets/QuickSwitcherSheet';
 import { ShortcutsHelpSheet } from './sheets/ShortcutsHelpSheet';
 import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { ProjectDiffSheet } from './sheets/ProjectDiffSheet';
+import { WorkspaceDiffSheet } from './sheets/WorkspaceDiffSheet';
 import { WorkspaceAgentReviewSheet } from './sheets/WorkspaceAgentReviewSheet';
 import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
 import { ArchiveAllSheet } from './sheets/ArchiveAllSheet';
@@ -25,9 +26,11 @@ import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSh
 const WIDE_SHEETS = new Set<string>([
   'worktreeDiff',
   'projectDiff',
+  'workspaceDiff',
   'workspaceAgentReview',
   'colosseumCompare',
   'bulkConversationActions',
+  'capabilities',
 ]);
 
 export function SheetHost() {
@@ -66,6 +69,7 @@ export function SheetHost() {
         {sheet.type === 'colosseumCompare' && <ColosseumCompareSheet colosseumId={sheet.colosseumId} />}
         {sheet.type === 'worktreeDiff' && <WorktreeDiffSheet convId={sheet.convId} />}
         {sheet.type === 'projectDiff' && <ProjectDiffSheet convId={sheet.convId} />}
+        {sheet.type === 'workspaceDiff' && <WorkspaceDiffSheet convId={sheet.convId} />}
         {sheet.type === 'workspaceAgentReview' && (
           <WorkspaceAgentReviewSheet coordinatorId={sheet.coordinatorId} />
         )}

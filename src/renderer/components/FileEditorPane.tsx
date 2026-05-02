@@ -2,11 +2,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
+import type { ArtifactPreviewResult, FileInfoResult } from '@shared/types';
 import hljs from 'highlight.js';
-import { canPreviewFile } from '../filePreview';
+import {
+  canPreviewFile,
+  detectFilePreviewKind,
+  isBinaryPreviewKind,
+  isUnsupportedBinaryFile,
+} from '../filePreview';
 import { FileTree } from './FileTree';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
+
+type FileInfoState = FileInfoResult & { requestedPath: string };
+type LargeTextPreview = {
+  content: string;
+  truncated: boolean;
+  totalBytes: number;
+  previewBytes: number;
+};
 
 export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string | null } = {}) {
   const convId = useStore((s) => s.selectedConversationId);
@@ -34,37 +48,93 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const closeFile = useStore((s) => s.closeFile);
   const [content, setContent] = useState<string>('');
   const [diffText, setDiffText] = useState<string>('');
+  const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
+  const [fileInfo, setFileInfo] = useState<FileInfoState | null>(null);
+  const [largeTextPreview, setLargeTextPreview] = useState<LargeTextPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [copiedPath, setCopiedPath] = useState(false);
+  const previewKind = detectFilePreviewKind(path);
   const previewable = canPreviewFile(path);
+  const binaryPreview = isBinaryPreviewKind(previewKind);
+  const unsupportedBinary = isUnsupportedBinaryFile(path);
+  const blockedFile =
+    (fileInfo?.requestedPath === path &&
+      fileInfo.ok &&
+      (fileInfo.tooLarge || fileInfo.unsupportedBinary)) ||
+    (unsupportedBinary && !!error);
 
   const openFile = useStore((s) => s.openFile);
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
+    if (unsupportedBinary) {
+      setLoading(false);
+      setError('This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.');
+      setDirty(false);
+      setArtifactPreview(null);
+      setLargeTextPreview(null);
+      setContent('');
+      return () => {
+        cancelled = true;
+      };
+    }
     setLoading(true);
     setError(null);
     setDirty(false);
-    window.overcli
-      .invoke('fs:readFile', { path, rootPath: rootPath ?? undefined })
-      .then((res) => {
+    setArtifactPreview(null);
+    setLargeTextPreview(null);
+    setFileInfo(null);
+    const isWorkspaceMemberPath =
+      !!workspaceMembers &&
+      workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
+    (async () => {
+      const info = await window.overcli.invoke('fs:fileInfo', { path, rootPath: rootPath ?? undefined });
+      if (cancelled) return;
+      setFileInfo({ ...info, requestedPath: path });
+      if (!info.ok) {
+        setError(info.error);
+        return;
+      }
+      if (!isWorkspaceMemberPath && info.resolvedPath && info.resolvedPath !== path) {
+        openFile(info.resolvedPath, highlight ?? undefined, mode);
+        return;
+      }
+      if (info.tooLarge || info.unsupportedBinary) {
+        setError(info.error ?? 'File is not safe to open.');
+        return;
+      }
+      if (binaryPreview) {
+        const res = await window.overcli.invoke('fs:readArtifactPreview', { path, rootPath: rootPath ?? undefined });
         if (cancelled) return;
-        if (res.ok) {
-          setContent(res.content);
-          // Tool results often pass a hint (`store.ts`, `src/main/index.ts`)
-          // that the resolver expanded to an absolute path. Upgrade the
-          // store so subsequent save/diff ops target the real file.
-          // Skip the upgrade for workspace-member paths ("<member>/…") —
-          // the relative form is already canonical and carries the
-          // project prefix that the diff view needs to strip.
-          const isWorkspaceMemberPath =
-            !!workspaceMembers &&
-            workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
-          if (!isWorkspaceMemberPath && res.resolvedPath && res.resolvedPath !== path) {
-            openFile(res.resolvedPath, highlight ?? undefined, mode);
+        if (res.ok) setArtifactPreview(res);
+        else setError(res.error);
+      } else {
+        if (info.largeText) {
+          const res = await window.overcli.invoke('fs:readLargeTextPreview', { path, rootPath: rootPath ?? undefined });
+          if (cancelled) return;
+          if (res.ok) {
+            setLargeTextPreview({
+              content: res.content,
+              truncated: res.truncated,
+              totalBytes: res.totalBytes,
+              previewBytes: res.previewBytes,
+            });
+            setContent(res.content);
+          } else {
+            setError(res.error);
           }
-        } else setError(res.error);
+          return;
+        }
+        const res = await window.overcli.invoke('fs:readFile', { path, rootPath: rootPath ?? undefined });
+        if (cancelled) return;
+        if (res.ok) setContent(res.content);
+        else setError(res.error);
+      }
+    })()
+      .catch((e: unknown) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -72,7 +142,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     return () => {
       cancelled = true;
     };
-  }, [path, rootPath]);
+  }, [binaryPreview, highlight, mode, openFile, path, rootPath, unsupportedBinary, workspaceMembers]);
 
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
@@ -83,6 +153,21 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   );
   useEffect(() => {
     if (!path || mode !== 'diff' || !diffTarget) return;
+    if (!fileInfo || fileInfo.requestedPath !== path) return;
+    if (!fileInfo.ok) {
+      setDiffText('');
+      setError(fileInfo.error);
+      return;
+    }
+    if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
+      setDiffText('');
+      setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
+      return;
+    }
+    if (unsupportedBinary) {
+      setDiffText('');
+      return;
+    }
     setLoading(true);
     setError(null);
     (async () => {
@@ -128,7 +213,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, diffTarget]);
+  }, [path, mode, diffTarget, unsupportedBinary, fileInfo]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
@@ -166,8 +251,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // When the file tree is requested but no file is open, show the tree
   // alone. When a file is open, show the tree on top and the file below
   // — a two-pane layout. When tree is off and a file is open, show only
-  // the file.
-  if (!path && showFileTree && rootPath) {
+  // the file. Suppress the embedded tree when ExplorerPane mounts us
+  // (rootPathOverride) — that view already supplies its own tree pane.
+  const embedTree = showFileTree && !rootPathOverride;
+  if (!path && embedTree && rootPath) {
     return <FileTree rootPath={rootPath} />;
   }
   if (!path) {
@@ -179,14 +266,47 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   }
   return (
     <div className="flex flex-col h-full">
-      {showFileTree && rootPath && (
+      {embedTree && rootPath && (
         <div className="h-[40%] min-h-[120px] border-b border-card overflow-hidden">
           <FileTree rootPath={rootPath} />
         </div>
       )}
       <div className="flex flex-col flex-1 min-h-0">
         <div className="flex items-center justify-between px-3 py-2 border-b border-card">
-          <div className="text-xs truncate text-ink-muted">{path}</div>
+          <div className="min-w-0 flex items-center gap-2">
+            <div
+              className="text-xs truncate text-ink-muted select-text cursor-text"
+              title={path}
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              {path}
+            </div>
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(path);
+                  setCopiedPath(true);
+                  window.setTimeout(() => setCopiedPath(false), 1200);
+                } catch {
+                  setCopiedPath(false);
+                }
+              }}
+              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+              title="Copy file path"
+            >
+              {copiedPath ? 'Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={async () => {
+                const res = await window.overcli.invoke('fs:openPath', path);
+                if (!res.ok) setError(res.error);
+              }}
+              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+              title="Open in default app (e.g. VS Code)"
+            >
+              Open
+            </button>
+          </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
               <button
@@ -247,6 +367,8 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         <div className="flex-1 min-h-0 overflow-auto">
           {loading ? (
             <div className="p-4 text-xs text-ink-faint">Loading…</div>
+          ) : blockedFile ? (
+            <BlockedFilePanel path={path} message={error ?? 'This file cannot be previewed in Overcli.'} />
           ) : error ? (
             <div className="p-4 text-xs text-red-300">{error}</div>
           ) : mode === 'diff' ? (
@@ -256,7 +378,23 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               <div className="p-4 text-xs text-ink-faint">No changes against HEAD.</div>
             )
           ) : mode === 'preview' && previewable ? (
-            <FilePreview path={path} content={content} />
+            <FilePreview
+              path={path}
+              content={content}
+              artifact={artifactPreview}
+              rootPath={rootPath ?? undefined}
+            />
+          ) : binaryPreview ? (
+            <div className="p-4 text-xs text-ink-faint">
+              This artifact is not editable as text. Use Preview to inspect it, or Diff to review
+              repository changes.
+            </div>
+          ) : largeTextPreview ? (
+            <LargeTextViewer
+              preview={largeTextPreview}
+              path={path}
+              onOpenExternal={() => window.overcli.invoke('fs:openPath', path)}
+            />
           ) : (
             <Editor
               content={content}
@@ -272,6 +410,85 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       </div>
     </div>
   );
+}
+
+function BlockedFilePanel({ path, message }: { path: string; message: string }) {
+  const [openError, setOpenError] = useState<string | null>(null);
+  return (
+    <div className="h-full min-h-0 bg-surface-muted p-4">
+      <div className="max-w-xl border border-card-strong bg-surface rounded-lg p-4">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">Preview unavailable</div>
+        <div className="mt-1 text-sm font-semibold text-ink truncate">{path.split(/[/\\]/).pop() ?? path}</div>
+        <div className="mt-3 text-xs text-ink-muted leading-relaxed">{message}</div>
+        <div className="mt-4 flex items-center gap-2">
+          <button
+            onClick={async () => {
+              setOpenError(null);
+              const res = await window.overcli.invoke('fs:openPath', path);
+              if (!res.ok) setOpenError(res.error);
+            }}
+            className="text-xs font-medium px-3 py-1.5 rounded bg-accent text-surface hover:bg-accent/90"
+          >
+            Open
+          </button>
+          <button
+            onClick={() => window.overcli.invoke('fs:openInFinder', path)}
+            className="text-xs px-3 py-1.5 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+          >
+            Reveal
+          </button>
+        </div>
+        {openError && <div className="mt-3 text-xs text-red-300">{openError}</div>}
+      </div>
+    </div>
+  );
+}
+
+function LargeTextViewer({
+  preview,
+  path,
+  onOpenExternal,
+}: {
+  preview: LargeTextPreview;
+  path: string;
+  onOpenExternal: () => void;
+}) {
+  const safeContent = useMemo(() => clampLongLines(preview.content, 2000), [preview.content]);
+  return (
+    <div className="h-full min-h-0 flex flex-col bg-surface-muted">
+      <div className="px-3 py-2 border-b border-card text-xs text-ink-muted flex items-center justify-between gap-3">
+        <span className="truncate">
+          Previewing first {formatBytes(preview.previewBytes)} of {formatBytes(preview.totalBytes)}
+          {preview.truncated ? ' · truncated' : ''}
+        </span>
+        <button
+          onClick={onOpenExternal}
+          className="shrink-0 px-2 py-1 rounded border border-card-strong hover:bg-card-strong text-ink-muted hover:text-ink"
+        >
+          Open
+        </button>
+      </div>
+      <pre
+        className="m-0 flex-1 overflow-auto p-3 text-[12px] leading-relaxed font-mono text-ink-muted whitespace-pre"
+        title={path}
+      >
+        {safeContent}
+      </pre>
+    </div>
+  );
+}
+
+function clampLongLines(content: string, maxChars: number): string {
+  return content
+    .split('\n')
+    .map((line) => (line.length > maxChars ? `${line.slice(0, maxChars)} … [line truncated]` : line))
+    .join('\n');
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function Editor({
@@ -302,7 +519,7 @@ function Editor({
       <div className="flex-1 relative">
         <pre
           aria-hidden
-          className="absolute inset-0 pt-2 px-2 m-0 pointer-events-none whitespace-pre overflow-visible"
+          className="editor-overlay absolute inset-0 pt-2 px-2 m-0 pointer-events-none whitespace-pre overflow-visible"
           dangerouslySetInnerHTML={{
             __html: highlightContent(content, language, highlightRange),
           }}
@@ -438,7 +655,16 @@ function resolveDiffTarget(
       }
     }
   }
-  return { cwd: rootPath, path, baseBranch: convBaseBranch };
+  // Git wants a repo-relative path; absolute paths get treated as
+  // unknown and fall through to the --no-index branch above, which
+  // makes every file render as a fresh add.
+  const rel =
+    path === rootPath
+      ? '.'
+      : path.startsWith(`${rootPath}/`)
+        ? path.slice(rootPath.length + 1)
+        : path;
+  return { cwd: rootPath, path: rel, baseBranch: convBaseBranch };
 }
 
 function resolveWorkspaceMembers(

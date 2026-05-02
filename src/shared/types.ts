@@ -388,6 +388,22 @@ export interface CapabilitiesReport {
   warnings: string[];
 }
 
+/// Curated skill that can be installed into a CLI's skills/ directory.
+/// `targets` lists the backends this skill can be installed into;
+/// Gemini is intentionally excluded today because gemini-cli has no
+/// `skills/` convention to write into.
+export type SkillTarget = Extract<Backend, 'claude' | 'codex'>;
+
+export interface MarketplaceSkill {
+  /// Stable id used as the install directory name (e.g. "git-helper").
+  id: string;
+  name: string;
+  description: string;
+  targets: SkillTarget[];
+  /// Per-target installed status, set by the main process at list time.
+  installed: Partial<Record<SkillTarget, boolean>>;
+}
+
 export interface OllamaModelInfo {
   name: string;
   sizeBytes: number;
@@ -576,13 +592,40 @@ export interface IPCInvokeMap {
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
   'capabilities:scan': () => CapabilitiesReport;
+  'skills:listMarketplace': () => MarketplaceSkill[];
+  'skills:installMarketplace': (args: {
+    skillId: string;
+    targets: SkillTarget[];
+  }) => { ok: true } | { ok: false; error: string };
+  'skills:uninstallMarketplace': (args: {
+    skillId: string;
+    targets: SkillTarget[];
+  }) => { ok: true } | { ok: false; error: string };
+  /// Removes any installed skill — marketplace or hand-rolled. Validates
+  /// the path lives directly under ~/.claude/skills or ~/.codex/skills
+  /// before deleting the skill's directory.
+  'skills:uninstallByPath': (args: {
+    path: string;
+  }) => { ok: true } | { ok: false; error: string };
   'fs:pickDirectory': () => string | null;
+  'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
     | { ok: true; content: string; resolvedPath: string }
     | { ok: false; error: string };
+  'fs:readLargeTextPreview': (args: { path: string; rootPath?: string }) =>
+    | { ok: true; content: string; resolvedPath: string; truncated: boolean; totalBytes: number; previewBytes: number }
+    | { ok: false; error: string };
+  'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
   'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
+  'fs:listFileEntries': (root: string) => FileTreeEntry[];
   'fs:openInFinder': (path: string) => void;
+  'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
+  'preview:runProjectCommand': (args: {
+    cwd: string;
+    command: string;
+  }) => { ok: true } | { ok: false; error: string };
   'git:run': (args: { args: string[]; cwd: string }) => {
     stdout: string;
     stderr: string;
@@ -743,6 +786,71 @@ export interface IPCInvokeMap {
   'ollama:deleteSession': (sessionId: string) => void;
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
+}
+
+export type ArtifactPreviewResult =
+  | {
+      ok: true;
+      kind: 'image';
+      resolvedPath: string;
+      sizeBytes: number;
+      mimeType: string;
+      dataUrl: string;
+    }
+  | {
+      ok: true;
+      kind: 'pdf';
+      resolvedPath: string;
+      sizeBytes: number;
+      mimeType: string;
+      fileUrl: string;
+      dataUrl?: string;
+    }
+  | {
+      ok: true;
+      kind: 'office';
+      resolvedPath: string;
+      sizeBytes: number;
+      extension: string;
+      family: 'document' | 'spreadsheet' | 'presentation';
+      convertedPdfDataUrl?: string;
+      convertedPdfSizeBytes?: number;
+      converterPath?: string;
+      conversionError?: string;
+    }
+  | { ok: false; error: string };
+
+export type FileInfoResult =
+  | {
+      ok: true;
+      resolvedPath: string;
+      sizeBytes: number;
+      tooLarge: boolean;
+      largeText: boolean;
+      unsupportedBinary: boolean;
+      error?: string;
+    }
+  | { ok: false; error: string };
+
+export interface FileTreeEntry {
+  path: string;
+  sizeBytes: number;
+}
+
+export type ProjectPreviewHintsResult =
+  | {
+      ok: true;
+      rootPath: string;
+      packageManager: 'npm' | 'pnpm' | 'yarn';
+      commands: ProjectPreviewCommand[];
+    }
+  | { ok: false; error: string };
+
+export interface ProjectPreviewCommand {
+  id: string;
+  label: string;
+  command: string;
+  kind: 'dev' | 'storybook' | 'preview' | 'test';
 }
 
 export interface SilentLogEntry {

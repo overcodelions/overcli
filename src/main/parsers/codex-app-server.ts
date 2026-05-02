@@ -16,6 +16,11 @@ interface PartialAssistantState {
 export interface CodexAppServerParserState {
   assistantByItemId: Record<string, PartialAssistantState>;
   reasoningByItemId: Record<string, PartialAssistantState>;
+  /// Last user-facing error notice we emitted, with timestamp. Codex sends
+  /// the same usage-limit / failure text via both a standalone `error`
+  /// notification AND `turn/completed.turn.error` — without dedupe the user
+  /// sees the same banner twice per turn.
+  lastErrorNotice?: { text: string; at: number };
 }
 
 export function makeCodexAppServerParserState(): CodexAppServerParserState {
@@ -23,6 +28,16 @@ export function makeCodexAppServerParserState(): CodexAppServerParserState {
     assistantByItemId: {},
     reasoningByItemId: {},
   };
+}
+
+const ERROR_NOTICE_DEDUPE_MS = 5000;
+
+function shouldEmitErrorNotice(state: CodexAppServerParserState, text: string): boolean {
+  const now = Date.now();
+  const last = state.lastErrorNotice;
+  if (last && last.text === text && now - last.at < ERROR_NOTICE_DEDUPE_MS) return false;
+  state.lastErrorNotice = { text, at: now };
+  return true;
 }
 
 export function parseCodexAppServerNotification(
@@ -44,24 +59,29 @@ export function parseCodexAppServerNotification(
       return parseReasoningDelta(params, state, raw);
     case 'item/reasoning/summaryTextDelta':
       return parseReasoningDelta(params, state, raw);
-    case 'turn/completed':
-      return {
-        events: [
-          event(
-            {
-              type: 'result',
-              info: {
-                subtype: params?.turn?.status ?? 'completed',
-                isError: params?.turn?.status != null && params.turn.status !== 'completed',
-                durationMs: params?.turn?.durationMs ?? 0,
-                totalCostUSD: 0,
-                modelUsage: {},
-              },
+    case 'turn/completed': {
+      const events: StreamEvent[] = [];
+      const turnError = extractErrorMessage(params?.turn?.error);
+      if (turnError && shouldEmitErrorNotice(state, turnError)) {
+        events.push(event({ type: 'systemNotice', text: turnError }, raw));
+      }
+      events.push(
+        event(
+          {
+            type: 'result',
+            info: {
+              subtype: params?.turn?.status ?? 'completed',
+              isError: params?.turn?.status != null && params.turn.status !== 'completed',
+              durationMs: params?.turn?.durationMs ?? 0,
+              totalCostUSD: 0,
+              modelUsage: {},
             },
-            raw,
-          ),
-        ],
-      };
+          },
+          raw,
+        ),
+      );
+      return { events };
+    }
     case 'warning':
     case 'deprecationNotice':
     case 'configWarning':
@@ -76,18 +96,13 @@ export function parseCodexAppServerNotification(
           ),
         ],
       };
-    case 'error':
+    case 'error': {
+      const text = extractErrorMessage(params) ?? 'codex app-server error';
+      if (!shouldEmitErrorNotice(state, text)) return { events: [] };
       return {
-        events: [
-          event(
-            {
-              type: 'systemNotice',
-              text: typeof params?.message === 'string' ? params.message : 'codex app-server error',
-            },
-            raw,
-          ),
-        ],
+        events: [event({ type: 'systemNotice', text }, raw)],
       };
+    }
     default:
       return { events: [event({ type: 'other', label: `codex:${method}` }, raw)] };
   }
@@ -300,6 +315,21 @@ function ensurePartialState(
   };
   target[id] = created;
   return created;
+}
+
+/// Walk the common shapes codex uses for error payloads and return the most
+/// human-readable message we can find, or null if nothing usable is present.
+/// Covers `{message}`, `{error: {message}}` (turn/completed.turn.error), and
+/// JSON-RPC-style `{error: {code, message}}` notifications.
+function extractErrorMessage(payload: any): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  if (typeof payload.message === 'string' && payload.message.trim()) return payload.message;
+  if (payload.error && typeof payload.error === 'object') {
+    if (typeof payload.error.message === 'string' && payload.error.message.trim()) {
+      return payload.error.message;
+    }
+  }
+  return null;
 }
 
 function sessionFromThread(thread: any): { sessionId: string } | undefined {
