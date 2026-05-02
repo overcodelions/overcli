@@ -8,6 +8,8 @@ import { app, BrowserWindow, dialog, ipcMain, shell, Menu, nativeTheme } from 'e
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Store } from './store';
 import { RunnerManager } from './runner';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
@@ -36,6 +38,12 @@ import {
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
 import {
+  listMarketplaceSkills,
+  installMarketplaceSkill,
+  uninstallMarketplaceSkill,
+  uninstallSkillByPath,
+} from './skillsCatalog';
+import {
   OLLAMA_CATALOG,
   detectHardware,
   detectOllama,
@@ -54,7 +62,15 @@ import {
   removeCoordinatorSymlinkRoot,
 } from './workspace';
 import { openTerminalAt, runInTerminal } from './terminal';
-import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../shared/types';
+import {
+  ArtifactPreviewResult,
+  Backend,
+  MainToRendererEvent,
+  ProjectPreviewCommand,
+  ProjectPreviewHintsResult,
+  StreamEventKind,
+  StreamEvent,
+} from '../shared/types';
 
 // Dev vs prod: we go to the Vite dev server ONLY when VITE_DEV_SERVER_URL
 // is explicitly set (the `dev:electron` npm script sets it). Anything else
@@ -63,6 +79,10 @@ import { Backend, MainToRendererEvent, StreamEventKind, StreamEvent } from '../s
 // incorrectly sent `npm start` at the Vite URL that wasn't running.
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const isDev = !!DEV_URL;
+const execFileAsync = promisify(execFile);
+const MAX_OPEN_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_TEXT_FILE_BYTES = 1 * 1024 * 1024;
+const LARGE_TEXT_PREVIEW_BYTES = 256 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 let runner: RunnerManager | null = null;
@@ -164,6 +184,14 @@ function registerIpc(): void {
   });
   ipcMain.handle('runner:listInstalledReviewers', () => listInstalledReviewers());
   ipcMain.handle('capabilities:scan', () => scanCapabilities());
+  ipcMain.handle('skills:listMarketplace', () => listMarketplaceSkills());
+  ipcMain.handle('skills:installMarketplace', (_e, { skillId, targets }) =>
+    installMarketplaceSkill(skillId, targets),
+  );
+  ipcMain.handle('skills:uninstallMarketplace', (_e, { skillId, targets }) =>
+    uninstallMarketplaceSkill(skillId, targets),
+  );
+  ipcMain.handle('skills:uninstallByPath', (_e, { path: p }) => uninstallSkillByPath(p));
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
@@ -173,6 +201,7 @@ function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths[0];
   });
+  ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) => fileInfo(args?.path ?? '', args?.rootPath));
   ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
     const hint = args?.path ?? '';
     const resolved = resolveFilePath(hint, args?.rootPath);
@@ -191,18 +220,27 @@ function registerIpc(): void {
     }
     try {
       const stat = fs.statSync(resolved);
-      if (stat.size > 5 * 1024 * 1024) {
-        return { ok: false, error: `File is ${Math.round(stat.size / 1024 / 1024)} MB. Editor only opens files under 5 MB.` };
+      if (stat.size > MAX_OPEN_FILE_BYTES) {
+        return { ok: false, error: fileTooLargeMessage(stat.size) };
+      }
+      if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
+        return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
       }
       const content = fs.readFileSync(resolved, 'utf-8');
       if (content.includes('\0')) {
-        return { ok: false, error: 'Binary file — editor only opens text.' };
+        return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
       }
       return { ok: true, content, resolvedPath: resolved };
     } catch (err: any) {
       return { ok: false, error: err?.message ?? 'Could not read file' };
     }
   });
+  ipcMain.handle('fs:readLargeTextPreview', (_e, args: { path: string; rootPath?: string }) =>
+    readLargeTextPreview(args?.path ?? '', args?.rootPath),
+  );
+  ipcMain.handle('fs:readArtifactPreview', async (_e, args: { path: string; rootPath?: string }) =>
+    readArtifactPreview(args?.path ?? '', args?.rootPath),
+  );
   ipcMain.handle('fs:writeFile', (_e, { path: p, content }) => {
     if (!isPathUnderRegisteredRoot(p)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
@@ -218,10 +256,37 @@ function registerIpc(): void {
     if (!isPathUnderRegisteredRoot(root)) return [];
     return listFilesRecursive(root);
   });
+  ipcMain.handle('fs:listFileEntries', (_e, root: string) => {
+    if (!isPathUnderRegisteredRoot(root)) return [];
+    return listFileEntriesRecursive(root);
+  });
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
     if (!isPathUnderRegisteredRoot(p)) return;
     shell.showItemInFolder(p);
   });
+  ipcMain.handle('fs:openPath', async (_e, p: string) => {
+    const resolved = resolveFilePath(p);
+    if (!resolved || !isPathUnderRegisteredRoot(resolved)) {
+      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    }
+    const error = await shell.openPath(resolved);
+    return error ? { ok: false, error } : { ok: true };
+  });
+  ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
+    projectPreviewHints(args?.path ?? '', args?.rootPath),
+  );
+  ipcMain.handle(
+    'preview:runProjectCommand',
+    (_e, { cwd, command }: { cwd: string; command: string }) => {
+      if (!isPathUnderRegisteredRoot(cwd)) {
+        return { ok: false, error: 'Preview command cwd is outside registered project roots.' };
+      }
+      if (!/^[A-Za-z0-9 .:_/-]+$/.test(command)) {
+        return { ok: false, error: 'Preview command contains unsupported characters.' };
+      }
+      return openTerminalAt(cwd, command);
+    },
+  );
 
   ipcMain.handle('git:run', (_e, { args, cwd }) => {
     if (!isRendererSafeGitInvocation(args, cwd)) {
@@ -413,6 +478,371 @@ function registerIpc(): void {
 // the HTTP request we opened in pullModel.
 const pendingPulls = new Map<string, AbortController>();
 
+function fileInfo(hint: string, rootPath?: string) {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) {
+    if (path.isAbsolute(hint) && isPathUnderRegisteredRoot(hint)) {
+      return { ok: false, error: `File not found at ${hint}.` };
+    }
+    return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  }
+  if (!isPathUnderRegisteredRoot(resolved)) {
+    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) return { ok: false, error: 'Path is not a regular file.' };
+    const artifactPreview = isArtifactPreviewExtension(resolved);
+    const largeText =
+      !artifactPreview && stat.size > MAX_TEXT_FILE_BYTES && stat.size <= MAX_OPEN_FILE_BYTES;
+    const tooLarge = stat.size > MAX_OPEN_FILE_BYTES;
+    const unsupportedBinary =
+      !artifactPreview && (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size));
+    return {
+      ok: true,
+      resolvedPath: resolved,
+      sizeBytes: stat.size,
+      tooLarge,
+      largeText,
+      unsupportedBinary,
+      error: tooLarge
+        ? fileTooLargeMessage(stat.size)
+        : unsupportedBinary
+          ? 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.'
+          : undefined,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not inspect file' };
+  }
+}
+
+function readLargeTextPreview(hint: string, rootPath?: string) {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!isPathUnderRegisteredRoot(resolved)) {
+    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
+    if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
+      return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
+    }
+    const fd = fs.openSync(resolved, 'r');
+    try {
+      const size = Math.min(stat.size, LARGE_TEXT_PREVIEW_BYTES);
+      const buffer = Buffer.alloc(size);
+      const bytesRead = fs.readSync(fd, buffer, 0, size, 0);
+      return {
+        ok: true,
+        content: buffer.subarray(0, bytesRead).toString('utf-8'),
+        resolvedPath: resolved,
+        truncated: stat.size > bytesRead,
+        totalBytes: stat.size,
+        previewBytes: bytesRead,
+      };
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not read large text preview' };
+  }
+}
+
+async function readArtifactPreview(hint: string, rootPath?: string): Promise<ArtifactPreviewResult> {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!isPathUnderRegisteredRoot(resolved)) {
+    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+  }
+  try {
+    const stat = fs.statSync(resolved);
+    const ext = path.extname(resolved).slice(1).toLowerCase();
+    const officeFamily = officeFamilyForExtension(ext);
+    if (officeFamily) {
+      const converted = await convertOfficeToPdfPreview(resolved);
+      return {
+        ok: true,
+        kind: 'office',
+        resolvedPath: resolved,
+        sizeBytes: stat.size,
+        extension: ext,
+        family: officeFamily,
+        ...converted,
+      };
+    }
+
+    const mimeType = mimeForPreviewExtension(ext);
+    if (!mimeType) return { ok: false, error: `No artifact preview available for .${ext || 'file'}.` };
+    if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
+    if (mimeType === 'application/pdf') {
+      const data = fs.readFileSync(resolved).toString('base64');
+      return {
+        ok: true,
+        kind: 'pdf',
+        resolvedPath: resolved,
+        sizeBytes: stat.size,
+        mimeType,
+        fileUrl: pathToFileUrl(resolved),
+        dataUrl: `data:${mimeType};base64,${data}`,
+      };
+    }
+    const data = fs.readFileSync(resolved).toString('base64');
+    return {
+      ok: true,
+      kind: 'image',
+      resolvedPath: resolved,
+      sizeBytes: stat.size,
+      mimeType,
+      dataUrl: `data:${mimeType};base64,${data}`,
+    };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not read artifact preview' };
+  }
+}
+
+function pathToFileUrl(filePath: string): string {
+  const normalized = path.resolve(filePath).replace(/\\/g, '/');
+  const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`;
+  return encodeURI(`file://${prefixed}`);
+}
+
+async function convertOfficeToPdfPreview(
+  filePath: string,
+): Promise<Pick<
+  Extract<ArtifactPreviewResult, { ok: true; kind: 'office' }>,
+  'convertedPdfDataUrl' | 'convertedPdfSizeBytes' | 'converterPath' | 'conversionError'
+>> {
+  const converterPath = findLibreOfficeBinary();
+  if (!converterPath) return { conversionError: 'LibreOffice/soffice was not found.' };
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-office-preview-'));
+  try {
+    await execFileAsync(
+      converterPath,
+      ['--headless', '--convert-to', 'pdf', '--outdir', outDir, filePath],
+      { timeout: 30_000, maxBuffer: 1024 * 1024 },
+    );
+    const expected = path.join(outDir, `${path.basename(filePath, path.extname(filePath))}.pdf`);
+    const pdfPath = fs.existsSync(expected)
+      ? expected
+      : fs.readdirSync(outDir).find((name) => name.toLowerCase().endsWith('.pdf'));
+    const resolvedPdfPath = pdfPath && path.isAbsolute(pdfPath) ? pdfPath : pdfPath ? path.join(outDir, pdfPath) : '';
+    if (!resolvedPdfPath || !fs.existsSync(resolvedPdfPath)) {
+      return { converterPath, conversionError: 'LibreOffice did not produce a PDF preview.' };
+    }
+    const stat = fs.statSync(resolvedPdfPath);
+    if (stat.size > MAX_OPEN_FILE_BYTES) {
+      return { converterPath, conversionError: 'Converted PDF is over the 5 MB preview cap.' };
+    }
+    const data = fs.readFileSync(resolvedPdfPath).toString('base64');
+    return {
+      converterPath,
+      convertedPdfDataUrl: `data:application/pdf;base64,${data}`,
+      convertedPdfSizeBytes: stat.size,
+    };
+  } catch (err: any) {
+    return { converterPath, conversionError: err?.message ?? 'LibreOffice conversion failed.' };
+  } finally {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  }
+}
+
+function fileTooLargeMessage(bytes: number): string {
+  return `File is ${formatMegabytes(bytes)} MB. Overcli only opens files under 5 MB.`;
+}
+
+function formatMegabytes(bytes: number): string {
+  return Math.max(1, Math.ceil(bytes / 1024 / 1024)).toString();
+}
+
+const BINARY_EXTENSIONS = new Set([
+  '7z',
+  'a',
+  'app',
+  'avi',
+  'bin',
+  'bz2',
+  'class',
+  'dmg',
+  'dll',
+  'dylib',
+  'eot',
+  'exe',
+  'gz',
+  'icns',
+  'jar',
+  'mov',
+  'mp3',
+  'mp4',
+  'o',
+  'otf',
+  'pkg',
+  'rar',
+  'so',
+  'sqlite',
+  'sqlite3',
+  'tar',
+  'tgz',
+  'ttf',
+  'war',
+  'wasm',
+  'woff',
+  'woff2',
+  'xz',
+  'zip',
+]);
+
+function isKnownBinaryExtension(filePath: string): boolean {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  return BINARY_EXTENSIONS.has(ext);
+}
+
+function isArtifactPreviewExtension(filePath: string): boolean {
+  const ext = path.extname(filePath).slice(1).toLowerCase();
+  return !!mimeForPreviewExtension(ext) || !!officeFamilyForExtension(ext);
+}
+
+function isLikelyBinaryFile(filePath: string, sizeBytes: number): boolean {
+  if (sizeBytes === 0) return false;
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const sample = Buffer.alloc(Math.min(sizeBytes, 4096));
+    const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0);
+    if (sample.subarray(0, bytesRead).includes(0)) return true;
+    let controlBytes = 0;
+    for (let i = 0; i < bytesRead; i += 1) {
+      const byte = sample[i];
+      const allowedWhitespace = byte === 9 || byte === 10 || byte === 12 || byte === 13;
+      if (byte < 32 && !allowedWhitespace) controlBytes += 1;
+    }
+    return bytesRead > 0 && controlBytes / bytesRead > 0.08;
+  } catch {
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function findLibreOfficeBinary(): string | null {
+  const candidates =
+    process.platform === 'darwin'
+      ? [
+          '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+          '/opt/homebrew/bin/soffice',
+          '/usr/local/bin/soffice',
+          'soffice',
+          'libreoffice',
+        ]
+      : ['soffice', 'libreoffice'];
+  for (const candidate of candidates) {
+    if (candidate.includes(path.sep) && fs.existsSync(candidate)) return candidate;
+    if (!candidate.includes(path.sep) && commandExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+function commandExists(command: string): boolean {
+  const paths = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  return paths.some((dir) => {
+    try {
+      return fs.existsSync(path.join(dir, command));
+    } catch {
+      return false;
+    }
+  });
+}
+
+function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHintsResult {
+  const resolved = resolveFilePath(hint, rootPath);
+  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  const packageRoot = findNearestPackageRoot(path.dirname(resolved));
+  if (!packageRoot) return { ok: false, error: 'No package.json found for this component.' };
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf-8'));
+    const scripts = typeof pkg?.scripts === 'object' && pkg.scripts ? pkg.scripts : {};
+    const packageManager = detectPackageManager(packageRoot);
+    const commands = previewCommandsForScripts(scripts, packageManager);
+    if (commands.length === 0) {
+      return { ok: false, error: 'No dev, preview, Storybook, or visual test scripts found.' };
+    }
+    return { ok: true, rootPath: packageRoot, packageManager, commands };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? 'Could not read package preview scripts.' };
+  }
+}
+
+function findNearestPackageRoot(start: string): string | null {
+  let current = path.resolve(start);
+  while (isPathUnderRegisteredRoot(current)) {
+    if (fs.existsSync(path.join(current, 'package.json'))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+function detectPackageManager(root: string): 'npm' | 'pnpm' | 'yarn' {
+  if (fs.existsSync(path.join(root, 'pnpm-lock.yaml'))) return 'pnpm';
+  if (fs.existsSync(path.join(root, 'yarn.lock'))) return 'yarn';
+  return 'npm';
+}
+
+function previewCommandsForScripts(
+  scripts: Record<string, unknown>,
+  packageManager: 'npm' | 'pnpm' | 'yarn',
+): ProjectPreviewCommand[] {
+  const commands: ProjectPreviewCommand[] = [];
+  const add = (id: string, label: string, kind: ProjectPreviewCommand['kind']) => {
+    if (typeof scripts[id] !== 'string') return;
+    commands.push({ id, label, kind, command: scriptCommand(packageManager, id) });
+  };
+  add('dev', 'Run dev server', 'dev');
+  add('start', 'Run start', 'dev');
+  add('storybook', 'Run Storybook', 'storybook');
+  add('preview', 'Run preview server', 'preview');
+  add('test:visual', 'Run visual tests', 'test');
+  add('test:e2e', 'Run e2e tests', 'test');
+  return commands;
+}
+
+function scriptCommand(packageManager: 'npm' | 'pnpm' | 'yarn', script: string): string {
+  if (packageManager === 'yarn') return `yarn ${script}`;
+  if (packageManager === 'pnpm') return `pnpm run ${script}`;
+  return script === 'start' ? 'npm start' : `npm run ${script}`;
+}
+
+function officeFamilyForExtension(ext: string): 'document' | 'spreadsheet' | 'presentation' | null {
+  if (ext === 'doc' || ext === 'docx') return 'document';
+  if (ext === 'xls' || ext === 'xlsx') return 'spreadsheet';
+  if (ext === 'ppt' || ext === 'pptx') return 'presentation';
+  return null;
+}
+
+function mimeForPreviewExtension(ext: string): string | null {
+  switch (ext) {
+    case 'pdf':
+      return 'application/pdf';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'bmp':
+      return 'image/bmp';
+    case 'ico':
+      return 'image/x-icon';
+    default:
+      return null;
+  }
+}
+
 // Collect every directory the user has explicitly registered with the app
 // (projects, workspaces, worktrees). Filesystem IPC handlers treat these
 // as the only legal roots — a compromised renderer can't reach into
@@ -450,6 +880,7 @@ const RENDERER_GIT_ALLOWLIST = new Set([
   'rev-parse',
   'log',
   'show',
+  'ls-files',
 ]);
 function isRendererSafeGitInvocation(args: unknown, cwd: unknown): boolean {
   if (!Array.isArray(args) || args.length === 0) return false;
@@ -592,6 +1023,10 @@ function resolveFilePath(hint: string, rootPath?: string): string | null {
 }
 
 function listFilesRecursive(root: string): string[] {
+  return listFileEntriesRecursive(root).map((entry) => entry.path);
+}
+
+function listFileEntriesRecursive(root: string): Array<{ path: string; sizeBytes: number }> {
   const skipDirs = new Set([
     '.git',
     'node_modules',
@@ -607,7 +1042,7 @@ function listFilesRecursive(root: string): string[] {
     'DerivedData',
     '.swiftpm',
   ]);
-  const out: string[] = [];
+  const out: Array<{ path: string; sizeBytes: number }> = [];
   const stack: string[] = [root];
   while (stack.length) {
     const cur = stack.pop()!;
@@ -629,7 +1064,7 @@ function listFilesRecursive(root: string): string[] {
       if (stat.isDirectory()) {
         stack.push(full);
       } else if (stat.isFile()) {
-        out.push(full);
+        out.push({ path: full, sizeBytes: stat.size });
         if (out.length > 20000) return out; // safety cap
       }
     }
