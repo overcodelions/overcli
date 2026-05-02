@@ -37,6 +37,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     installedReviewers,
     settings,
     projects,
+    workspaces,
     showToolActivity,
     showFileTree,
     setPrimary,
@@ -60,6 +61,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       installedReviewers: s.installedReviewers,
       settings: s.settings,
       projects: s.projects,
+      workspaces: s.workspaces,
       showToolActivity: s.showToolActivity,
       showFileTree: s.showFileTree,
       setPrimary: s.setPrimaryBackend,
@@ -302,24 +304,36 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           (() => {
             // Worktree-bound agent → full WorktreeDiffSheet (merge/rebase/push/PR).
             // Workspace coordinator → per-member review sheet.
-            // Plain project conv (no worktree, no agent members) → simple
-            // ProjectDiffSheet showing `git diff HEAD` in the project root,
-            // so the Diff button is consistently available wherever a git
-            // working tree exists.
+            // Plain workspace conv (no worktree, no agent members, but
+            // hosted in a workspace) → multi-project diff sheet that runs
+            // `git diff HEAD` in each member project.
+            // Plain project conv → simple ProjectDiffSheet showing
+            // `git diff HEAD` in the project root, so the Diff button is
+            // consistently available wherever a git working tree exists.
             const isCoordinator = (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
             const ownerProjectPath = findOwningProjectPath(projects, conversationId);
-            const showDiff = conv.worktreePath || isCoordinator || !!ownerProjectPath;
+            const owningWorkspace = !ownerProjectPath
+              ? workspaces.find((w) => (w.conversations ?? []).some((c) => c.id === conversationId))
+              : undefined;
+            const isPlainWorkspaceConv =
+              !!owningWorkspace && !isCoordinator && !conv.worktreePath;
+            const showDiff =
+              conv.worktreePath || isCoordinator || !!ownerProjectPath || isPlainWorkspaceConv;
             if (!showDiff) return null;
             const targetSheet = conv.worktreePath
               ? ({ type: 'worktreeDiff', convId: conversationId } as const)
               : isCoordinator
                 ? ({ type: 'workspaceAgentReview', coordinatorId: conversationId } as const)
-                : ({ type: 'projectDiff', convId: conversationId } as const);
+                : isPlainWorkspaceConv
+                  ? ({ type: 'workspaceDiff', convId: conversationId } as const)
+                  : ({ type: 'projectDiff', convId: conversationId } as const);
             const tooltip = conv.worktreePath
               ? `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
               : isCoordinator
                 ? 'Review each project and merge independently'
-                : 'View working-tree diff vs HEAD';
+                : isPlainWorkspaceConv
+                  ? 'View working-tree diff vs HEAD across all workspace projects'
+                  : 'View working-tree diff vs HEAD';
             return (
               <button
                 onClick={() => openSheet(targetSheet)}

@@ -55,6 +55,7 @@ export type ActiveSheet =
   | { type: 'colosseumCompare'; colosseumId: UUID }
   | { type: 'worktreeDiff'; convId: UUID }
   | { type: 'projectDiff'; convId: UUID }
+  | { type: 'workspaceDiff'; convId: UUID }
   | { type: 'workspaceAgentReview'; coordinatorId: UUID }
   | { type: 'archiveConversation'; convId: UUID }
   | { type: 'archiveAllInProject'; projectId: UUID }
