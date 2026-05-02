@@ -369,3 +369,14 @@ html, body {
 :root:not(.dark) .hljs-type, :root:not(.dark) .hljs-class { color: #267f99; }
 :root:not(.dark) .hljs-variable, :root:not(.dark) .hljs-attr { color: #001080; }
 :root:not(.dark) .hljs-tag { color: #800000; }
+
+/* Editor overlay: the syntax-highlighted <pre> sits over a plain <textarea>
+ * that intercepts clicks. If any token uses italic or bold glyphs, its
+ * width diverges from the textarea's regular-weight glyphs and clicks
+ * land off-target. Normalize style/weight here without touching the same
+ * theme used in chat code blocks. */
+.editor-overlay,
+.editor-overlay * {
+  font-style: normal !important;
+  font-weight: normal !important;
+}

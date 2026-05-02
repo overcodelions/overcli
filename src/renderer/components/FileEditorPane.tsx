@@ -251,8 +251,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // When the file tree is requested but no file is open, show the tree
   // alone. When a file is open, show the tree on top and the file below
   // — a two-pane layout. When tree is off and a file is open, show only
-  // the file.
-  if (!path && showFileTree && rootPath) {
+  // the file. Suppress the embedded tree when ExplorerPane mounts us
+  // (rootPathOverride) — that view already supplies its own tree pane.
+  const embedTree = showFileTree && !rootPathOverride;
+  if (!path && embedTree && rootPath) {
     return <FileTree rootPath={rootPath} />;
   }
   if (!path) {
@@ -264,7 +266,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   }
   return (
     <div className="flex flex-col h-full">
-      {showFileTree && rootPath && (
+      {embedTree && rootPath && (
         <div className="h-[40%] min-h-[120px] border-b border-card overflow-hidden">
           <FileTree rootPath={rootPath} />
         </div>
@@ -293,6 +295,16 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               title="Copy file path"
             >
               {copiedPath ? 'Copied' : 'Copy'}
+            </button>
+            <button
+              onClick={async () => {
+                const res = await window.overcli.invoke('fs:openPath', path);
+                if (!res.ok) setError(res.error);
+              }}
+              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+              title="Open in default app (e.g. VS Code)"
+            >
+              Open
             </button>
           </div>
           <div className="flex items-center gap-2">
@@ -507,7 +519,7 @@ function Editor({
       <div className="flex-1 relative">
         <pre
           aria-hidden
-          className="absolute inset-0 pt-2 px-2 m-0 pointer-events-none whitespace-pre overflow-visible"
+          className="editor-overlay absolute inset-0 pt-2 px-2 m-0 pointer-events-none whitespace-pre overflow-visible"
           dangerouslySetInnerHTML={{
             __html: highlightContent(content, language, highlightRange),
           }}
@@ -643,7 +655,16 @@ function resolveDiffTarget(
       }
     }
   }
-  return { cwd: rootPath, path, baseBranch: convBaseBranch };
+  // Git wants a repo-relative path; absolute paths get treated as
+  // unknown and fall through to the --no-index branch above, which
+  // makes every file render as a fresh add.
+  const rel =
+    path === rootPath
+      ? '.'
+      : path.startsWith(`${rootPath}/`)
+        ? path.slice(rootPath.length + 1)
+        : path;
+  return { cwd: rootPath, path: rel, baseBranch: convBaseBranch };
 }
 
 function resolveWorkspaceMembers(
