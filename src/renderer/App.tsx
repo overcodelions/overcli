@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { useConversation } from './hooks';
+import { findConversation } from './conversationLookup';
 import { useThemeEffect } from './useThemeEffect';
 import { useShortcuts } from './useShortcuts';
 import { Sidebar } from './components/Sidebar';
@@ -45,10 +46,18 @@ export function App() {
   // Self-heal: if the selected conversation has been deleted (e.g. the
   // user hits Delete from ArchiveConversationSheet), fall back to the
   // welcome pane instead of leaving a dead conversation selected.
+  // Debounced so transient store/index timing doesn't cause a visible
+  // one-frame drop back to Welcome while the conversation still exists.
   useEffect(() => {
-    if (selectedConversationId && !selectedConv) {
-      selectConversation(null);
-    }
+    if (!selectedConversationId || selectedConv) return;
+    const timer = setTimeout(() => {
+      const state = useStore.getState();
+      if (state.selectedConversationId !== selectedConversationId) return;
+      if (!findConversation(state, selectedConversationId)) {
+        state.selectConversation(null);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
   }, [selectedConversationId, selectedConv, selectConversation]);
 
   // Apply light/dark preference to <html>. Must run before first paint so
@@ -100,7 +109,7 @@ export function App() {
             <LocalPane />
           ) : detailMode === 'explorer' ? (
             <ExplorerPane />
-          ) : selectedConversationId && selectedConv ? (
+          ) : selectedConversationId ? (
             <ConversationPane />
           ) : (
             <WelcomePane />
