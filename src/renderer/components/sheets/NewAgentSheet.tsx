@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { Backend, Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { BaseBranchSelect } from './BaseBranchSelect';
+import { BranchCombobox } from './BranchCombobox';
 import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 
 type AgentKind = 'build' | 'review' | 'docs';
@@ -206,24 +207,13 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
           <label className="text-xs text-ink-faint">
             {kind === 'docs' ? 'Branch to document' : 'Branch to review'}
           </label>
-          <select
+          <BranchCombobox
+            options={targetBranchOptions}
             value={targetBranch}
-            onChange={(e) => setTargetBranch(e.target.value)}
-            disabled={loadingBranches || targetBranchOptions.length === 0}
-            className="field px-3 py-1.5 text-sm"
-          >
-            {targetBranchOptions.length === 0 ? (
-              <option value="">
-                {loadingBranches ? 'Loading branches…' : 'No branches available'}
-              </option>
-            ) : (
-              targetBranchOptions.map((b) => (
-                <option key={b} value={b}>
-                  {b}
-                </option>
-              ))
-            )}
-          </select>
+            onChange={setTargetBranch}
+            disabled={loadingBranches}
+            placeholder={loadingBranches ? 'Loading branches…' : 'No branches available'}
+          />
         </div>
       )}
 
