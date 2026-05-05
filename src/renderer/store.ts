@@ -32,7 +32,7 @@ import {
   MainToRendererEvent,
 } from '@shared/types';
 import { FileViewMode } from './filePreview';
-import { workspaceSymlinkNames } from '@shared/workspaceNames';
+import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
@@ -920,7 +920,7 @@ export const useStore = create<StoreState>((set, get) => ({
   async pickProject() {
     const path = await window.overcli.invoke('fs:pickDirectory');
     if (!path) return;
-    const name = path.split('/').filter(Boolean).slice(-1)[0] ?? 'Project';
+    const name = pathBasename(path) || 'Project';
     const project: Project = {
       id: uuid(),
       name,
