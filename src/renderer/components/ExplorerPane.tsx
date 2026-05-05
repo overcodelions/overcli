@@ -24,6 +24,8 @@ export function ExplorerPane() {
   const openFilePath = useStore((s) => s.openFilePath);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
+  const setDetailMode = useStore((s) => s.setDetailMode);
+  const closeExplorer = () => setDetailMode('conversation');
 
   const [treeWidth, setTreeWidth] = useState(
     () => clamp(settings.explorerTreeWidth ?? 280, TREE_MIN, TREE_MAX),
@@ -64,8 +66,11 @@ export function ExplorerPane() {
 
   if (!rootPath) {
     return (
-      <div className="h-full flex items-center justify-center text-xs text-ink-faint">
-        Pick a project or workspace from the sidebar to explore.
+      <div className="h-full flex flex-col">
+        <ExplorerHeader onClose={closeExplorer} />
+        <div className="flex-1 flex items-center justify-center text-xs text-ink-faint">
+          Pick a project or workspace from the sidebar to explore.
+        </div>
       </div>
     );
   }
@@ -73,10 +78,12 @@ export function ExplorerPane() {
   return (
     <div className="flex flex-col flex-1 min-h-0 min-w-0">
       {branch?.isRepo && branch.currentBranch ? (
-        <BranchBanner info={branch} />
+        <BranchBanner info={branch} onClose={closeExplorer} />
       ) : branch ? (
-        <FolderBanner />
-      ) : null}
+        <FolderBanner onClose={closeExplorer} />
+      ) : (
+        <ExplorerHeader onClose={closeExplorer} />
+      )}
       <div className="flex flex-1 min-h-0 min-w-0">
       <div
         style={{ width: treeWidth }}
@@ -109,7 +116,7 @@ export function ExplorerPane() {
 /// Thin read-only strip at the top of the explorer showing the current
 /// git branch and dirty-file stats. Matches the `⎇ branch` treatment used
 /// in the conversation header so the two views feel consistent.
-function BranchBanner({ info }: { info: BranchInfo }) {
+function BranchBanner({ info, onClose }: { info: BranchInfo; onClose: () => void }) {
   const dirty = info.changeCount > 0;
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
@@ -130,16 +137,41 @@ function BranchBanner({ info }: { info: BranchInfo }) {
       ) : (
         <span className="text-ink-faint">clean</span>
       )}
+      <CloseButton onClose={onClose} />
     </div>
   );
 }
 
-function FolderBanner() {
+function FolderBanner({ onClose }: { onClose: () => void }) {
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
       <span className="text-ink-muted">Folder</span>
       <span className="text-ink-faint">Not a git repo. Overcli will preview safe files and open blocked files externally.</span>
+      <CloseButton onClose={onClose} />
     </div>
+  );
+}
+
+function ExplorerHeader({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="flex items-center px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
+      <span className="text-ink-muted">Explorer</span>
+      <CloseButton onClose={onClose} />
+    </div>
+  );
+}
+
+function CloseButton({ onClose }: { onClose: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClose}
+      title="Close explorer"
+      aria-label="Close explorer"
+      className="ml-auto flex h-5 w-5 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card"
+    >
+      ×
+    </button>
   );
 }
 
