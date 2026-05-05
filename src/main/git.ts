@@ -376,6 +376,41 @@ export function switchProjectToBranch(args: {
   return { ok: true, message: parts.join(' '), stashed };
 }
 
+/// Stash any dirty working tree, then `git switch` onto `targetBranch`.
+/// Used by the base-branch-mismatch banner to put a non-worktree
+/// conversation's project repo back onto the branch the conv was started
+/// on. The stash stays on the stack — users `git stash pop` later.
+export function switchBranch(args: {
+  cwd: string;
+  targetBranch: string;
+}): { ok: true; message: string; stashed: boolean } | { ok: false; error: string } {
+  const status = runGit(['status', '--porcelain'], args.cwd);
+  if (status.exitCode !== 0) {
+    return { ok: false, error: status.stderr.trim() || status.stdout.trim() };
+  }
+  let stashed = false;
+  if (status.stdout.trim()) {
+    const stash = runGit(
+      ['stash', 'push', '-u', '-m', `overcli: auto-stash before switching to ${args.targetBranch}`],
+      args.cwd,
+    );
+    if (stash.exitCode !== 0) {
+      return { ok: false, error: stash.stderr.trim() || stash.stdout.trim() };
+    }
+    stashed = true;
+  }
+  const short = args.targetBranch.startsWith('origin/')
+    ? args.targetBranch.slice('origin/'.length)
+    : args.targetBranch;
+  const switchRes = runGit(['switch', short], args.cwd);
+  if (switchRes.exitCode !== 0) {
+    return { ok: false, error: switchRes.stderr.trim() || switchRes.stdout.trim() };
+  }
+  const parts = [`Checked out ${short}.`];
+  if (stashed) parts.push('Previous changes saved in `git stash` — run `git stash pop` to restore.');
+  return { ok: true, message: parts.join(' '), stashed };
+}
+
 export function removeWorktree(args: {
   projectPath: string;
   worktreePath: string;

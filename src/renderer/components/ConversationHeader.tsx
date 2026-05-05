@@ -1,4 +1,4 @@
-import { CSSProperties, ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { CSSProperties, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import {
@@ -197,6 +197,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           <div className="text-[10px] text-ink-faint truncate">
             {conv.branchName} · {conv.worktreePath}
           </div>
+        )}
+        {!conv.worktreePath && (
+          <BaseBranchMismatchBanner conversationId={conversationId} />
         )}
       </div>
 
@@ -424,6 +427,104 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
         )}
       </div>
     </header>
+  );
+}
+
+/// Warns when a project conversation's owning repo HEAD has drifted away
+/// from the branch it was started on. Skipped for worktree conversations
+/// (they own their own checkout) and workspace conversations (no single
+/// owning repo). Refreshes on mount, on window focus (terminal switch),
+/// and at the end of each turn (agent-driven `git checkout`).
+function BaseBranchMismatchBanner({ conversationId }: { conversationId: UUID }) {
+  const conv = useConversation(conversationId);
+  const projects = useStore((s) => s.projects);
+  const gitStatus = useStore((s) => s.gitStatusByConv[conversationId]);
+  const refreshGitStatus = useStore((s) => s.refreshGitStatus);
+  const runnerIsRunning = useRunnerIsRunning(conversationId);
+  const [busy, setBusy] = useState(false);
+
+  const ownerProject = useMemo(
+    () => findOwningProjectPath(projects, conversationId),
+    [projects, conversationId],
+  );
+
+  useEffect(() => {
+    if (!ownerProject) return;
+    void refreshGitStatus(conversationId);
+    const onFocus = () => void refreshGitStatus(conversationId);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [ownerProject, conversationId, refreshGitStatus]);
+
+  // Re-probe after each turn ends so an agent-driven `git checkout` shows
+  // up immediately. Triggers on the running→idle transition.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !runnerIsRunning && ownerProject) {
+      void refreshGitStatus(conversationId);
+    }
+    wasRunning.current = runnerIsRunning;
+  }, [runnerIsRunning, ownerProject, conversationId, refreshGitStatus]);
+
+  if (!conv?.baseBranch || !ownerProject || !gitStatus?.isRepo) return null;
+  const expected = conv.baseBranch.startsWith('origin/')
+    ? conv.baseBranch.slice('origin/'.length)
+    : conv.baseBranch;
+  const current = gitStatus.currentBranch;
+  if (!current || current === expected) return null;
+
+  const dirty = (gitStatus.changes?.length ?? 0) > 0;
+
+  const switchBack = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await window.overcli.invoke('git:switchBranch', {
+        cwd: ownerProject,
+        targetBranch: expected,
+      });
+      if (!res.ok) {
+        window.alert(`Couldn't switch branch: ${res.error}`);
+      } else {
+        await refreshGitStatus(conversationId);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const adoptCurrent = () => {
+    useStore.setState((s) => ({
+      projects: s.projects.map((p) => ({
+        ...p,
+        conversations: p.conversations.map((c) =>
+          c.id === conversationId ? { ...c, baseBranch: current } : c,
+        ),
+      })),
+    }));
+  };
+
+  return (
+    <div className="text-[10px] mt-0.5 flex items-center gap-2 text-amber-300/90 flex-wrap">
+      <span className="truncate">
+        On <code className="font-mono">{current}</code> — conversation expects{' '}
+        <code className="font-mono">{expected}</code>
+        {dirty && ' · uncommitted changes will be stashed'}
+      </span>
+      <button
+        disabled={busy}
+        onClick={switchBack}
+        className="px-1.5 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 disabled:opacity-50"
+      >
+        Switch back
+      </button>
+      <button
+        onClick={adoptCurrent}
+        className="px-1.5 py-0.5 rounded hover:bg-card-strong text-ink-muted"
+      >
+        Use {current}
+      </button>
+    </div>
   );
 }
 
