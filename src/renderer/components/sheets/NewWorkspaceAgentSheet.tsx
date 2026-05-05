@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
+import { BranchCombobox } from './BranchCombobox';
 
 type WorkspaceAgentKind = 'build' | 'docs';
 
@@ -42,6 +43,10 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
   const [topic, setTopic] = useState('');
   const [bases, setBases] = useState<Record<UUID, string | null>>({});
   const [loadingBases, setLoadingBases] = useState(true);
+  const [branchMode, setBranchMode] = useState<'auto' | 'shared'>('auto');
+  const [sharedBranch, setSharedBranch] = useState('');
+  const [memberBranches, setMemberBranches] = useState<Record<UUID, string[]>>({});
+  const [loadingShared, setLoadingShared] = useState(false);
   const [working, setWorking] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,16 +80,89 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
     };
   }, [members.map((m) => m.id).join('\0'), kind]);
 
+  // For "Shared branch" mode, load each member's branches and present
+  // their union — falling back to per-repo auto-detect for any repo
+  // that doesn't have the user's pick.
+  useEffect(() => {
+    if (members.length === 0 || kind !== 'build' || branchMode !== 'shared') return;
+    let cancelled = false;
+    setLoadingShared(true);
+    void Promise.all(
+      members.map(async (p) => {
+        const list = await window.overcli
+          .invoke('git:listBaseBranches', p.path)
+          .catch(() => [] as string[]);
+        return [p.id, list] as const;
+      }),
+    ).then((entries) => {
+      if (cancelled) return;
+      const next: Record<UUID, string[]> = {};
+      for (const [pid, list] of entries) next[pid] = list;
+      setMemberBranches(next);
+      setLoadingShared(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [members.map((m) => m.id).join('\0'), kind, branchMode]);
+
+  const sharedOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const p of members) {
+      for (const b of memberBranches[p.id] ?? []) {
+        if (seen.has(b)) continue;
+        seen.add(b);
+        ordered.push(b);
+      }
+    }
+    const priority = ['main', 'master', 'develop', 'dev'];
+    ordered.sort((a, b) => {
+      const ai = priority.indexOf(a);
+      const bi = priority.indexOf(b);
+      if (ai === -1 && bi === -1) return 0;
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+    return ordered;
+  }, [memberBranches, members.map((m) => m.id).join('\0')]);
+
+  useEffect(() => {
+    if (branchMode !== 'shared') return;
+    if (sharedOptions.length === 0) return;
+    if (!sharedBranch || !sharedOptions.includes(sharedBranch)) {
+      setSharedBranch(sharedOptions[0]);
+    }
+  }, [branchMode, sharedOptions, sharedBranch]);
+
+  const sharedCoverage = useMemo(() => {
+    if (!sharedBranch) return { has: [], missing: [] as typeof members };
+    const has: typeof members = [];
+    const missing: typeof members = [];
+    for (const p of members) {
+      ((memberBranches[p.id] ?? []).includes(sharedBranch) ? has : missing).push(p);
+    }
+    return { has, missing };
+  }, [sharedBranch, memberBranches, members.map((m) => m.id).join('\0')]);
+
   if (!ws) return null;
 
   const allResolved = members.length > 0 && members.every((p) => bases[p.id]);
   const missing = members.filter((p) => !bases[p.id]);
   const meta = KINDS.find((k) => k.id === kind) ?? KINDS[0];
+  // In shared mode, repos missing the picked branch fall back to their
+  // auto-detected base, so we still need every member to have *some*
+  // resolvable branch — the same condition as auto mode.
+  const buildReady =
+    branchMode === 'shared'
+      ? members.length > 0 && !!sharedBranch && allResolved
+      : allResolved;
 
   const canSubmit =
     !working &&
     !!name.trim() &&
-    (kind === 'docs' ? !!topic.trim() : allResolved);
+    (kind === 'docs' ? !!topic.trim() : buildReady);
   const submitLabel = working
     ? kind === 'docs'
       ? 'Drafting docs…'
@@ -112,7 +190,13 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
       } else {
         const baseBranches: Record<UUID, string> = {};
         for (const p of members) {
-          const b = bases[p.id];
+          let b: string | null | undefined;
+          if (branchMode === 'shared') {
+            const has = (memberBranches[p.id] ?? []).includes(sharedBranch);
+            b = has ? sharedBranch : bases[p.id];
+          } else {
+            b = bases[p.id];
+          }
           if (b) baseBranches[p.id] = b;
         }
         setProgress(
@@ -175,32 +259,95 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
       </div>
       {kind === 'build' && (
         <>
-          <div className="text-[10px] uppercase tracking-wide text-ink-faint mt-1">
-            Will branch from
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-ink-faint">Branch from</label>
+            <div className="flex gap-1 rounded border border-card bg-card p-1 w-fit">
+              {(
+                [
+                  { id: 'auto', label: 'Per repo (detected)' },
+                  { id: 'shared', label: 'Shared branch' },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setBranchMode(m.id)}
+                  className={
+                    'text-xs px-3 py-1 rounded transition-colors ' +
+                    (branchMode === m.id
+                      ? 'bg-accent text-white shadow-sm'
+                      : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                  }
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-col gap-1 rounded border border-card bg-card p-2 max-h-[220px] overflow-y-auto">
-            {members.length === 0 ? (
-              <div className="text-xs text-ink-faint">No member projects in this workspace.</div>
-            ) : loadingBases ? (
-              <div className="text-xs text-ink-faint">Detecting base branches…</div>
-            ) : (
-              members.map((p) => {
-                const branch = bases[p.id];
-                return (
-                  <div key={p.id} className="flex items-center gap-2 text-xs">
-                    <span className="text-ink-muted truncate flex-1">{p.name}</span>
-                    <span className="text-ink-faint">→</span>
-                    {branch ? (
-                      <span className="font-mono text-ink">{branch}</span>
-                    ) : (
-                      <span className="text-amber-400">no base branch found</span>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-          {!loadingBases && missing.length > 0 && (
+          {branchMode === 'shared' ? (
+            <div className="flex flex-col gap-2">
+              <BranchCombobox
+                options={sharedOptions}
+                value={sharedBranch}
+                onChange={setSharedBranch}
+                disabled={loadingShared}
+                placeholder={loadingShared ? 'Loading branches…' : 'No branches found in any repo'}
+              />
+              {sharedBranch && (
+                <div className="flex flex-col gap-1 rounded border border-card bg-card p-2 max-h-[220px] overflow-y-auto">
+                  {members.map((p) => {
+                    const has = (memberBranches[p.id] ?? []).includes(sharedBranch);
+                    const fallback = bases[p.id];
+                    return (
+                      <div key={p.id} className="flex items-center gap-2 text-xs">
+                        <span className="text-ink-muted truncate flex-1">{p.name}</span>
+                        <span className="text-ink-faint">→</span>
+                        {has ? (
+                          <span className="font-mono text-ink">{sharedBranch}</span>
+                        ) : fallback ? (
+                          <span className="font-mono text-amber-400" title={`${sharedBranch} not in this repo — falling back to detected base`}>
+                            {fallback} (fallback)
+                          </span>
+                        ) : (
+                          <span className="text-amber-400">no base branch found</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {sharedBranch && sharedCoverage.missing.length > 0 && (
+                <div className="text-xs text-ink-faint">
+                  {sharedCoverage.missing.length === 1
+                    ? `${sharedCoverage.missing[0].name} doesn't have ${sharedBranch}; using its detected base instead.`
+                    : `${sharedCoverage.missing.length} repos don't have ${sharedBranch}; each falls back to its detected base.`}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex flex-col gap-1 rounded border border-card bg-card p-2 max-h-[220px] overflow-y-auto">
+              {members.length === 0 ? (
+                <div className="text-xs text-ink-faint">No member projects in this workspace.</div>
+              ) : loadingBases ? (
+                <div className="text-xs text-ink-faint">Detecting base branches…</div>
+              ) : (
+                members.map((p) => {
+                  const branch = bases[p.id];
+                  return (
+                    <div key={p.id} className="flex items-center gap-2 text-xs">
+                      <span className="text-ink-muted truncate flex-1">{p.name}</span>
+                      <span className="text-ink-faint">→</span>
+                      {branch ? (
+                        <span className="font-mono text-ink">{branch}</span>
+                      ) : (
+                        <span className="text-amber-400">no base branch found</span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          )}
+          {branchMode === 'auto' && !loadingBases && missing.length > 0 && (
             <div className="text-xs text-amber-400">
               {missing.length === 1
                 ? `${missing[0].name} has no branches yet — make an initial commit or fetch a remote, then reopen this sheet.`

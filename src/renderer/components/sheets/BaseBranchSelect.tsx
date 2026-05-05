@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { BranchCombobox } from './BranchCombobox';
 
 interface BaseBranchSelectProps {
   repoPaths: string[];
@@ -73,22 +74,14 @@ export function BaseBranchSelect({
 
   return (
     <div className="flex flex-col gap-1">
-      <select
+      <BranchCombobox
+        options={options}
         value={selectedValue}
-        onChange={(e) => onChange(e.target.value)}
-        disabled={disabled || loading || options.length === 0}
-        className={className ?? 'field px-3 py-1.5 text-sm'}
-      >
-        {options.length === 0 ? (
-          <option value="">{placeholder}</option>
-        ) : (
-          options.map((branch) => (
-            <option key={branch} value={branch}>
-              {branch}
-            </option>
-          ))
-        )}
-      </select>
+        onChange={onChange}
+        disabled={disabled || loading}
+        placeholder={placeholder}
+        className={className}
+      />
       {error && <div className="text-xs text-red-400">{error}</div>}
       {emptyHint && <div className="text-xs text-amber-400">{emptyHint}</div>}
     </div>

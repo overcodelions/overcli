@@ -499,19 +499,45 @@ function StatusFooter({ status, remote }: { status: WorktreeStatus; remote: Remo
 /// Self-contained unified-diff renderer. Doesn't use the Diff component
 /// because this view renders the full diff text (with file headers), not
 /// just a single hunk — and because we already have FileDiff.body split by
-/// file, we just need hunk + line styling.
+/// file, we just need hunk + line styling. Tracks old/new line numbers
+/// from the @@ hunk headers so we can render an editor-style gutter.
 export function UnifiedDiffBody({ text }: { text: string }) {
   const lines = text.split('\n');
+  let oldLine = 0;
+  let newLine = 0;
+  const hunkHeader = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+  const rows = lines.map((raw) => {
+    let kind: 'add' | 'remove' | 'context' | 'hunk' | 'fileHeader' | 'meta' = 'context';
+    if (raw.startsWith('+++') || raw.startsWith('---')) kind = 'fileHeader';
+    else if (raw.startsWith('@@')) kind = 'hunk';
+    else if (raw.startsWith('diff ') || raw.startsWith('index ')) kind = 'meta';
+    else if (raw.startsWith('+')) kind = 'add';
+    else if (raw.startsWith('-')) kind = 'remove';
+
+    let oldNum: number | null = null;
+    let newNum: number | null = null;
+    if (kind === 'hunk') {
+      const m = raw.match(hunkHeader);
+      if (m) {
+        oldLine = parseInt(m[1], 10);
+        newLine = parseInt(m[2], 10);
+      }
+    } else if (kind === 'context') {
+      if (oldLine && newLine) {
+        oldNum = oldLine++;
+        newNum = newLine++;
+      }
+    } else if (kind === 'add') {
+      if (newLine) newNum = newLine++;
+    } else if (kind === 'remove') {
+      if (oldLine) oldNum = oldLine++;
+    }
+    return { raw, kind, oldNum, newNum };
+  });
+
   return (
     <div className="font-mono text-[11px] leading-[1.5]">
-      {lines.map((raw, i) => {
-        let kind: 'add' | 'remove' | 'context' | 'hunk' | 'fileHeader' | 'meta' = 'context';
-        if (raw.startsWith('+++') || raw.startsWith('---')) kind = 'fileHeader';
-        else if (raw.startsWith('@@')) kind = 'hunk';
-        else if (raw.startsWith('diff ') || raw.startsWith('index ')) kind = 'meta';
-        else if (raw.startsWith('+')) kind = 'add';
-        else if (raw.startsWith('-')) kind = 'remove';
-
+      {rows.map(({ raw, kind, oldNum, newNum }, i) => {
         const bg =
           kind === 'add'
             ? 'diff-add-row'
@@ -533,11 +559,14 @@ export function UnifiedDiffBody({ text }: { text: string }) {
             ? 'text-ink-faint'
             : 'text-ink';
         return (
-          <div
-            key={i}
-            className={'px-3 whitespace-pre select-text ' + bg + ' ' + fg}
-          >
-            {raw || ' '}
+          <div key={i} className={'flex whitespace-pre select-text ' + bg + ' ' + fg}>
+            <span className="select-none text-ink-faint pl-2 pr-1 text-right tabular-nums w-10 shrink-0">
+              {oldNum ?? ''}
+            </span>
+            <span className="select-none text-ink-faint pr-2 text-right tabular-nums w-10 shrink-0">
+              {newNum ?? ''}
+            </span>
+            <span className="px-1 flex-1">{raw || ' '}</span>
           </div>
         );
       })}
