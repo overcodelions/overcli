@@ -210,12 +210,12 @@ function registerIpc(): void {
       // root" — the old shared message blamed the project list even when
       // the real cause was a missing/renamed file the agent claimed to
       // have written.
-      if (path.isAbsolute(hint) && isPathUnderRegisteredRoot(hint)) {
+      if (path.isAbsolute(hint) && isReadablePath(hint)) {
         return { ok: false, error: `File not found at ${hint}.` };
       }
       return { ok: false, error: `Could not find "${hint}" in any registered project.` };
     }
-    if (!isPathUnderRegisteredRoot(resolved)) {
+    if (!isReadablePath(resolved)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
     }
     try {
@@ -261,12 +261,12 @@ function registerIpc(): void {
     return listFileEntriesRecursive(root);
   });
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
-    if (!isPathUnderRegisteredRoot(p)) return;
+    if (!isReadablePath(p)) return;
     shell.showItemInFolder(p);
   });
   ipcMain.handle('fs:openPath', async (_e, p: string) => {
     const resolved = resolveFilePath(p);
-    if (!resolved || !isPathUnderRegisteredRoot(resolved)) {
+    if (!resolved || !isReadablePath(resolved)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
     }
     const error = await shell.openPath(resolved);
@@ -481,12 +481,12 @@ const pendingPulls = new Map<string, AbortController>();
 function fileInfo(hint: string, rootPath?: string) {
   const resolved = resolveFilePath(hint, rootPath);
   if (!resolved) {
-    if (path.isAbsolute(hint) && isPathUnderRegisteredRoot(hint)) {
+    if (path.isAbsolute(hint) && isReadablePath(hint)) {
       return { ok: false, error: `File not found at ${hint}.` };
     }
     return { ok: false, error: `Could not find "${hint}" in any registered project.` };
   }
-  if (!isPathUnderRegisteredRoot(resolved)) {
+  if (!isReadablePath(resolved)) {
     return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
   }
   try {
@@ -519,7 +519,7 @@ function fileInfo(hint: string, rootPath?: string) {
 function readLargeTextPreview(hint: string, rootPath?: string) {
   const resolved = resolveFilePath(hint, rootPath);
   if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
-  if (!isPathUnderRegisteredRoot(resolved)) {
+  if (!isReadablePath(resolved)) {
     return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
   }
   try {
@@ -552,7 +552,7 @@ function readLargeTextPreview(hint: string, rootPath?: string) {
 async function readArtifactPreview(hint: string, rootPath?: string): Promise<ArtifactPreviewResult> {
   const resolved = resolveFilePath(hint, rootPath);
   if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
-  if (!isPathUnderRegisteredRoot(resolved)) {
+  if (!isReadablePath(resolved)) {
     return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
   }
   try {
@@ -918,6 +918,31 @@ function isPathUnderRegisteredRoot(target: string): boolean {
     if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
   }
   return false;
+}
+
+// Read-only carve-out for `~/.claude/plans/`. Claude writes plan files
+// here from inside overcli, but the directory is never registered as a
+// project/workspace/worktree so the normal validator rejects it. Allow
+// reads (preview, info, large-text, artifact) but keep writes routed
+// through `isPathUnderRegisteredRoot` — a compromised renderer should
+// not be able to overwrite the user's plans, and the rest of `~/.claude/`
+// (settings, auth, memory) stays off-limits.
+function isReadablePlanPath(target: string): boolean {
+  if (!target) return false;
+  const plansRoot = path.join(os.homedir(), '.claude', 'plans');
+  const resolvedTarget = resolveExistingAncestor(path.resolve(target));
+  let resolvedRoot: string;
+  try {
+    resolvedRoot = fs.realpathSync(plansRoot);
+  } catch {
+    return false;
+  }
+  const rel = path.relative(resolvedRoot, resolvedTarget);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function isReadablePath(target: string): boolean {
+  return isPathUnderRegisteredRoot(target) || isReadablePlanPath(target);
 }
 
 // `fs.realpathSync` throws if any segment is missing (e.g. a file about
