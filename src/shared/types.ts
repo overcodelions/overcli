@@ -653,6 +653,10 @@ export interface IPCInvokeMap {
     worktreePath: string;
     targetBranch: string;
   }) => { ok: true; message: string; stashed: boolean } | { ok: false; error: string };
+  'git:switchBranch': (args: {
+    cwd: string;
+    targetBranch: string;
+  }) => { ok: true; message: string; stashed: boolean } | { ok: false; error: string };
   'git:removeWorktree': (args: { projectPath: string; worktreePath: string; branchName: string }) => {
     ok: boolean;
     error?: string;

@@ -20,6 +20,7 @@ import {
   createReviewWorktree,
   promoteReviewWorktree,
   switchProjectToBranch,
+  switchBranch,
   removeWorktree,
   checkoutAgentLocally,
   detectBaseBranch,
@@ -298,6 +299,7 @@ function registerIpc(): void {
   ipcMain.handle('git:createReviewWorktree', (_e, args) => createReviewWorktree(args));
   ipcMain.handle('git:promoteReviewWorktree', (_e, args) => promoteReviewWorktree(args));
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
+  ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
     const res = checkoutAgentLocally(args);
