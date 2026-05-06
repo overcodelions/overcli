@@ -433,14 +433,13 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 /// Warns when a project conversation's owning repo HEAD has drifted away
 /// from the branch it was started on. Skipped for worktree conversations
 /// (they own their own checkout) and workspace conversations (no single
-/// owning repo). Refreshes on mount, on window focus (terminal switch),
-/// and at the end of each turn (agent-driven `git checkout`).
+/// owning repo). Uses a lightweight one-call IPC (`git rev-parse`) so
+/// re-probing on focus/turn-end is cheap.
 function BaseBranchMismatchBanner({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
   const projects = useStore((s) => s.projects);
-  const gitStatus = useStore((s) => s.gitStatusByConv[conversationId]);
-  const refreshGitStatus = useStore((s) => s.refreshGitStatus);
   const runnerIsRunning = useRunnerIsRunning(conversationId);
+  const [current, setCurrent] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const ownerProject = useMemo(
@@ -448,32 +447,28 @@ function BaseBranchMismatchBanner({ conversationId }: { conversationId: UUID }) 
     [projects, conversationId],
   );
 
-  useEffect(() => {
+  const probe = useCallback(async () => {
     if (!ownerProject) return;
-    void refreshGitStatus(conversationId);
-    const onFocus = () => void refreshGitStatus(conversationId);
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
-  }, [ownerProject, conversationId, refreshGitStatus]);
+    const res = await window.overcli.invoke('git:currentBranch', { cwd: ownerProject });
+    setCurrent(res.isRepo ? res.branch : null);
+  }, [ownerProject]);
+
+  // Probe on mount / when the owning project changes.
+  useEffect(() => { void probe(); }, [probe]);
 
   // Re-probe after each turn ends so an agent-driven `git checkout` shows
   // up immediately. Triggers on the running→idle transition.
   const wasRunning = useRef(false);
   useEffect(() => {
-    if (wasRunning.current && !runnerIsRunning && ownerProject) {
-      void refreshGitStatus(conversationId);
-    }
+    if (wasRunning.current && !runnerIsRunning) void probe();
     wasRunning.current = runnerIsRunning;
-  }, [runnerIsRunning, ownerProject, conversationId, refreshGitStatus]);
+  }, [runnerIsRunning, probe]);
 
-  if (!conv?.baseBranch || !ownerProject || !gitStatus?.isRepo) return null;
+  if (!conv?.baseBranch || !ownerProject || !current) return null;
   const expected = conv.baseBranch.startsWith('origin/')
     ? conv.baseBranch.slice('origin/'.length)
     : conv.baseBranch;
-  const current = gitStatus.currentBranch;
-  if (!current || current === expected) return null;
-
-  const dirty = (gitStatus.changes?.length ?? 0) > 0;
+  if (current === expected) return null;
 
   const switchBack = async () => {
     if (busy) return;
@@ -483,11 +478,8 @@ function BaseBranchMismatchBanner({ conversationId }: { conversationId: UUID }) 
         cwd: ownerProject,
         targetBranch: expected,
       });
-      if (!res.ok) {
-        window.alert(`Couldn't switch branch: ${res.error}`);
-      } else {
-        await refreshGitStatus(conversationId);
-      }
+      if (!res.ok) window.alert(`Couldn't switch branch: ${res.error}`);
+      else await probe();
     } finally {
       setBusy(false);
     }
@@ -509,7 +501,6 @@ function BaseBranchMismatchBanner({ conversationId }: { conversationId: UUID }) 
       <span className="truncate">
         On <code className="font-mono">{current}</code> — conversation expects{' '}
         <code className="font-mono">{expected}</code>
-        {dirty && ' · uncommitted changes will be stashed'}
       </span>
       <button
         disabled={busy}
