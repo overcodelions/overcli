@@ -198,10 +198,10 @@ function registerIpc(): void {
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
     const res = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openDirectory'],
+      properties: ['openDirectory', 'multiSelections'],
     });
     if (res.canceled || res.filePaths.length === 0) return null;
-    return res.filePaths[0];
+    return res.filePaths;
   });
   ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) => fileInfo(args?.path ?? '', args?.rootPath));
   ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
