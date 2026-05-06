@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
+import { ProjectPicker } from './ProjectPicker';
 import { UUID } from '@shared/types';
 
 export function EditWorkspaceSheet({ workspaceId }: { workspaceId: UUID }) {
@@ -44,42 +45,21 @@ export function EditWorkspaceSheet({ workspaceId }: { workspaceId: UUID }) {
       </div>
       <div>
         <label className="text-xs text-ink-faint">Member projects</label>
-        <div className="mt-1 border border-card rounded max-h-[240px] overflow-y-auto">
-          {projects.map((p) => {
-            const checked = picked.has(p.id);
-            const inUse = referencedProjectIds.has(p.id);
-            return (
-              <label
-                key={p.id}
-                className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-card-strong cursor-pointer border-b border-card last:border-b-0"
+        <ProjectPicker
+          projects={projects}
+          picked={picked}
+          onChange={setPicked}
+          renderRowBadge={(p, checked) =>
+            referencedProjectIds.has(p.id) && !checked ? (
+              <div
+                className="text-[10px] text-amber-500"
+                title="Existing workspace agents reference this project — its worktrees stay but no new agents will include it."
               >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(e) => {
-                    const next = new Set(picked);
-                    if (e.target.checked) next.add(p.id);
-                    else next.delete(p.id);
-                    setPicked(next);
-                  }}
-                  className="accent-accent"
-                />
-                <div className="flex-1 min-w-0">
-                  <div>{p.name}</div>
-                  <div className="text-[10px] text-ink-faint truncate">{p.path}</div>
-                </div>
-                {inUse && !checked && (
-                  <div
-                    className="text-[10px] text-amber-500"
-                    title="Existing workspace agents reference this project — its worktrees stay but no new agents will include it."
-                  >
-                    in use
-                  </div>
-                )}
-              </label>
-            );
-          })}
-        </div>
+                in use
+              </div>
+            ) : null
+          }
+        />
       </div>
       <div>
         <label className="text-xs text-ink-faint">
