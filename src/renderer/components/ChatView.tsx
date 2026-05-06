@@ -70,6 +70,32 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     return () => cancelAnimationFrame(id);
   }, [tailId, tailRevision, currentReveal?.id, isRunning]);
 
+  // Land at the absolute bottom on conv switch. `initialTopMostItemIndex`
+  // alone is unreliable here: virtuoso renders with estimated row heights
+  // first and only re-measures after markdown / syntax highlighting paint,
+  // which lands the user a few rows above the real bottom. Re-scroll across
+  // a few timing windows so late measurements don't strand us.
+  useEffect(() => {
+    let cancelled = false;
+    const scroll = () => {
+      if (cancelled) return;
+      virtuosoRef.current?.scrollToIndex({
+        index: 'LAST',
+        align: 'end',
+        behavior: 'auto',
+      });
+    };
+    const raf = requestAnimationFrame(scroll);
+    const t1 = setTimeout(scroll, 100);
+    const t2 = setTimeout(scroll, 300);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [conversationId]);
+
   const handleAtBottomChange = (atBottom: boolean) => {
     if (atBottom) {
       followingRef.current = true;
@@ -139,7 +165,12 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         // grace window above is the primary defense; this is belt and
         // suspenders.
         atBottomThreshold={400}
-        initialTopMostItemIndex={Math.max(0, visibleEvents.length - 1)}
+        // Land at the *bottom* of the last event on conv switch.
+        // Without `align: 'end'` virtuoso puts the *top* of the last
+        // item at the top of the viewport — for a long final assistant
+        // turn that shows the beginning of the message with the latest
+        // content cut off below.
+        initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
         // Pre-render a buffer so scrolling doesn't reveal blank space
         // mid-flick on heavy markdown rows.
         increaseViewportBy={{ top: 600, bottom: 600 }}
