@@ -725,6 +725,7 @@ export interface IPCInvokeMap {
     insertions: number;
     deletions: number;
   };
+  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
   'git:workspaceCommitStatus': (args: { projects: Array<{ name: string; path: string }> }) => {
     isRepo: boolean;
     currentBranch: string;

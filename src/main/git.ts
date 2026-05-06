@@ -845,6 +845,19 @@ export function worktreeStatus(args: {
   };
 }
 
+/// Cheapest possible "what branch is this repo on right now". One git
+/// invocation, no diff math, no file walks. Used by the
+/// base-branch-mismatch banner which only needs the branch name and is
+/// called on every conversation focus.
+export function currentBranch(cwd: string): { isRepo: boolean; branch: string } {
+  if (!cwd) return { isRepo: false, branch: '' };
+  const res = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  if (res.exitCode !== 0) return { isRepo: false, branch: '' };
+  const branch = res.stdout.trim();
+  if (!branch || branch === 'HEAD') return { isRepo: !!branch, branch: '' };
+  return { isRepo: true, branch };
+}
+
 /// Quick probe for the header commit button. Returns `isRepo: false` when
 /// `cwd` isn't a git working tree (missing `.git`, git binary missing, or
 /// the path doesn't exist) so the renderer can hide the button entirely.
