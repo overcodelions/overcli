@@ -26,6 +26,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
   const activityLabel = runner?.activityLabel ?? '';
   const error = runner?.errorMessage;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const atBottomRef = useRef(true);
 
   const toolUseIndex = useMemo(() => indexToolUses(events), [events]);
   const toolResultIndex = useMemo(() => indexToolResults(events), [events]);
@@ -38,6 +39,23 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     () => countPendingSubagents(events, toolResultIndex),
     [events, toolResultIndex],
   );
+
+  // Streaming tail-follow: virtuoso's `followOutput` fires on array-length
+  // changes, but during streaming the assistant event mutates in place
+  // (height grows, length unchanged) so it never fires. We watch the
+  // tail event's revision and imperatively snap to bottom when the user
+  // is still near it.
+  const tailEvent = visibleEvents[visibleEvents.length - 1];
+  const tailRevision = tailEvent?.revision ?? 0;
+  const tailId = tailEvent?.id ?? '';
+  useEffect(() => {
+    if (!atBottomRef.current) return;
+    virtuosoRef.current?.scrollToIndex({
+      index: 'LAST',
+      align: 'end',
+      behavior: 'auto',
+    });
+  }, [tailId, tailRevision, currentReveal?.id, isRunning]);
 
   // Empty / loading states render outside virtuoso — virtuoso with zero
   // items renders nothing, and the intro card uses min-h-full layout that
@@ -90,6 +108,8 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         // when they've scrolled up. Smooth scrolling makes streaming feel
         // jittery on long turns, so we use instant.
         followOutput="auto"
+        atBottomStateChange={(b) => { atBottomRef.current = b; }}
+        atBottomThreshold={120}
         initialTopMostItemIndex={Math.max(0, visibleEvents.length - 1)}
         // Pre-render a buffer so scrolling doesn't reveal blank space
         // mid-flick on heavy markdown rows.
