@@ -607,7 +607,7 @@ export interface IPCInvokeMap {
   'skills:uninstallByPath': (args: {
     path: string;
   }) => { ok: true } | { ok: false; error: string };
-  'fs:pickDirectory': () => string | null;
+  'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
     | { ok: true; content: string; resolvedPath: string }

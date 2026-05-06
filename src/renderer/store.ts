@@ -918,18 +918,22 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async pickProject() {
-    const path = await window.overcli.invoke('fs:pickDirectory');
-    if (!path) return;
-    const name = pathBasename(path) || 'Project';
-    const project: Project = {
+    const paths = await window.overcli.invoke('fs:pickDirectory');
+    if (!paths || paths.length === 0) return;
+    const existing = new Set(get().projects.map((p) => p.path));
+    const fresh = paths.filter((p) => !existing.has(p));
+    if (fresh.length === 0) return;
+    const added: Project[] = fresh.map((p) => ({
       id: uuid(),
-      name,
-      path,
+      name: pathBasename(p) || 'Project',
+      path: p,
       conversations: [],
       lastOpenedAt: Date.now(),
-    };
-    await get().addProject(project);
-    get().startNewConversation(project.id);
+    }));
+    for (const project of added) {
+      await get().addProject(project);
+    }
+    get().startNewConversation(added[added.length - 1].id);
   },
 
   async newConversation(projectId) {
