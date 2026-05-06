@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
+import { ProjectPicker } from './ProjectPicker';
 
 export function NewWorkspaceSheet() {
   const projects = useStore((s) => s.projects);
@@ -31,30 +32,7 @@ export function NewWorkspaceSheet() {
       </div>
       <div>
         <label className="text-xs text-ink-faint">Member projects</label>
-        <div className="mt-1 border border-card rounded max-h-[240px] overflow-y-auto">
-          {projects.map((p) => (
-            <label
-              key={p.id}
-              className="flex items-center gap-2 px-3 py-2 text-xs hover:bg-card-strong cursor-pointer border-b border-card last:border-b-0"
-            >
-              <input
-                type="checkbox"
-                checked={picked.has(p.id)}
-                onChange={(e) => {
-                  const next = new Set(picked);
-                  if (e.target.checked) next.add(p.id);
-                  else next.delete(p.id);
-                  setPicked(next);
-                }}
-                className="accent-accent"
-              />
-              <div className="flex-1 min-w-0">
-                <div>{p.name}</div>
-                <div className="text-[10px] text-ink-faint truncate">{p.path}</div>
-              </div>
-            </label>
-          ))}
-        </div>
+        <ProjectPicker projects={projects} picked={picked} onChange={setPicked} />
       </div>
       <div>
         <label className="text-xs text-ink-faint">
