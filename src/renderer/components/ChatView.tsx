@@ -1,4 +1,5 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useStore } from '../store';
 import { useRunner } from '../runnersStore';
 import { Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
@@ -24,11 +25,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
   const isRunning = runner?.isRunning ?? false;
   const activityLabel = runner?.activityLabel ?? '';
   const error = runner?.errorMessage;
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const wasAtBottomRef = useRef(true);
-  const forceFollowRef = useRef(false);
-  const prevConversationIdRef = useRef<UUID | null>(null);
-  const prevTailRef = useRef<{ id: string; revision: number; type: StreamEvent['kind']['type'] } | null>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
 
   const toolUseIndex = useMemo(() => indexToolUses(events), [events]);
   const toolResultIndex = useMemo(() => indexToolResults(events), [events]);
@@ -41,97 +38,94 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     () => countPendingSubagents(events, toolResultIndex),
     [events, toolResultIndex],
   );
-  const tailEvent = visibleEvents[visibleEvents.length - 1] ?? null;
 
-  const updateBottomState = () => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const slack = 64;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < slack;
-    wasAtBottomRef.current = nearBottom;
-    if (!nearBottom) forceFollowRef.current = false;
-  };
+  // Empty / loading states render outside virtuoso — virtuoso with zero
+  // items renders nothing, and the intro card uses min-h-full layout that
+  // a virtualized list can't provide.
+  if (runner?.historyLoading) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+          <div className="text-xs text-ink-faint">Loading history…</div>
+        </div>
+      </div>
+    );
+  }
 
-  // Before every re-render, capture whether we're near the bottom. After
-  // paint, if we were, snap back to bottom. Keeps the view following the
-  // streaming tail without yanking readers who scrolled up.
-  useLayoutEffect(() => {
-    updateBottomState();
-  });
+  if (visibleEvents.length === 0 && !isRunning) {
+    return (
+      <div className="flex-1 min-h-0 flex flex-col">
+        <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+          <NewAgentIntro conversationId={conversationId} />
+        </div>
+      </div>
+    );
+  }
 
-  useEffect(() => {
-    if (prevConversationIdRef.current !== conversationId) {
-      prevConversationIdRef.current = conversationId;
-      forceFollowRef.current = true;
-    }
-
-    const prevTail = prevTailRef.current;
-    const nextTail = tailEvent
-      ? {
-          id: tailEvent.id,
-          revision: tailEvent.revision,
-          type: tailEvent.kind.type,
-        }
-      : null;
-
-    const appendedVisibleRow = !!nextTail && (!prevTail || prevTail.id !== nextTail.id);
-    if (appendedVisibleRow) {
-      forceFollowRef.current = true;
-    }
-
-    if ((wasAtBottomRef.current || forceFollowRef.current) && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-
-    if (!isRunning) {
-      forceFollowRef.current = false;
-    }
-
-    prevTailRef.current = nextTail;
-  }, [conversationId, isRunning, tailEvent, events.length, runner?.events, currentReveal?.id]);
+  const showActivityStrip =
+    isRunning && (activityLabel || !showToolActivity || pendingSubagents > 0);
+  const activityStripLabel = showActivityStrip
+    ? withSubagentSuffix(
+        // When tool activity is hidden, the user loses the visible signal
+        // of which tool is running — so promote the latest in-flight tool
+        // call to the strip. Falls back to whatever generic label the
+        // runner set ("Thinking…", "Running tools…") when no tool is
+        // currently pending.
+        (!showToolActivity && latestPendingToolLabel(events, toolResultIndex)) ||
+          activityLabel,
+        pendingSubagents,
+      )
+    : '';
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={updateBottomState}
-        className="flex-1 min-h-0 overflow-y-auto px-5 py-4 space-y-3"
-      >
-        {visibleEvents.length === 0 && !runner?.historyLoading && !runner?.isRunning && (
-          <NewAgentIntro conversationId={conversationId} />
-        )}
-        {runner?.historyLoading && <div className="text-xs text-ink-faint">Loading history…</div>}
-        {visibleEvents.map((event) => (
-          <EventRow
-            key={event.id}
-            event={event}
-            conversationId={conversationId}
-            toolUseIndex={toolUseIndex}
-            toolResultIndex={toolResultIndex}
-          />
-        ))}
-        {currentReveal && (
-          <div key={currentReveal.id} className="transient-slot">
-            <ToolUseCard use={currentReveal} result={toolResultIndex.get(currentReveal.id)} />
+      <Virtuoso
+        // Re-key on conversationId so virtuoso resets its scroll state
+        // (and re-applies initialTopMostItemIndex) when you switch convs,
+        // instead of trying to reconcile two unrelated event lists.
+        key={conversationId}
+        ref={virtuosoRef}
+        data={visibleEvents}
+        // 'auto' = follow the tail when the user is near bottom; pause
+        // when they've scrolled up. Smooth scrolling makes streaming feel
+        // jittery on long turns, so we use instant.
+        followOutput="auto"
+        initialTopMostItemIndex={Math.max(0, visibleEvents.length - 1)}
+        // Pre-render a buffer so scrolling doesn't reveal blank space
+        // mid-flick on heavy markdown rows.
+        increaseViewportBy={{ top: 600, bottom: 600 }}
+        // Key by event id — without this, virtuoso reuses index-based
+        // slots and a row can show stale content after the list shifts
+        // (visible as "two identical turns" when streaming).
+        computeItemKey={(_index, event) => event.id}
+        className="flex-1 min-h-0"
+        itemContent={(_index, event) => (
+          <div className="px-5 py-1.5">
+            <EventRow
+              event={event}
+              conversationId={conversationId}
+              toolUseIndex={toolUseIndex}
+              toolResultIndex={toolResultIndex}
+            />
           </div>
         )}
-        {isRunning && (activityLabel || !showToolActivity || pendingSubagents > 0) && (
-          <ActivityStrip
-            label={withSubagentSuffix(
-              // When tool activity is hidden, the user loses the visible
-              // signal of which tool is running — so promote the latest
-              // in-flight tool call to the strip. Falls back to whatever
-              // generic label the runner set ("Thinking…", "Running
-              // tools…") when no tool is currently pending.
-              (!showToolActivity && latestPendingToolLabel(events, toolResultIndex)) ||
-                activityLabel,
-              pendingSubagents,
-            )}
-          />
-        )}
-        {error && <SystemNotice text={error} />}
-        <div style={{ height: 40 }} />
-      </div>
+        components={{
+          Footer: () => (
+            <div className="px-5 pb-10 pt-1.5 space-y-3">
+              {currentReveal && (
+                <div key={currentReveal.id} className="transient-slot">
+                  <ToolUseCard
+                    use={currentReveal}
+                    result={toolResultIndex.get(currentReveal.id)}
+                  />
+                </div>
+              )}
+              {showActivityStrip && <ActivityStrip label={activityStripLabel} />}
+              {error && <SystemNotice text={error} />}
+            </div>
+          ),
+        }}
+      />
     </div>
   );
 }
