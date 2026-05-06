@@ -934,6 +934,19 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async newConversation(projectId) {
     const preferred = defaultBackend(get().settings);
+    // Capture the project's current branch so the conversation header can
+    // warn if the working tree drifts onto a different branch later. Best
+    // effort — a non-git project just leaves it undefined.
+    let baseBranch: string | undefined;
+    const project = get().projects.find((p) => p.id === projectId);
+    if (project?.path) {
+      try {
+        const status = await window.overcli.invoke('git:commitStatus', { cwd: project.path });
+        if (status.isRepo && status.currentBranch) baseBranch = status.currentBranch;
+      } catch {
+        /* leave baseBranch undefined */
+      }
+    }
     const conv: Conversation = {
       id: uuid(),
       name: 'New conversation',
@@ -943,6 +956,7 @@ export const useStore = create<StoreState>((set, get) => ({
       currentModel: '',
       permissionMode: get().settings.defaultPermissionMode,
       primaryBackend: preferred,
+      baseBranch,
     };
     set((s) => ({
       projects: s.projects.map((p) =>
