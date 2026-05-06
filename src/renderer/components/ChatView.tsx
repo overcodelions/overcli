@@ -26,7 +26,13 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
   const activityLabel = runner?.activityLabel ?? '';
   const error = runner?.errorMessage;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
-  const atBottomRef = useRef(true);
+  const followingRef = useRef(true);
+  // Timestamp of the last tail-content change. atBottomStateChange flipping
+  // to false within ~250ms of a content change is virtuoso reporting that
+  // the new content has pushed past the viewport bottom — that's not the
+  // user scrolling away, so we ignore it and scroll to catch up. Outside
+  // that window, a false signal is treated as a real user gesture.
+  const lastTailChangeAtRef = useRef(0);
 
   const toolUseIndex = useMemo(() => indexToolUses(events), [events]);
   const toolResultIndex = useMemo(() => indexToolResults(events), [events]);
@@ -40,22 +46,41 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     [events, toolResultIndex],
   );
 
-  // Streaming tail-follow: virtuoso's `followOutput` fires on array-length
-  // changes, but during streaming the assistant event mutates in place
-  // (height grows, length unchanged) so it never fires. We watch the
-  // tail event's revision and imperatively snap to bottom when the user
-  // is still near it.
+  // Streaming tail-follow: virtuoso's `followOutput` only fires when the
+  // data array length changes, but during streaming the same event mutates
+  // in place — its height grows, length doesn't change. We watch the tail
+  // event's revision and imperatively scroll to the bottom when we're
+  // still in follow mode. rAF defers the scroll until virtuoso has had a
+  // chance to re-measure the grown row, otherwise scrollToIndex aligns to
+  // a stale height.
   const tailEvent = visibleEvents[visibleEvents.length - 1];
   const tailRevision = tailEvent?.revision ?? 0;
   const tailId = tailEvent?.id ?? '';
   useEffect(() => {
-    if (!atBottomRef.current) return;
-    virtuosoRef.current?.scrollToIndex({
-      index: 'LAST',
-      align: 'end',
-      behavior: 'auto',
+    lastTailChangeAtRef.current = Date.now();
+    if (!followingRef.current) return;
+    const id = requestAnimationFrame(() => {
+      if (!followingRef.current) return;
+      virtuosoRef.current?.scrollToIndex({
+        index: 'LAST',
+        align: 'end',
+        behavior: 'auto',
+      });
     });
+    return () => cancelAnimationFrame(id);
   }, [tailId, tailRevision, currentReveal?.id, isRunning]);
+
+  const handleAtBottomChange = (atBottom: boolean) => {
+    if (atBottom) {
+      followingRef.current = true;
+      return;
+    }
+    // Within the post-content-change window, a "no longer at bottom"
+    // signal means content grew past the viewport — not a user scroll.
+    // Ignore so the rAF effect can catch up.
+    if (Date.now() - lastTailChangeAtRef.current < 250) return;
+    followingRef.current = false;
+  };
 
   // Empty / loading states render outside virtuoso — virtuoso with zero
   // items renders nothing, and the intro card uses min-h-full layout that
@@ -108,8 +133,12 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         // when they've scrolled up. Smooth scrolling makes streaming feel
         // jittery on long turns, so we use instant.
         followOutput="auto"
-        atBottomStateChange={(b) => { atBottomRef.current = b; }}
-        atBottomThreshold={120}
+        atBottomStateChange={handleAtBottomChange}
+        // Wider threshold so a single tall code block streaming in
+        // doesn't pop the user out of follow mode. The post-content
+        // grace window above is the primary defense; this is belt and
+        // suspenders.
+        atBottomThreshold={400}
         initialTopMostItemIndex={Math.max(0, visibleEvents.length - 1)}
         // Pre-render a buffer so scrolling doesn't reveal blank space
         // mid-flick on heavy markdown rows.
