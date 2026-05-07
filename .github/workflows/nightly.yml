@@ -71,7 +71,10 @@ jobs:
             console.log('version =', p.version);
           "
 
-      - name: Build & package
+      - name: Compile main + renderer
+        run: npm run build
+
+      - name: Package with electron-builder
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
