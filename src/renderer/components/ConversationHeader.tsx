@@ -231,10 +231,12 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           icon={<ShieldIcon tone={permissionTone(pendingPermissionMode ?? activePermissionMode)} />}
           label={modeLabel(pendingPermissionMode ?? activePermissionMode)}
           tone={permissionTone(pendingPermissionMode ?? activePermissionMode)}
-          items={(['plan', 'default', 'acceptEdits', 'bypassPermissions'] as PermissionMode[]).map((m) => ({
-            value: m,
-            label: modeLabel(m),
-          }))}
+          items={(['plan', 'default', 'auto', 'acceptEdits', 'bypassPermissions'] as PermissionMode[])
+            .filter((m) => m !== 'auto' || backend === 'claude')
+            .map((m) => ({
+              value: m,
+              label: modeLabel(m),
+            }))}
           onPick={(v) => void setPermission(conversationId, v as PermissionMode)}
         />
 
@@ -884,6 +886,10 @@ function buildForkPreamble(
   const turns: Turn[] = [];
   let pendingUser: string | null = null;
   for (const e of events) {
+    // Reviewer (rebound) turns aren't part of the primary user↔assistant
+    // arc — including them would have the forked CLI think the prior
+    // dialog included a third party.
+    if (e.reviewer) continue;
     if (e.kind.type === 'localUser') {
       if (pendingUser !== null) {
         turns.push({ user: pendingUser, assistant: '' });

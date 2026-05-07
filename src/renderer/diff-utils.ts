@@ -99,10 +99,14 @@ export function agentDescription(
 }
 
 /// Last assistant-authored text in the runner's event stream, or null.
+/// Skips rebound (reviewer) events so commit messages and agent
+/// descriptions reflect what the *primary* agent did, not the
+/// secondary reviewer's running commentary.
 export function lastAssistantText(runner: RunnerState | undefined): string | null {
   if (!runner) return null;
   for (let i = runner.events.length - 1; i >= 0; i--) {
     const e: StreamEvent = runner.events[i];
+    if (e.reviewer) continue;
     if (e.kind.type === 'assistant' && e.kind.info.text.trim()) {
       return e.kind.info.text;
     }

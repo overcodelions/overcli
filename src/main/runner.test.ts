@@ -28,11 +28,15 @@ describe('codexPermissionMapping', () => {
   it('default → workspace-write sandbox, on-request approvals', () => {
     expect(codexPermissionMapping('default')).toEqual({ sandbox: 'workspace-write', approval: 'on-request' });
   });
+
+  it('auto falls back to default mapping (auto is Claude-only)', () => {
+    expect(codexPermissionMapping('auto')).toEqual({ sandbox: 'workspace-write', approval: 'on-request' });
+  });
 });
 
 describe('codexTransportPermissions', () => {
   it('always returns approval: never so app-server handles approvals itself', () => {
-    for (const mode of ['default', 'plan', 'acceptEdits', 'bypassPermissions'] as const) {
+    for (const mode of ['default', 'plan', 'auto', 'acceptEdits', 'bypassPermissions'] as const) {
       expect(codexTransportPermissions(mode).approval).toBe('never');
     }
   });
@@ -44,11 +48,13 @@ describe('codexTransportPermissions', () => {
 });
 
 describe('geminiPermissionMapping', () => {
-  it('maps the four modes to gemini --approval-mode values', () => {
+  it('maps overcli modes to gemini --approval-mode values', () => {
     expect(geminiPermissionMapping('plan')).toBe('plan');
     expect(geminiPermissionMapping('acceptEdits')).toBe('auto_edit');
     expect(geminiPermissionMapping('bypassPermissions')).toBe('yolo');
     expect(geminiPermissionMapping('default')).toBe('default');
+    // `auto` is Claude-only; gemini falls back to its default approval flow.
+    expect(geminiPermissionMapping('auto')).toBe('default');
   });
 });
 

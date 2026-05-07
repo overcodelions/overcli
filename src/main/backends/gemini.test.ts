@@ -39,6 +39,8 @@ describe('geminiBackend.buildArgs', () => {
     const cases: Array<[BackendSendArgs['permissionMode'], string]> = [
       ['default', 'default'],
       ['plan', 'plan'],
+      // `auto` is Claude-only; gemini falls back to default approval.
+      ['auto', 'default'],
       ['acceptEdits', 'auto_edit'],
       ['bypassPermissions', 'yolo'],
     ];

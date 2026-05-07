@@ -40,12 +40,15 @@ jobs:
           MAC_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           MAC_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
+          if [ "$RUNNER_OS" = "macOS" ] && [ -n "$MAC_CSC_LINK" ]; then
+            echo "Apple credentials detected — building signed + notarized."
             export CSC_LINK="$MAC_CSC_LINK"
             export CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
             export APPLE_ID="$MAC_APPLE_ID"
             export APPLE_APP_SPECIFIC_PASSWORD="$MAC_APPLE_APP_SPECIFIC_PASSWORD"
             export APPLE_TEAM_ID="$MAC_APPLE_TEAM_ID"
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            echo "No Apple credentials in repo secrets — building unsigned."
           fi
           npx electron-builder --publish never
 

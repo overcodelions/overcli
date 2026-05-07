@@ -104,6 +104,7 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -1162,6 +1163,12 @@ function buildMenu(): void {
 
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  // In dev the dock shows Electron's default icon because we're running the
+  // Electron binary directly (no .app bundle). Override it so dev matches prod.
+  if (isDev && process.platform === 'darwin' && app.dock) {
+    const devIcon = path.join(__dirname, '..', '..', 'build', 'icon.png');
+    if (fs.existsSync(devIcon)) app.dock.setIcon(devIcon);
+  }
   // Apply navigation + window-open locks to every webContents — not just
   // mainWindow — so any future child contents inherits the same clamps.
   app.on('web-contents-created', (_e, contents) => {

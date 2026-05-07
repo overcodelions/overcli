@@ -4,7 +4,7 @@
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama';
-export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'bypassPermissions';
+export type PermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits' | 'bypassPermissions';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | '';
 
 export interface ToolUseBlock {
@@ -193,6 +193,19 @@ export interface StreamEvent {
   /// Bumps on in-place mutation of the partial-assistant slot so the renderer
   /// can tell a row changed even when its id didn't.
   revision: number;
+  /// Set when the event came from the rebound reviewer rather than the
+  /// primary backend. Lets consumers that only care about primary output
+  /// (reviewer-digest bookkeeping, fork preamble, last-assistant-text
+  /// extractors, the latest-tool-reveal in ChatView) filter these out,
+  /// and drives the renderer's per-block "Codex · collab · round 2"
+  /// header. `verdict: true` is set on exactly one assistant event per
+  /// round (the final text-bearing message) — server-side, at
+  /// turn/completed only. The renderer renders a small check next to
+  /// that bubble's CLI label and demotes the round's other assistant
+  /// text bubbles to intermediate styling. While the round is still in
+  /// flight no event carries `verdict`, so nothing is dimmed and no
+  /// check appears prematurely.
+  reviewer?: { backend: Backend; round: number; mode: 'review' | 'collab'; verdict?: boolean };
 }
 
 export interface Conversation {
@@ -217,6 +230,14 @@ export interface Conversation {
   reviewBackend?: string | null;
   reviewMode?: 'review' | 'collab' | null;
   collabMaxTurns?: number | null;
+  /// SHA-256 hashes of synthetic collab pingPrompts overcli has fed to
+  /// the primary CLI. The primary's transcript persists those as
+  /// `role: 'user'` messages, which on restart history-replay would
+  /// otherwise render as misattributed user-style bubbles. We use these
+  /// hashes at replay time to skip them. The list grows by one per
+  /// collab round and is small (64 chars/entry) — bounded by round
+  /// count, not by prompt size.
+  syntheticPrompts?: string[];
   /// Ollama-specific reviewer model override. When the reviewer is
   /// `ollama`, this takes precedence over the app-wide Ollama default.
   reviewOllamaModel?: string | null;
@@ -588,6 +609,11 @@ export interface IPCInvokeMap {
     codexRolloutPaths?: string[];
     conversationCreatedAt?: number;
     conversationLastActiveAt?: number;
+    /// SHA-256 hashes of synthetic collab pingPrompts the primary's
+    /// transcript persists. Replay skips any user-role message whose
+    /// content hashes to one of these so reviewer feedback doesn't
+    /// resurface as a user-style bubble after restart.
+    syntheticPrompts?: string[];
   }) => StreamEvent[];
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
@@ -980,6 +1006,16 @@ export type MainToRendererEvent =
       mode: 'proto' | 'exec' | 'app-server';
       sandbox: string;
       approval: string;
+    }
+  | {
+      /// Notifies the renderer that overcli just fed a synthetic
+      /// collab pingPrompt to the primary CLI. The renderer adds the
+      /// hash to `Conversation.syntheticPrompts` and persists, so
+      /// history replay can skip it instead of rendering the wrapped
+      /// reviewer feedback as a misattributed user bubble.
+      type: 'syntheticPrompt';
+      conversationId: UUID;
+      hash: string;
     }
   | {
       type: 'ollamaPull';

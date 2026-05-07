@@ -2,7 +2,8 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useStore } from '../store';
 import { useRunner } from '../runnersStore';
-import { Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
+import { backendColor, backendName } from '../theme';
+import { Backend, Conversation, StreamEvent, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { UserBubble } from './UserBubble';
 import { AssistantBubble } from './AssistantBubble';
 import { ToolUseCard } from './ToolUseCard';
@@ -40,6 +41,35 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     () => filterRendered(events, showToolActivity, toolUseIndex),
     [events, showToolActivity, toolUseIndex],
   );
+  // Verdict + intermediate sets. The server marks exactly one event
+  // per round as `reviewer.verdict: true` at turn/completed — that's
+  // the verdict bubble (full chrome + check). Every *other* reviewer
+  // assistant-text event is intermediate, which the renderer demotes
+  // to a compact `ReviewerStepLine` (no bubble chrome). We don't gate
+  // intermediate-ness on completion: while a round is in flight the
+  // verdict flag isn't set yet, so all of the streaming "I'm checking
+  // …" messages render compact immediately, and at turn/completed the
+  // last text-bearing one snaps to a full bubble. Tool / thinking /
+  // patch rows in the rebound block always render at full chrome —
+  // they're work artifacts, not verdict candidates.
+  const { verdictIds, intermediateIds } = useMemo(() => {
+    const verdicts = new Set<string>();
+    for (const e of visibleEvents) {
+      if (e.reviewer?.verdict) verdicts.add(e.id);
+    }
+    const intermediates = new Set<string>();
+    for (const e of visibleEvents) {
+      if (
+        e.reviewer &&
+        e.kind.type === 'assistant' &&
+        e.kind.info.text.trim().length > 0 &&
+        !verdicts.has(e.id)
+      ) {
+        intermediates.add(e.id);
+      }
+    }
+    return { verdictIds: verdicts, intermediateIds: intermediates };
+  }, [visibleEvents]);
   const currentReveal = useLatestToolReveal(events, toolResultIndex, showToolActivity, conversationId);
   const pendingSubagents = useMemo(
     () => countPendingSubagents(events, toolResultIndex),
@@ -179,16 +209,49 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
         // (visible as "two identical turns" when streaming).
         computeItemKey={(_index, event) => event.id}
         className="flex-1 min-h-0"
-        itemContent={(_index, event) => (
-          <div className="px-5 py-1.5">
-            <EventRow
-              event={event}
-              conversationId={conversationId}
-              toolUseIndex={toolUseIndex}
-              toolResultIndex={toolResultIndex}
-            />
-          </div>
-        )}
+        itemContent={(index, event) => {
+          // First event of a new rebound block gets a "Codex · collab ·
+          // round 2" header so a reader scanning the chat can tell who's
+          // talking. The verdict (set by the server at turn/completed)
+          // gets a check rendered next to its CLI label inside the
+          // bubble; other text bubbles in the same completed round
+          // dim to intermediate styling. While the round is in flight
+          // nothing is marked, so streaming bubbles render plain.
+          const prev = index > 0 ? visibleEvents[index - 1] : undefined;
+          const showHeader =
+            !!event.reviewer &&
+            (!prev?.reviewer ||
+              prev.reviewer.backend !== event.reviewer.backend ||
+              prev.reviewer.round !== event.reviewer.round);
+          const isVerdict = verdictIds.has(event.id);
+          const isIntermediate = intermediateIds.has(event.id);
+          const reviewerTint = event.reviewer
+            ? backendColor(event.reviewer.backend)
+            : undefined;
+          // Compact step-line rows tighten the wrapper's vertical
+          // padding from the row default (py-1.5 = 6px each side) to
+          // 0, so a stack of "I'm checking…" lines packs together
+          // instead of breathing like full bubbles. ReviewerStepLine's
+          // own internal py-0.5 supplies a 2px line gap.
+          const rowPad = isIntermediate ? 'px-5 py-0' : 'px-5 py-1.5';
+          return (
+            <div className={rowPad}>
+              {showHeader && event.reviewer && (
+                <ReviewerHeader info={event.reviewer} />
+              )}
+              <EventRow
+                event={event}
+                conversationId={conversationId}
+                toolUseIndex={toolUseIndex}
+                toolResultIndex={toolResultIndex}
+                endorsed={isVerdict && !!event.reviewer}
+                endorsementTint={reviewerTint}
+                reviewerCompact={isIntermediate}
+                reviewerTint={reviewerTint}
+              />
+            </div>
+          );
+        }}
         components={{
           Footer: () => (
             <div className="px-5 pb-10 pt-1.5 space-y-3">
@@ -216,6 +279,17 @@ type EventRowProps = {
   conversationId: UUID;
   toolUseIndex: Map<string, ToolUseBlock>;
   toolResultIndex: Map<string, ToolResultBlock>;
+  /// True for the one assistant event per rebound round that the
+  /// server marked as the verdict. Drives a small check rendered next
+  /// to the CLI label inside the bubble.
+  endorsed?: boolean;
+  endorsementTint?: string;
+  /// True for reviewer assistant-text events that aren't (yet) the
+  /// verdict — render compact via ReviewerStepLine instead of a full
+  /// AssistantBubble. Tool / thinking / patch rows in a rebound block
+  /// stay full-chrome regardless of this flag.
+  reviewerCompact?: boolean;
+  reviewerTint?: string;
 };
 
 /// Only `assistant` and `toolResult` rows look up their props' indices
@@ -230,12 +304,26 @@ const EventRow = memo(function EventRow({
   conversationId,
   toolUseIndex,
   toolResultIndex,
+  endorsed,
+  endorsementTint,
+  reviewerCompact,
+  reviewerTint,
 }: EventRowProps) {
   switch (event.kind.type) {
     case 'localUser':
       return <UserBubble text={event.kind.text} attachments={event.kind.attachments} />;
     case 'assistant':
-      return <AssistantBubble info={event.kind.info} toolResultIndex={toolResultIndex} />;
+      if (reviewerCompact && reviewerTint) {
+        return <ReviewerStepLine text={event.kind.info.text} tint={reviewerTint} />;
+      }
+      return (
+        <AssistantBubble
+          info={event.kind.info}
+          toolResultIndex={toolResultIndex}
+          endorsed={endorsed}
+          endorsementTint={endorsementTint}
+        />
+      );
     case 'toolResult':
       return <ToolResultCard results={event.kind.results} toolUseIndex={toolUseIndex} />;
     case 'result':
@@ -266,12 +354,58 @@ const EventRow = memo(function EventRow({
 function areEventRowPropsEqual(prev: EventRowProps, next: EventRowProps): boolean {
   if (prev.event !== next.event) return false;
   if (prev.conversationId !== next.conversationId) return false;
+  if (prev.endorsed !== next.endorsed) return false;
+  if (prev.endorsementTint !== next.endorsementTint) return false;
+  if (prev.reviewerCompact !== next.reviewerCompact) return false;
+  if (prev.reviewerTint !== next.reviewerTint) return false;
   const t = next.event.kind.type;
   if (t === 'assistant' || t === 'toolResult') {
     if (prev.toolUseIndex !== next.toolUseIndex) return false;
     if (prev.toolResultIndex !== next.toolResultIndex) return false;
   }
   return true;
+}
+
+function ReviewerStepLine({ text, tint }: { text: string; tint: string }) {
+  // Compact "process step" rendering for non-verdict reviewer assistant
+  // text. Strips bubble chrome (no bg, no border, no accent strip),
+  // smaller dim type, tinted dot prefix — so a chain of mid-round
+  // narration ("I'm checking…", "I found…") reads as work-shown
+  // rather than as five equally-loud answers. The verdict (the last
+  // text-bearing assistant event of the round) goes through the full
+  // AssistantBubble instead.
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  return (
+    <div className="flex items-start gap-2 py-0.5 text-[11.5px] text-ink-muted leading-relaxed">
+      <span
+        className="mt-1.5 flex-shrink-0 w-1 h-1 rounded-full"
+        style={{ background: tint }}
+        aria-hidden
+      />
+      <div className="flex-1 min-w-0 whitespace-pre-wrap break-words select-text">
+        {trimmed}
+      </div>
+    </div>
+  );
+}
+
+function ReviewerHeader({
+  info,
+}: {
+  info: { backend: Backend; round: number; mode: 'review' | 'collab' };
+}) {
+  const tint = backendColor(info.backend);
+  const parts = [backendName(info.backend), info.mode === 'collab' ? 'collab' : 'review'];
+  if (info.mode === 'collab') parts.push(`round ${info.round}`);
+  return (
+    <div
+      className="text-[10px] uppercase tracking-wider font-medium pt-1 pb-1.5"
+      style={{ color: tint }}
+    >
+      {parts.join(' · ')}
+    </div>
+  );
 }
 
 function NewAgentIntro({ conversationId }: { conversationId: UUID }) {
@@ -581,6 +715,11 @@ function useLatestToolReveal(
     let pendingSubagent: ToolUseBlock | null = null;
     for (const ev of events) {
       if (baseline.has(ev.id)) continue;
+      // The latest-tool-reveal indicator follows the primary agent only.
+      // Rebound (reviewer) tool calls render inline within the rebound
+      // block; the conversation-level "Rebounding…" running indicator
+      // covers the "reviewer is working" affordance at a higher level.
+      if (ev.reviewer) continue;
       if (ev.kind.type === 'localUser') {
         latestFlash = null;
         pendingSubagent = null;

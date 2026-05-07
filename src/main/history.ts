@@ -6,10 +6,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/types';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { loadOllamaSession } from './ollamaStore';
 import { claudeToolResultText } from './parsers/claude';
 import { logSilent } from './diagnostics';
+
+/// True if `text` matches a known synthetic-collab pingPrompt overcli
+/// previously fed to the primary CLI. Each replay branch consults this
+/// before emitting a `localUser` event, so reviewer feedback the
+/// primary persisted as a user message doesn't resurface as a
+/// misattributed user-style bubble. Hashing the text avoids storing
+/// (potentially long) prompt bodies in conversation state.
+function isSyntheticPrompt(text: string, syntheticHashes: Set<string>): boolean {
+  if (syntheticHashes.size === 0) return false;
+  const h = createHash('sha256').update(text, 'utf8').digest('hex');
+  return syntheticHashes.has(h);
+}
 
 export function loadHistory(args: {
   backend: Backend;
@@ -18,10 +30,12 @@ export function loadHistory(args: {
   codexRolloutPaths?: string[];
   conversationCreatedAt?: number;
   conversationLastActiveAt?: number;
+  syntheticPrompts?: string[];
 }): StreamEvent[] {
+  const synthetic = new Set(args.syntheticPrompts ?? []);
   switch (args.backend) {
     case 'claude':
-      return loadClaudeHistory(args.sessionId, args.projectPath);
+      return loadClaudeHistory(args.sessionId, args.projectPath, synthetic);
     case 'codex':
       return loadCodexHistory(
         args.codexRolloutPaths ?? [],
@@ -29,15 +43,19 @@ export function loadHistory(args: {
         args.projectPath,
         args.conversationCreatedAt,
         args.conversationLastActiveAt,
+        synthetic,
       );
     case 'gemini':
-      return loadGeminiHistory(args.sessionId, args.projectPath);
+      return loadGeminiHistory(args.sessionId, args.projectPath, synthetic);
     case 'ollama':
-      return loadOllamaHistory(args.sessionId);
+      return loadOllamaHistory(args.sessionId, synthetic);
   }
 }
 
-function loadOllamaHistory(sessionId: string | undefined): StreamEvent[] {
+function loadOllamaHistory(
+  sessionId: string | undefined,
+  syntheticPrompts: Set<string>,
+): StreamEvent[] {
   if (!sessionId) return [];
   const persisted = loadOllamaSession(sessionId);
   if (!persisted) return [];
@@ -50,6 +68,7 @@ function loadOllamaHistory(sessionId: string | undefined): StreamEvent[] {
       persisted.messageTimestamps?.[i] ??
       fallbackEnd - (persisted.messages.length - 1 - i) * 1000;
     if (msg.role === 'user') {
+      if (isSyntheticPrompt(msg.content, syntheticPrompts)) continue;
       out.push(event({ type: 'localUser', text: msg.content }, msg.content, ts));
     } else if (msg.role === 'assistant') {
       out.push(
@@ -117,7 +136,11 @@ export function migrateClaudeSessionCwd(args: {
   }
 }
 
-function loadClaudeHistory(sessionId: string | undefined, projectPath: string): StreamEvent[] {
+function loadClaudeHistory(
+  sessionId: string | undefined,
+  projectPath: string,
+  syntheticPrompts: Set<string>,
+): StreamEvent[] {
   if (!sessionId) return [];
   const slug = claudeProjectSlug(projectPath);
   const file = path.join(os.homedir(), '.claude', 'projects', slug, `${sessionId}.jsonl`);
@@ -126,7 +149,12 @@ function loadClaudeHistory(sessionId: string | undefined, projectPath: string): 
   const out: StreamEvent[] = [];
   for (const line of lines) {
     const evs = parseClaudeHistoryLine(line);
-    for (const ev of evs) out.push(ev);
+    for (const ev of evs) {
+      if (ev.kind.type === 'localUser' && isSyntheticPrompt(ev.kind.text, syntheticPrompts)) {
+        continue;
+      }
+      out.push(ev);
+    }
   }
   return out;
 }
@@ -247,8 +275,9 @@ function loadCodexHistory(
   paths: string[],
   sessionId: string | undefined,
   projectPath: string,
-  conversationCreatedAt?: number,
-  conversationLastActiveAt?: number,
+  conversationCreatedAt: number | undefined,
+  conversationLastActiveAt: number | undefined,
+  syntheticPrompts: Set<string>,
 ): StreamEvent[] {
   const allPaths = paths.length
     ? paths
@@ -260,7 +289,11 @@ function loadCodexHistory(
     const lines = fs.readFileSync(p, 'utf-8').split('\n');
     for (const line of lines) {
       const ev = parseCodexHistoryLine(line);
-      if (ev) merged.push(ev);
+      if (!ev) continue;
+      if (ev.kind.type === 'localUser' && isSyntheticPrompt(ev.kind.text, syntheticPrompts)) {
+        continue;
+      }
+      merged.push(ev);
     }
   }
   merged.sort((a, b) => a.timestamp - b.timestamp);
@@ -540,7 +573,11 @@ export function normalizeSigText(s: string): string {
   return (s || '').trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 
-function loadGeminiHistory(sessionId: string | undefined, projectPath: string): StreamEvent[] {
+function loadGeminiHistory(
+  sessionId: string | undefined,
+  projectPath: string,
+  syntheticPrompts: Set<string>,
+): StreamEvent[] {
   if (!sessionId) return [];
   const shortId = sessionId.slice(0, 8);
   // gemini writes sessions under ~/.gemini/tmp/<slug>/chats/session-...-<shortId>.json
@@ -572,7 +609,9 @@ function loadGeminiHistory(sessionId: string | undefined, projectPath: string): 
       const kind = turn.type ?? turn.role;
       if (kind === 'user') {
         const text = geminiUserText(turn.content);
-        if (text) out.push(event({ type: 'localUser', text }, '', ts));
+        if (text && !isSyntheticPrompt(text, syntheticPrompts)) {
+          out.push(event({ type: 'localUser', text }, '', ts));
+        }
       } else if (kind === 'gemini' || kind === 'model' || kind === 'assistant') {
         const text = typeof turn.content === 'string' ? turn.content : geminiUserText(turn.content);
         const thinking: string[] = [];

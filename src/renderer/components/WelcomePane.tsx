@@ -4,6 +4,7 @@ import { Composer } from './Composer';
 import { Backend, PermissionMode, EffortLevel, Project, UUID, Attachment, Workspace } from '@shared/types';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
+import { modeLabel, permissionTone } from './conversationHeaderHelpers';
 
 const WELCOME_KEY = '__welcome__';
 
@@ -187,11 +188,13 @@ export function WelcomePane() {
             <>
               <Pill
                 label={modeLabel(permissionMode)}
-                color={permissionToneColor(permissionMode)}
-                items={(['plan', 'default', 'acceptEdits', 'bypassPermissions'] as PermissionMode[]).map((m) => ({
-                  value: m,
-                  label: modeLabel(m),
-                }))}
+                color={permissionTone(permissionMode)}
+                items={(['plan', 'default', 'auto', 'acceptEdits', 'bypassPermissions'] as PermissionMode[])
+                  .filter((m) => m !== 'auto' || backend === 'claude')
+                  .map((m) => ({
+                    value: m,
+                    label: modeLabel(m),
+                  }))}
                 onPick={(v) => setLocalPermissionMode(v as PermissionMode)}
               />
               <Pill
@@ -201,7 +204,15 @@ export function WelcomePane() {
                   value: b,
                   label: backendName(b),
                 }))}
-                onPick={(v) => setBackend(v as Backend)}
+                onPick={(v) => {
+                  const next = v as Backend;
+                  setBackend(next);
+                  // `auto` is Claude-only; demote to default when leaving Claude
+                  // so the picker label and the eventual mapped behaviour agree.
+                  if (next !== 'claude' && permissionMode === 'auto') {
+                    setLocalPermissionMode('default');
+                  }
+                }}
               />
               <Pill
                 label={model ? shortModel(model) : 'Model'}
@@ -504,24 +515,6 @@ function shortPath(p: string): string {
   // We don't have $HOME in the renderer (contextIsolation), so just
   // collapse any /Users/<anything>/ prefix to ~/ as a best-effort.
   return p.replace(/^\/Users\/[^/]+\//, '~/');
-}
-
-function modeLabel(mode: PermissionMode): string {
-  switch (mode) {
-    case 'plan':
-      return 'Plan';
-    case 'acceptEdits':
-      return 'Accept edits';
-    case 'bypassPermissions':
-      return 'Full access';
-    default:
-      return 'Default';
-  }
-}
-
-function permissionToneColor(mode: PermissionMode): string | undefined {
-  if (mode === 'bypassPermissions' || mode === 'acceptEdits') return '#f97a5a'; // warm amber
-  return undefined;
 }
 
 function effortLabel(effort: EffortLevel): string {
