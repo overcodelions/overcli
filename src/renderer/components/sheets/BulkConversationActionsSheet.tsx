@@ -187,7 +187,7 @@ export function BulkConversationActionsSheet() {
   };
 
   return (
-    <div className="flex flex-col w-full h-[min(760px,88vh)]">
+    <div className="flex flex-col w-full h-full">
       <div className="px-5 pt-4 pb-3 border-b border-card">
         <div className="text-lg font-semibold">Bulk Conversation Actions</div>
         <div className="text-xs text-ink-faint mt-1">
