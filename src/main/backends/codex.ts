@@ -10,6 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { codexTransportPermissions } from '../permissionRules';
 import { extractCodexExecSnapshot } from '../streamSnapshot';
+import { resolveSymlinkWritableRoots } from '../workspace';
 import type { StreamEvent } from '../../shared/types';
 import type {
   BackendCtx,
@@ -50,7 +51,17 @@ export const codexBackend: BackendSpec = {
     const { sandbox, approval } = codexTransportPermissions(args.permissionMode);
     const a: string[] = [];
     if (args.model) a.push('-m', args.model);
-    a.push('-s', sandbox, '-a', approval, 'exec', '-');
+    a.push('-s', sandbox, '-a', approval, 'exec');
+    // Coordinator-style cwds (folders of symlinks pointing into each
+    // member worktree) need their symlink targets explicitly granted as
+    // writable roots; otherwise codex's workspace-write sandbox refuses
+    // edits whose path resolves outside the cwd subtree.
+    if (sandbox === 'workspace-write') {
+      for (const root of resolveSymlinkWritableRoots(args.cwd)) {
+        a.push('--add-dir', root);
+      }
+    }
+    a.push('-');
     return a;
   },
 

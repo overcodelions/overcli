@@ -15,13 +15,37 @@ describe('buildReviewerArgs', () => {
   });
 
   it('adds workspace-write sandbox + never-approve when yolo is on for codex', () => {
+    // -s and -a are top-level codex flags (not exec flags), so they
+    // come before the `exec` subcommand. Putting them after `exec`
+    // makes the parser reject `--ask-for-approval` as an unknown arg.
     expect(buildReviewerArgs('codex', { yolo: true })).toEqual([
+      '-s',
+      'workspace-write',
+      '-a',
+      'never',
       'exec',
       '--skip-git-repo-check',
-      '--sandbox',
+      '-',
+    ]);
+  });
+
+  it('appends --add-dir for each writable root in yolo codex mode', () => {
+    expect(
+      buildReviewerArgs('codex', {
+        yolo: true,
+        writableRoots: ['/tmp/proj-a', '/tmp/proj-b'],
+      }),
+    ).toEqual([
+      '-s',
       'workspace-write',
-      '--ask-for-approval',
+      '-a',
       'never',
+      'exec',
+      '--skip-git-repo-check',
+      '--add-dir',
+      '/tmp/proj-a',
+      '--add-dir',
+      '/tmp/proj-b',
       '-',
     ]);
   });

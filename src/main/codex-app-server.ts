@@ -40,6 +40,10 @@ export interface CodexAppServerStartOptions {
   model: string;
   sandbox: CodexAppServerSandboxMode;
   approval: CodexAppServerApprovalPolicy;
+  /// Extra dirs to grant write access to in workspace-write mode, on
+  /// top of `cwd`. Used for coordinator-style cwd's that are folders
+  /// of symlinks pointing at member worktrees outside the cwd subtree.
+  writableRoots?: string[];
 }
 
 export interface CodexAppServerTurnOptions {
@@ -49,6 +53,7 @@ export interface CodexAppServerTurnOptions {
   approval: CodexAppServerApprovalPolicy;
   effortLevel?: EffortLevel;
   attachments?: Attachment[];
+  writableRoots?: string[];
 }
 
 interface CodexAppServerNotificationEvent {
@@ -153,7 +158,7 @@ export class CodexAppServerClient extends EventEmitter {
       input,
       cwd: opts.cwd,
       approvalPolicy: opts.approval,
-      sandboxPolicy: sandboxPolicyForMode(opts.sandbox, opts.cwd),
+      sandboxPolicy: sandboxPolicyForMode(opts.sandbox, opts.cwd, opts.writableRoots),
       model: opts.model || null,
       effort: codexAppServerEffort(opts.effortLevel),
     });
@@ -344,7 +349,11 @@ function buildUserInput(text: string, attachments: Attachment[]): any[] {
   return input;
 }
 
-function sandboxPolicyForMode(mode: CodexAppServerSandboxMode, cwd: string): any {
+function sandboxPolicyForMode(
+  mode: CodexAppServerSandboxMode,
+  cwd: string,
+  extraWritableRoots?: string[],
+): any {
   switch (mode) {
     case 'read-only':
       return {
@@ -355,15 +364,18 @@ function sandboxPolicyForMode(mode: CodexAppServerSandboxMode, cwd: string): any
     case 'danger-full-access':
       return { type: 'dangerFullAccess' };
     case 'workspace-write':
-    default:
+    default: {
+      const roots = new Set<string>([cwd]);
+      for (const r of extraWritableRoots ?? []) if (r) roots.add(r);
       return {
         type: 'workspaceWrite',
-        writableRoots: [cwd],
+        writableRoots: [...roots],
         readOnlyAccess: { type: 'fullAccess' },
         networkAccess: false,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       };
+    }
   }
 }
 

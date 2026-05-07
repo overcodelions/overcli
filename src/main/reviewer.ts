@@ -16,6 +16,7 @@ import {
   CodexAppServerSandboxMode,
 } from './codex-app-server';
 import { OllamaChatMessage, streamChat } from './ollama';
+import { resolveSymlinkWritableRoots } from './workspace';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -26,10 +27,15 @@ interface PrimaryTurnSummary {
   toolActivity: string;
 }
 
-interface CodexCollabActiveRound {
+interface CodexReviewerActiveTurn {
   cardId: string;
   startedAt: number;
   round: number;
+  /// Mode this round was fired in. Stored on the active turn so the
+  /// ReviewInfo we emit on turn/completed reflects the right badge
+  /// even when a single warm session ping-pongs between review and
+  /// collab modes across primary turns.
+  mode: 'review' | 'collab';
   /// Text accumulated per agentMessage item id, in arrival order. Codex
   /// can emit multiple agentMessage items in one turn (e.g. text →
   /// command/patch → more text in yolo collab), and the rendered card
@@ -39,16 +45,16 @@ interface CodexCollabActiveRound {
   resolve: (info: ReviewInfo) => void;
 }
 
-function joinCollabText(textByItem: Map<string, string>): string {
+function joinReviewerText(textByItem: Map<string, string>): string {
   return Array.from(textByItem.values()).filter(Boolean).join('\n\n');
 }
 
-interface CodexCollabSession {
+interface CodexReviewerSession {
   client: CodexAppServerClient;
   cwd: string;
   yolo: boolean;
   /// In-flight round, if any. Cleared on turn/completed or error.
-  active?: CodexCollabActiveRound;
+  active?: CodexReviewerActiveTurn;
 }
 
 export class ReviewerManager {
@@ -61,10 +67,10 @@ export class ReviewerManager {
   /// instead of SIGTERM on a child process.
   private inFlightHttp = new Map<UUID, AbortController>();
   /// Persistent codex app-server reviewer per conversation, used in
-  /// collab mode so each round reuses the same codex thread instead of
-  /// spawning a fresh `codex exec` subprocess. Lazily created on first
-  /// collab round and disposed only on full shutdown / cwd change.
-  private codexCollab = new Map<UUID, CodexCollabSession>();
+  /// review and collab modes so each round reuses the same codex thread
+  /// instead of spawning a fresh `codex exec` subprocess. Lazily created
+  /// on first round and disposed only on full shutdown / cwd change.
+  private codexSessions = new Map<UUID, CodexReviewerSession>();
   /// Per-conversation counter so each review card gets a stable sequence
   /// number for the UI to show "round 2", "round 3", etc.
   private rounds = new Map<UUID, number>();
@@ -86,29 +92,29 @@ export class ReviewerManager {
       ctl.abort();
       this.inFlightHttp.delete(conversationId);
     }
-    // Codex collab: cancellation invalidates the persistent thread.
-    // turn/interrupt is best-effort — codex may keep streaming item/* or
-    // turn/completed for the cancelled turn for a while. If we kept the
-    // client warm, those late notifications would land after the next
-    // round's tryRunCodexCollab reassigned session.active and would
-    // either smear text into the wrong bubble or prematurely finish it.
-    // Killing forces a fresh client + thread on the next round, which
-    // costs one cold start but keeps round boundaries clean.
-    const collab = this.codexCollab.get(conversationId);
-    if (collab) {
-      const a = collab.active;
-      collab.active = undefined;
-      this.codexCollab.delete(conversationId);
-      collab.client.kill();
+    // Cancellation invalidates the persistent codex thread. turn/interrupt
+    // is best-effort — codex may keep streaming item/* or turn/completed
+    // for the cancelled turn for a while. If we kept the client warm,
+    // those late notifications would land after the next round's
+    // tryRunCodexAppServer reassigned session.active and would either
+    // smear text into the wrong bubble or prematurely finish it. Killing
+    // forces a fresh client + thread on the next round, which costs one
+    // cold start but keeps round boundaries clean.
+    const codex = this.codexSessions.get(conversationId);
+    if (codex) {
+      const a = codex.active;
+      codex.active = undefined;
+      this.codexSessions.delete(conversationId);
+      codex.client.kill();
       if (a) {
         const final: ReviewInfo = {
           backend: 'codex',
-          text: joinCollabText(a.textByItem).trim(),
+          text: joinReviewerText(a.textByItem).trim(),
           isRunning: false,
           error: 'Cancelled',
           startedAt: a.startedAt,
           round: a.round,
-          mode: 'collab',
+          mode: a.mode,
         };
         this.emitReview(conversationId, { cardId: a.cardId, info: final });
         a.resolve(final);
@@ -124,17 +130,17 @@ export class ReviewerManager {
   /// (stop = "cancel current", dispose = "this conversation is going away").
   dispose(conversationId: UUID): void {
     this.stop(conversationId);
-    const collab = this.codexCollab.get(conversationId);
-    if (collab) {
-      collab.client.kill();
-      this.codexCollab.delete(conversationId);
+    const codex = this.codexSessions.get(conversationId);
+    if (codex) {
+      codex.client.kill();
+      this.codexSessions.delete(conversationId);
     }
   }
 
   stopAll(): void {
     for (const id of Array.from(this.inFlight.keys())) this.stop(id);
     for (const id of Array.from(this.inFlightHttp.keys())) this.stop(id);
-    for (const id of Array.from(this.codexCollab.keys())) this.dispose(id);
+    for (const id of Array.from(this.codexSessions.keys())) this.dispose(id);
   }
 
   /// Fire a reviewer for the just-completed primary turn. Resolves when
@@ -166,11 +172,16 @@ export class ReviewerManager {
       return this.runOllama({ ...args, mode });
     }
 
-    // Codex collab: persistent app-server thread, reused across rounds.
-    // Falls back to the one-shot subprocess path below if the codex
-    // binary isn't on PATH or the client fails to start.
-    if (args.reviewBackend === 'codex' && mode === 'collab') {
-      const persisted = await this.tryRunCodexCollab(args);
+    // Codex always uses the app-server transport — same persistent
+    // thread for both review and collab modes (collab simply replays
+    // additional rounds against the warm thread). Beats the codex exec
+    // subprocess path because we get structured item/* notifications
+    // (cheap to translate into agentMessage cards) instead of having
+    // to scrape the timestamped stdout transcript, and dodges the
+    // exec CLI's flag-position pickiness. Falls back to exec only if
+    // the codex binary isn't on PATH.
+    if (args.reviewBackend === 'codex') {
+      const persisted = await this.tryRunCodexAppServer({ ...args, mode });
       if (persisted) return persisted;
     }
 
@@ -212,7 +223,16 @@ export class ReviewerManager {
     }
 
     return new Promise<ReviewInfo>((resolve) => {
-      const childArgs = buildReviewerArgs(args.reviewBackend, { yolo: !!args.yolo });
+      const childArgs = buildReviewerArgs(args.reviewBackend, {
+        yolo: !!args.yolo,
+        // Lifts coordinator-root symlink targets into codex's writable
+        // set so `--sandbox workspace-write` doesn't deny edits that
+        // resolve outside the coordinator's cwd subtree.
+        writableRoots:
+          args.reviewBackend === 'codex' && args.yolo
+            ? resolveSymlinkWritableRoots(args.cwd)
+            : undefined,
+      });
       const env = buildBackendEnv(process.env, bin);
       const shell = backendNeedsShell(bin);
       const proc = spawn(bin, childArgs, {
@@ -307,15 +327,17 @@ export class ReviewerManager {
     });
   }
 
-  /// Attempts a persistent codex app-server reviewer round. Returns the
-  /// finished ReviewInfo on success, or `null` if we couldn't even start
-  /// (binary missing) — caller falls back to the one-shot exec path.
-  private async tryRunCodexCollab(args: {
+  /// Run a codex reviewer round through the persistent app-server
+  /// transport. Returns the finished ReviewInfo on success, or `null`
+  /// if we couldn't start (binary missing) — caller falls back to the
+  /// one-shot exec path.
+  private async tryRunCodexAppServer(args: {
     conversationId: UUID;
     cwd: string;
     summary: PrimaryTurnSummary;
     backendPathOverride?: string;
     yolo?: boolean;
+    mode: 'review' | 'collab';
   }): Promise<ReviewInfo | null> {
     const bin = resolveBackendPath('codex', args.backendPathOverride);
     if (!bin) return null;
@@ -326,6 +348,7 @@ export class ReviewerManager {
     const cardId = randomUUID();
     const startedAt = Date.now();
     const yolo = !!args.yolo;
+    const { mode } = args;
 
     this.emitReview(args.conversationId, {
       cardId,
@@ -335,34 +358,37 @@ export class ReviewerManager {
         isRunning: true,
         startedAt,
         round,
-        mode: 'collab',
+        mode,
       },
     });
 
     // Reuse an existing client only if cwd & yolo still match; otherwise
     // tear it down and start fresh so sandbox semantics stay correct.
-    let session = this.codexCollab.get(args.conversationId);
+    let session = this.codexSessions.get(args.conversationId);
     if (session && (session.cwd !== args.cwd || session.yolo !== yolo)) {
       session.client.kill();
-      this.codexCollab.delete(args.conversationId);
+      this.codexSessions.delete(args.conversationId);
       session = undefined;
     }
     if (!session) {
       const env = buildBackendEnv(process.env, bin);
       const client = new CodexAppServerClient({ binary: bin, cwd: args.cwd, env });
       session = { client, cwd: args.cwd, yolo };
-      this.codexCollab.set(args.conversationId, session);
-      this.wireCodexCollabClient(args.conversationId, session);
+      this.codexSessions.set(args.conversationId, session);
+      this.wireCodexReviewerClient(args.conversationId, session);
     }
 
     const sandbox: CodexAppServerSandboxMode = yolo ? 'workspace-write' : 'read-only';
     const approval: CodexAppServerApprovalPolicy = 'never';
+
+    const extraWritableRoots = yolo ? resolveSymlinkWritableRoots(args.cwd) : undefined;
 
     return new Promise<ReviewInfo>((resolve) => {
       session!.active = {
         cardId,
         startedAt,
         round,
+        mode,
         textByItem: new Map(),
         lastEmit: 0,
         resolve,
@@ -374,6 +400,7 @@ export class ReviewerManager {
           model: '',
           sandbox,
           approval,
+          writableRoots: extraWritableRoots,
         })
         .catch((err: any) => {
           if (!session!.active || session!.active.cardId !== cardId) return;
@@ -381,7 +408,7 @@ export class ReviewerManager {
           session!.active = undefined;
           // Drop the now-broken client so the next round starts cleanly.
           session!.client.kill();
-          this.codexCollab.delete(args.conversationId);
+          this.codexSessions.delete(args.conversationId);
           const info: ReviewInfo = {
             backend: 'codex',
             text: '',
@@ -389,7 +416,7 @@ export class ReviewerManager {
             error: message,
             startedAt,
             round,
-            mode: 'collab',
+            mode,
           };
           this.emitReview(args.conversationId, { cardId, info });
           resolve(info);
@@ -397,14 +424,14 @@ export class ReviewerManager {
     });
   }
 
-  private wireCodexCollabClient(conversationId: UUID, session: CodexCollabSession): void {
+  private wireCodexReviewerClient(conversationId: UUID, session: CodexReviewerSession): void {
     session.client.on('notification', ({ method, params }) => {
       // Reject events from a session that's been replaced. After we
       // kill+respawn on cancel, the dying client may still parse a few
       // more JSON-RPC lines off its stdout buffer; without this guard
       // those late item/* or turn/completed events would mutate the new
       // session's active round.
-      if (this.codexCollab.get(conversationId) !== session) return;
+      if (this.codexSessions.get(conversationId) !== session) return;
       const a = session.active;
       if (!a) return;
       switch (method) {
@@ -419,7 +446,7 @@ export class ReviewerManager {
             // keep their entries in textByItem so the rendered card is
             // the union, in arrival order.
             if (itemId) a.textByItem.set(itemId, item.text);
-            this.maybeEmitCodexCollabProgress(conversationId, session);
+            this.maybeEmitCodexReviewerProgress(conversationId, session);
           }
           break;
         }
@@ -428,18 +455,18 @@ export class ReviewerManager {
           if (itemId && typeof params?.delta === 'string') {
             a.textByItem.set(itemId, (a.textByItem.get(itemId) ?? '') + params.delta);
           }
-          this.maybeEmitCodexCollabProgress(conversationId, session);
+          this.maybeEmitCodexReviewerProgress(conversationId, session);
           break;
         }
         case 'turn/completed': {
-          const text = joinCollabText(a.textByItem).trim();
+          const text = joinReviewerText(a.textByItem).trim();
           const final: ReviewInfo = {
             backend: 'codex',
             text,
             isRunning: false,
             startedAt: a.startedAt,
             round: a.round,
-            mode: 'collab',
+            mode: a.mode,
             raw: text || undefined,
           };
           session.active = undefined;
@@ -451,12 +478,12 @@ export class ReviewerManager {
           const message = typeof params?.message === 'string' ? params.message : 'codex app-server error';
           const final: ReviewInfo = {
             backend: 'codex',
-            text: joinCollabText(a.textByItem).trim(),
+            text: joinReviewerText(a.textByItem).trim(),
             isRunning: false,
             error: message,
             startedAt: a.startedAt,
             round: a.round,
-            mode: 'collab',
+            mode: a.mode,
           };
           session.active = undefined;
           this.emitReview(conversationId, { cardId: a.cardId, info: final });
@@ -468,7 +495,7 @@ export class ReviewerManager {
     // The reviewer runs autonomously — auto-decline any approval prompts
     // codex sends rather than blocking forever waiting for user input.
     session.client.on('request', ({ id }) => {
-      if (this.codexCollab.get(conversationId) !== session) return;
+      if (this.codexSessions.get(conversationId) !== session) return;
       void session.client.rejectServerRequest(id, 'Reviewer auto-decline');
     });
     session.client.on('close', () => {
@@ -476,26 +503,29 @@ export class ReviewerManager {
       // After a kill-on-cancel, a fresh session may already occupy this
       // conversation id, and the dying client's close event must not
       // evict it.
-      const current = this.codexCollab.get(conversationId);
-      if (current === session) this.codexCollab.delete(conversationId);
+      const current = this.codexSessions.get(conversationId);
+      if (current === session) this.codexSessions.delete(conversationId);
       const a = session.active;
       if (!a) return;
       session.active = undefined;
       const final: ReviewInfo = {
         backend: 'codex',
-        text: joinCollabText(a.textByItem).trim(),
+        text: joinReviewerText(a.textByItem).trim(),
         isRunning: false,
         error: 'codex app-server closed',
         startedAt: a.startedAt,
         round: a.round,
-        mode: 'collab',
+        mode: a.mode,
       };
       this.emitReview(conversationId, { cardId: a.cardId, info: final });
       a.resolve(final);
     });
   }
 
-  private maybeEmitCodexCollabProgress(conversationId: UUID, session: CodexCollabSession): void {
+  private maybeEmitCodexReviewerProgress(
+    conversationId: UUID,
+    session: CodexReviewerSession,
+  ): void {
     const a = session.active;
     if (!a) return;
     const now = Date.now();
@@ -505,11 +535,11 @@ export class ReviewerManager {
       cardId: a.cardId,
       info: {
         backend: 'codex',
-        text: joinCollabText(a.textByItem),
+        text: joinReviewerText(a.textByItem),
         isRunning: true,
         startedAt: a.startedAt,
         round: a.round,
-        mode: 'collab',
+        mode: a.mode,
       },
     });
   }
@@ -658,7 +688,7 @@ export function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): s
 
 export function buildReviewerArgs(
   backend: Backend,
-  opts: { yolo?: boolean } = {},
+  opts: { yolo?: boolean; writableRoots?: string[] } = {},
 ): string[] {
   switch (backend) {
     case 'claude':
@@ -666,7 +696,7 @@ export function buildReviewerArgs(
       // assistant message. No --output-format so we get plain text,
       // which is what the review card displays.
       return ['-p', '-'];
-    case 'codex':
+    case 'codex': {
       // codex exec: one-shot version of codex proto. `-` tells it to
       // read the user prompt from stdin. --skip-git-repo-check lets the
       // reviewer run when cwd is a synthetic workspace/coordinator root
@@ -675,17 +705,26 @@ export function buildReviewerArgs(
       // can actually edit files. Default is codex's own read-only
       // sandbox, which is why a review that wants to patch code
       // previously bounced with a "read-only session" message.
-      return opts.yolo
-        ? [
-            'exec',
-            '--skip-git-repo-check',
-            '--sandbox',
-            'workspace-write',
-            '--ask-for-approval',
-            'never',
-            '-',
-          ]
-        : ['exec', '--skip-git-repo-check', '-'];
+      // `-s` and `-a` are TOP-LEVEL codex flags — they have to come
+      // before `exec`. Putting them after `exec` makes the codex parser
+      // reject `--ask-for-approval` as an unknown exec argument.
+      if (!opts.yolo) return ['exec', '--skip-git-repo-check', '-'];
+      const extras: string[] = [];
+      for (const r of opts.writableRoots ?? []) {
+        if (!r) continue;
+        extras.push('--add-dir', r);
+      }
+      return [
+        '-s',
+        'workspace-write',
+        '-a',
+        'never',
+        'exec',
+        '--skip-git-repo-check',
+        ...extras,
+        '-',
+      ];
+    }
     case 'gemini':
       // gemini CLI also supports stdin prompt via `-p -`.
       return ['-p', '-'];
