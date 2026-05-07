@@ -772,6 +772,8 @@ const GUIDES: Partial<Record<CapabilityKind, Guide>> = {
 
 // ---------- Generic capability row ----------
 
+const MCP_CLIS: Backend[] = ['claude', 'codex', 'gemini'];
+
 function CapabilityRow({ entry }: { entry: CapabilityEntry }) {
   return (
     <div className="rounded-md border border-card bg-card/30 px-3 py-2.5 hover:border-card-strong transition-colors">
@@ -795,6 +797,46 @@ function CapabilityRow({ entry }: { entry: CapabilityEntry }) {
           {entry.path}
         </div>
       )}
+      {entry.kind === 'mcp' && <McpCopyControls entry={entry} />}
+    </div>
+  );
+}
+
+function McpCopyControls({ entry }: { entry: CapabilityEntry }) {
+  const copy = useStore((s) => s.copyMcpToCli);
+  const [busyTo, setBusyTo] = useState<Backend | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const installedOn = new Set(entry.clis);
+  const missing = MCP_CLIS.filter((c) => !installedOn.has(c));
+  if (missing.length === 0) return null;
+
+  const source = entry.clis.find((c) => MCP_CLIS.includes(c));
+  if (!source) return null;
+
+  const onCopy = async (target: Backend) => {
+    setBusyTo(target);
+    setError(null);
+    const res = await copy(entry.name, source, target);
+    if (!res.ok) setError(res.error);
+    setBusyTo(null);
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+      <span className="text-[10px] text-ink-faint">Also install on:</span>
+      {missing.map((cli) => (
+        <button
+          key={cli}
+          disabled={busyTo !== null}
+          onClick={() => void onCopy(cli)}
+          className="text-[10.5px] px-2 py-0.5 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong disabled:opacity-50"
+          title={`Copy "${entry.name}" config from ${CLI_LABEL[source]} to ${CLI_LABEL[cli]}`}
+        >
+          {busyTo === cli ? '…' : `+ ${CLI_LABEL[cli]}`}
+        </button>
+      ))}
+      {error && <span className="text-[10.5px] text-red-400 font-mono">{error}</span>}
     </div>
   );
 }

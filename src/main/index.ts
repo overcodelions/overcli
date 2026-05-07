@@ -39,6 +39,7 @@ import {
 } from './git';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
+import { isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -194,6 +195,24 @@ function registerIpc(): void {
     uninstallMarketplaceSkill(skillId, targets),
   );
   ipcMain.handle('skills:uninstallByPath', (_e, { path: p }) => uninstallSkillByPath(p));
+  ipcMain.handle('capabilities:copyMcp', (_e, { name, fromCli, toCli }) => {
+    if (!isMcpCli(fromCli) || !isMcpCli(toCli)) {
+      return { ok: false as const, error: `Unsupported CLI for MCP copy.` };
+    }
+    if (fromCli === toCli) {
+      return { ok: false as const, error: `Source and target CLI are the same.` };
+    }
+    try {
+      const config = readMcpServer(fromCli, name);
+      if (!config) {
+        return { ok: false as const, error: `MCP server "${name}" not found in ${fromCli} config.` };
+      }
+      writeMcpServer(toCli, name, config);
+      return { ok: true as const };
+    } catch (err: any) {
+      return { ok: false as const, error: err?.message ?? String(err) };
+    }
+  });
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
