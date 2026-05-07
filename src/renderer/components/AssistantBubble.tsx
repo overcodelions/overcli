@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { AssistantEventInfo, ToolResultBlock } from '@shared/types';
+import { AssistantEventInfo, ToolResultBlock, ToolUseBlock } from '@shared/types';
 import { backendColor, backendFromModel, shortModel } from '../theme';
 import { Markdown } from './Markdown';
 import { useStore } from '../store';
@@ -36,9 +36,14 @@ export function AssistantBubble({
   const backend = backendFromModel(info.model);
   const tint = backendColor(backend);
 
+  // Claude occasionally emits the same AskUserQuestion call twice in one
+  // assistant turn (model glitch), which renders as two identical question
+  // cards stacked on top of each other. Collapse identical AskUserQuestion
+  // tool_uses by their input payload so the user sees one card.
+  const dedupedToolUses = dedupeAskUserQuestion(info.toolUses);
   const visibleToolUses = showToolActivity
-    ? info.toolUses
-    : info.toolUses.filter(
+    ? dedupedToolUses
+    : dedupedToolUses.filter(
         (u) => INTERACTIVE_TOOLS.has(u.name) || PERSISTENT_TOOLS.has(u.name),
       );
 
@@ -130,6 +135,20 @@ export function AssistantBubble({
         ))}
     </div>
   );
+}
+
+function dedupeAskUserQuestion(toolUses: ToolUseBlock[]): ToolUseBlock[] {
+  const seen = new Set<string>();
+  const out: ToolUseBlock[] = [];
+  for (const u of toolUses) {
+    if (u.name === 'AskUserQuestion') {
+      const key = u.inputJSON;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    out.push(u);
+  }
+  return out;
 }
 
 function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => void) {
