@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { useRunnerEvents } from '../runnersStore';
+import { useRunnerCompletedAt, useRunnerEvents } from '../runnersStore';
 import { ConversationHeader } from './ConversationHeader';
 import { ChatView } from './ChatView';
 import { InputBar } from './InputBar';
@@ -47,10 +47,14 @@ export function ConversationPane() {
     }
     return n;
   }, [events]);
+  // Turn-end trigger: catches git state changes done via Bash (commit,
+  // push, stash, …) that don't show up in editCount. One extra refresh
+  // per turn — cheap, and avoids per-Bash-call refresh churn.
+  const completedAt = useRunnerCompletedAt(convId);
   useEffect(() => {
     if (!convId) return;
     void refreshGitStatus(convId);
-  }, [convId, editCount, refreshGitStatus]);
+  }, [convId, editCount, completedAt, refreshGitStatus]);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(() => window.innerWidth);
   useEffect(() => {

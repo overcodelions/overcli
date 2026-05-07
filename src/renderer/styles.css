@@ -380,3 +380,9 @@ html, body {
   font-style: normal !important;
   font-weight: normal !important;
 }
+
+/* Rebound block visuals are now component-level: the per-block header
+ * is drawn by ReviewerHeader, intermediate "I'm checking…" rows by
+ * ReviewerStepLine (compact, dim, dot-prefixed), and the verdict
+ * by AssistantBubble + a check next to the model label. No
+ * row-wrapper class needed. */

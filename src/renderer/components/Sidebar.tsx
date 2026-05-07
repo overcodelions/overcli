@@ -3,8 +3,11 @@ import { useStore } from '../store';
 import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { backendColor } from '../theme';
-
-const ACTIVE_CONVERSATION_WINDOW_MS = 10 * 60 * 1000;
+import {
+  ACTIVE_CONVERSATION_WINDOW_MS,
+  conversationActivityAt,
+  isActiveConversation,
+} from '../conversationLookup';
 
 export function Sidebar() {
   const projects = useStore((s) => s.projects);
@@ -370,14 +373,14 @@ function collectTopConversations(
   const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
   for (const project of projects) {
     for (const conv of project.conversations) {
-      if (!conv.hidden && isActiveConversation(conv, runners, cutoff)) {
+      if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
         out.push({ conv, ownerName: project.name, ownerKind: 'project' });
       }
     }
   }
   for (const workspace of workspaces) {
     for (const conv of workspace.conversations ?? []) {
-      if (!conv.hidden && isActiveConversation(conv, runners, cutoff)) {
+      if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
         out.push({ conv, ownerName: workspace.name, ownerKind: 'workspace' });
       }
     }
@@ -388,18 +391,6 @@ function collectTopConversations(
     if (aRunning !== bRunning) return bRunning - aRunning;
     return conversationActivityAt(b.conv) - conversationActivityAt(a.conv);
   });
-}
-
-function isActiveConversation(
-  conv: Conversation,
-  runners: Record<UUID, { isRunning: boolean } | undefined>,
-  cutoff: number,
-): boolean {
-  return !!runners[conv.id]?.isRunning || conversationActivityAt(conv) >= cutoff;
-}
-
-function conversationActivityAt(conv: Conversation): number {
-  return conv.lastActiveAt ?? conv.createdAt ?? 0;
 }
 
 function hasProjectActivity(project: Project, colosseums: Colosseum[]): boolean {

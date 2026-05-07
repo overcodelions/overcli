@@ -39,6 +39,9 @@ export const claudeBackend: BackendSpec = {
     // In bypassPermissions mode Claude Code auto-allows everything
     // without prompting — wiring our permission-prompt-tool would force
     // it to route tool checks through us anyway, defeating the mode.
+    // `auto` mode keeps the prompt tool wired: Claude classifies each
+    // tool call and only routes to us when it wants confirmation; safe
+    // calls just don't invoke the prompt tool.
     if (args.permissionMode !== 'bypassPermissions') {
       const mcpConfigPath = ctx.mcpConfigPathFor(args.conversationId);
       if (mcpConfigPath) {

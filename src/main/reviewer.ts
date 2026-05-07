@@ -15,6 +15,11 @@ import {
   CodexAppServerClient,
   CodexAppServerSandboxMode,
 } from './codex-app-server';
+import {
+  CodexAppServerParserState,
+  makeCodexAppServerParserState,
+  parseCodexAppServerNotification,
+} from './parsers/codex-app-server';
 import { OllamaChatMessage, streamChat } from './ollama';
 import { resolveSymlinkWritableRoots } from './workspace';
 
@@ -28,25 +33,42 @@ interface PrimaryTurnSummary {
 }
 
 interface CodexReviewerActiveTurn {
-  cardId: string;
   startedAt: number;
   round: number;
-  /// Mode this round was fired in. Stored on the active turn so the
-  /// ReviewInfo we emit on turn/completed reflects the right badge
-  /// even when a single warm session ping-pongs between review and
-  /// collab modes across primary turns.
+  /// Mode this round was fired in. Used as the per-event reviewer tag
+  /// and surfaced by the renderer's "Codex · collab · round 2" header.
   mode: 'review' | 'collab';
-  /// Text accumulated per agentMessage item id, in arrival order. Codex
-  /// can emit multiple agentMessage items in one turn (e.g. text →
-  /// command/patch → more text in yolo collab), and the rendered card
-  /// is the concatenation of all of them.
-  textByItem: Map<string, string>;
-  lastEmit: number;
+  /// Per-round parser state. We use the same translator the primary
+  /// codex path uses, so reasoning items become thinking text, command/
+  /// patch items become tool cards, and agentMessage items become the
+  /// reviewer's assistant text. Resetting per round keeps item ids from
+  /// smearing into the next round's bubbles.
+  parserState: CodexAppServerParserState;
+  /// agentMessage text per emitted assistant event id. Each delta of a
+  /// codex agentMessage emits an `assistant` event (same id) carrying
+  /// the running snapshot — `text="I"`, then `"I'm"`, then `"I'm
+  /// checking"`, … — so we can't push-on-every-emit without ending up
+  /// with every streaming snapshot in the joined feed-back prompt.
+  /// Storing by id and overwriting keeps just the final text per item;
+  /// the values join in insertion order (= arrival order of items) at
+  /// turn/completed.
+  assistantTextsById: Map<string, string>;
+  /// Most recently emitted text-bearing assistant event. Updated on
+  /// every delta so it stays current; at turn/completed we re-emit it
+  /// with `reviewer.verdict: true` so the renderer can mark exactly
+  /// one bubble per round as the verdict (and dim the others). Must
+  /// be text-bearing because codex tool starts (commandExecution,
+  /// fileChange) emit `assistant` events with toolUses and no text —
+  /// we don't want them claiming the verdict slot.
+  lastTextAssistant?: StreamEvent;
   resolve: (info: ReviewInfo) => void;
 }
 
-function joinReviewerText(textByItem: Map<string, string>): string {
-  return Array.from(textByItem.values()).filter(Boolean).join('\n\n');
+function joinAssistantTexts(textsById: Map<string, string>): string {
+  return Array.from(textsById.values())
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 interface CodexReviewerSession {
@@ -92,42 +114,42 @@ export class ReviewerManager {
       ctl.abort();
       this.inFlightHttp.delete(conversationId);
     }
-    // Cancellation invalidates the persistent codex thread. turn/interrupt
-    // is best-effort — codex may keep streaming item/* or turn/completed
-    // for the cancelled turn for a while. If we kept the client warm,
+    // Cancel any in-flight codex turn but leave an idle warm session
+    // alone so the next collab round can reuse the same thread. We only
+    // kill the client when there's an active turn: turn/interrupt is
+    // best-effort and codex may keep streaming item/* or turn/completed
+    // for the cancelled turn for a while; if we left that client running
     // those late notifications would land after the next round's
-    // tryRunCodexAppServer reassigned session.active and would either
-    // smear text into the wrong bubble or prematurely finish it. Killing
-    // forces a fresh client + thread on the next round, which costs one
-    // cold start but keeps round boundaries clean.
+    // tryRunCodexAppServer reassigned session.active and smear text into
+    // the wrong bubble. With no in-flight turn there's nothing to smear,
+    // so the cache stays useful.
     const codex = this.codexSessions.get(conversationId);
-    if (codex) {
+    if (codex && codex.active) {
       const a = codex.active;
       codex.active = undefined;
       this.codexSessions.delete(conversationId);
       codex.client.kill();
-      if (a) {
-        const final: ReviewInfo = {
-          backend: 'codex',
-          text: joinReviewerText(a.textByItem).trim(),
-          isRunning: false,
-          error: 'Cancelled',
-          startedAt: a.startedAt,
-          round: a.round,
-          mode: a.mode,
-        };
-        this.emitReview(conversationId, { cardId: a.cardId, info: final });
-        a.resolve(final);
-      }
+      this.emitReviewerSystemNotice(conversationId, a, 'Cancelled');
+      const final: ReviewInfo = {
+        backend: 'codex',
+        text: joinAssistantTexts(a.assistantTextsById),
+        isRunning: false,
+        error: 'Cancelled',
+        startedAt: a.startedAt,
+        round: a.round,
+        mode: a.mode,
+      };
+      a.resolve(final);
     }
   }
 
-  /// Tear down any persistent reviewer state for the conversation. Use
-  /// when the conversation is going away or its rebound config no longer
-  /// matches the persistent backend (e.g. user switched away from codex).
-  /// Today this is equivalent to stop() because stop() already kills the
-  /// codex client; kept as a separate name so call sites read clearly
-  /// (stop = "cancel current", dispose = "this conversation is going away").
+  /// Tear down any persistent reviewer state for the conversation,
+  /// including idle warm codex sessions that stop() leaves alone. Use
+  /// when the conversation is going away or its rebound config no
+  /// longer matches the persistent backend (e.g. user switched away
+  /// from codex). stop() = "cancel any in-flight round, keep warm
+  /// session"; dispose() = "this conversation is going away, kill
+  /// everything".
   dispose(conversationId: UUID): void {
     this.stop(conversationId);
     const codex = this.codexSessions.get(conversationId);
@@ -172,15 +194,15 @@ export class ReviewerManager {
       return this.runOllama({ ...args, mode });
     }
 
-    // Codex always uses the app-server transport — same persistent
-    // thread for both review and collab modes (collab simply replays
-    // additional rounds against the warm thread). Beats the codex exec
-    // subprocess path because we get structured item/* notifications
-    // (cheap to translate into agentMessage cards) instead of having
-    // to scrape the timestamped stdout transcript, and dodges the
-    // exec CLI's flag-position pickiness. Falls back to exec only if
-    // the codex binary isn't on PATH.
-    if (args.reviewBackend === 'codex') {
+    // Codex collab uses the persistent app-server transport so each
+    // round reuses the same thread. Plain review stays on `codex exec`
+    // because exec's stdout parser tags reasoning-style narration as
+    // [thinking] sections that we strip — the app-server stream emits
+    // the same narration as agentMessage items, which we'd have no
+    // clean way to filter, and the review card ends up as a wall of
+    // process-narration instead of just the verdict. Falls back to
+    // exec when the binary isn't on PATH.
+    if (args.reviewBackend === 'codex' && mode === 'collab') {
       const persisted = await this.tryRunCodexAppServer({ ...args, mode });
       if (persisted) return persisted;
     }
@@ -345,22 +367,9 @@ export class ReviewerManager {
     const round = (this.rounds.get(args.conversationId) ?? 0) + 1;
     this.rounds.set(args.conversationId, round);
 
-    const cardId = randomUUID();
     const startedAt = Date.now();
     const yolo = !!args.yolo;
     const { mode } = args;
-
-    this.emitReview(args.conversationId, {
-      cardId,
-      info: {
-        backend: 'codex',
-        text: '',
-        isRunning: true,
-        startedAt,
-        round,
-        mode,
-      },
-    });
 
     // Reuse an existing client only if cwd & yolo still match; otherwise
     // tear it down and start fresh so sandbox semantics stay correct.
@@ -385,12 +394,11 @@ export class ReviewerManager {
 
     return new Promise<ReviewInfo>((resolve) => {
       session!.active = {
-        cardId,
         startedAt,
         round,
         mode,
-        textByItem: new Map(),
-        lastEmit: 0,
+        parserState: makeCodexAppServerParserState(),
+        assistantTextsById: new Map(),
         resolve,
       };
       const prompt = buildReviewPrompt(args.summary, round);
@@ -403,13 +411,17 @@ export class ReviewerManager {
           writableRoots: extraWritableRoots,
         })
         .catch((err: any) => {
-          if (!session!.active || session!.active.cardId !== cardId) return;
+          // Guard against late catch resolving the wrong round — only
+          // act if our active round is still the one we just started.
+          const a = session!.active;
+          if (!a || a.round !== round) return;
           const message = err?.message ?? String(err);
           session!.active = undefined;
           // Drop the now-broken client so the next round starts cleanly.
           session!.client.kill();
           this.codexSessions.delete(args.conversationId);
-          const info: ReviewInfo = {
+          this.emitReviewerSystemNotice(args.conversationId, a, message);
+          resolve({
             backend: 'codex',
             text: '',
             isRunning: false,
@@ -417,15 +429,13 @@ export class ReviewerManager {
             startedAt,
             round,
             mode,
-          };
-          this.emitReview(args.conversationId, { cardId, info });
-          resolve(info);
+          });
         });
     });
   }
 
   private wireCodexReviewerClient(conversationId: UUID, session: CodexReviewerSession): void {
-    session.client.on('notification', ({ method, params }) => {
+    session.client.on('notification', ({ method, params, raw }) => {
       // Reject events from a session that's been replaced. After we
       // kill+respawn on cancel, the dying client may still parse a few
       // more JSON-RPC lines off its stdout buffer; without this guard
@@ -434,62 +444,82 @@ export class ReviewerManager {
       if (this.codexSessions.get(conversationId) !== session) return;
       const a = session.active;
       if (!a) return;
-      switch (method) {
-        case 'item/started':
-        case 'item/completed': {
-          const item = params?.item;
-          if (item?.type === 'agentMessage' && typeof item.text === 'string') {
-            const itemId = String(item.id ?? '');
-            // Overwrite the per-item text — item/completed carries the
-            // final full text for this item, item/started carries the
-            // initial chunk (often empty). Other items in the same turn
-            // keep their entries in textByItem so the rendered card is
-            // the union, in arrival order.
-            if (itemId) a.textByItem.set(itemId, item.text);
-            this.maybeEmitCodexReviewerProgress(conversationId, session);
+
+      // Route every notification through the same parser the primary
+      // codex path uses, then tag the resulting events with reviewer
+      // provenance and emit them on the conversation's normal stream.
+      // The renderer treats a tagged event like a regular assistant /
+      // tool / patch row and groups them under a "Codex · collab ·
+      // round N" header.
+      const parsed = parseCodexAppServerNotification(method, params, a.parserState, raw);
+      if (parsed.events.length > 0) {
+        // Strip the synthetic per-turn `result` event the parser appends
+        // on turn/completed — the reviewer turn doesn't deserve a
+        // duration/cost ResultRow in the chat. The reviewer's own end-
+        // of-turn handler below resolves the ReviewInfo for the runner.
+        const filtered = parsed.events.filter((e) => e.kind.type !== 'result');
+        if (filtered.length > 0) {
+          const tag = { backend: 'codex' as Backend, round: a.round, mode: a.mode };
+          for (const ev of filtered) ev.reviewer = tag;
+          // Capture text-bearing assistant events into the by-id map
+          // (overwriting per-item) so the joined feed-back prompt has
+          // each item's *final* text exactly once, regardless of how
+          // many delta snapshots we saw stream by. Track the most
+          // recently emitted text-bearing event so it can be promoted
+          // to verdict on turn/completed.
+          for (const ev of filtered) {
+            if (ev.kind.type === 'assistant' && ev.kind.info.text) {
+              a.assistantTextsById.set(ev.id, ev.kind.info.text);
+              a.lastTextAssistant = ev;
+            }
           }
-          break;
+          this.emit({ type: 'stream', conversationId, events: filtered });
         }
-        case 'item/agentMessage/delta': {
-          const itemId = String(params?.itemId ?? '');
-          if (itemId && typeof params?.delta === 'string') {
-            a.textByItem.set(itemId, (a.textByItem.get(itemId) ?? '') + params.delta);
-          }
-          this.maybeEmitCodexReviewerProgress(conversationId, session);
-          break;
-        }
-        case 'turn/completed': {
-          const text = joinReviewerText(a.textByItem).trim();
-          const final: ReviewInfo = {
-            backend: 'codex',
-            text,
-            isRunning: false,
-            startedAt: a.startedAt,
-            round: a.round,
-            mode: a.mode,
-            raw: text || undefined,
+      }
+
+      if (method === 'turn/completed') {
+        // Verdict promotion: re-emit the last text-bearing assistant
+        // event of the round with `reviewer.verdict: true`. The store
+        // replaces by id, so the existing bubble updates in place — the
+        // renderer reacts by drawing a check next to the CLI label and
+        // dimming the other text bubbles in this round. This is the
+        // only point where any event carries the verdict flag, so
+        // mid-stream nothing reads as final or intermediate.
+        if (a.lastTextAssistant) {
+          const verdict: StreamEvent = {
+            ...a.lastTextAssistant,
+            reviewer: { ...a.lastTextAssistant.reviewer!, verdict: true },
           };
-          session.active = undefined;
-          this.emitReview(conversationId, { cardId: a.cardId, info: final });
-          a.resolve(final);
-          break;
+          this.emit({ type: 'stream', conversationId, events: [verdict] });
         }
-        case 'error': {
-          const message = typeof params?.message === 'string' ? params.message : 'codex app-server error';
-          const final: ReviewInfo = {
-            backend: 'codex',
-            text: joinReviewerText(a.textByItem).trim(),
-            isRunning: false,
-            error: message,
-            startedAt: a.startedAt,
-            round: a.round,
-            mode: a.mode,
-          };
-          session.active = undefined;
-          this.emitReview(conversationId, { cardId: a.cardId, info: final });
-          a.resolve(final);
-          break;
-        }
+        const joined = joinAssistantTexts(a.assistantTextsById);
+        const final: ReviewInfo = {
+          backend: 'codex',
+          text: joined,
+          isRunning: false,
+          startedAt: a.startedAt,
+          round: a.round,
+          mode: a.mode,
+          raw: joined || undefined,
+        };
+        session.active = undefined;
+        a.resolve(final);
+      } else if (method === 'error') {
+        const message =
+          typeof params?.message === 'string' ? params.message : 'codex app-server error';
+        const joined = joinAssistantTexts(a.assistantTextsById);
+        const final: ReviewInfo = {
+          backend: 'codex',
+          text: joined,
+          isRunning: false,
+          error: message,
+          startedAt: a.startedAt,
+          round: a.round,
+          mode: a.mode,
+        };
+        session.active = undefined;
+        this.emitReviewerSystemNotice(conversationId, a, message);
+        a.resolve(final);
       }
     });
     // The reviewer runs autonomously — auto-decline any approval prompts
@@ -508,39 +538,40 @@ export class ReviewerManager {
       const a = session.active;
       if (!a) return;
       session.active = undefined;
-      const final: ReviewInfo = {
+      this.emitReviewerSystemNotice(conversationId, a, 'codex app-server closed');
+      a.resolve({
         backend: 'codex',
-        text: joinReviewerText(a.textByItem).trim(),
+        text: joinAssistantTexts(a.assistantTextsById),
         isRunning: false,
         error: 'codex app-server closed',
         startedAt: a.startedAt,
         round: a.round,
         mode: a.mode,
-      };
-      this.emitReview(conversationId, { cardId: a.cardId, info: final });
-      a.resolve(final);
+      });
     });
   }
 
-  private maybeEmitCodexReviewerProgress(
+  /// Surface a reviewer-side error/cancellation as a tagged systemNotice
+  /// so the chat shows what happened inline with the rebound block,
+  /// rather than silently dropping the round.
+  private emitReviewerSystemNotice(
     conversationId: UUID,
-    session: CodexReviewerSession,
+    a: CodexReviewerActiveTurn,
+    text: string,
   ): void {
-    const a = session.active;
-    if (!a) return;
-    const now = Date.now();
-    if (now - a.lastEmit < 100) return;
-    a.lastEmit = now;
-    this.emitReview(conversationId, {
-      cardId: a.cardId,
-      info: {
-        backend: 'codex',
-        text: joinReviewerText(a.textByItem),
-        isRunning: true,
-        startedAt: a.startedAt,
-        round: a.round,
-        mode: a.mode,
-      },
+    this.emit({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: randomUUID(),
+          timestamp: Date.now(),
+          raw: '',
+          kind: { type: 'systemNotice', text },
+          revision: 0,
+          reviewer: { backend: 'codex', round: a.round, mode: a.mode },
+        },
+      ],
     });
   }
 

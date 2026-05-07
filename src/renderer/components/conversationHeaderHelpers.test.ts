@@ -10,6 +10,7 @@ import {
 describe('modeLabel', () => {
   it('renders human-friendly names for each mode', () => {
     expect(modeLabel('plan')).toBe('Plan');
+    expect(modeLabel('auto')).toBe('Auto');
     expect(modeLabel('acceptEdits')).toBe('Accept edits');
     expect(modeLabel('bypassPermissions')).toBe('Bypass (dangerous)');
     expect(modeLabel('default')).toBe('Default');
@@ -25,6 +26,7 @@ describe('permissionTone', () => {
   it('returns undefined for safe modes', () => {
     expect(permissionTone('plan')).toBeUndefined();
     expect(permissionTone('default')).toBeUndefined();
+    expect(permissionTone('auto')).toBeUndefined();
   });
 });
 

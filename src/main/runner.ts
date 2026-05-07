@@ -5,7 +5,7 @@
 // feed new user turns without respawning.
 
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -78,6 +78,14 @@ import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 
 type Emit = (event: MainToRendererEvent) => void;
+
+/// SHA-256 hex of a synthetic collab pingPrompt, used to mark it for
+/// skip-on-replay. Hashing keeps `Conversation.syntheticPrompts` bounded
+/// at 64 chars/entry regardless of prompt size, so a long collab
+/// session can't bloat persisted state.
+function hashSyntheticPrompt(prompt: string): string {
+  return createHash('sha256').update(prompt, 'utf8').digest('hex');
+}
 
 interface SendArgs {
   conversationId: UUID;
@@ -1111,6 +1119,11 @@ export class RunnerManager {
     ].join('\n');
 
     this.emit({
+      type: 'syntheticPrompt',
+      conversationId: convId,
+      hash: hashSyntheticPrompt(pingPrompt),
+    });
+    this.emit({
       type: 'running',
       conversationId: convId,
       isRunning: true,
@@ -1670,6 +1683,11 @@ export class RunnerManager {
       `Please respond — either incorporate their feedback or push back with reasoning.`,
     ].join('\n');
 
+    this.emit({
+      type: 'syntheticPrompt',
+      conversationId: convId,
+      hash: hashSyntheticPrompt(pingPrompt),
+    });
     this.emit({
       type: 'running',
       conversationId: convId,
@@ -2307,6 +2325,12 @@ export class RunnerManager {
       `Please respond — either incorporate their feedback or push back with reasoning.`,
     ].join('\n');
 
+    this.emit({
+      type: 'syntheticPrompt',
+      conversationId: convId,
+      hash: hashSyntheticPrompt(pingPrompt),
+    });
+
     try {
       if (active.backend === 'gemini') {
         this.killProc(convId);
@@ -2533,6 +2557,8 @@ function geminiAcpPermissionMode(mode: PermissionMode): string {
       return 'autoEdit';
     case 'bypassPermissions':
       return 'yolo';
+    // `auto` is Claude-only; gemini ACP has no equivalent classifier mode.
+    case 'auto':
     case 'default':
     default:
       return 'default';

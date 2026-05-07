@@ -15,6 +15,9 @@ export function codexPermissionMapping(mode: PermissionMode): { sandbox: string;
       return { sandbox: 'workspace-write', approval: 'on-failure' };
     case 'bypassPermissions':
       return { sandbox: 'danger-full-access', approval: 'never' };
+    // `auto` is a Claude-only mode (Claude classifies each tool call itself).
+    // For other backends we fall back to default-mode semantics.
+    case 'auto':
     case 'default':
     default:
       return { sandbox: 'workspace-write', approval: 'on-request' };
@@ -34,6 +37,8 @@ export function geminiPermissionMapping(mode: PermissionMode): string {
       return 'auto_edit';
     case 'bypassPermissions':
       return 'yolo';
+    // `auto` is Claude-only; map to gemini's default approval flow.
+    case 'auto':
     case 'default':
     default:
       return 'default';

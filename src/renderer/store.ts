@@ -37,6 +37,8 @@ import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
   findConvWithProjectPath,
+  findOwnerProject,
+  isActiveConversation,
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
@@ -657,6 +659,20 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   selectConversation(id) {
+    // Skip the project's lastOpenedAt bump when the owning project
+    // already has *any* active conv (running or recently-active) — its
+    // sort position is already pinned by that conv, so re-selecting
+    // shouldn't shuffle the Projects list. We only bump when the
+    // project would otherwise be dormant, e.g. the user dug into it
+    // from "More projects" and we want it to surface.
+    const before = get();
+    const owningProject = id ? findOwnerProject(before, id) : null;
+    const projectAlreadyActive = owningProject
+      ? owningProject.conversations.some(
+          (c) => !c.hidden && isActiveConversation(c, !!getRunner(c.id)?.isRunning),
+        )
+      : false;
+    const bumpProject = !!id && !!owningProject && !projectAlreadyActive;
     set((s) => ({
       selectedConversationId: id,
       detailMode: id ? 'conversation' : s.detailMode,
@@ -666,14 +682,14 @@ export const useStore = create<StoreState>((set, get) => ({
       openFileHighlight: null,
       openFileMode: 'edit',
       lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
-      projects: id
+      projects: bumpProject
         ? s.projects.map((p) =>
             p.conversations.some((c) => c.id === id) ? { ...p, lastOpenedAt: Date.now() } : p,
           )
         : s.projects,
     }));
     window.overcli.invoke('store:saveSelection', id);
-    if (id && get().projects.some((p) => p.conversations.some((c) => c.id === id))) {
+    if (bumpProject) {
       void get().saveProjects();
     }
     if (id) {
@@ -1677,7 +1693,17 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async setPrimaryBackend(id, backend) {
-    mutateConversation(set, get, id, (c) => ({ ...c, primaryBackend: backend }));
+    mutateConversation(set, get, id, (c) => {
+      const next = { ...c, primaryBackend: backend };
+      // `auto` is Claude-only; switching to a non-Claude backend silently
+      // demotes it to `default` so the picker label and the actual
+      // mapped behaviour stay in sync.
+      if (backend !== 'claude') {
+        if (next.permissionMode === 'auto') next.permissionMode = 'default';
+        if (next.pendingPermissionMode === 'auto') next.pendingPermissionMode = undefined;
+      }
+      return next;
+    });
     await saveConversationState(get);
     // Auto-pick an Ollama model on first switch if none is set, so the
     // user doesn't hit "model required" on the first send.
@@ -2050,6 +2076,7 @@ export const useStore = create<StoreState>((set, get) => ({
       codexRolloutPaths: conv.codexRolloutPaths,
       conversationCreatedAt: conv.createdAt,
       conversationLastActiveAt: conv.lastActiveAt,
+      syntheticPrompts: conv.syntheticPrompts,
     });
     useRunnersStore.getState().patchRunner(conversationId, (existingRunner) => {
       // History events are inserted at the front; live events (if any came
@@ -2304,6 +2331,17 @@ export const useStore = create<StoreState>((set, get) => ({
         codexSandboxMode: event.sandbox,
         codexApprovalPolicy: event.approval,
       });
+    } else if (event.type === 'syntheticPrompt') {
+      // Record the hash on the conversation so history replay can skip
+      // the matching `role: 'user'` entry the primary CLI persisted —
+      // otherwise the wrapped reviewer feedback resurfaces as a
+      // misattributed user-style bubble after restart.
+      mutateConversation(set, get, event.conversationId, (c) => {
+        const existing = c.syntheticPrompts ?? [];
+        if (existing.includes(event.hash)) return c;
+        return { ...c, syntheticPrompts: [...existing, event.hash] };
+      });
+      void saveConversationState(get);
     } else if (event.type === 'ollamaServerStatus') {
       set({ ollamaServerStatus: event.status });
     }

@@ -9,6 +9,23 @@
 
 import type { Conversation, Project, UUID, Workspace } from '../shared/types';
 
+/// Window during which a conversation counts as "Active" — surfaces it
+/// in the top-of-sidebar Active section and suppresses redundant
+/// project reordering when it gets re-selected.
+export const ACTIVE_CONVERSATION_WINDOW_MS = 10 * 60 * 1000;
+
+export function conversationActivityAt(conv: Conversation): number {
+  return conv.lastActiveAt ?? conv.createdAt ?? 0;
+}
+
+export function isActiveConversation(
+  conv: Conversation,
+  isRunning: boolean,
+  cutoff: number = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS,
+): boolean {
+  return isRunning || conversationActivityAt(conv) >= cutoff;
+}
+
 export type ConvLocation =
   | { kind: 'project'; project: Project; conversation: Conversation }
   | { kind: 'workspace'; workspace: Workspace; conversation: Conversation };

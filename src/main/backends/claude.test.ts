@@ -72,6 +72,17 @@ describe('claudeBackend.buildArgs', () => {
     expect(a).not.toContain('--permission-prompt-tool');
   });
 
+  it('passes --permission-mode auto and keeps MCP wiring', () => {
+    // Claude classifies tool calls itself in auto mode but may still
+    // route ambiguous cases through our prompt tool, so we leave the
+    // MCP wiring in place.
+    const a = claudeBackend.buildArgs({ ...baseArgs, permissionMode: 'auto' }, withMcpCtx);
+    expect(a).toContain('--permission-mode');
+    expect(a).toContain('auto');
+    expect(a).toContain('--mcp-config');
+    expect(a).toContain('--permission-prompt-tool');
+  });
+
   it('appends --add-dir for each normalized allowed dir', () => {
     const a = claudeBackend.buildArgs(
       { ...baseArgs, allowedDirs: ['/opt/shared', '/tmp/project', '/tmp/other'] },

@@ -4,6 +4,8 @@ export function modeLabel(mode: PermissionMode): string {
   switch (mode) {
     case 'plan':
       return 'Plan';
+    case 'auto':
+      return 'Auto';
     case 'acceptEdits':
       return 'Accept edits';
     case 'bypassPermissions':

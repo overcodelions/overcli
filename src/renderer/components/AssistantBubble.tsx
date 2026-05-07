@@ -18,9 +18,16 @@ const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
 export function AssistantBubble({
   info,
   toolResultIndex,
+  endorsed,
+  endorsementTint,
 }: {
   info: AssistantEventInfo;
   toolResultIndex?: Map<string, ToolResultBlock>;
+  /// When true, render a small check next to the CLI label inside the
+  /// bubble. Used by the rebound renderer to mark the verdict bubble
+  /// of a completed reviewer round.
+  endorsed?: boolean;
+  endorsementTint?: string;
 }) {
   const openFile = useStore((s) => s.openFile);
   const showToolActivity = useStore((s) => s.showToolActivity);
@@ -59,9 +66,30 @@ export function AssistantBubble({
             style={{ background: tint + 'cc' }}
           />
           <div className="px-4 py-2.5 pl-[14px]" ref={renderedRef}>
-            {info.model && (
-              <div className="text-[10px] font-medium mb-1" style={{ color: tint }}>
-                {shortModel(info.model)}
+            {(info.model || endorsed) && (
+              <div
+                className="text-[10px] font-medium mb-1 flex items-center gap-1"
+                style={{ color: tint }}
+              >
+                {info.model && <span>{shortModel(info.model)}</span>}
+                {endorsed && (
+                  <svg
+                    width="11"
+                    height="11"
+                    viewBox="0 0 16 16"
+                    fill="none"
+                    aria-label="verdict"
+                    style={{ color: endorsementTint ?? tint }}
+                  >
+                    <path
+                      d="M3.5 8.5L6.5 11.5L12.5 4.5"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                )}
               </div>
             )}
             <Markdown source={info.text} onOpenPath={(p) => handleOpenPath(p, openFile)} />

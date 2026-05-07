@@ -33,7 +33,7 @@ describe('codexBackend.buildArgs', () => {
   });
 
   it('always forces approval=never on the exec transport', () => {
-    for (const mode of ['default', 'plan', 'acceptEdits', 'bypassPermissions'] as const) {
+    for (const mode of ['default', 'plan', 'auto', 'acceptEdits', 'bypassPermissions'] as const) {
       const a = codexBackend.buildArgs({ ...baseArgs, permissionMode: mode }, noTranscriptCtx);
       const aIdx = a.indexOf('-a');
       expect(a[aIdx + 1]).toBe('never');
@@ -44,6 +44,8 @@ describe('codexBackend.buildArgs', () => {
     const cases: Array<[BackendSendArgs['permissionMode'], string]> = [
       ['plan', 'read-only'],
       ['default', 'workspace-write'],
+      // `auto` is Claude-only; codex falls back to default sandbox.
+      ['auto', 'workspace-write'],
       ['acceptEdits', 'workspace-write'],
       ['bypassPermissions', 'danger-full-access'],
     ];
