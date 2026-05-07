@@ -607,6 +607,15 @@ export interface IPCInvokeMap {
   'skills:uninstallByPath': (args: {
     path: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Copies an MCP server config from one CLI to another, translating
+  /// between JSON (`mcpServers`) and TOML (`[mcp_servers.<name>]`) as
+  /// needed. The source CLI must already have the server configured;
+  /// the target CLI gets it added (or replaced if already present).
+  'capabilities:copyMcp': (args: {
+    name: string;
+    fromCli: Backend;
+    toCli: Backend;
+  }) => { ok: true } | { ok: false; error: string };
   'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>

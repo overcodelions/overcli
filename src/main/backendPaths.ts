@@ -38,10 +38,30 @@ function nodeVersionBins(root: string, binFromVersionDir: (versionDir: string) =
   } catch {
     return [];
   }
+  // Sort newest-first by version number. A naive `.sort().reverse()` is
+  // lexicographic — "v8.9.0" > "v22.16.0" because '8' > '2' character-wise —
+  // which puts ancient nvm versions ahead of modern ones on PATH and breaks
+  // shebangs like `#!/usr/bin/env node`.
   return versions
-    .sort()
-    .reverse()
+    .slice()
+    .sort(compareNodeVersionsDesc)
     .map((version) => binFromVersionDir(path.join(root, version)));
+}
+
+function compareNodeVersionsDesc(a: string, b: string): number {
+  const pa = parseVersionTuple(a);
+  const pb = parseVersionTuple(b);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pb[i] - pa[i];
+  }
+  // Same numeric tuple: fall back to lexicographic so prereleases are stable.
+  return b.localeCompare(a);
+}
+
+function parseVersionTuple(name: string): [number, number, number] {
+  const match = name.match(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  if (!match) return [-1, -1, -1];
+  return [Number(match[1] ?? 0), Number(match[2] ?? 0), Number(match[3] ?? 0)];
 }
 
 function commonBinDirs(backend: Backend): string[] {
@@ -135,6 +155,23 @@ export function resolveBackendPath(
     if (existsExecutable(candidate)) return candidate;
   }
   return null;
+}
+
+/// Returns every executable backend candidate visible to the resolver,
+/// in priority order (PATH → common dirs → platform `where`). Used by
+/// callers that need to pick a *specific* candidate from the list (e.g.
+/// codex preferring an app-server-capable binary when several versions
+/// are installed) rather than the first match `resolveBackendPath`
+/// would return.
+export function listBackendPathCandidates(
+  backend: Backend,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return unique([
+    ...pathBinCandidates(backend, env),
+    ...commonBinCandidates(backend),
+    ...whereCandidates(backend, env),
+  ]).filter(existsExecutable);
 }
 
 export function buildBackendEnv(

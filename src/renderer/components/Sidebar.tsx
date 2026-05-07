@@ -591,20 +591,20 @@ function ProjectGroup({
           <span className="text-xs font-medium truncate">{project.name}</span>
         </button>
         <button
+          onClick={onNewConversation}
+          className="w-6 h-6 flex items-center justify-center rounded text-accent hover:text-accent hover:bg-card-strong [filter:drop-shadow(0_0_3px_rgba(125,200,255,0.7))] hover:[filter:drop-shadow(0_0_5px_rgba(125,200,255,0.9))]"
+          title="New conversation"
+          aria-label={`New conversation in ${project.name}`}
+        >
+          <PlusIcon />
+        </button>
+        <button
           onClick={onExplore}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
           title="Explore files"
           aria-label={`Explore files in ${project.name}`}
         >
           <SearchIcon />
-        </button>
-        <button
-          onClick={onNewConversation}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-          title="New conversation"
-          aria-label={`New conversation in ${project.name}`}
-        >
-          <PlusIcon />
         </button>
         <button
           onClick={() => setConfirmRemove(true)}
@@ -1071,12 +1071,12 @@ function WorkspaceGroup({
           <span className="text-xs font-medium truncate">{workspace.name}</span>
         </button>
         <button
-          onClick={onEdit}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-muted opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-          title="Edit workspace member projects"
-          aria-label={`Edit workspace ${workspace.name}`}
+          onClick={onNewConversation}
+          className="w-6 h-6 flex items-center justify-center rounded text-accent hover:text-accent hover:bg-card-strong [filter:drop-shadow(0_0_3px_rgba(125,200,255,0.7))] hover:[filter:drop-shadow(0_0_5px_rgba(125,200,255,0.9))]"
+          title="New conversation"
+          aria-label={`New conversation in ${workspace.name}`}
         >
-          <PencilIcon />
+          <PlusIcon />
         </button>
         {onExplore && (
           <button
@@ -1089,12 +1089,12 @@ function WorkspaceGroup({
           </button>
         )}
         <button
-          onClick={onNewConversation}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
-          title="New conversation"
-          aria-label={`New conversation in ${workspace.name}`}
+          onClick={onEdit}
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-muted opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
+          title="Edit workspace member projects"
+          aria-label={`Edit workspace ${workspace.name}`}
         >
-          <PlusIcon />
+          <PencilIcon />
         </button>
         <button
           onClick={() => setConfirmRemove(true)}
