@@ -197,6 +197,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
                   <ToolUseCard
                     use={currentReveal}
                     result={toolResultIndex.get(currentReveal.id)}
+                    compact
                   />
                 </div>
               )}

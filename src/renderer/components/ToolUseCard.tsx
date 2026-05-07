@@ -7,7 +7,19 @@ import { Diff } from './DiffView';
 /// edits, bash commands, reads) branch by `use.name`. The optional
 /// `result` is the tool's return value — specialized cards use it to
 /// inline a ✓/✗ badge instead of showing the result as a separate row.
-export function ToolUseCard({ use, result }: { use: ToolUseBlock; result?: ToolResultBlock }) {
+///
+/// `compact` collapses the card to a single header row — used by the
+/// transient "now doing" slot, which is hard-clipped to ~3rem so all
+/// cards in that slot share a stable footprint.
+export function ToolUseCard({
+  use,
+  result,
+  compact = false,
+}: {
+  use: ToolUseBlock;
+  result?: ToolResultBlock;
+  compact?: boolean;
+}) {
   const openFile = useStore((s) => s.openFile);
   const args = parseInput(use.inputJSON);
 
@@ -24,7 +36,7 @@ export function ToolUseCard({ use, result }: { use: ToolUseBlock; result?: ToolR
     return <FileReadCard use={use} args={args} result={result} onOpen={(p) => openFile(p)} />;
   }
   if (use.name === 'Bash') {
-    return <BashCard args={args} result={result} />;
+    return <BashCard args={args} result={result} compact={compact} />;
   }
   if (use.name === 'TodoWrite') {
     return <TodoWriteCard args={args} />;
@@ -359,11 +371,36 @@ function FileReadCard({ use, args, result, onOpen }: { use: ToolUseBlock; args: 
   );
 }
 
-function BashCard({ args, result }: { args: Record<string, any>; result?: ToolResultBlock }) {
+function BashCard({
+  args,
+  result,
+  compact = false,
+}: {
+  args: Record<string, any>;
+  result?: ToolResultBlock;
+  compact?: boolean;
+}) {
   const cmd = typeof args.command === 'string' ? args.command : '';
   const [showOutput, setShowOutput] = useState(false);
   const hasOutput = !!result?.content && result.content.trim().length > 0;
   const isError = !!result?.isError;
+  // Compact: collapse to a single header row for the transient "now
+  // doing" slot, which clips at 3rem. Header shows description (or the
+  // command itself as a fallback) so the slot still tells the user what
+  // bash is running without spilling onto a clipped second row.
+  if (compact) {
+    return (
+      <div className="rounded-lg bg-card text-xs overflow-hidden">
+        <div className="flex items-center gap-2 px-3 py-1.5">
+          <span className="text-purple-400 text-[10px] uppercase tracking-wide font-medium">Bash</span>
+          <span className="text-ink-faint truncate text-[10px] flex-1 min-w-0">
+            {args.description || cmd}
+          </span>
+          <StatusBadge result={result} />
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="rounded-lg bg-card text-xs overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-1.5">
