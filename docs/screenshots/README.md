@@ -1,12 +1,20 @@
 # Screenshots
 
-The top-level `README.md` references three images in this directory. Drop PNG captures at these paths and they'll render:
+The top-level `README.md` references these images. Drop PNG captures at these paths and they'll render on GitHub.
 
-| Path | Shows | Suggested size |
-|---|---|---|
-| `chat.png` | The main chat view — sidebar + one backend streaming a turn with tool cards and diffs | 1840 × 1200 (2× @ 920) |
-| `colosseum.png` | Colosseum mode — the same prompt running against every backend in parallel | 1840 × 1200 |
-| `local.png` | The Local pane — Ollama catalog, live server logs, GPU readout | 1840 × 1200 |
+| Path | Shows |
+|---|---|
+| `welcome.png` | Welcome screen — Projects / Agents / Workspaces cards (dark) |
+| `chat-light.png` | Chat with thinking block streaming + changes bar (light) |
+| `chat-diff-light.png` | Chat + side-by-side file diff pane (light) |
+| `chat-result-dark.png` | Chat with full markdown result rendered (dark) |
+| `colosseum.png` | New Colosseum modal with two contenders (dark) |
+| `rebound-popover.png` | Rebound config popover — reviewer + mode + rounds (light) |
+| `rebound-collab-1.png` | Codex ↔ Claude collab transcript, mid-rounds (dark) |
+| `rebound-collab-2.png` | Codex ↔ Claude collab transcript, later rounds (dark) |
+| `settings-backends.png` | Settings → Backends pane with health badges (dark) |
+
+All images are sized at 920px in the README. Source captures are typically 2× that on Retina displays.
 
 ## Capture recipe
 
@@ -14,23 +22,19 @@ On macOS, the cleanest captures come from `Cmd+Shift+4` → `Space` → click th
 
 ```bash
 # Quick save directly into this folder (macOS):
-screencapture -o -W ~/git-services/overcli/docs/screenshots/chat.png
-screencapture -o -W ~/git-services/overcli/docs/screenshots/colosseum.png
-screencapture -o -W ~/git-services/overcli/docs/screenshots/local.png
+screencapture -o -W ~/git-services/overcli/docs/screenshots/<name>.png
 ```
 
 `-W` lets you click the window to select it; `-o` omits the window shadow so the PNG is a clean rectangle.
 
 ## Before capturing
 
-For consistent marketing images:
+- Pick a theme intentionally (the README mixes light and dark on purpose).
+- Use `~1440 × 960` logical (Retina captures double to `2880 × 1920`).
+- Seed a workspace with realistic-looking projects and a short conversation — no real customer data, internal repo names, or PII in file paths.
+- Expand the active project in the sidebar; collapse the rest.
+- For rebound/collab shots, run a real prompt long enough for a few rounds to land.
 
-- **Theme**: dark mode (`⌘,` → Settings → Theme → Dark).
-- **Window size**: ~1440 × 960 logical (Retina captures double to 2880 × 1920, which crops well to the suggested 1840 × 1200).
-- **Sample data**: seed a workspace with a couple of projects and a short realistic conversation — avoid anything with real customer data, internal repo names, or PII in file paths.
-- **Sidebar**: expand the active project so nested conversations show; collapse the rest.
-- **Usage widget** (for `local.png` especially): let the backend run a real small prompt first so the GPU readout populates.
+## Adding more
 
-## Also welcome
-
-If you capture more views (permission card, approval card, rebound review, worktree diff, extensions browser, etc.), drop them here and reference them in the README — the more the project looks real on GitHub, the better. Name them `kebab-case.png` and add a row to the main README's Screenshots section.
+Drop new PNGs here and add a row to the table above + a `<p align="center">…</p>` block in the top-level README. Use `kebab-case.png`.

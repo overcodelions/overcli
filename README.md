@@ -37,21 +37,49 @@
 ## Screenshots
 
 <p align="center">
-  <em>Chat — one window for every coding agent you already use.</em><br />
-  <img alt="Overcli chat view" src="docs/screenshots/chat.png" width="920" />
+  <em>Welcome — pick a project, an agent, or a workspace and you're in.</em><br />
+  <img alt="Overcli welcome screen" src="docs/screenshots/welcome.png" width="920" />
 </p>
 
 <p align="center">
-  <em>Colosseum — same prompt, every backend in parallel.</em><br />
-  <img alt="Overcli colosseum" src="docs/screenshots/colosseum.png" width="920" />
+  <em>Chat (light) — thinking blocks stream live; the changes bar above the composer counts what the turn has touched.</em><br />
+  <img alt="Overcli chat — thinking" src="docs/screenshots/chat-light.png" width="920" />
 </p>
 
 <p align="center">
-  <em>Local — a real UI for your Ollama install.</em><br />
-  <img alt="Overcli local pane" src="docs/screenshots/local.png" width="920" />
+  <em>Side-by-side diff — file edits open inline without leaving the conversation.</em><br />
+  <img alt="Overcli chat with diff pane" src="docs/screenshots/chat-diff-light.png" width="920" />
 </p>
 
-> Screenshots live in `docs/screenshots/`. If you're reading this and the images are missing, drop captures at those paths and they'll light up.
+<p align="center">
+  <em>Same flow, dark theme — the agent's full report rendered with markdown, code, and lists.</em><br />
+  <img alt="Overcli chat result — dark" src="docs/screenshots/chat-result-dark.png" width="920" />
+</p>
+
+<p align="center">
+  <em>Colosseum — same prompt against every backend, in parallel git worktrees.</em><br />
+  <img alt="Overcli colosseum dialog" src="docs/screenshots/colosseum.png" width="920" />
+</p>
+
+<p align="center">
+  <em>Rebound — pick a reviewer, a mode (review or collab), and a round budget.</em><br />
+  <img alt="Overcli rebound configuration" src="docs/screenshots/rebound-popover.png" width="920" />
+</p>
+
+<p align="center">
+  <em>Collab mode — primary and reviewer ping-pong with their thinking on display.</em><br />
+  <img alt="Overcli rebound collab transcript" src="docs/screenshots/rebound-collab-1.png" width="920" />
+</p>
+
+<p align="center">
+  <em>...round after round, until the reviewer is satisfied or the budget runs out.</em><br />
+  <img alt="Overcli rebound collab — later rounds" src="docs/screenshots/rebound-collab-2.png" width="920" />
+</p>
+
+<p align="center">
+  <em>Settings — toggle backends, override CLI paths, see live health badges.</em><br />
+  <img alt="Overcli settings — backends" src="docs/screenshots/settings-backends.png" width="920" />
+</p>
 
 ## Features
 
@@ -66,7 +94,7 @@
 | 07 | **Permission & approval** | Claude permission prompts and Codex approval cards (exec + apply_patch) are proper UI elements, not modal interruptions. |
 | 08 | **History from disk** | Reads prior transcripts straight out of `~/.claude/projects`, `~/.codex/sessions`, and `~/.gemini/tmp`. Nothing re-invented. |
 | 09 | **File editor** | Syntax highlighting, line-range highlighting, HTML & Markdown preview tabs. No context-switch to VS Code. |
-| 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Rescan on demand. |
+| 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Copy an MCP server from one CLI to the others in a click. Rescan on demand. |
 | 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher. |
 | 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
 | 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
@@ -94,7 +122,7 @@ Overcli is a thin GUI over CLIs you install separately. Install whichever ones y
 
 | Backend | CLI | Install |
 |---|---|---|
-| Claude | `claude` | `npm i -g @anthropic-ai/claude-cli` |
+| Claude | `claude` | `npm i -g @anthropic-ai/claude-code` |
 | Codex | `codex` | `npm i -g @openai/codex` |
 | Gemini | `gemini` | `npm i -g @google/gemini-cli` |
 | Ollama | `ollama` | [ollama.com](https://ollama.com) |
@@ -171,17 +199,20 @@ See [electron-builder's code-signing docs](https://www.electron.build/code-signi
 src/
   shared/        types shared by main + renderer (the IPC wire contract)
   main/          Electron main process
-    index.ts       app lifecycle, IPC handlers, window
-    runner.ts      subprocess manager per conversation
-    parsers/       claude / codex / gemini stream-event parsers
-    history.ts     load prior transcripts from disk
-    store.ts       on-disk persistence (single overcli.json)
-    git.ts         worktree ops for agent conversations
-    stats.ts       usage aggregation
-    health.ts      backend ready / unauth / missing probes
-    workspace.ts   workspace model (projects-of-projects)
-    reviewer.ts    rebound-review orchestration
-    ollama.ts      Ollama model catalog + server control
+    index.ts             app lifecycle, IPC handlers, window
+    runner.ts            subprocess manager per conversation
+    codex-app-server.ts  Codex app-server transport (replaces stdio for codex)
+    backends/            per-backend adapters (claude / codex / gemini / ollama)
+    parsers/             stream-event parsers, one per backend
+    history.ts           load prior transcripts from disk
+    store.ts             on-disk persistence (single overcli.json)
+    git.ts               worktree ops for agent conversations
+    stats.ts             usage aggregation
+    health.ts            backend ready / unauth / missing probes
+    workspace.ts         workspace model (projects-of-projects)
+    reviewer.ts          rebound-review orchestration
+    ollama.ts            Ollama model catalog + server control
+    mcpConfig.ts         cross-CLI MCP server config sync
   preload/       contextBridge exposing `window.overcli`
   renderer/      React app
     App.tsx, components/, store.ts (Zustand), theme.ts, hooks.ts
@@ -192,8 +223,8 @@ src/
 ### How a turn flows
 
 1. User types in the composer; the renderer IPCs the message to main.
-2. `runner.ts` spawns (or reuses) the appropriate CLI subprocess.
-3. The CLI's stream events hit `parsers/<backend>.ts`, which normalises them into a backend-agnostic `TurnEvent` stream.
+2. The matching backend adapter in `backends/` opens (or reuses) a session — a CLI subprocess for claude/gemini/ollama, the app-server channel for codex.
+3. Stream events hit `parsers/<backend>.ts`, which normalise them into a backend-agnostic `TurnEvent` stream.
 4. Those events flow back to the renderer and become tool cards, message bubbles, approval cards, and diffs in `ChatView.tsx`.
 5. On completion, `stats.ts` records the turn; `reviewer.ts` optionally kicks off a rebound review on a second backend.
 
@@ -202,9 +233,9 @@ src/
 Issues, bug reports, and PRs welcome — please open an issue first for anything non-trivial so we can talk about the shape of it. The app's built to be *explainable*, so expect review comments asking "why this, not that."
 
 - [Open an issue](https://github.com/lionelfarr/overcli/issues/new)
-- Check existing issues and discussions before filing duplicates
-- Run `npm test` before submitting a PR
-- Follow the existing code style (TypeScript strict, no semicolons-optional drama, Prettier defaults via editor)
+- Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup and PR expectations
+- See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before participating
+- Found a security bug? Don't file a public issue — see [`SECURITY.md`](SECURITY.md)
 
 ## Not included (by choice)
 
