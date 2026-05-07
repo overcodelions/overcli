@@ -1229,15 +1229,8 @@ function ReboundRow({
 
 function CollabRoundsInput({ conversationId }: { conversationId: UUID }) {
   const conv = useConversation(conversationId);
-  const setRounds = (v: number) =>
-    useStore.setState((s) => ({
-      projects: s.projects.map((p) => ({
-        ...p,
-        conversations: p.conversations.map((c) =>
-          c.id === conversationId ? { ...c, collabMaxTurns: v } : c,
-        ),
-      })),
-    }));
+  const setCollabMaxTurns = useStore((s) => s.setCollabMaxTurns);
+  const setRounds = (v: number) => void setCollabMaxTurns(conversationId, v);
   // Default 3 pongs — the Swift build found that deeper collab loops
   // burned a lot of tokens without meaningfully improving the result.
   const v = conv?.collabMaxTurns ?? 3;

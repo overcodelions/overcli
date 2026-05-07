@@ -121,6 +121,41 @@ export function coordinatorRootPath(coordinatorId: string): string {
   return path.join(app.getPath('userData'), 'coordinators', coordinatorId);
 }
 
+/// Resolve the symlinks directly under `cwd` to their absolute target
+/// dirs. Used to expand a coordinator-style cwd (a folder of symlinks
+/// pointing at each member worktree) into a list of writable roots a
+/// codex sandbox needs, since codex's workspace-write only grants
+/// access to the cwd subtree — a write through a symlink resolves to
+/// the symlink's target path, which sits outside that subtree and
+/// would otherwise be denied. Returns an empty array if cwd doesn't
+/// exist, isn't a directory, or contains no link targets.
+export function resolveSymlinkWritableRoots(cwd: string): string[] {
+  if (!cwd) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(cwd, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out = new Set<string>();
+  for (const e of entries) {
+    if (!e.isSymbolicLink()) continue;
+    const link = path.join(cwd, e.name);
+    try {
+      const target = fs.realpathSync(link);
+      // Only directory targets matter for codex's writable-roots; a
+      // symlink to a file would just need its parent dir, but coordinator
+      // roots only ever link to dirs in practice.
+      const stat = fs.statSync(target);
+      if (stat.isDirectory()) out.add(target);
+    } catch {
+      // broken symlink — skip; codex will surface the error if the agent
+      // tries to use it.
+    }
+  }
+  return [...out];
+}
+
 /// A workspace-agent coordinator needs its own synthetic root whose
 /// symlinks point at each member's per-project WORKTREE rather than the
 /// main project tree. Without this the agent would edit files via the

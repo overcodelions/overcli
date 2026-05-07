@@ -44,7 +44,12 @@ import {
   makeSystemInitEvent,
   makeToolResultEvent,
 } from './parsers/ollama';
-import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
+import {
+  backendNeedsShell,
+  buildBackendEnv,
+  listBackendPathCandidates,
+  resolveBackendPath,
+} from './backendPaths';
 import {
   OLLAMA_CATALOG,
   OllamaChatMessage,
@@ -70,6 +75,7 @@ import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
 import type { BackendCtx, BackendSendArgs } from './backends';
+import { resolveSymlinkWritableRoots } from './workspace';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -248,6 +254,13 @@ export class RunnerManager {
   /// Per-conversation temp --mcp-config path for Claude's permission-prompt-tool.
   /// Present while the Claude subprocess is alive; cleared on close/kill.
   private claudeMcpByConv = new Map<UUID, string>();
+  /// Conversations whose next Claude turn has been requested but hasn't yet
+  /// reached the synchronous `sendSubprocess` step (broker prep in flight).
+  /// While set, swallow stray `running: false` emits from the *previous*
+  /// turn's subprocess close — otherwise a fast follow-up that arrives in
+  /// the gap between the old proc exiting and the new one spawning gets
+  /// its optimistic "Thinking…" strip clobbered.
+  private claudeSendPending = new Set<UUID>();
 
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
     this.emit = emit;
@@ -412,10 +425,12 @@ export class RunnerManager {
       // Claude needs an MCP permission-prompt server registered before the
       // subprocess starts so `--permission-prompt-tool` has something to
       // call. Do that async, then hand off to the standard subprocess path.
+      this.claudeSendPending.add(args.conversationId);
       void (async () => {
         try {
           await this.prepareClaudeBroker(args);
         } catch (err) {
+          this.claudeSendPending.delete(args.conversationId);
           this.emit({
             type: 'error',
             conversationId: args.conversationId,
@@ -424,6 +439,7 @@ export class RunnerManager {
           this.emit({ type: 'running', conversationId: args.conversationId, isRunning: false });
           return;
         }
+        this.claudeSendPending.delete(args.conversationId);
         this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted });
       })();
       return { ok: true };
@@ -436,6 +452,11 @@ export class RunnerManager {
     this.cancelGeminiAcp(conversationId);
     this.killProc(conversationId);
     this.killOllama(conversationId);
+    // Also halt any rebounding reviewer in flight; otherwise a Stop click
+    // during the "Rebounding…" phase doesn't actually stop the reviewer
+    // subprocess, and a collab-mode reviewer would still queue a next
+    // round when it finished after the user asked to stop.
+    this.reviewer.stop(conversationId);
     this.emit({ type: 'running', conversationId, isRunning: false });
   }
 
@@ -809,7 +830,17 @@ export class RunnerManager {
       });
       events.push(result);
       this.emit({ type: 'stream', conversationId: convId, events });
-      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      const handsOffToReviewer = !opts?.err && !!finalAssistantText && !!args.reviewBackend;
+      if (handsOffToReviewer) {
+        this.emit({
+          type: 'running',
+          conversationId: convId,
+          isRunning: true,
+          activityLabel: 'Rebounding…',
+        });
+      } else {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
       if (!opts?.err) {
         // Persist after the whole turn (including tool rounds) finishes.
         saveOllamaSession({
@@ -821,7 +852,7 @@ export class RunnerManager {
       }
       if (session!.inFlight === controller) session!.inFlight = undefined;
 
-      if (!opts?.err && finalAssistantText && args.reviewBackend) {
+      if (handsOffToReviewer) {
         void this.runOllamaReviewHook({
           convId,
           session: session!,
@@ -1032,6 +1063,8 @@ export class RunnerManager {
     const capturedBurst = session.collabBurst;
     const capturedRound = session.collabRoundsInBurst + 1;
     session.collabRoundsInBurst = capturedRound;
+    let nextRoundQueued = false;
+    try {
 
     const result = await this.reviewer.run({
       conversationId: convId,
@@ -1084,6 +1117,7 @@ export class RunnerManager {
       activityLabel: `Collab round ${capturedRound + 1}…`,
     });
 
+    nextRoundQueued = true;
     this.sendOllama(
       {
         conversationId: convId,
@@ -1100,6 +1134,11 @@ export class RunnerManager {
       },
       { syntheticFromCollab: true },
     );
+    } finally {
+      if (!nextRoundQueued) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
+    }
   }
 
   private async sendGeminiAcp(
@@ -1195,7 +1234,17 @@ export class RunnerManager {
           },
         ],
       });
-      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      const handsOffToReviewer = !resultInfo.isError && !!session.reviewBackend;
+      if (handsOffToReviewer) {
+        this.emit({
+          type: 'running',
+          conversationId: convId,
+          isRunning: true,
+          activityLabel: 'Rebounding…',
+        });
+      } else {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
       void this.maybeRunGeminiAcpReviewer(convId, session, resultInfo.isError);
       this.drainGeminiAcpQueue(convId);
     } catch (err: any) {
@@ -1583,6 +1632,8 @@ export class RunnerManager {
     const capturedBurst = session.collabBurst;
     const capturedRound = session.collabRoundsInBurst + 1;
     session.collabRoundsInBurst = capturedRound;
+    let nextRoundQueued = false;
+    try {
 
     const result = await this.reviewer.run({
       conversationId: convId,
@@ -1608,6 +1659,8 @@ export class RunnerManager {
     if (result.error || !result.text.trim()) return;
     if (capturedRound >= (session.collabMaxTurns || 3)) return;
     if (this.geminiAcpSessions.get(convId) !== session) return;
+
+    nextRoundQueued = true;
 
     const pingPrompt = [
       `The secondary reviewer (${session.reviewBackend}) had this take on your last turn:`,
@@ -1641,6 +1694,11 @@ export class RunnerManager {
       },
       { syntheticFromCollab: true, userEventAlreadyEmitted: true },
     );
+    } finally {
+      if (!nextRoundQueued) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
+    }
   }
 
   private spawnFor(args: SendArgs): ActiveProcess {
@@ -1793,7 +1851,16 @@ export class RunnerManager {
       );
 
       if (turnEnded) {
-        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+        if (active.reviewBackend) {
+          this.emit({
+            type: 'running',
+            conversationId: convId,
+            isRunning: true,
+            activityLabel: 'Rebounding…',
+          });
+        } else {
+          this.emit({ type: 'running', conversationId: convId, isRunning: false });
+        }
         void this.maybeRunReviewer(convId, active);
       } else if (asksQuestion && active.backend === 'claude') {
         this.killProc(convId);
@@ -1826,11 +1893,36 @@ export class RunnerManager {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
     }
-    this.emit({
-      type: 'running',
-      conversationId,
-      isRunning: false,
-    });
+    // Skip the running:false emit only when a fresh Claude send is
+    // mid-flight on this same conversation AND the closing proc was the
+    // previous Claude turn. The flag is Claude-specific (codex/gemini
+    // don't use it), so closes from other backends always emit normally.
+    const skipRunningFalse =
+      active.backend === 'claude' && this.claudeSendPending.has(conversationId);
+    // Codex exec close fires the reviewer right below for code===0 — keep
+    // the running indicator on (as "Rebounding…") so the sidebar doesn't
+    // flicker idle between primary close and reviewer launch.
+    const codexExecHandsOffToReviewer =
+      active.backend === 'codex' &&
+      active.codexMode === 'exec' &&
+      code === 0 &&
+      !!active.reviewBackend;
+    if (!skipRunningFalse) {
+      if (codexExecHandsOffToReviewer) {
+        this.emit({
+          type: 'running',
+          conversationId,
+          isRunning: true,
+          activityLabel: 'Rebounding…',
+        });
+      } else {
+        this.emit({
+          type: 'running',
+          conversationId,
+          isRunning: false,
+        });
+      }
+    }
     if (active.backend === 'codex' && active.codexMode === 'exec') {
       this.emit({
         type: 'stream',
@@ -1901,10 +1993,32 @@ export class RunnerManager {
 
   private resolveBinary(backend: Backend): string {
     const settings = this.settingsProvider();
-    const resolved = resolveBackendPath(backend, settings.backendPaths[backend]);
+    const override = settings.backendPaths[backend];
+    if (backend === 'codex' && !override) {
+      const picked = this.pickCodexBinary();
+      if (picked) return picked;
+    }
+    const resolved = resolveBackendPath(backend, override);
     if (resolved) return resolved;
     // Last resort: hope it's on PATH (which we extend via buildEnv).
     return backend;
+  }
+
+  /// codex 0.30+ ships an `app-server` transport that overcli prefers; older
+  /// builds (e.g. homebrew 0.29) only have `exec`, which fails outside a
+  /// trusted git repo. When multiple codex binaries are installed (common
+  /// when `npm i -g @openai/codex` lands a fresh one alongside a stale
+  /// homebrew install), PATH order alone can pick the older one. Walk
+  /// every visible candidate and return the first that supports
+  /// app-server; null falls back to the default first-match resolver.
+  private pickCodexBinary(): string | null {
+    const env = buildBackendEnv(process.env);
+    for (const candidate of listBackendPathCandidates('codex', env)) {
+      if (this.detectCodexCapabilities(candidate, env).hasAppServer) {
+        return candidate;
+      }
+    }
+    return null;
   }
 
   private detectCodexCapabilities(
@@ -2019,6 +2133,10 @@ export class RunnerManager {
         approval: transport.approval as CodexAppServerApprovalPolicy,
         effortLevel: args.effortLevel,
         attachments: args.attachments,
+        // For coordinator-style cwds (a folder of symlinks into each
+        // member worktree) workspace-write would otherwise sandbox out
+        // edits whose path resolved through a symlink.
+        writableRoots: resolveSymlinkWritableRoots(args.cwd),
       });
       // Update on any threadId we don't already have. The fresh-conv
       // case (no prior sessionId) is the original trigger; the
@@ -2133,6 +2251,12 @@ export class RunnerManager {
     const capturedBurst = active.collabBurst;
     const capturedRound = active.collabRoundsInBurst + 1;
     active.collabRoundsInBurst = capturedRound;
+    // Track whether we kicked off another collab round. If we don't,
+    // the conversation has truly settled and the running indicator
+    // (which we left on as "Rebounding…" at turn end) needs to flip
+    // back to false so the sidebar doesn't read as perpetually busy.
+    let nextRoundQueued = false;
+    try {
 
     const result = await this.reviewer.run({
       conversationId: convId,
@@ -2170,6 +2294,8 @@ export class RunnerManager {
     if (result.error || !result.text.trim()) return;
     if (capturedRound >= (active.collabMaxTurns || 3)) return;
     if (!this.procs.get(convId) || this.procs.get(convId) !== active) return;
+
+    nextRoundQueued = true;
 
     // Build a ping-pong prompt. Make it clear to the primary who is
     // speaking so the loop reads coherently in the chat.
@@ -2247,6 +2373,11 @@ export class RunnerManager {
     } catch {
       // If stdin died, skip silently; the session already reported the
       // failure via the process close handler.
+    }
+    } finally {
+      if (!nextRoundQueued) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
     }
   }
 

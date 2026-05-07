@@ -281,6 +281,7 @@ interface StoreState {
   setEffortLevel(id: UUID, effort: EffortLevel): Promise<void>;
   setReviewBackend(id: UUID, backend: string | null): Promise<void>;
   setReviewMode(id: UUID, mode: 'review' | 'collab'): Promise<void>;
+  setCollabMaxTurns(id: UUID, turns: number): Promise<void>;
   setReviewOllamaModel(id: UUID, model: string | null): Promise<void>;
   setReviewYolo(id: UUID, yolo: boolean): Promise<void>;
   renameConversation(id: UUID, name: string): Promise<void>;
@@ -1740,6 +1741,10 @@ export const useStore = create<StoreState>((set, get) => ({
       // time. Deeper loops rarely help and burn tokens.
       collabMaxTurns: mode === 'collab' && (c.collabMaxTurns == null) ? 3 : c.collabMaxTurns,
     }));
+    await saveConversationState(get);
+  },
+  async setCollabMaxTurns(id, turns) {
+    mutateConversation(set, get, id, (c) => ({ ...c, collabMaxTurns: turns }));
     await saveConversationState(get);
   },
   async setReviewOllamaModel(id, model) {
