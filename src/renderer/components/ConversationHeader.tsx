@@ -8,7 +8,23 @@ import {
   useRunnerIsRunning,
   useRunnersStore,
 } from '../runnersStore';
-import { Backend, Conversation, PermissionMode, UUID, EffortLevel, StreamEvent } from '@shared/types';
+import {
+  Backend,
+  Conversation,
+  PermissionMode,
+  PersonaKey,
+  ReviewPreset,
+  UUID,
+  EffortLevel,
+  StreamEvent,
+} from '@shared/types';
+import {
+  PERSONA_DISPLAY,
+  PERSONA_REQUIRES_CODE_CHANGES,
+  PRESETS,
+  TIERS,
+  modelTier,
+} from '@shared/reboundPresets';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
@@ -46,6 +62,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     setModel,
     setReviewBackend,
     setReviewMode,
+    setReviewModel,
+    setReviewPersona,
+    setReviewPreset,
     setReviewOllamaModel,
     setReviewYolo,
     promoteReviewAgent,
@@ -70,6 +89,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       setModel: s.setBackendModel,
       setReviewBackend: s.setReviewBackend,
       setReviewMode: s.setReviewMode,
+      setReviewModel: s.setReviewModel,
+      setReviewPersona: s.setReviewPersona,
+      setReviewPreset: s.setReviewPreset,
       setReviewOllamaModel: s.setReviewOllamaModel,
       setReviewYolo: s.setReviewYolo,
       promoteReviewAgent: s.promoteReviewAgent,
@@ -264,6 +286,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             installedReviewers={installedReviewers}
             onSelectBackend={(b) => void setReviewBackend(conversationId, b)}
             onSelectMode={(m) => void setReviewMode(conversationId, m)}
+            onSelectModel={(m) => void setReviewModel(conversationId, m)}
+            onSelectPersona={(p) => void setReviewPersona(conversationId, p)}
+            onSelectPreset={(p) => void setReviewPreset(conversationId, p)}
             onSelectOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
             onToggleYolo={(v) => void setReviewYolo(conversationId, v)}
           />
@@ -391,6 +416,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           onModelChange={(b, m) => void setModel(conversationId, b, m)}
           onSelectReviewBackend={(b) => void setReviewBackend(conversationId, b)}
           onSelectReviewMode={(m) => void setReviewMode(conversationId, m)}
+          onSelectReviewModel={(m) => void setReviewModel(conversationId, m)}
+          onSelectReviewPersona={(p) => void setReviewPersona(conversationId, p)}
+          onSelectReviewPreset={(p) => void setReviewPreset(conversationId, p)}
           onSelectReviewOllamaModel={(m) => void setReviewOllamaModel(conversationId, m)}
           onToggleReviewYolo={(v) => void setReviewYolo(conversationId, v)}
         />
@@ -967,16 +995,28 @@ type ReboundConv = {
   id: UUID;
   reviewBackend?: string | null;
   reviewMode?: 'review' | 'collab' | null;
+  reviewPreset?: ReviewPreset | null;
+  reviewModel?: string | null;
+  reviewPersona?: PersonaKey | null;
   collabMaxTurns?: number | null;
   reviewOllamaModel?: string | null;
   reviewYolo?: boolean | null;
   primaryBackend?: Backend;
+  /// Per-backend primary model — the panel reads whichever matches
+  /// the primary backend to gate cheap-paranoid (only enabled when
+  /// the primary is on the cheap tier) and to label the chosen model.
+  claudeModel?: string;
+  codexModel?: string;
+  geminiModel?: string;
 };
 
 interface ReboundHandlers {
   installedReviewers: Record<string, boolean>;
   onSelectBackend: (b: string | null) => void;
   onSelectMode: (m: 'review' | 'collab') => void;
+  onSelectModel: (m: string | null) => void;
+  onSelectPersona: (p: PersonaKey | null) => void;
+  onSelectPreset: (p: ReviewPreset | 'off') => void;
   onSelectOllamaModel: (m: string | null) => void;
   onToggleYolo: (v: boolean) => void;
 }
@@ -986,6 +1026,9 @@ function ReboundPanel({
   installedReviewers,
   onSelectBackend,
   onSelectMode,
+  onSelectModel,
+  onSelectPersona,
+  onSelectPreset,
   onSelectOllamaModel,
   onToggleYolo,
 }: { conv: ReboundConv } & ReboundHandlers) {
@@ -1008,138 +1051,303 @@ function ReboundPanel({
   const active = !!conv.reviewBackend;
   const primary = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
   const candidates = enabledBackends(settings).filter((b) => b !== primary);
+  const primaryModel =
+    primary === 'codex'
+      ? conv.codexModel
+      : primary === 'gemini'
+      ? conv.geminiModel
+      : primary === 'claude'
+      ? conv.claudeModel
+      : undefined;
+  const primaryTier = modelTier(primary, primaryModel);
+  const selectedPreset: ReviewPreset | 'off' = !active
+    ? 'off'
+    : conv.reviewPreset ?? 'custom';
+  // Two-view popover: 'presets' shows the curated list (compact, ~8
+  // rows); 'advanced' shows the full manual configuration. Selecting
+  // Custom… or clicking the "Edit advanced…" link switches to advanced;
+  // a back arrow returns to presets. Initialize to advanced when the
+  // user is already in custom mode so they don't have to click through.
+  const [view, setView] = useState<'presets' | 'advanced'>(
+    selectedPreset === 'custom' ? 'advanced' : 'presets',
+  );
 
-  return (
-    <div className="flex flex-col gap-3">
-      <div>
-        <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Reviewer</div>
-        <div className="flex flex-col gap-1">
-          <ReboundRow
-            label="Off"
-            description="No secondary review."
-            selected={!active}
-            onSelect={() => onSelectBackend(null)}
-          />
-          {candidates.map((b) => {
-            const ready = installedReviewers[b];
-            const isLocal = b === 'ollama';
-            return (
-              <ReboundRow
-                key={b}
-                label={backendName(b) + (isLocal ? '  (local)' : '')}
-                labelColor={backendColor(b)}
-                description={
-                  ready
-                    ? isLocal
-                      ? `Fast, private, but lighter-weight critique than Claude/Codex. Uses your default Ollama model.`
-                      : `Run ${backendName(b)} after each ${backendName(primary)} turn.`
-                    : isLocal
-                    ? 'Ollama not installed — set it up in the Local tab.'
-                    : `${backendName(b)} CLI not installed or not authenticated.`
-                }
-                selected={conv.reviewBackend === b}
-                disabled={!ready}
-                onSelect={() => onSelectBackend(b)}
-              />
-            );
-          })}
-        </div>
-      </div>
+  // Per-preset disabled rationale, when applicable.
+  function presetDisabled(preset: ReviewPreset): string | null {
+    if (preset === 'cheap-paranoid' && primaryTier === 'smart') {
+      return 'Primary is already on the smart tier — preset would have no effect.';
+    }
+    if (preset === 'independent') {
+      // 'independent' resolves to any non-primary CLI. Disable when
+      // every other CLI is unavailable — there's nothing different to
+      // pick. We also need to check installation: a CLI is considered
+      // available if `installedReviewers[b]` is true (claude/codex/
+      // gemini) or if it's the primary itself (which we exclude).
+      const others = (['claude', 'codex', 'gemini', 'ollama'] as const).filter(
+        (b) => b !== primary && installedReviewers[b],
+      );
+      if (others.length === 0) {
+        return 'Install another CLI to enable a different reasoning lineage.';
+      }
+    }
+    return null;
+  }
 
-      {active && (
+  // Reviewer-side tier shortcuts for the model textbox in Advanced.
+  // Pull from the shared TIERS table so this stays in sync with the
+  // resolver instead of duplicating model strings here.
+  const reviewerBackend = (conv.reviewBackend as Backend | undefined) ?? primary;
+  const reviewerTiers = TIERS[reviewerBackend] ?? null;
+
+  if (view === 'presets') {
+    return (
+      <div className="flex flex-col gap-3">
         <div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Mode</div>
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Preset</div>
           <div className="flex flex-col gap-1">
             <ReboundRow
-              label="Review"
-              description="One-shot: reviewer reads each turn and comments."
-              selected={conv.reviewMode !== 'collab'}
-              onSelect={() => onSelectMode('review')}
+              label="Off"
+              description="No secondary review."
+              selected={selectedPreset === 'off'}
+              onSelect={() => onSelectPreset('off')}
             />
+            {PRESETS.map((p) => {
+              const blocker = presetDisabled(p.key);
+              // Append a trigger hint so users know up front whether
+              // each preset fires every turn or only on code-change
+              // turns. Without this, picking e.g. half-finished and
+              // chatting (no edits) is silently a no-op and feels
+              // broken. Mirrors the welcome-pane card hint.
+              const triggerHint = p.persona
+                ? PERSONA_REQUIRES_CODE_CHANGES[p.persona]
+                  ? ' Fires on code-change turns only.'
+                  : ' Fires every turn.'
+                : '';
+              return (
+                <ReboundRow
+                  key={p.key}
+                  label={p.label}
+                  description={(blocker ?? p.description) + triggerHint}
+                  selected={selectedPreset === p.key}
+                  disabled={!!blocker}
+                  onSelect={() => onSelectPreset(p.key)}
+                />
+              );
+            })}
             <ReboundRow
-              label="Collab"
-              description="Ping-pong: primary and reviewer take turns until the budget is spent."
-              selected={conv.reviewMode === 'collab'}
-              onSelect={() => onSelectMode('collab')}
+              label="Custom…"
+              description="Configure reviewer, model, persona, and mode by hand."
+              selected={selectedPreset === 'custom'}
+              onSelect={() => {
+                onSelectPreset('custom');
+                setView('advanced');
+              }}
             />
           </div>
         </div>
-      )}
+        {active && selectedPreset !== 'custom' && (
+          <button
+            onClick={() => setView('advanced')}
+            className="text-[10px] uppercase tracking-wider text-ink-faint hover:text-ink text-left"
+          >
+            Edit advanced options →
+          </button>
+        )}
+      </div>
+    );
+  }
 
-      {active && conv.reviewBackend === 'ollama' && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
-            Ollama model
-          </div>
-          {pulled.length === 0 ? (
-            <div className="text-[10px] text-amber-400">
-              No models pulled. Open the Local tab to pull one.
-            </div>
-          ) : (
-            <div className="flex flex-col gap-0.5">
-              <button
-                onClick={() => onSelectOllamaModel(null)}
-                className={
-                  'text-left px-2 py-1 rounded font-mono text-[11px] ' +
-                  (!conv.reviewOllamaModel
-                    ? 'bg-accent/15 text-ink'
-                    : 'text-ink-muted hover:bg-card-strong hover:text-ink')
-                }
-              >
-                (use default)
-              </button>
-              {pulled.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => onSelectOllamaModel(m)}
-                  className={
-                    'text-left px-2 py-1 rounded font-mono text-[11px] ' +
-                    (conv.reviewOllamaModel === m
-                      ? 'bg-accent/15 text-ink'
-                      : 'text-ink-muted hover:bg-card-strong hover:text-ink')
-                  }
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+  // Advanced view — full manual editor. Same controls that used to live
+  // under the inline Advanced disclosure, now reachable via a back link
+  // so the popover height in the default (preset) view stays compact.
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        onClick={() => setView('presets')}
+        className="text-[10px] uppercase tracking-wider text-ink-faint hover:text-ink text-left flex items-center gap-1"
+      >
+        <span>←</span>
+        <span>Presets</span>
+      </button>
+      <div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                  Reviewer CLI
+                </div>
+                <div className="flex flex-col gap-1">
+                  {candidates.length === 0 && (
+                    <div className="text-[10px] text-ink-faint italic">
+                      Only one CLI installed — same-CLI presets above still work.
+                    </div>
+                  )}
+                  {[primary, ...candidates].map((b) => {
+                    const ready = b === primary || installedReviewers[b];
+                    const isLocal = b === 'ollama';
+                    return (
+                      <ReboundRow
+                        key={b}
+                        label={backendName(b) + (b === primary ? ' (same as primary)' : isLocal ? ' (local)' : '')}
+                        labelColor={backendColor(b)}
+                        description={
+                          ready
+                            ? `Use ${backendName(b)} as the reviewer.`
+                            : `${backendName(b)} CLI not installed or not authenticated.`
+                        }
+                        selected={conv.reviewBackend === b}
+                        disabled={!ready}
+                        onSelect={() => onSelectBackend(b)}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
 
-      {active && conv.reviewMode === 'collab' && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
-            Collab rounds per burst
-          </div>
-          <CollabRoundsInput conversationId={conv.id} />
-          <div className="text-[10px] text-ink-faint mt-1">
-            Max back-and-forth turns before we stop and return to you.
-          </div>
-        </div>
-      )}
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">Mode</div>
+                <div className="flex flex-col gap-1">
+                  <ReboundRow
+                    label="Review"
+                    description="Reviewer flags issues → primary fixes → reviewer verifies the fix (if code changed). No loops."
+                    selected={conv.reviewMode !== 'collab'}
+                    onSelect={() => onSelectMode('review')}
+                  />
+                  <ReboundRow
+                    label="Collab"
+                    description="Ping-pong: primary and reviewer take turns until the budget is spent."
+                    selected={conv.reviewMode === 'collab'}
+                    onSelect={() => onSelectMode('collab')}
+                  />
+                </div>
+              </div>
 
-      {active && conv.reviewBackend === 'codex' && (
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
-            Codex sandbox
-          </div>
-          <label className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-card-strong cursor-pointer">
-            <input
-              type="checkbox"
-              checked={!!conv.reviewYolo}
-              onChange={(e) => onToggleYolo(e.target.checked)}
-              className="mt-0.5"
-            />
-            <div className="flex flex-col">
-              <span className="text-xs">Yolo mode</span>
-              <span className="text-[10px] text-ink-faint">
-                Workspace-write + auto-approve. Off = codex's default read-only sandbox.
-              </span>
-            </div>
-          </label>
-        </div>
-      )}
+              {reviewerTiers && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                    Reviewer model
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <ReboundRow
+                      label="CLI default"
+                      description="Whatever the reviewer CLI picks on its own."
+                      selected={!conv.reviewModel}
+                      onSelect={() => onSelectModel(null)}
+                    />
+                    <ReboundRow
+                      label="Cheap"
+                      description={reviewerTiers.cheap}
+                      selected={conv.reviewModel === reviewerTiers.cheap}
+                      onSelect={() => onSelectModel(reviewerTiers.cheap)}
+                    />
+                    <ReboundRow
+                      label="Smart"
+                      description={reviewerTiers.smart}
+                      selected={conv.reviewModel === reviewerTiers.smart}
+                      onSelect={() => onSelectModel(reviewerTiers.smart)}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                  Persona
+                </div>
+                <div className="flex flex-col gap-1">
+                  <ReboundRow
+                    label="None"
+                    description="Generic critic prompt."
+                    selected={(conv.reviewPersona ?? null) === null}
+                    onSelect={() => onSelectPersona(null)}
+                  />
+                  {(Object.entries(PERSONA_DISPLAY) as [PersonaKey, { label: string; description: string }][]).map(
+                    ([key, info]) => (
+                      <ReboundRow
+                        key={key}
+                        label={info.label}
+                        description={info.description}
+                        selected={conv.reviewPersona === key}
+                        onSelect={() => onSelectPersona(key)}
+                      />
+                    ),
+                  )}
+                </div>
+              </div>
+
+              {conv.reviewBackend === 'ollama' && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                    Ollama model
+                  </div>
+                  {pulled.length === 0 ? (
+                    <div className="text-[10px] text-amber-400">
+                      No models pulled. Open the Local tab to pull one.
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-0.5">
+                      <button
+                        onClick={() => onSelectOllamaModel(null)}
+                        className={
+                          'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                          (!conv.reviewOllamaModel
+                            ? 'bg-accent/15 text-ink'
+                            : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                        }
+                      >
+                        (use default)
+                      </button>
+                      {pulled.map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => onSelectOllamaModel(m)}
+                          className={
+                            'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                            (conv.reviewOllamaModel === m
+                              ? 'bg-accent/15 text-ink'
+                              : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                          }
+                        >
+                          {m}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {conv.reviewMode === 'collab' && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                    Collab rounds per burst
+                  </div>
+                  <CollabRoundsInput conversationId={conv.id} />
+                  <div className="text-[10px] text-ink-faint mt-1">
+                    Max back-and-forth turns before we stop and return to you.
+                  </div>
+                </div>
+              )}
+
+              {conv.reviewBackend === 'codex' && (
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1.5">
+                    Codex sandbox
+                  </div>
+                  <label className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-card-strong cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={!!conv.reviewYolo}
+                      onChange={(e) => onToggleYolo(e.target.checked)}
+                      className="mt-0.5"
+                    />
+                    <div className="flex flex-col">
+                      <span className="text-xs">Yolo mode</span>
+                      <span className="text-[10px] text-ink-faint">
+                        Workspace-write + auto-approve. Off = codex's default read-only sandbox.
+                      </span>
+                    </div>
+                  </label>
+                </div>
+              )}
+      </div>
     </div>
   );
 }
@@ -1161,8 +1369,17 @@ function ReboundPicker({
 
   const active = !!conv.reviewBackend;
   const tint = active ? '#c29bff' : undefined;
+  // Prefer the preset name in the closed pill — much more legible than
+  // "rebound · claude · review". Falls back to the backend name when the
+  // user is in custom mode (no preset to name).
+  const presetSpec = conv.reviewPreset ? PRESETS.find((p) => p.key === conv.reviewPreset) : null;
+  const collabSuffix = conv.reviewMode === 'collab' ? ' · collab' : '';
   const label = active
-    ? `rebound · ${conv.reviewBackend}${conv.reviewMode === 'collab' ? ' · collab' : ''}`
+    ? `rebound · ${
+        presetSpec
+          ? presetSpec.label.toLowerCase()
+          : conv.reviewBackend
+      }${collabSuffix}`
     : 'rebound';
 
   return (
@@ -1177,7 +1394,7 @@ function ReboundPicker({
         <span className="text-[9px] opacity-70">▾</span>
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-[300px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs">
+        <div className="absolute right-0 top-full mt-1 w-[300px] max-h-[70vh] overflow-y-auto bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs">
           <ReboundPanel conv={conv} {...handlers} />
         </div>
       )}
@@ -1222,12 +1439,12 @@ function ReboundRow({
       </div>
       <div className="flex-1 min-w-0">
         <div
-          className={selected ? 'text-ink' : 'text-ink-muted'}
+          className="text-ink"
           style={labelColor ? { color: labelColor } : undefined}
         >
           {label}
         </div>
-        <div className="text-[10px] text-ink-faint">{description}</div>
+        <div className="text-[10px] text-ink-muted">{description}</div>
       </div>
     </button>
   );
@@ -1265,6 +1482,9 @@ function ConversationSettingsButton({
   onModelChange,
   onSelectReviewBackend,
   onSelectReviewMode,
+  onSelectReviewModel,
+  onSelectReviewPersona,
+  onSelectReviewPreset,
   onSelectReviewOllamaModel,
   onToggleReviewYolo,
 }: {
@@ -1276,6 +1496,9 @@ function ConversationSettingsButton({
   onModelChange: (backend: Backend, model: string) => void;
   onSelectReviewBackend: (b: string | null) => void;
   onSelectReviewMode: (m: 'review' | 'collab') => void;
+  onSelectReviewModel: (m: string | null) => void;
+  onSelectReviewPersona: (p: PersonaKey | null) => void;
+  onSelectReviewPreset: (p: ReviewPreset | 'off') => void;
   onSelectReviewOllamaModel: (m: string | null) => void;
   onToggleReviewYolo: (v: boolean) => void;
 }) {
@@ -1406,6 +1629,9 @@ function ConversationSettingsButton({
                 installedReviewers={installedReviewers}
                 onSelectBackend={onSelectReviewBackend}
                 onSelectMode={onSelectReviewMode}
+                onSelectModel={onSelectReviewModel}
+                onSelectPersona={onSelectReviewPersona}
+                onSelectPreset={onSelectReviewPreset}
                 onSelectOllamaModel={onSelectReviewOllamaModel}
                 onToggleYolo={onToggleReviewYolo}
               />

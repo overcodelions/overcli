@@ -218,11 +218,22 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
           // dim to intermediate styling. While the round is in flight
           // nothing is marked, so streaming bubbles render plain.
           const prev = index > 0 ? visibleEvents[index - 1] : undefined;
-          const showHeader =
+          const next = index < visibleEvents.length - 1 ? visibleEvents[index + 1] : undefined;
+          // A reviewer block is a run of consecutive events sharing
+          // the same backend + round. Round changes (collab round 2 →
+          // round 3) start a new block — same visual grouping rules
+          // showHeader uses below.
+          const isFirstInBlock =
             !!event.reviewer &&
             (!prev?.reviewer ||
               prev.reviewer.backend !== event.reviewer.backend ||
               prev.reviewer.round !== event.reviewer.round);
+          const isLastInBlock =
+            !!event.reviewer &&
+            (!next?.reviewer ||
+              next.reviewer.backend !== event.reviewer.backend ||
+              next.reviewer.round !== event.reviewer.round);
+          const showHeader = isFirstInBlock;
           const isVerdict = verdictIds.has(event.id);
           const isIntermediate = intermediateIds.has(event.id);
           const reviewerTint = event.reviewer
@@ -234,8 +245,21 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
           // instead of breathing like full bubbles. ReviewerStepLine's
           // own internal py-0.5 supplies a 2px line gap.
           const rowPad = isIntermediate ? 'px-5 py-0' : 'px-5 py-1.5';
-          return (
-            <div className={rowPad}>
+          // Reviewer-tagged events (codex collab/review path) get the
+          // same indent + wash treatment as one-shot review cards in
+          // ReviewCard.tsx. The wash sits on an INNER div so it
+          // respects the row's `px-5` content padding (same right
+          // edge as primary bubbles); putting it on the row wrapper
+          // would extend it edge-to-edge. Boundary rows get rounded
+          // corners + extra padding so the wash reads as one
+          // contained card spanning the block.
+          const reviewerInner = event.reviewer
+            ? `ml-6 bg-white/[0.02] px-3${isFirstInBlock ? ' rounded-t-xl pt-3' : ''}${
+                isLastInBlock ? ' rounded-b-xl pb-3' : ''
+              }`
+            : '';
+          const inner = (
+            <>
               {showHeader && event.reviewer && (
                 <ReviewerHeader info={event.reviewer} />
               )}
@@ -249,6 +273,11 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
                 reviewerCompact={isIntermediate}
                 reviewerTint={reviewerTint}
               />
+            </>
+          );
+          return (
+            <div className={rowPad}>
+              {event.reviewer ? <div className={reviewerInner}>{inner}</div> : inner}
             </div>
           );
         }}
@@ -400,10 +429,13 @@ function ReviewerHeader({
   if (info.mode === 'collab') parts.push(`round ${info.round}`);
   return (
     <div
-      className="text-[10px] uppercase tracking-wider font-medium pt-1 pb-1.5"
+      className="text-[10px] uppercase tracking-wider font-medium pt-1 pb-1.5 flex items-center gap-1.5"
       style={{ color: tint }}
     >
-      {parts.join(' · ')}
+      {/* "↩" prefix matches the one-shot reviewer cards (ReviewCard.tsx)
+          so codex collab/review reads as the same kind of block. */}
+      <span className="text-ink-faint">↩</span>
+      <span>{parts.join(' · ')}</span>
     </div>
   );
 }
