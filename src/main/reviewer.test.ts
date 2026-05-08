@@ -3,11 +3,50 @@ import {
   buildReviewPrompt,
   buildReviewerArgs,
   extractReviewerDisplay,
+  parseClaudeStreamJson,
 } from './reviewer';
 
 describe('buildReviewerArgs', () => {
-  it('reads claude prompt from stdin with plain text output', () => {
-    expect(buildReviewerArgs('claude')).toEqual(['-p', '-']);
+  it('reads claude prompt from stdin with stream-json output (so we can capture the session id for warm --resume), low effort, default permission mode (no tools in -p)', () => {
+    expect(buildReviewerArgs('claude')).toEqual([
+      '--effort',
+      'low',
+      '--permission-mode',
+      'default',
+      '--allowedTools',
+      'Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(git status:*) Bash(git ls-files:*)',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '-p',
+      '-',
+    ]);
+  });
+
+  it('uses the per-persona effort for claude (security gets medium instead of the default low)', () => {
+    const args = buildReviewerArgs('claude', { effort: 'medium' });
+    expect(args).toContain('--effort');
+    expect(args[args.indexOf('--effort') + 1]).toBe('medium');
+  });
+
+  it('appends --resume <id> for claude when a prior session id is known', () => {
+    expect(buildReviewerArgs('claude', { resumeSessionId: 'abc-123' })).toEqual([
+      '--resume',
+      'abc-123',
+      '--effort',
+      'low',
+      '--permission-mode',
+      'default',
+      '--allowedTools',
+      'Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(git status:*) Bash(git ls-files:*)',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '-p',
+      '-',
+    ]);
   });
 
   it('passes --skip-git-repo-check to codex exec so reviewer runs in non-git workspace roots', () => {
@@ -51,7 +90,20 @@ describe('buildReviewerArgs', () => {
   });
 
   it('ignores yolo for non-codex backends', () => {
-    expect(buildReviewerArgs('claude', { yolo: true })).toEqual(['-p', '-']);
+    expect(buildReviewerArgs('claude', { yolo: true })).toEqual([
+      '--effort',
+      'low',
+      '--permission-mode',
+      'default',
+      '--allowedTools',
+      'Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(git status:*) Bash(git ls-files:*)',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '-p',
+      '-',
+    ]);
     expect(buildReviewerArgs('gemini', { yolo: true })).toEqual(['-p', '-']);
   });
 
@@ -98,9 +150,44 @@ describe('buildReviewPrompt', () => {
 });
 
 describe('extractReviewerDisplay', () => {
-  it('returns plain trimmed text for non-codex backends', () => {
-    expect(extractReviewerDisplay('  looks fine  ', 'claude')).toBe('looks fine');
+  it('returns plain trimmed text for gemini (still uses one-shot plain-text mode)', () => {
     expect(extractReviewerDisplay('  looks fine  ', 'gemini')).toBe('looks fine');
+  });
+
+  it('extracts the latest assistant text from claude stream-json events', () => {
+    const raw = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-xyz' }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'looks fine' }] },
+      }),
+    ].join('\n');
+    expect(extractReviewerDisplay(raw, 'claude')).toBe('looks fine');
+  });
+
+  it('returns empty string for claude when stdout has no assistant events yet', () => {
+    expect(extractReviewerDisplay('', 'claude')).toBe('');
+    expect(
+      extractReviewerDisplay(
+        JSON.stringify({ type: 'system', subtype: 'init', session_id: 's' }),
+        'claude',
+      ),
+    ).toBe('');
+  });
+
+  it('extracts thinking blocks separately from text so the renderer can show "what was checked" above the verdict', () => {
+    const raw = JSON.stringify({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'Scanning for stubs and TODOs...' },
+          { type: 'text', text: 'Looks complete.' },
+        ],
+      },
+    });
+    const parsed = parseClaudeStreamJson(raw);
+    expect(parsed.text).toBe('Looks complete.');
+    expect(parsed.thinking).toBe('Scanning for stubs and TODOs...');
   });
 
   it('keeps only [ts] codex sections from codex exec transcripts', () => {
