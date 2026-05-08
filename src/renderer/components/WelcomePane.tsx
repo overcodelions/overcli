@@ -197,6 +197,7 @@ export function WelcomePane() {
         <Composer
           draftKey={WELCOME_KEY}
           autoFocus
+          disabled={Object.keys(backendHealth).length > 0 && !Object.values(backendHealth).some((h) => h.kind === 'ready')}
           focusSignal={welcomeFocusToken + composerFocusNudge}
           variant="welcome"
           rootPath={selectedProject?.path}
@@ -545,37 +546,39 @@ const CLI_SETUP: {
 ];
 
 function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
+  const rows = CLI_SETUP.filter(({ backend }) => {
+    const kind = backendHealth[backend]?.kind ?? 'missing';
+    return kind !== 'ready';
+  });
+  if (rows.length === 0) return null;
   return (
-    <div className="mt-6 mx-auto max-w-[520px] rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-left">
-      <div className="text-xs font-medium text-amber-400 mb-3">
-        No CLIs detected — install at least one to get started
+    <div className="mb-5 rounded-lg border border-amber-500/40 bg-surface-elevated p-4 text-left">
+      <div className="text-xs text-ink-muted mb-3">
+        You'll need at least one CLI installed to get started
       </div>
-      <div className="flex flex-col gap-2">
-        {CLI_SETUP.map(({ backend, name, install, auth }) => {
+      <div className="flex flex-col gap-1">
+        {rows.map(({ backend, name, install, auth }) => {
           const health = backendHealth[backend];
           const kind = health?.kind ?? 'missing';
+          const isAuth = kind === 'unauthenticated';
+          const command = isAuth && auth ? auth : install;
           return (
-            <div key={backend} className="flex items-start gap-2.5 text-xs">
-              <span className="mt-0.5 shrink-0">
-                {kind === 'unauthenticated' ? (
-                  <span className="text-amber-400">○</span>
-                ) : (
-                  <span className="text-ink-faint">–</span>
-                )}
+            <div
+              key={backend}
+              className="flex items-center gap-3 rounded-md px-2.5 py-2 bg-card/60"
+            >
+              <span
+                className="text-xs font-semibold w-12 shrink-0"
+                style={{ color: backendColor(backend as Backend) }}
+              >
+                {name}
               </span>
-              <div className="min-w-0">
-                <span className="text-ink font-medium">{name}</span>
-                {kind === 'unauthenticated' && auth && (
-                  <span className="ml-2 text-ink-muted">
-                    installed — run <code className="font-mono text-amber-300/80">{auth}</code>
-                  </span>
-                )}
-                {(kind === 'missing' || kind === 'error' || kind === 'unknown') && (
-                  <span className="ml-2 text-ink-faint">
-                    <code className="font-mono text-ink-muted">{install}</code>
-                  </span>
-                )}
-              </div>
+              <code className="flex-1 text-[11px] font-mono text-ink truncate">
+                {command}
+              </code>
+              {isAuth && (
+                <span className="text-[10px] text-amber-400 shrink-0">needs login</span>
+              )}
             </div>
           );
         })}
