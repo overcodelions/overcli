@@ -535,8 +535,9 @@ export function Composer({
             e.target.value = '';
           }}
         />
-        {footer}
-        <div className="flex-1" />
+        <div className="flex-1 flex flex-wrap items-center gap-2 min-w-0">
+          {footer}
+        </div>
         {isRunning ? (
           <button
             onClick={onStop}

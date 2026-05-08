@@ -13,6 +13,7 @@ import {
   Backend,
   PermissionMode,
   EffortLevel,
+  PersonaKey,
   StreamEvent,
   ToolUseBlock,
   UUID,
@@ -22,6 +23,11 @@ import {
   Attachment,
   UserInputAnswer,
 } from '../shared/types';
+import {
+  PERSONA_REQUIRES_CODE_CHANGES,
+  didMutateCode,
+  isAllGoodReviewerResponse,
+} from '../shared/reboundPresets';
 // Claude parser internals now live behind backends/claude.ts. The runner
 // only sees opaque parserState on ActiveProcess and dispatches via spec.
 import {
@@ -100,6 +106,12 @@ interface SendArgs {
   attachments?: Attachment[];
   reviewBackend?: string | null;
   reviewMode?: 'review' | 'collab' | null;
+  reviewModel?: string | null;
+  reviewPersona?: PersonaKey | null;
+  /// Persisted reviewer session ids per backend (from a prior app
+  /// session). See ReviewerManager — used as a warm-resume hint
+  /// across restarts. Today only the `claude` slot is populated.
+  reviewerSessionIds?: Partial<Record<Backend, string>>;
   collabMaxTurns?: number | null;
   reviewOllamaModel?: string | null;
   reviewYolo?: boolean | null;
@@ -135,11 +147,25 @@ interface ActiveProcess {
   currentUserPrompt: string;
   currentAssistantText: string;
   currentToolActivity: string[];
+  /// Prior turns of (user, assistant) text so the reviewer has the
+  /// conversation context, not just the latest exchange. Without this
+  /// the reviewer can't tell what e.g. "ok 2" is answering. Pushed at
+  /// each new send (just before currentUserPrompt is overwritten).
+  priorTurns: { userPrompt: string; assistantText: string }[];
   /// Snapshot of the rebound config that came in with this turn. The
   /// renderer passes it on send; we stash it here so the turn-complete
   /// hook can fire the reviewer without having to re-fetch store state.
   reviewBackend: Backend | null;
   reviewMode: 'review' | 'collab' | null;
+  /// Reviewer model override (claude/codex/gemini). See SendArgs.reviewModel.
+  reviewModel: string | null;
+  /// Reviewer persona key (resolved into a prompt preamble in
+  /// reviewer.ts via reboundPresets.PERSONA_PREAMBLES).
+  reviewPersona: PersonaKey | null;
+  /// Persisted reviewer session ids per backend (warm-resume hints
+  /// that survive app restart). Captured from the conv state at send
+  /// time and passed through to reviewer.run().
+  reviewerSessionIds: Partial<Record<Backend, string>>;
   collabMaxTurns: number;
   /// User-picked Ollama model for the reviewer (when `reviewBackend`
   /// is `ollama`). When null, we fall back to the app-wide default then
@@ -199,8 +225,15 @@ interface GeminiAcpSession {
   currentAssistantNeedsSplit: boolean;
   currentUserPrompt: string;
   currentToolActivity: string[];
+  /// See ActiveProcess.priorTurns — same purpose for the gemini-acp
+  /// session (gives the reviewer conversation context, not just the
+  /// latest exchange).
+  priorTurns: { userPrompt: string; assistantText: string }[];
   reviewBackend: Backend | null;
   reviewMode: 'review' | 'collab' | null;
+  reviewModel: string | null;
+  reviewPersona: PersonaKey | null;
+  reviewerSessionIds: Partial<Record<Backend, string>>;
   collabMaxTurns: number;
   reviewOllamaModel: string | null;
   reviewYolo: boolean;
@@ -238,6 +271,17 @@ interface OllamaSession {
   /// user moves on.
   collabBurst: number;
   collabRoundsInBurst: number;
+  /// See ActiveProcess.priorTurns. For ollama we could derive this from
+  /// `messages` but tracking it explicitly mirrors the other two paths
+  /// and avoids re-walking the array on every reviewer fire.
+  priorTurns: { userPrompt: string; assistantText: string }[];
+  /// Most-recent user prompt + assistant text for the in-flight turn,
+  /// captured at send time and updated as the response streams. Pushed
+  /// onto priorTurns at the next send. Kept separate from `messages`
+  /// because messages is structured for the Ollama API and the reviewer
+  /// wants plain pairs.
+  currentUserPrompt: string;
+  currentAssistantText: string;
 }
 
 export class RunnerManager {
@@ -677,11 +721,24 @@ export class RunnerManager {
           approval: perms.approval,
         });
       }
+      // Carry forward the just-completed turn into the reviewer's
+      // conversation context before we reset for the new prompt. Skip
+      // empty pairs (initial send, or aborted turns with no assistant
+      // text) so the transcript isn't padded with blanks.
+      if (active.currentUserPrompt || active.currentAssistantText) {
+        active.priorTurns.push({
+          userPrompt: active.currentUserPrompt,
+          assistantText: active.currentAssistantText,
+        });
+      }
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
+      active.reviewModel = args.reviewModel ?? null;
+      active.reviewPersona = args.reviewPersona ?? null;
+      active.reviewerSessionIds = { ...(args.reviewerSessionIds ?? {}) };
       active.collabMaxTurns = args.collabMaxTurns ?? 3;
       active.reviewOllamaModel = args.reviewOllamaModel ?? null;
       active.reviewYolo = !!args.reviewYolo;
@@ -699,6 +756,7 @@ export class RunnerManager {
       if (!options.syntheticFromCollab) {
         active.collabBurst += 1;
         active.collabRoundsInBurst = 0;
+        this.reviewer.resetRounds(convId);
       }
       this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
       if (args.backend === 'codex' && active.codexMode === 'app-server' && active.codexAppServer) {
@@ -763,6 +821,9 @@ export class RunnerManager {
         initEmitted: !!persisted,
         collabBurst: 0,
         collabRoundsInBurst: 0,
+        priorTurns: [],
+        currentUserPrompt: '',
+        currentAssistantText: '',
       };
       this.ollamaSessions.set(convId, session);
     }
@@ -771,6 +832,7 @@ export class RunnerManager {
     if (!options.syntheticFromCollab) {
       session.collabBurst += 1;
       session.collabRoundsInBurst = 0;
+      this.reviewer.resetRounds(convId);
     }
 
     // Push a local-user bubble into the UI up front, matching the
@@ -802,6 +864,17 @@ export class RunnerManager {
     }
 
     session.lastModel = model;
+    // Carry the just-completed turn into reviewer history before
+    // overwriting current. Skip empty pairs (initial send / aborted
+    // turn with no assistant text).
+    if (session.currentUserPrompt || session.currentAssistantText) {
+      session.priorTurns.push({
+        userPrompt: session.currentUserPrompt,
+        assistantText: session.currentAssistantText,
+      });
+    }
+    session.currentUserPrompt = args.prompt;
+    session.currentAssistantText = '';
     session.messages.push({ role: 'user', content: args.prompt });
     session.messageTimestamps.push(Date.now());
 
@@ -868,6 +941,9 @@ export class RunnerManager {
           assistantText: finalAssistantText,
           reviewBackend: args.reviewBackend as Backend,
           reviewMode: args.reviewMode ?? null,
+          reviewModel: args.reviewModel ?? null,
+          reviewPersona: args.reviewPersona ?? null,
+          reviewerSessionIds: args.reviewerSessionIds ?? {},
           collabMaxTurns: args.collabMaxTurns ?? 3,
           reviewOllamaModel: args.reviewOllamaModel ?? null,
           reviewYolo: !!args.reviewYolo,
@@ -991,6 +1067,7 @@ export class RunnerManager {
             session!.messages.push({ role: 'assistant', content: res.text });
             session!.messageTimestamps.push(Date.now());
             finalAssistantText = res.text;
+            session!.currentAssistantText = res.text;
           }
           finishWith();
           return;
@@ -1061,6 +1138,9 @@ export class RunnerManager {
     assistantText: string;
     reviewBackend: Backend;
     reviewMode: 'review' | 'collab' | null;
+    reviewModel: string | null;
+    reviewPersona: PersonaKey | null;
+    reviewerSessionIds: Partial<Record<Backend, string>>;
     collabMaxTurns: number;
     reviewOllamaModel: string | null;
     reviewYolo: boolean;
@@ -1074,10 +1154,42 @@ export class RunnerManager {
     let nextRoundQueued = false;
     try {
 
+    // Review mode: reviewer can fire up to 2 times.
+    //   - Round 1: always (subject to other gates below).
+    //   - Round 2: only when the primary actually made code changes
+    //     in response to the round-1 feedback. Lets the reviewer
+    //     verify the fix landed; skips when the primary just pushed
+    //     back in text (no new work to review).
+    //   - Round 3+: never, no matter what. Hard stop avoids loops.
+    // Collab mode keeps the reviewer firing until collabMaxTurns.
+    // (Ollama has no tool tracking on its session, so didMutateCode
+    // sees an empty list and round 2 is effectively never allowed —
+    // ollama primaries don't edit files anyway.)
+    if (params.reviewMode !== 'collab') {
+      if (capturedRound > 2) return;
+      if (capturedRound === 2 && !didMutateCode([])) return;
+    }
+    // Skip the review entirely when the persona only makes sense on
+    // code-changing turns (half-finished, security) and the assistant
+    // didn't actually edit anything. Ollama can't invoke edit tools
+    // today, so for those personas this always skips on ollama —
+    // intentional: a "look for stubs" reviewer firing on text-only
+    // turns just rubber-stamps and burns tokens.
+    if (
+      params.reviewPersona &&
+      PERSONA_REQUIRES_CODE_CHANGES[params.reviewPersona] &&
+      !didMutateCode([])
+    ) {
+      return;
+    }
+
     const result = await this.reviewer.run({
       conversationId: convId,
       reviewBackend,
       reviewMode: params.reviewMode,
+      reviewModel: params.reviewModel,
+      reviewPersona: params.reviewPersona,
+      reviewerSessionIds: params.reviewerSessionIds,
       cwd: params.cwd,
       summary: {
         primaryBackend: 'ollama',
@@ -1086,6 +1198,7 @@ export class RunnerManager {
         // Ollama doesn't emit tool_use events today, so tool activity is
         // empty. The reviewer prompt handles the empty case gracefully.
         toolActivity: '',
+        priorTurns: session.priorTurns,
       },
       backendPathOverride: settings.backendPaths[reviewBackend],
       ollamaModel:
@@ -1095,14 +1208,20 @@ export class RunnerManager {
       yolo: params.reviewYolo,
     });
 
-    // Plain review: done after one round.
-    if (params.reviewMode !== 'collab') return;
     // Stale burst — user sent a new message; abandon.
     if (session.collabBurst !== capturedBurst) return;
     // Reviewer errored or had nothing to say.
     if (result.error || !result.text.trim()) return;
-    // Hit the round cap for this burst.
-    if (capturedRound >= (params.collabMaxTurns || 3)) return;
+    // Reviewer signaled "all good" with no actionable feedback. Don't
+    // burn a primary turn asking it to "incorporate or push back" when
+    // there's nothing to engage with. The verdict card still renders.
+    if (isAllGoodReviewerResponse(result.text, params.reviewPersona)) return;
+    // Round-cap gate. Collab uses the configured budget; review mode
+    // gets a cap of 2 so its single round-1 feedback passes through
+    // (round 2+ is short-circuited at the top of this method, so the
+    // 2 here is just a number that doesn't trip on round 1).
+    const cap = params.reviewMode === 'collab' ? params.collabMaxTurns || 3 : 2;
+    if (capturedRound >= cap) return;
     // Session torn down.
     if (this.ollamaSessions.get(convId) !== session) return;
 
@@ -1141,6 +1260,9 @@ export class RunnerManager {
         permissionMode: 'default',
         reviewBackend,
         reviewMode: params.reviewMode,
+        reviewModel: params.reviewModel,
+        reviewPersona: params.reviewPersona,
+        reviewerSessionIds: params.reviewerSessionIds,
         collabMaxTurns: params.collabMaxTurns,
         reviewOllamaModel: params.reviewOllamaModel,
         reviewYolo: params.reviewYolo,
@@ -1199,6 +1321,12 @@ export class RunnerManager {
       this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
     }
 
+    if (session.currentUserPrompt || session.currentAssistantText) {
+      session.priorTurns.push({
+        userPrompt: session.currentUserPrompt,
+        assistantText: session.currentAssistantText,
+      });
+    }
     session.currentUserPrompt = args.prompt;
     session.currentAssistantText = '';
     session.currentThinkingText = '';
@@ -1209,6 +1337,9 @@ export class RunnerManager {
     session.currentAssistantNeedsSplit = false;
     session.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
     session.reviewMode = args.reviewMode ?? null;
+    session.reviewModel = args.reviewModel ?? null;
+    session.reviewPersona = args.reviewPersona ?? null;
+    session.reviewerSessionIds = { ...(args.reviewerSessionIds ?? {}) };
     session.collabMaxTurns = args.collabMaxTurns ?? 3;
     session.reviewOllamaModel = args.reviewOllamaModel ?? null;
     session.reviewYolo = !!args.reviewYolo;
@@ -1217,6 +1348,7 @@ export class RunnerManager {
     if (!options.syntheticFromCollab) {
       session.collabBurst += 1;
       session.collabRoundsInBurst = 0;
+      this.reviewer.resetRounds(convId);
     }
 
     this.emit({
@@ -1309,8 +1441,12 @@ export class RunnerManager {
       next.currentAssistantNeedsSplit = false;
       next.currentUserPrompt = '';
       next.currentToolActivity = [];
+      next.priorTurns = [];
       next.reviewBackend = null;
       next.reviewMode = null;
+      next.reviewModel = null;
+      next.reviewPersona = null;
+      next.reviewerSessionIds = {};
       next.collabMaxTurns = 3;
       next.reviewOllamaModel = null;
       next.reviewYolo = false;
@@ -1648,16 +1784,38 @@ export class RunnerManager {
     let nextRoundQueued = false;
     try {
 
+    // Review mode: reviewer fires up to 2x — round 1 always, round 2
+    // only when the primary made code changes in response to feedback
+    // (so the fix gets verified). Round 3+ never. See ollama hook for
+    // full rationale.
+    if (session.reviewMode !== 'collab') {
+      if (capturedRound > 2) return;
+      if (capturedRound === 2 && !didMutateCode(session.currentToolActivity)) return;
+    }
+    // Skip the review entirely when the persona only makes sense on
+    // code-changing turns and this turn was text-only.
+    if (
+      session.reviewPersona &&
+      PERSONA_REQUIRES_CODE_CHANGES[session.reviewPersona] &&
+      !didMutateCode(session.currentToolActivity)
+    ) {
+      return;
+    }
+
     const result = await this.reviewer.run({
       conversationId: convId,
       reviewBackend: session.reviewBackend,
       reviewMode: session.reviewMode,
+      reviewModel: session.reviewModel,
+      reviewPersona: session.reviewPersona,
+      reviewerSessionIds: session.reviewerSessionIds,
       cwd: session.cwd,
       summary: {
         primaryBackend: 'gemini',
         userPrompt: session.currentUserPrompt,
         assistantText: session.currentAssistantText,
         toolActivity: session.currentToolActivity.join('\n'),
+        priorTurns: session.priorTurns,
       },
       backendPathOverride: settings.backendPaths[session.reviewBackend],
       ollamaModel:
@@ -1667,10 +1825,15 @@ export class RunnerManager {
       yolo: session.reviewYolo,
     });
 
-    if (session.reviewMode !== 'collab') return;
     if (session.collabBurst !== capturedBurst) return;
     if (result.error || !result.text.trim()) return;
-    if (capturedRound >= (session.collabMaxTurns || 3)) return;
+    // Reviewer signaled "all good" → skip the synthetic feed-back round.
+    if (isAllGoodReviewerResponse(result.text, session.reviewPersona)) return;
+    // Round-cap: collab uses configured budget; review uses 2 so the
+    // single round-1 feedback passes (round 2+ is short-circuited at
+    // the top of this method).
+    const cap = session.reviewMode === 'collab' ? session.collabMaxTurns || 3 : 2;
+    if (capturedRound >= cap) return;
     if (this.geminiAcpSessions.get(convId) !== session) return;
 
     nextRoundQueued = true;
@@ -1706,6 +1869,9 @@ export class RunnerManager {
         sessionId: session.sessionId,
         reviewBackend: session.reviewBackend,
         reviewMode: session.reviewMode,
+        reviewModel: session.reviewModel,
+        reviewPersona: session.reviewPersona,
+        reviewerSessionIds: session.reviewerSessionIds,
         collabMaxTurns: session.collabMaxTurns,
         reviewOllamaModel: session.reviewOllamaModel,
         reviewYolo: session.reviewYolo,
@@ -1751,8 +1917,12 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
+      reviewModel: args.reviewModel ?? null,
+      reviewPersona: args.reviewPersona ?? null,
+      reviewerSessionIds: { ...(args.reviewerSessionIds ?? {}) },
       collabMaxTurns: args.collabMaxTurns ?? 3,
       reviewOllamaModel: args.reviewOllamaModel ?? null,
       reviewYolo: !!args.reviewYolo,
@@ -2102,8 +2272,12 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
+      reviewModel: args.reviewModel ?? null,
+      reviewPersona: args.reviewPersona ?? null,
+      reviewerSessionIds: { ...(args.reviewerSessionIds ?? {}) },
       collabMaxTurns: args.collabMaxTurns ?? 3,
       reviewOllamaModel: args.reviewOllamaModel ?? null,
       reviewYolo: !!args.reviewYolo,
@@ -2276,16 +2450,40 @@ export class RunnerManager {
     let nextRoundQueued = false;
     try {
 
+    // Review mode: reviewer fires up to 2x — round 1 always, round 2
+    // only when the primary made code changes in response to feedback
+    // (so the fix gets verified). Round 3+ never. See ollama hook for
+    // full rationale.
+    if (active.reviewMode !== 'collab') {
+      if (capturedRound > 2) return;
+      if (capturedRound === 2 && !didMutateCode(active.currentToolActivity)) return;
+    }
+    // Skip the review entirely when the persona only makes sense on
+    // code-changing turns and this turn was text-only — saves real
+    // tokens on conversational/Q&A turns where half-finished/security
+    // would just rubber-stamp.
+    if (
+      active.reviewPersona &&
+      PERSONA_REQUIRES_CODE_CHANGES[active.reviewPersona] &&
+      !didMutateCode(active.currentToolActivity)
+    ) {
+      return;
+    }
+
     const result = await this.reviewer.run({
       conversationId: convId,
       reviewBackend: active.reviewBackend,
       reviewMode: active.reviewMode,
+      reviewModel: active.reviewModel,
+      reviewPersona: active.reviewPersona,
+      reviewerSessionIds: active.reviewerSessionIds,
       cwd: active.cwd,
       summary: {
         primaryBackend: active.backend,
         userPrompt: active.currentUserPrompt,
         assistantText: active.currentAssistantText,
         toolActivity: active.currentToolActivity.join('\n'),
+        priorTurns: active.priorTurns,
       },
       backendPathOverride: settings.backendPaths[active.reviewBackend],
       // Ollama reviewer needs a model tag — it doesn't infer one from
@@ -2307,10 +2505,15 @@ export class RunnerManager {
     //   - the reviewer errored or produced no usable text
     //   - we've hit the per-burst rounds cap
     //   - the primary subprocess has died
-    if (active.reviewMode !== 'collab') return;
     if (active.collabBurst !== capturedBurst) return;
     if (result.error || !result.text.trim()) return;
-    if (capturedRound >= (active.collabMaxTurns || 3)) return;
+    // Reviewer signaled "all good" → skip the synthetic feed-back round.
+    if (isAllGoodReviewerResponse(result.text, active.reviewPersona)) return;
+    // Round-cap: collab uses configured budget; review uses 2 so the
+    // single round-1 feedback passes (round 2+ is short-circuited at
+    // the top of this method).
+    const cap = active.reviewMode === 'collab' ? active.collabMaxTurns || 3 : 2;
+    if (capturedRound >= cap) return;
     if (!this.procs.get(convId) || this.procs.get(convId) !== active) return;
 
     nextRoundQueued = true;
@@ -2345,6 +2548,9 @@ export class RunnerManager {
             sessionId: active.sessionId,
             reviewBackend: active.reviewBackend,
             reviewMode: active.reviewMode,
+            reviewModel: active.reviewModel,
+            reviewPersona: active.reviewPersona,
+            reviewerSessionIds: active.reviewerSessionIds,
             collabMaxTurns: active.collabMaxTurns,
             reviewOllamaModel: active.reviewOllamaModel,
             reviewYolo: active.reviewYolo,
@@ -2357,6 +2563,12 @@ export class RunnerManager {
       // same format user sends take, just without emitting a
       // localUser event to the chat (collab synthetic prompts
       // shouldn't appear as user bubbles).
+      if (active.currentUserPrompt || active.currentAssistantText) {
+        active.priorTurns.push({
+          userPrompt: active.currentUserPrompt,
+          assistantText: active.currentAssistantText,
+        });
+      }
       active.currentUserPrompt = pingPrompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];

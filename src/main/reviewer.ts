@@ -8,8 +8,22 @@
 
 import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { Backend, MainToRendererEvent, ReviewInfo, StreamEvent, UUID } from '../shared/types';
+import {
+  Backend,
+  EffortLevel,
+  MainToRendererEvent,
+  PersonaKey,
+  ReviewInfo,
+  StreamEvent,
+  UUID,
+} from '../shared/types';
 import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
+import {
+  PERSONA_EFFORT,
+  PERSONA_PREAMBLES,
+  defaultAllGoodVerdict,
+} from '../shared/reboundPresets';
+import { summarizeToolUse } from './toolDescription';
 import {
   CodexAppServerApprovalPolicy,
   CodexAppServerClient,
@@ -30,6 +44,13 @@ interface PrimaryTurnSummary {
   userPrompt: string;
   assistantText: string;
   toolActivity: string;
+  /// Earlier exchanges in the same conversation, oldest first. The
+  /// reviewer needs them to make sense of replies like "ok 2" — without
+  /// the prior question that "2" was answering, every short follow-up
+  /// reads as ambiguous. Rendered above the current turn in the prompt.
+  /// Optional so test fixtures and legacy call sites don't have to set
+  /// it; treated as empty when absent.
+  priorTurns?: { userPrompt: string; assistantText: string }[];
 }
 
 interface CodexReviewerActiveTurn {
@@ -93,6 +114,14 @@ export class ReviewerManager {
   /// instead of spawning a fresh `codex exec` subprocess. Lazily created
   /// on first round and disposed only on full shutdown / cwd change.
   private codexSessions = new Map<UUID, CodexReviewerSession>();
+  /// Claude reviewer session id per conversation. Captured from the
+  /// system_init event of the first review's stream-json output and
+  /// passed to subsequent reviews via `--resume <id>` so Claude reuses
+  /// the same conversation thread on its side. That lets the API-level
+  /// prompt cache hit on the persona + transcript prefix, and lets us
+  /// strip priorTurns from the prompt entirely (Claude already
+  /// remembers them in the resumed session).
+  private claudeReviewerSessions = new Map<UUID, string>();
   /// Per-conversation counter so each review card gets a stable sequence
   /// number for the UI to show "round 2", "round 3", etc.
   private rounds = new Map<UUID, number>();
@@ -157,12 +186,26 @@ export class ReviewerManager {
       codex.client.kill();
       this.codexSessions.delete(conversationId);
     }
+    // Drop the captured claude session id so a new conversation that
+    // happens to reuse this id (post-dispose) doesn't accidentally
+    // resume into the prior conversation's reviewer thread.
+    this.claudeReviewerSessions.delete(conversationId);
   }
 
   stopAll(): void {
     for (const id of Array.from(this.inFlight.keys())) this.stop(id);
     for (const id of Array.from(this.inFlightHttp.keys())) this.stop(id);
     for (const id of Array.from(this.codexSessions.keys())) this.dispose(id);
+    this.claudeReviewerSessions.clear();
+  }
+
+  /// Reset the per-conversation round counter so the next reviewer run
+  /// starts at "round 1". Called by the runner when a new collab burst
+  /// begins (human-originated send), so the round number rendered in
+  /// `ReviewerHeader` / `ReviewCard` reflects the burst-relative round
+  /// instead of the lifetime count.
+  resetRounds(conversationId: UUID): void {
+    this.rounds.delete(conversationId);
   }
 
   /// Fire a reviewer for the just-completed primary turn. Resolves when
@@ -179,6 +222,19 @@ export class ReviewerManager {
     backendPathOverride?: string;
     /// Ollama reviewer model tag; ignored for other backends.
     ollamaModel?: string;
+    /// Reviewer model override for claude/codex/gemini. Passed as
+    /// `--model X` (claude) or `-m X` (codex/gemini). Use ollamaModel
+    /// for the ollama path instead.
+    reviewModel?: string | null;
+    /// Reviewer persona key. Resolved into a prompt preamble inside
+    /// buildReviewPrompt — the table lives in reboundPresets.ts.
+    reviewPersona?: PersonaKey | null;
+    /// Persisted reviewer session ids per backend (from a prior app
+    /// session). When present for the active reviewer backend and we
+    /// don't already have an in-memory entry, we prime the map so the
+    /// next reviewer invocation resumes the warm thread across app
+    /// restarts. Ignored once the in-memory entry exists.
+    reviewerSessionIds?: Partial<Record<Backend, string>>;
     /// Codex-only yolo toggle: run the reviewer with a workspace-write
     /// sandbox and auto-approval. Ignored for other backends (Claude and
     /// Gemini reviewer CLIs don't expose an equivalent flag here).
@@ -194,15 +250,14 @@ export class ReviewerManager {
       return this.runOllama({ ...args, mode });
     }
 
-    // Codex collab uses the persistent app-server transport so each
-    // round reuses the same thread. Plain review stays on `codex exec`
-    // because exec's stdout parser tags reasoning-style narration as
-    // [thinking] sections that we strip — the app-server stream emits
-    // the same narration as agentMessage items, which we'd have no
-    // clean way to filter, and the review card ends up as a wall of
-    // process-narration instead of just the verdict. Falls back to
-    // exec when the binary isn't on PATH.
-    if (args.reviewBackend === 'codex' && mode === 'collab') {
+    // Codex always uses the persistent app-server transport so the
+    // reviewer thread stays warm across reviews in the same
+    // conversation. Verdict promotion (in wireCodexReviewerClient)
+    // handles the noisier output stream — the last text-bearing
+    // assistant event becomes the verdict and intermediate narration
+    // is dimmed. Falls back to one-shot exec when the binary isn't on
+    // PATH or app-server fails to start.
+    if (args.reviewBackend === 'codex') {
       const persisted = await this.tryRunCodexAppServer({ ...args, mode });
       if (persisted) return persisted;
     }
@@ -228,7 +283,28 @@ export class ReviewerManager {
       },
     });
 
-    const prompt = buildReviewPrompt(args.summary, round);
+    // Claude warm-resume: if we captured a session id from a previous
+    // review in this conversation, pass it via --resume and strip
+    // priorTurns from the prompt (the resumed Claude session already
+    // has them). Prime the in-memory map from the persisted hint
+    // (carried on the conversation across app restarts) when we don't
+    // yet have an entry — first review post-restart picks up where
+    // the previous app session left off.
+    const persistedClaudeId = args.reviewerSessionIds?.claude;
+    if (
+      args.reviewBackend === 'claude' &&
+      persistedClaudeId &&
+      !this.claudeReviewerSessions.has(args.conversationId)
+    ) {
+      this.claudeReviewerSessions.set(args.conversationId, persistedClaudeId);
+    }
+    const claudeResumeId =
+      args.reviewBackend === 'claude'
+        ? this.claudeReviewerSessions.get(args.conversationId) ?? null
+        : null;
+    const summary =
+      claudeResumeId ? { ...args.summary, priorTurns: [] } : args.summary;
+    const prompt = buildReviewPrompt(summary, round, args.reviewPersona ?? null);
     const bin = resolveBackendPath(args.reviewBackend, args.backendPathOverride);
     if (!bin) {
       const info: ReviewInfo = {
@@ -247,6 +323,9 @@ export class ReviewerManager {
     return new Promise<ReviewInfo>((resolve) => {
       const childArgs = buildReviewerArgs(args.reviewBackend, {
         yolo: !!args.yolo,
+        model: args.reviewModel ?? null,
+        resumeSessionId: claudeResumeId,
+        effort: args.reviewPersona ? PERSONA_EFFORT[args.reviewPersona] : undefined,
         // Lifts coordinator-root symlink targets into codex's writable
         // set so `--sandbox workspace-write` doesn't deny edits that
         // resolve outside the coordinator's cwd subtree.
@@ -276,7 +355,18 @@ export class ReviewerManager {
         // claude emits stream-json events, codex exec emits plain text,
         // gemini streams plain text. We keep the latest known assistant
         // text for the review card and update the UI throttled to ~10fps.
+        // For claude we also pull thinking content + tool activity so
+        // the renderer can show "what was checked" and live tool calls
+        // above the verdict — gives users visible signal that the
+        // model actually worked.
         const displayed = extractReviewerDisplay(stdout, args.reviewBackend);
+        let thinking = '';
+        let toolActivity: string[] | undefined;
+        if (args.reviewBackend === 'claude') {
+          const parsed = parseClaudeStreamJson(stdout);
+          thinking = parsed.thinking;
+          if (parsed.toolActivity.length > 0) toolActivity = parsed.toolActivity;
+        }
         const now = Date.now();
         if (now - lastEmit > 100) {
           lastEmit = now;
@@ -289,6 +379,8 @@ export class ReviewerManager {
               startedAt,
               round,
               mode,
+              thinking: thinking || undefined,
+              toolActivity,
             },
           });
         }
@@ -313,7 +405,43 @@ export class ReviewerManager {
       });
       proc.on('close', (code) => {
         this.inFlight.delete(args.conversationId);
-        const finalText = extractReviewerDisplay(stdout, args.reviewBackend);
+        let finalThinking: string | undefined;
+        let finalToolActivity: string[] | undefined;
+        // Capture claude session id so the next review can --resume.
+        // Only on a clean exit — a non-zero exit means the session may
+        // not be reusable and we'd rather start fresh next time. While
+        // we're parsing, also grab the final thinking content +
+        // tool activity for the verdict card.
+        if (args.reviewBackend === 'claude' && code === 0) {
+          const parsed = parseClaudeStreamJson(stdout);
+          if (parsed.sessionId) {
+            const prev = this.claudeReviewerSessions.get(args.conversationId);
+            this.claudeReviewerSessions.set(args.conversationId, parsed.sessionId);
+            if (prev !== parsed.sessionId) {
+              this.emit({
+                type: 'reviewerSessionConfigured',
+                conversationId: args.conversationId,
+                reviewBackend: 'claude',
+                sessionId: parsed.sessionId,
+              });
+            }
+          }
+          finalThinking = parsed.thinking || undefined;
+          finalToolActivity = parsed.toolActivity.length > 0 ? parsed.toolActivity : undefined;
+        }
+        let finalText = extractReviewerDisplay(stdout, args.reviewBackend);
+        // Empty-output rescue: Opus on `--effort low` (notably the
+        // critic persona used by cheap-and-paranoid) sometimes exits
+        // with zero content blocks when it has nothing critical to
+        // add. The CLI returns code 0 with `result: ""` and a few
+        // end-of-turn tokens. Show the persona's "all good" phrase
+        // instead of "(no output)" — captures the model's intent
+        // ("nothing to flag") in a form that flows through the rest
+        // of the pipeline correctly (the all-good detection skips the
+        // synthetic feedback round, the card displays a real verdict).
+        if (!finalText.trim() && code === 0 && args.reviewPersona) {
+          finalText = defaultAllGoodVerdict(args.reviewPersona);
+        }
         const info: ReviewInfo = {
           backend: args.reviewBackend,
           text: finalText,
@@ -322,6 +450,8 @@ export class ReviewerManager {
           startedAt,
           round,
           mode,
+          thinking: finalThinking,
+          toolActivity: finalToolActivity,
           raw: stdout.trim() || undefined,
         };
         this.emitReview(args.conversationId, { cardId, info });
@@ -360,6 +490,8 @@ export class ReviewerManager {
     backendPathOverride?: string;
     yolo?: boolean;
     mode: 'review' | 'collab';
+    reviewModel?: string | null;
+    reviewPersona?: PersonaKey | null;
   }): Promise<ReviewInfo | null> {
     const bin = resolveBackendPath('codex', args.backendPathOverride);
     if (!bin) return null;
@@ -379,6 +511,12 @@ export class ReviewerManager {
       this.codexSessions.delete(args.conversationId);
       session = undefined;
     }
+    // Capture warm-vs-cold BEFORE we (possibly) create a fresh session
+    // below. A warm session means the codex thread already has the prior
+    // conversation in its memory, so we skip priorTurns in the prompt
+    // and send only the new exchange — saves real tokens on smart-tier
+    // reviewer presets, and lets cache reuse kick in inside codex too.
+    const warm = !!session;
     if (!session) {
       const env = buildBackendEnv(process.env, bin);
       const client = new CodexAppServerClient({ binary: bin, cwd: args.cwd, env });
@@ -401,14 +539,25 @@ export class ReviewerManager {
         assistantTextsById: new Map(),
         resolve,
       };
-      const prompt = buildReviewPrompt(args.summary, round);
+      // On warm rounds, strip priorTurns from the summary — the codex
+      // thread already remembers them.
+      const summary = warm ? { ...args.summary, priorTurns: [] } : args.summary;
+      const prompt = buildReviewPrompt(summary, round, args.reviewPersona ?? null);
+      // Persona-driven reasoning effort. Codex's app-server takes the
+      // same EffortLevel union the primary uses; mapping to its API
+      // value happens inside codexAppServerEffort. Falls through as
+      // undefined when no persona is set (e.g. preset = 'independent').
+      const personaEffort: EffortLevel | undefined = args.reviewPersona
+        ? PERSONA_EFFORT[args.reviewPersona]
+        : undefined;
       void session!.client
         .sendUserInput(prompt, {
           cwd: args.cwd,
-          model: '',
+          model: args.reviewModel?.trim() || '',
           sandbox,
           approval,
           writableRoots: extraWritableRoots,
+          effortLevel: personaEffort,
         })
         .catch((err: any) => {
           // Guard against late catch resolving the wrong round — only
@@ -595,6 +744,7 @@ export class ReviewerManager {
     cwd: string;
     summary: PrimaryTurnSummary;
     ollamaModel?: string;
+    reviewPersona?: PersonaKey | null;
     mode: 'review' | 'collab';
   }): Promise<ReviewInfo> {
     const { mode } = args;
@@ -631,9 +781,15 @@ export class ReviewerManager {
       return info;
     }
 
+    // Persona, when set, overrides the generic critic system prompt —
+    // ollama models stay on-rails better with the same persona text we
+    // give the cloud CLIs, since they're the ones tuned for it.
+    const systemPrompt = args.reviewPersona
+      ? PERSONA_PREAMBLES[args.reviewPersona]
+      : buildOllamaReviewSystem();
     const messages: OllamaChatMessage[] = [
-      { role: 'system', content: buildOllamaReviewSystem() },
-      { role: 'user', content: buildReviewPrompt(args.summary, round) },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: buildReviewPrompt(args.summary, round, args.reviewPersona ?? null) },
     ];
 
     const controller = new AbortController();
@@ -695,11 +851,34 @@ function buildOllamaReviewSystem(): string {
   ].join(' ');
 }
 
-export function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): string {
+export function buildReviewPrompt(
+  summary: PrimaryTurnSummary,
+  round: number,
+  persona?: PersonaKey | null,
+): string {
   // Tight framing — codex exec echoes the prompt in its stdout, so extra
   // words here directly bloat the raw view. First round gets the role;
   // later rounds skip it.
-  const body = [
+  // Cap the transcript to the last N exchanges so the reviewer prompt
+  // doesn't balloon over long conversations. The reviewer needs RECENT
+  // context to disambiguate replies like "ok 2", not turn-47 from an
+  // hour ago. Keeps cost bounded for smart-tier reviewer presets.
+  const PRIOR_TURNS_CAP = 8;
+  const all = summary.priorTurns ?? [];
+  const kept = all.slice(-PRIOR_TURNS_CAP);
+  const transcript: string[] = [];
+  if (kept.length < all.length) {
+    transcript.push(`(${all.length - kept.length} earlier turns elided)`);
+    transcript.push('');
+  }
+  for (const t of kept) {
+    transcript.push(`User: ${t.userPrompt || '(no text)'}`);
+    transcript.push('');
+    transcript.push(`${summary.primaryBackend}: ${t.assistantText || '(no text)'}`);
+    transcript.push('');
+  }
+  const body: string[] = [
+    ...transcript,
     `User: ${summary.userPrompt}`,
     '',
     `${summary.primaryBackend}: ${summary.assistantText || '(no text)'}`,
@@ -708,25 +887,98 @@ export function buildReviewPrompt(summary: PrimaryTurnSummary, round: number): s
     body.push('', `Tools: ${summary.toolActivity}`);
   }
   if (round === 1) {
-    return [
-      `Sanity-check the turn below by ${summary.primaryBackend}. Reply briefly: what's wrong or "looks fine". Ground it in the code.`,
-      '',
-      ...body,
-    ].join('\n');
+    // Persona preamble replaces the generic sanity-check framing — the
+    // persona text already names the lens. Falls back to the generic
+    // framing when no persona is set (preset = 'independent' or no
+    // preset at all). When there's prior context, hint that the LAST
+    // exchange is the one to review so the reviewer doesn't critique
+    // the earlier ones.
+    const framing = persona
+      ? PERSONA_PREAMBLES[persona]
+      : `Sanity-check the turn below by ${summary.primaryBackend}. Reply briefly: what's wrong or "looks fine". Ground it in the code.`;
+    const focusHint =
+      transcript.length > 0
+        ? `\n\nThe earlier exchanges are conversation context; review only the LAST ${summary.primaryBackend} response.`
+        : '';
+    return [framing + focusHint, '', ...body].join('\n');
   }
   return body.join('\n');
 }
 
 export function buildReviewerArgs(
   backend: Backend,
-  opts: { yolo?: boolean; writableRoots?: string[] } = {},
+  opts: {
+    yolo?: boolean;
+    writableRoots?: string[];
+    model?: string | null;
+    /// Claude only: when set, append `--resume <id>` so the reviewer
+    /// continues the same Claude session as previous reviewer rounds in
+    /// this conversation. Lets the API prompt cache hit on the
+    /// persona + transcript prefix, and lets us skip priorTurns in the
+    /// prompt body (Claude already has them).
+    resumeSessionId?: string | null;
+    /// Per-persona reasoning effort. Maps to `--effort` on claude.
+    /// Codex picks this up via the app-server transport instead (so
+    /// this is unused for that path); gemini has no equivalent flag.
+    effort?: EffortLevel;
+  } = {},
 ): string[] {
+  // Reviewer model override: claude takes `--model X`, codex/gemini
+  // take `-m X`. Each CLI puts the flag before its own positional
+  // arguments, so we splice rather than append.
+  const model = opts.model?.trim() || null;
+  const resume = opts.resumeSessionId?.trim() || null;
   switch (backend) {
-    case 'claude':
-      // `-p -` reads the prompt from stdin, returns a single final
-      // assistant message. No --output-format so we get plain text,
-      // which is what the review card displays.
-      return ['-p', '-'];
+    case 'claude': {
+      // stream-json output gives us the system_init event (carries the
+      // session_id we need to capture for next round's --resume) plus
+      // structured assistant events we extract the verdict text from.
+      // --verbose is required when --output-format=stream-json.
+      //
+      // --effort comes from the persona table (PERSONA_EFFORT) — most
+      // personas use 'low' to keep the model from burning its output
+      // budget on extended thinking and ending with empty text;
+      // 'security' uses 'medium' because subtle bugs (race conditions,
+      // auth bypass paths) genuinely benefit from deeper analysis.
+      //
+      // --permission-mode default means tools require asking; -p mode
+      // has no human to ask, so tools effectively can't fire. The
+      // reviewer is a text-only critic; tool use just wastes budget.
+      // Empty-string and undefined both fall through to 'low'.
+      const effort = opts.effort || 'low';
+      const a: string[] = [];
+      if (model) a.push('--model', model);
+      if (resume) a.push('--resume', resume);
+      a.push('--effort', effort);
+      a.push('--permission-mode', 'default');
+      // Whitelist read-only tools so the reviewer can verify findings
+      // against the actual code instead of trusting the assistant's
+      // summary. Read/Grep/Glob cover source inspection; the git Bash
+      // subset lets it diff the working tree (most useful for
+      // half-finished / security personas reviewing real code changes).
+      // Edits and shell mutations are NOT whitelisted, and
+      // --permission-mode default means anything outside this list
+      // would prompt for approval — which can't happen in -p mode, so
+      // it effectively fails. Reviewer is read-only by construction.
+      a.push(
+        '--allowedTools',
+        'Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(git status:*) Bash(git ls-files:*)',
+      );
+      // --include-partial-messages surfaces streaming partial content
+      // blocks including thinking. Without it, claude only emits the
+      // final assistant message, so even at high effort the model's
+      // reasoning is invisible to us. The primary's claude path uses
+      // this same flag for the same reason.
+      a.push(
+        '--output-format',
+        'stream-json',
+        '--verbose',
+        '--include-partial-messages',
+        '-p',
+        '-',
+      );
+      return a;
+    }
     case 'codex': {
       // codex exec: one-shot version of codex proto. `-` tells it to
       // read the user prompt from stdin. --skip-git-repo-check lets the
@@ -736,16 +988,19 @@ export function buildReviewerArgs(
       // can actually edit files. Default is codex's own read-only
       // sandbox, which is why a review that wants to patch code
       // previously bounced with a "read-only session" message.
-      // `-s` and `-a` are TOP-LEVEL codex flags — they have to come
-      // before `exec`. Putting them after `exec` makes the codex parser
-      // reject `--ask-for-approval` as an unknown exec argument.
-      if (!opts.yolo) return ['exec', '--skip-git-repo-check', '-'];
+      // `-s` and `-a` and `-m` are TOP-LEVEL codex flags — they have
+      // to come before `exec`. Putting them after `exec` makes the
+      // codex parser reject them as unknown exec arguments.
+      const top: string[] = [];
+      if (model) top.push('-m', model);
+      if (!opts.yolo) return [...top, 'exec', '--skip-git-repo-check', '-'];
       const extras: string[] = [];
       for (const r of opts.writableRoots ?? []) {
         if (!r) continue;
         extras.push('--add-dir', r);
       }
       return [
+        ...top,
         '-s',
         'workspace-write',
         '-a',
@@ -756,9 +1011,14 @@ export function buildReviewerArgs(
         '-',
       ];
     }
-    case 'gemini':
-      // gemini CLI also supports stdin prompt via `-p -`.
-      return ['-p', '-'];
+    case 'gemini': {
+      // gemini CLI also supports stdin prompt via `-p -`. Model flag is
+      // `-m X`, same as the primary gemini path.
+      const a: string[] = [];
+      if (model) a.push('-m', model);
+      a.push('-p', '-');
+      return a;
+    }
     case 'ollama':
       // Ollama doesn't go through a CLI subprocess at all — run() routes
       // it to runOllama() before reaching this builder. Throw if we ever
@@ -768,15 +1028,89 @@ export function buildReviewerArgs(
 }
 
 /// Pull display text out of whatever stdout the reviewer is producing.
-/// Claude/Gemini run without --output-format so stdout is plain assistant
-/// text. Codex exec emits a structured transcript — banner, config block,
-/// echoed user instructions, thinking summaries, then the actual "codex"
-/// response, then a token-usage footer — and we want only the final
-/// response to land in the review card.
+/// Gemini runs without --output-format so stdout is plain assistant
+/// text. Claude runs with --output-format stream-json so we can capture
+/// the session_id for warm-resume, and we extract the latest assistant
+/// event's text. Codex exec emits a structured transcript — banner,
+/// config block, echoed user instructions, thinking summaries, then the
+/// actual "codex" response, then a token-usage footer — and we want
+/// only the final response to land in the review card.
 export function extractReviewerDisplay(raw: string, backend: Backend): string {
   if (!raw) return '';
   if (backend === 'codex') return extractCodexDisplay(raw);
+  if (backend === 'claude') return parseClaudeStreamJson(raw).text;
   return raw.trim();
+}
+
+/// Parse claude's --output-format=stream-json output. One JSON object
+/// per line. We only care about the system_init event (carries
+/// session_id we'll re-use via --resume) and assistant events (carry
+/// the verdict text in their content blocks). Tolerant of partial
+/// lines during streaming — bad JSON is silently skipped.
+export function parseClaudeStreamJson(raw: string): {
+  text: string;
+  thinking: string;
+  toolActivity: string[];
+  sessionId?: string;
+} {
+  let text = '';
+  let thinking = '';
+  let resultText = '';
+  let sessionId: string | undefined;
+  // Tool uses are emitted as separate `assistant` events with a
+  // `tool_use` content block (each with a unique id). Tracking by id
+  // lets us deduplicate the partial-message stream — claude emits the
+  // same tool_use multiple times as the input JSON streams in, and we
+  // only want one activity line per actual call. The summary string
+  // (file path / command / etc) is built once when the input is
+  // complete-enough to parse.
+  const toolActivityById = new Map<string, string>();
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith('{')) continue;
+    let obj: any;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (obj?.type === 'system' && obj?.subtype === 'init' && typeof obj.session_id === 'string') {
+      sessionId = obj.session_id;
+    } else if (obj?.type === 'assistant' && Array.isArray(obj?.message?.content)) {
+      const textJoined = obj.message.content
+        .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+        .map((b: any) => b.text)
+        .join('');
+      if (textJoined) text = textJoined;
+      const thinkingJoined = obj.message.content
+        .filter((b: any) => b?.type === 'thinking' && typeof b.thinking === 'string')
+        .map((b: any) => b.thinking)
+        .join('\n\n');
+      if (thinkingJoined) thinking = thinkingJoined;
+      // Capture tool_use blocks for the activity strip. Reusing the
+      // shared summarizeToolUse keeps formatting consistent with the
+      // primary's tool activity panel (e.g. "• Read /path/to/file").
+      for (const b of obj.message.content) {
+        if (b?.type !== 'tool_use' || typeof b.id !== 'string') continue;
+        const inputJSON =
+          b.input != null ? JSON.stringify(b.input) : '';
+        const summary = summarizeToolUse(b.name ?? '?', inputJSON);
+        if (summary) toolActivityById.set(b.id, summary);
+      }
+    } else if (obj?.type === 'result' && typeof obj?.result === 'string' && obj.result) {
+      // Defense-in-depth fallback. In some claude versions the assistant
+      // event might be filtered out by hooks or arrive in a shape we
+      // don't recognize, but the result event's `result` field still
+      // carries the final text. Prefer assistant event when present.
+      resultText = obj.result;
+    }
+  }
+  return {
+    text: text || resultText,
+    thinking,
+    toolActivity: Array.from(toolActivityById.values()),
+    sessionId,
+  };
 }
 
 function extractCodexDisplay(raw: string): string {

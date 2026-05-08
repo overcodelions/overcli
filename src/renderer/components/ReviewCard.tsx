@@ -10,16 +10,55 @@ export function ReviewCard({ info }: { info: ReviewInfo }) {
   if (info.mode === 'collab') label.push(`round ${info.round}`);
 
   return (
-    <div className="flex flex-col gap-1.5">
+    // Indent the whole card so it visually nests under the primary
+    // turn it's commenting on — easy to scan as a meta-comment vs.
+    // another primary bubble. The subtle background wash + rounded
+    // corners group everything (label, activity, thinking, verdict,
+    // raw) into one visible "review section" so it reads as a single
+    // sub-thread instead of a stack of loose elements.
+    <div className="flex flex-col gap-1.5 ml-6 rounded-xl bg-white/[0.02] p-3">
       <div
-        className="text-[10px] uppercase tracking-wider font-medium"
+        className="text-[10px] uppercase tracking-wider font-medium flex items-center gap-1.5"
         style={{ color: tint }}
       >
-        {label.join(' · ')}
-        {info.isRunning && <span className="ml-2 text-ink-faint normal-case tracking-normal">· thinking…</span>}
+        {/* "↩" prefix signals "reply to the primary turn above" — gives
+            the card a recognizable shape regardless of CLI color. */}
+        <span className="text-ink-faint">↩</span>
+        <span>{label.join(' · ')}</span>
+        {info.isRunning && (
+          <span className="ml-1 text-ink-faint normal-case tracking-normal">· thinking…</span>
+        )}
       </div>
+      {info.toolActivity && info.toolActivity.length > 0 && (
+        // Live tool activity strip — surfaced so users see the reviewer
+        // actually doing work (Read, Grep, Bash) rather than just a
+        // spinner. Auto-collapses to the most recent few lines while
+        // running, expandable to see them all. Once the review is done
+        // it stays visible as proof-of-work alongside the verdict.
+        <details
+          open={info.isRunning}
+          className="rounded-lg text-[11px] text-ink-muted px-3 py-1.5 border border-card bg-card"
+        >
+          <summary className="cursor-pointer text-ink-faint text-[10px] uppercase tracking-wider">
+            {info.backend} activity ({info.toolActivity.length})
+          </summary>
+          <div className="mt-1 flex flex-col gap-0.5 font-mono text-[10px] select-text">
+            {info.toolActivity.map((line, i) => (
+              <div key={i} className="truncate text-ink-muted/80">
+                {line}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
       {info.thinking && (
-        <details className="rounded-lg text-[11px] italic text-ink-muted px-3 py-1.5 border border-card bg-card">
+        // Open by default so the user actually sees the model worked,
+        // not just the final verdict. Collapsible if they want to hide
+        // it. Matches codex's "narration above the verdict" pattern.
+        <details
+          open
+          className="rounded-lg text-[11px] italic text-ink-muted px-3 py-1.5 border border-card bg-card"
+        >
           <summary className="cursor-pointer text-ink-faint text-[10px] uppercase tracking-wider">
             {info.backend} thinking
           </summary>
@@ -31,11 +70,16 @@ export function ReviewCard({ info }: { info: ReviewInfo }) {
           {info.error}
         </div>
       ) : info.text ? (
+        // Same visual treatment as a primary assistant bubble
+        // (tint-mixed border + background + 2px accent strip). The
+        // review's "this is a sub-thread" framing already comes from
+        // the wash + indent + ↩ above; the verdict text itself just
+        // wants to read as a regular response.
         <div
-          className="relative rounded-lg overflow-hidden"
+          className="relative rounded-xl overflow-hidden"
           style={{
-            border: `1px solid ${tint}30`,
-            background: 'rgba(255,255,255,0.02)',
+            background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
           }}
         >
           <div className="absolute left-0 top-0 bottom-0 w-[2px]" style={{ background: tint + 'cc' }} />

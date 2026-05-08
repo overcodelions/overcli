@@ -29,8 +29,11 @@ import {
   Backend,
   PermissionMode,
   EffortLevel,
+  PersonaKey,
+  ReviewPreset,
   MainToRendererEvent,
 } from '@shared/types';
+import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import {
@@ -283,6 +286,14 @@ interface StoreState {
   setEffortLevel(id: UUID, effort: EffortLevel): Promise<void>;
   setReviewBackend(id: UUID, backend: string | null): Promise<void>;
   setReviewMode(id: UUID, mode: 'review' | 'collab'): Promise<void>;
+  setReviewModel(id: UUID, model: string | null): Promise<void>;
+  setReviewPersona(id: UUID, persona: PersonaKey | null): Promise<void>;
+  /// Apply a curated rebound preset. Resolves the preset against the
+  /// conversation's current primary backend and writes all the
+  /// underlying review* fields in one shot. Pass 'off' to clear the
+  /// reviewer entirely; pass 'custom' to mark that the user is editing
+  /// the underlying fields directly without a preset.
+  setReviewPreset(id: UUID, preset: ReviewPreset | 'off'): Promise<void>;
   setCollabMaxTurns(id: UUID, turns: number): Promise<void>;
   setReviewOllamaModel(id: UUID, model: string | null): Promise<void>;
   setReviewYolo(id: UUID, yolo: boolean): Promise<void>;
@@ -1702,6 +1713,19 @@ export const useStore = create<StoreState>((set, get) => ({
         if (next.permissionMode === 'auto') next.permissionMode = 'default';
         if (next.pendingPermissionMode === 'auto') next.pendingPermissionMode = undefined;
       }
+      // Re-resolve any non-custom rebound preset against the new
+      // primary. Needed because presets like 'half-finished' say "same
+      // CLI as primary" — without this, switching primary mid-convo
+      // would leave the resolved reviewBackend pointing at the old CLI.
+      if (next.reviewPreset && next.reviewPreset !== 'custom') {
+        const resolved = resolvePreset(next.reviewPreset, backend);
+        if (resolved) {
+          next.reviewBackend = resolved.reviewBackend;
+          next.reviewMode = resolved.reviewMode;
+          next.reviewModel = resolved.reviewModel;
+          next.reviewPersona = resolved.reviewPersona;
+        }
+      }
       return next;
     });
     await saveConversationState(get);
@@ -1757,7 +1781,28 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
   async setReviewBackend(id, backend) {
-    mutateConversation(set, get, id, (c) => ({ ...c, reviewBackend: backend }));
+    mutateConversation(set, get, id, (c) => {
+      const next = { ...c, reviewBackend: backend };
+      // Re-map the reviewer model to the new CLI's equivalent tier.
+      // Without this, switching CLI in Advanced strands the model on
+      // the previous CLI's id (e.g. `gpt-5.5` after switching to
+      // claude), which doesn't match any of the new CLI's tier rows
+      // and makes the picker look unselected. Strategy: detect the
+      // previous tier (cheap/smart) using the previous backend; map
+      // to the new backend's same tier. Fall back to null (CLI
+      // default) when the previous model isn't a recognized tier or
+      // the new backend has no tier table (ollama).
+      if (backend && c.reviewBackend && c.reviewModel) {
+        const prevBackend = c.reviewBackend as Backend;
+        const prevTier = modelTier(prevBackend, c.reviewModel);
+        const newTiers = TIERS[backend as Backend];
+        next.reviewModel = prevTier && newTiers ? newTiers[prevTier] : null;
+      } else if (backend && !TIERS[backend as Backend]) {
+        // Switching to a backend with no tier table (ollama) — clear.
+        next.reviewModel = null;
+      }
+      return next;
+    });
     await saveConversationState(get);
   },
   async setReviewMode(id, mode) {
@@ -1780,6 +1825,50 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   async setReviewYolo(id, yolo) {
     mutateConversation(set, get, id, (c) => ({ ...c, reviewYolo: yolo }));
+    await saveConversationState(get);
+  },
+  async setReviewModel(id, model) {
+    // Manual edit — preset no longer describes the configuration.
+    mutateConversation(set, get, id, (c) => ({ ...c, reviewModel: model, reviewPreset: 'custom' }));
+    await saveConversationState(get);
+  },
+  async setReviewPersona(id, persona) {
+    mutateConversation(set, get, id, (c) => ({ ...c, reviewPersona: persona, reviewPreset: 'custom' }));
+    await saveConversationState(get);
+  },
+  async setReviewPreset(id, preset) {
+    mutateConversation(set, get, id, (c) => {
+      if (preset === 'off') {
+        return {
+          ...c,
+          reviewPreset: null,
+          reviewBackend: null,
+          reviewMode: null,
+          reviewModel: null,
+          reviewPersona: null,
+        };
+      }
+      if (preset === 'custom') {
+        // No field changes — just mark the configuration as user-edited
+        // so the picker shows "Custom…" instead of pinning a preset
+        // name on something the user has since modified.
+        return { ...c, reviewPreset: 'custom' };
+      }
+      const primary = c.primaryBackend ?? 'claude';
+      const resolved = resolvePreset(preset, primary);
+      // resolvePreset returns null when the preset can't apply (e.g. a
+      // tier-based preset on Ollama). Leave fields unchanged in that
+      // case — the renderer should have disabled the row.
+      if (!resolved) return c;
+      return {
+        ...c,
+        reviewPreset: preset,
+        reviewBackend: resolved.reviewBackend,
+        reviewMode: resolved.reviewMode,
+        reviewModel: resolved.reviewModel,
+        reviewPersona: resolved.reviewPersona,
+      };
+    });
     await saveConversationState(get);
   },
   async renameConversation(id, name) {
@@ -1933,6 +2022,9 @@ export const useStore = create<StoreState>((set, get) => ({
       attachments: attachments.length ? attachments : undefined,
       reviewBackend: conv.reviewBackend ?? null,
       reviewMode: conv.reviewMode ?? null,
+      reviewModel: conv.reviewModel ?? null,
+      reviewPersona: conv.reviewPersona ?? null,
+      reviewerSessionIds: conv.reviewerSessionIds,
       collabMaxTurns: conv.collabMaxTurns ?? null,
       reviewOllamaModel: conv.reviewOllamaModel ?? null,
       reviewYolo: conv.reviewYolo ?? null,
@@ -2276,6 +2368,14 @@ export const useStore = create<StoreState>((set, get) => ({
         scheduleClearCompletion(event.conversationId, completedAt as number);
       }
       if (justCompleted) {
+        // Bump lastActiveAt so the sidebar's "Active" 10-min window
+        // restarts at finish time, not at the original prompt — long
+        // runs were dropping off the list the instant they finished.
+        mutateConversation(set, get, event.conversationId, (c) => ({
+          ...c,
+          lastActiveAt: Date.now(),
+        }));
+        void saveConversationState(get);
         // Main-side guard skips the bounce if the window is focused or
         // we already nudged in the last 10s, so this is safe to fire on
         // every completion regardless of view state.
@@ -2323,6 +2423,20 @@ export const useStore = create<StoreState>((set, get) => ({
           next.codexRolloutPath = event.rolloutPath;
         }
         return next;
+      });
+      void saveConversationState(get);
+    } else if (event.type === 'reviewerSessionConfigured') {
+      // Persist the captured reviewer session id on the conversation so
+      // the next review can resume the same warm thread — survives app
+      // restart. Keyed by reviewer backend; today only `claude` fires
+      // this, but the keyed shape leaves room for codex/others later.
+      const store = get();
+      const conv = findConversation(store, event.conversationId);
+      if (!conv) return;
+      mutateConversation(set, get, event.conversationId, (c) => {
+        const ids = { ...(c.reviewerSessionIds ?? {}) };
+        ids[event.reviewBackend] = event.sessionId;
+        return { ...c, reviewerSessionIds: ids };
       });
       void saveConversationState(get);
     } else if (event.type === 'codexRuntimeMode') {

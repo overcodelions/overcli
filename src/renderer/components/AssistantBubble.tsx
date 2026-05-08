@@ -142,13 +142,38 @@ function dedupeAskUserQuestion(toolUses: ToolUseBlock[]): ToolUseBlock[] {
   const out: ToolUseBlock[] = [];
   for (const u of toolUses) {
     if (u.name === 'AskUserQuestion') {
-      const key = u.inputJSON;
+      const key = askUserQuestionKey(u.inputJSON);
       if (seen.has(key)) continue;
       seen.add(key);
     }
     out.push(u);
   }
   return out;
+}
+
+// Lenient content key: collapse cards that ask the same thing even when
+// the raw inputJSON differs (whitespace, key order, partial-stream
+// fragments, model rephrasing the prompt). Only the bits that affect
+// what the user picks count toward identity — question headers and the
+// set of option labels.
+function askUserQuestionKey(inputJSON: string): string {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(inputJSON);
+  } catch {
+    return inputJSON;
+  }
+  const questions = Array.isArray(parsed?.questions) ? parsed.questions : [];
+  const norm = (s: unknown) => (typeof s === 'string' ? s.trim().toLowerCase() : '');
+  const parts: string[] = [];
+  for (const q of questions) {
+    const head = norm(q?.header) || norm(q?.question);
+    const opts = Array.isArray(q?.options)
+      ? q.options.map((o: any) => norm(o?.label)).filter(Boolean).sort().join('|')
+      : '';
+    parts.push(`${head}::${opts}`);
+  }
+  return parts.join('§');
 }
 
 function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => void) {
@@ -165,18 +190,26 @@ function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => 
 
 function ThinkingBlock({ text, label }: { text: string; label: string }) {
   const [expanded, setExpanded] = useState(false);
-  const preview = text.trim().split('\n').slice(0, 2).join(' ').slice(0, 200);
+  // Header-only when collapsed — no preview text. Earlier we showed
+  // the first 2 lines as a preview, which on long conversations made
+  // thinking blocks dominate the chat visually. Now the collapsed
+  // state is a single muted line ("▸ thinking · 4 lines"); transparency
+  // is one click away when you want it.
+  const lineCount = text.trim().split('\n').filter((l) => l.trim().length > 0).length;
   return (
-    <div className="rounded-lg text-xs text-ink-faint italic pl-3 pr-3 py-2 relative overflow-hidden bg-card">
+    <div className="rounded-lg text-xs text-ink-faint italic pl-3 pr-3 py-1.5 relative overflow-hidden bg-card">
       <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-ink-faint/30" />
       <button
         onClick={() => setExpanded((e) => !e)}
-        className="flex items-center gap-1.5 text-ink-faint hover:text-ink-muted uppercase text-[9px] tracking-wider mb-1"
+        className="flex items-center gap-1.5 text-ink-faint hover:text-ink-muted uppercase text-[9px] tracking-wider"
       >
         <span>{expanded ? '▾' : '▸'}</span>
-        <span>{label}</span>
+        <span>
+          {label}
+          {lineCount > 1 ? ` · ${lineCount} lines` : ''}
+        </span>
       </button>
-      <div className="whitespace-pre-wrap">{expanded ? text : preview}</div>
+      {expanded && <div className="whitespace-pre-wrap mt-1">{text}</div>}
     </div>
   );
 }
