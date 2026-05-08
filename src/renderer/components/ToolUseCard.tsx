@@ -152,6 +152,7 @@ function MultiEditCard({ args, result, onOpen }: { args: Record<string, any>; re
 /// user turn so claude's context includes the selection.
 function AskUserQuestionCard({ use, args }: { use: ToolUseBlock; args: Record<string, any> }) {
   const [selections, setSelections] = useState<Record<number, Set<number>>>({});
+  const [other, setOther] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const questions: Array<{ header?: string; question?: string; multiple?: boolean; options?: Array<{ label: string; description?: string }> }> =
     Array.isArray(args.questions) ? args.questions : [];
@@ -172,10 +173,19 @@ function AskUserQuestionCard({ use, args }: { use: ToolUseBlock; args: Record<st
     });
   };
 
-  const canSubmit = questions.length > 0 && questions.every((_, i) => (selections[i]?.size ?? 0) > 0);
+  const otherTrimmed = other.trim();
+  const hasOther = otherTrimmed.length > 0;
+  const canSubmit =
+    hasOther ||
+    (questions.length > 0 && questions.every((_, i) => (selections[i]?.size ?? 0) > 0));
 
   const submit = () => {
     if (!canSubmit || !convId) return;
+    if (hasOther) {
+      void send(convId, otherTrimmed);
+      setSubmitted(true);
+      return;
+    }
     const lines: string[] = [];
     for (let i = 0; i < questions.length; i++) {
       const q = questions[i];
@@ -246,6 +256,23 @@ function AskUserQuestionCard({ use, args }: { use: ToolUseBlock; args: Record<st
             );
           })
         )}
+        <div className="flex flex-col gap-1 pt-1 border-t border-blue-500/20">
+          <div className="text-[10px] text-ink-faint">Or type your own response</div>
+          <textarea
+            value={other}
+            disabled={submitted}
+            onChange={(e) => setOther(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="Reply in your own words…"
+            rows={2}
+            className="w-full resize-y bg-blue-500/5 border border-blue-500/20 rounded px-2 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-blue-500/60 disabled:opacity-50"
+          />
+        </div>
       </div>
       <div className="flex justify-end gap-2 px-3 py-2 border-t border-blue-500/30">
         {submitted ? (
@@ -256,7 +283,7 @@ function AskUserQuestionCard({ use, args }: { use: ToolUseBlock; args: Record<st
             disabled={!canSubmit}
             className="text-xs px-3 py-1 rounded bg-blue-500/25 text-blue-100 hover:bg-blue-500/40 disabled:opacity-40"
           >
-            Submit
+            {hasOther ? 'Send reply' : 'Submit'}
           </button>
         )}
       </div>
