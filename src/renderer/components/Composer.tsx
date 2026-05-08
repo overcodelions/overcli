@@ -36,6 +36,7 @@ export interface ComposerProps {
   /// list is provided, typing `/` at the start of the draft opens a
   /// filterable popover. Names are bare (no leading `/`).
   slashCommands?: SlashCommandEntry[];
+  disabled?: boolean;
 }
 
 export interface SlashCommandEntry {
@@ -145,6 +146,7 @@ export function Composer({
   focusSignal,
   rootPath,
   slashCommands,
+  disabled,
 }: ComposerProps) {
   const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
   const setDraft = useStore((s) => s.setDraft);
@@ -503,10 +505,12 @@ export function Composer({
             void handleFiles(files);
           }
         }}
-        placeholder={placeholder ?? 'Message…'}
+        disabled={disabled}
+        placeholder={disabled ? 'Install a CLI above to get started' : (placeholder ?? 'Message…')}
         rows={variant === 'welcome' ? 3 : 2}
         className={
           'bg-transparent resize-none outline-none select-text placeholder-ink-faint ' +
+          (disabled ? 'opacity-40 cursor-not-allowed ' : '') +
           (variant === 'welcome' ? 'text-base px-5 pt-4 pb-2' : 'text-sm px-3.5 py-2.5')
         }
       />
@@ -548,7 +552,7 @@ export function Composer({
         ) : (
           <button
             onClick={commit}
-            disabled={!draft.trim() && attachments.length === 0}
+            disabled={disabled || (!draft.trim() && attachments.length === 0)}
             className="w-8 h-8 flex items-center justify-center rounded-full bg-accent/30 text-ink hover:bg-accent/50 disabled:opacity-30 disabled:hover:bg-accent/30"
             title="Send (⏎)"
           >
