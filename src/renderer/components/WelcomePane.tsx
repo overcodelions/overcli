@@ -1,7 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { Composer } from './Composer';
-import { Backend, PermissionMode, EffortLevel, Project, UUID, Attachment, Workspace } from '@shared/types';
+import {
+  Backend,
+  BackendHealth,
+  PermissionMode,
+  EffortLevel,
+  Project,
+  ReviewPreset,
+  UUID,
+  Attachment,
+  Workspace,
+} from '@shared/types';
+import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
 import { modeLabel, permissionTone } from './conversationHeaderHelpers';
@@ -16,6 +27,8 @@ export function WelcomePane() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const settings = useStore((s) => s.settings);
+  const installedReviewers = useStore((s) => s.installedReviewers);
+  const backendHealth = useStore((s) => s.backendHealth);
   const focusedProjectId = useStore((s) => s.focusedProjectId);
   const focusedWorkspaceId = useStore((s) => s.focusedWorkspaceId);
   const welcomeFocusToken = useStore((s) => s.welcomeFocusToken);
@@ -29,6 +42,7 @@ export function WelcomePane() {
   const setPermissionMode = useStore((s) => s.setPermissionMode);
   const setEffortLevel = useStore((s) => s.setEffortLevel);
   const setPrimaryBackend = useStore((s) => s.setPrimaryBackend);
+  const setReviewPreset = useStore((s) => s.setReviewPreset);
   const addAttachment = useStore((s) => s.addAttachment);
   const clearAttachments = useStore((s) => s.clearAttachments);
   const setDraft = useStore((s) => s.setDraft);
@@ -50,6 +64,7 @@ export function WelcomePane() {
   );
   const [effort, setEffort] = useState<EffortLevel>(settings.defaultEffort);
   const [model, setModel] = useState<string>('');
+  const [reviewPreset, setLocalReviewPreset] = useState<ReviewPreset | 'off'>('off');
   const [branch, setBranch] = useState<string>('');
   const [ollamaPulledModels, setOllamaPulledModels] = useState<string[]>([]);
   const slashCommands = useSlashCommands(backend);
@@ -144,6 +159,10 @@ export function WelcomePane() {
     void setPermissionMode(conv.id, permissionMode);
     if (effort) void setEffortLevel(conv.id, effort);
     if (model) void setBackendModel(conv.id, backend, model);
+    // Apply rebound preset *after* setPrimaryBackend so the resolver
+    // sees the right primary. Off is the harmless no-op default and
+    // doesn't need to be dispatched.
+    if (reviewPreset !== 'off') void setReviewPreset(conv.id, reviewPreset);
     // Fire the send. store.send reads draft+attachments from the store so
     // we explicitly cleared ours above and passed attachments through.
     setDraft(WELCOME_KEY, '');
@@ -152,7 +171,7 @@ export function WelcomePane() {
   };
 
   if (projects.length === 0) {
-    return <EmptyWelcome onPick={pickProject} />;
+    return <EmptyWelcome onPick={pickProject} backendHealth={backendHealth} />;
   }
 
   const headline = isNonGitProject
@@ -212,6 +231,19 @@ export function WelcomePane() {
                   if (next !== 'claude' && permissionMode === 'auto') {
                     setLocalPermissionMode('default');
                   }
+                  // Old model belonged to the previous CLI and almost
+                  // certainly isn't a valid model id for the new one
+                  // (e.g. `sonnet-4-6` is not a Codex model). Re-pick:
+                  // if a tier-shifting preset is active, snap to that
+                  // preset's primary tier on the new CLI; otherwise
+                  // fall back to the user's configured default for the
+                  // new backend.
+                  if (reviewPreset === 'cheap-paranoid') {
+                    const cheap = TIERS[next]?.cheap;
+                    setModel(cheap ?? settings.backendDefaultModels[next] ?? '');
+                  } else {
+                    setModel(settings.backendDefaultModels[next] ?? '');
+                  }
                 }}
               />
               <Pill
@@ -239,9 +271,141 @@ export function WelcomePane() {
                   onPick={(v) => setEffort(v as EffortLevel)}
                 />
               )}
+              <Pill
+                label={
+                  reviewPreset === 'off'
+                    ? 'Rebound'
+                    : PRESETS.find((p) => p.key === reviewPreset)?.label ?? 'Custom'
+                }
+                color={reviewPreset === 'off' ? undefined : '#c29bff'}
+                items={[
+                  { value: 'off', label: 'No rebound' },
+                  ...PRESETS.map((p) => {
+                    // Independent needs at least one non-primary CLI
+                    // installed. Disable + explain if there's no other
+                    // CLI available — same gating logic the rebound
+                    // popover uses on the conversation header.
+                    if (p.key === 'independent') {
+                      const others = (['claude', 'codex', 'gemini', 'ollama'] as const).filter(
+                        (b) => b !== backend && installedReviewers[b],
+                      );
+                      if (others.length === 0) {
+                        return {
+                          value: p.key,
+                          label: p.label,
+                          note: 'Install another CLI to enable',
+                          disabled: true,
+                        };
+                      }
+                    }
+                    return { value: p.key, label: p.label };
+                  }),
+                ]}
+                onPick={(v) => {
+                  const next = v as ReviewPreset | 'off';
+                  const prev = reviewPreset;
+                  setLocalReviewPreset(next);
+                  // Cheap-and-paranoid only delivers value when primary
+                  // is on the cheap tier. Auto-flip the primary model
+                  // when entering it; auto-restore to the user's
+                  // configured default when leaving so we don't silently
+                  // strand them on Sonnet after they switch presets.
+                  if (next === 'cheap-paranoid') {
+                    const cheap = TIERS[backend]?.cheap;
+                    if (cheap) setModel(cheap);
+                  } else if (prev === 'cheap-paranoid') {
+                    setModel(settings.backendDefaultModels[backend] ?? '');
+                  }
+                }}
+              />
             </>
           }
         />
+        {(() => {
+          // Mismatch warning for cheap-paranoid: the preset's value is
+          // "cheap primary, smart reviewer" — leaving primary on the smart
+          // tier defeats the purpose. We don't auto-fix the model so users
+          // stay in control; just surface the conflict here.
+          if (reviewPreset !== 'cheap-paranoid') return null;
+          const effectiveModel = model || settings.backendDefaultModels[backend] || '';
+          if (modelTier(backend, effectiveModel) !== 'smart') return null;
+          return (
+            <div className="mt-2 text-[11px] text-amber-400 text-center">
+              Cheap-and-paranoid expects a cheap primary; you're on{' '}
+              <span className="font-mono">{shortModel(effectiveModel)}</span>. Switch to the
+              cheap tier to actually save tokens.
+            </div>
+          );
+        })()}
+        {reviewPreset !== 'off' && (() => {
+          const spec = PRESETS.find((p) => p.key === reviewPreset);
+          const resolved = resolvePreset(reviewPreset, backend);
+          if (!spec || !resolved) return null;
+          // Cost dots: 1 = low, 2 = medium, 3 = high. Lets users see at a
+          // glance whether a preset is cheap or pricey before opting in.
+          const costDots = spec.relativeCost === 'low' ? 1 : spec.relativeCost === 'medium' ? 2 : 3;
+          const costColor =
+            spec.relativeCost === 'low'
+              ? 'text-emerald-400'
+              : spec.relativeCost === 'medium'
+              ? 'text-amber-400'
+              : 'text-rose-400';
+          return (
+            <div className="mt-3 rounded-lg border border-card-strong bg-card/40 p-3 text-xs">
+              <div className="flex items-baseline justify-between gap-3 mb-1">
+                <div className="font-medium" style={{ color: '#c29bff' }}>
+                  Rebound: {spec.label}
+                </div>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={'text-[10px] tracking-widest ' + costColor}
+                    title={`Relative cost per review: ${spec.relativeCost}`}
+                  >
+                    {'•'.repeat(costDots)}
+                    <span className="opacity-30">{'•'.repeat(3 - costDots)}</span>
+                  </span>
+                  <span className="text-[10px] uppercase tracking-wider text-ink-faint">
+                    {spec.mode === 'collab' ? 'Collab' : 'Review'}
+                  </span>
+                </div>
+              </div>
+              <div className="text-ink-muted mb-1">{spec.description}</div>
+              <div className="text-[11px] text-ink-faint mb-2">
+                <span className="text-ink-muted">Best for:</span> {spec.bestFor}
+              </div>
+              {resolved.reviewPersona && (
+                PERSONA_REQUIRES_CODE_CHANGES[resolved.reviewPersona] ? (
+                  <div className="text-[11px] text-amber-400/80 mb-2">
+                    Fires only on turns that change code (Edit, Write, Patch). Skipped on
+                    text-only / Q&amp;A turns.
+                  </div>
+                ) : (
+                  <div className="text-[11px] text-ink-muted mb-2">
+                    Fires every turn — including text-only / Q&amp;A turns.
+                  </div>
+                )
+              )}
+              <div className="text-[11px] text-ink-faint flex flex-wrap gap-x-3 gap-y-0.5">
+                <span>
+                  Reviewer:{' '}
+                  <span className="text-ink" style={{ color: backendColor(resolved.reviewBackend) }}>
+                    {backendName(resolved.reviewBackend)}
+                  </span>
+                </span>
+                {resolved.reviewModel && (
+                  <span>
+                    Model: <span className="font-mono text-ink">{shortModel(resolved.reviewModel)}</span>
+                  </span>
+                )}
+                {resolved.reviewPersona && (
+                  <span>
+                    Persona: <span className="text-ink">{resolved.reviewPersona}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })()}
         <div className="mt-3 flex items-center gap-2 text-xs text-ink-muted justify-center flex-wrap">
           <ContextPill
             label={focusedWorkspace?.name ?? selectedProject?.name ?? 'Pick project'}
@@ -305,7 +469,16 @@ function StarterPrompts({
   );
 }
 
-function EmptyWelcome({ onPick }: { onPick: () => void }) {
+function EmptyWelcome({
+  onPick,
+  backendHealth,
+}: {
+  onPick: () => void;
+  backendHealth: Record<string, BackendHealth>;
+}) {
+  const healthLoaded = Object.keys(backendHealth).length > 0;
+  const anyReady = Object.values(backendHealth).some((h) => h.kind === 'ready');
+
   return (
     <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
       <div className="w-full max-w-[760px] text-center">
@@ -319,6 +492,8 @@ function EmptyWelcome({ onPick }: { onPick: () => void }) {
           and coordinate work across multiple repos — no API keys, just the
           CLIs you already have signed in.
         </div>
+
+        {healthLoaded && !anyReady && <CliSetupGuide backendHealth={backendHealth} />}
 
         <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
           <FeatureCard
@@ -352,6 +527,58 @@ function EmptyWelcome({ onPick }: { onPick: () => void }) {
             Pick a folder on disk. Git repos unlock agents; any folder works for chat.
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const CLI_SETUP: {
+  backend: Backend;
+  name: string;
+  install: string;
+  auth: string | null;
+}[] = [
+  { backend: 'claude', name: 'Claude', install: 'npm install -g @anthropic-ai/claude-code', auth: 'claude auth login' },
+  { backend: 'codex', name: 'Codex', install: 'npm install -g @openai/codex', auth: 'codex login' },
+  { backend: 'gemini', name: 'Gemini', install: 'npm install -g @google/gemini-cli', auth: 'gemini auth login' },
+  { backend: 'ollama', name: 'Ollama', install: 'Download from ollama.com', auth: null },
+];
+
+function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
+  return (
+    <div className="mt-6 mx-auto max-w-[520px] rounded-lg border border-amber-500/30 bg-amber-500/5 p-4 text-left">
+      <div className="text-xs font-medium text-amber-400 mb-3">
+        No CLIs detected — install at least one to get started
+      </div>
+      <div className="flex flex-col gap-2">
+        {CLI_SETUP.map(({ backend, name, install, auth }) => {
+          const health = backendHealth[backend];
+          const kind = health?.kind ?? 'missing';
+          return (
+            <div key={backend} className="flex items-start gap-2.5 text-xs">
+              <span className="mt-0.5 shrink-0">
+                {kind === 'unauthenticated' ? (
+                  <span className="text-amber-400">○</span>
+                ) : (
+                  <span className="text-ink-faint">–</span>
+                )}
+              </span>
+              <div className="min-w-0">
+                <span className="text-ink font-medium">{name}</span>
+                {kind === 'unauthenticated' && auth && (
+                  <span className="ml-2 text-ink-muted">
+                    installed — run <code className="font-mono text-amber-300/80">{auth}</code>
+                  </span>
+                )}
+                {(kind === 'missing' || kind === 'error' || kind === 'unknown') && (
+                  <span className="ml-2 text-ink-faint">
+                    <code className="font-mono text-ink-muted">{install}</code>
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -555,6 +782,9 @@ interface PillItem {
   label: string;
   note?: string;
   kind?: 'header';
+  /// When true, the row is shown greyed out and clicks are no-ops.
+  /// Use `note` to explain why (e.g. "Install another CLI").
+  disabled?: boolean;
 }
 
 function Pill({
@@ -582,7 +812,7 @@ function Pill({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-card-strong border border-card hover:bg-card-strong text-xs"
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-card-strong border border-card hover:bg-card-strong text-xs whitespace-nowrap"
         style={color ? { color } : undefined}
       >
         <span>{label}</span>
@@ -601,11 +831,18 @@ function Pill({
             ) : (
               <button
                 key={it.value}
+                disabled={it.disabled}
                 onClick={() => {
+                  if (it.disabled) return;
                   setOpen(false);
                   onPick(it.value);
                 }}
-                className="w-full text-left px-3 py-1.5 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+                className={
+                  'w-full text-left px-3 py-1.5 text-xs ' +
+                  (it.disabled
+                    ? 'opacity-40 cursor-not-allowed text-ink-muted'
+                    : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                }
               >
                 <div>{it.label}</div>
                 {it.note && <div className="text-[10px] text-ink-faint truncate">{it.note}</div>}
