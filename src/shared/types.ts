@@ -7,6 +7,29 @@ export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama';
 export type PermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits' | 'bypassPermissions';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | '';
 
+/// Curated rebound presets surfaced in the UI. 'custom' means the user
+/// edited the underlying fields directly and we shouldn't try to pin a
+/// preset name on the result. See `src/main/reboundPresets.ts` for the
+/// source of truth on how each one resolves to backend/model/persona.
+export type ReviewPreset =
+  | 'half-finished'
+  | 'security'
+  | 'cheap-paranoid'
+  | 'skeptical-user'
+  | 'design-review'
+  | 'independent'
+  | 'custom';
+
+/// Persona keys for the reviewer prompt preamble. The actual prompt
+/// text lives in the same table — storing the key lets us tweak wording
+/// without migrating saved conversations.
+export type PersonaKey =
+  | 'half-finished'
+  | 'security'
+  | 'critic'
+  | 'skeptical-user'
+  | 'design';
+
 export interface ToolUseBlock {
   id: string;
   name: string;
@@ -151,6 +174,12 @@ export interface ReviewInfo {
   round: number;
   mode?: string;
   thinking?: string;
+  /// One-line summaries of tool calls the reviewer made while
+  /// producing the verdict — `Read /path/to/file`, `Grep validateStages`,
+  /// `Bash ls`. Streamed live so the user sees the reviewer doing work
+  /// instead of just a spinner. Empty when the reviewer didn't invoke
+  /// any tools (most non-claude paths today).
+  toolActivity?: string[];
   raw?: string;
 }
 
@@ -229,6 +258,34 @@ export interface Conversation {
   hidden?: boolean;
   reviewBackend?: string | null;
   reviewMode?: 'review' | 'collab' | null;
+  /// User-facing rebound configuration. The renderer picks a preset
+  /// (e.g. 'half-finished', 'security'); selecting a preset writes the
+  /// concrete reviewBackend / reviewMode / reviewModel / reviewPersona
+  /// fields below. Editing anything in the Advanced section flips the
+  /// preset to 'custom'. Stored separately from the resolved fields so
+  /// the closed-state pill can show "rebound · half-finished" instead
+  /// of "rebound · claude · review", and so the panel can show the
+  /// active preset selection on reopen.
+  reviewPreset?: ReviewPreset | null;
+  /// Reviewer model override. Passed as `--model X` (claude) or `-m X`
+  /// (codex/gemini). Null leaves the reviewer CLI on its default model.
+  /// Ignored for ollama (use reviewOllamaModel instead).
+  reviewModel?: string | null;
+  /// Reviewer persona key. Resolved into a prompt preamble at run time
+  /// from the table in `src/main/reboundPresets.ts` — storing the key
+  /// (not the body) lets us tune persona wording without migrating
+  /// saved conversations.
+  reviewPersona?: PersonaKey | null;
+  /// Captured reviewer session ids per backend. Persisted across app
+  /// restarts so the next review can resume into the same warm thread
+  /// instead of cold-starting (warm thread = cache reuse on the
+  /// persona + transcript prefix, plus the reviewer's own prior
+  /// verdicts stay in context). Today only `claude` is populated
+  /// (via `--resume <id>`); the keyed shape leaves room for `codex`
+  /// and others to join without renaming. Updated by the
+  /// `reviewerSessionConfigured` IPC event after each successful
+  /// review captures or refreshes its session id.
+  reviewerSessionIds?: Partial<Record<Backend, string>>;
   collabMaxTurns?: number | null;
   /// SHA-256 hashes of synthetic collab pingPrompts overcli has fed to
   /// the primary CLI. The primary's transcript persists those as
@@ -559,6 +616,13 @@ export interface IPCInvokeMap {
     /// completes and streams reviewResult events back.
     reviewBackend?: string | null;
     reviewMode?: 'review' | 'collab' | null;
+    reviewModel?: string | null;
+    reviewPersona?: PersonaKey | null;
+    /// Persisted reviewer session ids per backend. When present for the
+    /// active reviewer backend, the runner primes ReviewerManager's
+    /// in-memory map so the next reviewer invocation resumes the warm
+    /// thread (survives app restart). Today only `claude` is wired.
+    reviewerSessionIds?: Partial<Record<Backend, string>>;
     collabMaxTurns?: number | null;
     reviewOllamaModel?: string | null;
     reviewYolo?: boolean | null;
@@ -999,6 +1063,20 @@ export type MainToRendererEvent =
       conversationId: UUID;
       sessionId: string;
       rolloutPath?: string;
+    }
+  | {
+      // Surfaces a captured reviewer session id (per backend) so the
+      // renderer can persist it on the conversation under
+      // `reviewerSessionIds[reviewBackend]`. The next time a review
+      // fires for the same backend (this conversation, even after an
+      // app restart), it gets passed back via runner:send so the
+      // reviewer resumes its warm thread instead of cold-starting.
+      // Today only `claude` ever fires this; the keyed shape keeps
+      // room for codex/other backends to join later.
+      type: 'reviewerSessionConfigured';
+      conversationId: UUID;
+      reviewBackend: Backend;
+      sessionId: string;
     }
   | {
       type: 'codexRuntimeMode';
