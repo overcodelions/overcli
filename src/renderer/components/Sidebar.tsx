@@ -358,6 +358,12 @@ function pathBasename(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).slice(-1)[0] ?? path;
 }
 
+function projectLabel(project: Project): string {
+  const fromPath = pathBasename(project.path).trim();
+  if (fromPath) return fromPath;
+  return project.name;
+}
+
 interface RecentConversationItem {
   conv: Conversation;
   ownerName: string;
@@ -374,7 +380,7 @@ function collectTopConversations(
   for (const project of projects) {
     for (const conv of project.conversations) {
       if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
-        out.push({ conv, ownerName: project.name, ownerKind: 'project' });
+        out.push({ conv, ownerName: projectLabel(project), ownerKind: 'project' });
       }
     }
   }
@@ -451,7 +457,7 @@ function ProjectShortcutRow({
         <ProjectIcon />
         <span className="min-w-0 flex-1">
           <span className={'block truncate text-xs ' + (selected ? 'font-medium' : '')}>
-            {project.name}
+            {projectLabel(project)}
           </span>
           <span className="block truncate text-[10px] text-ink-faint">{pathBasename(project.path)}</span>
         </span>
@@ -579,13 +585,13 @@ function ProjectGroup({
         <button onClick={toggle} className="flex items-center gap-1.5 flex-1 text-left min-w-0">
           <span className={'text-[9px] text-ink-faint ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
           <ProjectIcon />
-          <span className="text-xs font-medium truncate">{project.name}</span>
+          <span className="text-xs font-medium truncate">{projectLabel(project)}</span>
         </button>
         <button
           onClick={onNewConversation}
           className="w-6 h-6 flex items-center justify-center rounded text-accent hover:text-accent hover:bg-card-strong [filter:drop-shadow(0_0_3px_rgba(125,200,255,0.7))] hover:[filter:drop-shadow(0_0_5px_rgba(125,200,255,0.9))]"
           title="New conversation"
-          aria-label={`New conversation in ${project.name}`}
+          aria-label={`New conversation in ${projectLabel(project)}`}
         >
           <PlusIcon />
         </button>
@@ -593,7 +599,7 @@ function ProjectGroup({
           onClick={onExplore}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-ink hover:bg-card-strong"
           title="Explore files"
-          aria-label={`Explore files in ${project.name}`}
+          aria-label={`Explore files in ${projectLabel(project)}`}
         >
           <SearchIcon />
         </button>
@@ -601,14 +607,14 @@ function ProjectGroup({
           onClick={() => setConfirmRemove(true)}
           className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
           title="Remove project from Overcli"
-          aria-label={`Remove project ${project.name}`}
+          aria-label={`Remove project ${projectLabel(project)}`}
         >
           <TrashIcon />
         </button>
       </div>
       {confirmRemove && (
         <InlineRemoveConfirm
-          title={`Remove ${project.name} from Overcli?`}
+          title={`Remove ${projectLabel(project)} from Overcli?`}
           body="This keeps the repo on disk, but removes it from the app."
           details={removeDetails}
           confirmLabel="Remove"
@@ -1223,7 +1229,7 @@ function ArchivedGroup() {
     }> = [];
     for (const p of projects) {
       for (const c of p.conversations) {
-        if (c.hidden) out.push({ conv: c, owner: p.name, ownerIcon: 'project' });
+        if (c.hidden) out.push({ conv: c, owner: projectLabel(p), ownerIcon: 'project' });
       }
     }
     for (const w of workspaces) {
