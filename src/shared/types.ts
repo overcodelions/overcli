@@ -209,6 +209,7 @@ export type StreamEventKind =
   | { type: 'reviewResult'; info: ReviewInfo }
   | { type: 'systemNotice'; text: string }
   | { type: 'metaReminder'; text: string }
+  | { type: 'easterEgg'; text: string; from: string }
   | { type: 'stderr'; line: string }
   | { type: 'parseError'; message: string }
   | { type: 'streamDelta' }
