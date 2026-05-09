@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>Four coding agents. One honest window.</strong><br />
-  A cross-platform desktop app that wraps <code>claude</code>, <code>codex</code>, <code>gemini</code>, and <code>ollama</code> in a single GUI —
+  A cross-platform desktop app that wraps <code>claude</code>, <code>codex</code>, <code>gemini</code>, and <code>ollama</code> —
   conversations, diffs, git worktrees, and usage stats in the same place.
 </p>
 
@@ -24,16 +24,26 @@
 </p>
 
 <p align="center">
-  <a href="#download">Download</a> ·
+  <a href="#why-overcli">Why Overcli</a> ·
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#features">Features</a> ·
-  <a href="#development">Dev</a> ·
-  <a href="#contributing">Contributing</a> ·
+  <a href="#download">Download</a> ·
+  <a href="#quick-start">Quick Start</a> ·
   <a href="#a-fatherson-project">About</a>
 </p>
 
 ---
 
 > Overcli is a fan-built desktop client. It is **not** affiliated with Anthropic, OpenAI, or Google. It runs on top of the official `claude`, `codex`, and `gemini` CLIs and the open-source `ollama` runtime — whatever auth those already have is the auth Overcli uses. No API keys required.
+
+## Why Overcli
+
+Coding-agent workflows are powerful, but they usually live across half a dozen terminals, dashboards, and tabs. Overcli pulls them into one window so you can:
+
+- Run the same prompt against multiple backends and **compare diffs side by side**.
+- See what the agent actually did — every edit as a **real diff**, every Bash call as a real terminal block.
+- Keep agents in **isolated git worktrees** until you like what you read, then merge.
+- **Loop a reviewer** (cross-backend if you want) onto the result without copy-pasting transcripts.
 
 ## Screenshots
 
@@ -68,13 +78,8 @@
 </p>
 
 <p align="center">
-  <em>Collab mode — primary and reviewer ping-pong with their thinking on display.</em><br />
+  <em>Collab mode — primary and reviewer ping-pong with their thinking on display, round after round, until the reviewer is satisfied or the budget runs out.</em><br />
   <img alt="Overcli rebound collab transcript" src="docs/screenshots/rebound-collab-1.png" width="920" />
-</p>
-
-<p align="center">
-  <em>...round after round, until the reviewer is satisfied or the budget runs out.</em><br />
-  <img alt="Overcli rebound collab — later rounds" src="docs/screenshots/rebound-collab-2.png" width="920" />
 </p>
 
 <p align="center">
@@ -109,7 +114,7 @@
 
 Builds are produced by the release workflow and land on the [Releases page](https://github.com/lionelfarr/overcli/releases).
 
-| Platform | Artifact |
+| Platform | Artifacts |
 |---|---|
 | **macOS** · arm64 + x64 | `.dmg` · `.zip` |
 | **Windows** · x64 + arm64 | NSIS installer |
@@ -117,9 +122,11 @@ Builds are produced by the release workflow and land on the [Releases page](http
 
 > ⚠️ Builds are **unsigned**. macOS shows *"unidentified developer"* on first open — right-click the app → **Open**. Do it once, it sticks. Prefer to build it yourself? See [Build & package](#build--package) below.
 
-## Requirements
+## Quick Start
 
-Overcli is a thin GUI over CLIs you install separately. Install whichever ones you want to use:
+### 1. Install the backends you want to use
+
+Overcli is a thin GUI over CLIs you install separately. You don't need all four — health badges show you what it can reach, and the app works fine with just one installed.
 
 | Backend | CLI | Install |
 |---|---|---|
@@ -128,9 +135,7 @@ Overcli is a thin GUI over CLIs you install separately. Install whichever ones y
 | Gemini | `gemini` | `npm i -g @google/gemini-cli` |
 | Ollama | `ollama` | [ollama.com](https://ollama.com) |
 
-You don't need all four — Overcli's health badges will show you which ones it can reach, and the app works fine with just one installed.
-
-## Development
+### 2. Run Overcli in development
 
 ```bash
 git clone https://github.com/lionelfarr/overcli
@@ -139,13 +144,13 @@ npm install
 npm run dev
 ```
 
-`dev` runs three watchers concurrently:
+`npm run dev` runs three watchers concurrently:
 
 - **vite** — renderer dev server at http://localhost:5173
 - **tsc** — main-process incremental compile into `dist/main/`
 - **electron** — waits for both, then launches Electron pointed at the Vite dev URL
 
-### Scripts
+### 3. Scripts
 
 | Command | What it does |
 |---|---|
@@ -229,15 +234,6 @@ src/
 4. Those events flow back to the renderer and become tool cards, message bubbles, approval cards, and diffs in `ChatView.tsx`.
 5. On completion, `stats.ts` records the turn; `reviewer.ts` optionally kicks off a rebound review on a second backend.
 
-## Contributing
-
-Issues, bug reports, and PRs welcome — please open an issue first for anything non-trivial so we can talk about the shape of it. The app's built to be *explainable*, so expect review comments asking "why this, not that."
-
-- [Open an issue](https://github.com/lionelfarr/overcli/issues/new)
-- Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup and PR expectations
-- See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before participating
-- Found a security bug? Don't file a public issue — see [`SECURITY.md`](SECURITY.md)
-
 ## Not included (by choice)
 
 - **Time Travel** — forking a conversation at a specific turn
@@ -250,6 +246,15 @@ Anything else missing that you'd expect? It's a bug — please file it.
 Overcli is a collaboration between **[Lionel Farr](https://github.com/lionelfarr)** and his son **[Owen Farr](https://github.com/owenlfarr)**. It started as a way to spend time building something real together — Owen learning how a production app actually comes together (IPC, state, streaming, diffs, packaging), Lionel getting to teach by doing instead of explaining in the abstract. Every feature above is an excuse for a conversation about *why* it's designed the way it is.
 
 > If you're reading the code and wondering why some decisions look the way they do — it's because they were chosen to be *explainable*, not just clever.
+
+## Contributing
+
+Issues, bug reports, and PRs welcome — please open an issue first for anything non-trivial so we can talk about the shape of it.
+
+- [Open an issue](https://github.com/lionelfarr/overcli/issues/new)
+- Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup and PR expectations
+- See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before participating
+- Found a security bug? Don't file a public issue — see [`SECURITY.md`](SECURITY.md)
 
 ## License
 
