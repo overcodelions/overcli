@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest a new feature or a change to an existing one.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Overcli is a small project — a quick conversation about *shape* before code saves a lot of rework.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation, not the solution.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+      description: Sketch the change. Mockups or rough screenshots are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other approaches you thought about, and why this one wins.
+
+  - type: checkboxes
+    id: backends
+    attributes:
+      label: Backend(s) involved
+      options:
+        - label: claude
+        - label: codex
+        - label: gemini
+        - label: ollama
+        - label: none / cross-cutting

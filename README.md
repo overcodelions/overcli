@@ -15,6 +15,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/lionelfarr/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/lionelfarr/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
   <img alt="version" src="https://img.shields.io/badge/version-0.1.0-informational" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />

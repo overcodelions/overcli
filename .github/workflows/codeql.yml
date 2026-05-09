@@ -1,0 +1,53 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '0 9 * * 1'
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  preflight:
+    name: Check repo visibility
+    runs-on: ubuntu-latest
+    outputs:
+      is_public: ${{ steps.check.outputs.is_public }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(gh api "repos/${{ github.repository }}" --jq .visibility)
+          if [ "$visibility" = "public" ]; then
+            echo "is_public=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Repo is $visibility — skipping CodeQL. Code Scanning upload requires a public repo or GitHub Advanced Security."
+            echo "is_public=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    needs: preflight
+    if: needs.preflight.outputs.is_public == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
