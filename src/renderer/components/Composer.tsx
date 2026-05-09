@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { Attachment } from '@shared/types';
+import { useRunnersStore } from '../runnersStore';
+import { Attachment, StreamEvent } from '@shared/types';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -63,6 +64,18 @@ const KONAMI_TRIGGER_KEYS = [
 const EASTER_EGG_CHANCE_PER_FOCUS = 0.005;
 const EASTER_EGG_TOKEN_MS = 150;
 const EASTER_EGG_COOLDOWN_MS = 15 * 60 * 1000;
+
+const OWEN_LINES = [
+  'Hey, Owen here. Nice find. 👋',
+  '↑↑↓↓←→←→BA — overcli co-pilot reporting in.',
+  'Built by Owen + Dad. This bubble stays between us — no LLM involved.',
+  'Achievement unlocked: you found the easter egg. — Owen',
+  'Cheat code accepted. Carry on. 🎮',
+];
+
+function pickOwenLine(): string {
+  return OWEN_LINES[Math.floor(Math.random() * OWEN_LINES.length)];
+}
 
 /// Non-image MIME prefixes / extensions we accept and forward to the
 /// backend by writing to disk + inlining the path. Anything else gets
@@ -427,6 +440,24 @@ export function Composer({
     [],
   );
 
+  const dropOwenBubble = useCallback(() => {
+    if (draftKey.startsWith('__')) return;
+    const event: StreamEvent = {
+      id: `egg-${crypto.randomUUID()}`,
+      timestamp: Date.now(),
+      raw: '',
+      kind: {
+        type: 'easterEgg',
+        from: 'Owen Farr',
+        text: pickOwenLine(),
+      },
+      revision: 0,
+    };
+    useRunnersStore.getState().patchRunner(draftKey, (runner) => ({
+      events: [...runner.events, event],
+    }));
+  }, [draftKey]);
+
   const advanceKonami = useCallback((rawKey: string): boolean => {
     const key = rawKey.length === 1 ? rawKey.toLowerCase() : rawKey;
     const expected = KONAMI_TRIGGER_KEYS[konamiProgressRef.current];
@@ -436,13 +467,22 @@ export function Composer({
         konamiProgressRef.current = 0;
         setKonamiGlow((v) => !v);
         runKonamiFlash();
+        dropOwenBubble();
         return true;
       }
       return false;
     }
     konamiProgressRef.current = key === KONAMI_TRIGGER_KEYS[0] ? 1 : 0;
     return false;
-  }, [runKonamiFlash]);
+  }, [runKonamiFlash, dropOwenBubble]);
+
+  // Auto-fade the persistent text glow after 30s so it doesn't bleed into
+  // real typing if the user forgets it's on.
+  useEffect(() => {
+    if (!konamiGlow) return;
+    const t = window.setTimeout(() => setKonamiGlow(false), 30000);
+    return () => window.clearTimeout(t);
+  }, [konamiGlow]);
 
   return (
     <div
