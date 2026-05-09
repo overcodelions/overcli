@@ -13,6 +13,7 @@ import {
   Workspace,
 } from '@shared/types';
 import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
+import { pathBasename } from '@shared/workspaceNames';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
 import { modeLabel, permissionTone } from './conversationHeaderHelpers';
@@ -113,6 +114,11 @@ export function WelcomePane() {
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
     [projects, selectedProjectId],
   );
+  const selectedProjectLabel = useMemo(() => {
+    if (!selectedProject) return null;
+    const fromPath = pathBasename(selectedProject.path).trim();
+    return fromPath || selectedProject.name;
+  }, [selectedProject]);
   // `false` once probed and the folder isn't a git repo. We use this to
   // reframe the welcome screen as a "work folder" — review data, build
   // reports, investigate — rather than the build/code framing that fits a
@@ -175,8 +181,8 @@ export function WelcomePane() {
   }
 
   const headline = isNonGitProject
-    ? `What can we dig into in ${selectedProject?.name}?`
-    : `What should we build in ${focusedWorkspace?.name ?? selectedProject?.name ?? 'overcli'}?`;
+    ? `What can we dig into in ${selectedProjectLabel ?? selectedProject?.name}?`
+    : `What should we build in ${focusedWorkspace?.name ?? selectedProjectLabel ?? selectedProject?.name ?? 'overcli'}?`;
   const placeholder = isNonGitProject
     ? `Review data, draft a report, investigate — ask ${backendName(backend)} anything. @ to reference files · / for commands`
     : `Ask ${backendName(backend)} anything. @ to reference files · / for commands`;
