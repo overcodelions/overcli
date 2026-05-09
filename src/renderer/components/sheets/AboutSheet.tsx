@@ -141,7 +141,7 @@ export function AboutSheet() {
         </div>
         <div className="flex-1" />
         <a
-          href="https://github.com/lionelfarr/overcli"
+          href="https://github.com/overcodelions/overcli"
           target="_blank"
           rel="noreferrer"
           className="rounded-md px-2.5 py-1.5 text-[11px] text-ink-muted hover:bg-card-strong hover:text-ink"

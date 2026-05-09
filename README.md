@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/lionelfarr/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/lionelfarr/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
+  <a href="https://github.com/overcodelions/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/overcodelions/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
   <img alt="version" src="https://img.shields.io/badge/version-0.1.0-informational" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
@@ -112,7 +112,7 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 
 ## Download
 
-Builds are produced by the release workflow and land on the [Releases page](https://github.com/lionelfarr/overcli/releases).
+Builds are produced by the release workflow and land on the [Releases page](https://github.com/overcodelions/overcli/releases).
 
 | Platform | Artifacts |
 |---|---|
@@ -138,7 +138,7 @@ Overcli is a thin GUI over CLIs you install separately. You don't need all four 
 ### 2. Run Overcli in development
 
 ```bash
-git clone https://github.com/lionelfarr/overcli
+git clone https://github.com/overcodelions/overcli
 cd overcli
 npm install
 npm run dev
@@ -251,7 +251,7 @@ Overcli is a collaboration between **[Lionel Farr](https://github.com/lionelfarr
 
 Issues, bug reports, and PRs welcome — please open an issue first for anything non-trivial so we can talk about the shape of it.
 
-- [Open an issue](https://github.com/lionelfarr/overcli/issues/new)
+- [Open an issue](https://github.com/overcodelions/overcli/issues/new)
 - Read [`CONTRIBUTING.md`](CONTRIBUTING.md) for dev setup and PR expectations
 - See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before participating
 - Found a security bug? Don't file a public issue — see [`SECURITY.md`](SECURITY.md)

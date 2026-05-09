@@ -11,7 +11,7 @@ Email **lionelfarr@codelionsllc.com** with:
 - Affected version (Help → About, or `package.json`)
 - Your platform and which backend(s) are involved, if relevant
 
-You can also use [GitHub's private vulnerability reporting](https://github.com/lionelfarr/overcli/security/advisories/new).
+You can also use [GitHub's private vulnerability reporting](https://github.com/overcodelions/overcli/security/advisories/new).
 
 We'll acknowledge the report within a few days, work with you on a fix, and credit you in the release notes unless you'd prefer otherwise.
 

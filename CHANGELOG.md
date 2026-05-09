@@ -27,5 +27,5 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/lionelfarr/overcli/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/lionelfarr/overcli/releases/tag/v0.1.0
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/overcodelions/overcli/releases/tag/v0.1.0

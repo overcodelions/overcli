@@ -8,13 +8,13 @@
     "Lionel Farr <lionelfarr@gmail.com>",
     "Owen Farr"
   ],
-  "homepage": "https://github.com/lionelfarr/overcli",
+  "homepage": "https://github.com/overcodelions/overcli",
   "repository": {
     "type": "git",
-    "url": "https://github.com/lionelfarr/overcli.git"
+    "url": "https://github.com/overcodelions/overcli.git"
   },
   "bugs": {
-    "url": "https://github.com/lionelfarr/overcli/issues"
+    "url": "https://github.com/overcodelions/overcli/issues"
   },
   "main": "dist/main/index.js",
   "scripts": {
