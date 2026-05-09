@@ -14,8 +14,28 @@ permissions:
   security-events: write
 
 jobs:
+  preflight:
+    name: Check repo visibility
+    runs-on: ubuntu-latest
+    outputs:
+      is_public: ${{ steps.check.outputs.is_public }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility=$(gh api "repos/${{ github.repository }}" --jq .visibility)
+          if [ "$visibility" = "public" ]; then
+            echo "is_public=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Repo is $visibility — skipping CodeQL. Code Scanning upload requires a public repo or GitHub Advanced Security."
+            echo "is_public=false" >> "$GITHUB_OUTPUT"
+          fi
+
   analyze:
     name: Analyze ${{ matrix.language }}
+    needs: preflight
+    if: needs.preflight.outputs.is_public == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
