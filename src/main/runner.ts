@@ -2143,6 +2143,11 @@ export class RunnerManager {
           this.codexExecTranscriptByConversation.set(conversationId, transcript);
         }
         void this.maybeRunReviewer(conversationId, active);
+      } else {
+        const tail = (active.stderrBuffer || active.stdoutBuffer || '').slice(-1200);
+        if (this.maybeRetryCodexModelDowngrade(conversationId, active, active.launchModel, tail)) {
+          return;
+        }
       }
     }
     if (code != null && code !== 0 && code !== 143) {
@@ -2155,6 +2160,65 @@ export class RunnerManager {
           (tail ? `Recent stderr: ${tail}` : 'Run the CLI manually for details.'),
       });
     }
+  }
+
+  private maybeRetryCodexModelDowngrade(
+    conversationId: UUID,
+    active: ActiveProcess,
+    failedModel: string,
+    errorText: string,
+  ): boolean {
+    if (active.backend !== 'codex') return false;
+    const settings = this.settingsProvider();
+    if (!settings.autoDowngrade) return false;
+    if (!this.isCodexModelUnavailableError(errorText)) return false;
+    const nextModel = this.nextCodexFallbackModel(failedModel);
+    if (!nextModel) return false;
+    const stashed = active.lastSendArgs;
+    if (!stashed) return false;
+
+    this.emit({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: randomUUID(),
+          timestamp: Date.now(),
+          raw: '',
+          kind: {
+            type: 'systemNotice',
+            text: `Model ${failedModel} unavailable. Retrying with ${nextModel}...`,
+          },
+          revision: 0,
+        },
+      ],
+    });
+
+    const retryArgs: SendArgs = {
+      ...stashed,
+      model: nextModel,
+      localUserId: undefined,
+    };
+    this.send(retryArgs, { suppressLocalUser: true });
+    return true;
+  }
+
+  private isCodexModelUnavailableError(text: string): boolean {
+    const t = text.toLowerCase();
+    return (
+      (t.includes('model') && t.includes('not found')) ||
+      (t.includes('model') && t.includes('not available')) ||
+      (t.includes('unknown model')) ||
+      (t.includes('invalid model')) ||
+      (t.includes('unsupported model'))
+    );
+  }
+
+  private nextCodexFallbackModel(model: string): string | null {
+    const m = (model || '').trim().toLowerCase();
+    if (m === 'gpt-5.5-mini') return 'gpt-5.4-mini';
+    if (m === 'gpt-5.4-mini') return 'gpt-5.4';
+    return null;
   }
 
   private handleStderr(convId: UUID, active: ActiveProcess, chunk: string): void {
@@ -2346,6 +2410,9 @@ export class RunnerManager {
       }
     } catch (err: any) {
       const message = err?.message ?? String(err);
+      if (this.maybeRetryCodexModelDowngrade(convId, active, args.model, message)) {
+        return;
+      }
       this.emit({ type: 'error', conversationId: convId, message });
       this.emit({ type: 'running', conversationId: convId, isRunning: false });
     }
