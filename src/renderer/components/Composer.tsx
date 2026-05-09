@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { Attachment } from '@shared/types';
+import { useRunnersStore } from '../runnersStore';
+import { Attachment, StreamEvent } from '@shared/types';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -46,6 +47,35 @@ export interface SlashCommandEntry {
 }
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB; matches the Claude API document/image cap
+const KONAMI_HINT_TOKENS = ['↑', '↑', '↓', '↓', '←', '→', '←', '→', 'B', 'A', 'Enter'];
+const KONAMI_TRIGGER_KEYS = [
+  'ArrowUp',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowLeft',
+  'ArrowRight',
+  'b',
+  'a',
+  'Enter',
+];
+const EASTER_EGG_CHANCE_PER_FOCUS = 0.005;
+const EASTER_EGG_TOKEN_MS = 150;
+const EASTER_EGG_COOLDOWN_MS = 15 * 60 * 1000;
+
+const OWEN_LINES = [
+  'Hey, Owen here. Nice find. 👋',
+  '↑↑↓↓←→←→BA — overcli co-pilot reporting in.',
+  'Built by Owen + Dad. This bubble stays between us — no LLM involved.',
+  'Achievement unlocked: you found the easter egg. — Owen',
+  'Cheat code accepted. Carry on. 🎮',
+];
+
+function pickOwenLine(): string {
+  return OWEN_LINES[Math.floor(Math.random() * OWEN_LINES.length)];
+}
 
 /// Non-image MIME prefixes / extensions we accept and forward to the
 /// backend by writing to disk + inlining the path. Anything else gets
@@ -157,8 +187,25 @@ export function Composer({
   const removeAttachment = useStore((s) => s.removeAttachment);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
   const [dragging, setDragging] = useState(false);
   const [rejection, setRejection] = useState<string | null>(null);
+  const [easterPlaceholder, setEasterPlaceholder] = useState<string | null>(null);
+  const [konamiGlow, setKonamiGlow] = useState(false);
+  const konamiProgressRef = useRef(0);
+  const easterTimersRef = useRef<number[]>([]);
+  const easterCooldownUntilRef = useRef(0);
+  const flashTimeoutRef = useRef<number | null>(null);
+
+  const clearEasterPlaceholder = useCallback(() => {
+    if (easterTimersRef.current.length) {
+      for (const id of easterTimersRef.current) window.clearTimeout(id);
+      easterTimersRef.current = [];
+    }
+    setEasterPlaceholder(null);
+  }, []);
+
+  useEffect(() => clearEasterPlaceholder, [clearEasterPlaceholder]);
 
   // Auto-grow the textarea up to the variant's max height. Welcome allows a
   // bigger pane since it dominates the screen; compact stays short so the
@@ -345,6 +392,98 @@ export function Composer({
     onSend(text, attachments);
   };
 
+  const maybeFlashEasterPlaceholder = useCallback(() => {
+    if (disabled) return;
+    if (draft.length > 0) return;
+    const now = Date.now();
+    if (now < easterCooldownUntilRef.current) return;
+    if (Math.random() >= EASTER_EGG_CHANCE_PER_FOCUS) return;
+    clearEasterPlaceholder();
+    easterCooldownUntilRef.current = now + EASTER_EGG_COOLDOWN_MS;
+    KONAMI_HINT_TOKENS.forEach((token, idx) => {
+      easterTimersRef.current.push(
+        window.setTimeout(() => {
+          setEasterPlaceholder(token);
+        }, idx * EASTER_EGG_TOKEN_MS),
+      );
+    });
+    easterTimersRef.current.push(
+      window.setTimeout(() => {
+        setEasterPlaceholder(null);
+      }, KONAMI_HINT_TOKENS.length * EASTER_EGG_TOKEN_MS),
+    );
+  }, [clearEasterPlaceholder, disabled, draft.length]);
+
+  const runKonamiFlash = useCallback(() => {
+    const target = sendButtonRef.current ?? textareaRef.current;
+    const rect = target?.getBoundingClientRect();
+    const x = rect ? rect.left + rect.width / 2 : window.innerWidth * 0.75;
+    const y = rect ? rect.top + rect.height / 2 : window.innerHeight * 0.8;
+    document.body.style.setProperty('--konami-ripple-x', `${Math.round(x)}px`);
+    document.body.style.setProperty('--konami-ripple-y', `${Math.round(y)}px`);
+    document.body.classList.remove('konami-screen-ripple');
+    // Reflow so rapid repeat retriggers the animation class.
+    void document.body.offsetWidth;
+    document.body.classList.add('konami-screen-ripple');
+    if (flashTimeoutRef.current) window.clearTimeout(flashTimeoutRef.current);
+    flashTimeoutRef.current = window.setTimeout(() => {
+      document.body.classList.remove('konami-screen-ripple');
+      flashTimeoutRef.current = null;
+    }, 760);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (flashTimeoutRef.current) window.clearTimeout(flashTimeoutRef.current);
+      document.body.classList.remove('konami-screen-ripple');
+    },
+    [],
+  );
+
+  const dropOwenBubble = useCallback(() => {
+    if (draftKey.startsWith('__')) return;
+    const event: StreamEvent = {
+      id: `egg-${crypto.randomUUID()}`,
+      timestamp: Date.now(),
+      raw: '',
+      kind: {
+        type: 'easterEgg',
+        from: 'Owen Farr',
+        text: pickOwenLine(),
+      },
+      revision: 0,
+    };
+    useRunnersStore.getState().patchRunner(draftKey, (runner) => ({
+      events: [...runner.events, event],
+    }));
+  }, [draftKey]);
+
+  const advanceKonami = useCallback((rawKey: string): boolean => {
+    const key = rawKey.length === 1 ? rawKey.toLowerCase() : rawKey;
+    const expected = KONAMI_TRIGGER_KEYS[konamiProgressRef.current];
+    if (key === expected) {
+      konamiProgressRef.current += 1;
+      if (konamiProgressRef.current === KONAMI_TRIGGER_KEYS.length) {
+        konamiProgressRef.current = 0;
+        setKonamiGlow((v) => !v);
+        runKonamiFlash();
+        dropOwenBubble();
+        return true;
+      }
+      return false;
+    }
+    konamiProgressRef.current = key === KONAMI_TRIGGER_KEYS[0] ? 1 : 0;
+    return false;
+  }, [runKonamiFlash, dropOwenBubble]);
+
+  // Auto-fade the persistent text glow after 30s so it doesn't bleed into
+  // real typing if the user forgets it's on.
+  useEffect(() => {
+    if (!konamiGlow) return;
+    const t = window.setTimeout(() => setKonamiGlow(false), 30000);
+    return () => window.clearTimeout(t);
+  }, [konamiGlow]);
+
   return (
     <div
       className={
@@ -406,7 +545,9 @@ export function Composer({
       <textarea
         ref={textareaRef}
         value={draft}
+        onFocus={maybeFlashEasterPlaceholder}
         onChange={(e) => {
+          if (easterPlaceholder) clearEasterPlaceholder();
           const value = e.target.value;
           setDraft(draftKey, value);
           const caret = e.target.selectionStart ?? value.length;
@@ -430,6 +571,7 @@ export function Composer({
           updateSlashFromCaret(el.value, caret);
         }}
         onBlur={() => {
+          clearEasterPlaceholder();
           // Delay so a click inside a popover can fire first.
           setTimeout(() => {
             setMention(null);
@@ -437,6 +579,13 @@ export function Composer({
           }, 120);
         }}
         onKeyDown={(e) => {
+          if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+            const matchedKonami = advanceKonami(e.key);
+            if (matchedKonami && e.key === 'Enter') {
+              e.preventDefault();
+              return;
+            }
+          }
           if (mention && mentionMatches.length > 0) {
             if (e.key === 'ArrowDown') {
               e.preventDefault();
@@ -506,10 +655,17 @@ export function Composer({
           }
         }}
         disabled={disabled}
-        placeholder={disabled ? 'Install a CLI above to get started' : (placeholder ?? 'Message…')}
+        spellCheck={false}
+        placeholder={
+          disabled
+            ? 'Install a CLI above to get started'
+            : (easterPlaceholder ?? placeholder ?? 'Message...')
+        }
         rows={variant === 'welcome' ? 3 : 2}
         className={
           'bg-transparent resize-none outline-none select-text placeholder-ink-faint ' +
+          (easterPlaceholder ? 'placeholder-konami ' : '') +
+          (konamiGlow ? 'composer-konami-glow ' : '') +
           (disabled ? 'opacity-40 cursor-not-allowed ' : '') +
           (variant === 'welcome' ? 'text-base px-5 pt-4 pb-2' : 'text-sm px-3.5 py-2.5')
         }
@@ -551,6 +707,7 @@ export function Composer({
           </button>
         ) : (
           <button
+            ref={sendButtonRef}
             onClick={commit}
             disabled={disabled || (!draft.trim() && attachments.length === 0)}
             className="w-8 h-8 flex items-center justify-center rounded-full bg-accent/30 text-ink hover:bg-accent/50 disabled:opacity-30 disabled:hover:bg-accent/30"
