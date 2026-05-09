@@ -349,11 +349,100 @@ html, body {
   50%      { opacity: 0.7;  transform: translateY(3px); }
 }
 
-/* Rare Konami hint placeholder flash in the composer. */
 .placeholder-konami::placeholder {
-  color: color-mix(in srgb, var(--c-accent) 68%, var(--c-ink-faint));
-  text-shadow: 0 0 10px color-mix(in srgb, var(--c-accent) 52%, transparent);
-  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--c-ink-faint) 74%, var(--c-accent));
+  text-shadow: 0 0 5px color-mix(in srgb, var(--c-accent) 22%, transparent);
+}
+
+.composer-konami-glow {
+  font-weight: 700;
+  color: #d7e3ff;
+  caret-color: color-mix(in srgb, var(--c-accent) 70%, white);
+  background-image: linear-gradient(
+    90deg,
+    #bccfff 0%,
+    #bccfff 47.8%,
+    #e6f1ff 49.1%,
+    #ffffff 50%,
+    #e6f1ff 50.9%,
+    #bccfff 52.2%,
+    #bccfff 100%
+  );
+  background-size: 320% 100%;
+  background-position: 120% 50%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: composer-konami-wave 5200ms linear infinite;
+  text-shadow:
+    0 0 12px color-mix(in srgb, var(--c-accent) 46%, transparent),
+    0 0 26px color-mix(in srgb, var(--c-accent) 34%, transparent),
+    0 0 44px color-mix(in srgb, var(--c-accent) 22%, transparent);
+}
+
+@keyframes composer-konami-wave {
+  0% {
+    background-position: 120% 50%;
+  }
+  100% {
+    background-position: -20% 50%;
+  }
+}
+
+body.konami-screen-ripple::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  mix-blend-mode: screen;
+  background: radial-gradient(
+    circle at var(--konami-ripple-x, 75vw) var(--konami-ripple-y, 80vh),
+    rgba(186, 108, 255, 0.95) 0%,
+    rgba(137, 68, 230, 0.88) 12%,
+    rgba(108, 46, 193, 0.62) 26%,
+    rgba(83, 28, 164, 0.24) 44%,
+    rgba(0, 0, 0, 0) 62%
+  );
+  transform-origin: var(--konami-ripple-x, 75vw) var(--konami-ripple-y, 80vh);
+  animation: konami-screen-ripple 760ms cubic-bezier(0.2, 0.72, 0.25, 1);
+}
+
+@keyframes konami-screen-ripple {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.08);
+    filter: saturate(1.2) brightness(1.05);
+  }
+  44% {
+    opacity: 0.86;
+    transform: scale(1.55);
+    filter: saturate(1.35) brightness(1.28);
+    background: radial-gradient(
+      circle at var(--konami-ripple-x, 75vw) var(--konami-ripple-y, 80vh),
+      rgba(239, 221, 255, 0.98) 0%,
+      rgba(216, 176, 255, 0.92) 14%,
+      rgba(156, 88, 246, 0.72) 30%,
+      rgba(112, 50, 205, 0.30) 48%,
+      rgba(0, 0, 0, 0) 66%
+    );
+  }
+  72% {
+    opacity: 0.24;
+    transform: scale(2.85);
+    filter: saturate(1.05) brightness(1.02);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(3.4);
+    filter: saturate(1) brightness(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.konami-screen-ripple::after {
+    animation-duration: 220ms;
+  }
 }
 
 /* highlight.js palette — dark and light variants. We swap at the :root
