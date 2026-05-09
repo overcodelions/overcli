@@ -217,7 +217,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
         </div>
         {conv.worktreePath && (
           <div className="text-[10px] text-ink-faint truncate">
-            {conv.branchName} · {conv.worktreePath}
+            {conv.branchName} · {pathBasename(conv.worktreePath)}
           </div>
         )}
         {!conv.worktreePath && (
@@ -458,6 +458,10 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       </div>
     </header>
   );
+}
+
+function pathBasename(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).slice(-1)[0] ?? path;
 }
 
 /// Warns when a project conversation's owning repo HEAD has drifted away
