@@ -673,12 +673,19 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
 
 // Tools handled elsewhere in the transcript and therefore skipped by
-// the transient flash slot: PERSISTENT_TOOLS render their full card in
-// the assistant bubble regardless of the toggle, so flashing them would
-// duplicate. Everything else flashes — suppressing unknown tools makes
-// long turns (subagents, MCP calls, skills) feel like nothing is
-// happening.
-const FLASH_SKIP = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
+// the transient flash slot: PERSISTENT_TOOLS and INTERACTIVE_TOOLS both
+// render their full card in the assistant bubble regardless of the
+// toggle, so flashing them would duplicate. Everything else flashes —
+// suppressing unknown tools makes long turns (subagents, MCP calls,
+// skills) feel like nothing is happening.
+const FLASH_SKIP = new Set([
+  'Edit',
+  'MultiEdit',
+  'Write',
+  'TodoWrite',
+  'AskUserQuestion',
+  'ExitPlanMode',
+]);
 
 function shouldFlash(name: string): boolean {
   return !FLASH_SKIP.has(name);
