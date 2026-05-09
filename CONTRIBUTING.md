@@ -7,7 +7,7 @@ Thanks for your interest. Overcli is a small project and we'd like to keep it ex
 - Be kind. See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 - Open an issue for anything bigger than a typo, dependency bump, or one-file fix.
 - Keep PRs focused. One concern per PR; if it grows, split it.
-- Match the existing code style. TypeScript strict, Prettier defaults, no clever tricks where a clear line will do.
+- Match the existing code style. TypeScript strict, no clever tricks where a clear line will do. An `.editorconfig` covers indentation and line endings.
 
 ## Dev setup
 

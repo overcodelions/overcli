@@ -1,0 +1,73 @@
+name: Bug report
+description: Something is broken or behaving wrong.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please scrub credentials and private paths from anything you paste.
+
+        Security bugs should **not** go here — see [SECURITY.md](https://github.com/lionelfarr/overcli/blob/master/SECURITY.md).
+
+  - type: textarea
+    id: what-you-did
+    attributes:
+      label: What you did
+      placeholder: Steps to reproduce, or what you clicked.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Include error messages, stack traces, or screenshots if relevant.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Overcli version
+      description: From Help → About, or `package.json`.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS (arm64)
+        - macOS (x64)
+        - Windows (x64)
+        - Windows (arm64)
+        - Linux (x64)
+        - Linux (arm64)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: backends
+    attributes:
+      label: Which backend(s) does this touch?
+      options:
+        - label: claude
+        - label: codex
+        - label: gemini
+        - label: ollama
+        - label: none / cross-cutting
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Logs, transcripts, related issues. Optional.
