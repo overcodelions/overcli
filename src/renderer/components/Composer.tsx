@@ -47,6 +47,19 @@ export interface SlashCommandEntry {
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB; matches the Claude API document/image cap
 const KONAMI_HINT_TOKENS = ['↑', '↑', '↓', '↓', '←', '→', '←', '→', 'B', 'A', 'Enter'];
+const KONAMI_TRIGGER_KEYS = [
+  'ArrowUp',
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'ArrowLeft',
+  'ArrowRight',
+  'b',
+  'a',
+  'Enter',
+];
 const EASTER_EGG_CHANCE_PER_FOCUS = 0.005;
 const EASTER_EGG_TOKEN_MS = 150;
 const EASTER_EGG_COOLDOWN_MS = 15 * 60 * 1000;
@@ -161,11 +174,15 @@ export function Composer({
   const removeAttachment = useStore((s) => s.removeAttachment);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const sendButtonRef = useRef<HTMLButtonElement>(null);
   const [dragging, setDragging] = useState(false);
   const [rejection, setRejection] = useState<string | null>(null);
   const [easterPlaceholder, setEasterPlaceholder] = useState<string | null>(null);
+  const [konamiGlow, setKonamiGlow] = useState(false);
+  const konamiProgressRef = useRef(0);
   const easterTimersRef = useRef<number[]>([]);
   const easterCooldownUntilRef = useRef(0);
+  const flashTimeoutRef = useRef<number | null>(null);
 
   const clearEasterPlaceholder = useCallback(() => {
     if (easterTimersRef.current.length) {
@@ -384,6 +401,49 @@ export function Composer({
     );
   }, [clearEasterPlaceholder, disabled, draft.length]);
 
+  const runKonamiFlash = useCallback(() => {
+    const target = sendButtonRef.current ?? textareaRef.current;
+    const rect = target?.getBoundingClientRect();
+    const x = rect ? rect.left + rect.width / 2 : window.innerWidth * 0.75;
+    const y = rect ? rect.top + rect.height / 2 : window.innerHeight * 0.8;
+    document.body.style.setProperty('--konami-ripple-x', `${Math.round(x)}px`);
+    document.body.style.setProperty('--konami-ripple-y', `${Math.round(y)}px`);
+    document.body.classList.remove('konami-screen-ripple');
+    // Reflow so rapid repeat retriggers the animation class.
+    void document.body.offsetWidth;
+    document.body.classList.add('konami-screen-ripple');
+    if (flashTimeoutRef.current) window.clearTimeout(flashTimeoutRef.current);
+    flashTimeoutRef.current = window.setTimeout(() => {
+      document.body.classList.remove('konami-screen-ripple');
+      flashTimeoutRef.current = null;
+    }, 760);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (flashTimeoutRef.current) window.clearTimeout(flashTimeoutRef.current);
+      document.body.classList.remove('konami-screen-ripple');
+    },
+    [],
+  );
+
+  const advanceKonami = useCallback((rawKey: string): boolean => {
+    const key = rawKey.length === 1 ? rawKey.toLowerCase() : rawKey;
+    const expected = KONAMI_TRIGGER_KEYS[konamiProgressRef.current];
+    if (key === expected) {
+      konamiProgressRef.current += 1;
+      if (konamiProgressRef.current === KONAMI_TRIGGER_KEYS.length) {
+        konamiProgressRef.current = 0;
+        setKonamiGlow((v) => !v);
+        runKonamiFlash();
+        return true;
+      }
+      return false;
+    }
+    konamiProgressRef.current = key === KONAMI_TRIGGER_KEYS[0] ? 1 : 0;
+    return false;
+  }, [runKonamiFlash]);
+
   return (
     <div
       className={
@@ -479,6 +539,13 @@ export function Composer({
           }, 120);
         }}
         onKeyDown={(e) => {
+          if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+            const matchedKonami = advanceKonami(e.key);
+            if (matchedKonami && e.key === 'Enter') {
+              e.preventDefault();
+              return;
+            }
+          }
           if (mention && mentionMatches.length > 0) {
             if (e.key === 'ArrowDown') {
               e.preventDefault();
@@ -548,6 +615,7 @@ export function Composer({
           }
         }}
         disabled={disabled}
+        spellCheck={false}
         placeholder={
           disabled
             ? 'Install a CLI above to get started'
@@ -557,6 +625,7 @@ export function Composer({
         className={
           'bg-transparent resize-none outline-none select-text placeholder-ink-faint ' +
           (easterPlaceholder ? 'placeholder-konami ' : '') +
+          (konamiGlow ? 'composer-konami-glow ' : '') +
           (disabled ? 'opacity-40 cursor-not-allowed ' : '') +
           (variant === 'welcome' ? 'text-base px-5 pt-4 pb-2' : 'text-sm px-3.5 py-2.5')
         }
@@ -598,6 +667,7 @@ export function Composer({
           </button>
         ) : (
           <button
+            ref={sendButtonRef}
             onClick={commit}
             disabled={disabled || (!draft.trim() && attachments.length === 0)}
             className="w-8 h-8 flex items-center justify-center rounded-full bg-accent/30 text-ink hover:bg-accent/50 disabled:opacity-30 disabled:hover:bg-accent/30"
