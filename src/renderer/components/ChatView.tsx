@@ -785,6 +785,17 @@ function useLatestToolReveal(
     const next = pendingSubagent ?? latestFlash;
     desiredRef.current = next;
 
+    // Prevent noisy churn from repeated Bash tool_use blocks that run the
+    // same command text (common on Windows wrappers). Keep the current
+    // reveal card if the command signature hasn't changed.
+    if (
+      currentRef.current &&
+      next &&
+      toolRevealSignature(currentRef.current) === toolRevealSignature(next)
+    ) {
+      return;
+    }
+
     if (currentRef.current?.id === next?.id) return;
 
     const commit = (value: ToolUseBlock | null) => {
@@ -985,7 +996,8 @@ function shortToolLabel(use: ToolUseBlock): string {
     case 'Write':
       return base ? `Writing ${base}…` : 'Writing…';
     case 'Bash': {
-      const cmd = String(args.command ?? '').split('\n')[0].trim().slice(0, 50);
+      const firstLine = String(args.command ?? '').split('\n')[0].trim();
+      const cmd = simplifyShellCommandLabel(firstLine).slice(0, 50);
       return cmd ? `Running ${cmd}…` : 'Running command…';
     }
     case 'Grep': {
@@ -1020,8 +1032,24 @@ function safeParse(json: string): Record<string, any> {
 }
 
 function basename(p: string): string {
-  const i = p.lastIndexOf('/');
-  return i >= 0 ? p.slice(i + 1) : p;
+  return p.split(/[\\/]/).filter(Boolean).slice(-1)[0] ?? p;
+}
+
+function simplifyShellCommandLabel(cmd: string): string {
+  const lower = cmd.toLowerCase();
+  if (lower.includes('powershell.exe') || lower.includes('windowspowershell') || lower.includes('pwsh.exe')) {
+    return 'PowerShell command';
+  }
+  return cmd;
+}
+
+function toolRevealSignature(use: ToolUseBlock): string {
+  const args = safeParse(use.inputJSON);
+  if (use.name === 'Bash') {
+    const firstLine = String(args.command ?? '').split('\n')[0].trim();
+    return `Bash:${simplifyShellCommandLabel(firstLine)}`;
+  }
+  return `${use.name}:${use.id}`;
 }
 
 function indexToolUses(events: StreamEvent[]): Map<string, ToolUseBlock> {
