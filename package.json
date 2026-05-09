@@ -144,7 +144,7 @@
     "diff": "^9.0.0",
     "dompurify": "^3.4.0",
     "highlight.js": "^11.10.0",
-    "marked": "^15.0.3",
+    "marked": "^18.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-virtuoso": "^4.18.6",
