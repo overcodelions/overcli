@@ -46,6 +46,10 @@ export interface SlashCommandEntry {
 }
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB; matches the Claude API document/image cap
+const KONAMI_HINT_TOKENS = ['↑', '↑', '↓', '↓', '←', '→', '←', '→', 'B', 'A', 'Enter'];
+const EASTER_EGG_CHANCE_PER_FOCUS = 0.005;
+const EASTER_EGG_TOKEN_MS = 150;
+const EASTER_EGG_COOLDOWN_MS = 15 * 60 * 1000;
 
 /// Non-image MIME prefixes / extensions we accept and forward to the
 /// backend by writing to disk + inlining the path. Anything else gets
@@ -159,6 +163,19 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [rejection, setRejection] = useState<string | null>(null);
+  const [easterPlaceholder, setEasterPlaceholder] = useState<string | null>(null);
+  const easterTimersRef = useRef<number[]>([]);
+  const easterCooldownUntilRef = useRef(0);
+
+  const clearEasterPlaceholder = useCallback(() => {
+    if (easterTimersRef.current.length) {
+      for (const id of easterTimersRef.current) window.clearTimeout(id);
+      easterTimersRef.current = [];
+    }
+    setEasterPlaceholder(null);
+  }, []);
+
+  useEffect(() => clearEasterPlaceholder, [clearEasterPlaceholder]);
 
   // Auto-grow the textarea up to the variant's max height. Welcome allows a
   // bigger pane since it dominates the screen; compact stays short so the
@@ -345,6 +362,28 @@ export function Composer({
     onSend(text, attachments);
   };
 
+  const maybeFlashEasterPlaceholder = useCallback(() => {
+    if (disabled) return;
+    if (draft.length > 0) return;
+    const now = Date.now();
+    if (now < easterCooldownUntilRef.current) return;
+    if (Math.random() >= EASTER_EGG_CHANCE_PER_FOCUS) return;
+    clearEasterPlaceholder();
+    easterCooldownUntilRef.current = now + EASTER_EGG_COOLDOWN_MS;
+    KONAMI_HINT_TOKENS.forEach((token, idx) => {
+      easterTimersRef.current.push(
+        window.setTimeout(() => {
+          setEasterPlaceholder(token);
+        }, idx * EASTER_EGG_TOKEN_MS),
+      );
+    });
+    easterTimersRef.current.push(
+      window.setTimeout(() => {
+        setEasterPlaceholder(null);
+      }, KONAMI_HINT_TOKENS.length * EASTER_EGG_TOKEN_MS),
+    );
+  }, [clearEasterPlaceholder, disabled, draft.length]);
+
   return (
     <div
       className={
@@ -406,7 +445,9 @@ export function Composer({
       <textarea
         ref={textareaRef}
         value={draft}
+        onFocus={maybeFlashEasterPlaceholder}
         onChange={(e) => {
+          if (easterPlaceholder) clearEasterPlaceholder();
           const value = e.target.value;
           setDraft(draftKey, value);
           const caret = e.target.selectionStart ?? value.length;
@@ -430,6 +471,7 @@ export function Composer({
           updateSlashFromCaret(el.value, caret);
         }}
         onBlur={() => {
+          clearEasterPlaceholder();
           // Delay so a click inside a popover can fire first.
           setTimeout(() => {
             setMention(null);
@@ -506,10 +548,15 @@ export function Composer({
           }
         }}
         disabled={disabled}
-        placeholder={disabled ? 'Install a CLI above to get started' : (placeholder ?? 'Message…')}
+        placeholder={
+          disabled
+            ? 'Install a CLI above to get started'
+            : (easterPlaceholder ?? placeholder ?? 'Message...')
+        }
         rows={variant === 'welcome' ? 3 : 2}
         className={
           'bg-transparent resize-none outline-none select-text placeholder-ink-faint ' +
+          (easterPlaceholder ? 'placeholder-konami ' : '') +
           (disabled ? 'opacity-40 cursor-not-allowed ' : '') +
           (variant === 'welcome' ? 'text-base px-5 pt-4 pb-2' : 'text-sm px-3.5 py-2.5')
         }
