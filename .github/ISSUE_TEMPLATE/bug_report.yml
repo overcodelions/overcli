@@ -7,7 +7,7 @@ body:
       value: |
         Thanks for taking the time to file a bug. Please scrub credentials and private paths from anything you paste.
 
-        Security bugs should **not** go here — see [SECURITY.md](https://github.com/lionelfarr/overcli/blob/master/SECURITY.md).
+        Security bugs should **not** go here — see [SECURITY.md](https://github.com/overcodelions/overcli/blob/master/SECURITY.md).
 
   - type: textarea
     id: what-you-did

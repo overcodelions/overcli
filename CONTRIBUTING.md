@@ -12,7 +12,7 @@ Thanks for your interest. Overcli is a small project and we'd like to keep it ex
 ## Dev setup
 
 ```bash
-git clone https://github.com/lionelfarr/overcli
+git clone https://github.com/overcodelions/overcli
 cd overcli
 npm install
 npm run dev
@@ -31,7 +31,7 @@ If your change touches a backend adapter (`src/main/backends/`) or a parser (`sr
 
 ## Reporting bugs
 
-[Open an issue](https://github.com/lionelfarr/overcli/issues/new) with:
+[Open an issue](https://github.com/overcodelions/overcli/issues/new) with:
 
 1. What you did
 2. What you expected
