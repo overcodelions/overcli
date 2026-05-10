@@ -11,7 +11,7 @@ Overcli is a small project and a father–son collaboration. We expect everyone 
 
 ## If something goes wrong
 
-Email **lionel@codelionsllc.com** with a description of what happened and links if relevant. Reports will be read promptly and handled privately.
+Email **assistant@codelionsllc.com** with a description of what happened and links if relevant. Reports will be read promptly and handled privately.
 
 The maintainers may, at their discretion, edit or remove comments, close issues or PRs, and ban people from the project for behaviour that violates this code.
 
