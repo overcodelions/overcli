@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "description": "A desktop GUI that sits over your coding-agent CLIs (claude, codex, gemini, ollama).",
   "license": "Apache-2.0",
-  "author": "Lionel Farr <lionelfarr@gmail.com>",
+  "author": "Lionel Farr <lionelfarr@codelionsllc.com>",
   "contributors": [
-    "Lionel Farr <lionelfarr@gmail.com>",
+    "Lionel Farr <lionelfarr@codelionsllc.com>",
     "Owen Farr"
   ],
   "homepage": "https://github.com/overcodelions/overcli",
