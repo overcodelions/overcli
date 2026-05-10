@@ -4,7 +4,7 @@
 
 **Please do not open a public GitHub issue for security bugs.**
 
-Email **lionel@codelionsllc.com** with:
+Email **security@codelionsllc.com** with:
 
 - A description of the issue and the impact
 - Steps to reproduce, or a proof-of-concept
