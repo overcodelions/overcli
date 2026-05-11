@@ -185,19 +185,7 @@ Output lands in `release/`:
 - `release/Overcli-<version>.dmg` — drag-to-Applications installer
 - `release/Overcli-<version>-mac.zip` — zipped .app for auto-updater flows
 
-### Signing (optional)
-
-Builds are unsigned by default. To produce a signed + notarized macOS build, set your Apple Developer ID credentials:
-
-```bash
-export CSC_LINK=/path/to/developer-id.p12
-export CSC_KEY_PASSWORD=...
-export APPLE_ID=...
-export APPLE_APP_SPECIFIC_PASSWORD=...
-npm run dist:mac
-```
-
-See [electron-builder's code-signing docs](https://www.electron.build/code-signing) for details.
+> Forking and want signed builds for your own distribution? See [electron-builder's code-signing docs](https://www.electron.build/code-signing) — the release workflow honours the standard `CSC_LINK` / `APPLE_ID` env vars.
 
 ## Architecture
 
