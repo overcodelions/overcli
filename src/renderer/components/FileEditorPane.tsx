@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type UIEvent as ReactUIEvent,
+} from 'react';
 import { useStore } from '../store';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
@@ -503,8 +511,99 @@ function Editor({
   language: string | null;
 }) {
   const lines = content.split('\n');
+  // Pull range endpoints out so the memo key below stays primitive —
+  // the parent recreates the `highlightRange` tuple on every render,
+  // which would otherwise bust the highlight cache on every keystroke.
+  const rangeStart = highlightRange?.[0] ?? null;
+  const rangeEnd = highlightRange?.[1] ?? null;
+
+  // hljs.highlightAuto on a multi-KB file is ~50–150ms of synchronous
+  // work — running it on every keystroke is what makes typing feel
+  // laggy. Instead, debounce a "settled" content snapshot that the
+  // expensive highlighter consumes, and render plain (escaped) text
+  // in the overlay between keystrokes. The textarea text is
+  // transparent, so the overlay is what the user actually sees; the
+  // escaped fallback is cheap and renders instantly with each
+  // keystroke, then the colored version swaps in once typing pauses.
+  const [settledContent, setSettledContent] = useState(content);
+  useEffect(() => {
+    const t = setTimeout(() => setSettledContent(content), 60);
+    return () => clearTimeout(t);
+  }, [content]);
+
+  const highlightedHtml = useMemo(
+    () =>
+      highlightContent(
+        settledContent,
+        language,
+        rangeStart != null && rangeEnd != null ? [rangeStart, rangeEnd] : null,
+      ),
+    [settledContent, language, rangeStart, rangeEnd],
+  );
+
+  // While the user is mid-keystroke (content has changed but the
+  // debounced settledContent hasn't caught up yet), show a
+  // plain-escaped version of the live content so the visible text
+  // matches the textarea exactly. Once typing pauses, swap to the
+  // syntax-highlighted version.
+  const displayHtml =
+    content === settledContent
+      ? highlightedHtml
+      : plainEscapedContent(
+          content,
+          rangeStart != null && rangeEnd != null ? [rangeStart, rangeEnd] : null,
+        );
+
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const preRef = useRef<HTMLPreElement>(null);
+
+  // The textarea and the highlight `<pre>` are independent layers, so
+  // horizontal scrolling inside the textarea (long lines, no wrap)
+  // would otherwise leave the overlay frozen and the caret would drift
+  // off the rendered tokens. Mirror scrollLeft into the pre — which is
+  // overflow-hidden — so the two scroll as one. Vertical scrolling
+  // lives on the outer container (textarea grows to content height),
+  // so we don't need to sync scrollTop.
+  const handleScroll = (e: ReactUIEvent<HTMLTextAreaElement>) => {
+    const pre = preRef.current;
+    if (!pre) return;
+    pre.scrollLeft = e.currentTarget.scrollLeft;
+  };
+
+  // Tab in a plain textarea moves focus to the next focusable element,
+  // which is unusable for code editing. Insert a literal tab at the
+  // selection and keep the caret one position to the right of it.
+  // We deliberately don't handle Shift+Tab (would need to find and
+  // remove indentation) — that's a worthwhile follow-up but more code
+  // than fits the scope here.
+  const handleKeyDown = (e: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key !== 'Tab' || e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+    e.preventDefault();
+    const ta = e.currentTarget;
+    const start = ta.selectionStart;
+    const end = ta.selectionEnd;
+    const next = content.slice(0, start) + '\t' + content.slice(end);
+    onChange(next);
+    // React hasn't re-rendered yet, so the textarea's value is still
+    // the old string. Restore the caret after the value prop flushes —
+    // setting selectionStart/End on the stale value would land in the
+    // wrong place.
+    requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.selectionStart = node.selectionEnd = start + 1;
+    });
+  };
+
+  // leading-[18px] is load-bearing and must match the pixel line-height
+  // pinned on `.editor-overlay` and `.editor-pane-textarea` in
+  // styles.css. We use a px value (not unitless 1.5) because Chromium
+  // rounds subpixel line-heights differently for <pre> vs <textarea>,
+  // which makes selections drift further off the rendered text the
+  // lower in the file you scroll. The wrapper value here drives the
+  // line-numbers column; the overlay/textarea pull theirs from CSS.
   return (
-    <div className="flex text-[12px] font-mono">
+    <div className="flex text-[12px] font-mono leading-[18px]">
       <div className="select-none text-right pr-2 pt-2 text-ink-faint sticky left-0 bg-surface-muted min-w-[3.5em]">
         {lines.map((_, i) => {
           const ln = i + 1;
@@ -518,22 +617,47 @@ function Editor({
       </div>
       <div className="flex-1 relative">
         <pre
+          ref={preRef}
           aria-hidden
-          className="editor-overlay absolute inset-0 pt-2 px-2 m-0 pointer-events-none whitespace-pre overflow-visible"
-          dangerouslySetInnerHTML={{
-            __html: highlightContent(content, language, highlightRange),
-          }}
+          className="editor-overlay absolute inset-0 pt-2 px-2 m-0 pointer-events-none whitespace-pre overflow-hidden"
+          dangerouslySetInnerHTML={{ __html: displayHtml }}
         />
         <textarea
+          ref={textareaRef}
           value={content}
           onChange={(e) => onChange(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onScroll={handleScroll}
           spellCheck={false}
-          className="relative w-full min-h-full bg-transparent text-transparent caret-ink pt-2 px-2 select-text outline-none whitespace-pre resize-none"
-          style={{ minHeight: `${lines.length * 1.5}em` }}
+          className="editor-pane-textarea relative w-full min-h-full bg-transparent text-transparent caret-ink select-text outline-none whitespace-pre resize-none"
+          style={{ minHeight: `${lines.length * 18}px` }}
         />
       </div>
     </div>
   );
+}
+
+/// Cheap mid-typing fallback for the overlay. The textarea text is
+/// transparent so the user only sees what the overlay renders —
+/// while the (expensive) hljs pass is being debounced, this provides
+/// a per-keystroke render of the live content with no tokenization.
+/// `<` is the only thing we need to escape for `<pre>` to display
+/// raw source faithfully; `&` etc. would only matter if our own
+/// row wrapper introduced entities, and it doesn't.
+function plainEscapedContent(content: string, highlightRange: [number, number] | null): string {
+  const escaped = content.replace(/</g, '&lt;');
+  if (!highlightRange) return escaped;
+  const [start, end] = highlightRange;
+  return escaped
+    .split('\n')
+    .map((line, i) => {
+      const ln = i + 1;
+      if (ln >= start && ln <= end) {
+        return `<span style="display:inline-block;width:100%;background:rgba(124,139,255,0.1)">${line}</span>`;
+      }
+      return line;
+    })
+    .join('\n');
 }
 
 function highlightContent(content: string, language: string | null, highlightRange: [number, number] | null): string {
