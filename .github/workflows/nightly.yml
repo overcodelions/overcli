@@ -127,6 +127,27 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Create stable-named copies
+        shell: bash
+        run: |
+          mkdir -p stable
+          shopt -s nullglob
+          cd artifacts
+          for f in *; do
+            case "$f" in
+              *arm64*mac*.zip)      cp "$f" "../stable/Overcli-nightly-mac-arm64.zip" ;;
+              *arm64*.dmg)          cp "$f" "../stable/Overcli-nightly-mac-arm64.dmg" ;;
+              *arm64*.exe)          cp "$f" "../stable/Overcli-nightly-win-arm64.exe" ;;
+              *Setup*.exe)          cp "$f" "../stable/Overcli-nightly-win-x64.exe" ;;
+              *arm64.AppImage)      cp "$f" "../stable/Overcli-nightly-linux-arm64.AppImage" ;;
+              *.AppImage)           cp "$f" "../stable/Overcli-nightly-linux-x64.AppImage" ;;
+              *arm64.deb)           cp "$f" "../stable/Overcli-nightly-linux-arm64.deb" ;;
+              *amd64.deb)           cp "$f" "../stable/Overcli-nightly-linux-x64.deb" ;;
+            esac
+          done
+          echo "Stable copies:"
+          ls -la ../stable
+
       - name: Move nightly tag to current commit
         run: |
           git tag -f nightly
@@ -140,5 +161,14 @@ jobs:
           body: |
             Auto-built nightly from commit `${{ github.sha }}`.
 
+            **Stable download links** (always point at the latest nightly):
+            - macOS (Apple Silicon): [`Overcli-nightly-mac-arm64.dmg`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-mac-arm64.dmg)
+            - Windows (x64): [`Overcli-nightly-win-x64.exe`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-win-x64.exe)
+            - Windows (ARM64): [`Overcli-nightly-win-arm64.exe`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-win-arm64.exe)
+            - Linux (x64 AppImage): [`Overcli-nightly-linux-x64.AppImage`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-linux-x64.AppImage)
+            - Linux (ARM64 AppImage): [`Overcli-nightly-linux-arm64.AppImage`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-linux-arm64.AppImage)
+
             > Pre-release. Not notarized on macOS — Gatekeeper will warn on first launch.
-          files: artifacts/*
+          files: |
+            artifacts/*
+            stable/*
