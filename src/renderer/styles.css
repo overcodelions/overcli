@@ -469,6 +469,30 @@ body.konami-screen-ripple::after {
   font-weight: normal !important;
 }
 
+/* Lock the textarea and overlay to identical text metrics. Unitless
+ * line-heights inherited from Tailwind's `leading-[1.5]` round
+ * subpixel-differently between <pre> and <textarea> in Chromium,
+ * which makes selections drift further off the rendered text the
+ * lower in the file you go. Pinning line-height in absolute pixels
+ * (18px == 12px * 1.5) and forcing textarea to inherit the full
+ * font shorthand stops the drift. Padding is normalized too — some
+ * Chromium builds add 2px implicit padding to textareas. */
+.editor-overlay,
+.editor-pane-textarea {
+  line-height: 18px !important;
+  font-family: 'SF Mono', Menlo, Consolas, monospace !important;
+  font-size: 12px !important;
+  tab-size: 4;
+}
+.editor-pane-textarea {
+  padding-top: 0.5rem;
+  padding-bottom: 0;
+  padding-left: 0.5rem;
+  padding-right: 0.5rem;
+  border: 0;
+  margin: 0;
+}
+
 /* Rebound block visuals are now component-level: the per-block header
  * is drawn by ReviewerHeader, intermediate "I'm checking…" rows by
  * ReviewerStepLine (compact, dim, dot-prefixed), and the verdict

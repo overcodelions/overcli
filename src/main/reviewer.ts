@@ -6,7 +6,7 @@
 // conversation so successive rounds reuse the codex thread instead of
 // paying cold-start each time.
 
-import { spawn, ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   Backend,
@@ -326,6 +326,12 @@ export class ReviewerManager {
         model: args.reviewModel ?? null,
         resumeSessionId: claudeResumeId,
         effort: args.reviewPersona ? PERSONA_EFFORT[args.reviewPersona] : undefined,
+        // Skip `--effort` when the user's claude CLI is too old to
+        // know it — otherwise the subprocess dies immediately with
+        // `error: unknown option '--effort'`. Probed (and cached) per
+        // binary path; no-op for codex/gemini.
+        effortSupported:
+          args.reviewBackend === 'claude' ? claudeSupportsEffort(bin) : undefined,
         // Lifts coordinator-root symlink targets into codex's writable
         // set so `--sandbox workspace-write` doesn't deny edits that
         // resolve outside the coordinator's cwd subtree.
@@ -905,6 +911,44 @@ export function buildReviewPrompt(
   return body.join('\n');
 }
 
+/// Memo of `bin → does its --help mention --effort?`. Older
+/// `@anthropic-ai/claude-code` releases don't accept the flag and
+/// exit immediately with `error: unknown option '--effort'`. We
+/// probe once per binary path (cheap local --help call) and cache
+/// the answer for the rest of the process. Exported only for tests.
+const claudeEffortSupport = new Map<string, boolean>();
+
+export function claudeSupportsEffort(bin: string): boolean {
+  const cached = claudeEffortSupport.get(bin);
+  if (cached !== undefined) return cached;
+  let supported = true;
+  try {
+    const env = buildBackendEnv(process.env, bin);
+    const shell = backendNeedsShell(bin);
+    const res = spawnSync(bin, ['--help'], { encoding: 'utf-8', timeout: 4000, env, shell });
+    const out = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+    // If --help failed entirely we leave `supported` true — falling
+    // through to the existing "error: unknown option" surface is no
+    // worse than what we have today, and we don't want to silently
+    // strip the flag on healthy installs because of a transient probe
+    // failure. We only flip to false when --help ran AND --effort is
+    // absent from its output.
+    if (!res.error && res.status === 0 && out && !/--effort\b/.test(out)) {
+      supported = false;
+    }
+  } catch {
+    // Same reasoning as above — probe failure shouldn't strip the flag.
+  }
+  claudeEffortSupport.set(bin, supported);
+  return supported;
+}
+
+/// Test-only: reset the probe cache between cases. Not part of the
+/// public surface beyond unit tests.
+export function _resetClaudeEffortSupportCache(): void {
+  claudeEffortSupport.clear();
+}
+
 export function buildReviewerArgs(
   backend: Backend,
   opts: {
@@ -921,6 +965,13 @@ export function buildReviewerArgs(
     /// Codex picks this up via the app-server transport instead (so
     /// this is unused for that path); gemini has no equivalent flag.
     effort?: EffortLevel;
+    /// Claude only: whether the installed `claude` CLI accepts the
+    /// `--effort` flag. Older versions reject it with
+    /// `error: unknown option '--effort'`. Probed once per binary in
+    /// `claudeSupportsEffort` and threaded through here so the pure
+    /// arg builder stays sync + testable. Defaults to true (assume
+    /// support) so existing call sites and tests are unaffected.
+    effortSupported?: boolean;
   } = {},
 ): string[] {
   // Reviewer model override: claude takes `--model X`, codex/gemini
@@ -949,7 +1000,10 @@ export function buildReviewerArgs(
       const a: string[] = [];
       if (model) a.push('--model', model);
       if (resume) a.push('--resume', resume);
-      a.push('--effort', effort);
+      // Older claude CLIs predate `--effort` and exit immediately with
+      // `error: unknown option '--effort'`. Skip the flag when the
+      // installed binary doesn't advertise it (probed at the call site).
+      if (opts.effortSupported !== false) a.push('--effort', effort);
       a.push('--permission-mode', 'default');
       // Whitelist read-only tools so the reviewer can verify findings
       // against the actual code instead of trusting the assistant's
