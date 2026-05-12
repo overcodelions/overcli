@@ -30,6 +30,25 @@ describe('buildReviewerArgs', () => {
     expect(args[args.indexOf('--effort') + 1]).toBe('medium');
   });
 
+  it('omits --effort for claude when the installed CLI does not advertise it (older versions reject the flag with "unknown option")', () => {
+    const args = buildReviewerArgs('claude', { effort: 'medium', effortSupported: false });
+    expect(args).not.toContain('--effort');
+    expect(args).not.toContain('medium');
+    // Still produces an otherwise-valid argv.
+    expect(args).toEqual([
+      '--permission-mode',
+      'default',
+      '--allowedTools',
+      'Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(git show:*) Bash(git status:*) Bash(git ls-files:*)',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '-p',
+      '-',
+    ]);
+  });
+
   it('appends --resume <id> for claude when a prior session id is known', () => {
     expect(buildReviewerArgs('claude', { resumeSessionId: 'abc-123' })).toEqual([
       '--resume',
