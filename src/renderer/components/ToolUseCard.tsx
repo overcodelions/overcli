@@ -208,7 +208,15 @@ function AskUserQuestionCard({ use, args }: { use: ToolUseBlock; args: Record<st
       </div>
       <div className="px-3 py-2 flex flex-col gap-3">
         {questions.length === 0 ? (
-          <div className="text-[10px] text-ink-faint italic">(question still streaming…)</div>
+          // The tool_use input never parsed into a `questions` array
+          // (incomplete partial JSON, an empty payload from the model,
+          // or — currently — the SDK transport not surfacing the
+          // consolidated assistant message). The old "(still streaming…)"
+          // wording lied once the turn ended; just route the user at
+          // the free-text reply that's always rendered below.
+          <div className="text-[10px] text-ink-faint italic">
+            No options provided — type your reply below.
+          </div>
         ) : (
           questions.map((q, qi) => {
             const multiple = !!q.multiple;
