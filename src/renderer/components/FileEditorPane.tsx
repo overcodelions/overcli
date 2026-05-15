@@ -18,9 +18,17 @@ import {
   isBinaryPreviewKind,
   isUnsupportedBinaryFile,
 } from '../filePreview';
-import { FileTree } from './FileTree';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
+import { CodeMirrorEditor } from './CodeMirrorEditor';
+
+// Feature flag: route the editable file view through CodeMirror 6.
+// The old layered textarea+pre `Editor` lower in this file has a known
+// click-alignment bug (caret drifts off rendered text the further down
+// you scroll) that two prior fixes haven't put to bed. Flip back to
+// `false` to fall through to the legacy editor if the CM6 version
+// regresses something.
+const USE_CODEMIRROR_EDITOR = true;
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
 type LargeTextPreview = {
@@ -52,7 +60,6 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
   const setMode = useStore((s) => s.setOpenFileMode);
-  const showFileTree = useStore((s) => s.showFileTree);
   const closeFile = useStore((s) => s.closeFile);
   const [content, setContent] = useState<string>('');
   const [diffText, setDiffText] = useState<string>('');
@@ -256,15 +263,10 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     return () => window.removeEventListener('keydown', onKey);
   }, [path, mode, save, setMode]);
 
-  // When the file tree is requested but no file is open, show the tree
-  // alone. When a file is open, show the tree on top and the file below
-  // — a two-pane layout. When tree is off and a file is open, show only
-  // the file. Suppress the embedded tree when ExplorerPane mounts us
-  // (rootPathOverride) — that view already supplies its own tree pane.
-  const embedTree = showFileTree && !rootPathOverride;
-  if (!path && embedTree && rootPath) {
-    return <FileTree rootPath={rootPath} />;
-  }
+  // The folder icon (conversation header) and the project/workspace
+  // Explore buttons now route through ExplorerPane, which owns its
+  // own side-by-side tree+editor layout. FileEditorPane is the bare
+  // editor view: it never embeds the tree itself.
   if (!path) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-ink-faint">
@@ -274,11 +276,6 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   }
   return (
     <div className="flex flex-col h-full">
-      {embedTree && rootPath && (
-        <div className="h-[40%] min-h-[120px] border-b border-card overflow-hidden">
-          <FileTree rootPath={rootPath} />
-        </div>
-      )}
       <div className="flex flex-col flex-1 min-h-0">
         <div className="flex items-center justify-between px-3 py-2 border-b border-card">
           <div className="min-w-0 flex items-center gap-2">
@@ -402,6 +399,16 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               preview={largeTextPreview}
               path={path}
               onOpenExternal={() => window.overcli.invoke('fs:openPath', path)}
+            />
+          ) : USE_CODEMIRROR_EDITOR ? (
+            <CodeMirrorEditor
+              content={content}
+              onChange={(v) => {
+                setContent(v);
+                setDirty(true);
+              }}
+              highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
+              language={detectLanguage(path)}
             />
           ) : (
             <Editor
@@ -701,8 +708,10 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   py: 'python', rb: 'ruby', php: 'php', pl: 'perl', lua: 'lua',
   sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash',
   ps1: 'powershell', psm1: 'powershell',
-  // Config / data
+  // Config / data — properties/ini/toml all key=value and the legacy
+  // `properties` stream mode tokenizes any of them well enough.
   json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini', ini: 'ini',
+  properties: 'ini', conf: 'ini', cfg: 'ini',
   xml: 'xml', svg: 'xml', plist: 'xml',
   env: 'ini', 'env.local': 'ini',
   // Web

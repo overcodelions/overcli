@@ -24,7 +24,6 @@ export interface UiSliceState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
-  showFileTree: boolean;
   explorerRootPath: string | null;
   sidebarVisible: boolean;
   showToolActivity: boolean;
@@ -36,7 +35,6 @@ export interface UiSliceActions {
   openFile(path: string, highlight?: OpenFileHighlight, mode?: FileViewMode): void;
   setOpenFileMode(mode: FileViewMode): void;
   closeFile(): void;
-  toggleFileTree(): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
 }
@@ -49,7 +47,6 @@ export const uiSliceInitialState: UiSliceState = {
   openFilePath: null,
   openFileHighlight: null,
   openFileMode: 'edit',
-  showFileTree: false,
   explorerRootPath: null,
   sidebarVisible: true,
   showToolActivity: false,
@@ -79,9 +76,6 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>): UiSliceActions 
         openFileHighlight: null,
         openFileMode: 'edit',
       } as Partial<T>);
-    },
-    toggleFileTree() {
-      set(((s) => ({ showFileTree: !s.showFileTree })) as (s: T) => Partial<T>);
     },
     toggleSidebar() {
       set(((s) => ({ sidebarVisible: !s.sidebarVisible })) as (s: T) => Partial<T>);

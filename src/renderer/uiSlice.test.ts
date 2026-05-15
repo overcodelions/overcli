@@ -46,13 +46,6 @@ describe('createUiSlice', () => {
     expect(state.sidebarVisible).toBe(true);
   });
 
-  it('toggleFileTree flips state', () => {
-    const { state, slice } = makeStub();
-    expect(state.showFileTree).toBe(false);
-    slice.toggleFileTree();
-    expect(state.showFileTree).toBe(true);
-  });
-
   it('toggleToolActivity flips state', () => {
     const { state, slice } = makeStub();
     expect(state.showToolActivity).toBe(false);

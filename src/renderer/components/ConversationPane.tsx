@@ -6,6 +6,7 @@ import { ChatView } from './ChatView';
 import { InputBar } from './InputBar';
 import { StatsFooter } from './StatsFooter';
 import { FileEditorPane } from './FileEditorPane';
+import { ExplorerPane } from './ExplorerPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
 import { useConversation } from '../hooks';
@@ -19,7 +20,11 @@ const CHAT_MIN = 360;
 export function ConversationPane() {
   const convId = useStore((s) => s.selectedConversationId);
   const openFilePath = useStore((s) => s.openFilePath);
-  const showFileTree = useStore((s) => s.showFileTree);
+  // When `openExplorer` is called (from a project/workspace row or the
+  // conversation header's folder icon) it sets `explorerRootPath`
+  // without touching `detailMode` — that's our signal to mount the
+  // explorer in the right pane instead of the bare FileEditorPane.
+  const explorerRootPath = useStore((s) => s.explorerRootPath);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
   const ollamaServerStatus = useStore((s) => s.ollamaServerStatus);
@@ -74,7 +79,8 @@ export function ConversationPane() {
   }, [settings.editorPaneWidth, editorMax]);
 
   if (!convId) return null;
-  const editorVisible = !!openFilePath || showFileTree;
+  const explorerOpen = !!explorerRootPath;
+  const editorVisible = explorerOpen || !!openFilePath;
   const convBackend = conv?.primaryBackend;
   const isOllamaConv = convBackend === 'ollama';
   const showOllamaWarning =
@@ -123,7 +129,7 @@ export function ConversationPane() {
             style={{ width }}
             className="flex-shrink-0 h-full border-l border-card overflow-hidden"
           >
-            <FileEditorPane />
+            {explorerOpen ? <ExplorerPane /> : <FileEditorPane />}
           </div>
         </>
       )}
