@@ -26,7 +26,7 @@ import {
   modelTier,
 } from '@shared/reboundPresets';
 import { backendColor, backendName, shortModel } from '../theme';
-import { useConversation } from '../hooks';
+import { useConversation, useConversationRoot } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
 import { CommitButton } from './CommitButton';
 import {
@@ -55,7 +55,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     projects,
     workspaces,
     showToolActivity,
-    showFileTree,
+    explorerRootPath,
+    openExplorer,
+    closeExplorer,
     setPrimary,
     setPermission,
     setEffort,
@@ -73,7 +75,6 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     resetConversation,
     openSheet,
     toggleToolActivity,
-    toggleFileTree,
   } = useStore(
     useShallow((s) => ({
       backendHealth: s.backendHealth,
@@ -82,7 +83,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       projects: s.projects,
       workspaces: s.workspaces,
       showToolActivity: s.showToolActivity,
-      showFileTree: s.showFileTree,
+      explorerRootPath: s.explorerRootPath,
+      openExplorer: s.openExplorer,
+      closeExplorer: s.closeExplorer,
       setPrimary: s.setPrimaryBackend,
       setPermission: s.setPermissionMode,
       setEffort: s.setEffortLevel,
@@ -100,10 +103,19 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       resetConversation: s.resetConversation,
       openSheet: s.openSheet,
       toggleToolActivity: s.toggleToolActivity,
-      toggleFileTree: s.toggleFileTree,
     })),
   );
   const runnerIsRunning = useRunnerIsRunning(conversationId);
+  // Folder icon target: the conversation's root (worktree for agents,
+  // project path for plain conversations). Resolved the same way
+  // FileEditorPane does so the right-pane explorer roots match where
+  // the conversation actually lives on disk.
+  const convRoot = useConversationRoot(conversationId);
+  const explorerOpen = !!explorerRootPath;
+  const toggleExplorer = () => {
+    if (explorerOpen) closeExplorer();
+    else if (convRoot) openExplorer(convRoot);
+  };
   const runnerModel = useRunnerCurrentModel(conversationId);
   const {
     runtimeMode: codexRuntimeMode,
@@ -303,9 +315,9 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
         </IconButton>
 
         <IconButton
-          active={showFileTree}
-          onClick={toggleFileTree}
-          title={showFileTree ? 'Hide file tree' : 'Show file tree'}
+          active={explorerOpen}
+          onClick={toggleExplorer}
+          title={explorerOpen ? 'Hide explorer' : 'Show explorer'}
         >
           <FolderIcon />
         </IconButton>

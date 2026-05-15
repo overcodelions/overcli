@@ -111,7 +111,6 @@ interface StoreState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
-  showFileTree: boolean;
   /// Root directory for the standalone file explorer view. Set by
   /// `openExplorer`; consumed by ExplorerPane when detailMode is
   /// 'explorer'. Unlike conversation-scoped file browsing, this is
@@ -173,11 +172,11 @@ interface StoreState {
   startNewConversationInWorkspace(workspaceId: UUID): void;
   setDetailMode(mode: DetailMode): void;
   openExplorer(rootPath: string): void;
+  closeExplorer(): void;
   openSheet(sheet: ActiveSheet | null): void;
   openFile(path: string, highlight?: OpenFileHighlight, mode?: FileViewMode): void;
   setOpenFileMode(mode: FileViewMode): void;
   closeFile(): void;
-  toggleFileTree(): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
   setDraft(id: UUID, text: string): void;
@@ -746,6 +745,28 @@ export const useStore = create<StoreState>((set, get) => ({
   // ./uiSlice.ts and are spread into the store above.
 
   openExplorer(rootPath) {
+    // When a conversation is in context, the user expects Explore to open
+    // a file browser alongside the chat — not to swap the whole right
+    // side over to the standalone explorer view and lose the
+    // conversation. Branch on whether a conversation is selected:
+    //   - Conversation active → open the explorer in the conversation's
+    //     right pane (ConversationPane swaps FileEditorPane out for
+    //     ExplorerPane when explorerRootPath is non-null). detailMode,
+    //     selectedConversationId, focus IDs all stay put.
+    //   - No conversation → original behavior: switch detailMode to
+    //     'explorer' so App.tsx renders the standalone ExplorerPane,
+    //     and clear focus so the sidebar doesn't lie about what's
+    //     selected.
+    const state = get();
+    if (state.selectedConversationId) {
+      set({
+        explorerRootPath: rootPath,
+        openFilePath: null,
+        openFileHighlight: null,
+        openFileMode: 'edit',
+      });
+      return;
+    }
     set({
       detailMode: 'explorer',
       explorerRootPath: rootPath,
@@ -757,6 +778,17 @@ export const useStore = create<StoreState>((set, get) => ({
       openFileMode: 'edit',
     });
     window.overcli.invoke('store:saveSelection', null);
+  },
+
+  closeExplorer() {
+    // Symmetric counterpart to openExplorer: clears the explorer root and
+    // drops 'explorer' detailMode if we'd entered the standalone view.
+    // Leaving the in-conversation case untouched (detailMode stays
+    // 'conversation') means just the right pane collapses.
+    set((s) => ({
+      explorerRootPath: null,
+      detailMode: s.detailMode === 'explorer' ? 'conversation' : s.detailMode,
+    }));
   },
 
   setDraft(id, text) {
