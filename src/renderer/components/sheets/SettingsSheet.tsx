@@ -519,6 +519,12 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           value={local.showDebug ?? false}
           onChange={(v) => patch({ showDebug: v })}
         />
+        <Toggle
+          label="Use Claude Agent SDK (experimental)"
+          help="Route Claude turns through @anthropic-ai/claude-agent-sdk in-process instead of spawning `claude -p`. Permission prompts route directly via canUseTool (no MCP broker round-trip). Survives future restrictions on `-p`."
+          value={(local.claudeTransport ?? 'cli') === 'sdk'}
+          onChange={(v) => patch({ claudeTransport: v ? 'sdk' : 'cli' })}
+        />
       </Group>
     </div>
   );

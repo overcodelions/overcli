@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
@@ -101,7 +101,14 @@ export function renderMarkdownHtml(
 /// what we were fighting in the Swift port — one big memoized HTML string
 /// lets the browser's layout engine do its best work.
 export function Markdown({ source, onOpenPath }: { source: string; onOpenPath?: (path: string) => void }) {
-  const html = useMemo(() => renderMarkdownHtml(source), [source]);
+  // marked + hljs + DOMPurify is ~ms-scale on long bubbles, and the
+  // streaming assistant text updates with every token. Re-parsing on
+  // each chunk saturates the main thread and stalls the composer.
+  // Throttling the input to ~80ms (~12 fps) keeps streaming legible
+  // while leaving cycles for typing/scroll. Trailing edge always
+  // fires so the final value is fully rendered.
+  const throttled = useThrottledValue(source, 80);
+  const html = useMemo(() => renderMarkdownHtml(throttled), [throttled]);
 
   return (
     <div
@@ -130,6 +137,42 @@ export function Markdown({ source, onOpenPath }: { source: string; onOpenPath?: 
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );
+}
+
+function useThrottledValue<T>(value: T, intervalMs: number): T {
+  const [shown, setShown] = useState(value);
+  const lastEmitRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latestRef = useRef(value);
+  latestRef.current = value;
+
+  useEffect(() => {
+    const now = performance.now();
+    const elapsed = now - lastEmitRef.current;
+    if (elapsed >= intervalMs) {
+      lastEmitRef.current = now;
+      setShown(value);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    } else if (timerRef.current == null) {
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        lastEmitRef.current = performance.now();
+        setShown(latestRef.current);
+      }, intervalMs - elapsed);
+    }
+  }, [value, intervalMs]);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  return shown;
 }
 
 function escapeAttr(s: string): string {

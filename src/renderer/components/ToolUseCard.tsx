@@ -298,6 +298,7 @@ function ExitPlanModeCard({ use, args }: { use: ToolUseBlock; args: Record<strin
   const plan = typeof args.plan === 'string' ? args.plan : '';
   const [decided, setDecided] = useState<'approved' | 'denied' | null>(null);
   const send = useStore((s) => s.send);
+  const setPermissionMode = useStore((s) => s.setPermissionMode);
   const convId = useStore((s) => s.selectedConversationId);
 
   const respond = (approved: boolean) => {
@@ -306,6 +307,10 @@ function ExitPlanModeCard({ use, args }: { use: ToolUseBlock; args: Record<strin
     const msg = approved
       ? 'Approved — go ahead with the plan.'
       : 'Denied — let\'s keep iterating on the plan first.';
+    // Approve drops out of plan mode so the next turn actually executes;
+    // setPermissionMode updates the store synchronously, so the send()
+    // below picks up 'default' as the pending mode and commits it.
+    if (approved) void setPermissionMode(convId, 'default');
     void send(convId, msg);
   };
 
