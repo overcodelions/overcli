@@ -878,7 +878,10 @@ export function commitStatus(cwd: string): {
     return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
   }
   const branch = runGit(['branch', '--show-current'], cwd);
-  const status = runGit(['status', '--porcelain=v1'], cwd);
+  // `--untracked-files=all` so a newly-created directory is listed as one
+  // entry per file inside it, not a single `?? path/to/dir/` line that
+  // collapses everything the agent wrote into a zero-line directory row.
+  const status = runGit(['status', '--porcelain=v1', '--untracked-files=all'], cwd);
   const statusByPath = new Map<string, string>();
   if (status.exitCode === 0) {
     for (const line of status.stdout.split('\n')) {
