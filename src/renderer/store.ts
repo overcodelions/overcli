@@ -2029,6 +2029,7 @@ export const useStore = create<StoreState>((set, get) => ({
       reviewOllamaModel: conv.reviewOllamaModel ?? null,
       reviewYolo: conv.reviewYolo ?? null,
       allowedDirs: backend === 'claude' ? computeAllowedDirs(get(), conversationId) : undefined,
+      claudeTransport: backend === 'claude' ? get().settings.claudeTransport ?? 'cli' : undefined,
     });
 
     mutateConversation(set, get, conversationId, (c) => ({
