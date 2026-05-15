@@ -68,6 +68,8 @@ import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
+import { ClaudeSdkClient } from './claude-sdk-client';
+import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import {
   appendClaudeAllowRule,
   codexTransportPermissions,
@@ -117,6 +119,10 @@ interface SendArgs {
   reviewYolo?: boolean | null;
   allowedDirs?: string[];
   localUserId?: string;
+  /// Transport to use for Claude turns. Defaults to 'cli' when omitted.
+  /// 'sdk' routes through @anthropic-ai/claude-agent-sdk instead of
+  /// spawning `claude -p`. Ignored for non-claude backends.
+  claudeTransport?: 'cli' | 'sdk';
 }
 
 interface PermissionResponse {
@@ -135,6 +141,21 @@ interface ActiveProcess {
   codexAppServerState?: CodexAppServerParserState;
   codexAppServer?: CodexAppServerClient;
   codexMode?: 'exec' | 'app-server';
+  /// Claude Agent SDK client, when this conversation is on the 'sdk'
+  /// transport (Settings → Advanced → Use Claude Agent SDK). Mutually
+  /// exclusive with `proc`: SDK turns are driven in-process and have no
+  /// subprocess. The runner subscribes to the client's `line` event and
+  /// pipes each SDKMessage (stringified) into the standard claudeBackend
+  /// `parseChunk` pipeline so event handling is single-sourced.
+  claudeSdk?: ClaudeSdkClient;
+  /// Whether the SDK client's first turn has been started. Lets the
+  /// runner emit a synthetic systemInit fallback only if the SDK doesn't
+  /// surface one (it should always, but we don't want to leak that
+  /// assumption into the chat UI).
+  claudeSdkStarted?: boolean;
+  /// Tracks the transport this active record was created with so paramsChanged
+  /// can detect a CLI ↔ SDK toggle and respawn.
+  claudeTransport?: 'cli' | 'sdk';
   /// Pending permission/approval handlers indexed by requestId / callId.
   /// We look them up on response so the renderer's allow/deny decisions
   /// reach the live subprocess.
@@ -369,6 +390,15 @@ export class RunnerManager {
       });
       return;
     }
+    // Tools that carry their own in-card Approve/Deny UI — gating them at
+    // the broker too would force the user to click twice for one decision.
+    if (req.toolName === 'ExitPlanMode' || req.toolName === 'AskUserQuestion') {
+      this.claudeBroker.resolve(req.conversationId, req.requestId, {
+        behavior: 'allow',
+        updatedInput: req.toolInput,
+      });
+      return;
+    }
     active.pendingPermissions.set(req.requestId, (approved: boolean) => {
       this.claudeBroker.resolve(
         req.conversationId,
@@ -433,6 +463,205 @@ export class RunnerManager {
     this.claudeMcpByConv.set(convId, configPath);
   }
 
+  /// Drive a Claude turn through @anthropic-ai/claude-agent-sdk instead of
+  /// `claude -p`. Mirrors the CLI path's flow — emitLocalUser, prior-turn
+  /// bookkeeping, reviewer wiring — but the transport is an in-process
+  /// query() instead of a subprocess. SDK messages are serialized to JSON
+  /// and fed through the same claudeBackend.parseChunk pipeline as CLI
+  /// stdout, so all event handling is single-sourced.
+  private sendClaudeSdk(
+    args: SendArgs,
+    options: { userEventAlreadyEmitted: boolean },
+  ): { ok: true } | { ok: false; error: string } {
+    const convId = args.conversationId;
+    if (!options.userEventAlreadyEmitted) {
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+    }
+
+    try {
+      const existing = this.procs.get(convId);
+      const paramsChanged =
+        !!existing &&
+        (existing.launchPermissionMode !== args.permissionMode ||
+          existing.launchModel !== args.model ||
+          existing.cwd !== args.cwd ||
+          existing.claudeTransport !== 'sdk');
+      if (paramsChanged) {
+        this.killProc(convId);
+      }
+
+      let active = this.procs.get(convId);
+      if (!active) {
+        active = this.createClaudeSdkActive(args);
+        this.procs.set(convId, active);
+      }
+
+      // Carry the just-completed turn into reviewer history before we
+      // overwrite currentUserPrompt. Skip empty pairs (initial send /
+      // aborted turn with no assistant text).
+      if (active.currentUserPrompt || active.currentAssistantText) {
+        active.priorTurns.push({
+          userPrompt: active.currentUserPrompt,
+          assistantText: active.currentAssistantText,
+        });
+      }
+      active.currentUserPrompt = args.prompt;
+      active.currentAssistantText = '';
+      active.currentToolActivity = [];
+      active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
+      active.reviewMode = args.reviewMode ?? null;
+      active.reviewModel = args.reviewModel ?? null;
+      active.reviewPersona = args.reviewPersona ?? null;
+      active.reviewerSessionIds = { ...(args.reviewerSessionIds ?? {}) };
+      active.collabMaxTurns = args.collabMaxTurns ?? 3;
+      active.reviewOllamaModel = args.reviewOllamaModel ?? null;
+      active.reviewYolo = !!args.reviewYolo;
+      active.cwd = args.cwd;
+      active.lastSendArgs = args;
+      active.collabBurst += 1;
+      active.collabRoundsInBurst = 0;
+      this.reviewer.resetRounds(convId);
+      this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
+
+      active.claudeSdk!.sendTurn({ prompt: args.prompt, attachments: args.attachments });
+      return { ok: true };
+    } catch (err: any) {
+      const message = err?.message ?? String(err);
+      this.emit({ type: 'error', conversationId: convId, message });
+      return { ok: false, error: message };
+    }
+  }
+
+  private createClaudeSdkActive(args: SendArgs): ActiveProcess {
+    const convId = args.conversationId;
+    const allowedDirs = normalizeAllowedDirs(args.cwd, args.allowedDirs);
+    const active: ActiveProcess = {
+      proc: undefined,
+      backend: 'claude',
+      sessionId: args.sessionId,
+      launchModel: args.model,
+      launchPermissionMode: args.permissionMode,
+      stdoutBuffer: '',
+      stderrBuffer: '',
+      pendingPermissions: new Map(),
+      pendingCodexApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      currentUserPrompt: args.prompt,
+      currentAssistantText: '',
+      currentToolActivity: [],
+      priorTurns: [],
+      reviewBackend: (args.reviewBackend as Backend | null) ?? null,
+      reviewMode: args.reviewMode ?? null,
+      reviewModel: args.reviewModel ?? null,
+      reviewPersona: args.reviewPersona ?? null,
+      reviewerSessionIds: { ...(args.reviewerSessionIds ?? {}) },
+      collabMaxTurns: args.collabMaxTurns ?? 3,
+      reviewOllamaModel: args.reviewOllamaModel ?? null,
+      reviewYolo: !!args.reviewYolo,
+      collabBurst: 0,
+      collabRoundsInBurst: 0,
+      cwd: args.cwd,
+      allowedDirs,
+      sessionAllowedTools: new Set(),
+      parserState: getBackendSpec('claude').makeParserState?.(),
+      claudeTransport: 'sdk',
+    };
+    const client = new ClaudeSdkClient({
+      cwd: args.cwd,
+      model: args.model || undefined,
+      permissionMode: args.permissionMode,
+      allowedDirs: allowedDirs.length ? allowedDirs : undefined,
+      resumeSessionId: args.sessionId,
+      effortLevel: args.effortLevel,
+      canUseTool: this.buildClaudeSdkCanUseTool(convId),
+    });
+    active.claudeSdk = client;
+    client.on('line', (line: string) => {
+      // The SDK's typed messages share the wire shape of `claude -p`'s
+      // JSONL output, so we feed them straight through parseChunk. The
+      // trailing newline matters: parseChunk splits on '\n' and any
+      // partial-line buffering is preserved per chunk.
+      this.handleStdout(convId, active, line + '\n');
+    });
+    client.on('error', (err: Error) => {
+      this.emit({
+        type: 'error',
+        conversationId: convId,
+        message: `Claude SDK error: ${err.message}`,
+      });
+      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+    });
+    client.on('close', () => {
+      // The SDK consumer loop exited (either close() called or query()
+      // finished). Tear down the active record so the next send creates
+      // a fresh client; the session id we captured earlier still lets
+      // the next query() resume the conversation.
+      if (this.procs.get(convId) === active) {
+        this.procs.delete(convId);
+        this.reviewer.dispose(convId);
+      }
+      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+    });
+    return active;
+  }
+
+  /// Build the SDK `canUseTool` callback for a conversation. Mirrors
+  /// handleClaudeApproval but resolves a Promise<PermissionResult> instead
+  /// of a JSON-RPC response — no MCP broker round-trip needed. Permission
+  /// decisions still flow through pendingPermissions so the renderer's
+  /// existing respondPermission path drives them.
+  private buildClaudeSdkCanUseTool(conversationId: UUID): CanUseTool {
+    return async (toolName, input, ctx) => {
+      const active = this.procs.get(conversationId);
+      if (!active) {
+        return { behavior: 'deny', message: 'no active overcli session' };
+      }
+      if (active.sessionAllowedTools.has(toolName)) {
+        return { behavior: 'allow', updatedInput: input };
+      }
+      // Tools that carry their own in-card Approve/Deny UI — gating them
+      // here too would force the user to click twice for one decision.
+      if (toolName === 'ExitPlanMode' || toolName === 'AskUserQuestion') {
+        return { behavior: 'allow', updatedInput: input };
+      }
+      const requestId = randomUUID();
+      const approved = await new Promise<boolean>((resolve) => {
+        active.pendingPermissions.set(requestId, resolve);
+        const toolInputStr = JSON.stringify(input, null, 2);
+        const requestedPath = extractRequestedPath(toolName, input);
+        const outsideAllowedDirs =
+          !!requestedPath && !isInsideAllowedDirs(requestedPath, active.cwd, active.allowedDirs);
+        this.emit({
+          type: 'stream',
+          conversationId,
+          events: [
+            {
+              id: randomUUID(),
+              timestamp: Date.now(),
+              raw: JSON.stringify({ toolName, toolInput: input }),
+              kind: {
+                type: 'permissionRequest',
+                info: {
+                  backend: 'claude',
+                  requestId,
+                  toolName,
+                  description: ctx.description ?? '',
+                  toolInput: toolInputStr,
+                  requestedPath: requestedPath ?? undefined,
+                  outsideAllowedDirs: outsideAllowedDirs || undefined,
+                },
+              },
+              revision: 0,
+            },
+          ],
+        });
+      });
+      return approved
+        ? { behavior: 'allow', updatedInput: input }
+        : { behavior: 'deny', message: 'denied by user' };
+    };
+  }
+
   /// Spawn (or reuse) a subprocess for this conversation, write the prompt
   /// onto its stdin in the backend's native envelope format, and return
   /// once the write completes. All events stream back async via `emit`.
@@ -471,6 +700,14 @@ export class RunnerManager {
       }
       void this.sendGeminiAcp(args, { syntheticFromCollab: false, userEventAlreadyEmitted: true });
       return { ok: true };
+    }
+
+    if (args.backend === 'claude' && args.claudeTransport === 'sdk') {
+      // SDK transport: drives Claude in-process via @anthropic-ai/claude-agent-sdk
+      // instead of spawning `claude -p`. Permission prompts route through
+      // canUseTool → pendingPermissions, mirroring the broker's flow but
+      // without the MCP round-trip.
+      return this.sendClaudeSdk(args, { userEventAlreadyEmitted });
     }
 
     if (args.backend === 'claude') {
@@ -650,6 +887,12 @@ export class RunnerManager {
     if (!active) return;
     if (active.codexMode === 'app-server' && active.codexAppServer) {
       active.codexAppServer.kill();
+    } else if (active.claudeSdk) {
+      // SDK transport: closing the input iterable lets the underlying
+      // query() drain and exit cleanly. No SIGTERM to send.
+      try {
+        active.claudeSdk.close();
+      } catch {}
     } else if (active.proc) {
       try {
         active.proc.stdin.end();
