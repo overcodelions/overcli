@@ -19,6 +19,7 @@ describe('DEFAULT_SETTINGS', () => {
       explorerTreeWidth: 280,
       showActiveSidebarSection: true,
       showDebug: false,
+      claudeTransport: 'cli',
     });
   });
 

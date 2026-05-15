@@ -584,6 +584,12 @@ export interface AppSettings {
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
   showDebug?: boolean;
+  /// Transport used to drive Claude. 'cli' (default) spawns `claude -p`
+  /// with stream-json over stdio — the long-standing path. 'sdk' is the
+  /// in-process @anthropic-ai/claude-agent-sdk path; it survives future
+  /// restrictions on `-p` and exposes typed events / direct permission
+  /// callbacks. Opt-in while the SDK transport is being built out.
+  claudeTransport?: 'cli' | 'sdk';
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -635,6 +641,10 @@ export interface IPCInvokeMap {
     /// show instantly. Main uses the same id on its emitted localUser event
     /// so `mergeIncomingEvents` updates in place instead of double-rendering.
     localUserId?: string;
+    /// Transport to use for Claude turns. Defaults to 'cli' when omitted.
+    /// 'sdk' routes through @anthropic-ai/claude-agent-sdk instead of
+    /// spawning `claude -p`. Ignored for non-claude backends.
+    claudeTransport?: 'cli' | 'sdk';
   }) => { ok: true } | { ok: false; error: string };
   'runner:stop': (args: { conversationId: UUID }) => void;
   'runner:newConversation': (args: { conversationId: UUID }) => void;
@@ -1125,4 +1135,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   explorerTreeWidth: 280,
   showActiveSidebarSection: true,
   showDebug: false,
+  claudeTransport: 'cli',
 };
