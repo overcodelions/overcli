@@ -24,8 +24,11 @@ export function ExplorerPane() {
   const openFilePath = useStore((s) => s.openFilePath);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
-  const setDetailMode = useStore((s) => s.setDetailMode);
-  const closeExplorer = () => setDetailMode('conversation');
+  // closeExplorer (vs. setDetailMode('conversation')) handles both
+  // contexts this pane renders in: standalone (clears the root and
+  // switches detailMode back), and in-conversation right pane (just
+  // clears the root, leaving the chat untouched).
+  const closeExplorer = useStore((s) => s.closeExplorer);
 
   const [treeWidth, setTreeWidth] = useState(
     () => clamp(settings.explorerTreeWidth ?? 280, TREE_MIN, TREE_MAX),
@@ -76,7 +79,10 @@ export function ExplorerPane() {
   }
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 min-w-0">
+    // h-full + flex-1 covers both mount sites: in App.tsx's <main
+    // flex-col> parent we get sized by flex-1, in ConversationPane's
+    // fixed-width right pane we get sized by h-full / h:100%.
+    <div className="flex flex-col flex-1 h-full min-h-0 min-w-0">
       {branch?.isRepo && branch.currentBranch ? (
         <BranchBanner info={branch} onClose={closeExplorer} />
       ) : branch ? (
