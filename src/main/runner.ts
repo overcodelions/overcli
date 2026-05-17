@@ -63,7 +63,12 @@ import {
   detectOllama,
   streamChat,
 } from './ollama';
-import { OLLAMA_BUILTIN_TOOLS, executeOllamaTool, extractInlineToolCalls } from './ollamaTools';
+import {
+  OLLAMA_BUILTIN_TOOLS,
+  executeOllamaTool,
+  extractInlineToolCalls,
+  looksLikeToolNarration,
+} from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
@@ -1127,12 +1132,16 @@ export class RunnerManager {
 
     this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
 
-    const tools = modelSupportsTools(model) ? OLLAMA_BUILTIN_TOOLS : undefined;
-    // Qwen/Llama-coder models default to refusing file questions unless a
-    // system message explicitly tells them tools are real. Prepended to
-    // every tool-enabled call; not persisted to the transcript so cwd and
-    // the tool list stay fresh if either changes mid-conversation.
-    const toolSystemPrompt = tools ? buildOllamaToolSystemPrompt(args.cwd) : null;
+    // We DELIBERATELY do NOT pass `tools` to Ollama. Ollama's tool
+    // templating is unreliable across qwen-coder / llama-coder builds —
+    // we've seen the model narrate ("I will read X") and never emit a
+    // structured tool_call. Instead we embed the tool schemas directly
+    // in the system prompt with a strict <tool_call>{…}</tool_call>
+    // format and parse every response through extractInlineToolCalls.
+    // This works as long as the model can follow in-prompt instructions
+    // (most 7B+ instruction-tuned models can).
+    const toolsEnabled = modelSupportsTools(model);
+    const toolSystemPrompt = toolsEnabled ? buildOllamaToolSystemPrompt(args.cwd) : null;
     // Cap the tool-call ping-pong. Models occasionally get stuck re-calling
     // read_file on the same path; bailing out after 8 rounds surfaces the
     // bug instead of hanging the UI.
@@ -1207,11 +1216,30 @@ export class RunnerManager {
       let assistantRevision = 0;
       let streamError: string | null = null;
 
+      // Scrub past-turn assistant narration ("I will read X" with no
+      // tool_calls attached) from the wire transcript. Models like
+      // qwen2.5-coder will gleefully continue any pattern they see in
+      // context — once narration appears once in history, it tends to
+      // recur every turn, drowning out the system-prompt instructions.
+      // We only scrub prior turns: anything from this turn forward
+      // (narration + nudge system message) stays on the wire so the
+      // re-run round sees the course-correction context.
+      const priorTurns = session!.messages.slice(0, turnStartIndex);
+      const thisTurn = session!.messages.slice(turnStartIndex);
+      const scrubbedPriorTurns = toolsEnabled
+        ? priorTurns.filter((m) => {
+            if (m.role !== 'assistant') return true;
+            const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+            if (hasToolCalls) return true;
+            return !looksLikeToolNarration(m.content ?? '');
+          })
+        : priorTurns;
+      const cleanedHistory = [...scrubbedPriorTurns, ...thisTurn];
       const wireMessages: OllamaChatMessage[] = toolSystemPrompt
-        ? [{ role: 'system', content: toolSystemPrompt }, ...session!.messages]
-        : session!.messages;
+        ? [{ role: 'system', content: toolSystemPrompt }, ...cleanedHistory]
+        : cleanedHistory;
       await streamChat(
-        { model, messages: wireMessages, tools, signal: controller.signal },
+        { model, messages: wireMessages, signal: controller.signal },
         (ev) => {
           if (ev.type === 'token') {
             acc += ev.text;
@@ -1253,14 +1281,13 @@ export class RunnerManager {
 
       if (streamError) return { ok: false, error: streamError };
 
-      // Text-fallback parser. Some tool-capable models (notably smaller
-      // Qwen/Llama coder variants, but occasionally the 14B+ too) emit
-      // tool calls as JSON in the content channel instead of via Ollama's
-      // structured `tool_calls`. When tools were sent but nothing came
-      // back structurally, sniff the content. If we find a call, strip it
-      // from the visible bubble so the user sees the cleaned-up reply.
+      // We never send the structured `tools` field, so every tool call
+      // has to come through the content channel. Sniff for our required
+      // <tool_call>{…}</tool_call> wrapper (and bare/fenced JSON as
+      // graceful fallbacks). If we find one, strip it from the visible
+      // bubble so the user sees the cleaned-up reply.
       let finalText = acc;
-      if (tools && pendingToolCalls.length === 0) {
+      if (toolsEnabled && pendingToolCalls.length === 0) {
         const extracted = extractInlineToolCalls(acc);
         if (extracted.calls.length > 0) {
           pendingToolCalls = extracted.calls;
@@ -1285,6 +1312,18 @@ export class RunnerManager {
       return { ok: true, toolCalls: pendingToolCalls, text: finalText };
     };
 
+    // Index of the user message we just pushed — everything before is
+    // "prior turns" (subject to narration scrubbing on the wire), and
+    // everything from this index onward is "this turn" (kept verbatim
+    // so the nudge round sees the model's own promise).
+    const turnStartIndex = session.messages.length - 1;
+
+    // One-shot nudge: if a tool-enabled round ends with no tool call
+    // but the reply looks like the model declared an intent ("I will
+    // read X") and then stopped, we re-prompt once with an explicit
+    // reminder. Capped at one nudge per turn so a model that genuinely
+    // can't comply doesn't loop forever.
+    let nudgedThisTurn = false;
     const runLoop = async () => {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         const res = await runOneRound();
@@ -1305,6 +1344,20 @@ export class RunnerManager {
         }
 
         if (res.toolCalls.length === 0) {
+          if (toolsEnabled && !nudgedThisTurn && looksLikeToolNarration(res.text)) {
+            // Persist the narration so the model sees its own promise
+            // in context, then inject a system-role nudge and re-run.
+            nudgedThisTurn = true;
+            session!.messages.push({ role: 'assistant', content: res.text });
+            session!.messageTimestamps.push(Date.now());
+            session!.messages.push({
+              role: 'system',
+              content:
+                'You described what you would do but did not call a tool. Call the tool now using a <tool_call>{"name":"…","arguments":{…}}</tool_call> block. Do not narrate again — emit only the tool_call.',
+            });
+            session!.messageTimestamps.push(Date.now());
+            continue;
+          }
           // Clean finish: append the assistant reply to the transcript.
           if (res.text) {
             session!.messages.push({ role: 'assistant', content: res.text });
@@ -3227,25 +3280,68 @@ function modelSupportsTools(tag: string): boolean {
   return !!hit?.supportsTools;
 }
 
-/// System prompt prepended on every tool-enabled Ollama call. Qwen-coder
-/// and (less often) Llama variants default to "I can't access your
-/// files" refusals unless told outright that the tools are real. The
-/// phrasing is deliberately blunt: these models respond to explicit
-/// "do X, not Y" instructions much better than to polite hints.
+/// System prompt prepended on every tool-enabled Ollama call. We embed
+/// the tool schemas directly here (rather than passing `tools` to
+/// Ollama) because Ollama's templating is unreliable for many coder
+/// models — qwen2.5-coder in particular tends to narrate ("I will read
+/// X") without ever emitting a structured tool_call when invoked via
+/// the API field. Putting the schema in-prompt with worked examples
+/// makes the contract deterministic.
 function buildOllamaToolSystemPrompt(cwd: string): string {
   return [
     'You are a local coding assistant running inside overcli on the user\'s machine.',
     `You have real, working access to the user's project directory at: ${cwd}`,
     '',
-    'The following tools are available and will return real results from disk:',
-    '- read_file(path): read a text file relative to the project root.',
-    '- list_dir(path): list files and subdirectories; use "." for the project root.',
-    '- grep(pattern, path?, caseInsensitive?): regex-search across the project.',
+    'AVAILABLE TOOLS (real, working — they read the user\'s actual disk):',
     '',
-    'When the user asks to read a file, list a directory, search the code, or otherwise inspect the project — CALL THE TOOL. Do not reply that you cannot access files. Do not refuse. The tools work.',
+    '  read_file(path: string)',
+    '    Read a UTF-8 text file relative to the project root. Returns up to 256 KB.',
     '',
-    'Call tools through your native tool-calling channel. Do not emit JSON tool-call blobs as plain text.',
-    'After receiving tool results, answer the user\'s question concisely using what you learned.',
+    '  list_dir(path: string)',
+    '    List files and subdirectories under a project-relative path. Use "." for the root.',
+    '',
+    '  grep(pattern: string, path?: string, caseInsensitive?: boolean)',
+    '    Regex-search across the project. `path` defaults to the project root.',
+    '',
+    'TOOL-CALL FORMAT (MANDATORY):',
+    'Whenever you need to use a tool, emit EXACTLY this block — no prose, no markdown fences, just the tag:',
+    '',
+    '<tool_call>',
+    '{"name": "<tool_name>", "arguments": {<json args>}}',
+    '</tool_call>',
+    '',
+    'The wrapper tags and the JSON are BOTH required. Stop generating after </tool_call>; the tool result will be fed back to you on the next turn.',
+    '',
+    'CRITICAL RULES:',
+    '1. When the user asks about files, directories, or code content, you MUST call the appropriate tool. Do NOT describe what you "will" do.',
+    '2. Never narrate ("I will read X", "Let me list Y", "I\'ll check Z", "I will now…"). If you find yourself writing one of those phrases, STOP and emit the <tool_call> block instead.',
+    '3. Never fabricate file names, directory contents, or file content. If you have not called the tool yet, you do not know what is there.',
+    '4. After the tool returns, answer the user\'s question concisely using the real result.',
+    '',
+    'WORKED EXAMPLES:',
+    '',
+    'User: what is in this directory?',
+    'Assistant:',
+    '<tool_call>',
+    '{"name": "list_dir", "arguments": {"path": "."}}',
+    '</tool_call>',
+    '',
+    'User: what does README.md say?',
+    'Assistant:',
+    '<tool_call>',
+    '{"name": "read_file", "arguments": {"path": "README.md"}}',
+    '</tool_call>',
+    '',
+    'User: where do we configure the database URL?',
+    'Assistant:',
+    '<tool_call>',
+    '{"name": "grep", "arguments": {"pattern": "DATABASE_URL", "caseInsensitive": false}}',
+    '</tool_call>',
+    '',
+    'WRONG (do NOT produce output like this):',
+    '"I will read README.md to provide you with its contents."',
+    '"Let me fetch the contents of that file."',
+    '"Sure, I\'ll list the directory."',
   ].join('\n');
 }
 
