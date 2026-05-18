@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ToolResultBlock, ToolUseBlock } from '@shared/types';
 import { Markdown } from './Markdown';
-import { useStore } from '../store';
+import { useOpenFile } from '../openFile';
 
 export function ToolResultCard({ results, toolUseIndex }: { results: ToolResultBlock[]; toolUseIndex: Map<string, ToolUseBlock> }) {
   return (
@@ -20,7 +20,7 @@ export function ToolResultCard({ results, toolUseIndex }: { results: ToolResultB
 export const AGENT_TOOLS = new Set(['Agent', 'Task']);
 
 function SingleResult({ result, source }: { result: ToolResultBlock; source?: ToolUseBlock }) {
-  const openFile = useStore((s) => s.openFile);
+  const openFile = useOpenFile();
   const isAgent = !!source && AGENT_TOOLS.has(source.name);
   // Agent reports are the point of the call — show them by default.
   // Read/Edit/MultiEdit/Write/Bash results are bulky tool byproducts —

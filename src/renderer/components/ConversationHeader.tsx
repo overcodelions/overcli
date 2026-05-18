@@ -125,16 +125,28 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
   } = useRunnerCodexFlags(conversationId);
   const [confirmingReset, setConfirmingReset] = useState(false);
   // Track header width (not viewport) since side panels can shrink the
-  // pane on a wide screen. Below the threshold, Fork/Rebound move into
-  // the conversation settings dropdown.
+  // pane on a wide screen. Two thresholds: <720 hides Fork/Rebound (they
+  // move into the settings dropdown), <520 drops labels from the
+  // remaining IconPickers and the Diff button so icons + tooltips
+  // carry the load — that's how we keep things from overlapping at
+  // very narrow widths (drawer open + small window).
   const headerRef = useRef<HTMLElement>(null);
   const [compact, setCompact] = useState(false);
+  const [iconsOnly, setIconsOnly] = useState(false);
   useEffect(() => {
     const el = headerRef.current;
     if (!el) return;
     const obs = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        setCompact(entry.contentRect.width < 720);
+        const w = entry.contentRect.width;
+        // <980: Fork + Rebound pickers move into the settings
+        //       dropdown (they're the biggest contributors to the
+        //       right-side crowd and have a fallback home).
+        // <760: drop labels from the remaining pickers + Diff so
+        //       only icons (with tooltips) stay. Also hide the
+        //       redundant "Claude CLI" left badge.
+        setCompact(w < 980);
+        setIconsOnly(w < 760);
       }
     });
     obs.observe(el);
@@ -189,12 +201,14 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           )}
           {locked ? (
             <>
-              <HeaderBadge
-                title={`Session backend: ${backendName(backend)} CLI`}
-                style={{ color: backendColor(backend) }}
-              >
-                {backendName(backend)} CLI
-              </HeaderBadge>
+              {!iconsOnly && (
+                <HeaderBadge
+                  title={`Session backend: ${backendName(backend)} CLI`}
+                  style={{ color: backendColor(backend) }}
+                >
+                  {backendName(backend)} CLI
+                </HeaderBadge>
+              )}
               {sessionModel && (
                 <HeaderBadge title={`Session model: ${sessionModel}`} pulse={runnerIsRunning}>
                   {shortModel(sessionModel)}
@@ -243,6 +257,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           <IconPicker
             icon={<BackendDot color={backendColor(backend)} />}
             label={backendName(backend)}
+            iconOnly={iconsOnly}
             items={enabled.map((b) => ({
               value: b,
               label: backendName(b),
@@ -266,6 +281,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           icon={<ShieldIcon tone={permissionTone(pendingPermissionMode ?? activePermissionMode)} />}
           label={modeLabel(pendingPermissionMode ?? activePermissionMode)}
           tone={permissionTone(pendingPermissionMode ?? activePermissionMode)}
+          iconOnly={iconsOnly}
           items={(['plan', 'default', 'auto', 'acceptEdits', 'bypassPermissions'] as PermissionMode[])
             .filter((m) => m !== 'auto' || backend === 'claude')
             .map((m) => ({
@@ -279,6 +295,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           <IconPicker
             icon={<BrainIcon />}
             label={effortLabel(conv.effortLevel ?? '')}
+            iconOnly={iconsOnly}
             items={([
               { value: '', label: 'Default' },
               { value: 'low', label: 'Low' },
@@ -386,11 +403,14 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
             return (
               <button
                 onClick={() => openSheet(targetSheet)}
-                className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink"
+                className={
+                  'flex items-center rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink ' +
+                  (iconsOnly ? 'px-1.5 py-1' : 'gap-1.5 px-2 py-1')
+                }
                 title={tooltip}
               >
                 <DiffIcon />
-                <span>Diff</span>
+                {!iconsOnly && <span>Diff</span>}
               </button>
             );
           })()
@@ -709,12 +729,16 @@ function IconPicker({
   items,
   onPick,
   tone,
+  iconOnly,
 }: {
   icon: React.ReactNode;
   label: string;
   items: PickerItem[];
   onPick: (v: string) => void;
   tone?: string;
+  /// Drop the label + chevron in narrow header tiers — the label
+  /// becomes a tooltip so the picker still self-identifies.
+  iconOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -730,12 +754,16 @@ function IconPicker({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-card-strong"
+        className={
+          'flex items-center rounded hover:bg-card-strong ' +
+          (iconOnly ? 'px-1.5 py-1' : 'gap-1.5 px-2 py-1')
+        }
         style={tone ? { color: tone } : undefined}
+        title={iconOnly ? label : undefined}
       >
         {icon}
-        <span className="text-xs">{label}</span>
-        <span className="text-[9px] opacity-70">▾</span>
+        {!iconOnly && <span className="text-xs">{label}</span>}
+        {!iconOnly && <span className="text-[9px] opacity-70">▾</span>}
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 min-w-[200px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1">
