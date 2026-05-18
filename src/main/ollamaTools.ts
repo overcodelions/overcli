@@ -107,11 +107,13 @@ export interface ToolExecutionResult {
 /// Some models (especially the smaller Qwen/Llama coder variants) emit
 /// tool calls as plain text in `message.content` instead of using
 /// Ollama's structured `tool_calls` field. We sniff the content for
-/// `{"name": "...", "arguments": {...}}` blocks (optionally wrapped in
-/// ```json fences) and promote them to real tool calls.
+/// `{"name": "...", "arguments": {...}}` blocks — bare, fenced with
+/// ```json, or wrapped in Qwen's `<tool_call>…</tool_call>` tags — and
+/// promote them to real tool calls.
 ///
-/// Returns `cleanedText` with the extracted blocks (and their fences)
-/// stripped out so the user doesn't see the raw JSON in the chat bubble.
+/// Returns `cleanedText` with the extracted blocks (and their fences /
+/// XML tags) stripped out so the user doesn't see the raw JSON in the
+/// chat bubble.
 export function extractInlineToolCalls(text: string): {
   calls: OllamaToolCall[];
   cleanedText: string;
@@ -150,12 +152,19 @@ export function extractInlineToolCalls(text: string): {
       i = closeIdx + 1;
       continue;
     }
-    // Widen the strip range to swallow a surrounding ```json … ``` fence
-    // so the cleaned bubble reads naturally.
-    const fenceBefore = text.slice(0, i).match(/```(?:json)?\s*$/);
-    const fenceAfter = text.slice(closeIdx + 1).match(/^\s*```/);
-    const start = fenceBefore ? i - fenceBefore[0].length : i;
-    const end = closeIdx + 1 + (fenceAfter ? fenceAfter[0].length : 0);
+    // Widen the strip range to swallow a surrounding wrapper (a
+    // ```json … ``` fence or Qwen's <tool_call>…</tool_call> tag) so the
+    // cleaned bubble reads naturally.
+    const before = text.slice(0, i);
+    const after = text.slice(closeIdx + 1);
+    const fenceBefore = before.match(/```(?:json)?\s*$/);
+    const fenceAfter = fenceBefore ? after.match(/^\s*```/) : null;
+    const xmlBefore = !fenceBefore ? before.match(/<tool_call>\s*$/) : null;
+    const xmlAfter = xmlBefore ? after.match(/^\s*<\/tool_call>/) : null;
+    const startPad = (fenceBefore?.[0].length ?? 0) + (xmlBefore?.[0].length ?? 0);
+    const endPad = (fenceAfter?.[0].length ?? 0) + (xmlAfter?.[0].length ?? 0);
+    const start = i - startPad;
+    const end = closeIdx + 1 + endPad;
     calls.push({
       id: `call_fallback_${calls.length}_${Date.now()}`,
       name,
@@ -175,6 +184,25 @@ export function extractInlineToolCalls(text: string): {
   }
   parts.push(text.slice(cursor));
   return { calls, cleanedText: parts.join('').replace(/\n{3,}/g, '\n\n').trim() };
+}
+
+/// True iff `text` looks like the model declaring it's about to use a
+/// tool ("I will read…", "Let me list…", "Sure, I'll search…") without
+/// actually emitting a tool call. Used to trigger a one-shot nudge that
+/// asks the model to actually invoke the tool.
+///
+/// Kept deliberately conservative: we only match when the sentence
+/// clearly references one of our tool verbs (read/list/search/grep/
+/// look/check/fetch/inspect/show/find) so a model that legitimately
+/// finished a turn without tool use ("Yes, that file looks fine") isn't
+/// nudged.
+export function looksLikeToolNarration(text: string): boolean {
+  if (!text) return false;
+  const t = text.trim();
+  if (t.length > 600) return false;
+  const pattern =
+    /\b(?:i(?:'| wi)ll|i am going to|let me|sure,?\s*i'?ll|i can|i'll go ahead and|please allow me to)\b[^.\n]*\b(?:read|open|list|search|grep|look\s*(?:at|in|up)|check|fetch|inspect|show|find|analy[sz]e|extract|provide a summary|summari[sz]e|tell you what)\b/i;
+  return pattern.test(t);
 }
 
 /// Walks forward from an open brace and returns the index of the matching

@@ -443,6 +443,9 @@ export class OllamaServerManager {
     try {
       child = spawn(bin, ['serve'], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Force loopback bind — overrides any inherited OLLAMA_HOST=0.0.0.0
+        // so the spawned server is never exposed beyond this machine.
+        env: { ...process.env, OLLAMA_HOST: `${OLLAMA_HOST}:${OLLAMA_PORT}` },
       }) as ServerChild;
     } catch (err: any) {
       this.setStatus('error');

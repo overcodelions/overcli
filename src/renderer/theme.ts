@@ -11,6 +11,11 @@ export function backendColor(backend: Backend | null | undefined): string {
       return '#3dced7'; // cyan/teal
     case 'ollama':
       return '#f29e4c'; // amber — "local"
+    case 'copilot':
+      // Magenta-pink pulled from Copilot's logo gradient. Avoid the
+      // GitHub green (#7ee787) — that clashes with the sidebar's
+      // active-conversation indicator dot.
+      return '#f471b5';
     case 'claude':
     default:
       return '#b587ff'; // purple
@@ -25,6 +30,8 @@ export function backendName(backend: Backend | null | undefined): string {
       return 'Gemini';
     case 'ollama':
       return 'Ollama';
+    case 'copilot':
+      return 'Copilot';
     case 'claude':
     default:
       return 'Claude';
@@ -39,6 +46,8 @@ export function backendIcon(backend: Backend | null | undefined): string {
       return '✦';
     case 'ollama':
       return '◉';
+    case 'copilot':
+      return '⌥';
     case 'claude':
     default:
       return '◈';
@@ -51,6 +60,7 @@ export function backendFromModel(model: string | null | undefined): Backend {
   if (m.includes('gemini')) return 'gemini';
   if (m.includes('codex') || m.includes('gpt-')) return 'codex';
   if (m.includes('ollama')) return 'ollama';
+  if (m.includes('copilot')) return 'copilot';
   if (m.includes('claude')) return 'claude';
   return 'claude';
 }
