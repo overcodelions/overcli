@@ -182,7 +182,7 @@ function registerIpc(): void {
     runner!.respondUserInput(conversationId, requestId, answers),
   );
   ipcMain.handle('runner:loadHistory', (_e, args) => loadHistory(args));
-  ipcMain.handle('runner:probeHealth', (_e, backend: 'claude' | 'codex' | 'gemini' | 'ollama') => {
+  ipcMain.handle('runner:probeHealth', (_e, backend: Backend) => {
     const settings = Store.load().settings;
     return probeBackendHealth(backend, settings.backendPaths[backend]);
   });

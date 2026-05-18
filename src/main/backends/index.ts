@@ -6,6 +6,7 @@
 import type { Backend } from '../../shared/types';
 import { claudeBackend } from './claude';
 import { codexBackend } from './codex';
+import { copilotBackend } from './copilot';
 import { geminiBackend } from './gemini';
 import { ollamaBackend } from './ollama';
 import type { BackendSpec } from './types';
@@ -13,6 +14,7 @@ import type { BackendSpec } from './types';
 const SPECS: Record<Backend, BackendSpec> = {
   claude: claudeBackend,
   codex: codexBackend,
+  copilot: copilotBackend,
   gemini: geminiBackend,
   ollama: ollamaBackend,
 };
