@@ -695,7 +695,7 @@ function isBackendEnabled(settings: BackendPrefs, backend: Backend): boolean {
 }
 
 function enabledBackends(settings: BackendPrefs): Backend[] {
-  const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  const all: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
   return all.filter((b) => isBackendEnabled(settings, b));
 }
 
@@ -778,6 +778,11 @@ function modelOptionsFor(
     claude: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+    // Copilot's --model accepts model ids served via GitHub's Bedrock
+    // gateway. The default the CLI picks is `claude-haiku-4.5`; the
+    // others are the public Copilot-CLI-supported set as of mid-2026.
+    // Users can override via Settings → Models if a newer id ships.
+    copilot: ['claude-haiku-4.5', 'claude-sonnet-4.6', 'gpt-5.5'],
   };
   const list = base[backend];
   if (configuredDefault && !list.includes(configuredDefault)) {

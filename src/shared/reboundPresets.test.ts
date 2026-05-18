@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isAllGoodReviewerResponse } from './reboundPresets';
+import { isAllGoodReviewerResponse, resolvePreset } from './reboundPresets';
 
 describe('isAllGoodReviewerResponse', () => {
   it('matches the exact persona phrase, case-insensitively, ignoring trailing punctuation', () => {
@@ -56,5 +56,43 @@ describe('isAllGoodReviewerResponse', () => {
         'security',
       ),
     ).toBe(false);
+  });
+});
+
+
+describe('resolvePreset with copilot primary', () => {
+  it('redirects "same"-backend presets to a different CLI when primary is copilot', () => {
+    // half-finished has backend: 'same' in PRESETS. With a copilot
+    // primary that would route to a throwing reviewer; the resolver
+    // must redirect to DIFFERENT_BACKEND_PREFERENCE's first entry
+    // (codex).
+    const resolved = resolvePreset('half-finished', 'copilot');
+    expect(resolved).not.toBeNull();
+    expect(resolved!.reviewBackend).not.toBe('copilot');
+    expect(resolved!.reviewBackend).toBe('codex');
+  });
+
+  it('keeps "same"-backend behavior for non-copilot primaries', () => {
+    const resolved = resolvePreset('half-finished', 'claude');
+    expect(resolved!.reviewBackend).toBe('claude');
+  });
+
+  it('redirects "different"-backend presets to a non-copilot reviewer when primary is copilot', () => {
+    // pickDifferentBackend excludes copilot itself, so an independent
+    // preset on a copilot primary picks the next available CLI.
+    const resolved = resolvePreset('independent', 'copilot');
+    expect(resolved!.reviewBackend).not.toBe('copilot');
+  });
+
+  it('preserves tier + persona + mode through the copilot redirect', () => {
+    // security preset is tier: 'smart', persona: 'security', mode: 'review'.
+    // After redirect we should still get the smart tier on the picked
+    // reviewer backend (which has a TIERS entry).
+    const resolved = resolvePreset('security', 'copilot');
+    expect(resolved).not.toBeNull();
+    expect(resolved!.reviewBackend).toBe('codex');
+    expect(resolved!.reviewPersona).toBe('security');
+    expect(resolved!.reviewMode).toBe('review');
+    expect(resolved!.reviewModel).toBe('gpt-5.5'); // codex.smart tier
   });
 });
