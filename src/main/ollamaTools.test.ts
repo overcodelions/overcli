@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { extractInlineToolCalls, looksLikeToolNarration } from './ollamaTools';
+import {
+  buildOllamaToolSystemPrompt,
+  extractInlineToolCalls,
+  looksLikeToolNarration,
+  modelSupportsTools,
+} from './ollamaTools';
 
 describe('extractInlineToolCalls', () => {
   it('returns no calls when the text is plain prose', () => {
@@ -59,5 +64,28 @@ describe('looksLikeToolNarration', () => {
 
   it('ignores empty input', () => {
     expect(looksLikeToolNarration('')).toBe(false);
+  });
+});
+
+describe('modelSupportsTools', () => {
+  it('returns true for catalog entries flagged as tool-capable', () => {
+    expect(modelSupportsTools('qwen2.5-coder:7b')).toBe(true);
+    expect(modelSupportsTools('llama3.1:8b')).toBe(true);
+  });
+
+  it('returns false for unknown / custom tags', () => {
+    expect(modelSupportsTools('some-private-finetune:latest')).toBe(false);
+    expect(modelSupportsTools('')).toBe(false);
+  });
+});
+
+describe('buildOllamaToolSystemPrompt', () => {
+  it('embeds the cwd and the three built-in tools in the prompt', () => {
+    const prompt = buildOllamaToolSystemPrompt('/path/to/proj');
+    expect(prompt).toContain('/path/to/proj');
+    expect(prompt).toContain('read_file');
+    expect(prompt).toContain('list_dir');
+    expect(prompt).toContain('grep');
+    expect(prompt).toContain('<tool_call>');
   });
 });

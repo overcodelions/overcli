@@ -57,17 +57,14 @@ import {
   resolveBackendPath,
 } from './backendPaths';
 import {
-  OLLAMA_CATALOG,
   OllamaChatMessage,
-  OllamaToolCall,
   detectOllama,
-  streamChat,
 } from './ollama';
 import {
   OLLAMA_BUILTIN_TOOLS,
-  executeOllamaTool,
-  extractInlineToolCalls,
-  looksLikeToolNarration,
+  buildOllamaToolSystemPrompt,
+  modelSupportsTools,
+  runOllamaToolLoop,
 } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
 import { ReviewerManager } from './reviewer';
@@ -1136,20 +1133,15 @@ export class RunnerManager {
 
     this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
 
-    // We DELIBERATELY do NOT pass `tools` to Ollama. Ollama's tool
-    // templating is unreliable across qwen-coder / llama-coder builds —
-    // we've seen the model narrate ("I will read X") and never emit a
-    // structured tool_call. Instead we embed the tool schemas directly
-    // in the system prompt with a strict <tool_call>{…}</tool_call>
-    // format and parse every response through extractInlineToolCalls.
-    // This works as long as the model can follow in-prompt instructions
-    // (most 7B+ instruction-tuned models can).
+    // Tool wiring runs through runOllamaToolLoop in ollamaTools.ts —
+    // the same helper the reviewer uses, so both stay in lockstep on
+    // narration scrubbing, inline-tool-call parsing, the one-shot
+    // nudge, and the round cap. We deliberately don't pass `tools` on
+    // the wire: Ollama's templating is unreliable across qwen-coder /
+    // llama-coder builds, so the helper embeds the schema in-prompt and
+    // parses tool calls out of the content channel.
     const toolsEnabled = modelSupportsTools(model);
-    const toolSystemPrompt = toolsEnabled ? buildOllamaToolSystemPrompt(args.cwd) : null;
-    // Cap the tool-call ping-pong. Models occasionally get stuck re-calling
-    // read_file on the same path; bailing out after 8 rounds surfaces the
-    // bug instead of hanging the UI.
-    const MAX_TOOL_ROUNDS = 8;
+    const systemPrompt = toolsEnabled ? buildOllamaToolSystemPrompt(args.cwd) : '';
 
     const startedAt = Date.now();
     let finished = false;
@@ -1208,221 +1200,129 @@ export class RunnerManager {
       }
     };
 
-    // Runs one streamChat call. Returns the collected tool calls (empty
-    // if the model finished with plain text). Emits assistant tokens and
-    // the final assistant event for this sub-turn.
-    const runOneRound = async (): Promise<
-      { ok: true; toolCalls: OllamaToolCall[]; text: string } | { ok: false; error: string }
-    > => {
-      let acc = '';
-      let pendingToolCalls: OllamaToolCall[] = [];
-      const assistantEventId = randomUUID();
-      let assistantRevision = 0;
-      let streamError: string | null = null;
+    // Mark the start of "this turn" in the transcript — the loop helper
+    // uses this to scrub prior tool-narration from the wire while keeping
+    // anything from this turn forward (narration + nudge system message)
+    // verbatim so the re-run round sees the model's own promise.
+    const turnStartIndex = session.messages.length - 1;
 
-      // Scrub past-turn assistant narration ("I will read X" with no
-      // tool_calls attached) from the wire transcript. Models like
-      // qwen2.5-coder will gleefully continue any pattern they see in
-      // context — once narration appears once in history, it tends to
-      // recur every turn, drowning out the system-prompt instructions.
-      // We only scrub prior turns: anything from this turn forward
-      // (narration + nudge system message) stays on the wire so the
-      // re-run round sees the course-correction context.
-      const priorTurns = session!.messages.slice(0, turnStartIndex);
-      const thisTurn = session!.messages.slice(turnStartIndex);
-      const scrubbedPriorTurns = toolsEnabled
-        ? priorTurns.filter((m) => {
-            if (m.role !== 'assistant') return true;
-            const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
-            if (hasToolCalls) return true;
-            return !looksLikeToolNarration(m.content ?? '');
-          })
-        : priorTurns;
-      const cleanedHistory = [...scrubbedPriorTurns, ...thisTurn];
-      const wireMessages: OllamaChatMessage[] = toolSystemPrompt
-        ? [{ role: 'system', content: toolSystemPrompt }, ...cleanedHistory]
-        : cleanedHistory;
-      await streamChat(
-        { model, messages: wireMessages, signal: controller.signal },
+    // Per-round UI bubble identity — each round needs a fresh
+    // `assistant` event id so the renderer paints a new bubble instead
+    // of mutating the previous round's. The loop helper's `roundStart`
+    // event tells us when to mint a new one.
+    let assistantEventId = randomUUID();
+    let assistantRevision = 0;
+    let postedToolCallsThisRound = false;
+
+    const driveLoop = async () => {
+      const messageCountBefore = session!.messages.length;
+      const outcome = await runOllamaToolLoop(
+        {
+          model,
+          cwd: args.cwd,
+          signal: controller.signal,
+          systemPrompt,
+          messages: session!.messages,
+          turnStartIndex,
+          nudgeOnNarration: toolsEnabled,
+        },
         (ev) => {
-          if (ev.type === 'token') {
-            acc += ev.text;
+          if (ev.type === 'roundStart') {
+            assistantEventId = randomUUID();
+            assistantRevision = 0;
+            postedToolCallsThisRound = false;
+          } else if (ev.type === 'assistantDelta') {
             assistantRevision += 1;
             this.emit({
               type: 'stream',
               conversationId: convId,
-              events: [makeAssistantEvent(model, acc, assistantEventId, assistantRevision)],
+              events: [
+                makeAssistantEvent(model, ev.cumulative, assistantEventId, assistantRevision),
+              ],
             });
-          } else if (ev.type === 'toolCalls') {
-            pendingToolCalls = pendingToolCalls.concat(ev.calls);
-          } else if (ev.type === 'done') {
-            // If this round ends with tool_calls, finalize the assistant
-            // bubble with the tool uses attached so the UI can render
-            // them inline with the intermediate text.
-            if (pendingToolCalls.length > 0) {
+          } else if (ev.type === 'roundComplete') {
+            if (ev.toolCalls.length > 0 && !postedToolCallsThisRound) {
+              // Finalize the bubble with tool_uses attached so the UI
+              // can render the call inline with the intermediate text.
               assistantRevision += 1;
+              postedToolCallsThisRound = true;
               this.emit({
                 type: 'stream',
                 conversationId: convId,
                 events: [
                   makeAssistantEventWithTools(
                     model,
-                    acc,
+                    ev.text,
                     assistantEventId,
                     assistantRevision,
-                    pendingToolCalls,
+                    ev.toolCalls,
                   ),
                 ],
               });
+            } else if (ev.toolCalls.length === 0 && ev.text) {
+              // Final round with no tools — keep finalAssistantText
+              // current for the reviewer hook below.
+              finalAssistantText = ev.text;
+              session!.currentAssistantText = ev.text;
             }
-          } else if (ev.type === 'error') {
-            streamError = ollamaFriendlyError(ev.message);
+          } else if (ev.type === 'toolResult') {
+            this.emit({
+              type: 'stream',
+              conversationId: convId,
+              events: [
+                makeToolResultEvent([
+                  {
+                    id: ev.call.id,
+                    content: ev.result.content,
+                    isError: ev.result.isError,
+                  },
+                ]),
+              ],
+            });
           }
         },
-      ).catch((err: any) => {
-        streamError = err?.message ?? String(err);
-      });
+      );
 
-      if (streamError) return { ok: false, error: streamError };
-
-      // We never send the structured `tools` field, so every tool call
-      // has to come through the content channel. Sniff for our required
-      // <tool_call>{…}</tool_call> wrapper (and bare/fenced JSON as
-      // graceful fallbacks). If we find one, strip it from the visible
-      // bubble so the user sees the cleaned-up reply.
-      let finalText = acc;
-      if (toolsEnabled && pendingToolCalls.length === 0) {
-        const extracted = extractInlineToolCalls(acc);
-        if (extracted.calls.length > 0) {
-          pendingToolCalls = extracted.calls;
-          finalText = extracted.cleanedText;
-          assistantRevision += 1;
-          this.emit({
-            type: 'stream',
-            conversationId: convId,
-            events: [
-              makeAssistantEventWithTools(
-                model,
-                finalText,
-                assistantEventId,
-                assistantRevision,
-                pendingToolCalls,
-              ),
-            ],
-          });
-        }
+      // Sync messageTimestamps to whatever the loop appended. Granular
+      // per-message timestamps aren't load-bearing — these only affect
+      // the relative ordering of replayed rows — so a turn-end Date.now
+      // is fine.
+      while (session!.messageTimestamps.length < session!.messages.length) {
+        session!.messageTimestamps.push(Date.now());
       }
 
-      return { ok: true, toolCalls: pendingToolCalls, text: finalText };
+      if (!outcome.ok) {
+        const friendly = ollamaFriendlyError(outcome.error);
+        this.emit({
+          type: 'stream',
+          conversationId: convId,
+          events: [makeErrorEvent(friendly)],
+        });
+        // Roll back any messages added this turn (including the user
+        // prompt) so a retry doesn't double-count them — matches the
+        // prior single-round behaviour but extended to clean up any
+        // partial tool-call rounds the helper may have pushed before
+        // failing.
+        while (session!.messages.length > messageCountBefore - 1) {
+          session!.messages.pop();
+          session!.messageTimestamps.pop();
+        }
+        finishWith({ err: friendly });
+        return;
+      }
+
+      finishWith();
     };
 
-    // Index of the user message we just pushed — everything before is
-    // "prior turns" (subject to narration scrubbing on the wire), and
-    // everything from this index onward is "this turn" (kept verbatim
-    // so the nudge round sees the model's own promise).
-    const turnStartIndex = session.messages.length - 1;
-
-    // One-shot nudge: if a tool-enabled round ends with no tool call
-    // but the reply looks like the model declared an intent ("I will
-    // read X") and then stopped, we re-prompt once with an explicit
-    // reminder. Capped at one nudge per turn so a model that genuinely
-    // can't comply doesn't loop forever.
-    let nudgedThisTurn = false;
-    const runLoop = async () => {
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-        const res = await runOneRound();
-        if (!res.ok) {
-          this.emit({
-            type: 'stream',
-            conversationId: convId,
-            events: [makeErrorEvent(res.error)],
-          });
-          // Roll back the just-sent user message so the next retry
-          // doesn't double-count it — matches prior behaviour.
-          if (session!.messages[session!.messages.length - 1]?.role === 'user') {
-            session!.messages.pop();
-            session!.messageTimestamps.pop();
-          }
-          finishWith({ err: res.error });
-          return;
-        }
-
-        if (res.toolCalls.length === 0) {
-          if (toolsEnabled && !nudgedThisTurn && looksLikeToolNarration(res.text)) {
-            // Persist the narration so the model sees its own promise
-            // in context, then inject a system-role nudge and re-run.
-            nudgedThisTurn = true;
-            session!.messages.push({ role: 'assistant', content: res.text });
-            session!.messageTimestamps.push(Date.now());
-            session!.messages.push({
-              role: 'system',
-              content:
-                'You described what you would do but did not call a tool. Call the tool now using a <tool_call>{"name":"…","arguments":{…}}</tool_call> block. Do not narrate again — emit only the tool_call.',
-            });
-            session!.messageTimestamps.push(Date.now());
-            continue;
-          }
-          // Clean finish: append the assistant reply to the transcript.
-          if (res.text) {
-            session!.messages.push({ role: 'assistant', content: res.text });
-            session!.messageTimestamps.push(Date.now());
-            finalAssistantText = res.text;
-            session!.currentAssistantText = res.text;
-          }
-          finishWith();
-          return;
-        }
-
-        // Tool-call round — persist the assistant's partial reply (with
-        // tool_calls attached so the transcript keeps the call/result
-        // pairing Ollama expects on replay) and execute each call.
-        session!.messages.push({
-          role: 'assistant',
-          content: res.text,
-          tool_calls: res.toolCalls.map((c) => ({
-            function: { name: c.name, arguments: c.arguments },
-          })),
-        });
-        session!.messageTimestamps.push(Date.now());
-
-        for (const call of res.toolCalls) {
-          const result = executeOllamaTool({
-            name: call.name,
-            arguments: call.arguments,
-            cwd: args.cwd,
-          });
-          // Surface the tool result in the UI the same way the Claude
-          // parser does — as a toolResult event correlated by id.
-          this.emit({
-            type: 'stream',
-            conversationId: convId,
-            events: [
-              makeToolResultEvent([
-                { id: call.id, content: result.content, isError: result.isError },
-              ]),
-            ],
-          });
-          session!.messages.push({
-            role: 'tool',
-            content: result.content,
-            tool_name: call.name,
-          });
-          session!.messageTimestamps.push(Date.now());
-        }
-      }
-
-      // Hit the tool-round cap — the model is likely stuck. Bail with a
-      // visible error rather than looping forever.
-      const capMsg = `Reached tool-call limit (${MAX_TOOL_ROUNDS} rounds) without a final answer.`;
+    void driveLoop().catch((err) => {
+      const message = err?.message ?? String(err);
       this.emit({
         type: 'stream',
         conversationId: convId,
-        events: [makeErrorEvent(capMsg)],
+        events: [makeErrorEvent(message)],
       });
-      finishWith({ err: capMsg });
-    };
-
-    void runLoop();
+      finishWith({ err: message });
+    });
     return { ok: true };
   }
 
@@ -3273,80 +3173,6 @@ function evenlySpreadTimestamps(end: number, count: number): number[] {
     out.push(end - (count - 1 - i) * 1000);
   }
   return out;
-}
-
-/// True iff `tag` is in the curated catalog AND its family is trained on
-/// the Ollama tool-calling protocol. Unknown/custom tags get `false` —
-/// passing `tools` to a model that wasn't trained for them typically
-/// produces garbage or outright JSON-mode refusals.
-function modelSupportsTools(tag: string): boolean {
-  const hit = OLLAMA_CATALOG.find((m) => m.tag === tag);
-  return !!hit?.supportsTools;
-}
-
-/// System prompt prepended on every tool-enabled Ollama call. We embed
-/// the tool schemas directly here (rather than passing `tools` to
-/// Ollama) because Ollama's templating is unreliable for many coder
-/// models — qwen2.5-coder in particular tends to narrate ("I will read
-/// X") without ever emitting a structured tool_call when invoked via
-/// the API field. Putting the schema in-prompt with worked examples
-/// makes the contract deterministic.
-function buildOllamaToolSystemPrompt(cwd: string): string {
-  return [
-    'You are a local coding assistant running inside overcli on the user\'s machine.',
-    `You have real, working access to the user's project directory at: ${cwd}`,
-    '',
-    'AVAILABLE TOOLS (real, working — they read the user\'s actual disk):',
-    '',
-    '  read_file(path: string)',
-    '    Read a UTF-8 text file relative to the project root. Returns up to 256 KB.',
-    '',
-    '  list_dir(path: string)',
-    '    List files and subdirectories under a project-relative path. Use "." for the root.',
-    '',
-    '  grep(pattern: string, path?: string, caseInsensitive?: boolean)',
-    '    Regex-search across the project. `path` defaults to the project root.',
-    '',
-    'TOOL-CALL FORMAT (MANDATORY):',
-    'Whenever you need to use a tool, emit EXACTLY this block — no prose, no markdown fences, just the tag:',
-    '',
-    '<tool_call>',
-    '{"name": "<tool_name>", "arguments": {<json args>}}',
-    '</tool_call>',
-    '',
-    'The wrapper tags and the JSON are BOTH required. Stop generating after </tool_call>; the tool result will be fed back to you on the next turn.',
-    '',
-    'CRITICAL RULES:',
-    '1. When the user asks about files, directories, or code content, you MUST call the appropriate tool. Do NOT describe what you "will" do.',
-    '2. Never narrate ("I will read X", "Let me list Y", "I\'ll check Z", "I will now…"). If you find yourself writing one of those phrases, STOP and emit the <tool_call> block instead.',
-    '3. Never fabricate file names, directory contents, or file content. If you have not called the tool yet, you do not know what is there.',
-    '4. After the tool returns, answer the user\'s question concisely using the real result.',
-    '',
-    'WORKED EXAMPLES:',
-    '',
-    'User: what is in this directory?',
-    'Assistant:',
-    '<tool_call>',
-    '{"name": "list_dir", "arguments": {"path": "."}}',
-    '</tool_call>',
-    '',
-    'User: what does README.md say?',
-    'Assistant:',
-    '<tool_call>',
-    '{"name": "read_file", "arguments": {"path": "README.md"}}',
-    '</tool_call>',
-    '',
-    'User: where do we configure the database URL?',
-    'Assistant:',
-    '<tool_call>',
-    '{"name": "grep", "arguments": {"pattern": "DATABASE_URL", "caseInsensitive": false}}',
-    '</tool_call>',
-    '',
-    'WRONG (do NOT produce output like this):',
-    '"I will read README.md to provide you with its contents."',
-    '"Let me fetch the contents of that file."',
-    '"Sure, I\'ll list the directory."',
-  ].join('\n');
 }
 
 function ollamaFriendlyError(raw: string): string {

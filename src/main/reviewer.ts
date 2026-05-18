@@ -34,7 +34,12 @@ import {
   makeCodexAppServerParserState,
   parseCodexAppServerNotification,
 } from './parsers/codex-app-server';
-import { OllamaChatMessage, streamChat } from './ollama';
+import { OllamaChatMessage } from './ollama';
+import {
+  buildOllamaToolSystemPrompt,
+  modelSupportsTools,
+  runOllamaToolLoop,
+} from './ollamaTools';
 import { resolveSymlinkWritableRoots } from './workspace';
 
 type Emit = (event: MainToRendererEvent) => void;
@@ -811,56 +816,102 @@ export class ReviewerManager {
 
     // Persona, when set, overrides the generic critic system prompt —
     // ollama models stay on-rails better with the same persona text we
-    // give the cloud CLIs, since they're the ones tuned for it.
-    const systemPrompt = args.reviewPersona
+    // give the cloud CLIs, since they're the ones tuned for it. When the
+    // model supports tools, append the tool-protocol prompt so the
+    // reviewer can read_file/list_dir/grep to verify claims — same
+    // capability the cloud reviewers get through their CLIs.
+    const personaSystem = args.reviewPersona
       ? PERSONA_PREAMBLES[args.reviewPersona]
       : buildOllamaReviewSystem();
-    const messages: OllamaChatMessage[] = [
-      { role: 'system', content: systemPrompt },
+    const toolsEnabled = modelSupportsTools(model);
+    const systemPrompt = toolsEnabled
+      ? `${personaSystem}\n\n${buildOllamaToolSystemPrompt(args.cwd)}`
+      : personaSystem;
+
+    // Reviewer transcript stays local to this call — we don't persist
+    // it across rounds the way sendOllama does. The helper appends
+    // assistant/tool messages as it loops; we just drop the array when
+    // the call resolves.
+    const transcript: OllamaChatMessage[] = [
       { role: 'user', content: buildReviewPrompt(args.summary, round, args.reviewPersona ?? null) },
     ];
 
     const controller = new AbortController();
     this.inFlightHttp.set(args.conversationId, controller);
 
-    let acc = '';
+    let visibleText = '';
     let lastEmit = 0;
-    let errorMessage: string | undefined;
+    const toolActivity: string[] = [];
 
-    await streamChat({ model, messages, signal: controller.signal }, (ev) => {
-      if (ev.type === 'token') {
-        acc += ev.text;
-        const now = Date.now();
-        if (now - lastEmit > 100) {
-          lastEmit = now;
-          this.emitReview(args.conversationId, {
-            cardId,
-            info: {
-              backend: args.reviewBackend,
-              text: acc,
-              isRunning: true,
-              startedAt,
-              round,
-              mode,
-            },
-          });
+    const emitProgress = () => {
+      this.emitReview(args.conversationId, {
+        cardId,
+        info: {
+          backend: args.reviewBackend,
+          text: visibleText,
+          isRunning: true,
+          startedAt,
+          round,
+          mode,
+          toolActivity: toolActivity.length > 0 ? [...toolActivity] : undefined,
+        },
+      });
+    };
+
+    const outcome = await runOllamaToolLoop(
+      {
+        model,
+        cwd: args.cwd,
+        signal: controller.signal,
+        systemPrompt,
+        messages: transcript,
+        // No prior turns to scrub — the reviewer transcript starts fresh
+        // each call with just the user prompt at index 0.
+        turnStartIndex: 0,
+        // The reviewer often says "I'll check the diff and report back"
+        // and follows through inside the same paragraph; nudging on
+        // narration would re-prompt it for tool calls when none are
+        // actually needed.
+        nudgeOnNarration: false,
+      },
+      (ev) => {
+        if (ev.type === 'assistantDelta') {
+          visibleText = ev.cumulative;
+          const now = Date.now();
+          if (now - lastEmit > 100) {
+            lastEmit = now;
+            emitProgress();
+          }
+        } else if (ev.type === 'roundComplete') {
+          // Replace any in-progress raw text with the cleaned version
+          // (tool_call JSON stripped). Final round's text is the verdict.
+          visibleText = ev.text;
+        } else if (ev.type === 'toolResult') {
+          const summary = summarizeToolUse(
+            ev.call.name,
+            JSON.stringify(ev.call.arguments),
+          );
+          if (summary) toolActivity.push(summary);
+          emitProgress();
         }
-      } else if (ev.type === 'error') {
-        errorMessage = ev.message;
-      }
-    });
+      },
+    );
 
     this.inFlightHttp.delete(args.conversationId);
 
+    const errorMessage = outcome.ok ? undefined : outcome.error;
+    const finalText = (outcome.ok ? outcome.finalText : visibleText).trim();
+
     const info: ReviewInfo = {
       backend: args.reviewBackend,
-      text: acc.trim(),
+      text: finalText,
       isRunning: false,
       error: errorMessage,
       startedAt,
       round,
       mode,
-      raw: acc.trim() || undefined,
+      raw: finalText || undefined,
+      toolActivity: toolActivity.length > 0 ? toolActivity : undefined,
     };
     this.emitReview(args.conversationId, { cardId, info });
     return info;
