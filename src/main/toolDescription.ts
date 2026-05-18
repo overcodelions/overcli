@@ -31,6 +31,19 @@ export function summarizeToolUse(name: string, inputJSON: string, filePath?: str
   if (name === 'Read') {
     return `• Read ${filePath ?? parsed?.file_path ?? ''}`.trim();
   }
+  // Ollama built-in tools — exposed to local models that support tool
+  // calling. Naming uses the function-style name from the schema rather
+  // than the cloud CLIs' PascalCase.
+  if (name === 'read_file') {
+    return `• Read ${filePath ?? parsed?.path ?? ''}`.trim();
+  }
+  if (name === 'list_dir') {
+    return `• List ${parsed?.path ?? '.'}`.trim();
+  }
+  if (name === 'grep') {
+    const pat = typeof parsed?.pattern === 'string' ? parsed.pattern : '';
+    return `• Grep ${truncate(pat, 80)}`.trim();
+  }
   if (name === 'TodoWrite') {
     const count = Array.isArray(parsed?.todos) ? parsed.todos.length : 0;
     return `• TodoWrite (${count})`;
