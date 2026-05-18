@@ -13,15 +13,33 @@ import { ExplorerPane } from './components/ExplorerPane';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
+import { SubagentDrawer } from './components/SubagentDrawer';
+import { FileEditorPane } from './components/FileEditorPane';
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 520;
+const SUBAGENT_DRAWER_MIN = 320;
+const SUBAGENT_DRAWER_MAX = 820;
+const SUBAGENT_DRAWER_DEFAULT = 480;
+const SIDE_FILE_MIN = 420;
+const SIDE_FILE_MAX = 1000;
+const SIDE_FILE_DEFAULT = 640;
 
 export function App() {
   const init = useStore((s) => s.init);
   const ingest = useStore((s) => s.ingestMainEvent);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const detailMode = useStore((s) => s.detailMode);
+  const subagentDrawerParentId = useStore((s) => s.subagentDrawerParentId);
+  const [subagentDrawerWidth, setSubagentDrawerWidth] = useState(SUBAGENT_DRAWER_DEFAULT);
+  // Side-file pane: when the SubagentDrawer is open, ANY open file
+  // renders here (right of the drawer) instead of inline next to the
+  // conversation. The conversation should never be displaced once
+  // you've committed to the drawer view, so we ignore the trigger
+  // (drawer click, main-transcript click, sheet open — same slot).
+  const openFilePath = useStore((s) => s.openFilePath);
+  const sideFileVisible = !!subagentDrawerParentId && !!openFilePath;
+  const [sideFileWidth, setSideFileWidth] = useState(SIDE_FILE_DEFAULT);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
   const selectedConv = useConversation(selectedConversationId);
@@ -115,6 +133,40 @@ export function App() {
             <WelcomePane />
           )}
         </main>
+        {subagentDrawerParentId && selectedConversationId && (
+          <>
+            <ResizableDivider
+              width={subagentDrawerWidth}
+              onChange={setSubagentDrawerWidth}
+              minWidth={SUBAGENT_DRAWER_MIN}
+              maxWidth={SUBAGENT_DRAWER_MAX}
+              side="right"
+            />
+            <div
+              style={{ width: subagentDrawerWidth }}
+              className="flex-shrink-0 h-full overflow-hidden"
+            >
+              <SubagentDrawer conversationId={selectedConversationId} />
+            </div>
+          </>
+        )}
+        {sideFileVisible && (
+          <>
+            <ResizableDivider
+              width={sideFileWidth}
+              onChange={setSideFileWidth}
+              minWidth={SIDE_FILE_MIN}
+              maxWidth={SIDE_FILE_MAX}
+              side="right"
+            />
+            <div
+              style={{ width: sideFileWidth }}
+              className="flex-shrink-0 h-full overflow-hidden border-l border-card"
+            >
+              <FileEditorPane />
+            </div>
+          </>
+        )}
       </div>
       <SheetHost />
     </div>
