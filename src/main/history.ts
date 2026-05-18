@@ -242,14 +242,25 @@ export function parseClaudeHistoryLine(line: string): StreamEvent[] {
   const tsRaw = json.timestamp ?? json.time ?? Date.now();
   const timestamp = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw) || Date.now();
   const type = json.type ?? json.message?.type;
+  // Sidechain entries in the JSONL transcript came from a Task/Agent
+  // subagent. Tag them so the renderer routes to the SubagentDrawer
+  // instead of appending into the main transcript. The transcript
+  // lacks an explicit parent_tool_use_id on each row, so we coalesce
+  // under a single synthetic key until we wire a proper parent link.
+  const parentToolUseId: string | undefined =
+    typeof json.parent_tool_use_id === 'string' && json.parent_tool_use_id
+      ? json.parent_tool_use_id
+      : json.isSidechain
+        ? '__sidechain__'
+        : undefined;
   if (type === 'user' && typeof json.message?.content === 'string') {
     const content = json.message.content;
     if (json.isMeta === true) {
       const match = content.match(/^\s*<system-reminder>([\s\S]*?)<\/system-reminder>\s*$/);
       const text = match ? match[1].trim() : content;
-      return [event({ type: 'metaReminder', text }, trimmed, timestamp)];
+      return [tag(event({ type: 'metaReminder', text }, trimmed, timestamp), parentToolUseId)];
     }
-    return [event({ type: 'localUser', text: content }, trimmed, timestamp)];
+    return [tag(event({ type: 'localUser', text: content }, trimmed, timestamp), parentToolUseId)];
   }
   if (type === 'user' && Array.isArray(json.message?.content)) {
     // tool_result blocks
@@ -260,7 +271,7 @@ export function parseClaudeHistoryLine(line: string): StreamEvent[] {
         content: claudeToolResultText(b.content),
         isError: !!b.is_error,
       }));
-    if (results.length) return [event({ type: 'toolResult', results }, trimmed, timestamp)];
+    if (results.length) return [tag(event({ type: 'toolResult', results }, trimmed, timestamp), parentToolUseId)];
     return [];
   }
   if (type === 'assistant' && json.message?.content) {
@@ -284,19 +295,33 @@ export function parseClaudeHistoryLine(line: string): StreamEvent[] {
         });
       }
     }
+    const usageOnMsg = json.message?.usage;
+    const assistantUsage =
+      usageOnMsg && typeof usageOnMsg === 'object'
+        ? {
+            inputTokens: numberOrZero(usageOnMsg.input_tokens),
+            outputTokens: numberOrZero(usageOnMsg.output_tokens),
+            cacheReadInputTokens: numberOrZero(usageOnMsg.cache_read_input_tokens),
+            cacheCreationInputTokens: numberOrZero(usageOnMsg.cache_creation_input_tokens),
+          }
+        : undefined;
     const events: StreamEvent[] = [
-      event(
-        {
-          type: 'assistant',
-          info: {
-            model: json.message.model ?? null,
-            text: textBlocks.join(''),
-            toolUses,
-            thinking,
+      tag(
+        event(
+          {
+            type: 'assistant',
+            info: {
+              model: json.message.model ?? null,
+              text: textBlocks.join(''),
+              toolUses,
+              thinking,
+              ...(assistantUsage ? { usage: assistantUsage } : {}),
+            },
           },
-        },
-        trimmed,
-        timestamp,
+          trimmed,
+          timestamp,
+        ),
+        parentToolUseId,
       ),
     ];
     // Synthesize a result event from message.usage so TurnCaption can
@@ -316,19 +341,22 @@ export function parseClaudeHistoryLine(line: string): StreamEvent[] {
       const hasUsage = Object.values(modelUsage[model]).some((n) => n > 0);
       if (hasUsage) {
         events.push(
-          event(
-            {
-              type: 'result',
-              info: {
-                subtype: 'success',
-                isError: false,
-                durationMs: 0,
-                totalCostUSD: 0,
-                modelUsage,
+          tag(
+            event(
+              {
+                type: 'result',
+                info: {
+                  subtype: 'success',
+                  isError: false,
+                  durationMs: 0,
+                  totalCostUSD: 0,
+                  modelUsage,
+                },
               },
-            },
-            trimmed,
-            timestamp + 1,
+              trimmed,
+              timestamp + 1,
+            ),
+            parentToolUseId,
           ),
         );
       }
@@ -781,4 +809,9 @@ function geminiHistoryToolResultText(result: unknown): string | null {
 
 function event(kind: StreamEventKind, raw: string, timestamp: number): StreamEvent {
   return { id: randomUUID(), timestamp, raw, kind, revision: 0 };
+}
+
+function tag(ev: StreamEvent, parentToolUseId: string | undefined): StreamEvent {
+  if (parentToolUseId) ev.parentToolUseId = parentToolUseId;
+  return ev;
 }

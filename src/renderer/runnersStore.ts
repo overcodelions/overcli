@@ -23,6 +23,13 @@ import type { StreamEvent, UUID } from '@shared/types';
 /// Per-conversation runtime state. Keyed off conversation id.
 export interface RunnerState {
   events: StreamEvent[];
+  /// Nested events emitted by Task/Agent subagents, bucketed by the
+  /// parent Task tool_use id. The main `events` array no longer
+  /// contains them — the inline ToolUseCard reads the bucket length
+  /// for a live event count and the SubagentDrawer renders the full
+  /// nested stream from here. Insertion order in each bucket matches
+  /// arrival order, just like `events`.
+  subagentEvents: Record<string, StreamEvent[]>;
   isRunning: boolean;
   activityLabel?: string;
   errorMessage?: string;
@@ -48,6 +55,7 @@ export interface RunnerState {
 export function newRunnerState(): RunnerState {
   return {
     events: [],
+    subagentEvents: {},
     isRunning: false,
     pendingLocalUserIds: new Set(),
     currentModel: '',
@@ -110,6 +118,28 @@ export function useRunner(id: UUID | null | undefined): RunnerState | undefined 
 
 export function useRunnerEvents(id: UUID | null | undefined): StreamEvent[] | null {
   return useRunnersStore((s) => (id ? s.runners[id]?.events ?? null : null));
+}
+
+/// Events emitted by a specific Task/Agent subagent. Returns an empty
+/// array (stable identity) when the subagent has not produced anything
+/// yet so consumers don't fight referential-equality churn.
+const EMPTY_SUBAGENT_EVENTS: StreamEvent[] = [];
+export function useSubagentEvents(
+  id: UUID | null | undefined,
+  parentToolUseId: string | null | undefined,
+): StreamEvent[] {
+  return useRunnersStore((s) => {
+    if (!id || !parentToolUseId) return EMPTY_SUBAGENT_EVENTS;
+    return s.runners[id]?.subagentEvents[parentToolUseId] ?? EMPTY_SUBAGENT_EVENTS;
+  });
+}
+
+/// Parent tool-use ids of every subagent that has emitted at least one
+/// event in this conversation. Used by SubagentDrawer to render tabs.
+export function useSubagentKeys(id: UUID | null | undefined): string[] {
+  return useRunnersStore(
+    useShallow((s) => (id ? Object.keys(s.runners[id]?.subagentEvents ?? {}) : [])),
+  );
 }
 
 export function useRunnerIsRunning(id: UUID | null | undefined): boolean {

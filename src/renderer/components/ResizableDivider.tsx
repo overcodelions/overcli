@@ -70,13 +70,20 @@ export function ResizableDivider({
         p.onChange(reset);
         p.onCommit?.(reset);
       }}
-      className="group relative flex-shrink-0 w-[4px] cursor-col-resize select-none"
+      className="group relative flex-shrink-0 w-[4px] cursor-col-resize select-none z-10"
       title="Drag to resize · double-click to reset"
     >
-      {/* Wider invisible hit target so grabbing is forgiving. */}
-      <div className="absolute inset-y-0 -left-1 -right-1" />
-      {/* Visual line, subtle at rest, accent on hover/active. */}
-      <div className="absolute inset-y-0 left-[1px] w-[2px] bg-transparent group-hover:bg-accent/50 transition-colors" />
+      {/* Hit target — extends past the 4px visible bar so grabbing
+          forgives near-misses. Carries cursor-col-resize itself
+          because the parent's 4px box is too narrow to land on
+          reliably, and z-10 keeps it above neighbor panes that
+          would otherwise eat the hover. */}
+      <div className="absolute inset-y-0 -left-2 -right-2 cursor-col-resize z-10" />
+      {/* Visible line. Subtle at rest so it doesn't compete with
+          conversation chrome, brighter on hover/drag so the user
+          can see the grab zone. Always rendered (no bg-transparent)
+          so the divider is findable without hover-discovery. */}
+      <div className="absolute inset-y-0 left-[1px] w-[2px] bg-card group-hover:bg-accent transition-colors pointer-events-none" />
     </div>
   );
 }

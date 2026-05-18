@@ -1,6 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ToolResultBlock, ToolUseBlock } from '@shared/types';
 import { useStore } from '../store';
+import { useInsideSubagentDrawer, useOpenFile } from '../openFile';
+import { useSubagentEvents } from '../runnersStore';
 import { Diff } from './DiffView';
 
 /// Generic card for a single tool_use block. Specialized renderings (file
@@ -20,7 +22,8 @@ export function ToolUseCard({
   result?: ToolResultBlock;
   compact?: boolean;
 }) {
-  const openFile = useStore((s) => s.openFile);
+  const openFile = useOpenFile();
+  const insideDrawer = useInsideSubagentDrawer();
   const args = parseInput(use.inputJSON);
 
   if (use.name === 'Edit') {
@@ -36,7 +39,10 @@ export function ToolUseCard({
     return <FileReadCard use={use} args={args} result={result} onOpen={(p) => openFile(p)} />;
   }
   if (use.name === 'Bash') {
-    return <BashCard args={args} result={result} compact={compact} />;
+    // The drawer is narrow; collapse Bash to its one-line header so the
+    // subagent transcript stays scannable. Main-conversation cards keep
+    // the full command + expandable output behavior.
+    return <BashCard args={args} result={result} compact={compact || insideDrawer} />;
   }
   if (use.name === 'TodoWrite') {
     return <TodoWriteCard args={args} />;
@@ -47,7 +53,223 @@ export function ToolUseCard({
   if (use.name === 'ExitPlanMode') {
     return <ExitPlanModeCard use={use} args={args} />;
   }
+  if (use.name === 'Task' || use.name === 'Agent') {
+    return <SubagentCard use={use} args={args} result={result} />;
+  }
   return <GenericToolCard use={use} />;
+}
+
+/// Inline card for a Task/Agent tool call. The subagent's own stream
+/// (assistant text, nested tool uses, tool results) is captured in a
+/// per-parent bucket on the renderer's runner state; we show a compact
+/// summary here and route the user to the SubagentDrawer for the full
+/// transcript. Live event-count badge gives a "agent is doing
+/// something" pulse without flooding the main conversation.
+function SubagentCard({
+  use,
+  args,
+  result,
+}: {
+  use: ToolUseBlock;
+  args: Record<string, any>;
+  result?: ToolResultBlock;
+}) {
+  const conversationId = useStore((s) => s.selectedConversationId);
+  const openSubagentDrawer = useStore((s) => s.openSubagentDrawer);
+  const events = useSubagentEvents(conversationId, use.id);
+  const subtype: string = typeof args.subagent_type === 'string' ? args.subagent_type : '';
+  const description: string = typeof args.description === 'string' ? args.description : '';
+  const summary = summarizeSubagentEvents(events);
+  const isDone = !!result;
+  // Re-render once a second while the agent is running so the elapsed
+  // counter ticks up. No-op when the agent has finished.
+  const now = useNow(!isDone && events.length > 0, 1000);
+  const elapsedMs =
+    summary.startedAt > 0
+      ? (isDone ? summary.endedAt || now : now) - summary.startedAt
+      : 0;
+  return (
+    <button
+      onClick={() => openSubagentDrawer(use.id)}
+      className="w-full text-left rounded-lg border border-indigo-500/35 bg-indigo-500/10 dark:bg-indigo-500/[0.10] text-xs hover:bg-indigo-500/20 transition-colors"
+    >
+      <div className="flex flex-col gap-0.5 px-3 py-1.5">
+        <div className="flex items-center gap-2">
+          <span className="text-indigo-400 text-[10px] uppercase tracking-wide font-medium">
+            Agent
+          </span>
+          {subtype && (
+            <span className="text-ink text-[11px] font-medium">{subtype}</span>
+          )}
+          {description && (
+            <span className="text-ink-faint text-[10px] truncate flex-1">
+              {description}
+            </span>
+          )}
+          <span className="ml-auto text-[10px] text-indigo-300 flex items-center gap-1.5">
+            <span>{isDone ? '✓' : events.length > 0 ? '●' : '…'}</span>
+            {events.length > 0 ? (
+              <>
+                <span>{summary.toolUseCount} tool{summary.toolUseCount === 1 ? '' : 's'}</span>
+                {summary.totalTokens > 0 && (
+                  <span className="text-ink-faint">· {formatTokens(summary.totalTokens)} tok</span>
+                )}
+                {elapsedMs > 0 && (
+                  <span className="text-ink-faint">· {formatElapsed(elapsedMs)}</span>
+                )}
+              </>
+            ) : (
+              <span>starting…</span>
+            )}
+          </span>
+          <span className="text-[10px] text-ink-faint">open ▸</span>
+        </div>
+        {/* Currently doing — the most recent tool call, summarized.
+            Mirrors Claude CLI's "Searching for 4 patterns..." line. */}
+        {summary.currentActivity && (
+          <div className="text-[10px] text-ink-faint truncate pl-[3.25rem]">
+            <span className="text-indigo-300/70">{summary.currentActivity.name}</span>
+            {summary.currentActivity.detail && (
+              <span> · {summary.currentActivity.detail}</span>
+            )}
+          </div>
+        )}
+      </div>
+    </button>
+  );
+}
+
+/// Drives an interval re-render only while needed. Pass `active=false`
+/// (e.g. when the agent has completed) to halt the timer and stop
+/// scheduling unnecessary React work.
+function useNow(active: boolean, periodMs: number): number {
+  const [tick, setTick] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setTick(Date.now()), periodMs);
+    return () => clearInterval(id);
+  }, [active, periodMs]);
+  return tick;
+}
+
+interface SubagentSummary {
+  toolUseCount: number;
+  totalTokens: number;
+  /// Most recent tool call, summarized as one short line ("Bash: …",
+  /// "Read /path/to/file", "Grep \"pattern\""). Renders under the
+  /// agent name to mirror Claude CLI's live activity preview.
+  currentActivity: { name: string; detail: string } | null;
+  /// Earliest event timestamp seen for this subagent (ms). Drives the
+  /// elapsed-time counter on the inline card.
+  startedAt: number;
+  /// Latest event timestamp. The card uses this as the "ended" time
+  /// once the parent Task tool_result has landed; while running the
+  /// card swaps to `Date.now()` instead so the counter keeps ticking.
+  endedAt: number;
+}
+
+/// Walk a subagent's event bucket and aggregate progress / counters.
+/// Cache tokens are excluded from the headline total since they're not
+/// what a user means by "tokens used" — input + output matches Claude
+/// CLI's number. Tool-use counting dedupes by event id so a partial
+/// snapshot + final assistant don't double-count.
+function summarizeSubagentEvents(
+  events: { id: string; timestamp: number; kind: { type: string; info?: any; results?: any[] } }[],
+): SubagentSummary {
+  const lastById = new Map<string, any>();
+  let startedAt = 0;
+  let endedAt = 0;
+  for (const e of events) {
+    if (startedAt === 0 || e.timestamp < startedAt) startedAt = e.timestamp;
+    if (e.timestamp > endedAt) endedAt = e.timestamp;
+    if (e.kind.type !== 'assistant') continue;
+    lastById.set(e.id, e.kind.info);
+  }
+  let toolUseCount = 0;
+  let totalTokens = 0;
+  let latestUse: { name: string; inputJSON: string } | null = null;
+  // Iterate in event arrival order so the last toolUse we see is the
+  // newest. `lastById.values()` preserves insertion order (Map spec).
+  for (const info of lastById.values()) {
+    const uses = Array.isArray(info?.toolUses) ? info.toolUses : [];
+    toolUseCount += uses.length;
+    if (uses.length > 0) {
+      const u = uses[uses.length - 1];
+      latestUse = { name: u.name, inputJSON: u.inputJSON };
+    }
+    if (info?.usage) {
+      totalTokens += (info.usage.inputTokens ?? 0) + (info.usage.outputTokens ?? 0);
+    }
+  }
+  return {
+    toolUseCount,
+    totalTokens,
+    currentActivity: latestUse ? toolActivityLine(latestUse) : null,
+    startedAt,
+    endedAt,
+  };
+}
+
+/// Produce the "currently doing" one-liner from a tool call. Each tool
+/// gets a hand-picked detail field (file_path for Read, command for
+/// Bash, pattern for Grep, …). Unknown tools fall back to truncating
+/// the raw input JSON so the line is never blank.
+function toolActivityLine(use: { name: string; inputJSON: string }): { name: string; detail: string } {
+  let input: any = {};
+  try {
+    input = JSON.parse(use.inputJSON);
+  } catch {
+    // ignore — incomplete partial JSON during streaming
+  }
+  switch (use.name) {
+    case 'Bash':
+      return { name: 'Bash', detail: trimDetail(input.description || input.command || '') };
+    case 'Read':
+      return { name: 'Read', detail: trimDetail(input.file_path || '') };
+    case 'Write':
+      return { name: 'Write', detail: trimDetail(input.file_path || '') };
+    case 'Edit':
+    case 'MultiEdit':
+      return { name: use.name, detail: trimDetail(input.file_path || '') };
+    case 'Grep':
+      return { name: 'Grep', detail: input.pattern ? `"${trimDetail(input.pattern)}"` : '' };
+    case 'Glob':
+      return { name: 'Glob', detail: trimDetail(input.pattern || '') };
+    case 'WebFetch':
+      return { name: 'WebFetch', detail: trimDetail(input.url || '') };
+    case 'WebSearch':
+      return { name: 'WebSearch', detail: input.query ? `"${trimDetail(input.query)}"` : '' };
+    case 'TodoWrite':
+      return { name: 'TodoWrite', detail: `${Array.isArray(input.todos) ? input.todos.length : 0} items` };
+    case 'Task':
+    case 'Agent':
+      return { name: 'Agent', detail: trimDetail(input.subagent_type || input.description || '') };
+    default:
+      return { name: use.name, detail: trimDetail(use.inputJSON.replace(/^\{|\}$/g, '')) };
+  }
+}
+
+function trimDetail(s: string): string {
+  const trimmed = s.replace(/\s+/g, ' ').trim();
+  return trimmed.length > 60 ? trimmed.slice(0, 57) + '…' : trimmed;
+}
+
+function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return `${min}m ${sec}s`;
+  const hr = Math.floor(min / 60);
+  return `${hr}h ${min % 60}m`;
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return `${n}`;
 }
 
 function StatusBadge({ result }: { result?: ToolResultBlock }) {

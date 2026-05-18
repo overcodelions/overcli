@@ -3,6 +3,7 @@ import { AssistantEventInfo, ToolResultBlock, ToolUseBlock } from '@shared/types
 import { backendColor, backendFromModel, shortModel } from '../theme';
 import { Markdown } from './Markdown';
 import { useStore } from '../store';
+import { useOpenFile } from '../openFile';
 import { ToolUseCard } from './ToolUseCard';
 
 /// Tool names that must stay visible when tool activity is hidden,
@@ -10,16 +11,19 @@ import { ToolUseCard } from './ToolUseCard';
 const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 /// Tool names whose cards stay visible even when tool activity is hidden
-/// — edits and writes are meaningful output, and TodoWrite is live state
-/// the user is tracking against, not tool noise. Keep in sync with
-/// PERSISTENT_TOOLS in ChatView.tsx.
-const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
+/// — edits and writes are meaningful output, TodoWrite is live state the
+/// user is tracking against, and Task/Agent dispatches are the inline
+/// SubagentCard, which is the user's only handle to open the drawer and
+/// see what the subagent is doing. Keep in sync with PERSISTENT_TOOLS
+/// in ChatView.tsx.
+const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent']);
 
 export function AssistantBubble({
   info,
   toolResultIndex,
   endorsed,
   endorsementTint,
+  forceShowTools,
 }: {
   info: AssistantEventInfo;
   toolResultIndex?: Map<string, ToolResultBlock>;
@@ -28,9 +32,15 @@ export function AssistantBubble({
   /// of a completed reviewer round.
   endorsed?: boolean;
   endorsementTint?: string;
+  /// Bypass the global `showToolActivity` toggle and render every
+  /// tool_use card. Used by SubagentDrawer — the whole point of
+  /// opening that drawer is to inspect the agent's tool calls, so
+  /// hiding them based on the chat-level toggle would be useless.
+  forceShowTools?: boolean;
 }) {
-  const openFile = useStore((s) => s.openFile);
-  const showToolActivity = useStore((s) => s.showToolActivity);
+  const openFile = useOpenFile();
+  const showToolActivityGlobal = useStore((s) => s.showToolActivity);
+  const showToolActivity = forceShowTools || showToolActivityGlobal;
   const [copied, setCopied] = useState<'plain' | 'raw' | null>(null);
   const renderedRef = useRef<HTMLDivElement>(null);
   const backend = backendFromModel(info.model);
