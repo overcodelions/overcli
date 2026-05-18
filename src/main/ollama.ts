@@ -277,9 +277,9 @@ export const OLLAMA_CATALOG: RecommendedModel[] = [
   { tag: 'phi3.5:3.8b', displayName: 'Phi 3.5 3.8B', sizeGB: 2.2, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2024-08' },
 
   // --- Google (US) ---
-  { tag: 'gemma4:31b', displayName: 'Gemma 4 31B', sizeGB: 20.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04' },
-  { tag: 'gemma4:26b', displayName: 'Gemma 4 26B', sizeGB: 18.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Mixture-of-experts: 3.8B active params out of ~25B total.' },
-  { tag: 'gemma4:e4b', displayName: 'Gemma 4 E4B', sizeGB: 9.6, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 4.5B effective params.' },
+  { tag: 'gemma4:31b', displayName: 'Gemma 4 31B', sizeGB: 20.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', supportsTools: true },
+  { tag: 'gemma4:26b', displayName: 'Gemma 4 26B', sizeGB: 18.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Mixture-of-experts: 3.8B active params out of ~25B total.', supportsTools: true },
+  { tag: 'gemma4:e4b', displayName: 'Gemma 4 E4B', sizeGB: 9.6, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 4.5B effective params.', supportsTools: true },
   { tag: 'gemma4:e2b', displayName: 'Gemma 4 E2B', sizeGB: 7.2, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 2.3B effective params.' },
   { tag: 'gemma3:27b', displayName: 'Gemma 3 27B', sizeGB: 17.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
   { tag: 'gemma3:12b', displayName: 'Gemma 3 12B', sizeGB: 8.1, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
