@@ -365,7 +365,7 @@ describe('parseClaudeLine', () => {
     expect(parseClaudeLine(line)).toBeNull();
   });
 
-  it('ignores subagent stream_events so main-agent state is not reset mid-turn', () => {
+  it('routes subagent stream_events into a per-parent sub-state without disturbing main-agent state', () => {
     const state = makeClaudeParserState();
     // Main agent starts a message and opens a text block.
     parseClaudeLine(
@@ -386,27 +386,94 @@ describe('parseClaudeLine', () => {
     const mainEventId = state.inFlightEventId;
     expect(mainEventId).not.toBeNull();
 
-    // A subagent's message_start arrives on the same transport with
-    // parent_tool_use_id set. Folding it in would reset inFlightEventId.
+    // Subagent message_start arrives on the same transport with
+    // parent_tool_use_id set. Goes into its own sub-state.
     parseClaudeLine(
       JSON.stringify({
         type: 'stream_event',
         parent_tool_use_id: 'toolu_abc',
-        event: { type: 'message_start', message: {} },
+        event: { type: 'message_start', message: { model: 'claude-haiku' } },
       }),
       state,
     );
     expect(state.inFlightEventId).toBe(mainEventId);
+    const sub = state.subagents.get('toolu_abc');
+    expect(sub).toBeDefined();
+    expect(sub!.inFlightEventId).not.toBeNull();
+    expect(sub!.inFlightEventId).not.toBe(mainEventId);
 
-    // Same holds for isSidechain-tagged lines (Claude Code's sidechain marker).
+    // Subagent emits a content block — snapshot event should be tagged
+    // with parentToolUseId so the renderer knows where to park it.
+    const snap = parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        parent_tool_use_id: 'toolu_abc',
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'hi' } },
+      }),
+      state,
+    );
+    expect(snap?.parentToolUseId).toBe('toolu_abc');
+    if (snap?.kind.type !== 'assistant') throw new Error('expected assistant snapshot');
+    expect(snap.kind.info.text).toBe('hi');
+
+    // Main agent's state still untouched.
+    expect(state.inFlightEventId).toBe(mainEventId);
+  });
+
+  it('keeps parallel subagents in separate sub-states', () => {
+    const state = makeClaudeParserState();
     parseClaudeLine(
       JSON.stringify({
         type: 'stream_event',
-        isSidechain: true,
+        parent_tool_use_id: 'tool_a',
         event: { type: 'message_start', message: {} },
       }),
       state,
     );
-    expect(state.inFlightEventId).toBe(mainEventId);
+    parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        parent_tool_use_id: 'tool_b',
+        event: { type: 'message_start', message: {} },
+      }),
+      state,
+    );
+    const a = state.subagents.get('tool_a')!;
+    const b = state.subagents.get('tool_b')!;
+    expect(a.inFlightEventId).not.toBeNull();
+    expect(b.inFlightEventId).not.toBeNull();
+    expect(a.inFlightEventId).not.toBe(b.inFlightEventId);
+  });
+
+  it('tags subagent consolidated assistant lines with parentToolUseId', () => {
+    const state = makeClaudeParserState();
+    const evt = parseClaudeLine(
+      JSON.stringify({
+        type: 'assistant',
+        parent_tool_use_id: 'tool_a',
+        message: {
+          model: 'claude-haiku',
+          content: [{ type: 'text', text: 'done' }],
+        },
+      }),
+      state,
+    );
+    expect(evt?.parentToolUseId).toBe('tool_a');
+    if (evt?.kind.type !== 'assistant') throw new Error();
+    expect(evt.kind.info.text).toBe('done');
+  });
+
+  it('buckets isSidechain lines under a synthetic key', () => {
+    const state = makeClaudeParserState();
+    const evt = parseClaudeLine(
+      JSON.stringify({
+        type: 'stream_event',
+        isSidechain: true,
+        event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'x' } },
+      }),
+      state,
+    );
+    expect(evt?.parentToolUseId).toBe('__sidechain__');
+    expect(state.inFlightEventId).toBeNull();
   });
 });
