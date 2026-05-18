@@ -20,6 +20,13 @@ const CHAT_MIN = 360;
 export function ConversationPane() {
   const convId = useStore((s) => s.selectedConversationId);
   const openFilePath = useStore((s) => s.openFilePath);
+  // The file editor sits next to the conversation when the subagent
+  // drawer is closed. When the drawer is open, the editor moves to
+  // the far right (mounted by App.tsx) so the conversation isn't
+  // displaced. We suppress this inline slot in that case regardless
+  // of who triggered the open — drawer-side click, main-transcript
+  // click, or sheet — so file panes don't fight for the same gap.
+  const subagentDrawerOpen = useStore((s) => !!s.subagentDrawerParentId);
   // When `openExplorer` is called (from a project/workspace row or the
   // conversation header's folder icon) it sets `explorerRootPath`
   // without touching `detailMode` — that's our signal to mount the
@@ -80,7 +87,7 @@ export function ConversationPane() {
 
   if (!convId) return null;
   const explorerOpen = !!explorerRootPath;
-  const editorVisible = explorerOpen || !!openFilePath;
+  const editorVisible = explorerOpen || (!!openFilePath && !subagentDrawerOpen);
   const convBackend = conv?.primaryBackend;
   const isOllamaConv = convBackend === 'ollama';
   const showOllamaWarning =

@@ -19,6 +19,7 @@ describe('uiSliceInitialState', () => {
     expect(uiSliceInitialState.sidebarVisible).toBe(true);
     expect(uiSliceInitialState.openFilePath).toBeNull();
     expect(uiSliceInitialState.showToolActivity).toBe(false);
+    expect(uiSliceInitialState.subagentDrawerParentId).toBeNull();
   });
 });
 
@@ -79,5 +80,17 @@ describe('createUiSlice', () => {
     const { state, slice } = makeStub();
     slice.setOpenFileMode('preview');
     expect(state.openFileMode).toBe('preview');
+  });
+
+  it('openSubagentDrawer / closeSubagentDrawer toggle the right-drawer target', () => {
+    const { state, slice } = makeStub();
+    expect(state.subagentDrawerParentId).toBeNull();
+    slice.openSubagentDrawer('toolu_abc');
+    expect(state.subagentDrawerParentId).toBe('toolu_abc');
+    // Reopening with a different parent id switches the focus rather than stacking.
+    slice.openSubagentDrawer('toolu_def');
+    expect(state.subagentDrawerParentId).toBe('toolu_def');
+    slice.closeSubagentDrawer();
+    expect(state.subagentDrawerParentId).toBeNull();
   });
 });

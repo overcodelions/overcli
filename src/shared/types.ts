@@ -59,6 +59,12 @@ export interface AssistantEventInfo {
   /// non-partial `assistant` event will do once anyway. The renderer still
   /// shows partial events — that's the whole point.
   isPartial?: boolean;
+  /// Token usage reported on this assistant message. Pulled from the
+  /// CLI's `message.usage` block on the consolidated `assistant` line
+  /// (not on per-token deltas). The SubagentDrawer's inline card sums
+  /// these across a subagent's stream to surface "12 tool uses · 78k
+  /// tokens"-style totals. Absent on streaming snapshots.
+  usage?: ModelUsage;
 }
 
 export interface SystemInitInfo {
@@ -223,6 +229,12 @@ export interface StreamEvent {
   /// Bumps on in-place mutation of the partial-assistant slot so the renderer
   /// can tell a row changed even when its id didn't.
   revision: number;
+  /// Set when this event came from a Task/Agent subagent rather than the
+  /// main turn — value is the parent Task tool_use id from Claude's
+  /// transport. The renderer routes these into a side store keyed by
+  /// this id so the right-drawer SubagentDrawer can show the nested
+  /// stream while the main transcript stays clean.
+  parentToolUseId?: string;
   /// Set when the event came from the rebound reviewer rather than the
   /// primary backend. Lets consumers that only care about primary output
   /// (reviewer-digest bookkeeping, fork preamble, last-assistant-text
