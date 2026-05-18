@@ -34,6 +34,15 @@ export interface ClaudeParserState {
   /// doesn't thrash the renderer. Flush points (block start/stop,
   /// message stop) bypass the throttle so UI moments aren't missed.
   lastSnapshotAt: number;
+  /// Per-subagent parser sub-state, keyed by the parent Task tool_use id.
+  /// Claude Code's transport interleaves Task/Agent subagent
+  /// stream_event / assistant / user lines with `parent_tool_use_id`
+  /// set on the outer JSON. Each subagent gets its own independent
+  /// snapshot state so its message_start doesn't clobber the main
+  /// agent's in-flight id. Events emitted from a sub-state are tagged
+  /// with `parentToolUseId` by the dispatcher so the renderer can
+  /// route them to the right drawer.
+  subagents: Map<string, ClaudeParserState>;
 }
 
 /// Max snapshots/sec emitted for streaming text — enough to look live
@@ -48,7 +57,25 @@ export function makeClaudeParserState(): ClaudeParserState {
     blocks: new Map(),
     hasOpaqueReasoning: false,
     lastSnapshotAt: 0,
+    subagents: new Map(),
   };
+}
+
+/// Extract the parent Task tool_use id from a raw Claude transport line.
+/// Subagent lines carry either `parent_tool_use_id` (CLI stream-json),
+/// `parentToolUseId` (camelCase variant) or `isSidechain: true` (the
+/// Claude Code stable flag with no id). When only the boolean is set we
+/// fall back to a synthetic key so all sidechain output coalesces into
+/// one bucket rather than mixing into main-agent state.
+function extractParentToolUseId(json: any): string | undefined {
+  if (typeof json?.parent_tool_use_id === 'string' && json.parent_tool_use_id) {
+    return json.parent_tool_use_id;
+  }
+  if (typeof json?.parentToolUseId === 'string' && json.parentToolUseId) {
+    return json.parentToolUseId;
+  }
+  if (json?.isSidechain) return '__sidechain__';
+  return undefined;
 }
 
 export function claudeToolResultText(raw: unknown): string {
@@ -80,6 +107,32 @@ export function parseClaudeLine(line: string, state?: ClaudeParserState): Stream
   }
   const type = json.type;
 
+  // Subagent (Task/Agent) lines carry parent_tool_use_id / isSidechain
+  // on the outer JSON. Route them to a per-subagent parser sub-state so
+  // their message_start doesn't reset the main agent's inFlightEventId,
+  // and tag the emitted event so the renderer can park it in the
+  // SubagentDrawer instead of the main transcript.
+  const parentId = extractParentToolUseId(json);
+  if (parentId && state && (type === 'stream_event' || type === 'assistant' || type === 'user')) {
+    let sub = state.subagents.get(parentId);
+    if (!sub) {
+      sub = makeClaudeParserState();
+      state.subagents.set(parentId, sub);
+    }
+    const evt = parseClaudeLineInto(json, trimmed, sub);
+    if (evt) evt.parentToolUseId = parentId;
+    return evt;
+  }
+
+  return parseClaudeLineInto(json, trimmed, state);
+}
+
+function parseClaudeLineInto(
+  json: any,
+  trimmed: string,
+  state?: ClaudeParserState,
+): StreamEvent | null {
+  const type = json.type;
   switch (type) {
     case 'system': {
       if (json.subtype === 'init') {
@@ -121,17 +174,9 @@ export function parseClaudeLine(line: string, state?: ClaudeParserState): Stream
     }
     case 'stream_event': {
       if (!state) return null;
-      // Subagents emitted by Task/Agent tools stream their own deltas
-      // back on the same JSONL with `parent_tool_use_id` set. If we
-      // folded them into main-agent state the subagent's
-      // `message_start` would reset inFlightEventId, orphaning the
-      // main agent's partial snapshot so the final consolidated
-      // `assistant` line can't reuse its id — leaving a stale tool
-      // card with empty input stuck in the transcript. Drop these
-      // until we properly tail subagent streams.
-      if (json.parent_tool_use_id || json.parentToolUseId || json.isSidechain) {
-        return null;
-      }
+      // parseClaudeLine has already redirected subagent lines into a
+      // per-parent sub-state, so `state` here is either the main-agent
+      // state or a subagent's own state — fold deltas into whichever.
       return handleStreamEvent(json.event ?? {}, state, trimmed);
     }
     case 'assistant': {
@@ -187,6 +232,7 @@ export function parseClaudeLine(line: string, state?: ClaudeParserState): Stream
             toolUses,
             thinking,
             hasOpaqueReasoning,
+            usage: extractUsage(msg.usage),
           },
         },
         revision: 0,
@@ -419,4 +465,29 @@ function eventFromKind(kind: StreamEventKind, raw: string): StreamEvent {
     kind,
     revision: 0,
   };
+}
+
+/// Normalize Anthropic's snake-case `usage` block into the camelCase
+/// ModelUsage shape the rest of the app uses. Returns undefined when
+/// the source is missing or has no token counts at all — so consumers
+/// can short-circuit instead of summing a bunch of zeros.
+function extractUsage(usage: any): import('../../shared/types').ModelUsage | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const inputTokens = numOrZero(usage.input_tokens);
+  const outputTokens = numOrZero(usage.output_tokens);
+  const cacheReadInputTokens = numOrZero(usage.cache_read_input_tokens);
+  const cacheCreationInputTokens = numOrZero(usage.cache_creation_input_tokens);
+  if (
+    inputTokens === 0 &&
+    outputTokens === 0 &&
+    cacheReadInputTokens === 0 &&
+    cacheCreationInputTokens === 0
+  ) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens };
+}
+
+function numOrZero(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }

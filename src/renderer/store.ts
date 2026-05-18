@@ -124,6 +124,13 @@ interface StoreState {
   /// launch; the in-session flip is intentionally transient so users can
   /// toggle it per task without editing Settings.
   showToolActivity: boolean;
+  /// Parent Task tool_use id currently being inspected in the
+  /// SubagentDrawer. `null` means the drawer is closed.
+  subagentDrawerParentId: string | null;
+  /// Per-conversation list of dismissed subagent tabs. See uiSlice.
+  dismissedSubagents: Record<string, string[]>;
+  /// Where the file editor renders. See uiSlice for the contract.
+  fileEditorSide: 'inline' | 'side';
   pendingFinderQuery: string;
   conversationDrafts: Record<UUID, string>;
   /// Per-conversation pending attachments (images). Cleared on send, the
@@ -179,6 +186,11 @@ interface StoreState {
   closeFile(): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
+  openSubagentDrawer(parentToolUseId: string): void;
+  closeSubagentDrawer(): void;
+  dismissSubagent(conversationId: UUID, parentToolUseId: string): void;
+  resetDismissedSubagents(conversationId: UUID): void;
+  openSideFile(path: string, highlight?: OpenFileHighlight, mode?: FileViewMode): void;
   setDraft(id: UUID, text: string): void;
   addAttachment(key: string, attachment: Attachment): void;
   removeAttachment(key: string, attachmentId: string): void;
@@ -2371,7 +2383,29 @@ export const useStore = create<StoreState>((set, get) => ({
         if (e.kind.type === 'systemInit') initForGlobal = e.kind.info;
       }
       useRunnersStore.getState().patchRunner(event.conversationId, (runner) => {
-        const nextEvents = mergeIncomingEvents(runner.events, event.events);
+        // Split subagent events (parentToolUseId set by the Claude
+        // parser) out of the main transcript so they only feed the
+        // SubagentDrawer's per-parent buckets.
+        const mainIncoming: StreamEvent[] = [];
+        const subBuckets: Record<string, StreamEvent[]> = {};
+        for (const e of event.events) {
+          if (e.parentToolUseId) {
+            (subBuckets[e.parentToolUseId] ??= []).push(e);
+          } else {
+            mainIncoming.push(e);
+          }
+        }
+        const nextEvents = mergeIncomingEvents(runner.events, mainIncoming);
+        let nextSubagentEvents = runner.subagentEvents;
+        if (Object.keys(subBuckets).length > 0) {
+          nextSubagentEvents = { ...runner.subagentEvents };
+          for (const [parentId, batch] of Object.entries(subBuckets)) {
+            nextSubagentEvents[parentId] = mergeIncomingEvents(
+              nextSubagentEvents[parentId] ?? [],
+              batch,
+            );
+          }
+        }
         const pending = new Set(runner.pendingLocalUserIds);
         for (const e of event.events) {
           if (e.kind.type === 'localUser') pending.delete(e.id);
@@ -2382,7 +2416,12 @@ export const useStore = create<StoreState>((set, get) => ({
             currentModel = e.kind.info.model;
           }
         }
-        return { events: nextEvents, pendingLocalUserIds: pending, currentModel };
+        return {
+          events: nextEvents,
+          subagentEvents: nextSubagentEvents,
+          pendingLocalUserIds: pending,
+          currentModel,
+        };
       });
       if (initForGlobal) set({ lastInit: initForGlobal });
     } else if (event.type === 'running') {

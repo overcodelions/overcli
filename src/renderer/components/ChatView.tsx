@@ -673,7 +673,13 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 // TodoWrite stays visible too: the todo list is live state the user is
 // tracking against, not a transient lookup.
 // Keep in sync with the matching list in AssistantBubble.tsx.
-export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite']);
+// 'Task'/'Agent' are kept persistent so that an assistant bubble whose
+// only payload is a subagent dispatch (common while the subagent is
+// still running and the parent hasn't produced final text yet) survives
+// filterRendered when showToolActivity is off — otherwise the inline
+// SubagentCard, which is the user's only entry point into the drawer,
+// vanishes from the transcript mid-flight.
+export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent']);
 
 // Tools handled elsewhere in the transcript and therefore skipped by
 // the transient flash slot: PERSISTENT_TOOLS and INTERACTIVE_TOOLS both
@@ -688,6 +694,11 @@ const FLASH_SKIP = new Set([
   'TodoWrite',
   'AskUserQuestion',
   'ExitPlanMode',
+  // Subagents carry their own live state inside the inline SubagentCard
+  // (current tool + elapsed time, per parallel agent). Flashing them
+  // would duplicate that card and collapse N parallel runs into one.
+  'Task',
+  'Agent',
 ]);
 
 function shouldFlash(name: string): boolean {
@@ -754,7 +765,6 @@ function useLatestToolReveal(
     }
     const baseline = baselineIdsRef.current;
     let latestFlash: ToolUseBlock | null = null;
-    let pendingSubagent: ToolUseBlock | null = null;
     for (const ev of events) {
       if (baseline.has(ev.id)) continue;
       // The latest-tool-reveal indicator follows the primary agent only.
@@ -764,15 +774,9 @@ function useLatestToolReveal(
       if (ev.reviewer) continue;
       if (ev.kind.type === 'localUser') {
         latestFlash = null;
-        pendingSubagent = null;
         continue;
       }
       if (ev.kind.type !== 'assistant') continue;
-      for (const use of ev.kind.info.toolUses) {
-        if (SUBAGENT_TOOLS.has(use.name) && !toolResultIndex.has(use.id)) {
-          pendingSubagent = use;
-        }
-      }
       // Text from the assistant means it has "come back" with a response —
       // clear the slot so the bubble takes over. A later tool in the same
       // walk will override this if the turn is still running.
@@ -781,11 +785,14 @@ function useLatestToolReveal(
         if (shouldFlash(use.name)) latestFlash = use;
       }
     }
-    // A subagent/Task that hasn't completed wins over newer flash tools:
-    // the Claude CLI stream goes silent while a subagent works, so we
-    // keep the Task card pinned as the "it's still doing something"
-    // indicator until its tool_result arrives.
-    const next = pendingSubagent ?? latestFlash;
+    // Note: Task/Agent calls used to be pinned in this reveal slot as
+    // the "subagent is still working" indicator. The inline
+    // SubagentCard now carries its own live state (current tool +
+    // elapsed time) per agent, so pinning here only duplicated the
+    // card AND collapsed multiple parallel subagents into a single
+    // misleading entry. Subagents are intentionally excluded from
+    // shouldFlash() so they never reach this slot.
+    const next = latestFlash;
     desiredRef.current = next;
 
     // Prevent noisy churn from repeated Bash tool_use blocks that run the
