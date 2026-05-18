@@ -1015,7 +1015,11 @@ export class RunnerManager {
       if (!active.proc) {
         throw new Error('subprocess transport is not available');
       }
-      if (args.backend === 'gemini' || (args.backend === 'codex' && active.codexMode === 'exec')) {
+      if (
+        args.backend === 'gemini' ||
+        args.backend === 'copilot' ||
+        (args.backend === 'codex' && active.codexMode === 'exec')
+      ) {
         active.proc.stdin.end(envelope + '\n');
       } else {
         active.proc.stdin.write(envelope + '\n');
