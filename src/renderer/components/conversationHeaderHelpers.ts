@@ -36,6 +36,6 @@ export function isBackendEnabled(
 export function enabledBackends(
   settings: { disabledBackends?: Partial<Record<Backend, boolean>> },
 ): Backend[] {
-  const all: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  const all: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
   return all.filter((b) => isBackendEnabled(settings, b));
 }

@@ -4,6 +4,17 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- GitHub Copilot CLI as a fifth backend. Streams the JSONL event protocol (`copilot -p PROMPT --output-format=json --stream=on`), renders tool calls (view / edit / create / bash / glob / grep) as overcli's canonical tool cards, and replays history from `~/.copilot/session-state/<id>/events.jsonl`. Session continuity via `--resume`.
+- Copilot health probe (binary auto-discovery, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` detection, `~/.config/github-copilot` fallback).
+- Copilot in Settings → Backends (enable/disable, CLI path override) and Settings → Models (default model picker).
+- Rebound review mode supported with Copilot as primary — `same`-backend presets auto-route to Claude / Codex / Gemini and surface a "Routed via X" chip in the popover so the redirect is visible.
+
+### Known limitations
+- **Copilot as a reviewer backend is not supported.** Copilot's CLI takes prompts in argv, but the reviewer plumbing feeds prompts via stdin. Copilot is hidden from the reviewer picker.
+- **Collab-mode rebound is disabled when Copilot is the primary.** Copilot exits after each turn, so the runner can't push reviewer pingbacks into it. Greyed out in the popover with an explanation. Tracked in [#19](https://github.com/overcodelions/overcli/issues/19).
+- **Permission modes default / acceptEdits / bypassPermissions behave identically for Copilot.** Copilot exposes no MCP-style approval hook for overcli to broker, so non-Plan modes all map to `--allow-all-tools`. Plan mode narrows to read-only tools (`view`, `glob`, `grep`).
+
 ## [0.1.0] - 2026-05-09
 
 Initial public release.

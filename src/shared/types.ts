@@ -3,7 +3,7 @@
 // types so the JSON persistence shape stays compatible where it can.
 
 export type UUID = string;
-export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama';
+export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
 export type PermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits' | 'bypassPermissions';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | '';
 

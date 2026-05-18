@@ -9,6 +9,7 @@ import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/t
 import { createHash, randomUUID } from 'node:crypto';
 import { loadOllamaSession } from './ollamaStore';
 import { claudeToolResultText } from './parsers/claude';
+import { makeCopilotParserState, parseCopilotLine } from './parsers/copilot';
 import { logSilent } from './diagnostics';
 
 /// True if `text` matches a known synthetic-collab pingPrompt overcli
@@ -49,7 +50,77 @@ export function loadHistory(args: {
       return loadGeminiHistory(args.sessionId, args.projectPath, synthetic);
     case 'ollama':
       return loadOllamaHistory(args.sessionId, synthetic);
+    case 'copilot':
+      return loadCopilotHistory(args.sessionId, synthetic);
   }
+}
+
+function loadCopilotHistory(
+  sessionId: string | undefined,
+  syntheticPrompts: Set<string>,
+): StreamEvent[] {
+  if (!sessionId) return [];
+  // Copilot persists every JSONL event for a session under
+  // ~/.copilot/session-state/<sessionId>/events.jsonl — the exact same
+  // wire format the live stream uses. We feed each line back through
+  // parseCopilotLine with a fresh parser state and let it synthesize
+  // the same StreamEvents we'd emit during a live run.
+  const file = path.join(os.homedir(), '.copilot', 'session-state', sessionId, 'events.jsonl');
+  if (!fs.existsSync(file)) return [];
+  try {
+    const lines = fs.readFileSync(file, 'utf-8').split('\n');
+    const state = makeCopilotParserState();
+    const out: StreamEvent[] = [];
+    for (const raw of lines) {
+      if (!raw.trim()) continue;
+      // Copilot's persisted user.message echoes are the conversation's
+      // user prompts. parseCopilotLine drops them (live, the renderer
+      // already shows localUser); on replay we need to synthesize them
+      // so the user side of the transcript isn't blank.
+      const userEv = maybeCopilotUserEcho(raw);
+      if (userEv) {
+        if (!isSyntheticPrompt(userEv.kind.type === 'localUser' ? userEv.kind.text : '', syntheticPrompts)) {
+          out.push(userEv);
+        }
+        continue;
+      }
+      const evs = parseCopilotLine(raw, state);
+      for (const ev of evs) {
+        // Drop streaming partials — only the final consolidated
+        // assistant.message event is useful for history replay.
+        if (ev.kind.type === 'assistant' && ev.kind.info.isPartial) continue;
+        out.push(ev);
+      }
+    }
+    return out;
+  } catch (e) {
+    logSilent('history.loadCopilot', e);
+    return [];
+  }
+}
+
+/// Parse a copilot user.message line into a localUser StreamEvent so
+/// replayed transcripts show the prompts the user actually typed.
+function maybeCopilotUserEcho(line: string): StreamEvent | null {
+  let json: any;
+  try {
+    json = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (json?.type !== 'user.message') return null;
+  const text = typeof json.data?.content === 'string' ? json.data.content : '';
+  if (!text) return null;
+  const tsRaw = json.timestamp;
+  const timestamp =
+    typeof tsRaw === 'string' ? Date.parse(tsRaw) || Date.now() : typeof tsRaw === 'number' ? tsRaw : Date.now();
+  return {
+    id: randomUUID(),
+    timestamp,
+    raw: line,
+    kind: { type: 'localUser', text },
+    revision: 0,
+  };
 }
 
 function loadOllamaHistory(

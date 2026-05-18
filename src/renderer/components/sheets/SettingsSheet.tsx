@@ -274,7 +274,7 @@ function BackendsPane({
   health: Record<string, BackendHealth>;
   refresh: () => void;
 }) {
-  const backends: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+  const backends: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
   const enabled = backends.filter((b) => local.disabledBackends?.[b] !== true);
   const enabledCount = enabled.length;
   const preferredValue =
@@ -331,7 +331,7 @@ function BackendsPane({
         title="CLI paths"
         description="overcli auto-discovers CLIs in common install locations. Override here if yours is elsewhere."
       >
-        {(['claude', 'codex', 'gemini'] as Backend[]).map((b) => {
+        {(['claude', 'codex', 'gemini', 'copilot'] as Backend[]).map((b) => {
           const h = health[b];
           return (
             <div key={b} className="grid grid-cols-[80px_1fr_auto] items-center gap-2">
@@ -362,7 +362,7 @@ function BackendsPane({
 }
 
 function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
-  const backends: Backend[] = ['claude', 'codex', 'gemini'];
+  const backends: Backend[] = ['claude', 'codex', 'gemini', 'copilot'];
   return (
     <div>
       <Group
@@ -407,6 +407,7 @@ function placeholderFor(b: Backend): string {
   if (b === 'claude') return 'e.g. claude-opus-4-7';
   if (b === 'codex') return 'e.g. gpt-5.5';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
+  if (b === 'copilot') return 'e.g. claude-haiku-4.5';
   return 'e.g. gemini-2.5-pro';
 }
 

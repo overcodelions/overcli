@@ -137,7 +137,7 @@ export function AboutSheet() {
 
       <div className="flex items-center gap-3 border-t border-card bg-surface-elevated px-6 py-3">
         <div className="text-[11px] text-ink-faint">
-          Connects to claude, codex, gemini, ollama — uses your existing CLI auth.
+          Connects to claude, codex, gemini, copilot, ollama — uses your existing CLI auth.
         </div>
         <div className="flex-1" />
         <a

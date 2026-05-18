@@ -321,7 +321,9 @@ export class ReviewerManager {
     }
 
     return new Promise<ReviewInfo>((resolve) => {
-      const childArgs = buildReviewerArgs(args.reviewBackend, {
+      let childArgs: string[];
+      try {
+        childArgs = buildReviewerArgs(args.reviewBackend, {
         yolo: !!args.yolo,
         model: args.reviewModel ?? null,
         resumeSessionId: claudeResumeId,
@@ -339,7 +341,27 @@ export class ReviewerManager {
           args.reviewBackend === 'codex' && args.yolo
             ? resolveSymlinkWritableRoots(args.cwd)
             : undefined,
-      });
+        });
+      } catch (e) {
+        // buildReviewerArgs throws for backends that can't act as a
+        // reviewer (copilot today, since its CLI takes prompts in argv
+        // not stdin). Without this catch the throw becomes a silent
+        // promise rejection and the "thinking…" review card hangs
+        // forever — bury it as a normal error card instead.
+        const message = (e as Error)?.message ?? String(e);
+        const info: ReviewInfo = {
+          backend: args.reviewBackend,
+          text: '',
+          isRunning: false,
+          error: message,
+          startedAt,
+          round,
+          mode,
+        };
+        this.emitReview(args.conversationId, { cardId, info });
+        resolve(info);
+        return;
+      }
       const env = buildBackendEnv(process.env, bin);
       const shell = backendNeedsShell(bin);
       const proc = spawn(bin, childArgs, {
@@ -1078,6 +1100,13 @@ export function buildReviewerArgs(
       // it to runOllama() before reaching this builder. Throw if we ever
       // get here, since it means the dispatch in run() was bypassed.
       throw new Error('Ollama reviewer is dispatched via runOllama, not buildReviewerArgs');
+    case 'copilot':
+      // Copilot CLI takes its prompt in argv (`-p PROMPT`) and doesn't
+      // read from stdin. The reviewer plumbing here feeds prompts via
+      // stdin, so copilot can't slot in as a reviewer without a separate
+      // dispatch path. Excluded from DIFFERENT_BACKEND_PREFERENCE; this
+      // is a defense-in-depth throw if dispatch ever reaches here.
+      throw new Error('Copilot is not yet supported as a reviewer backend');
   }
 }
 
