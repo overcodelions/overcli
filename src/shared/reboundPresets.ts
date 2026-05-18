@@ -341,6 +341,9 @@ export interface ResolvedPreset {
 /// story is much weaker for a local model. Order within cloud CLIs is
 /// arbitrary — codex first because that was the original hardcoded
 /// choice.
+// Note: copilot is excluded — its CLI takes prompts in argv (`-p ...`)
+// rather than via stdin, which doesn't fit the reviewer's stdin-fed
+// dispatch path. Will be added once the reviewer can speak argv-prompts.
 const DIFFERENT_BACKEND_PREFERENCE: Backend[] = ['codex', 'claude', 'gemini', 'ollama'];
 
 function pickDifferentBackend(primary: Backend): Backend | null {
@@ -366,7 +369,18 @@ export function resolvePreset(
 
   let backend: Backend;
   if (spec.backend === 'same') {
-    backend = primaryBackend;
+    // Copilot can't review (stdin-fed dispatch doesn't fit its CLI),
+    // so a "same as primary" preset on a copilot conversation has to
+    // fall through to a different CLI. Picks claude / codex / gemini
+    // in DIFFERENT_BACKEND_PREFERENCE order, same as the 'different'
+    // backend specs do.
+    if (primaryBackend === 'copilot') {
+      const picked = pickDifferentBackend(primaryBackend);
+      if (!picked) return null;
+      backend = picked;
+    } else {
+      backend = primaryBackend;
+    }
   } else if (spec.backend === 'different') {
     const picked = pickDifferentBackend(primaryBackend);
     if (!picked) return null;

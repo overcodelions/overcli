@@ -133,6 +133,15 @@ describe('buildReviewerArgs', () => {
   it('throws for ollama (uses HTTP path instead)', () => {
     expect(() => buildReviewerArgs('ollama')).toThrow(/dispatched via runOllama/);
   });
+
+  it('throws for copilot (cannot read prompts from stdin)', () => {
+    // Copilot's CLI takes prompts in argv (`-p PROMPT`), but the
+    // reviewer plumbing feeds prompts through stdin via `-p -` (gemini)
+    // or `-` (codex exec). Until that dispatch grows an argv-prompt
+    // branch, building reviewer args for copilot must throw rather
+    // than silently produce something the spawn will hang on.
+    expect(() => buildReviewerArgs('copilot')).toThrow(/Copilot is not yet supported as a reviewer/);
+  });
 });
 
 describe('buildReviewPrompt', () => {

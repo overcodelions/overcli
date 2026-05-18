@@ -45,7 +45,7 @@ import {
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
-const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'ollama'];
+const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 export type ActiveSheet =
   | { type: 'settings' }
