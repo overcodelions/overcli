@@ -55,13 +55,13 @@ describe('isBackendEnabled', () => {
 });
 
 describe('enabledBackends', () => {
-  it('returns all four when nothing is disabled', () => {
-    expect(enabledBackends({})).toEqual(['claude', 'codex', 'gemini', 'ollama']);
+  it('returns all five when nothing is disabled', () => {
+    expect(enabledBackends({})).toEqual(['claude', 'codex', 'gemini', 'copilot', 'ollama']);
   });
 
   it('filters out only the explicitly disabled', () => {
     expect(
-      enabledBackends({ disabledBackends: { ollama: true, gemini: true } }),
+      enabledBackends({ disabledBackends: { ollama: true, gemini: true, copilot: true } }),
     ).toEqual(['claude', 'codex']);
   });
 });

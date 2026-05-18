@@ -24,6 +24,7 @@ import {
   PRESETS,
   TIERS,
   modelTier,
+  resolvePreset,
 } from '@shared/reboundPresets';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation, useConversationRoot } from '../hooks';
@@ -1066,7 +1067,11 @@ function ReboundPanel({
 
   const active = !!conv.reviewBackend;
   const primary = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
-  const candidates = enabledBackends(settings).filter((b) => b !== primary);
+  // Copilot can't act as a reviewer — its CLI takes prompts in argv
+  // (`-p PROMPT`) and doesn't read from stdin, but overcli's reviewer
+  // plumbing feeds prompts via stdin. Hide it from the candidate list
+  // so users can't pick a backend the reviewer dispatch will throw on.
+  const candidates = enabledBackends(settings).filter((b) => b !== primary && b !== 'copilot');
   const primaryModel =
     primary === 'codex'
       ? conv.codexModel
@@ -1139,11 +1144,25 @@ function ReboundPanel({
                   ? ' Fires on code-change turns only.'
                   : ' Fires every turn.'
                 : '';
+              // When primary is copilot, "same backend" presets get
+              // silently rerouted to a different CLI by resolvePreset
+              // (copilot can't act as a reviewer). Surface that as a
+              // tinted chip below the description so the user knows up
+              // front the verdict will come from claude/codex/gemini,
+              // not copilot.
+              const resolved =
+                primary === 'copilot' && p.backend === 'same'
+                  ? resolvePreset(p.key, primary)
+                  : null;
+              const reroute = resolved
+                ? `Routed via ${backendName(resolved.reviewBackend)} — Copilot can't review itself`
+                : undefined;
               return (
                 <ReboundRow
                   key={p.key}
                   label={p.label}
                   description={(blocker ?? p.description) + triggerHint}
+                  note={reroute}
                   selected={selectedPreset === p.key}
                   disabled={!!blocker}
                   onSelect={() => onSelectPreset(p.key)}
@@ -1196,7 +1215,12 @@ function ReboundPanel({
                       Only one CLI installed — same-CLI presets above still work.
                     </div>
                   )}
-                  {[primary, ...candidates].map((b) => {
+                  {(primary === 'copilot' ? candidates : [primary, ...candidates]).map((b) => {
+                    // When primary is copilot, omit the "same as
+                    // primary" row entirely — copilot can't act as a
+                    // reviewer (see candidates filter above), so
+                    // offering it would just route to a throwing
+                    // dispatch. The remaining candidates are valid.
                     const ready = b === primary || installedReviewers[b];
                     const isLocal = b === 'ollama';
                     return (
@@ -1229,8 +1253,13 @@ function ReboundPanel({
                   />
                   <ReboundRow
                     label="Collab"
-                    description="Ping-pong: primary and reviewer take turns until the budget is spent."
+                    description={
+                      conv.primaryBackend === 'copilot'
+                        ? 'Not yet supported with Copilot — Copilot exits after each turn, so the reviewer can\'t ping it back.'
+                        : 'Ping-pong: primary and reviewer take turns until the budget is spent.'
+                    }
                     selected={conv.reviewMode === 'collab'}
+                    disabled={conv.primaryBackend === 'copilot'}
                     onSelect={() => onSelectMode('collab')}
                   />
                 </div>
@@ -1422,6 +1451,7 @@ function ReboundRow({
   label,
   labelColor,
   description,
+  note,
   selected,
   disabled,
   onSelect,
@@ -1429,6 +1459,11 @@ function ReboundRow({
   label: string;
   labelColor?: string;
   description: string;
+  /// Extra annotation rendered below the description in an accent
+  /// color — used today to flag preset reroutes when primary is
+  /// copilot ("Routed via claude (Copilot can't review itself)"). Keep
+  /// it short; it sits on its own line and uses the row's accent tint.
+  note?: string;
   selected: boolean;
   disabled?: boolean;
   onSelect: () => void;
@@ -1461,6 +1496,18 @@ function ReboundRow({
           {label}
         </div>
         <div className="text-[10px] text-ink-muted">{description}</div>
+        {note && (
+          <div
+            className="text-[10px] mt-1 px-1.5 py-0.5 rounded inline-block font-medium"
+            style={{
+              color: '#f471b5',
+              background: 'rgba(244, 113, 181, 0.12)',
+              border: '1px solid rgba(244, 113, 181, 0.35)',
+            }}
+          >
+            {note}
+          </div>
+        )}
       </div>
     </button>
   );
