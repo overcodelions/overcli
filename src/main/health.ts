@@ -99,6 +99,27 @@ export function probeBackendHealth(backend: Backend, override?: string): Backend
     ) {
       return { kind: 'unauthenticated', message: 'Run `gemini auth login` in a terminal.' };
     }
+  } else if (backend === 'copilot') {
+    if (hasAnyEnv(['COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN'])) return { kind: 'ready' };
+    const home = os.homedir();
+    // Copilot CLI stores its OAuth state under ~/.config/github-copilot (or
+    // platform equivalent). Treat any of the well-known files as evidence
+    // the user has logged in at least once.
+    const platformDirs =
+      process.platform === 'win32'
+        ? [path.join(process.env.APPDATA ?? path.join(home, 'AppData', 'Roaming'), 'GitHub Copilot')]
+        : [
+            path.join(home, '.config', 'github-copilot'),
+            path.join(home, 'Library', 'Application Support', 'GitHub Copilot'),
+          ];
+    const candidates = platformDirs.flatMap((dir) => [
+      path.join(dir, 'apps.json'),
+      path.join(dir, 'hosts.json'),
+      dir,
+    ]);
+    if (!hasAnyFile(candidates)) {
+      return { kind: 'unauthenticated', message: 'Run `copilot login` in a terminal.' };
+    }
   }
 
   return { kind: 'ready' };
@@ -107,7 +128,7 @@ export function probeBackendHealth(backend: Backend, override?: string): Backend
 /// Discovered reviewer backends — any that are `ready` AND installed.
 export function listInstalledReviewers(): Record<string, boolean> {
   const out: Record<string, boolean> = {};
-  for (const backend of ['claude', 'codex', 'gemini', 'ollama'] as Backend[]) {
+  for (const backend of ['claude', 'codex', 'gemini', 'ollama', 'copilot'] as Backend[]) {
     const health = probeBackendHealth(backend);
     out[backend] = health.kind === 'ready';
   }

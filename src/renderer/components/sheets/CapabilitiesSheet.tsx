@@ -27,6 +27,7 @@ const CLI_LABEL: Record<Backend, string> = {
   claude: 'Claude',
   codex: 'Codex',
   gemini: 'Gemini',
+  copilot: 'Copilot',
   ollama: 'Ollama',
 };
 
