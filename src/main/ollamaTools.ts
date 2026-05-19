@@ -12,7 +12,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { OllamaToolCall, OllamaToolDefinition } from './ollama';
+import {
+  OLLAMA_CATALOG,
+  OllamaChatMessage,
+  OllamaToolCall,
+  OllamaToolDefinition,
+  streamChat,
+} from './ollama';
 
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_LIST_ENTRIES = 500;
@@ -402,4 +408,259 @@ function grepTool(
     }
   }
   return { content: matches.join('\n') || '(no matches)', isError: false };
+}
+
+/// Cap on how many tool/response rounds a single Ollama turn can take.
+/// Smaller models occasionally get stuck re-calling the same tool; the
+/// cap surfaces that as a visible error instead of an infinite spinner.
+export const MAX_OLLAMA_TOOL_ROUNDS = 8;
+
+/// True iff `tag` is in the curated catalog AND its family is trained on
+/// the Ollama tool-calling protocol. Unknown/custom tags get `false` —
+/// passing tools to a model that wasn't trained for them typically
+/// produces garbage or outright JSON-mode refusals.
+export function modelSupportsTools(tag: string): boolean {
+  const hit = OLLAMA_CATALOG.find((m) => m.tag === tag);
+  return !!hit?.supportsTools;
+}
+
+/// System prompt prepended on every tool-enabled Ollama call. We embed
+/// the tool schemas directly here (rather than passing `tools` to
+/// Ollama) because Ollama's templating is unreliable for many coder
+/// models — qwen2.5-coder in particular tends to narrate ("I will read
+/// X") without ever emitting a structured tool_call when invoked via
+/// the API field. Putting the schema in-prompt with worked examples
+/// makes the contract deterministic.
+export function buildOllamaToolSystemPrompt(cwd: string): string {
+  return [
+    'You are a local coding assistant running inside overcli on the user\'s machine.',
+    `You have real, working access to the user's project directory at: ${cwd}`,
+    '',
+    'AVAILABLE TOOLS (real, working — they read the user\'s actual disk):',
+    '',
+    '  read_file(path: string)',
+    '    Read a UTF-8 text file relative to the project root. Returns up to 256 KB.',
+    '',
+    '  list_dir(path: string)',
+    '    List files and subdirectories under a project-relative path. Use "." for the root.',
+    '',
+    '  grep(pattern: string, path?: string, caseInsensitive?: boolean)',
+    '    Regex-search across the project. `path` defaults to the project root.',
+    '',
+    'TOOL-CALL FORMAT (MANDATORY):',
+    'Whenever you need to use a tool, emit EXACTLY this block — no prose, no markdown fences, just the tag:',
+    '',
+    '<tool_call>',
+    '{"name": "<tool_name>", "arguments": {<json args>}}',
+    '</tool_call>',
+    '',
+    'The wrapper tags and the JSON are BOTH required. Stop generating after </tool_call>; the tool result will be fed back to you on the next turn.',
+    '',
+    'CRITICAL RULES:',
+    '1. When the user asks about files, directories, or code content, you MUST call the appropriate tool. Do NOT describe what you "will" do.',
+    '2. Never narrate ("I will read X", "Let me list Y", "I\'ll check Z", "I will now…"). If you find yourself writing one of those phrases, STOP and emit the <tool_call> block instead.',
+    '3. Never fabricate file names, directory contents, or file content. If you have not called the tool yet, you do not know what is there.',
+    '4. After the tool returns, answer the user\'s question concisely using the real result.',
+    '',
+    'WORKED EXAMPLES:',
+    '',
+    'User: what is in this directory?',
+    'Assistant:',
+    '<tool_call>',
+    '{"name": "list_dir", "arguments": {"path": "."}}',
+    '</tool_call>',
+    '',
+    'User: what does README.md say?',
+    'Assistant:',
+    '<tool_call>',
+    '{"name": "read_file", "arguments": {"path": "README.md"}}',
+    '</tool_call>',
+    '',
+    'User: where do we configure the database URL?',
+    'Assistant:',
+    '<tool_call>',
+    '{"name": "grep", "arguments": {"pattern": "DATABASE_URL", "caseInsensitive": false}}',
+    '</tool_call>',
+    '',
+    'WRONG (do NOT produce output like this):',
+    '"I will read README.md to provide you with its contents."',
+    '"Let me fetch the contents of that file."',
+    '"Sure, I\'ll list the directory."',
+  ].join('\n');
+}
+
+/// Shared tool-call loop used by both the primary Ollama chat path
+/// (`sendOllama`) and the rebound reviewer (`runOllamaReview`). Owns the
+/// streamChat → parse → execute → re-enter cycle so the two paths stay
+/// in lockstep on narration scrubbing, the inline-tool-call parser, the
+/// one-shot nudge, and the round cap.
+///
+/// The helper mutates `args.messages` as it goes — appending assistant
+/// messages (with `tool_calls` attached when the round invokes tools)
+/// and `role: 'tool'` results — so the caller can persist the full
+/// transcript when the helper resolves. UI/event concerns live in the
+/// caller via `onEvent`.
+export interface OllamaToolLoopArgs {
+  model: string;
+  cwd: string;
+  signal: AbortSignal;
+  /// Prepended on every wire request when non-empty. Pass
+  /// `buildOllamaToolSystemPrompt(cwd)` when tools are enabled, or an
+  /// empty string for the no-tools path.
+  systemPrompt: string;
+  /// Conversation transcript. Mutated by the helper.
+  messages: OllamaChatMessage[];
+  /// Index in `messages` marking the start of "this turn". History
+  /// before this is scrubbed for tool narration before being sent on
+  /// the wire — qwen/llama coders gleefully pattern-continue narration
+  /// they see in context, drowning out the in-prompt instructions.
+  turnStartIndex: number;
+  maxRounds?: number;
+  /// One-shot nudge when a round ends with tool narration ("I will read
+  /// X") but no actual tool call. Defaults to true. The reviewer sets
+  /// this false since "I'll check the diff and report back" is a
+  /// legitimate verdict shape for that path.
+  nudgeOnNarration?: boolean;
+}
+
+export type OllamaToolLoopEvent =
+  | { type: 'roundStart'; round: number }
+  | { type: 'assistantDelta'; round: number; cumulative: string }
+  | { type: 'roundComplete'; round: number; text: string; toolCalls: OllamaToolCall[] }
+  | { type: 'toolResult'; round: number; call: OllamaToolCall; result: ToolExecutionResult };
+
+export type OllamaToolLoopOutcome =
+  | { ok: true; finalText: string; rounds: number }
+  | { ok: false; error: string; rounds: number };
+
+export async function runOllamaToolLoop(
+  args: OllamaToolLoopArgs,
+  onEvent: (ev: OllamaToolLoopEvent) => void,
+): Promise<OllamaToolLoopOutcome> {
+  const maxRounds = args.maxRounds ?? MAX_OLLAMA_TOOL_ROUNDS;
+  const nudgeOnNarration = args.nudgeOnNarration ?? true;
+  let nudged = false;
+
+  for (let round = 0; round < maxRounds; round += 1) {
+    onEvent({ type: 'roundStart', round });
+
+    const wireMessages = buildWireMessages(args.messages, args.turnStartIndex, args.systemPrompt);
+    let acc = '';
+    let pendingCalls: OllamaToolCall[] = [];
+    let streamError: string | null = null;
+
+    await streamChat(
+      { model: args.model, messages: wireMessages, signal: args.signal },
+      (ev) => {
+        if (ev.type === 'token') {
+          acc += ev.text;
+          onEvent({ type: 'assistantDelta', round, cumulative: acc });
+        } else if (ev.type === 'toolCalls') {
+          pendingCalls = pendingCalls.concat(ev.calls);
+        } else if (ev.type === 'error') {
+          streamError = ev.message;
+        }
+      },
+    ).catch((err: any) => {
+      streamError = err?.message ?? String(err);
+    });
+
+    if (streamError) return { ok: false, error: streamError, rounds: round + 1 };
+
+    // No structured tool_calls came through → check the content channel
+    // for the `<tool_call>{…}</tool_call>` wrapper (and bare/fenced JSON
+    // fallbacks). Most coder models route through this path.
+    let cleanedText = acc;
+    if (pendingCalls.length === 0) {
+      const extracted = extractInlineToolCalls(acc);
+      if (extracted.calls.length > 0) {
+        pendingCalls = extracted.calls;
+        cleanedText = extracted.cleanedText;
+      }
+    }
+
+    onEvent({ type: 'roundComplete', round, text: cleanedText, toolCalls: pendingCalls });
+
+    if (pendingCalls.length === 0) {
+      // No tool call this round. If the response looks like narration
+      // ("I'll read X") and we haven't nudged yet, push a system reminder
+      // and re-enter — but only when the caller opted into nudging.
+      if (nudgeOnNarration && !nudged && looksLikeToolNarration(cleanedText)) {
+        nudged = true;
+        if (cleanedText) {
+          args.messages.push({ role: 'assistant', content: cleanedText });
+        }
+        args.messages.push({
+          role: 'system',
+          content:
+            'You described what you would do but did not call a tool. Call the tool now using a <tool_call>{"name":"…","arguments":{…}}</tool_call> block. Do not narrate again — emit only the tool_call.',
+        });
+        continue;
+      }
+      // Clean finish — append final assistant text to transcript.
+      if (cleanedText) {
+        args.messages.push({ role: 'assistant', content: cleanedText });
+      }
+      return { ok: true, finalText: cleanedText, rounds: round + 1 };
+    }
+
+    // Tool-call round — persist the assistant's partial reply (with
+    // `tool_calls` attached so the transcript keeps the call/result
+    // pairing Ollama expects on replay) and execute each call.
+    args.messages.push({
+      role: 'assistant',
+      content: cleanedText,
+      tool_calls: pendingCalls.map((c) => ({
+        function: { name: c.name, arguments: c.arguments },
+      })),
+    });
+
+    for (const call of pendingCalls) {
+      const result = executeOllamaTool({
+        name: call.name,
+        arguments: call.arguments,
+        cwd: args.cwd,
+      });
+      onEvent({ type: 'toolResult', round, call, result });
+      args.messages.push({
+        role: 'tool',
+        content: result.content,
+        tool_name: call.name,
+      });
+    }
+  }
+
+  return {
+    ok: false,
+    error: `Reached tool-call limit (${maxRounds} rounds) without a final answer.`,
+    rounds: maxRounds,
+  };
+}
+
+/// Build the wire messages for one streamChat round: system prompt,
+/// scrubbed prior turns (narration-without-tool-call stripped to avoid
+/// pattern continuation), then this turn verbatim so the model sees its
+/// own promise + any nudge we injected.
+function buildWireMessages(
+  messages: OllamaChatMessage[],
+  turnStartIndex: number,
+  systemPrompt: string,
+): OllamaChatMessage[] {
+  const priorTurns = messages.slice(0, turnStartIndex);
+  const thisTurn = messages.slice(turnStartIndex);
+  // Only scrub when we have a system prompt — i.e. when tools are
+  // active. Without it we have no in-prompt protocol to protect from
+  // pattern-continuation, so leave history verbatim.
+  const scrubbedPriorTurns = systemPrompt
+    ? priorTurns.filter((m) => {
+        if (m.role !== 'assistant') return true;
+        const hasToolCalls = Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+        if (hasToolCalls) return true;
+        return !looksLikeToolNarration(m.content ?? '');
+      })
+    : priorTurns;
+  const head: OllamaChatMessage[] = systemPrompt
+    ? [{ role: 'system', content: systemPrompt }]
+    : [];
+  return [...head, ...scrubbedPriorTurns, ...thisTurn];
 }
