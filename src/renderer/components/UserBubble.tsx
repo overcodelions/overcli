@@ -1,8 +1,17 @@
 import { Attachment } from '@shared/types';
+import { Markdown } from './Markdown';
+
+/// Flow turns prepend this marker to the visible text so the bubble can
+/// switch into markdown-rendering mode (and so the marker itself stays
+/// out of the rendered output). Keep in sync with the runtime's
+/// `buildStepDisplayText` in src/main/flows/runtime.ts.
+const FLOW_DISPLAY_MARKER = '<!--flow-->';
 
 export function UserBubble({ text, attachments }: { text: string; attachments?: Attachment[] }) {
   const hasAttachments = attachments && attachments.length > 0;
-  const hasText = text && text.trim().length > 0;
+  const isFlow = text.startsWith(FLOW_DISPLAY_MARKER);
+  const body = isFlow ? text.slice(FLOW_DISPLAY_MARKER.length).trimStart() : text;
+  const hasText = body && body.trim().length > 0;
   return (
     <div className="flex justify-end">
       <div
@@ -38,7 +47,16 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
           </div>
         )}
         {hasText && (
-          <div className="px-3.5 py-2 text-sm whitespace-pre-wrap">{text}</div>
+          isFlow ? (
+            // Render markdown so artifact bodies (plan.md, review.md,
+            // diffs) display as headings + code blocks instead of a
+            // wall of pre-formatted text studded with XML-ish tags.
+            <div className="px-3.5 py-2 text-sm">
+              <Markdown source={body} />
+            </div>
+          ) : (
+            <div className="px-3.5 py-2 text-sm whitespace-pre-wrap">{body}</div>
+          )
         )}
       </div>
     </div>

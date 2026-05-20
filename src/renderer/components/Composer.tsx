@@ -209,14 +209,11 @@ export function Composer({
 
   // Auto-grow the textarea up to the variant's max height. Welcome allows a
   // bigger pane since it dominates the screen; compact stays short so the
-  // chat above remains visible.
+  // chat above remains visible. Uses CSS `field-sizing: content` (Chromium
+  // 123+) so the browser handles sizing — the old JS path set
+  // `height = 'auto'` then read `scrollHeight` on every keystroke, which
+  // forced a synchronous reflow of the whole FlowRunPane tree.
   const maxHeight = variant === 'welcome' ? 260 : 200;
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = Math.min(maxHeight, Math.max(48, el.scrollHeight)) + 'px';
-  }, [draft, variant, maxHeight]);
 
   useEffect(() => {
     if (autoFocus) textareaRef.current?.focus();
@@ -662,6 +659,7 @@ export function Composer({
             : (easterPlaceholder ?? placeholder ?? 'Message...')
         }
         rows={variant === 'welcome' ? 3 : 2}
+        style={{ fieldSizing: 'content', minHeight: 48, maxHeight } as React.CSSProperties}
         className={
           'bg-transparent resize-none outline-none select-text placeholder-ink-faint ' +
           (easterPlaceholder ? 'placeholder-konami ' : '') +

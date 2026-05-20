@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { AssistantEventInfo, ToolResultBlock, ToolUseBlock } from '@shared/types';
+import { AssistantEventInfo, ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { backendColor, backendFromModel, shortModel } from '../theme';
 import { Markdown } from './Markdown';
 import { useStore } from '../store';
@@ -24,6 +24,7 @@ export function AssistantBubble({
   endorsed,
   endorsementTint,
   forceShowTools,
+  conversationId,
 }: {
   info: AssistantEventInfo;
   toolResultIndex?: Map<string, ToolResultBlock>;
@@ -37,6 +38,9 @@ export function AssistantBubble({
   /// opening that drawer is to inspect the agent's tool calls, so
   /// hiding them based on the chat-level toggle would be useless.
   forceShowTools?: boolean;
+  /// Conversation this bubble is rendered inside — threaded through to
+  /// ToolUseCard so AskUserQuestion answers go to the right chat.
+  conversationId?: UUID;
 }) {
   const openFile = useOpenFile();
   const showToolActivityGlobal = useStore((s) => s.showToolActivity);
@@ -141,7 +145,12 @@ export function AssistantBubble({
           it, which is why inline diffs were missing. */}
       {hasTools &&
         visibleToolUses.map((use) => (
-          <ToolUseCard key={use.id} use={use} result={toolResultIndex?.get(use.id)} />
+          <ToolUseCard
+            key={use.id}
+            use={use}
+            result={toolResultIndex?.get(use.id)}
+            conversationId={conversationId}
+          />
         ))}
     </div>
   );

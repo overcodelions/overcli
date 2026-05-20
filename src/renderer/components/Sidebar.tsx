@@ -8,12 +8,22 @@ import {
   conversationActivityAt,
   isActiveConversation,
 } from '../conversationLookup';
+import { useFlowsStore } from '../flowsStore';
+import { ActiveFlowsList, FlowRunsSection, useHasActiveFlows } from './flows/FlowRunSidebarRow';
+import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 
 export function Sidebar() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const colosseums = useStore((s) => s.colosseums);
-  const selectedId = useStore((s) => s.selectedConversationId);
+  const rawSelectedId = useStore((s) => s.selectedConversationId);
+  const detailMode = useStore((s) => s.detailMode);
+  // The conversation sidebar rows should only HIGHLIGHT as selected
+  // when the user is actually viewing a conversation. Otherwise the
+  // last-opened conversation keeps rendering as selected even while
+  // the user is on Flows / Local / Usage / Explorer — confusing when
+  // a different selection (a flow run row) is also highlighted there.
+  const selectedId = detailMode === 'conversation' ? rawSelectedId : null;
   const focusedProjectId = useStore((s) => s.focusedProjectId);
   const selectConversation = useStore((s) => s.selectConversation);
   const pickProject = useStore((s) => s.pickProject);
@@ -110,6 +120,7 @@ export function Sidebar() {
     () => collectTopConversations(projects, workspaces, runners).slice(0, 3),
     [projects, runners, workspaces],
   );
+  const hasActiveFlows = useHasActiveFlows();
   const sortedProjects = useMemo(
     () =>
       [...projects].sort(
@@ -205,9 +216,10 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
-        {!query && showActiveSection && topConversations.length > 0 && (
+        {!query && showActiveSection && (topConversations.length > 0 || hasActiveFlows) && (
           <>
             <SidebarSectionTitle label="Active" />
+            <ActiveFlowsList />
             {topConversations.map((item) => (
               <RecentConversationRow
                 key={item.conv.id}
@@ -554,6 +566,14 @@ function ProjectGroup({
   const archivableCount = project.conversations.filter(
     (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
   ).length;
+  const flowRuns = useFlowsStore((s) => s.runs);
+  const deletableFlowCount = Object.values(flowRuns).filter(
+    (r) =>
+      r.projectPath === project.path &&
+      r.state.kind !== 'running' &&
+      r.state.kind !== 'paused' &&
+      !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
+  ).length;
   const workspaceRefs = workspaces.filter((w) => w.projectIds.includes(project.id));
   const [confirmRemove, setConfirmRemove] = useState(false);
 
@@ -662,6 +682,7 @@ function ProjectGroup({
               onSelect={onSelect}
             />
           ))}
+          <FlowRunsSection path={project.path} />
           <div className="flex gap-1 my-1 pl-1">
             {isGitRepo !== false && (
               <button
@@ -681,11 +702,11 @@ function ProjectGroup({
                 + colosseum
               </button>
             )}
-            {archivableCount > 0 && (
+            {archivableCount + deletableFlowCount > 0 && (
               <button
                 onClick={() => openSheet({ type: 'archiveAllInProject', projectId: project.id })}
                 className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong ml-auto"
-                title="Archive all inactive conversations in this project"
+                title="Archive inactive conversations and delete finished flow runs in this project"
               >
                 archive all
               </button>
@@ -896,75 +917,8 @@ function effectiveColosseumStatus(
   return colosseum.contenderIds.some((cid) => runners[cid]?.isRunning) ? 'running' : 'comparing';
 }
 
-/// Theme-aware running pulse. Reads the CSS var so light mode uses a
-/// darker green-600 while dark mode stays on green-400; the old hardcoded
-/// #4ade80 washed to near-white against the light surface and the pulse
-/// was barely visible.
-const RUNNING_MARKER_COLOR = 'var(--c-running-pulse)';
-
-function SidebarMarker({
-  color,
-  active,
-  completed = false,
-}: {
-  color: string;
-  active: boolean;
-  completed?: boolean;
-}) {
-  const pingStyle = useMemo(() => synchronizedAnimationStyle(1200), []);
-  const markerColor = active ? RUNNING_MARKER_COLOR : color;
-
-  if (!active && completed) {
-    // Replaces the dot with a checkmark in the same 10px box so the row
-    // doesn't reflow. Cleared on selection (or after a brief flash if
-    // the conv was already selected when it finished) — see store.ts.
-    return (
-      <span
-        className="flex h-2.5 w-2.5 flex-shrink-0 items-center justify-center"
-        style={{ color: RUNNING_MARKER_COLOR }}
-        title="Finished"
-        aria-label="Finished"
-      >
-        <svg viewBox="0 0 12 12" className="h-2.5 w-2.5" aria-hidden="true">
-          <path
-            d="M2.5 6.5l2.5 2.5 4.5-5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </span>
-    );
-  }
-
-  if (!active) {
-    return <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: markerColor }} />;
-  }
-
-  return (
-    <span className="relative flex h-2.5 w-2.5 flex-shrink-0 items-center justify-center pointer-events-none">
-      <span
-        className="absolute inline-flex h-full w-full rounded-full animate-ping"
-        style={{ ...pingStyle, background: markerColor, opacity: 0.45 }}
-      />
-      <span
-        className="absolute inline-flex h-full w-full rounded-full"
-        style={{ background: markerColor, opacity: 0.22 }}
-      />
-      <span className="relative inline-flex h-1.5 w-1.5 rounded-full" style={{ background: markerColor }} />
-    </span>
-  );
-}
-
-function synchronizedAnimationStyle(durationMs: number) {
-  const phase = Date.now() % durationMs;
-  return {
-    animationDelay: `${-phase}ms`,
-    animationDuration: `${durationMs}ms`,
-  };
-}
+// SidebarMarker + synchronizedAnimationStyle moved to ./SidebarMarker.tsx
+// so flow rows can reuse them without an import cycle.
 
 function RunningIndicator({
   active = true,
@@ -1043,6 +997,14 @@ function WorkspaceGroup({
   const runners = useAllRunners();
   const archivableCount = (workspace.conversations ?? []).filter(
     (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
+  ).length;
+  const flowRuns = useFlowsStore((s) => s.runs);
+  const deletableFlowCount = Object.values(flowRuns).filter(
+    (r) =>
+      r.projectPath === workspace.rootPath &&
+      r.state.kind !== 'running' &&
+      r.state.kind !== 'paused' &&
+      !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
   ).length;
   const [confirmRemove, setConfirmRemove] = useState(false);
 
@@ -1141,6 +1103,7 @@ function WorkspaceGroup({
               onClick={() => onSelect(conv.id)}
             />
           ))}
+          <FlowRunsSection path={workspace.rootPath} />
           <div className="flex gap-1 my-1 pl-1">
             <button
               onClick={onNewAgent}
@@ -1149,11 +1112,11 @@ function WorkspaceGroup({
             >
               + agent
             </button>
-            {archivableCount > 0 && (
+            {archivableCount + deletableFlowCount > 0 && (
               <button
                 onClick={() => openSheet({ type: 'archiveAllInWorkspace', workspaceId: workspace.id })}
                 className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong ml-auto"
-                title="Archive all inactive conversations in this workspace"
+                title="Archive inactive conversations and delete finished flow runs in this workspace"
               >
                 archive all
               </button>

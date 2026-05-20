@@ -2,6 +2,9 @@
 // renderer. Modeled on the Swift app's Conversation / Project / StreamEvent
 // types so the JSON persistence shape stays compatible where it can.
 
+import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
+import type { FlowTemplate } from './flows/templates';
+
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
 export type PermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits' | 'bypassPermissions';
@@ -653,6 +656,12 @@ export interface IPCInvokeMap {
     /// show instantly. Main uses the same id on its emitted localUser event
     /// so `mergeIncomingEvents` updates in place instead of double-rendering.
     localUserId?: string;
+    /// Cleaner version of `prompt` to show in the UI bubble. The model
+    /// still receives `prompt` verbatim (full scaffolding / role
+    /// instructions / output contract). Used by flow runtime to hide
+    /// the noisy meta-instructions from the user-facing transcript.
+    /// Falls back to `prompt` when omitted.
+    displayText?: string;
     /// Transport to use for Claude turns. Defaults to 'cli' when omitted.
     /// 'sdk' routes through @anthropic-ai/claude-agent-sdk instead of
     /// spawning `claude -p`. Ignored for non-claude backends.
@@ -913,6 +922,63 @@ export interface IPCInvokeMap {
   'ollama:deleteSession': (sessionId: string) => void;
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
+  /// Flows — see src/shared/flows/. Library is the user-global +
+  /// project-local YAML files; runs are in-memory state machines that
+  /// drive a sequence of step Conversations.
+  'flows:list': (args: { projectPaths?: string[] }) => Flow[];
+  'flows:save': (args: {
+    flow: Flow;
+    target: 'user' | 'project';
+    /// Required when target === 'project'. The flow file is written to
+    /// <projectPath>/.overcli/flows/<flow.id>.yaml.
+    projectPath?: string;
+  }) => { ok: true; filePath: string } | { ok: false; error: string };
+  'flows:delete': (args: {
+    flowId: string;
+    source: 'user' | 'project';
+    projectPath?: string;
+  }) => { ok: true } | { ok: false; error: string };
+  'flows:validate': (args: { yaml: string; id?: string }) =>
+    | { ok: true; flow: Flow }
+    | { ok: false; errors: Array<{ path: string; message: string }> };
+  'flows:toolCatalog': (args: { backend: Backend }) => FlowToolDescriptor[];
+  /// Bundled-with-the-app curated templates shown in the "+ New flow"
+  /// picker. Not part of the user/project library — these are immutable
+  /// starting points; selecting one clones it into a fresh editor draft.
+  'flows:listTemplates': () => FlowTemplate[];
+  /// Draft a flow from a natural-language description using Claude. The
+  /// renderer surfaces this behind a "✨ Describe a flow" button. On
+  /// success, the user drops into the editor with the generated draft.
+  'flows:draftFromPrompt': (args: { description: string }) =>
+    | { ok: true; flow: Flow }
+    | { ok: false; error: string };
+  'flows:startRun': (args: {
+    flowId: string;
+    projectPath: string;
+    userPrompt: string;
+    /// Optional. `cwd` (default) runs in the project/workspace as-is.
+    /// `worktree` creates a fresh git worktree off `baseBranch` and runs
+    /// there — isolates file changes from the user's main checkout.
+    runIn?: 'cwd' | 'worktree';
+    /// Required when `runIn === 'worktree'`.
+    baseBranch?: string;
+  }) =>
+    | { ok: true; runId: UUID }
+    | { ok: false; error: string; preflight?: { problems: Array<{ path: string; message: string; hint?: string }> } };
+  'flows:listRuns': () => FlowRun[];
+  'flows:getRun': (args: { runId: UUID }) => FlowRun | null;
+  'flows:resumeRun': (args: {
+    runId: UUID;
+    /// Optional per-artifact overrides. Each key/value replaces the
+    /// artifact body in the run's artifact map before the next step
+    /// reads its inputs. Used by the pause-card "edit artifact" affordance.
+    editedArtifacts?: Record<string, string>;
+  }) => { ok: true } | { ok: false; error: string };
+  'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Permanently remove a run from memory + disk. Aborts mid-flight
+  /// subprocesses if still running. Idempotent — deleting an unknown
+  /// id returns ok.
+  'flows:deleteRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
 }
 
 export type ArtifactPreviewResult =
@@ -1129,6 +1195,28 @@ export type MainToRendererEvent =
   | {
       type: 'ollamaServerStatus';
       status: OllamaServerStatus;
+    }
+  | {
+      /// Flow run state transition — emitted whenever a run advances
+      /// (step started/completed, paused, aborted, finished). The
+      /// renderer's flowsStore reacts by patching its in-memory copy
+      /// of the run; the active flow run pane re-renders.
+      type: 'flowRunUpdate';
+      run: FlowRun;
+    }
+  | {
+      /// A step produced a named artifact. Bundled separately from the
+      /// run update for fine-grained UI invalidation (the artifact panel
+      /// updates without rebuilding the whole step list).
+      type: 'flowArtifactProduced';
+      runId: UUID;
+      artifact: FlowArtifact;
+    }
+  | {
+      /// A run was deleted from main. Renderer evicts it from its
+      /// in-memory map so the library doesn't keep showing a ghost.
+      type: 'flowRunDeleted';
+      runId: UUID;
     };
 
 export const DEFAULT_SETTINGS: AppSettings = {

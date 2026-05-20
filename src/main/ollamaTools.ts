@@ -1,9 +1,15 @@
 // Built-in tools exposed to local Ollama models that support tool calling.
-// Kept intentionally small and read-only — this is the "look around the
-// project" kit that lets a local model answer questions about the code
-// without us handing it a shell. Writing/editing tools live under the
-// regular permissioned flow on the subprocess backends; if we add them
-// here later they need to route through respondPermission.
+//
+// The kit splits into two tiers. The READ-ONLY trio (read_file, list_dir,
+// grep) is the "look around the project" kit — safe for any chat, and the
+// default when no explicit allowlist is supplied (see OLLAMA_READONLY_TOOLS
+// and runner.ts). The MUTATING tools (write_file, edit_file, bash) are NOT
+// handed out by default: a caller must opt in by passing an explicit
+// `enabledTools` set that names them. Today only flow steps do that, and a
+// flow only runs after the user has reviewed its YAML (which spells out the
+// tools each step gets) and cleared preflight. Interactive chat never
+// enables them, so an ordinary local-model conversation can't silently
+// write files or run a shell.
 //
 // All paths are resolved against the conversation's cwd and rejected if
 // they escape that root. Sizes are capped so a chatty model can't OOM us
@@ -23,6 +29,12 @@ import {
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_LIST_ENTRIES = 500;
 const MAX_GREP_MATCHES = 200;
+
+/// The read-only subset of the tool kit — safe to expose to any chat. This
+/// is the default allowlist for callers that don't pass an explicit one
+/// (interactive chat); mutating tools (write_file/edit_file/bash) are only
+/// dispatched when a caller names them in `enabledTools` (e.g. a flow step).
+export const OLLAMA_READONLY_TOOLS: readonly string[] = ['read_file', 'list_dir', 'grep'];
 const SKIP_DIRS = new Set([
   '.git',
   'node_modules',
@@ -54,6 +66,79 @@ export const OLLAMA_BUILTIN_TOOLS: OllamaToolDefinition[] = [
           },
         },
         required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description:
+        'Create or overwrite a UTF-8 text file under the project root. Creates parent ' +
+        'directories as needed. Refuses to overwrite an existing file unless ' +
+        '`overwrite: true` is passed. Use this to add new files (e.g. tests).',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'File path relative to the project root.',
+          },
+          content: {
+            type: 'string',
+            description: 'Full UTF-8 file contents to write.',
+          },
+          overwrite: {
+            type: 'boolean',
+            description: 'Set to true to overwrite an existing file. Defaults to false.',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'edit_file',
+      description:
+        'Edit an existing UTF-8 text file by replacing a unique substring. Fails if ' +
+        '`old_string` is missing or appears more than once. To make multiple edits, ' +
+        'call this tool repeatedly. Cannot create new files — use write_file for that.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'File path relative to the project root.' },
+          old_string: {
+            type: 'string',
+            description: 'Exact substring to find. Must appear exactly once in the file.',
+          },
+          new_string: {
+            type: 'string',
+            description: 'Replacement text (may be empty to delete the match).',
+          },
+        },
+        required: ['path', 'old_string', 'new_string'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'bash',
+      description:
+        'Run a shell command in the project root via /bin/sh. 60s timeout, 256 KB output ' +
+        'cap. Use for tests (`npm test`), git commands, and other one-off project tasks. ' +
+        'Returns combined stdout+stderr and the exit code.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'Shell command to execute (interpreted by /bin/sh).',
+          },
+        },
+        required: ['command'],
       },
     },
   },
@@ -245,7 +330,16 @@ export function executeOllamaTool(args: {
   name: string;
   arguments: Record<string, unknown>;
   cwd: string;
+  enabledTools?: ReadonlySet<string>;
 }): ToolExecutionResult {
+  if (args.enabledTools && !args.enabledTools.has(args.name)) {
+    return {
+      content:
+        `Tool "${args.name}" is not enabled for this step. ` +
+        `Available tools: ${[...args.enabledTools].join(', ') || '(none)'}.`,
+      isError: true,
+    };
+  }
   try {
     switch (args.name) {
       case 'read_file':
@@ -259,6 +353,22 @@ export function executeOllamaTool(args: {
           args.arguments.path == null ? '.' : asString(args.arguments.path),
           Boolean(args.arguments.caseInsensitive),
         );
+      case 'write_file':
+        return writeFileTool(
+          args.cwd,
+          asString(args.arguments.path),
+          asString(args.arguments.content),
+          Boolean(args.arguments.overwrite),
+        );
+      case 'edit_file':
+        return editFileTool(
+          args.cwd,
+          asString(args.arguments.path),
+          asString(args.arguments.old_string),
+          asString(args.arguments.new_string),
+        );
+      case 'bash':
+        return bashTool(args.cwd, asString(args.arguments.command));
       default:
         return { content: `Unknown tool: ${args.name}`, isError: true };
     }
@@ -282,14 +392,172 @@ function safeResolve(cwd: string, rel: string): string {
   try {
     targetReal = fs.realpathSync(resolved);
   } catch {
-    // File doesn't exist yet — check the parent is inside cwd.
-    targetReal = resolved;
+    // File doesn't exist yet (write_file creates it, possibly mkdir'ing
+    // parents). Realpath the NEAREST EXISTING ancestor so a symlinked
+    // parent dir (e.g. cwd/sub -> /etc) can't smuggle the write outside
+    // the root, then re-attach the not-yet-existing tail. Resolving only
+    // the literal path here would let `sub/x` follow the `sub` symlink.
+    targetReal = realpathNearestAncestor(resolved);
   }
   const rel2 = path.relative(cwdReal, targetReal);
   if (rel2.startsWith('..') || path.isAbsolute(rel2)) {
     throw new Error(`path escapes project root: ${rel}`);
   }
   return resolved;
+}
+
+/// Realpath the closest existing ancestor of `target` and re-join the
+/// non-existent tail. Used by safeResolve for paths that don't exist yet
+/// so symlinks anywhere in the existing prefix are resolved before the
+/// containment check.
+function realpathNearestAncestor(target: string): string {
+  let dir = path.dirname(target);
+  let tail = path.basename(target);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(dir), tail);
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return target; // reached fs root, nothing resolved
+      tail = path.join(path.basename(dir), tail);
+      dir = parent;
+    }
+  }
+}
+
+const MAX_BASH_OUTPUT_BYTES = 256 * 1024;
+const BASH_TIMEOUT_MS = 60_000;
+
+/// Bounds for the JS grep fallback. The pattern is model-controlled, so a
+/// catastrophic-backtracking regex against a long line could otherwise hang
+/// the main process. We cap total wall-clock time across the walk AND skip
+/// pathologically long lines (a single `re.test` on a 100 KB minified line
+/// is the real ReDoS vector). The ripgrep path has its own 5s timeout.
+const GREP_TIME_BUDGET_MS = 5_000;
+const GREP_MAX_LINE_LEN = 10_000;
+
+/// Write a new file (or overwrite an existing one with `overwrite=true`).
+/// Parents are mkdir'd as needed. Refuses paths outside cwd via
+/// safeResolve.
+function writeFileTool(
+  cwd: string,
+  rel: string,
+  content: string,
+  overwrite: boolean,
+): ToolExecutionResult {
+  const bytes = Buffer.byteLength(content, 'utf-8');
+  if (bytes > MAX_FILE_BYTES) {
+    return {
+      content: `${rel}: content is ${Math.round(bytes / 1024)} KB — over the 256 KB write limit. Split the file or write less at once.`,
+      isError: true,
+    };
+  }
+  const full = safeResolve(cwd, rel);
+  if (fs.existsSync(full) && !overwrite) {
+    return {
+      content:
+        `${rel}: already exists. Pass overwrite=true to replace, or use edit_file ` +
+        `for targeted changes.`,
+      isError: true,
+    };
+  }
+  fs.mkdirSync(path.dirname(full), { recursive: true });
+  fs.writeFileSync(full, content, 'utf-8');
+  return {
+    content: `Wrote ${rel} (${bytes.toLocaleString()} bytes).`,
+    isError: false,
+  };
+}
+
+/// Replace a UNIQUE substring in an existing file. Mirrors the Claude
+/// Edit tool's semantics so models trained on similar surfaces produce
+/// the right argument shape. Refuses if the file doesn't exist, or if
+/// `old_string` is missing or ambiguous.
+function editFileTool(
+  cwd: string,
+  rel: string,
+  oldString: string,
+  newString: string,
+): ToolExecutionResult {
+  const full = safeResolve(cwd, rel);
+  if (!fs.existsSync(full)) {
+    return { content: `${rel}: file does not exist. Use write_file to create.`, isError: true };
+  }
+  const stat = fs.statSync(full);
+  if (!stat.isFile()) return { content: `${rel}: not a regular file`, isError: true };
+  if (stat.size > MAX_FILE_BYTES) {
+    return {
+      content: `${rel}: file is ${Math.round(stat.size / 1024)} KB — over the 256 KB edit limit.`,
+      isError: true,
+    };
+  }
+  const original = fs.readFileSync(full, 'utf-8');
+  if (!oldString) {
+    return { content: 'edit_file: old_string cannot be empty.', isError: true };
+  }
+  // Count occurrences; require exactly one to avoid silent corruption.
+  let count = 0;
+  let idx = -1;
+  let pos = 0;
+  while ((pos = original.indexOf(oldString, pos)) !== -1) {
+    if (count === 0) idx = pos;
+    count += 1;
+    pos += oldString.length;
+    if (count > 1) break;
+  }
+  if (count === 0) {
+    return {
+      content:
+        `${rel}: old_string not found. Use read_file to confirm the exact text and indentation.`,
+      isError: true,
+    };
+  }
+  if (count > 1) {
+    return {
+      content:
+        `${rel}: old_string appears ${count} times. Provide more context so the match is unique.`,
+      isError: true,
+    };
+  }
+  const updated = original.slice(0, idx) + newString + original.slice(idx + oldString.length);
+  fs.writeFileSync(full, updated, 'utf-8');
+  return {
+    content: `Edited ${rel}.`,
+    isError: false,
+  };
+}
+
+/// Shell-out via /bin/sh in the project root. Bounded by timeout + output
+/// cap. We surface stdout, stderr, and exit code separately so the model
+/// can react to failures (e.g. tests that didn't pass). The user opted
+/// into autonomous execution via the flow's permission/trust toggle, so
+/// we don't gate on per-command approval here.
+function bashTool(cwd: string, command: string): ToolExecutionResult {
+  if (!command.trim()) {
+    return { content: 'bash: empty command.', isError: true };
+  }
+  const res = spawnSync('/bin/sh', ['-c', command], {
+    cwd,
+    encoding: 'utf-8',
+    timeout: BASH_TIMEOUT_MS,
+    maxBuffer: MAX_BASH_OUTPUT_BYTES,
+  });
+  const stdout = (res.stdout ?? '').toString();
+  const stderr = (res.stderr ?? '').toString();
+  const timedOut = res.signal === 'SIGTERM' || (res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
+  const exit = res.status ?? -1;
+  const parts: string[] = [
+    `$ ${command}`,
+    `exit: ${exit}${timedOut ? ' (timed out after 60s)' : ''}`,
+  ];
+  if (stdout) parts.push('--- stdout ---', stdout);
+  if (stderr) parts.push('--- stderr ---', stderr);
+  return {
+    content: parts.join('\n'),
+    // Treat non-zero exit as an error so the model knows to react. The
+    // model can still read the output and decide what to do next.
+    isError: exit !== 0 || timedOut,
+  };
 }
 
 function readFileTool(cwd: string, rel: string): ToolExecutionResult {
@@ -365,7 +633,12 @@ function grepTool(
   }
   const matches: string[] = [];
   const stack: string[] = [full];
+  const deadline = Date.now() + GREP_TIME_BUDGET_MS;
   while (stack.length) {
+    if (Date.now() > deadline) {
+      matches.push(`… (search stopped after ${GREP_TIME_BUDGET_MS / 1000}s — narrow the pattern or path)`);
+      break;
+    }
     const cur = stack.pop()!;
     let entries: fs.Dirent[];
     try {
@@ -396,6 +669,10 @@ function grepTool(
         }
         const lines = text.split(/\r?\n/);
         for (let i = 0; i < lines.length; i += 1) {
+          // Skip pathologically long lines: a single re.test on a huge
+          // minified line is the catastrophic-backtracking vector, and the
+          // periodic deadline check can't interrupt one in-flight call.
+          if (lines[i].length > GREP_MAX_LINE_LEN) continue;
           if (re.test(lines[i])) {
             matches.push(`${path.relative(cwd, p)}:${i + 1}:${lines[i]}`);
             if (matches.length >= MAX_GREP_MATCHES) {
@@ -413,7 +690,10 @@ function grepTool(
 /// Cap on how many tool/response rounds a single Ollama turn can take.
 /// Smaller models occasionally get stuck re-calling the same tool; the
 /// cap surfaces that as a visible error instead of an infinite spinner.
-export const MAX_OLLAMA_TOOL_ROUNDS = 8;
+/// Bumped from 8 → 24 after flow steps regularly tripped at 8: real
+/// implementer work routinely chains 10–15 read+edit calls before
+/// producing the final `<output>` marker.
+export const MAX_OLLAMA_TOOL_ROUNDS = 24;
 
 /// True iff `tag` is in the curated catalog AND its family is trained on
 /// the Ollama tool-calling protocol. Unknown/custom tags get `false` —
@@ -431,21 +711,141 @@ export function modelSupportsTools(tag: string): boolean {
 /// X") without ever emitting a structured tool_call when invoked via
 /// the API field. Putting the schema in-prompt with worked examples
 /// makes the contract deterministic.
-export function buildOllamaToolSystemPrompt(cwd: string): string {
+export function buildOllamaToolSystemPrompt(
+  cwd: string,
+  enabledTools?: ReadonlySet<string>,
+): string {
+  const isEnabled = (name: string): boolean => !enabledTools || enabledTools.has(name);
+  const sections: Array<{ name: string; lines: string[] }> = [
+    {
+      name: 'read_file',
+      lines: [
+        '  read_file(path: string)',
+        '    Read a UTF-8 text file relative to the project root. Returns up to 256 KB.',
+      ],
+    },
+    {
+      name: 'list_dir',
+      lines: [
+        '  list_dir(path: string)',
+        '    List files and subdirectories under a project-relative path. Use "." for the root.',
+      ],
+    },
+    {
+      name: 'grep',
+      lines: [
+        '  grep(pattern: string, path?: string, caseInsensitive?: boolean)',
+        '    Regex-search across the project. `path` defaults to the project root.',
+      ],
+    },
+    {
+      name: 'write_file',
+      lines: [
+        '  write_file(path: string, content: string, overwrite?: boolean)',
+        '    Create a new file (parent dirs auto-created). Refuses to overwrite an existing',
+        '    file unless overwrite is true. Use this for NEW files (e.g. new test files).',
+      ],
+    },
+    {
+      name: 'edit_file',
+      lines: [
+        '  edit_file(path: string, old_string: string, new_string: string)',
+        '    Edit an existing file by replacing a UNIQUE substring. old_string must appear',
+        '    EXACTLY ONCE in the file (whitespace included) — read_file the file first to',
+        '    get the exact text. Use this for SURGICAL changes to existing files.',
+      ],
+    },
+    {
+      name: 'bash',
+      lines: [
+        '  bash(command: string)',
+        '    Run a /bin/sh command in the project root. 60s timeout, 256 KB output cap.',
+        '    Use for tests (`npm test`), git commands, package installs, etc.',
+      ],
+    },
+  ];
+  const toolBlock = sections
+    .filter((s) => isEnabled(s.name))
+    .flatMap((s) => ['', ...s.lines])
+    .join('\n');
+
+  const examples: Array<{ tool: string; lines: string[] }> = [
+    {
+      tool: 'list_dir',
+      lines: [
+        'User: what is in this directory?',
+        'Assistant:',
+        '<tool_call>',
+        '{"name": "list_dir", "arguments": {"path": "."}}',
+        '</tool_call>',
+      ],
+    },
+    {
+      tool: 'read_file',
+      lines: [
+        'User: what does README.md say?',
+        'Assistant:',
+        '<tool_call>',
+        '{"name": "read_file", "arguments": {"path": "README.md"}}',
+        '</tool_call>',
+      ],
+    },
+    {
+      tool: 'grep',
+      lines: [
+        'User: where do we configure the database URL?',
+        'Assistant:',
+        '<tool_call>',
+        '{"name": "grep", "arguments": {"pattern": "DATABASE_URL", "caseInsensitive": false}}',
+        '</tool_call>',
+      ],
+    },
+    {
+      tool: 'write_file',
+      lines: [
+        'User: create a new test file for the foo module.',
+        'Assistant:',
+        '<tool_call>',
+        '{"name": "write_file", "arguments": {"path": "src/foo.test.ts", "content": "import { foo } from \'./foo\';\\n\\ntest(\'foo works\', () => {\\n  expect(foo()).toBe(true);\\n});\\n"}}',
+        '</tool_call>',
+      ],
+    },
+    {
+      tool: 'edit_file',
+      lines: [
+        'User: rename the variable `count` to `total` in src/index.ts (it appears once).',
+        'Assistant:',
+        '<tool_call>',
+        '{"name": "read_file", "arguments": {"path": "src/index.ts"}}',
+        '</tool_call>',
+        '(after seeing the result you would then call edit_file with the exact substring, e.g.)',
+        '<tool_call>',
+        '{"name": "edit_file", "arguments": {"path": "src/index.ts", "old_string": "let count = 0;", "new_string": "let total = 0;"}}',
+        '</tool_call>',
+      ],
+    },
+    {
+      tool: 'bash',
+      lines: [
+        'User: run the tests.',
+        'Assistant:',
+        '<tool_call>',
+        '{"name": "bash", "arguments": {"command": "npm test"}}',
+        '</tool_call>',
+      ],
+    },
+  ];
+  const exampleBlock = examples
+    .filter((e) => isEnabled(e.tool))
+    .flatMap((e) => ['', ...e.lines])
+    .join('\n');
+
   return [
     'You are a local coding assistant running inside overcli on the user\'s machine.',
     `You have real, working access to the user's project directory at: ${cwd}`,
     '',
-    'AVAILABLE TOOLS (real, working — they read the user\'s actual disk):',
-    '',
-    '  read_file(path: string)',
-    '    Read a UTF-8 text file relative to the project root. Returns up to 256 KB.',
-    '',
-    '  list_dir(path: string)',
-    '    List files and subdirectories under a project-relative path. Use "." for the root.',
-    '',
-    '  grep(pattern: string, path?: string, caseInsensitive?: boolean)',
-    '    Regex-search across the project. `path` defaults to the project root.',
+    'AVAILABLE TOOLS (real, working — they read AND modify the user\'s actual disk):',
+    toolBlock,
     '',
     'TOOL-CALL FORMAT (MANDATORY):',
     'Whenever you need to use a tool, emit EXACTLY this block — no prose, no markdown fences, just the tag:',
@@ -457,34 +857,19 @@ export function buildOllamaToolSystemPrompt(cwd: string): string {
     'The wrapper tags and the JSON are BOTH required. Stop generating after </tool_call>; the tool result will be fed back to you on the next turn.',
     '',
     'CRITICAL RULES:',
-    '1. When the user asks about files, directories, or code content, you MUST call the appropriate tool. Do NOT describe what you "will" do.',
-    '2. Never narrate ("I will read X", "Let me list Y", "I\'ll check Z", "I will now…"). If you find yourself writing one of those phrases, STOP and emit the <tool_call> block instead.',
+    '1. When you need to do something with files, you MUST call the appropriate tool. Do NOT describe what you "will" do.',
+    '2. Never narrate ("I will read X", "I\'ll use the edit_file tool", "Let me list Y"). If you catch yourself typing those phrases, STOP and emit the <tool_call> block instead.',
     '3. Never fabricate file names, directory contents, or file content. If you have not called the tool yet, you do not know what is there.',
-    '4. After the tool returns, answer the user\'s question concisely using the real result.',
+    '4. Only call the tools listed above. If a task asks for something that requires a tool not in your list, say so plainly — do not invent a tool name.',
+    '5. After the tool returns, answer concisely using the real result.',
     '',
     'WORKED EXAMPLES:',
-    '',
-    'User: what is in this directory?',
-    'Assistant:',
-    '<tool_call>',
-    '{"name": "list_dir", "arguments": {"path": "."}}',
-    '</tool_call>',
-    '',
-    'User: what does README.md say?',
-    'Assistant:',
-    '<tool_call>',
-    '{"name": "read_file", "arguments": {"path": "README.md"}}',
-    '</tool_call>',
-    '',
-    'User: where do we configure the database URL?',
-    'Assistant:',
-    '<tool_call>',
-    '{"name": "grep", "arguments": {"pattern": "DATABASE_URL", "caseInsensitive": false}}',
-    '</tool_call>',
+    exampleBlock,
     '',
     'WRONG (do NOT produce output like this):',
     '"I will read README.md to provide you with its contents."',
     '"Let me fetch the contents of that file."',
+    '"I\'ll just use the edit_file tool."',
     '"Sure, I\'ll list the directory."',
   ].join('\n');
 }
@@ -521,6 +906,11 @@ export interface OllamaToolLoopArgs {
   /// this false since "I'll check the diff and report back" is a
   /// legitimate verdict shape for that path.
   nudgeOnNarration?: boolean;
+  /// Per-step tool allowlist. When set, only the named tools are
+  /// dispatched; calls to other tools return a structured error so the
+  /// model can correct course. Flow steps use this to enforce a
+  /// researcher's read-only contract. Undefined = all tools allowed.
+  enabledTools?: ReadonlySet<string>;
 }
 
 export type OllamaToolLoopEvent =
@@ -540,6 +930,11 @@ export async function runOllamaToolLoop(
   const maxRounds = args.maxRounds ?? MAX_OLLAMA_TOOL_ROUNDS;
   const nudgeOnNarration = args.nudgeOnNarration ?? true;
   let nudged = false;
+  // Track the previous no-tool-call text so we can detect a model spinning
+  // on the same narration ("I'll use the edit_file tool." × 25). Once we
+  // see the same gist twice in a row with no tool call, bail with a clear
+  // error rather than letting the loop chew through the full round budget.
+  let lastNoCallText: string | null = null;
 
   for (let round = 0; round < maxRounds; round += 1) {
     onEvent({ type: 'roundStart', round });
@@ -582,6 +977,25 @@ export async function runOllamaToolLoop(
     onEvent({ type: 'roundComplete', round, text: cleanedText, toolCalls: pendingCalls });
 
     if (pendingCalls.length === 0) {
+      // Stuck-loop guard: a model that keeps emitting the same narration
+      // round after round (gemma: "I'll just use the edit_file tool." ×25)
+      // wastes the user's time and tokens. If we see substantially the
+      // same text twice in a row, bail with a clear error instead of
+      // chewing through the round budget.
+      const norm = normalizeForRepeat(cleanedText);
+      if (norm && norm === lastNoCallText) {
+        return {
+          ok: false,
+          error:
+            `Model stuck in a narration loop — produced the same text twice without ` +
+            `calling a tool: "${truncate(cleanedText, 120)}". This usually means the ` +
+            `model intends to use a tool (e.g. edit_file) but doesn't know the call ` +
+            `format. Check the system prompt or try a different model.`,
+          rounds: round + 1,
+        };
+      }
+      if (norm) lastNoCallText = norm;
+
       // No tool call this round. If the response looks like narration
       // ("I'll read X") and we haven't nudged yet, push a system reminder
       // and re-enter — but only when the caller opted into nudging.
@@ -604,6 +1018,10 @@ export async function runOllamaToolLoop(
       return { ok: true, finalText: cleanedText, rounds: round + 1 };
     }
 
+    // Any successful tool round resets the stuck-loop tracker — the
+    // model is making progress.
+    lastNoCallText = null;
+
     // Tool-call round — persist the assistant's partial reply (with
     // `tool_calls` attached so the transcript keeps the call/result
     // pairing Ollama expects on replay) and execute each call.
@@ -620,6 +1038,7 @@ export async function runOllamaToolLoop(
         name: call.name,
         arguments: call.arguments,
         cwd: args.cwd,
+        enabledTools: args.enabledTools,
       });
       onEvent({ type: 'toolResult', round, call, result });
       args.messages.push({
@@ -635,6 +1054,19 @@ export async function runOllamaToolLoop(
     error: `Reached tool-call limit (${maxRounds} rounds) without a final answer.`,
     rounds: maxRounds,
   };
+}
+
+/// Normalize for repeat-detection. Strips whitespace, punctuation, and
+/// lowercases so "I'll just use the edit_file tool." matches "i'll just
+/// use the edit_file tool" across rounds even when the model varies
+/// punctuation. Empty string short-circuits to null at the caller.
+function normalizeForRepeat(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().toLowerCase().replace(/[.,!?;:]+$/g, '');
+}
+
+function truncate(s: string, n: number): string {
+  if (s.length <= n) return s;
+  return s.slice(0, n - 1) + '…';
 }
 
 /// Build the wire messages for one streamChat round: system prompt,
