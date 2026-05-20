@@ -119,7 +119,7 @@ function parseItemStarted(
       const next = ensurePartialState(state.assistantByItemId, item.id, item.text);
       if (!next.text) return { events: [] };
       return {
-        events: [assistantTextEvent(next, raw)],
+        events: [assistantTextEvent(next, raw, { isPartial: true })],
       };
     }
     case 'reasoning': {
@@ -240,7 +240,7 @@ function parseAgentMessageDelta(
   const next = ensurePartialState(state.assistantByItemId, params?.itemId, '');
   if (typeof params?.delta === 'string') next.text += params.delta;
   next.revision += 1;
-  return { events: [assistantTextEvent(next, raw)] };
+  return { events: [assistantTextEvent(next, raw, { isPartial: true })] };
 }
 
 function parseReasoningDelta(
@@ -254,7 +254,11 @@ function parseReasoningDelta(
   return { events: [] };
 }
 
-function assistantTextEvent(state: PartialAssistantState, raw: string): StreamEvent {
+function assistantTextEvent(
+  state: PartialAssistantState,
+  raw: string,
+  opts: { isPartial?: boolean } = {},
+): StreamEvent {
   return {
     id: state.eventId,
     timestamp: Date.now(),
@@ -266,6 +270,7 @@ function assistantTextEvent(state: PartialAssistantState, raw: string): StreamEv
         text: state.text,
         toolUses: [],
         thinking: [],
+        ...(opts.isPartial ? { isPartial: true } : {}),
       },
     },
     revision: state.revision,

@@ -49,12 +49,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // re-fire each render and pin the CPU.
   const workspaces = useStore((s) => s.workspaces);
   const projects = useStore((s) => s.projects);
-  // Workspace-member path resolution is only meaningful for a
-  // conversation-scoped file view. The explorer passes an explicit root
-  // and has no conversation, so skip the lookup.
+  // Workspace-member resolution: when the convId belongs to a workspace
+  // conversation, the lookup runs by convId. For flow runs whose
+  // projectPath is a workspace symlink root, convId doesn't match any
+  // workspace, so we fall back to matching by rootPath — without this
+  // the diff view runs `git diff` in the symlink dir (not a git repo)
+  // and errors with `Could not access 'HEAD'`.
   const workspaceMembers = useMemo(
-    () => (rootPathOverride ? null : resolveWorkspaceMembers(convId, workspaces, projects)),
-    [convId, workspaces, projects, rootPathOverride],
+    () => resolveWorkspaceMembers(convId, workspaces, projects, rootPath),
+    [convId, workspaces, projects, rootPath],
   );
   const path = useStore((s) => s.openFilePath);
   const highlight = useStore((s) => s.openFileHighlight);
@@ -804,6 +807,7 @@ function resolveWorkspaceMembers(
   convId: string | null,
   workspaces: Array<{
     projectIds: string[];
+    rootPath?: string;
     conversations?: Array<{
       id: string;
       worktreePath?: string;
@@ -821,21 +825,24 @@ function resolveWorkspaceMembers(
       checkedOutLocally?: boolean;
     }>;
   }>,
+  rootPathFallback: string | null,
 ): Array<{
   name: string;
   path: string;
   projectPath?: string | null;
   baseBranch?: string | null;
 }> | null {
-  if (!convId) return null;
   for (const w of workspaces) {
-    const c = (w.conversations ?? []).find((x) => x.id === convId);
-    if (!c) continue;
-    if (c.worktreePath) return null;
+    const c = convId ? (w.conversations ?? []).find((x) => x.id === convId) : null;
+    // Match by convId first (regular workspace convs), then fall back to
+    // rootPath (flow runs whose projectPath is the workspace symlink dir
+    // but whose convId isn't part of the workspace's conversation list).
+    if (!c && (!rootPathFallback || w.rootPath !== rootPathFallback)) continue;
+    if (c?.worktreePath) return null;
     // Coordinator: map symlinks to member WORKTREES so the diff view
     // runs git from the right repo. Use the same project-name + numeric
     // suffix dedup that `ensureCoordinatorSymlinkRoot` uses on disk.
-    if (c.workspaceAgentMemberIds?.length) {
+    if (c?.workspaceAgentMemberIds?.length) {
       const out: Array<{
         name: string;
         path: string;

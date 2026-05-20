@@ -1,6 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
+import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
+import { BaseBranchSelect } from './sheets/BaseBranchSelect';
+import type { Flow } from '@shared/flows/schema';
+import { FlowMonogram } from './flows/FlowMonogram';
 import {
   Backend,
   BackendHealth,
@@ -427,8 +431,486 @@ export function WelcomePane() {
             <Pill label={branch} items={[{ value: branch, label: branch }]} onPick={() => {}} />
           )}
         </div>
+        <WelcomeFlowsRow
+          projectPath={selectedProject?.path}
+          workspaceRootPath={focusedWorkspace?.rootPath}
+          targetLabel={focusedWorkspace?.name ?? selectedProject?.name ?? 'this context'}
+        />
       </div>
     </div>
+  );
+}
+
+/// "Or run a flow" section beneath the welcome composer. Surfaces saved
+/// flows as proper cards (monogram + name + step preview) — clicking a
+/// card slides a run panel into the same slot so the user stays in
+/// context. Capped to the first MAX_VISIBLE entries with a link to the
+/// full Flows tab.
+const MAX_VISIBLE_FLOWS = 4;
+
+function WelcomeFlowsRow({
+  projectPath,
+  workspaceRootPath,
+  targetLabel,
+}: {
+  projectPath: string | undefined;
+  workspaceRootPath: string | undefined;
+  targetLabel: string;
+}) {
+  const setDetailMode = useStore((s) => s.setDetailMode);
+  const flows = useFlowsStore((s) => s.flows);
+  const loaded = useFlowsStore((s) => s.loaded);
+  const reload = useFlowsStore((s) => s.reload);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
+  const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
+  const projects = useStore((s) => s.projects);
+  const workspaces = useStore((s) => s.workspaces);
+  const [pickedFlowId, setPickedFlowId] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>('cwd');
+  // baseBranch starts empty — the BaseBranchSelect below populates it
+  // from the repo's actual branches (and `detectBaseBranch` picks a
+  // sensible default like the repo's `origin/HEAD` or whichever of
+  // main/master exists). Hardcoding "main" was lying to users whose
+  // repos use `master`.
+  const [baseBranch, setBaseBranch] = useState('');
+
+  // Repos the worktree(s) are minted from. For a workspace we hand the
+  // selector each member's path so the branch list it shows is the
+  // INTERSECTION (only branches that exist in every repo are eligible).
+  const baseBranchRepoPaths = useMemo(() => {
+    if (workspaceRootPath) {
+      const ws = workspaces.find((w) => w.rootPath === workspaceRootPath);
+      if (ws) {
+        return ws.projectIds
+          .map((pid) => projects.find((p) => p.id === pid))
+          .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
+          .map((p) => p.path);
+      }
+    }
+    return projectPath ? [projectPath] : [];
+  }, [workspaceRootPath, projectPath, workspaces, projects]);
+  // Worktrees are eligible whenever we have ANY git-backed target:
+  //   - Single project: mint one worktree off baseBranch.
+  //   - Workspace: mint one worktree per member project and wire them
+  //     through a coordinator symlink root (handled by the flow
+  //     runtime). The workspace root itself isn't a git repo, but the
+  //     members are — that's what matters.
+  const canUseWorktree = !!workspaceRootPath || !!projectPath;
+
+  useEffect(() => {
+    if (!loaded) void reload(projects.map((p) => p.path));
+  }, [loaded, projects.length]);
+
+  const target = workspaceRootPath ?? projectPath ?? '';
+  const pickedFlow = pickedFlowId ? flows.find((f) => f.id === pickedFlowId) : null;
+
+  if (!loaded) return null;
+  if (flows.length === 0) return null;
+
+  const visibleFlows = showAll ? flows : flows.slice(0, MAX_VISIBLE_FLOWS);
+  const hiddenCount = flows.length - visibleFlows.length;
+
+  async function handleRun() {
+    if (!pickedFlow || !target || !draft.trim()) {
+      setError('Tell the flow what to work on, and pick a project or workspace.');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await window.overcli.invoke('flows:startRun', {
+        flowId: pickedFlow.id,
+        projectPath: target,
+        userPrompt: draft,
+        runIn: canUseWorktree ? runIn : 'cwd',
+        baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      const run = await window.overcli.invoke('flows:getRun', { runId: result.runId });
+      if (run) applyRunUpdate(run);
+      setActiveRun(result.runId);
+      setDetailMode('flows');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-8">
+      <div className="text-center text-[10px] uppercase tracking-[0.22em] text-ink-faint mb-3">
+        Or run a flow
+      </div>
+
+      {/* Card grid. Clicking a card toggles its expanded run panel
+          INSIDE the grid (replacing the cards) so there's no vertical
+          jump and the picked card's identity is preserved. */}
+      {!pickedFlow ? (
+        <>
+          <div className="grid grid-cols-2 gap-2">
+            {visibleFlows.map((flow) => (
+              <FlowCard
+                key={flow.id}
+                flow={flow}
+                picked={false}
+                onClick={() => {
+                  setPickedFlowId(flow.id);
+                  setDraft('');
+                  setError(null);
+                }}
+              />
+            ))}
+          </div>
+          <div className="flex items-center justify-center gap-3 mt-2 text-[11px] text-ink-faint">
+            {hiddenCount > 0 && (
+              <button
+                onClick={() => setShowAll(true)}
+                className="hover:text-ink underline-offset-2 hover:underline"
+              >
+                Show {hiddenCount} more
+              </button>
+            )}
+            {hiddenCount === 0 && showAll && flows.length > MAX_VISIBLE_FLOWS && (
+              <button
+                onClick={() => setShowAll(false)}
+                className="hover:text-ink underline-offset-2 hover:underline"
+              >
+                Show fewer
+              </button>
+            )}
+            <button
+              onClick={() => {
+                // Always land on the flows library — never a leftover
+                // active run or half-edited draft from a prior session.
+                setActiveRun(null);
+                closeFlowEditor();
+                setDetailMode('flows');
+              }}
+              className="hover:text-ink underline-offset-2 hover:underline"
+            >
+              Manage flows →
+            </button>
+          </div>
+        </>
+      ) : (
+        <RunPanel
+          flow={pickedFlow}
+          targetLabel={targetLabel}
+          draft={draft}
+          onDraft={setDraft}
+          error={error}
+          submitting={submitting}
+          onCancel={() => {
+            setPickedFlowId(null);
+            setError(null);
+          }}
+          onRun={handleRun}
+          canUseWorktree={canUseWorktree}
+          runIn={runIn}
+          onRunIn={setRunIn}
+          baseBranch={baseBranch}
+          onBaseBranch={setBaseBranch}
+          baseBranchRepoPaths={baseBranchRepoPaths}
+          canRun={!!target && !!draft.trim()}
+        />
+      )}
+    </div>
+  );
+}
+
+/// Expanded run panel — replaces the card grid in the same vertical slot
+/// so picking a flow doesn't push other content down.
+function RunPanel({
+  flow,
+  targetLabel,
+  draft,
+  onDraft,
+  error,
+  submitting,
+  onCancel,
+  onRun,
+  canUseWorktree,
+  runIn,
+  onRunIn,
+  baseBranch,
+  onBaseBranch,
+  baseBranchRepoPaths,
+  canRun,
+}: {
+  flow: Flow;
+  targetLabel: string;
+  draft: string;
+  onDraft: (s: string) => void;
+  error: string | null;
+  submitting: boolean;
+  onCancel: () => void;
+  onRun: () => void;
+  canUseWorktree: boolean;
+  runIn: 'cwd' | 'worktree';
+  onRunIn: (v: 'cwd' | 'worktree') => void;
+  baseBranch: string;
+  onBaseBranch: (s: string) => void;
+  /// Repos the worktree(s) will be minted from. Single project →
+  /// `[projectPath]`; workspace → each member's path. Passed straight
+  /// through to `BaseBranchSelect`, which lists the branch names that
+  /// exist in EVERY listed repo (intersection) so a workspace flow
+  /// can't pick a branch that one member doesn't have.
+  baseBranchRepoPaths: string[];
+  canRun: boolean;
+}) {
+  return (
+    <div
+      className={
+        // Solid card background — `bg-surface-elevated/60` + backdrop-blur
+        // was flashing white in Electron's renderer before the CSS vars
+        // settled on the first paint. Sticking to known-good tokens
+        // (matching the sheet host's pattern) avoids the flicker.
+        'relative rounded-2xl bg-surface-elevated ' +
+        'shadow-[0_20px_60px_-20px_rgba(0,0,0,0.55),0_2px_0_0_rgba(255,255,255,0.04)_inset] ' +
+        'ring-1 ring-card-strong overflow-hidden'
+      }
+    >
+      <div className="relative p-5">
+        {/* Header — monogram + title + steps, close on the right. No
+            divider line; spacing alone separates from the input. */}
+        <div className="flex items-start gap-3 mb-4">
+          <FlowMonogram name={flow.name} size="lg" />
+          <div className="flex-1 min-w-0 pt-0.5">
+            <div className="text-[15px] font-semibold leading-tight text-ink truncate">
+              {flow.name}
+            </div>
+            <div className="text-[11px] text-ink-muted mt-1 truncate">
+              <StepPreview flow={flow} />
+            </div>
+          </div>
+          <button
+            onClick={onCancel}
+            className="text-ink-faint hover:text-ink rounded-full w-7 h-7 flex items-center justify-center hover:bg-white/5 flex-shrink-0 transition"
+            aria-label="Close"
+            title="Back to flows"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Input — soft inner surface with a focus ring. Uses solid
+            tokens (bg-card / bg-card-strong) instead of opacity-modifier
+            variants, which don't compose cleanly with our CSS-var-backed
+            colors and were rendering near-white. */}
+        <input
+          value={draft}
+          onChange={(e) => onDraft(e.target.value)}
+          autoFocus
+          placeholder="What should it work on?"
+          className={
+            'w-full bg-card border border-card-strong rounded-lg px-3.5 py-2.5 text-sm text-ink ' +
+            'placeholder:text-ink-faint focus:outline-none focus:border-accent ' +
+            'focus:shadow-[0_0_0_3px_rgba(125,200,255,0.12)] transition'
+          }
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault();
+              onRun();
+            }
+          }}
+        />
+
+        {error && (
+          <div className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mt-3 whitespace-pre-wrap">
+            {error}
+          </div>
+        )}
+
+        {/* Footer row */}
+        <div className="flex items-center gap-3 mt-4">
+          {/* Target chip */}
+          <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
+            <span className="text-ink-faint">in</span>
+            <span className="font-medium text-ink truncate max-w-[140px]">{targetLabel}</span>
+          </div>
+
+          {canUseWorktree && (
+            <>
+              <span className="text-ink-faint text-[11px]">·</span>
+              {/* Segmented control with a real "active" state. */}
+              <div className="inline-flex p-0.5 rounded-lg bg-card border border-card-strong">
+                <SegmentButton
+                  active={runIn === 'cwd'}
+                  onClick={() => onRunIn('cwd')}
+                  title="Run in the project's working tree"
+                >
+                  main tree
+                </SegmentButton>
+                <SegmentButton
+                  active={runIn === 'worktree'}
+                  onClick={() => onRunIn('worktree')}
+                  title="Create a fresh worktree and run there"
+                >
+                  worktree
+                </SegmentButton>
+              </div>
+              {runIn === 'worktree' && (
+                <div className="inline-flex items-center gap-1.5 text-[11px]">
+                  <span className="text-ink-faint">off</span>
+                  <BaseBranchSelect
+                    repoPaths={baseBranchRepoPaths}
+                    value={baseBranch}
+                    onChange={onBaseBranch}
+                    className="text-[11px]"
+                  />
+                </div>
+              )}
+            </>
+          )}
+
+          {/* Right side: kbd hint + primary action. */}
+          <div className="ml-auto flex items-center gap-2.5">
+            <kbd
+              className={
+                'hidden sm:inline-flex items-center gap-0.5 text-[10px] font-mono ' +
+                'text-ink-faint px-1.5 py-0.5 rounded border border-card-strong bg-card'
+              }
+              title="Press ⌘⏎ to run"
+            >
+              ⌘⏎
+            </kbd>
+            <button
+              onClick={onRun}
+              disabled={submitting || !canRun}
+              className={
+                'inline-flex items-center gap-1.5 text-xs font-medium px-4 py-2 rounded-lg ' +
+                'bg-accent text-white shadow-[0_6px_18px_-6px_rgba(125,200,255,0.45)] ' +
+                'hover:shadow-[0_8px_22px_-6px_rgba(125,200,255,0.6)] hover:-translate-y-px ' +
+                'active:translate-y-0 transition-all duration-150 ' +
+                'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:shadow-none'
+              }
+            >
+              {submitting ? (
+                <>
+                  <Spinner /> Starting…
+                </>
+              ) : (
+                <>Run flow <span aria-hidden>→</span></>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SegmentButton({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className={
+        'text-[11px] px-2.5 py-1 rounded-md transition-all ' +
+        (active
+          ? 'bg-accent/25 text-ink shadow-[0_1px_0_0_rgba(255,255,255,0.06)_inset]'
+          : 'text-ink-muted hover:text-ink hover:bg-white/5')
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg
+      className="animate-spin w-3 h-3"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+    >
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.3" strokeWidth="2" />
+      <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/// Single flow card in the welcome grid. Subtle resting state, lifts on
+/// hover with a soft outline + tinted glow so the affordance reads as
+/// clickable without shouting.
+function FlowCard({
+  flow,
+  picked,
+  onClick,
+}: {
+  flow: Flow;
+  picked: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'group relative text-left rounded-xl border bg-card/30 px-3.5 py-3 transition-all duration-150 ' +
+        'hover:bg-card/60 hover:border-accent/40 hover:-translate-y-0.5 hover:shadow-[0_4px_18px_-8px_rgba(125,200,255,0.4)] ' +
+        (picked
+          ? 'border-accent shadow-[0_4px_18px_-8px_rgba(125,200,255,0.5)]'
+          : 'border-card')
+      }
+    >
+      <div className="flex items-start gap-3">
+        <FlowMonogram name={flow.name} />
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold truncate text-ink leading-tight">
+            {flow.name}
+          </div>
+          {flow.description && (
+            <div className="text-[11px] text-ink-muted line-clamp-1 mt-1 leading-snug">
+              {flow.description}
+            </div>
+          )}
+          <div className="text-[10px] text-ink-faint mt-2 truncate">
+            <StepPreview flow={flow} />
+          </div>
+        </div>
+        {/* Subtle play arrow on hover — reinforces "click to run". */}
+        <div className="text-ink-faint opacity-0 group-hover:opacity-100 group-hover:text-accent transition-opacity self-center flex-shrink-0">
+          →
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/// Compact "5 steps · plan → build → review" line. Truncates to 3 step
+/// ids with an ellipsis for longer flows.
+function StepPreview({ flow }: { flow: Flow }) {
+  const count = flow.steps.length;
+  const ids = flow.steps.slice(0, 3).map((s) => s.id);
+  const trail = flow.steps.length > 3 ? '…' : '';
+  return (
+    <>
+      {count} step{count === 1 ? '' : 's'}
+      {ids.length > 0 && (
+        <>
+          {' · '}
+          <span className="text-ink-muted">{ids.join(' → ')}{trail}</span>
+        </>
+      )}
+    </>
   );
 }
 

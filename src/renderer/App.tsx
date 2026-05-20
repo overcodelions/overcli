@@ -10,6 +10,8 @@ import { StatsPage } from './components/StatsPage';
 import { LocalPane } from './components/LocalPane';
 import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
+import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
+import { useFlowsStore } from './flowsStore';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
@@ -31,6 +33,7 @@ export function App() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const detailMode = useStore((s) => s.detailMode);
   const subagentDrawerParentId = useStore((s) => s.subagentDrawerParentId);
+  const subagentDrawerConversationId = useStore((s) => s.subagentDrawerConversationId);
   const [subagentDrawerWidth, setSubagentDrawerWidth] = useState(SUBAGENT_DRAWER_DEFAULT);
   // Side-file pane: when the SubagentDrawer is open, ANY open file
   // renders here (right of the drawer) instead of inline next to the
@@ -38,11 +41,46 @@ export function App() {
   // you've committed to the drawer view, so we ignore the trigger
   // (drawer click, main-transcript click, sheet open — same slot).
   const openFilePath = useStore((s) => s.openFilePath);
-  const sideFileVisible = !!subagentDrawerParentId && !!openFilePath;
+  // Show the side-file editor pane when:
+  //   - the subagent drawer is open (original behavior), OR
+  //   - we're in the Flows view (FlowsLibraryPane has no built-in file
+  //     editor mount, so file-link clicks would otherwise fall on the
+  //     floor — wire them to this side pane instead).
+  const sideFileVisible =
+    !!openFilePath && (!!subagentDrawerParentId || detailMode === 'flows');
   const [sideFileWidth, setSideFileWidth] = useState(SIDE_FILE_DEFAULT);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
   const selectedConv = useConversation(selectedConversationId);
+  // When the user is inside a flow run, derive a "drawer conv id" from
+  // the active run's currently-focused participant so subagent cards
+  // inside a flow step (e.g. the Task tool spawning an Explore agent)
+  // can open the SubagentDrawer — without this fallback the drawer
+  // gating on `selectedConversationId` no-ops in the flows detail mode.
+  const activeFlowRunId = useFlowsStore((s) => s.activeRunId);
+  const activeFlowRun = useFlowsStore((s) =>
+    s.activeRunId ? s.runs[s.activeRunId] : undefined,
+  );
+  const flowDrawerConvId = (() => {
+    if (detailMode !== 'flows' || !activeFlowRun) return null;
+    const st = activeFlowRun.state;
+    const currentStepId =
+      st.kind === 'running'
+        ? st.currentStepId
+        : st.kind === 'paused'
+          ? st.nextStepId
+          : activeFlowRun.attempts[activeFlowRun.attempts.length - 1]?.stepId;
+    if (!currentStepId) return null;
+    const step = activeFlowRun.flowSnapshot.steps.find((s) => s.id === currentStepId);
+    return step ? activeFlowRun.conversationIds[step.participantId] ?? null : null;
+  })();
+  // The drawer renders when EITHER a regular conversation is selected
+  // OR we're inside a flow run with a known conv. Prefer the conv id
+  // recorded by the inline SubagentCard at click time — the card knows
+  // its own conversation, even when that conversation isn't the one
+  // selected in the sidebar (flow step transcripts, history search).
+  const drawerConvId =
+    subagentDrawerConversationId ?? selectedConversationId ?? flowDrawerConvId;
   const startNewConversation = useStore((s) => s.startNewConversation);
   const projects = useStore((s) => s.projects);
   const settings = useStore((s) => s.settings);
@@ -60,6 +98,17 @@ export function App() {
   useEffect(() => {
     void init();
   }, [init]);
+
+  // Hydrate flow runs on app startup so the sidebar's per-project
+  // "Flows" sections populate immediately. Without this, runs only
+  // appeared after the user visited the Flows tab (which is where
+  // the original IPC call lived).
+  useEffect(() => {
+    void window.overcli.invoke('flows:listRuns').then((runs) => {
+      const apply = useFlowsStore.getState().applyRunUpdate;
+      for (const r of runs) apply(r);
+    });
+  }, []);
 
   // Self-heal: if the selected conversation has been deleted (e.g. the
   // user hits Delete from ArchiveConversationSheet), fall back to the
@@ -127,13 +176,15 @@ export function App() {
             <LocalPane />
           ) : detailMode === 'explorer' ? (
             <ExplorerPane />
+          ) : detailMode === 'flows' ? (
+            <FlowsLibraryPane />
           ) : selectedConversationId ? (
             <ConversationPane />
           ) : (
             <WelcomePane />
           )}
         </main>
-        {subagentDrawerParentId && selectedConversationId && (
+        {subagentDrawerParentId && drawerConvId && (
           <>
             <ResizableDivider
               width={subagentDrawerWidth}
@@ -146,7 +197,7 @@ export function App() {
               style={{ width: subagentDrawerWidth }}
               className="flex-shrink-0 h-full overflow-hidden"
             >
-              <SubagentDrawer conversationId={selectedConversationId} />
+              <SubagentDrawer conversationId={drawerConvId} />
             </div>
           </>
         )}
@@ -163,7 +214,16 @@ export function App() {
               style={{ width: sideFileWidth }}
               className="flex-shrink-0 h-full overflow-hidden border-l border-card"
             >
-              <FileEditorPane />
+              {/* Flow runs aren't in the main Conversation index, so the
+                  editor's default `useConversationRoot(convId)` lookup
+                  returns null and relative paths fail to resolve. Pass
+                  the active run's projectPath as an explicit root when
+                  we're viewing a flow. */}
+              <FileEditorPane
+                rootPathOverride={
+                  detailMode === 'flows' && activeFlowRun ? activeFlowRun.projectPath : null
+                }
+              />
             </div>
           </>
         )}

@@ -85,12 +85,24 @@ describe('createUiSlice', () => {
   it('openSubagentDrawer / closeSubagentDrawer toggle the right-drawer target', () => {
     const { state, slice } = makeStub();
     expect(state.subagentDrawerParentId).toBeNull();
+    expect(state.subagentDrawerConversationId).toBeNull();
     slice.openSubagentDrawer('toolu_abc');
     expect(state.subagentDrawerParentId).toBe('toolu_abc');
+    expect(state.subagentDrawerConversationId).toBeNull();
     // Reopening with a different parent id switches the focus rather than stacking.
     slice.openSubagentDrawer('toolu_def');
     expect(state.subagentDrawerParentId).toBe('toolu_def');
     slice.closeSubagentDrawer();
     expect(state.subagentDrawerParentId).toBeNull();
+    expect(state.subagentDrawerConversationId).toBeNull();
+  });
+
+  it('openSubagentDrawer records the conversation id when provided', () => {
+    const { state, slice } = makeStub();
+    slice.openSubagentDrawer('toolu_abc', 'conv_xyz');
+    expect(state.subagentDrawerParentId).toBe('toolu_abc');
+    expect(state.subagentDrawerConversationId).toBe('conv_xyz');
+    slice.closeSubagentDrawer();
+    expect(state.subagentDrawerConversationId).toBeNull();
   });
 });

@@ -1,0 +1,305 @@
+// Flow definitions and runtime state. Flows are an alternate session-entry
+// primitive: instead of picking a single backend/model/permission combo for a
+// conversation, a Flow defines a sequence of LLM steps with per-step model +
+// tools + role, optional rebound critique, and artifact handoff. Premium
+// models plan/review, local Ollama models build/test.
+//
+// A Flow lives on disk as YAML (round-tripped via ./yaml.ts). A FlowRun is the
+// in-memory + persisted state of one execution of a Flow; each step backs onto
+// a real (hidden) Conversation so the existing runner/reviewer/stream UI just
+// works.
+
+import type { Backend, ModelUsage, PermissionMode, PersonaKey, UUID } from '../types';
+
+/// Built-in role presets surface as a friendly picker in the builder UI and
+/// resolve to default system prompts at run time (see ./roles.ts). `'custom'`
+/// means the user typed their own prompt; the preset name no longer applies.
+export type FlowRolePreset =
+  | 'planner'
+  | 'implementer'
+  | 'plan-reviewer'
+  | 'reviewer'
+  | 'test-writer'
+  | 'researcher'
+  | 'shipper'
+  | 'custom';
+
+/// Backend + model selection. Models are strings here on purpose so the
+/// schema doesn't need a migration every time a new model ships — the
+/// builder UI picks from a live registry.
+export interface FlowModelRef {
+  backend: Backend;
+  model: string;
+}
+
+/// A participant in the flow — the conceptual "Primary" / "Worker" /
+/// "Reviewer" roles users actually think in, decoupled from any
+/// particular step. Each participant gets ONE persistent conversation
+/// across all steps it owns, so memory + context carry forward naturally
+/// (the planner remembers its plan when it later reviews the diff). The
+/// user can switch to any participant's tab in the run UI and chat with
+/// it directly ("hijack").
+export interface FlowParticipant {
+  /// Stable id referenced by `step.participantId`. Lowercase slug.
+  id: string;
+  /// Friendly name shown in tabs and the builder ("Primary", "Worker").
+  name: string;
+  backend: Backend;
+  model: string;
+  /// Conceptual role — drives default coloring in the UI and ordering of
+  /// tabs. 'custom' means none of the above; arbitrary participant.
+  kind?: 'primary' | 'worker' | 'reviewer' | 'custom';
+}
+
+/// Standard participant id every auto-migrated old flow uses for the
+/// first synthesized participant. Stable so re-saves produce the same
+/// YAML round-trip.
+export const DEFAULT_PARTICIPANT_ID = 'primary' as const;
+
+/// Per-step rebound config. Maps onto the existing ReviewerManager: the
+/// `critic` model is what overcli already calls "reviewBackend/reviewModel",
+/// and `mode` mirrors the existing review/collab modes. `maxIters` caps how
+/// many rounds the critic gets before the step has to move on.
+export interface FlowReboundConfig {
+  critic: FlowModelRef;
+  mode: 'review' | 'collab';
+  maxIters: number;
+  persona?: PersonaKey;
+}
+
+/// What to do when a step fails (hard error or rebound exhausted without an
+/// approval). `pause` (default) leaves the run paused so the user can decide;
+/// `goto` re-runs a named earlier step up to `maxRetries` times; `abort`
+/// terminates the run.
+export type FlowFailureAction =
+  | { action: 'pause' }
+  | { action: 'goto'; target: string; maxRetries: number }
+  | { action: 'abort' };
+
+export interface FlowStep {
+  /// Stable id used in `inputs` references and `on_fail.target`. Slug-like.
+  id: string;
+  /// Which participant runs this step. After migration this is the
+  /// authoritative model assignment; `model` below is retained on the
+  /// type for the legacy code path that wrote step-level model directly
+  /// before participants existed. The loader synthesizes participants
+  /// when only `model` is present so both forms read cleanly.
+  participantId: string;
+  /// LEGACY. Old-format flows specify the model per step; the loader
+  /// synthesizes a participant for each unique backend+model and points
+  /// `participantId` at it. Kept on the type so existing flow files
+  /// round-trip without losing data. New flows should leave this empty
+  /// and rely on `participantId`.
+  model?: FlowModelRef;
+  role: FlowRolePreset;
+  /// When set, overrides the preset prompt. Setting this from the builder
+  /// flips `role` to `'custom'`.
+  systemPromptOverride?: string;
+  /// Refs to artifact names produced by earlier steps, or the sentinel
+  /// `'user_prompt'` for the run's input. Order-preserving — the runtime
+  /// concatenates them into the step's user message in this order.
+  inputs: string[];
+  /// Tool ids the step is allowed to call. Surfaces in the picker as
+  /// checkboxes; the runtime translates to backend-specific flags.
+  tools: string[];
+  /// Permission mode the step's underlying conversation should run in.
+  /// Defaults applied by the runtime if absent — typically `acceptEdits`
+  /// for steps with write/bash tools, `default` otherwise.
+  permissionMode?: PermissionMode;
+  rebound?: FlowReboundConfig;
+  onFail?: FlowFailureAction;
+  /// When true, the runtime pauses BEFORE entering this step. The just-
+  /// finished prior step's conversation remains live and resumable — the
+  /// user can keep chatting with it (ask follow-ups, redirect, give more
+  /// context) just like a normal conversation. On `continue`, the prior
+  /// step's artifact is re-extracted from the latest assistant message so
+  /// any changes made via conversation propagate forward. The first step
+  /// ignores this (no prior conversation to converse with).
+  pauseBefore?: boolean;
+  /// Name of the artifact this step produces (e.g. `'plan.md'`, `'diff'`,
+  /// `'review.md'`, `'pr_url'`). Referenced by later steps' `inputs`.
+  output: string;
+}
+
+/// A flow definition. Round-trips to/from YAML via ./yaml.ts.
+export interface Flow {
+  /// Stable id — typically the file basename without `.yaml`.
+  id: string;
+  name: string;
+  description?: string;
+  /// What feeds the run's `user_prompt` artifact. v1 only supports the
+  /// literal `'user_prompt'` (a free-text input collected at launch). Future
+  /// values can be `jira:<ticket>`, `file:<path>`, etc.
+  input: 'user_prompt';
+  /// Declared participants for the flow. Steps reference these by id.
+  /// Every flow has at least one participant after load; the loader
+  /// synthesizes them from per-step models for old-format flows.
+  participants: FlowParticipant[];
+  steps: FlowStep[];
+  /// Resolved at load time — where this flow was read from.
+  source: 'user' | 'project';
+  /// Absolute path on disk. Re-saves write back to this path.
+  filePath: string;
+}
+
+/// A typed artifact a step produced. `body` is the raw text for markdown/text/
+/// diff and a URL string for `kind: 'url'`.
+export type FlowArtifactKind = 'markdown' | 'diff' | 'text' | 'url';
+
+export interface FlowArtifact {
+  name: string;
+  kind: FlowArtifactKind;
+  body: string;
+  producedByStepId: string;
+  producedAt: number;
+}
+
+/// Per-step run history. Records each attempt + its outcome so the run pane
+/// can show "build failed, retried, then succeeded" timelines.
+export interface FlowStepAttempt {
+  startedAt: number;
+  endedAt?: number;
+  conversationId: UUID;
+  /// Result of this attempt:
+  /// - `success`: produced its output artifact cleanly.
+  /// - `reboundExhausted`: critic never approved within maxIters.
+  /// - `error`: hard failure (subprocess crashed, output parse failed, …).
+  /// - `aborted`: user aborted the run mid-step.
+  outcome?: 'success' | 'reboundExhausted' | 'error' | 'aborted';
+  errorMessage?: string;
+  reboundRounds?: number;
+  /// Accumulated token usage for this attempt. Summed from `assistant`
+  /// stream events' `usage` block. Absent when the backend doesn't
+  /// report usage (Ollama, in some configurations).
+  usage?: ModelUsage;
+  /// Cumulative cost in USD as reported by the CLI's last `result`
+  /// event on this step's conversation. Absent for backends that
+  /// don't price (Ollama) or don't report (some CLIs).
+  costUSD?: number;
+}
+
+export type FlowRunState =
+  | { kind: 'running'; currentStepId: string }
+  | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' }
+  | { kind: 'done'; success: boolean }
+  | { kind: 'aborted' };
+
+export interface FlowRun {
+  id: UUID;
+  flowId: string;
+  /// Snapshot of the flow at launch time — flows can be edited after a run
+  /// starts, and we want the run to keep using the version it began with.
+  flowSnapshot: Flow;
+  /// The cwd every step runs in. For runs launched with `runIn: 'cwd'`
+  /// this is the project/workspace root verbatim; for `runIn: 'worktree'`
+  /// this is the fresh worktree path (and `sourceProjectPath` records
+  /// where the worktree was forked from).
+  projectPath: string;
+  userPrompt: string;
+  /// participantId → backing Conversation id. Each participant gets ONE
+  /// persistent Conversation across every step it runs, so the planner
+  /// remembers its plan when it later reviews, and the user can hijack a
+  /// participant from any tab to chat directly with it. Conversations are
+  /// created with `hidden: true` so they don't show up in the sidebar.
+  conversationIds: Record<string, UUID>;
+  artifacts: Record<string, FlowArtifact>;
+  state: FlowRunState;
+  createdAt: number;
+  /// Per-step attempts, in order. A step that ran twice via `on_fail.goto`
+  /// has two entries.
+  attempts: Array<{ stepId: string } & FlowStepAttempt>;
+  /// Set when the run was launched with `runIn: 'worktree'`. Absent for
+  /// runs that share the project's main checkout. The renderer uses these
+  /// to surface the worktree's branch + offer review/merge actions on a
+  /// completed run.
+  worktreePath?: string;
+  branchName?: string;
+  /// Original project the worktree was forked from. Same as `projectPath`
+  /// for non-worktree runs (omitted when redundant).
+  sourceProjectPath?: string;
+  /// `git rev-parse HEAD` captured at the moment the run started, in the
+  /// run's cwd. Used to compute real `git diff <baselineCommit>` output
+  /// for `diff`-kind artifacts so they reflect what actually changed on
+  /// disk rather than whatever the model dumped into its `<output>`
+  /// block. Absent for runs in non-git cwds (the diff falls back to the
+  /// model's output in that case).
+  baselineCommit?: string;
+  /// For workspace runs whose `projectPath` is the workspace's symlink
+  /// root (not itself a git repo), capture each member project's HEAD
+  /// keyed by the same symlink name `workspaceCommitStatus` uses. The
+  /// diff is built by running `git diff <baseline>` in each member and
+  /// concatenating with the prefix, so the artifact reflects ALL repos
+  /// the flow touched — not just one.
+  baselineCommitsByMember?: Record<string, { path: string; commit: string }>;
+  /// Per-participant CLI session id, captured from the first
+  /// `sessionConfigured` event each step emits. Persisted so that on
+  /// app restart the renderer can resume the participant's transcript
+  /// via `runner:loadHistory` (which needs `{backend, projectPath,
+  /// sessionId}`) — without this the chat panel only shows the artifact
+  /// and the user can't see what the model actually said. Keyed by
+  /// participantId to mirror `conversationIds`.
+  sessionIdsByParticipant?: Record<string, string>;
+  /// For workspace runs launched with `runIn: 'worktree'`: one worktree
+  /// per member project, surfaced through a coordinator symlink root
+  /// (which becomes the run's `projectPath`). Tracked here so the run
+  /// can capture per-member baselines for diff aggregation and so a
+  /// future "clean up worktrees" action knows what to remove.
+  workspaceWorktrees?: Array<{
+    name: string;
+    projectPath: string;
+    worktreePath: string;
+    branchName: string;
+  }>;
+}
+
+/// Descriptor for a tool that a step can be configured to use. Built from
+/// (Ollama built-in tools, Claude built-in tools, MCP servers, …). The
+/// builder renders these as a checkbox list; `available` controls whether
+/// the box is greyed (e.g. Ollama can't yet drive Bash, so it's listed but
+/// disabled).
+export interface FlowToolDescriptor {
+  /// Stable id used in `FlowStep.tools[]`. Examples: `'read_file'`,
+  /// `'Bash'`, `'mcp:jira'`.
+  id: string;
+  displayName: string;
+  description?: string;
+  category: 'builtin' | 'mcp';
+  /// Backends that can actually execute this tool. The builder uses this
+  /// + the step's selected backend to decide whether to grey the checkbox.
+  supportedBackends: Backend[];
+  /// When false, render checkbox but disabled, with `unavailableReason`
+  /// in the tooltip. Lets us list e.g. write tools for Ollama even though
+  /// they don't yet work, so users can see the roadmap.
+  available: boolean;
+  unavailableReason?: string;
+}
+
+/// Sentinel input ref for the run's user prompt. Referenced by step
+/// `inputs[]` to pull the launch-time free-text into the step's message.
+export const FLOW_USER_PROMPT_REF = 'user_prompt' as const;
+
+/// Resolve the effective backend+model for a step. Prefers the
+/// participant lookup (the post-migration source of truth) but falls
+/// back to the legacy step-level `model` field so partially-migrated
+/// flows still produce a usable answer. Returns a placeholder ref with
+/// empty model when neither is set — validation surfaces that as an
+/// error.
+export function resolveStepModel(flow: Flow, step: FlowStep): FlowModelRef {
+  if (step.participantId) {
+    const p = flow.participants?.find((x) => x.id === step.participantId);
+    if (p) return { backend: p.backend, model: p.model };
+  }
+  if (step.model) return step.model;
+  return { backend: 'claude', model: '' };
+}
+
+/// Resolve the FlowParticipant a step is assigned to. May be undefined
+/// for malformed flows; callers should treat that as a validation
+/// failure rather than crashing.
+export function resolveStepParticipant(
+  flow: Flow,
+  step: FlowStep,
+): FlowParticipant | undefined {
+  if (!step.participantId) return undefined;
+  return flow.participants?.find((p) => p.id === step.participantId);
+}

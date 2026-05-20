@@ -37,6 +37,12 @@ export interface UiSliceState {
   /// Parent Task tool_use id currently being inspected in the
   /// SubagentDrawer. `null` means the drawer is closed.
   subagentDrawerParentId: string | null;
+  /// Conversation that owns the active subagent. Set when the inline
+  /// SubagentCard opens the drawer so the drawer can subscribe to the
+  /// right runner — without this, opening a drawer from inside a flow
+  /// step would fall back to `selectedConversationId` (null in flows
+  /// mode) and the drawer would render against the wrong events.
+  subagentDrawerConversationId: string | null;
   /// Subagent tool_use ids the user has dismissed from the drawer's
   /// tab strip, scoped per-conversation. Survives the drawer
   /// mount/unmount cycle so dismissing the last tab and then opening
@@ -58,7 +64,7 @@ export interface UiSliceActions {
   closeFile(): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
-  openSubagentDrawer(parentToolUseId: string): void;
+  openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
   closeSubagentDrawer(): void;
   /// Hide a subagent tab in the given conversation's drawer.
   dismissSubagent(conversationId: string, parentToolUseId: string): void;
@@ -80,6 +86,7 @@ export const uiSliceInitialState: UiSliceState = {
   sidebarVisible: true,
   showToolActivity: false,
   subagentDrawerParentId: null,
+  subagentDrawerConversationId: null,
   dismissedSubagents: {},
 };
 
@@ -124,7 +131,7 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>): UiSliceActions 
     toggleToolActivity() {
       set(((s) => ({ showToolActivity: !s.showToolActivity })) as (s: T) => Partial<T>);
     },
-    openSubagentDrawer(parentToolUseId) {
+    openSubagentDrawer(parentToolUseId, conversationId) {
       // Clicking an inline card for a previously-dismissed subagent
       // should bring it back — the user explicitly asked for it.
       set(((s) => {
@@ -138,12 +145,16 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>): UiSliceActions 
         }
         return {
           subagentDrawerParentId: parentToolUseId,
+          subagentDrawerConversationId: conversationId ?? null,
           ...(mutated ? { dismissedSubagents: next } : {}),
         } as Partial<T>;
       }) as (s: T) => Partial<T>);
     },
     closeSubagentDrawer() {
-      set({ subagentDrawerParentId: null } as Partial<T>);
+      set({
+        subagentDrawerParentId: null,
+        subagentDrawerConversationId: null,
+      } as Partial<T>);
     },
     dismissSubagent(conversationId, parentToolUseId) {
       set(((s) => {

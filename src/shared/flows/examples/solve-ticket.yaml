@@ -1,0 +1,53 @@
+name: Solve a ticket end-to-end
+description: |
+  Premium model fetches a Jira ticket + plans. Local Ollama implements.
+  Premium reviews; on failure, bounces back to implement up to twice.
+  Local writes tests. A premium shipper commits + opens a PR (paused
+  before so a human can sanity-check first).
+input: user_prompt
+steps:
+  - id: plan
+    model: { backend: claude, model: claude-opus-4-7 }
+    role: planner
+    inputs: [user_prompt]
+    tools: [Read, Grep, Glob]
+    rebound:
+      critic: { backend: claude, model: claude-sonnet-4-6 }
+      mode: review
+      max_iters: 3
+    output: plan.md
+
+  - id: build
+    model: { backend: ollama, model: qwen2.5-coder:32b }
+    role: implementer
+    inputs: [plan.md]
+    tools: [read_file, list_dir, grep, write_file, edit_file]
+    permission_mode: acceptEdits
+    output: diff
+
+  - id: review
+    model: { backend: claude, model: claude-opus-4-7 }
+    role: reviewer
+    inputs: [plan.md, diff]
+    tools: [Read, Grep]
+    on_fail:
+      action: goto
+      target: build
+      max_retries: 2
+    output: review.md
+
+  - id: tests
+    model: { backend: ollama, model: qwen2.5-coder:32b }
+    role: test-writer
+    inputs: [diff, review.md]
+    tools: [read_file, list_dir, grep, write_file, edit_file]
+    permission_mode: acceptEdits
+    output: diff
+
+  - id: push
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: shipper
+    inputs: [plan.md, diff, review.md]
+    tools: [Bash]
+    pause_before: true
+    output: pr_url
