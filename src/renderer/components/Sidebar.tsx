@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
+import { flowRunOwnerPath } from '@shared/flows/schema';
 import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
@@ -569,7 +570,7 @@ function ProjectGroup({
   const flowRuns = useFlowsStore((s) => s.runs);
   const deletableFlowCount = Object.values(flowRuns).filter(
     (r) =>
-      r.projectPath === project.path &&
+      flowRunOwnerPath(r) === project.path &&
       r.state.kind !== 'running' &&
       r.state.kind !== 'paused' &&
       !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
@@ -1013,7 +1014,7 @@ function WorkspaceGroup({
   const flowRuns = useFlowsStore((s) => s.runs);
   const deletableFlowCount = Object.values(flowRuns).filter(
     (r) =>
-      r.projectPath === workspace.rootPath &&
+      flowRunOwnerPath(r) === workspace.rootPath &&
       r.state.kind !== 'running' &&
       r.state.kind !== 'paused' &&
       !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),

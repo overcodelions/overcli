@@ -10,7 +10,30 @@ import {
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
+import { resumeSessionAfterParamChange } from './runner';
 import type { StreamEvent } from '../shared/types';
+
+describe('resumeSessionAfterParamChange', () => {
+  // Regression: changing a flow participant's model in the hijack chat
+  // killed the live Claude process and respawned it without --resume,
+  // because that send path doesn't thread sessionId through. The new
+  // model then saw none of the prior conversation.
+  it('falls back to the live session when the caller did not supply one', () => {
+    expect(resumeSessionAfterParamChange(undefined, 'live-sess')).toBe('live-sess');
+  });
+
+  it('prefers the caller-supplied sessionId (normal chat threads conv.sessionId)', () => {
+    expect(resumeSessionAfterParamChange('caller-sess', 'live-sess')).toBe('caller-sess');
+  });
+
+  it('treats an empty caller sessionId as absent', () => {
+    expect(resumeSessionAfterParamChange('', 'live-sess')).toBe('live-sess');
+  });
+
+  it('returns undefined when neither side has a session (first turn)', () => {
+    expect(resumeSessionAfterParamChange(undefined, undefined)).toBeUndefined();
+  });
+});
 
 describe('codexPermissionMapping', () => {
   it('plan → read-only sandbox, on-request approvals', () => {

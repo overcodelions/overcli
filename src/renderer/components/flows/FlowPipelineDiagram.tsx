@@ -42,7 +42,15 @@ function tierOf(flow: Flow, step: FlowStep): keyof typeof TIER_COLOR {
 function compactModel(flow: Flow, step: FlowStep): string {
   const m = resolveStepModel(flow, step).model;
   if (!m) return '(no model)';
-  if (m.startsWith('claude-')) return m.replace('claude-', '').replace(/-/g, ' ');
+  // Strip the vendor prefix, keep version dashes as dots (4-7 → 4.7) and
+  // turn the remaining word-separating dashes into spaces (opus → opus).
+  // e.g. claude-opus-4-7 → "opus 4.7".
+  if (m.startsWith('claude-')) {
+    return m
+      .replace('claude-', '')
+      .replace(/(\d)-(\d)/g, '$1.$2')
+      .replace(/-/g, ' ');
+  }
   if (m.includes(':')) return m.split(':')[0];
   return m;
 }
