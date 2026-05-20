@@ -102,6 +102,22 @@ function hashSyntheticPrompt(prompt: string): string {
   return createHash('sha256').update(prompt, 'utf8').digest('hex');
 }
 
+/// When a live conversation is torn down to apply changed launch params
+/// (model / permission mode / cwd / transport), the respawn must resume
+/// the same backend session or all prior context is lost. The caller's
+/// sessionId wins when present — the normal chat path threads
+/// `conv.sessionId` through on every send. Otherwise fall back to the
+/// sessionId the live process captured off the stream, so callers that
+/// don't track it themselves (e.g. the flow hijack chat, where bumping a
+/// participant's model is the entire point) resume instead of starting a
+/// brand-new, context-free session.
+export function resumeSessionAfterParamChange(
+  callerSessionId: string | undefined,
+  liveSessionId: string | undefined,
+): string | undefined {
+  return callerSessionId || liveSessionId;
+}
+
 interface SendArgs {
   conversationId: UUID;
   prompt: string;
@@ -614,6 +630,12 @@ export class RunnerManager {
           existing.cwd !== args.cwd ||
           existing.claudeTransport !== 'sdk');
       if (paramsChanged) {
+        // killProc discards the live sessionId; carry it into the respawn
+        // (createClaudeSdkActive passes it as resumeSessionId) so a
+        // model/permission change resumes rather than silently restarting
+        // the conversation. See resumeSessionAfterParamChange.
+        const resumeId = resumeSessionAfterParamChange(args.sessionId, existing?.sessionId);
+        if (resumeId !== args.sessionId) args = { ...args, sessionId: resumeId };
         this.killProc(convId);
       }
 
@@ -1073,6 +1095,11 @@ export class RunnerManager {
         existing.backend === 'codex' &&
         existing.codexMode === 'app-server';
       if (paramsChanged && !canHotSwap) {
+        // killProc drops the live process *and* its in-memory sessionId,
+        // so the respawn below must be told to --resume or it starts a
+        // brand-new, context-free session. See resumeSessionAfterParamChange.
+        const resumeId = resumeSessionAfterParamChange(args.sessionId, existing?.sessionId);
+        if (resumeId !== args.sessionId) args = { ...args, sessionId: resumeId };
         this.killProc(convId);
       }
       const active = this.procs.get(convId) ?? this.spawnFor(args);

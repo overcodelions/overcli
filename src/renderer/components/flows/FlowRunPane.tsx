@@ -40,6 +40,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const removeRun = useFlowsStore((s) => s.removeRun);
+  const openSheet = useStore((s) => s.openSheet);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [diffSheetOpen, setDiffSheetOpen] = useState(false);
 
@@ -134,6 +135,15 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 runId={run.id}
                 participant={activeParticipant}
               />
+            )}
+            {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
+              <button
+                onClick={() => openSheet({ type: 'flowRunReview', runId })}
+                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25"
+                title="Review the worktree diff and merge / push / open a PR — pull the work back into your local repo"
+              >
+                Review &amp; merge
+              </button>
             )}
             {(run.state.kind === 'running' || run.state.kind === 'paused') && (
               <button
@@ -814,12 +824,21 @@ function HijackComposer({
   // worktree, or a workspace's symlink root that fans out to multiple
   // member projects. Workspace roots aren't git repos themselves, so
   // `git:commitStatus` returns `isRepo: false` and we miss every change
-  // the model made in member repos. Look up the workspace from the
-  // store; if found, query `git:workspaceCommitStatus` (which aggregates
-  // member repos and prefixes paths with `name/`) instead.
+  // the model made in member repos. We aggregate via
+  // `git:workspaceCommitStatus` (prefixes paths with `name/`) in two
+  // workspace cases:
+  //   - In-place workspace run: probe each member's MAIN checkout (the
+  //     cwd IS the workspace rootPath).
+  //   - Worktree workspace run: the cwd is a coordinator symlink root
+  //     (not the workspace rootPath, so the store lookup misses), and the
+  //     changes live in the per-member MINTED worktrees — probe those
+  //     directly off `run.workspaceWorktrees`.
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const workspaceProjects = useMemo(() => {
+    if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
+      return run.workspaceWorktrees.map((w) => ({ name: w.name, path: w.worktreePath }));
+    }
     const ws = workspaces.find((w) => w.rootPath === run.projectPath);
     if (!ws) return null;
     const projs = ws.projectIds
@@ -827,7 +846,7 @@ function HijackComposer({
       .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
       .map((p) => ({ name: p.name, path: p.path }));
     return workspaceSymlinkNames(projs);
-  }, [workspaces, projects, run.projectPath]);
+  }, [workspaces, projects, run.projectPath, run.workspaceWorktrees]);
 
   // Re-probe the working tree whenever a step attempt finishes or the
   // runner flips running/idle. Mirrors how ConversationPane keeps its

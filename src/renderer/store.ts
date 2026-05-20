@@ -64,6 +64,7 @@ export type ActiveSheet =
   | { type: 'projectDiff'; convId: UUID }
   | { type: 'workspaceDiff'; convId: UUID }
   | { type: 'workspaceAgentReview'; coordinatorId: UUID }
+  | { type: 'flowRunReview'; runId: UUID }
   | { type: 'archiveConversation'; convId: UUID }
   | { type: 'archiveAllInProject'; projectId: UUID }
   | { type: 'archiveAllInWorkspace'; workspaceId: UUID }

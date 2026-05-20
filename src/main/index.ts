@@ -950,6 +950,22 @@ function registeredRoots(): string[] {
       if (c.coordinatorRootPath) roots.add(c.coordinatorRootPath);
     }
   }
+  // Flow runs launched in a worktree live outside the project/workspace
+  // tree — single-project runs fork a worktree, workspace runs fork one
+  // PER member and front them with a coordinator symlink root. None of
+  // these are registered above, so opening a ChangesBar file (which
+  // realpaths through the coordinator symlink to the worktree) would be
+  // rejected as "outside any registered root". Register every live run's
+  // cwd + worktree paths so the file viewer/diff can reach them.
+  if (flowRuntime) {
+    for (const run of flowRuntime.listRuns()) {
+      if (run.projectPath) roots.add(run.projectPath);
+      if (run.worktreePath) roots.add(run.worktreePath);
+      for (const w of run.workspaceWorktrees ?? []) {
+        if (w.worktreePath) roots.add(w.worktreePath);
+      }
+    }
+  }
   return [...roots];
 }
 

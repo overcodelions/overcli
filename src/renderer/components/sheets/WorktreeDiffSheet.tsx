@@ -441,7 +441,7 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
   );
 }
 
-function ActionButton({
+export function ActionButton({
   onClick,
   disabled,
   label,
@@ -472,7 +472,7 @@ function ActionButton({
   );
 }
 
-function StatusFooter({ status, remote }: { status: WorktreeStatus; remote: RemoteKind }) {
+export function StatusFooter({ status, remote }: { status: WorktreeStatus; remote: RemoteKind }) {
   return (
     <div className="border-t border-white/5 px-3 py-2 text-[10px] text-ink-faint space-y-0.5">
       <div>

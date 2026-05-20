@@ -8,6 +8,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { useStore } from '../store';
+import { useFlowsStore } from '../flowsStore';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { ArtifactPreviewResult, FileInfoResult } from '@shared/types';
@@ -49,16 +50,49 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // re-fire each render and pin the CPU.
   const workspaces = useStore((s) => s.workspaces);
   const projects = useStore((s) => s.projects);
+  // The flow run currently being viewed, if any. Flow worktree runs live
+  // outside the workspace tree, so their member→repo mapping can't be
+  // derived from workspaces/projects alone — we read it off the run.
+  const detailMode = useStore((s) => s.detailMode);
+  const activeRunId = useFlowsStore((s) => s.activeRunId);
+  const flowRuns = useFlowsStore((s) => s.runs);
+  const flowRun = detailMode === 'flows' && activeRunId ? flowRuns[activeRunId] : undefined;
+
   // Workspace-member resolution: when the convId belongs to a workspace
   // conversation, the lookup runs by convId. For flow runs whose
   // projectPath is a workspace symlink root, convId doesn't match any
   // workspace, so we fall back to matching by rootPath — without this
   // the diff view runs `git diff` in the symlink dir (not a git repo)
   // and errors with `Could not access 'HEAD'`.
+  //
+  // Worktree workspace runs are a further special case: their root is a
+  // coordinator symlink dir (not the workspace rootPath, so the fallback
+  // misses) AND each member's changes live in a MINTED worktree, not the
+  // project's main checkout. Build the member list straight from the run
+  // so the ChangesBar's `<member>/…` paths peel to the right worktree,
+  // and diff against the per-member fork commit (matches the Review sheet).
+  const flowMembers = useMemo(() => {
+    if (!flowRun?.workspaceWorktrees?.length) return null;
+    return flowRun.workspaceWorktrees.map((w) => ({
+      name: w.name,
+      path: w.worktreePath,
+      projectPath: w.projectPath,
+      baseBranch:
+        flowRun.baselineCommitsByMember?.[w.name]?.commit ?? flowRun.baseBranch ?? null,
+    }));
+  }, [flowRun]);
   const workspaceMembers = useMemo(
-    () => resolveWorkspaceMembers(convId, workspaces, projects, rootPath),
-    [convId, workspaces, projects, rootPath],
+    () => flowMembers ?? resolveWorkspaceMembers(convId, workspaces, projects, rootPath),
+    [flowMembers, convId, workspaces, projects, rootPath],
   );
+  // For single-project worktree runs there's no member prefix; diff
+  // against the captured fork commit (else the base branch) so a flow
+  // that hasn't committed still shows its work instead of an empty/HEAD
+  // diff.
+  const flowSingleBase =
+    flowRun && !flowRun.workspaceWorktrees?.length
+      ? flowRun.baselineCommit ?? flowRun.baseBranch ?? null
+      : null;
   const path = useStore((s) => s.openFilePath);
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
@@ -166,8 +200,8 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // not a git repo, so paths in the ChangesBar come in as
   // "<member>/…path". Peel that prefix to run git in the real project.
   const diffTarget = useMemo(
-    () => resolveDiffTarget(path, rootPath, workspaceMembers, conv?.baseBranch ?? null),
-    [path, rootPath, workspaceMembers, conv?.baseBranch],
+    () => resolveDiffTarget(path, rootPath, workspaceMembers, conv?.baseBranch ?? flowSingleBase ?? null),
+    [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase],
   );
   useEffect(() => {
     if (!path || mode !== 'diff' || !diffTarget) return;

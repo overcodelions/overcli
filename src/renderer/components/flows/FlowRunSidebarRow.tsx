@@ -12,6 +12,7 @@ import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { useAllRunners } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
+import { flowRunOwnerPath } from '@shared/flows/schema';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
 
@@ -40,7 +41,7 @@ export function FlowRunsSection({ path }: FlowRunsSectionProps) {
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const runners = useAllRunners();
   const matches = Object.values(runs)
-    .filter((r) => r.projectPath === path)
+    .filter((r) => flowRunOwnerPath(r) === path)
     .sort((a, b) => b.createdAt - a.createdAt);
   if (matches.length === 0) return null;
   return (
@@ -109,7 +110,7 @@ export function ActiveFlowsList({ limit = 4 }: { limit?: number }) {
   return (
     <>
       {active.map(({ run, live }) => {
-        const owner = resolveOwner(run.projectPath, projects, workspaces);
+        const owner = resolveOwner(flowRunOwnerPath(run), projects, workspaces);
         return (
           <ActiveFlowRow
             key={run.id}
