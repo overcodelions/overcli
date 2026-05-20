@@ -39,12 +39,14 @@ import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
+  findConvLocation,
   findConvWithProjectPath,
   findOwnerProject,
   isActiveConversation,
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
+import { useFlowsStore } from './flowsStore';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 export type ActiveSheet =
@@ -70,7 +72,7 @@ export type ActiveSheet =
   | { type: 'quickSwitcher' }
   | { type: 'shortcutsHelp' };
 
-export type DetailMode = 'conversation' | 'stats' | 'local' | 'explorer';
+export type DetailMode = 'conversation' | 'stats' | 'local' | 'explorer' | 'flows';
 
 export interface OpenFileHighlight {
   startLine: number;
@@ -127,6 +129,8 @@ interface StoreState {
   /// Parent Task tool_use id currently being inspected in the
   /// SubagentDrawer. `null` means the drawer is closed.
   subagentDrawerParentId: string | null;
+  /// Conversation owning the active subagent. See uiSlice.
+  subagentDrawerConversationId: string | null;
   /// Per-conversation list of dismissed subagent tabs. See uiSlice.
   dismissedSubagents: Record<string, string[]>;
   /// Where the file editor renders. See uiSlice for the contract.
@@ -186,7 +190,7 @@ interface StoreState {
   closeFile(): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
-  openSubagentDrawer(parentToolUseId: string): void;
+  openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
   closeSubagentDrawer(): void;
   dismissSubagent(conversationId: UUID, parentToolUseId: string): void;
   resetDismissedSubagents(conversationId: UUID): void;
@@ -386,7 +390,24 @@ function scheduleClearCompletion(conversationId: UUID, completedAt: number): voi
 }
 
 function findConversation(state: StoreState, id: UUID): Conversation | null {
-  return findConversationFromIndex(state, id);
+  return findConversationFromIndex(lookupSource(state), id);
+}
+
+/// Build a `LookupSource` that includes flow-run conversations. Flow
+/// participants get synthesized into the conversation index so
+/// `store.send`, `loadHistoryIfNeeded`, and the other helpers
+/// transparently work on flow chats — without registering them as real
+/// sidebar conversations.
+function lookupSource(state: StoreState): {
+  projects: typeof state.projects;
+  workspaces: typeof state.workspaces;
+  flowRuns: ReturnType<typeof useFlowsStore.getState>['runs'];
+} {
+  return {
+    projects: state.projects,
+    workspaces: state.workspaces,
+    flowRuns: useFlowsStore.getState().runs,
+  };
 }
 
 function isAgentConversation(conv: Conversation): boolean {
@@ -500,7 +521,7 @@ function collectCoordinatorMembers(
 }
 
 function findContainerPath(state: StoreState, convId: UUID): string | null {
-  return findContainerPathFromIndex(state, convId);
+  return findContainerPathFromIndex(lookupSource(state), convId);
 }
 
 /// Directories we pass to Claude as `--add-dir` so its session-scope check
@@ -1926,9 +1947,16 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!conv) return;
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
+    // Flow-run conversations are synthesized on demand from FlowRun
+    // data, not stored in `projects[]`/`workspaces[]`. They're meant to
+    // stay hidden (the run pane is their UI), and the regular
+    // mutateConversation path is a no-op for them — so skip the
+    // un-archive write.
+    const isFlowConv =
+      findConvLocation(lookupSource(state), conversationId)?.kind === 'flow';
     // Un-archive a hidden conversation — the act of typing is the user
-    // bringing it back into focus.
-    if (conv.hidden) await state.setConversationHidden(conv.id, false);
+    // bringing it back into focus. Flow convs stay hidden.
+    if (conv.hidden && !isFlowConv) await state.setConversationHidden(conv.id, false);
 
     // Snapshot attachments before clearing so they survive the wire call
     // even though we're racing to empty the draft state optimistically.
@@ -2483,6 +2511,14 @@ export const useStore = create<StoreState>((set, get) => ({
       const store = get();
       const conv = findConversation(store, event.conversationId);
       if (!conv) return;
+      // For flow conversations the runtime side already captured this
+      // sessionId on `FlowRun.sessionIdsByParticipant` (the synthesized
+      // conv reads from there). The regular `mutateConversation` path
+      // is a no-op for flow convs and the extra `saveConversationState`
+      // write is wasted churn — skip it.
+      if (findConvLocation(lookupSource(store), event.conversationId)?.kind === 'flow') {
+        return;
+      }
       mutateConversation(set, get, event.conversationId, (c) => {
         const next = { ...c, sessionId: event.sessionId };
         if (event.rolloutPath) {
@@ -2530,6 +2566,25 @@ export const useStore = create<StoreState>((set, get) => ({
       void saveConversationState(get);
     } else if (event.type === 'ollamaServerStatus') {
       set({ ollamaServerStatus: event.status });
+    } else if (event.type === 'flowRunUpdate') {
+      // Lazy import to avoid a circular ref between store.ts and flowsStore.
+      void import('./flowsStore').then(({ useFlowsStore }) => {
+        useFlowsStore.getState().applyRunUpdate(event.run);
+      });
+    } else if (event.type === 'flowArtifactProduced') {
+      void import('./flowsStore').then(({ useFlowsStore }) => {
+        const s = useFlowsStore.getState();
+        const run = s.runs[event.runId];
+        if (!run) return;
+        s.applyRunUpdate({
+          ...run,
+          artifacts: { ...run.artifacts, [event.artifact.name]: event.artifact },
+        });
+      });
+    } else if (event.type === 'flowRunDeleted') {
+      void import('./flowsStore').then(({ useFlowsStore }) => {
+        useFlowsStore.getState().removeRun(event.runId);
+      });
     }
   },
 }));

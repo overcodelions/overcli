@@ -57,6 +57,11 @@ import {
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
 import { clearSilentLog, listSilentLog } from './diagnostics';
+import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
+import { listToolCatalog } from './flows/toolCatalog';
+import { FlowRuntime } from './flows/runtime';
+import { FLOW_TEMPLATES } from '../shared/flows/templates';
+import { draftFlowFromPrompt } from './flows/drafter';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
@@ -89,6 +94,12 @@ const LARGE_TEXT_PREVIEW_BYTES = 256 * 1024;
 
 let mainWindow: BrowserWindow | null = null;
 let runner: RunnerManager | null = null;
+// FlowRuntime is constructed alongside the RunnerManager so it can drive
+// step conversations through the existing send pipeline. Stays null until
+// Phase 4 lands the runtime module — until then, the flow runtime IPC
+// handlers below short-circuit to "not initialized" so the renderer can
+// already load flows and build them without a crash on Run.
+let flowRuntime: FlowRuntime | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -154,7 +165,22 @@ function emitToRenderer(event: MainToRendererEvent): void {
 }
 
 function registerIpc(): void {
-  runner = new RunnerManager(emitToRenderer, () => Store.load().settings);
+  // The flow runtime needs to tap every stream event the runner emits so
+  // it can detect step completion + accumulate assistant text for artifact
+  // extraction. Wrap the renderer emit callback to tee events into the
+  // runtime first; nothing changes for renderer-facing behavior.
+  const flowAwareEmit = (event: MainToRendererEvent) => {
+    if (flowRuntime) flowRuntime.observeEvent(event);
+    emitToRenderer(event);
+  };
+  runner = new RunnerManager(flowAwareEmit, () => Store.load().settings);
+  flowRuntime = new FlowRuntime(
+    runner,
+    flowAwareEmit,
+    () => Store.load().projects,
+    () => Store.load().settings,
+    () => Store.load().workspaces,
+  );
 
   ipcMain.handle('store:load', () => Store.load());
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
@@ -496,6 +522,43 @@ function registerIpc(): void {
   });
   ipcMain.handle('diagnostics:list', () => listSilentLog());
   ipcMain.handle('diagnostics:clear', () => clearSilentLog());
+
+  // Flows: library CRUD + tool catalog. The runtime handlers
+  // (startRun/listRuns/etc.) are stubbed until Phase 4 wires
+  // FlowRuntime; this gives the renderer something safe to call
+  // through the IPC contract.
+  ipcMain.handle('flows:list', (_e, args: { projectPaths?: string[] } = {}) =>
+    loadAllFlows({ projectPaths: args.projectPaths }),
+  );
+  ipcMain.handle('flows:save', (_e, args) => saveFlow(args));
+  ipcMain.handle('flows:delete', (_e, args) => deleteFlow(args));
+  ipcMain.handle('flows:validate', (_e, args) => validateFlowYaml(args));
+  ipcMain.handle('flows:toolCatalog', (_e, args) => listToolCatalog(args));
+  ipcMain.handle('flows:listTemplates', () => FLOW_TEMPLATES);
+  ipcMain.handle('flows:draftFromPrompt', (_e, args) =>
+    draftFlowFromPrompt(args, { settings: Store.load().settings, runner: runner! }),
+  );
+  ipcMain.handle('flows:startRun', (_e, args) =>
+    flowRuntime ? flowRuntime.startRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:listRuns', () => (flowRuntime ? flowRuntime.listRuns() : []));
+  ipcMain.handle('flows:getRun', (_e, { runId }) =>
+    flowRuntime ? flowRuntime.getRun(runId) : null,
+  );
+  ipcMain.handle('flows:resumeRun', (_e, args) =>
+    flowRuntime ? flowRuntime.resumeRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:abortRun', (_e, args) =>
+    flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:deleteRun', (_e, args) => {
+    if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
+    const result = flowRuntime.deleteRun(args);
+    if (result.ok) {
+      emitToRenderer({ type: 'flowRunDeleted', runId: args.runId });
+    }
+    return result;
+  });
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting

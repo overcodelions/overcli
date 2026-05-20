@@ -62,6 +62,7 @@ import {
 } from './ollama';
 import {
   OLLAMA_BUILTIN_TOOLS,
+  OLLAMA_READONLY_TOOLS,
   buildOllamaToolSystemPrompt,
   modelSupportsTools,
   runOllamaToolLoop,
@@ -88,6 +89,10 @@ import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 
 type Emit = (event: MainToRendererEvent) => void;
+
+/// Result of a `RunnerManager.oneShot` call: the assistant's full text on
+/// success, or a surfaced error string.
+export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
 
 /// SHA-256 hex of a synthetic collab pingPrompt, used to mark it for
 /// skip-on-replay. Hashing keeps `Conversation.syntheticPrompts` bounded
@@ -121,10 +126,21 @@ interface SendArgs {
   reviewYolo?: boolean | null;
   allowedDirs?: string[];
   localUserId?: string;
+  /// Visible-bubble override. When set, the on-screen user bubble shows
+  /// this text instead of the (possibly noisy) `prompt` the model
+  /// actually consumes. Used by flow runtime to hide role + output
+  /// scaffolding from the user-facing transcript.
+  displayText?: string;
   /// Transport to use for Claude turns. Defaults to 'cli' when omitted.
   /// 'sdk' routes through @anthropic-ai/claude-agent-sdk instead of
   /// spawning `claude -p`. Ignored for non-claude backends.
   claudeTransport?: 'cli' | 'sdk';
+  /// Per-call tool allowlist. Currently only honored by the Ollama
+  /// backend (it builds its own in-prompt tool catalog and dispatches
+  /// calls itself). For Claude/Codex/Gemini/Copilot the tool surface is
+  /// controlled by the CLI's permission mode; this field is ignored
+  /// there. Undefined = no restriction.
+  enabledTools?: string[];
 }
 
 interface PermissionResponse {
@@ -337,11 +353,120 @@ export class RunnerManager {
   /// its optimistic "Thinking…" strip clobbered.
   private claudeSendPending = new Set<UUID>();
 
+  /// In-flight `oneShot` turns, keyed by their throwaway conversation id.
+  /// `tapOneShot` accumulates assistant text into these and resolves them
+  /// when the turn finishes — see `oneShot`.
+  private oneShotWaiters = new Map<
+    UUID,
+    { text: string; settled: boolean; finish: (r: OneShotResult) => void }
+  >();
+
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
-    this.emit = emit;
+    // Tee every emitted event through the one-shot tap before it reaches
+    // the renderer. For a tracked one-shot conversation the tap consumes
+    // the event (returns true) so it never reaches the renderer — these
+    // hidden conversations have no UI and shouldn't create phantom runner
+    // state or fire completion notifications. A no-op for normal convs.
+    this.emit = (event) => {
+      if (this.tapOneShot(event)) return;
+      emit(event);
+    };
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
     this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
+  }
+
+  /// Run a single headless turn against any backend and resolve with the
+  /// assistant's full text. Unlike `send`, this is fire-and-forget from the
+  /// caller's view: it mints a throwaway conversation, taps the emit stream
+  /// for the assistant reply, tears the conversation down when the turn
+  /// ends, and never surfaces in the sidebar. Used by build-time helpers
+  /// like the flow drafter that need a one-shot completion from whichever
+  /// CLI the user prefers — not an interactive chat.
+  async oneShot(args: {
+    backend: Backend;
+    model: string;
+    prompt: string;
+    cwd: string;
+    timeoutMs?: number;
+  }): Promise<OneShotResult> {
+    const conversationId = randomUUID();
+    const timeoutMs = args.timeoutMs ?? 120_000;
+    return await new Promise<OneShotResult>((resolve) => {
+      let done = false;
+      const finish = (r: OneShotResult) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        this.oneShotWaiters.delete(conversationId);
+        // Best-effort teardown so no subprocess / ACP session lingers. We
+        // call the kill helpers directly rather than `stop()` because
+        // `stop()` emits a `running:false` the renderer would see for this
+        // otherwise-invisible conversation.
+        try {
+          this.killProc(conversationId);
+          this.killOllama(conversationId);
+          this.killGeminiAcp(conversationId);
+        } catch {
+          // ignore — the conversation may already be gone
+        }
+        resolve(r);
+      };
+      const timer = setTimeout(
+        () => finish({ ok: false, error: `Timed out after ${Math.round(timeoutMs / 1000)}s.` }),
+        timeoutMs,
+      );
+      this.oneShotWaiters.set(conversationId, { text: '', settled: false, finish });
+      const sent = this.send({
+        conversationId,
+        prompt: args.prompt,
+        backend: args.backend,
+        cwd: args.cwd,
+        model: args.model,
+        // Read-only generation: no edits expected, but keep prompts off so
+        // the hidden conversation can't stall on an unanswerable approval.
+        permissionMode: 'default',
+        reviewBackend: null,
+        reviewMode: null,
+        reviewModel: null,
+        reviewPersona: null,
+        enabledTools: args.backend === 'ollama' ? [] : undefined,
+      });
+      if (!sent.ok) finish({ ok: false, error: sent.error });
+    });
+  }
+
+  /// Feed an emitted event into any matching one-shot waiter: accumulate
+  /// final (non-partial, non-reviewer) assistant text, and resolve when the
+  /// turn ends (`running:false`) or errors. Returns true when the event
+  /// belongs to a tracked one-shot conversation so the caller can drop it
+  /// instead of forwarding to the renderer. Returns false (no-op) for any
+  /// untracked conversation.
+  private tapOneShot(event: MainToRendererEvent): boolean {
+    const cid = (event as { conversationId?: UUID }).conversationId;
+    if (!cid) return false;
+    const waiter = this.oneShotWaiters.get(cid);
+    if (!waiter) return false;
+    if (waiter.settled) return true; // mid-teardown — swallow trailing events
+    if (event.type === 'stream') {
+      for (const ev of event.events) {
+        if (
+          ev.kind.type === 'assistant' &&
+          !ev.kind.info.isPartial &&
+          !ev.reviewer &&
+          ev.kind.info.text
+        ) {
+          waiter.text += ev.kind.info.text;
+        }
+      }
+    } else if (event.type === 'error') {
+      waiter.settled = true;
+      waiter.finish({ ok: false, error: event.message });
+    } else if (event.type === 'running' && event.isRunning === false) {
+      waiter.settled = true;
+      waiter.finish({ ok: true, text: waiter.text });
+    }
+    return true;
   }
 
   /// Trim a SendArgs to the subset BackendSpec implementations need. Keeps
@@ -477,7 +602,7 @@ export class RunnerManager {
   ): { ok: true } | { ok: false; error: string } {
     const convId = args.conversationId;
     if (!options.userEventAlreadyEmitted) {
-      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId, args.displayText);
     }
 
     try {
@@ -698,7 +823,7 @@ export class RunnerManager {
     // until the conversation is reset or switched away.
     if (args.backend === 'gemini' && !(existing && existing.backend === 'gemini') && this.geminiAcpSupported !== false) {
       if (!userEventAlreadyEmitted) {
-        this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+        this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId, args.displayText);
       }
       void this.sendGeminiAcp(args, { syntheticFromCollab: false, userEventAlreadyEmitted: true });
       return { ok: true };
@@ -928,7 +1053,7 @@ export class RunnerManager {
   ): { ok: true } | { ok: false; error: string } {
     const convId = args.conversationId;
     if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
-      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId, args.displayText);
     }
 
     try {
@@ -1141,7 +1266,17 @@ export class RunnerManager {
     // llama-coder builds, so the helper embeds the schema in-prompt and
     // parses tool calls out of the content channel.
     const toolsEnabled = modelSupportsTools(model);
-    const systemPrompt = toolsEnabled ? buildOllamaToolSystemPrompt(args.cwd) : '';
+    // No explicit allowlist (interactive chat / hijack) means READ-ONLY:
+    // the mutating tools (write_file/edit_file/bash) are only ever handed
+    // out when a caller names them — today just flow steps, which the user
+    // has reviewed and which clear preflight first. A bare `[]` (the
+    // one-shot generation path) stays an empty allowlist = no tools.
+    const enabledToolSet = args.enabledTools
+      ? new Set(args.enabledTools)
+      : new Set(OLLAMA_READONLY_TOOLS);
+    const systemPrompt = toolsEnabled
+      ? buildOllamaToolSystemPrompt(args.cwd, enabledToolSet)
+      : '';
 
     const startedAt = Date.now();
     let finished = false;
@@ -1225,6 +1360,7 @@ export class RunnerManager {
           messages: session!.messages,
           turnStartIndex,
           nudgeOnNarration: toolsEnabled,
+          enabledTools: enabledToolSet,
         },
         (ev) => {
           if (ev.type === 'roundStart') {
@@ -1488,7 +1624,7 @@ export class RunnerManager {
     const inFlight = this.geminiAcpSessions.get(convId);
     if (inFlight?.promptInFlight) {
       if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
-        this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+        this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId, args.displayText);
       }
       inFlight.queuedPrompt = {
         args,
@@ -1518,7 +1654,7 @@ export class RunnerManager {
     }
 
     if (!options.syntheticFromCollab && !options.userEventAlreadyEmitted) {
-      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId);
+      this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId, args.displayText);
     }
 
     if (session.currentUserPrompt || session.currentAssistantText) {
@@ -2893,6 +3029,7 @@ export class RunnerManager {
     prompt: string,
     attachments?: Attachment[],
     id?: string,
+    displayText?: string,
   ): void {
     // When the renderer assigned an id up front, it already pushed the
     // user bubble into the UI optimistically with the *display* prompt —
@@ -2900,6 +3037,10 @@ export class RunnerManager {
     // a different payload (e.g. a fork preamble the renderer intentionally
     // excluded from the on-screen bubble) and clobbers the local version.
     if (id) return;
+    // Visible text in the bubble. Flow turns pass a cleaned-up version
+    // so the user doesn't see the role+contract scaffolding the model
+    // needs internally.
+    const visible = displayText ?? prompt;
     this.emit({
       type: 'stream',
       conversationId,
@@ -2908,7 +3049,7 @@ export class RunnerManager {
           id: randomUUID(),
           timestamp: Date.now(),
           raw: prompt,
-          kind: { type: 'localUser', text: prompt, attachments },
+          kind: { type: 'localUser', text: visible, attachments },
           revision: 0,
         },
       ],

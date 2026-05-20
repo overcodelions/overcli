@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { useFlowsStore } from '../flowsStore';
 
 /// Custom title bar region. `hiddenInset` window style shows the traffic
 /// lights overlaid on our content; pad the left enough to clear them and
@@ -9,6 +10,8 @@ export function TitleBar() {
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform;
   const isMac = platform.toLowerCase().includes('mac');
   const leadingInsetClass = isMac ? 'pl-[92px]' : 'pl-2';
@@ -26,6 +29,20 @@ export function TitleBar() {
       </button>
       <div className="flex items-center gap-1 no-drag">
         <NavButton label="Chat" active={detailMode === 'conversation'} onClick={() => setDetailMode('conversation')} />
+        <NavButton
+          label="Flows"
+          active={detailMode === 'flows'}
+          onClick={() => {
+            // Clicking Flows in the title bar always lands on the
+            // library — never the run detail or the editor. The user's
+            // mental model is "Flows tab = the list of flows"; jumping
+            // them back into a half-edited draft or a finished run from
+            // a previous session breaks that expectation.
+            setActiveRun(null);
+            closeFlowEditor();
+            setDetailMode('flows');
+          }}
+        />
         <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
         <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
       </div>

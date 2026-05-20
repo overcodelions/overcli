@@ -824,8 +824,11 @@ export class ReviewerManager {
       ? PERSONA_PREAMBLES[args.reviewPersona]
       : buildOllamaReviewSystem();
     const toolsEnabled = modelSupportsTools(model);
+    // Rebound reviewer is read-only by design — it inspects the
+    // implementer's claims, never mutates the working tree.
+    const reviewerTools: ReadonlySet<string> = new Set(['read_file', 'list_dir', 'grep']);
     const systemPrompt = toolsEnabled
-      ? `${personaSystem}\n\n${buildOllamaToolSystemPrompt(args.cwd)}`
+      ? `${personaSystem}\n\n${buildOllamaToolSystemPrompt(args.cwd, reviewerTools)}`
       : personaSystem;
 
     // Reviewer transcript stays local to this call — we don't persist
@@ -873,6 +876,7 @@ export class ReviewerManager {
         // narration would re-prompt it for tool calls when none are
         // actually needed.
         nudgeOnNarration: false,
+        enabledTools: reviewerTools,
       },
       (ev) => {
         if (ev.type === 'assistantDelta') {
