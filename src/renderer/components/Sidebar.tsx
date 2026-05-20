@@ -634,8 +634,20 @@ function ProjectGroup({
   return (
     <div className="mt-1">
       <div className="group flex items-center px-2 py-1 rounded hover:bg-card-strong">
-        <button onClick={toggle} className="flex items-center gap-1.5 flex-1 text-left min-w-0">
-          <span className={'text-[9px] text-ink-faint ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
+        <button
+          onClick={toggle}
+          className="w-5 h-5 flex items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card-strong"
+          title={expanded ? 'Collapse project' : 'Expand project'}
+          aria-label={expanded ? 'Collapse project' : 'Expand project'}
+        >
+          <span className={'text-[9px] ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
+        </button>
+        <button
+          onClick={onNewConversation}
+          className="flex items-center gap-1.5 flex-1 text-left min-w-0"
+          title={`Open ${projectLabel(project)}`}
+          aria-label={`Open ${projectLabel(project)}`}
+        >
           <ProjectIcon />
           <span className="text-xs font-medium truncate">{projectLabel(project)}</span>
         </button>
