@@ -7,7 +7,8 @@
 // reads from the same store snapshot share the same Map. When a
 // mutation lands the next read rebuilds it lazily.
 
-import type { Conversation, Project, UUID, Workspace } from '../shared/types';
+import type { Backend, Conversation, Project, UUID, Workspace } from '../shared/types';
+import type { FlowRun } from '../shared/flows/schema';
 
 /// Window during which a conversation counts as "Active" — surfaces it
 /// in the top-of-sidebar Active section and suppresses redundant
@@ -28,17 +29,25 @@ export function isActiveConversation(
 
 export type ConvLocation =
   | { kind: 'project'; project: Project; conversation: Conversation }
-  | { kind: 'workspace'; workspace: Workspace; conversation: Conversation };
+  | { kind: 'workspace'; workspace: Workspace; conversation: Conversation }
+  | { kind: 'flow'; run: FlowRun; participantId: string; conversation: Conversation };
 
 let cachedProjects: readonly Project[] | null = null;
 let cachedWorkspaces: readonly Workspace[] | null = null;
+let cachedFlowRuns: Readonly<Record<UUID, FlowRun>> | null = null;
 let cachedIndex: Map<UUID, ConvLocation> | null = null;
 
 function getIndex(
   projects: readonly Project[],
   workspaces: readonly Workspace[],
+  flowRuns: Readonly<Record<UUID, FlowRun>>,
 ): Map<UUID, ConvLocation> {
-  if (cachedIndex && cachedProjects === projects && cachedWorkspaces === workspaces) {
+  if (
+    cachedIndex &&
+    cachedProjects === projects &&
+    cachedWorkspaces === workspaces &&
+    cachedFlowRuns === flowRuns
+  ) {
     return cachedIndex;
   }
   const idx = new Map<UUID, ConvLocation>();
@@ -52,19 +61,70 @@ function getIndex(
       idx.set(conversation.id, { kind: 'workspace', workspace, conversation });
     }
   }
+  for (const run of Object.values(flowRuns)) {
+    for (const [participantId, convId] of Object.entries(run.conversationIds)) {
+      const conversation = synthesizeFlowConversation(run, participantId, convId);
+      if (conversation) {
+        idx.set(convId, { kind: 'flow', run, participantId, conversation });
+      }
+    }
+  }
   cachedProjects = projects;
   cachedWorkspaces = workspaces;
+  cachedFlowRuns = flowRuns;
   cachedIndex = idx;
   return idx;
+}
+
+/// Build a Conversation-shape object for a flow participant from its
+/// FlowRun + participant config. Flow conversations don't live in
+/// `projects[]`/`workspaces[]` (they're driven by the flow runtime), but
+/// the rest of the app expects all conversations to be findable via the
+/// shared lookup — so we synthesize one on demand. Mutations from
+/// `store.send` etc. fall on the floor here (no setter is wired back to
+/// flowsStore), which is intentional: flow convs are managed by the
+/// runtime, not the regular conversation mutation path.
+function synthesizeFlowConversation(
+  run: FlowRun,
+  participantId: string,
+  convId: UUID,
+): Conversation | null {
+  const participant = run.flowSnapshot.participants?.find((p) => p.id === participantId);
+  if (!participant) return null;
+  const backend = participant.backend as Backend;
+  const sessionId = run.sessionIdsByParticipant?.[participantId];
+  return {
+    id: convId,
+    name: participant.name,
+    sessionId,
+    createdAt: run.createdAt,
+    lastActiveAt: run.createdAt,
+    totalCostUSD: 0,
+    turnCount: 0,
+    currentModel: participant.model,
+    permissionMode: 'bypassPermissions',
+    hidden: true,
+    primaryBackend: backend,
+    ...(backend === 'claude' ? { claudeModel: participant.model } : {}),
+    ...(backend === 'codex' ? { codexModel: participant.model } : {}),
+    ...(backend === 'gemini' ? { geminiModel: participant.model } : {}),
+    ...(backend === 'ollama' ? { ollamaModel: participant.model } : {}),
+  };
 }
 
 export interface LookupSource {
   projects: readonly Project[];
   workspaces: readonly Workspace[];
+  /// Flow runs from `useFlowsStore`. Optional so unit tests / callers
+  /// that don't care about flow conversations don't have to plumb the
+  /// extra store through.
+  flowRuns?: Readonly<Record<UUID, FlowRun>>;
 }
 
+const EMPTY_RUNS: Record<UUID, FlowRun> = {};
+
 export function findConvLocation(src: LookupSource, id: UUID): ConvLocation | null {
-  return getIndex(src.projects, src.workspaces).get(id) ?? null;
+  return getIndex(src.projects, src.workspaces, src.flowRuns ?? EMPTY_RUNS).get(id) ?? null;
 }
 
 export function findConversation(src: LookupSource, id: UUID): Conversation | null {
@@ -88,6 +148,11 @@ export function findContainerPath(src: LookupSource, id: UUID): string | null {
   if (!hit) return null;
   if (hit.kind === 'project') {
     return hit.conversation.worktreePath ?? hit.project.path;
+  }
+  if (hit.kind === 'flow') {
+    // Flow conv's cwd is whatever the run was launched against — a
+    // project path, a worktree, or a workspace symlink root.
+    return hit.run.projectPath;
   }
   return hit.conversation.coordinatorRootPath ?? hit.conversation.worktreePath ?? hit.workspace.rootPath;
 }

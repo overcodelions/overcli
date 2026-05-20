@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { ToolResultBlock, ToolUseBlock } from '@shared/types';
+import { ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { useStore } from '../store';
 import { useInsideSubagentDrawer, useOpenFile } from '../openFile';
 import { useSubagentEvents } from '../runnersStore';
@@ -17,10 +17,18 @@ export function ToolUseCard({
   use,
   result,
   compact = false,
+  conversationId,
 }: {
   use: ToolUseBlock;
   result?: ToolResultBlock;
   compact?: boolean;
+  /// The conversation this card is rendered inside. Needed for
+  /// AskUserQuestion — submitting the answer has to go to THIS chat,
+  /// not whatever happens to be selected in the global sidebar. The
+  /// previous behavior used `selectedConversationId` and silently
+  /// dropped answers into the wrong conversation when the user had
+  /// switched away (e.g. between a flow run pane and a regular chat).
+  conversationId?: UUID;
 }) {
   const openFile = useOpenFile();
   const insideDrawer = useInsideSubagentDrawer();
@@ -48,13 +56,13 @@ export function ToolUseCard({
     return <TodoWriteCard args={args} />;
   }
   if (use.name === 'AskUserQuestion') {
-    return <AskUserQuestionCard use={use} args={args} />;
+    return <AskUserQuestionCard use={use} args={args} conversationId={conversationId} />;
   }
   if (use.name === 'ExitPlanMode') {
     return <ExitPlanModeCard use={use} args={args} />;
   }
   if (use.name === 'Task' || use.name === 'Agent') {
-    return <SubagentCard use={use} args={args} result={result} />;
+    return <SubagentCard use={use} args={args} result={result} conversationId={conversationId} />;
   }
   return <GenericToolCard use={use} />;
 }
@@ -69,12 +77,21 @@ function SubagentCard({
   use,
   args,
   result,
+  conversationId: conversationIdProp,
 }: {
   use: ToolUseBlock;
   args: Record<string, any>;
   result?: ToolResultBlock;
+  /// The conversation this card is rendered inside. Required when the
+  /// card is rendered outside a sidebar-selected conversation (e.g.
+  /// inside a flow step's transcript) — without it the events lookup
+  /// silently falls back to `selectedConversationId`, which is null in
+  /// flows mode, so the card stays stuck on "starting…" and the drawer
+  /// opens against the wrong runner.
+  conversationId?: UUID;
 }) {
-  const conversationId = useStore((s) => s.selectedConversationId);
+  const selectedConversationId = useStore((s) => s.selectedConversationId);
+  const conversationId = conversationIdProp ?? selectedConversationId;
   const openSubagentDrawer = useStore((s) => s.openSubagentDrawer);
   const events = useSubagentEvents(conversationId, use.id);
   const subtype: string = typeof args.subagent_type === 'string' ? args.subagent_type : '';
@@ -90,7 +107,7 @@ function SubagentCard({
       : 0;
   return (
     <button
-      onClick={() => openSubagentDrawer(use.id)}
+      onClick={() => openSubagentDrawer(use.id, conversationId ?? undefined)}
       className="w-full text-left rounded-lg border border-indigo-500/35 bg-indigo-500/10 dark:bg-indigo-500/[0.10] text-xs hover:bg-indigo-500/20 transition-colors"
     >
       <div className="flex flex-col gap-0.5 px-3 py-1.5">
@@ -372,14 +389,32 @@ function MultiEditCard({ args, result, onOpen }: { args: Record<string, any>; re
 /// AskUserQuestion — claude asks the user to pick one or more options
 /// from each question. We submit the picked answers back as the next
 /// user turn so claude's context includes the selection.
-function AskUserQuestionCard({ use, args }: { use: ToolUseBlock; args: Record<string, any> }) {
+function AskUserQuestionCard({
+  use,
+  args,
+  conversationId,
+}: {
+  use: ToolUseBlock;
+  args: Record<string, any>;
+  /// Target conversation for the answer. MUST be the conversation the
+  /// card is rendered inside. Falling back to `selectedConversationId`
+  /// was the source of a cross-conversation leak: if the user opened a
+  /// flow run while a different conversation was selected in the
+  /// sidebar, hitting Submit sent the answer to that other conversation
+  /// instead of the flow's chat.
+  conversationId?: UUID;
+}) {
   const [selections, setSelections] = useState<Record<number, Set<number>>>({});
   const [other, setOther] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const questions: Array<{ header?: string; question?: string; multiple?: boolean; options?: Array<{ label: string; description?: string }> }> =
     Array.isArray(args.questions) ? args.questions : [];
   const send = useStore((s) => s.send);
-  const convId = useStore((s) => s.selectedConversationId);
+  const selectedConvId = useStore((s) => s.selectedConversationId);
+  // Prefer the prop (the conversation we're actually rendered in); fall
+  // back to the global selection only when nobody supplied one (legacy
+  // call sites we haven't updated yet).
+  const convId = conversationId ?? selectedConvId;
 
   const toggle = (q: number, o: number, multiple: boolean) => {
     setSelections((cur) => {

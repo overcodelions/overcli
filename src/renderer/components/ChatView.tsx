@@ -291,6 +291,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
                     use={currentReveal}
                     result={toolResultIndex.get(currentReveal.id)}
                     compact
+                    conversationId={conversationId}
                   />
                 </div>
               )}
@@ -352,6 +353,7 @@ const EventRow = memo(function EventRow({
           toolResultIndex={toolResultIndex}
           endorsed={endorsed}
           endorsementTint={endorsementTint}
+          conversationId={conversationId}
         />
       );
     case 'toolResult':
