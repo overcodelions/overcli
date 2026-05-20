@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { useStore } from '../../store';
 
 const VERSION = '0.1.0';
@@ -68,11 +69,38 @@ const FEATURES = [
   },
 ] as const;
 
+const FLOW_POINTS = [
+  {
+    icon: 'handoff' as const,
+    color: '#b587ff',
+    title: 'Artifact handoff',
+    body: 'plan.md, diff, and review.md pass step to step — no copy-paste between models.',
+  },
+  {
+    icon: 'spark' as const,
+    color: '#36cfc9',
+    title: 'Premium where it counts',
+    body: 'Opus plans and reviews; a local Ollama model does the grunt execution.',
+  },
+  {
+    icon: 'branch' as const,
+    color: '#5b9cff',
+    title: 'Run in a worktree',
+    body: 'Fire off a long pipeline on an isolated branch, walk away, come back to a diff.',
+  },
+  {
+    icon: 'pause' as const,
+    color: '#f59e0b',
+    title: 'Human checkpoints',
+    body: 'pause_before a step to review, or hijack any participant mid-flight from its tab.',
+  },
+] as const;
+
 export function AboutSheet() {
   const close = useStore((s) => s.openSheet);
 
   return (
-    <div className="flex h-[760px] flex-col bg-surface-elevated">
+    <div className="flex h-[840px] max-h-[90vh] flex-col bg-surface-elevated">
       <div className="relative overflow-hidden border-b border-card bg-gradient-to-b from-accent/18 via-accent/6 to-transparent px-8 pt-9 pb-8">
         <div className="pointer-events-none absolute -right-28 -top-28 h-72 w-72 rounded-full bg-accent/12 blur-3xl" />
         <div className="pointer-events-none absolute -left-20 -bottom-24 h-56 w-56 rounded-full bg-accent/6 blur-3xl" />
@@ -113,8 +141,10 @@ export function AboutSheet() {
           ))}
         </div>
 
+        <FlowsSection />
+
         <SectionLabel className="mt-8">What's in the box</SectionLabel>
-        <div className="mt-3 grid grid-cols-2 gap-3">
+        <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-3">
           {FEATURES.map((feature) => (
             <FeatureRow key={feature.title} {...feature} />
           ))}
@@ -183,6 +213,185 @@ function SectionLabel({ children, className = '' }: { children: React.ReactNode;
     <div className={`flex items-center gap-2 ${className}`}>
       <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">{children}</div>
       <div className="h-px flex-1 bg-card" />
+    </div>
+  );
+}
+
+function FlowsSection() {
+  return (
+    <>
+      <SectionLabel className="mt-8">Multi-agent flows</SectionLabel>
+      <div className="relative mt-3 overflow-hidden rounded-2xl border border-card-strong bg-gradient-to-br from-[#b587ff]/12 via-[#36cfc9]/6 to-transparent p-5">
+        <div
+          className="pointer-events-none absolute -right-20 -top-24 h-56 w-56 rounded-full blur-3xl"
+          style={{ backgroundColor: '#b587ff24' }}
+        />
+        <div
+          className="pointer-events-none absolute -left-16 -bottom-20 h-44 w-44 rounded-full blur-3xl"
+          style={{ backgroundColor: '#36cfc922' }}
+        />
+        <div className="relative flex items-start gap-6">
+          <div className="min-w-0 flex-1">
+            <span
+              className="inline-flex h-5 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.14em]"
+              style={{ backgroundColor: '#b587ff26', color: '#c4a3ff' }}
+            >
+              New · Flows
+            </span>
+            <div className="mt-2 text-[17px] font-semibold leading-tight text-ink">
+              Chain models into a pipeline — not one big chat.
+            </div>
+            <div className="mt-1.5 text-[13px] leading-[1.55] text-ink-muted">
+              A flow is a sequence of LLM steps, each with its own model, tools, and role. Outputs hand
+              off forward as artifacts, so a premium model plans and reviews while a local model does
+              the work. Start from a template or describe what you want and Claude drafts the YAML.
+            </div>
+          </div>
+          <FlowPipelineDemo />
+        </div>
+        <div className="relative mt-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {FLOW_POINTS.map((p) => (
+            <FlowPoint key={p.title} {...p} />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function FlowPoint({
+  icon,
+  color,
+  title,
+  body,
+}: {
+  icon: 'handoff' | 'spark' | 'branch' | 'pause';
+  color: string;
+  title: string;
+  body: string;
+}) {
+  return (
+    <div
+      className="group relative overflow-hidden rounded-xl border border-card bg-gradient-to-br from-card to-card/30 p-3 transition-colors hover:border-card-strong"
+      style={{ boxShadow: `inset 0 1px 0 ${color}2e` }}
+    >
+      <div
+        className="pointer-events-none absolute -right-8 -top-8 h-20 w-20 rounded-full blur-2xl"
+        style={{ backgroundColor: `${color}22` }}
+      />
+      <div className="relative flex items-center gap-2">
+        <div
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg"
+          style={{ backgroundColor: `${color}22`, boxShadow: `inset 0 1px 0 ${color}33` }}
+        >
+          <FlowPointIcon icon={icon} color={color} />
+        </div>
+        <div className="text-[12.5px] font-semibold text-ink">{title}</div>
+      </div>
+      <div className="relative mt-1.5 text-[11.5px] leading-[1.45] text-ink-muted">{body}</div>
+    </div>
+  );
+}
+
+function FlowPointIcon({
+  icon,
+  color,
+}: {
+  icon: 'handoff' | 'spark' | 'branch' | 'pause';
+  color: string;
+}) {
+  const common = { width: 15, height: 15, viewBox: '0 0 16 16', fill: 'none' as const };
+  const sw = 1.4;
+  switch (icon) {
+    case 'handoff':
+      return (
+        <svg {...common}>
+          <rect x="2" y="3" width="5" height="6" rx="1" stroke={color} strokeWidth={sw} />
+          <rect x="9" y="7" width="5" height="6" rx="1" stroke={color} strokeWidth={sw} />
+          <path d="M7 5.5h2.5M9.5 5.5 8.3 4.3M9.5 5.5 8.3 6.7" stroke={color} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'spark':
+      return (
+        <svg {...common}>
+          <path d="M8 2 9.4 6.6 14 8 9.4 9.4 8 14 6.6 9.4 2 8 6.6 6.6Z" stroke={color} strokeWidth={sw} strokeLinejoin="round" />
+        </svg>
+      );
+    case 'branch':
+      return (
+        <svg {...common}>
+          <circle cx="4" cy="3.5" r="1.4" stroke={color} strokeWidth={sw} />
+          <circle cx="4" cy="12.5" r="1.4" stroke={color} strokeWidth={sw} />
+          <circle cx="12" cy="6" r="1.4" stroke={color} strokeWidth={sw} />
+          <path d="M4 5v6M4 9c0-2 2-3 4-3h2.5" stroke={color} strokeWidth={sw} strokeLinecap="round" />
+        </svg>
+      );
+    case 'pause':
+      return (
+        <svg {...common}>
+          <rect x="4.5" y="3" width="2.2" height="10" rx="0.8" stroke={color} strokeWidth={sw} />
+          <rect x="9.3" y="3" width="2.2" height="10" rx="0.8" stroke={color} strokeWidth={sw} />
+        </svg>
+      );
+  }
+}
+
+function FlowPipelineDemo() {
+  const steps = [
+    { role: 'Plan', model: 'Opus', artifact: 'plan.md', color: '#b587ff' },
+    { role: 'Build', model: 'Ollama', artifact: 'diff', color: '#36cfc9' },
+    { role: 'Review', model: 'Opus', artifact: 'review.md', color: '#5b9cff' },
+  ] as const;
+  return (
+    <div className="hidden shrink-0 items-center gap-1.5 rounded-xl border border-card-strong bg-surface-elevated/70 px-3.5 py-3.5 shadow-[0_8px_22px_rgba(0,0,0,0.22)] md:flex">
+      {steps.map((s, i) => (
+        <Fragment key={s.role}>
+          <div
+            className="relative w-[82px] overflow-hidden rounded-lg border bg-card/70 p-2 text-center"
+            style={{
+              borderColor: `${s.color}59`,
+              boxShadow: `inset 0 1px 0 ${s.color}33, 0 0 14px ${s.color}1f`,
+            }}
+          >
+            <div
+              className="pointer-events-none absolute -right-5 -top-5 h-12 w-12 rounded-full blur-xl"
+              style={{ backgroundColor: `${s.color}33` }}
+            />
+            <div className="relative flex items-center justify-center gap-1">
+              <span
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ backgroundColor: s.color, boxShadow: `0 0 6px ${s.color}` }}
+              />
+              <div className="text-[10px] font-semibold text-ink">{s.role}</div>
+            </div>
+            <div
+              className="relative mt-1 inline-block rounded px-1.5 py-0.5 text-[8.5px] font-semibold"
+              style={{ backgroundColor: `${s.color}26`, color: s.color }}
+            >
+              {s.model}
+            </div>
+            <div className="relative mt-1 font-mono text-[8px] text-ink-faint">{s.artifact}</div>
+          </div>
+          {i < steps.length - 1 && (
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 14 14"
+              fill="none"
+              className="shrink-0"
+              style={{ color: steps[i + 1].color }}
+            >
+              <path
+                d="M3 7h7M8 4l3 3-3 3"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+        </Fragment>
+      ))}
     </div>
   );
 }
