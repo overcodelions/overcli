@@ -7,7 +7,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
-import { resolveStepModel, type Flow } from '@shared/flows/schema';
+import { flowRunOwnerPath, resolveStepModel, type Flow } from '@shared/flows/schema';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
@@ -152,7 +152,7 @@ function RunsOverview() {
           <SectionHeading title="Active" count={active.length} accent />
           <div className="space-y-1.5 mb-4">
             {active.map((run) => (
-              <RunRow key={run.id} run={run} projectLabel={nameForPath.get(run.projectPath)} />
+              <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
             ))}
           </div>
         </>
@@ -172,7 +172,7 @@ function RunsOverview() {
           {showRecent && (
             <div className="space-y-1.5 mb-4">
               {recent.slice(0, 15).map((run) => (
-                <RunRow key={run.id} run={run} projectLabel={nameForPath.get(run.projectPath)} />
+                <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
               ))}
             </div>
           )}
@@ -241,7 +241,7 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
       <div className="flex-1 min-w-0 flex items-baseline gap-2">
         <span className="text-sm font-semibold truncate">{run.flowSnapshot.name}</span>
         <span className="text-[11px] text-ink-faint truncate">
-          {projectLabel ?? pathBasenameSafe(run.projectPath)}
+          {projectLabel ?? pathBasenameSafe(flowRunOwnerPath(run))}
           {run.worktreePath && <span className="ml-1">· worktree</span>}
         </span>
       </div>

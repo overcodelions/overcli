@@ -472,6 +472,8 @@ export class FlowRuntimeImpl {
       attempts: [],
       worktreePath: worktreeMeta?.worktreePath,
       branchName: worktreeMeta?.branchName,
+      baseBranch:
+        worktreeMeta || workspaceWorktrees ? args.baseBranch?.trim() || undefined : undefined,
       sourceProjectPath:
         worktreeMeta || workspaceWorktrees ? args.projectPath : undefined,
       baselineCommit,

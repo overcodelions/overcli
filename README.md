@@ -83,8 +83,18 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 </p>
 
 <p align="center">
+  <em>Flow builder — design a pipeline visually: chain steps across models, hand off artifacts (<code>plan.md</code> → <code>diff</code> → <code>review.md</code>), add retry edges, and tune each step's role, tools, and checkpoints.</em><br />
+  <img alt="Overcli flow builder" src="docs/screenshots/flows-edit.png" width="920" />
+</p>
+
+<p align="center">
   <em>Settings — toggle backends, override CLI paths, see live health badges.</em><br />
   <img alt="Overcli settings — backends" src="docs/screenshots/settings-backends.png" width="920" />
+</p>
+
+<p align="center">
+  <em>About — the whole pitch in one panel: why it exists, and what's in the box.</em><br />
+  <img alt="Overcli about panel" src="docs/screenshots/about.png" width="920" />
 </p>
 
 ## Features
@@ -109,6 +119,7 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 | 16 | **Smart downgrades** | Near a rate or cost cap, Overcli can step down automatically — `opus` → `sonnet`, cloud → local Ollama — so the next turn still ships. Off by default. |
 | 17 | **Health badges** | Per-backend status pills: *ready*, *unauthenticated*, *missing*, *error*. Know what's broken before you try to use it. |
 | 18 | **Colosseum** | Fire one prompt at every backend in parallel. Compare the diffs side by side. Keep the winner, discard the rest. |
+| 19 | **Flows** | Chain LLM steps into a pipeline — each step its own model, tools, and role. A premium model plans and reviews, a local Ollama model executes, and artifacts (`plan.md`, `diff`, `review.md`) hand off step to step. Run in a worktree, pause before any step, or hijack a participant mid-flight. Start from a template or describe what you want and Claude drafts the YAML. |
 
 ## Download
 

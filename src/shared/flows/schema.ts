@@ -214,6 +214,11 @@ export interface FlowRun {
   /// completed run.
   worktreePath?: string;
   branchName?: string;
+  /// Branch the worktree(s) were forked from (single project AND every
+  /// member of a workspace worktree run share one base). Persisted so the
+  /// review/merge UI can run `git diff <baseBranch>`, status, rebase and
+  /// merge-to-base without re-deriving it. Absent for `runIn: 'cwd'` runs.
+  baseBranch?: string;
   /// Original project the worktree was forked from. Same as `projectPath`
   /// for non-worktree runs (omitted when redundant).
   sourceProjectPath?: string;
@@ -250,6 +255,18 @@ export interface FlowRun {
     worktreePath: string;
     branchName: string;
   }>;
+}
+
+/// The project/workspace a run logically belongs to — i.e. where the user
+/// launched it from. For `runIn: 'worktree'` runs, `projectPath` is the
+/// throwaway worktree (single project) or coordinator symlink root
+/// (workspace), so it never equals the original project/workspace root;
+/// `sourceProjectPath` records that original. For `runIn: 'cwd'` runs
+/// `sourceProjectPath` is absent and `projectPath` IS the root. Match runs
+/// to their sidebar/library owner with this, not `projectPath` directly —
+/// otherwise worktree runs vanish from their workspace's Flows list.
+export function flowRunOwnerPath(run: FlowRun): string {
+  return run.sourceProjectPath ?? run.projectPath;
 }
 
 /// Descriptor for a tool that a step can be configured to use. Built from

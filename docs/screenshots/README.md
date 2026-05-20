@@ -12,7 +12,9 @@ The top-level `README.md` references these images. Drop PNG captures at these pa
 | `rebound-popover.png` | Rebound config popover — reviewer + mode + rounds (light) |
 | `rebound-collab-1.png` | Codex ↔ Claude collab transcript, mid-rounds (dark) |
 | `rebound-collab-2.png` | Codex ↔ Claude collab transcript, later rounds (dark) |
+| `flows-edit.png` | Flow builder — pipeline diagram, participants, per-step config (dark) |
 | `settings-backends.png` | Settings → Backends pane with health badges (dark) |
+| `about.png` | About panel scrolled to the multi-agent flows section (dark) |
 
 All images are sized at 920px in the README. Source captures are typically 2× that on Retina displays.
 

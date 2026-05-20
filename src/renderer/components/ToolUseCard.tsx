@@ -481,7 +481,7 @@ function AskUserQuestionCard({
               <div key={qi} className="flex flex-col gap-1.5">
                 <div className="text-ink">{q.header ?? q.question}</div>
                 {q.question && q.question !== q.header && (
-                  <div className="text-[10px] text-ink-faint">{q.question}</div>
+                  <div className="text-[10px] text-ink-muted">{q.question}</div>
                 )}
                 <div className="flex flex-col gap-1">
                   {(q.options ?? []).map((opt, oi) => {
@@ -510,7 +510,7 @@ function AskUserQuestionCard({
                         <div className="flex-1">
                           <div className="text-ink">{opt.label}</div>
                           {opt.description && (
-                            <div className="text-[10px] text-ink-faint">{opt.description}</div>
+                            <div className="text-[10px] text-ink-muted">{opt.description}</div>
                           )}
                         </div>
                       </button>
@@ -522,7 +522,7 @@ function AskUserQuestionCard({
           })
         )}
         <div className="flex flex-col gap-1 pt-1 border-t border-blue-500/20">
-          <div className="text-[10px] text-ink-faint">Or type your own response</div>
+          <div className="text-[10px] text-ink-muted">Or type your own response</div>
           <textarea
             value={other}
             disabled={submitted}
