@@ -16,6 +16,7 @@ import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { ProjectDiffSheet } from './sheets/ProjectDiffSheet';
 import { WorkspaceDiffSheet } from './sheets/WorkspaceDiffSheet';
 import { WorkspaceAgentReviewSheet } from './sheets/WorkspaceAgentReviewSheet';
+import { FlowRunReviewSheet } from './sheets/FlowRunReviewSheet';
 import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
 import { ArchiveAllSheet } from './sheets/ArchiveAllSheet';
 import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSheet';
@@ -28,6 +29,7 @@ const WIDE_SHEETS = new Set<string>([
   'projectDiff',
   'workspaceDiff',
   'workspaceAgentReview',
+  'flowRunReview',
   'colosseumCompare',
   'bulkConversationActions',
   'capabilities',
@@ -38,6 +40,10 @@ export function SheetHost() {
   const close = useStore((s) => s.openSheet);
   if (!sheet) return null;
   const wide = WIDE_SHEETS.has(sheet.type);
+  // About sits between the two tiers: wider than the default shell so the
+  // feature grids and flows showcase have room to breathe, but height stays
+  // content-driven (max-h) rather than locked to the viewport.
+  const isAbout = sheet.type === 'about';
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
@@ -51,7 +57,11 @@ export function SheetHost() {
           // tall and short whenever the diff under-fills it. Narrow
           // sheets keep `max-h` since their content varies more
           // legitimately (a short About vs. a long Settings).
-          (wide ? 'max-w-[1240px] h-[88vh]' : 'max-w-[680px] max-h-[80vh]')
+          (wide
+            ? 'max-w-[1240px] h-[88vh]'
+            : isAbout
+              ? 'max-w-[1040px] max-h-[90vh]'
+              : 'max-w-[680px] max-h-[80vh]')
         }
         onClick={(e) => e.stopPropagation()}
       >
@@ -73,6 +83,7 @@ export function SheetHost() {
         {sheet.type === 'workspaceAgentReview' && (
           <WorkspaceAgentReviewSheet coordinatorId={sheet.coordinatorId} />
         )}
+        {sheet.type === 'flowRunReview' && <FlowRunReviewSheet runId={sheet.runId} />}
         {sheet.type === 'archiveConversation' && (
           <ArchiveConversationSheet convId={sheet.convId} />
         )}
