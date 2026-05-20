@@ -62,6 +62,9 @@ export function backendFromModel(model: string | null | undefined): Backend {
   if (m.includes('ollama')) return 'ollama';
   if (m.includes('copilot')) return 'copilot';
   if (m.includes('claude')) return 'claude';
+  // Ollama tags are always `name:tag` (e.g. gemma4:26b, qwen2.5-coder:7b).
+  // Cloud-backend models never use that shape, so a bare colon means local.
+  if (/^[a-z0-9][a-z0-9._-]*:[a-z0-9][a-z0-9._-]*$/.test(m)) return 'ollama';
   return 'claude';
 }
 
