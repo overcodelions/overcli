@@ -158,9 +158,13 @@ function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): s
   return null;
 }
 
-export function runGit(args: string[], cwd: string): GitResult {
+export function runGit(args: string[], cwd: string, extraEnv?: NodeJS.ProcessEnv): GitResult {
   const bin = resolveGitBinary();
-  const res = spawnSync(bin, args, { cwd, encoding: 'utf-8', env: gitEnv() });
+  const res = spawnSync(bin, args, {
+    cwd,
+    encoding: 'utf-8',
+    env: extraEnv ? { ...gitEnv(), ...extraEnv } : gitEnv(),
+  });
   if (res.error) {
     return { stdout: '', stderr: res.error.message, exitCode: -1 };
   }

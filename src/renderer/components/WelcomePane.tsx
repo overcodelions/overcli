@@ -467,7 +467,14 @@ function WelcomeFlowsRow({
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const [pickedFlowId, setPickedFlowId] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
+  // The launch prompt lives in the shared draft/attachment store (keyed per
+  // flow) so the Composer can drive multi-line text + image attachments,
+  // exactly like the chat composer above.
+  // `__`-prefixed: a sentinel draft key (not a real conversation), matching
+  // the start page's `__welcome__`. Per-flow so each keeps its own draft.
+  const draftKey = pickedFlowId ? `__flow-launch:${pickedFlowId}__` : '__flow-launch__';
+  const setDraft = useStore((s) => s.setDraft);
+  const clearAttachments = useStore((s) => s.clearAttachments);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
@@ -515,18 +522,21 @@ function WelcomeFlowsRow({
   const visibleFlows = showAll ? flows : flows.slice(0, MAX_VISIBLE_FLOWS);
   const hiddenCount = flows.length - visibleFlows.length;
 
-  async function handleRun() {
-    if (!pickedFlow || !target || !draft.trim()) {
+  async function handleRun(prompt: string, attachments: Attachment[]) {
+    const text = prompt.trim();
+    if (!pickedFlow || !target || !text) {
       setError('Tell the flow what to work on, and pick a project or workspace.');
       return;
     }
+    if (submitting) return;
     setSubmitting(true);
     setError(null);
     try {
       const result = await window.overcli.invoke('flows:startRun', {
         flowId: pickedFlow.id,
         projectPath: target,
-        userPrompt: draft,
+        userPrompt: text,
+        attachments: attachments.length > 0 ? attachments : undefined,
         runIn: canUseWorktree ? runIn : 'cwd',
         baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
       });
@@ -536,6 +546,10 @@ function WelcomeFlowsRow({
       }
       const run = await window.overcli.invoke('flows:getRun', { runId: result.runId });
       if (run) applyRunUpdate(run);
+      // The launch prompt has been consumed — clear it so returning to the
+      // welcome screen starts fresh.
+      setDraft(draftKey, '');
+      clearAttachments(draftKey);
       setActiveRun(result.runId);
       setDetailMode('flows');
     } finally {
@@ -562,7 +576,6 @@ function WelcomeFlowsRow({
                 picked={false}
                 onClick={() => {
                   setPickedFlowId(flow.id);
-                  setDraft('');
                   setError(null);
                 }}
               />
@@ -603,8 +616,8 @@ function WelcomeFlowsRow({
         <RunPanel
           flow={pickedFlow}
           targetLabel={targetLabel}
-          draft={draft}
-          onDraft={setDraft}
+          draftKey={draftKey}
+          rootPath={target}
           error={error}
           submitting={submitting}
           onCancel={() => {
@@ -618,7 +631,6 @@ function WelcomeFlowsRow({
           baseBranch={baseBranch}
           onBaseBranch={setBaseBranch}
           baseBranchRepoPaths={baseBranchRepoPaths}
-          canRun={!!target && !!draft.trim()}
         />
       )}
     </div>
@@ -630,8 +642,8 @@ function WelcomeFlowsRow({
 function RunPanel({
   flow,
   targetLabel,
-  draft,
-  onDraft,
+  draftKey,
+  rootPath,
   error,
   submitting,
   onCancel,
@@ -642,16 +654,17 @@ function RunPanel({
   baseBranch,
   onBaseBranch,
   baseBranchRepoPaths,
-  canRun,
 }: {
   flow: Flow;
   targetLabel: string;
-  draft: string;
-  onDraft: (s: string) => void;
+  /// Store key the Composer reads/writes its draft + attachments under.
+  draftKey: string;
+  /// Project/workspace root, for @-mention file lookup in the Composer.
+  rootPath: string;
   error: string | null;
   submitting: boolean;
   onCancel: () => void;
-  onRun: () => void;
+  onRun: (prompt: string, attachments: Attachment[]) => void;
   canUseWorktree: boolean;
   runIn: 'cwd' | 'worktree';
   onRunIn: (v: 'cwd' | 'worktree') => void;
@@ -663,7 +676,6 @@ function RunPanel({
   /// exist in EVERY listed repo (intersection) so a workspace flow
   /// can't pick a branch that one member doesn't have.
   baseBranchRepoPaths: string[];
-  canRun: boolean;
 }) {
   return (
     <div
@@ -700,26 +712,66 @@ function RunPanel({
           </button>
         </div>
 
-        {/* Input — soft inner surface with a focus ring. Uses solid
-            tokens (bg-card / bg-card-strong) instead of opacity-modifier
-            variants, which don't compose cleanly with our CSS-var-backed
-            colors and were rendering near-white. */}
-        <input
-          value={draft}
-          onChange={(e) => onDraft(e.target.value)}
+        {/* Multi-line prompt with image attach / paste / drag-drop — the
+            same Composer the chat uses, so a flow can be launched from a
+            screenshot, spec, or log. Its send button (⏎) starts the run;
+            the target + worktree controls ride in the footer. */}
+        <Composer
+          draftKey={draftKey}
+          variant="welcome"
           autoFocus
-          placeholder="What should it work on?"
-          className={
-            'w-full bg-card border border-card-strong rounded-lg px-3.5 py-2.5 text-sm text-ink ' +
-            'placeholder:text-ink-faint focus:outline-none focus:border-accent ' +
-            'focus:shadow-[0_0_0_3px_rgba(125,200,255,0.12)] transition'
+          rootPath={rootPath}
+          placeholder="What should it work on? Paste a screenshot or drop a file…"
+          onSend={onRun}
+          footer={
+            <>
+              {/* Target chip */}
+              <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
+                <span className="text-ink-faint">in</span>
+                <span className="font-medium text-ink truncate max-w-[140px]">{targetLabel}</span>
+              </div>
+
+              {canUseWorktree && (
+                <>
+                  <span className="text-ink-faint text-[11px]">·</span>
+                  {/* Segmented control with a real "active" state. */}
+                  <div className="inline-flex p-0.5 rounded-lg bg-card border border-card-strong">
+                    <SegmentButton
+                      active={runIn === 'cwd'}
+                      onClick={() => onRunIn('cwd')}
+                      title="Run in the project's working tree"
+                    >
+                      main tree
+                    </SegmentButton>
+                    <SegmentButton
+                      active={runIn === 'worktree'}
+                      onClick={() => onRunIn('worktree')}
+                      title="Create a fresh worktree and run there"
+                    >
+                      worktree
+                    </SegmentButton>
+                  </div>
+                  {runIn === 'worktree' && (
+                    <div className="inline-flex items-center gap-1.5 text-[11px]">
+                      <span className="text-ink-faint">off</span>
+                      <BaseBranchSelect
+                        repoPaths={baseBranchRepoPaths}
+                        value={baseBranch}
+                        onChange={onBaseBranch}
+                        className="text-[11px]"
+                      />
+                    </div>
+                  )}
+                </>
+              )}
+
+              {submitting && (
+                <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-ink-faint">
+                  <Spinner /> Starting…
+                </span>
+              )}
+            </>
           }
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-              e.preventDefault();
-              onRun();
-            }
-          }}
         />
 
         {error && (
@@ -727,81 +779,6 @@ function RunPanel({
             {error}
           </div>
         )}
-
-        {/* Footer row */}
-        <div className="flex items-center gap-3 mt-4">
-          {/* Target chip */}
-          <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
-            <span className="text-ink-faint">in</span>
-            <span className="font-medium text-ink truncate max-w-[140px]">{targetLabel}</span>
-          </div>
-
-          {canUseWorktree && (
-            <>
-              <span className="text-ink-faint text-[11px]">·</span>
-              {/* Segmented control with a real "active" state. */}
-              <div className="inline-flex p-0.5 rounded-lg bg-card border border-card-strong">
-                <SegmentButton
-                  active={runIn === 'cwd'}
-                  onClick={() => onRunIn('cwd')}
-                  title="Run in the project's working tree"
-                >
-                  main tree
-                </SegmentButton>
-                <SegmentButton
-                  active={runIn === 'worktree'}
-                  onClick={() => onRunIn('worktree')}
-                  title="Create a fresh worktree and run there"
-                >
-                  worktree
-                </SegmentButton>
-              </div>
-              {runIn === 'worktree' && (
-                <div className="inline-flex items-center gap-1.5 text-[11px]">
-                  <span className="text-ink-faint">off</span>
-                  <BaseBranchSelect
-                    repoPaths={baseBranchRepoPaths}
-                    value={baseBranch}
-                    onChange={onBaseBranch}
-                    className="text-[11px]"
-                  />
-                </div>
-              )}
-            </>
-          )}
-
-          {/* Right side: kbd hint + primary action. */}
-          <div className="ml-auto flex items-center gap-2.5">
-            <kbd
-              className={
-                'hidden sm:inline-flex items-center gap-0.5 text-[10px] font-mono ' +
-                'text-ink-faint px-1.5 py-0.5 rounded border border-card-strong bg-card'
-              }
-              title="Press ⌘⏎ to run"
-            >
-              ⌘⏎
-            </kbd>
-            <button
-              onClick={onRun}
-              disabled={submitting || !canRun}
-              className={
-                'inline-flex items-center gap-1.5 text-xs font-medium px-4 py-2 rounded-lg ' +
-                'bg-accent text-white shadow-[0_6px_18px_-6px_rgba(125,200,255,0.45)] ' +
-                'hover:shadow-[0_8px_22px_-6px_rgba(125,200,255,0.6)] hover:-translate-y-px ' +
-                'active:translate-y-0 transition-all duration-150 ' +
-                'disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:shadow-none'
-              }
-            >
-              {submitting ? (
-                <>
-                  <Spinner /> Starting…
-                </>
-              ) : (
-                <>Run flow <span aria-hidden>→</span></>
-              )}
-            </button>
-          </div>
-        </div>
       </div>
     </div>
   );
