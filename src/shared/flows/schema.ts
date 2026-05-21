@@ -176,6 +176,15 @@ export interface FlowStepAttempt {
   /// event on this step's conversation. Absent for backends that
   /// don't price (Ollama) or don't report (some CLIs).
   costUSD?: number;
+  /// The artifact this attempt produced, as it should be DISPLAYED in the
+  /// run UI. For diff-kind outputs this body is the step's INCREMENTAL
+  /// change (what this step alone touched), which differs from the
+  /// cumulative diff kept in `FlowRun.artifacts[name]` (that one is what
+  /// gets handed to downstream steps as input). Storing it per-attempt
+  /// lets the UI show each step's own contribution instead of re-looking
+  /// up the name-keyed map, where multiple steps that share an output
+  /// name (e.g. two steps both producing `diff`) would otherwise collide.
+  artifact?: FlowArtifact;
 }
 
 export type FlowRunState =
