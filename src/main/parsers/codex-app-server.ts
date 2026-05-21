@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  ModelUsage,
   StreamEvent,
   StreamEventKind,
   ToolUseBlock,
@@ -64,6 +65,23 @@ export function parseCodexAppServerNotification(
       const turnError = extractErrorMessage(params?.turn?.error);
       if (turnError && shouldEmitErrorNotice(state, turnError)) {
         events.push(event({ type: 'systemNotice', text: turnError }, raw));
+      }
+      // Codex reports token usage only at turn end (never on the streamed
+      // agentMessage items), so carry it on a text-less assistant event —
+      // the same surface the runtime + flow token meter sum usage from for
+      // every other backend. With empty text/tools it renders no bubble
+      // (ChatView gates those out) but its usage still counts.
+      const usage = extractTurnUsage(params?.turn);
+      if (usage) {
+        events.push(
+          event(
+            {
+              type: 'assistant',
+              info: { model: 'codex', text: '', toolUses: [], thinking: [], usage },
+            },
+            raw,
+          ),
+        );
       }
       events.push(
         event(
@@ -335,6 +353,29 @@ function extractErrorMessage(payload: any): string | null {
     }
   }
   return null;
+}
+
+/// Normalize a `turn/completed` payload's per-turn token usage into the
+/// app's ModelUsage shape. Reads field names defensively in both camelCase
+/// (the app-server v2 wire form) and snake_case (older builds), and looks
+/// under `turn.tokenUsage` — the cumulative thread total lives on a
+/// separate `thread/tokenUsage/updated` notification, so this stays a
+/// per-turn delta that's safe to sum. `cachedInputTokens` is a subset of
+/// `inputTokens` for OpenAI models, so it's surfaced as cache-read rather
+/// than re-added to the input total. Returns undefined when every counter
+/// is zero so the caller can skip emitting an empty usage event.
+function extractTurnUsage(turn: any): ModelUsage | undefined {
+  const u = turn?.tokenUsage ?? turn?.token_usage ?? turn?.usage;
+  if (!u || typeof u !== 'object') return undefined;
+  const inputTokens = numOrZero(u.inputTokens ?? u.input_tokens);
+  const outputTokens = numOrZero(u.outputTokens ?? u.output_tokens);
+  const cacheReadInputTokens = numOrZero(u.cachedInputTokens ?? u.cached_input_tokens);
+  if (inputTokens === 0 && outputTokens === 0 && cacheReadInputTokens === 0) return undefined;
+  return { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens: 0 };
+}
+
+function numOrZero(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
 }
 
 function sessionFromThread(thread: any): { sessionId: string } | undefined {

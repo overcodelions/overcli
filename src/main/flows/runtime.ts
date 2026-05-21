@@ -22,9 +22,13 @@
 // runner pipeline drives.
 
 import { randomUUID } from 'node:crypto';
+import { copyFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
 
 import type {
   AppSettings,
+  Attachment,
   MainToRendererEvent,
   PermissionMode,
   Project,
@@ -43,7 +47,7 @@ import type {
   FlowStepAttempt,
 } from '../../shared/flows/schema';
 import { FLOW_USER_PROMPT_REF, resolveStepModel } from '../../shared/flows/schema';
-import { resolveSystemPrompt } from '../../shared/flows/roles';
+import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
 import { createWorktree, runGit } from '../git';
@@ -58,6 +62,9 @@ export interface FlowRuntimeStartArgs {
   /// substitutes the worktree path before any step runs.
   projectPath: string;
   userPrompt: string;
+  /// Images / files attached to the launch prompt, handed to the step(s)
+  /// that read `user_prompt` so the flow can act on a screenshot / spec.
+  attachments?: Attachment[];
   /// `cwd` (default): steps run with `projectPath` as their cwd, sharing
   /// the working tree with the user. `worktree`: create a fresh git
   /// worktree (new branch off `baseBranch`) and run there — changes stay
@@ -131,6 +138,21 @@ export class FlowRuntimeImpl {
   /// Track how many `goto` retries each step has consumed in a run, so
   /// `on_fail.goto.maxRetries` is respected.
   private retryCounts = new Map<string, number>(); // `${runId}:${stepId}` → count
+
+  /// Worktree snapshot (a git tree-ish) captured after each diff-producing
+  /// step, so the NEXT diff step can compute only what IT changed rather
+  /// than the whole cumulative diff. Outer key is runId; inner key is the
+  /// repo: `__single__` for a single-repo run, or the member name for a
+  /// workspace run. In-memory only — if it's lost across a restart, the
+  /// next diff step falls back to diffing against the run's baseline
+  /// commit (i.e. cumulative), which degrades gracefully.
+  private diffSnapshots = new Map<UUID, Map<string, string>>();
+
+  /// Launch-prompt attachments (images / files) per run, handed to the
+  /// step(s) that read `user_prompt`. In-memory only — they're consumed by
+  /// the first step at run start; not worth bloating the persisted run JSON
+  /// with base64 image data.
+  private pendingAttachments = new Map<UUID, Attachment[]>();
 
   /// Cap on the number of past runs we keep in memory. Once we exceed
   /// this, the oldest done/aborted runs are evicted. Running + paused
@@ -481,6 +503,9 @@ export class FlowRuntimeImpl {
       workspaceWorktrees,
     };
     this.runs.set(runId, run);
+    if (args.attachments && args.attachments.length > 0) {
+      this.pendingAttachments.set(runId, args.attachments);
+    }
     this.emitRunUpdate(run);
     void this.executeStep(runId, flow.steps[0].id);
     return { ok: true, runId };
@@ -504,6 +529,8 @@ export class FlowRuntimeImpl {
         this.convIdToRun.delete(convId);
       }
       this.stepBuffers.delete(victim.id);
+      this.diffSnapshots.delete(victim.id);
+      this.pendingAttachments.delete(victim.id);
       // Sweep any retry counters keyed under this run's id.
       for (const key of this.retryCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.retryCounts.delete(key);
@@ -740,6 +767,8 @@ export class FlowRuntimeImpl {
       this.convIdToRun.delete(convId);
     }
     this.stepBuffers.delete(args.runId);
+    this.diffSnapshots.delete(args.runId);
+    this.pendingAttachments.delete(args.runId);
     for (const key of this.retryCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
     }
@@ -843,10 +872,16 @@ export class FlowRuntimeImpl {
     // The model still receives the full `prompt` with role + contract,
     // so behavior doesn't change.
     const displayText = this.buildStepDisplayText(run, step);
+    // Launch attachments ride along with the step(s) that consume the
+    // user's prompt — typically just the first / planning step.
+    const attachments = step.inputs.includes(FLOW_USER_PROMPT_REF)
+      ? this.pendingAttachments.get(runId)
+      : undefined;
     const sendResult = this.runner.send({
       conversationId: convId,
       prompt,
       displayText,
+      attachments,
       backend: stepModel.backend,
       cwd: run.projectPath,
       model: stepModel.model,
@@ -895,10 +930,21 @@ export class FlowRuntimeImpl {
     // resulting artifact useless for review or downstream piping.
     // Computing it from the worktree against `baselineCommit` guarantees
     // it reflects what actually changed on disk.
+    // For diffs the artifact handed downstream (`run.artifacts[name]`) is
+    // the CUMULATIVE worktree diff — review/test/ship steps want the whole
+    // change so far as context. But the body we DISPLAY for this step is
+    // only its INCREMENTAL change, so a flow with several diff steps doesn't
+    // show the same growing blob over and over. Both come from the real
+    // filesystem rather than the model's narration.
     let body = artifactBody;
+    let displayBody = artifactBody;
     if (kind === 'diff') {
       const realDiff = computeRunDiffForRun(run);
       if (realDiff !== null) body = realDiff;
+      const incremental = this.computeIncrementalDiffForRun(run);
+      // Fall back to the cumulative diff when an incremental can't be
+      // computed (non-git cwd, or snapshot lost across a restart).
+      displayBody = incremental ?? body;
     }
 
     const artifact: FlowArtifact = {
@@ -910,13 +956,21 @@ export class FlowRuntimeImpl {
     };
     run.artifacts[step.output] = artifact;
     this.emit({ type: 'flowArtifactProduced', runId, artifact });
+    // Per-step display copy. Same as `artifact` for everything except
+    // diffs, where the body is this step's increment (see above).
+    const displayArtifact: FlowArtifact =
+      displayBody === body ? artifact : { ...artifact, body: displayBody };
     const usageTotals = buf
       ? {
           usage: { ...buf.usage },
           costUSD: buf.costUSD > 0 ? buf.costUSD : undefined,
         }
       : {};
-    this.finishAttempt(run, step.id, { outcome: 'success', ...usageTotals });
+    this.finishAttempt(run, step.id, {
+      outcome: 'success',
+      artifact: displayArtifact,
+      ...usageTotals,
+    });
     // Step boundary: artifact extracted, ready to advance. Persist NOW so
     // an unexpected exit between here and the next step start can be
     // resumed: on restart the run will be in `paused` (set by
@@ -977,6 +1031,43 @@ export class FlowRuntimeImpl {
     run.state = { kind: 'paused', nextStepId: step.id, reason: 'failure' };
     this.emitRunUpdate(run);
     this.checkpoint(run); // boundary — failure-pause is resumable
+  }
+
+  /// Compute what the JUST-FINISHED diff step changed on its own — the
+  /// delta between the worktree snapshot taken after the previous diff step
+  /// and the worktree right now. Advances the stored snapshot so the next
+  /// diff step measures from here. Returns null when the run has no git
+  /// baseline (non-git cwd) or git fails, letting the caller fall back to
+  /// the cumulative diff. Mirrors `computeRunDiffForRun`'s single-repo vs
+  /// per-member workspace split.
+  private computeIncrementalDiffForRun(run: FlowRun): string | null {
+    let snaps = this.diffSnapshots.get(run.id);
+    if (!snaps) {
+      snaps = new Map();
+      this.diffSnapshots.set(run.id, snaps);
+    }
+    const measure = (key: string, cwd: string, baseline: string): string | null => {
+      // First diff step measures from the run's baseline commit; later
+      // ones measure from the previous step's snapshot.
+      const from = snaps!.get(key) ?? baseline;
+      const res = computeIncrementalDiff(cwd, from);
+      if (!res) return null;
+      snaps!.set(key, res.snapshot); // advance for the next diff step
+      return res.diff;
+    };
+
+    if (run.baselineCommitsByMember) {
+      const blocks: string[] = [];
+      for (const [name, info] of Object.entries(run.baselineCommitsByMember)) {
+        const d = measure(name, info.path, info.commit);
+        if (d) blocks.push(`# ${name}\n${d}`);
+      }
+      return blocks.length === 0 ? null : blocks.join('\n');
+    }
+    if (run.baselineCommit) {
+      return measure('__single__', run.projectPath, run.baselineCommit);
+    }
+    return null;
   }
 
   private buildStepPrompt(run: FlowRun, step: FlowStep): string {
@@ -1106,18 +1197,56 @@ export class FlowRuntimeImpl {
     );
   }
 
-  /// Build the user-facing "I'm running step X" message — clean markdown
-  /// the UserBubble's flow-aware renderer can show as proper headings +
-  /// rendered artifacts. NOT what the model sees. The model gets the
-  /// full prompt from buildStepPrompt above.
-  ///
-  /// Marker prefix `<!--flow-->` is stripped by the renderer before
-  /// markdown parsing; presence of the marker switches the bubble from
-  /// preformatted text to markdown rendering.
-  private buildStepDisplayText(run: FlowRun, step: FlowStep): string {
-    const parts: string[] = ['<!--flow-->'];
-    parts.push(`### Step: \`${step.id}\`  ·  ${step.role}`);
+  /// True when the step's participant already completed an EARLIER step in
+  /// this run — i.e. its persistent conversation is being resumed rather
+  /// than started fresh. Used to add a "picking up this thread" note so the
+  /// user understands the model carries its prior context forward.
+  private isParticipantContinuation(run: FlowRun, step: FlowStep): boolean {
+    const participantId = step.participantId;
+    if (!participantId) return false;
+    return run.attempts.some((a) => {
+      if (a.stepId === step.id) return false; // ignore this step's own attempts
+      if (a.outcome !== 'success') return false;
+      const prior = run.flowSnapshot.steps.find((s) => s.id === a.stepId);
+      return prior?.participantId === participantId;
+    });
+  }
 
+  /// Build the user-facing "I'm running step X" message. NOT what the model
+  /// sees — the model gets the full prompt from buildStepPrompt above. This
+  /// is split into labeled sections the renderer turns into separate cards:
+  ///   - `<!--flow:header-->`       the step title + (when the same
+  ///                                participant ran an earlier step) a
+  ///                                "picking up this thread" continuation note
+  ///   - `<!--flow:instructions-->` the role's system prompt, verbatim, so
+  ///                                the user can see what the step was told
+  ///                                to do — answering "why are the
+  ///                                instructions so short?" (they aren't)
+  ///   - `<!--flow:inputs-->`       the artifacts handed to this step
+  ///
+  /// The leading `<!--flow-->` marker switches the bubble into card mode;
+  /// keep all four markers in sync with FlowStepCards.tsx in the renderer.
+  private buildStepDisplayText(run: FlowRun, step: FlowStep): string {
+    // Header — title plus a continuity note when this participant already
+    // produced an earlier step's output (same persistent conversation is
+    // being resumed, so the model keeps its prior context).
+    const header: string[] = [`### Step: \`${step.id}\`  ·  ${step.role}`];
+    if (this.isParticipantContinuation(run, step)) {
+      header.push(
+        `_↩ Picking up this thread — same model as a previous step, ` +
+          `now starting the **${step.id}** step._`,
+      );
+    }
+
+    // Instructions — the role's system prompt, shown verbatim. The artifact
+    // output contract is boilerplate appended to every step, so we leave it
+    // out here and show only the role-specific guidance.
+    const instructions =
+      step.role === 'custom'
+        ? (step.systemPromptOverride ?? '').trim()
+        : ROLE_PROMPTS[step.role];
+
+    // Inputs — the artifacts (and/or the original request) feeding this step.
     const inputs: Array<{ name: string; body: string }> = [];
     for (const ref of step.inputs) {
       if (ref === FLOW_USER_PROMPT_REF) {
@@ -1127,15 +1256,25 @@ export class FlowRuntimeImpl {
         if (art) inputs.push({ name: ref, body: art.body });
       }
     }
-
+    const inputParts: string[] = [];
     if (inputs.length === 0) {
-      parts.push('_no inputs_');
+      inputParts.push('_no inputs_');
     } else {
       for (const inp of inputs) {
-        parts.push(`#### ${inp.name}`);
-        parts.push(formatInputBodyForDisplay(inp.name, inp.body));
+        inputParts.push(`#### ${inp.name}`);
+        inputParts.push(formatInputBodyForDisplay(inp.name, inp.body));
       }
     }
+
+    const parts: string[] = ['<!--flow-->'];
+    parts.push('<!--flow:header-->');
+    parts.push(header.join('\n\n'));
+    if (instructions) {
+      parts.push('<!--flow:instructions-->');
+      parts.push(instructions);
+    }
+    parts.push('<!--flow:inputs-->');
+    parts.push(inputParts.join('\n\n'));
     return parts.join('\n\n');
   }
 
@@ -1266,6 +1405,61 @@ function computeRunDiffForRun(run: FlowRun): string | null {
     return computeRunDiff(run.projectPath, run.baselineCommit);
   }
   return null;
+}
+
+/// Snapshot the CURRENT working tree as a git tree object and return its
+/// sha — tracked + untracked files, honoring .gitignore — WITHOUT touching
+/// the repo's real index or working tree. We point git at a throwaway index
+/// (GIT_INDEX_FILE), seed it from the real index so unchanged files keep
+/// their stat cache (fast `add`), stage everything, then `write-tree`.
+/// Returns null if any step fails so callers fall back to a baseline diff.
+function snapshotWorktree(cwd: string): string | null {
+  const tmpIndex = join(tmpdir(), `overcli-flow-index-${randomUUID()}`);
+  try {
+    // Seed the temp index from the real one so `git add -A` only re-hashes
+    // files that actually changed. `--git-path index` resolves correctly
+    // even for worktrees, where `.git` is a file, not a directory.
+    const realIndex = runGit(['rev-parse', '--git-path', 'index'], cwd);
+    if (realIndex.exitCode === 0) {
+      const p = realIndex.stdout.trim();
+      const abs = isAbsolute(p) ? p : join(cwd, p);
+      try {
+        copyFileSync(abs, tmpIndex);
+      } catch {
+        // No existing index (fresh repo) — git creates one in the temp path.
+      }
+    }
+    const env: NodeJS.ProcessEnv = { GIT_INDEX_FILE: tmpIndex };
+    const add = runGit(['add', '-A'], cwd, env);
+    if (add.exitCode !== 0) return null;
+    const tree = runGit(['write-tree'], cwd, env);
+    if (tree.exitCode !== 0) return null;
+    const sha = tree.stdout.trim();
+    return sha || null;
+  } finally {
+    try {
+      rmSync(tmpIndex, { force: true });
+    } catch {
+      // Best-effort cleanup of the throwaway index.
+    }
+  }
+}
+
+/// Diff a `from` tree-ish (a previous snapshot or the baseline commit)
+/// against a fresh snapshot of the current worktree. Because both sides are
+/// tree objects that already include untracked files, `git diff A B` reports
+/// adds/edits/deletes with no untracked special-casing. Returns the filtered
+/// diff plus the new snapshot sha (so the caller can advance its cursor), or
+/// null on any git failure.
+function computeIncrementalDiff(
+  cwd: string,
+  fromRef: string,
+): { diff: string; snapshot: string } | null {
+  const snapshot = snapshotWorktree(cwd);
+  if (snapshot === null) return null;
+  const r = runGit(['diff', '--no-color', '--no-ext-diff', fromRef, snapshot], cwd);
+  if (r.exitCode !== 0) return null;
+  return { diff: filterNoiseFromDiff(r.stdout).diff, snapshot };
 }
 
 /// Compute the actual git diff between the run's baseline commit and the

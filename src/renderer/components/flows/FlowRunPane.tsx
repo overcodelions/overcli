@@ -27,6 +27,7 @@ import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
   resolveStepModel,
+  type FlowArtifact,
   type FlowParticipant,
   type FlowRun,
   type FlowStep,
@@ -396,18 +397,32 @@ function ParticipantBody({
   // coming back to a finished run sees the outputs without having to
   // scroll a transcript that may be gone (renderer-side runnersStore
   // is in-memory; the chat empties after restart but artifacts survive
-  // in the FlowRun JSON on disk). Memoized so the `isTyping` flip below
-  // doesn't rebuild the array and force ArtifactsPanel to re-scan every
-  // diff body.
+  // in the FlowRun JSON on disk).
+  //
+  // Read each step's OWN produced artifact off its latest successful
+  // attempt rather than the name-keyed `run.artifacts` map: when two
+  // steps share an output name (e.g. `build` and `tests` both produce
+  // `diff`), the map only keeps the last writer, so looking up by name
+  // would show the same blob once per step. The per-attempt copy also
+  // carries each diff step's INCREMENTAL change instead of the cumulative
+  // diff. Falls back to the map for steps whose attempt predates this
+  // (older runs didn't record per-attempt artifacts). Memoized so the
+  // `isTyping` flip below doesn't force ArtifactsPanel to re-scan diffs.
   const producedArtifacts = useMemo(
     () =>
       ownedSteps
-        .map((step) => ({ step, artifact: run.artifacts[step.output] }))
+        .map((step) => {
+          const latest = [...run.attempts]
+            .reverse()
+            .find((a) => a.stepId === step.id && a.outcome === 'success');
+          const artifact = latest?.artifact ?? run.artifacts[step.output];
+          return { step, artifact };
+        })
         .filter(
           (x): x is { step: typeof x.step; artifact: NonNullable<typeof x.artifact> } =>
             !!x.artifact,
         ),
-    [ownedSteps, run.artifacts],
+    [ownedSteps, run.attempts, run.artifacts],
   );
 
   // When the user starts typing a hijack message, collapse the artifacts
@@ -515,12 +530,14 @@ function ArtifactsPanel({
   forceCollapsed?: boolean;
 }) {
   const openFile = useStore((s) => s.openFile);
+  // Keyed by STEP id, not artifact name: two owned steps can produce the
+  // same output name (e.g. both `diff`), so the name isn't unique per row.
   const [openSet, setOpenSet] = useState<Set<string>>(() => new Set());
-  function toggle(name: string) {
+  function toggle(key: string) {
     setOpenSet((prev) => {
       const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -538,15 +555,15 @@ function ArtifactsPanel({
       </div>
       <div className="px-4 pb-3 space-y-2">
         {items.map(({ step, artifact }, idx) => {
-          const open = !forceCollapsed && openSet.has(artifact.name);
+          const open = !forceCollapsed && openSet.has(step.id);
           const summary = summaries[idx];
           return (
             <div
-              key={artifact.name}
+              key={step.id}
               className="rounded-md border border-card-strong bg-card/40 overflow-hidden"
             >
               <button
-                onClick={() => toggle(artifact.name)}
+                onClick={() => toggle(step.id)}
                 className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02]"
               >
                 <span className="text-[11px] text-ink-faint">{open ? '▼' : '▶'}</span>
@@ -687,7 +704,31 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
 // writes several diffs can be read in one place. Reuses `colorizeDiff`
 // for +/-/@@ coloring.
 function DiffSheet({ run, onClose }: { run: FlowRun; onClose: () => void }) {
-  const diffs = Object.values(run.artifacts).filter((a) => a.kind === 'diff');
+  // Show each step's OWN diff (its incremental change), pulled from the
+  // latest successful attempt per step. Dedupe byte-identical bodies as a
+  // safety net so a step that left the worktree unchanged — or an older
+  // run that stored cumulative diffs under one name — doesn't render the
+  // same blob twice. Falls back to the name-keyed map for older runs that
+  // predate per-attempt artifacts.
+  const diffs = useMemo(() => {
+    const byStep = new Map<string, FlowArtifact>();
+    for (const a of run.attempts) {
+      if (a.outcome === 'success' && a.artifact?.kind === 'diff') {
+        byStep.set(a.stepId, a.artifact); // later attempts overwrite earlier
+      }
+    }
+    let list: FlowArtifact[] =
+      byStep.size > 0
+        ? [...byStep.values()]
+        : Object.values(run.artifacts).filter((a) => a.kind === 'diff');
+    const seen = new Set<string>();
+    return list.filter((art) => {
+      const key = art.body.trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, [run.attempts, run.artifacts]);
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
