@@ -78,6 +78,46 @@ describe('parseCodexAppServerNotification', () => {
     expect(ev.kind.info).toMatchObject({ subtype: 'failed', isError: true, durationMs: 42 });
   });
 
+  it('emits per-turn token usage on a text-less assistant event before the result', () => {
+    const events = parse('turn/completed', {
+      turn: {
+        status: 'completed',
+        durationMs: 42,
+        tokenUsage: {
+          inputTokens: 1200,
+          cachedInputTokens: 800,
+          outputTokens: 340,
+          reasoningOutputTokens: 120,
+          totalTokens: 1540,
+        },
+      },
+    }).result.events;
+    expect(events).toHaveLength(2);
+    if (events[0].kind.type !== 'assistant') throw new Error();
+    expect(events[0].kind.info.text).toBe('');
+    expect(events[0].kind.info.usage).toEqual({
+      inputTokens: 1200,
+      outputTokens: 340,
+      cacheReadInputTokens: 800,
+      cacheCreationInputTokens: 0,
+    });
+    if (events[1].kind.type !== 'result') throw new Error();
+  });
+
+  it('reads snake_case turn usage fields too', () => {
+    const events = parse('turn/completed', {
+      turn: { status: 'completed', usage: { input_tokens: 10, output_tokens: 5 } },
+    }).result.events;
+    if (events[0].kind.type !== 'assistant') throw new Error();
+    expect(events[0].kind.info.usage).toMatchObject({ inputTokens: 10, outputTokens: 5 });
+  });
+
+  it('omits the usage event when the turn reports no tokens', () => {
+    const events = parse('turn/completed', { turn: { status: 'completed', durationMs: 42 } }).result.events;
+    expect(events).toHaveLength(1);
+    expect(events[0].kind.type).toBe('result');
+  });
+
   it('surfaces turn/completed error.message as a system notice before the result', () => {
     const events = parse('turn/completed', {
       turn: {

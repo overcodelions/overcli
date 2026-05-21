@@ -956,6 +956,10 @@ export interface IPCInvokeMap {
     flowId: string;
     projectPath: string;
     userPrompt: string;
+    /// Images / files attached to the launch prompt. Handed to the
+    /// step(s) that read `user_prompt` (typically the first / planning
+    /// step) so the flow can act on a screenshot, spec, or log.
+    attachments?: Attachment[];
     /// Optional. `cwd` (default) runs in the project/workspace as-is.
     /// `worktree` creates a fresh git worktree off `baseBranch` and runs
     /// there — isolates file changes from the user's main checkout.
