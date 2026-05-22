@@ -253,7 +253,7 @@ function FlowRunRow({
             }}
             className="flex items-center gap-2 flex-1 min-w-0 text-left px-2 py-1"
           >
-            <FlowMonogram name={run.flowSnapshot.name} size="sm" />
+            <FlowMonogram name={run.flowSnapshot.name} size="sm" live={isLive} />
             <span className={'truncate flex-1 ' + (visiblySelected ? 'font-semibold' : '')}>
               {runTitle(run)}
             </span>
