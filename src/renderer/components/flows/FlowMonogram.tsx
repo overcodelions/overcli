@@ -25,9 +25,15 @@ export type MonogramSize = 'xs' | 'sm' | 'md' | 'lg';
 export function FlowMonogram({
   name,
   size = 'md',
+  /// When true the monogram's letter glows and shifts color between its
+  /// tint and a theme peak (white in dark mode, black in light) so a live
+  /// run's icon reads as "still working" at a glance — mirrors the pulsing
+  /// marker in the sidebar's Active section, without flashing the tile.
+  live = false,
 }: {
   name: string;
   size?: MonogramSize;
+  live?: boolean;
 }) {
   const letter = (name.match(/[A-Za-z]/)?.[0] ?? '•').toUpperCase();
   let h = 0;
@@ -35,7 +41,7 @@ export function FlowMonogram({
   const tone = PALETTE[Math.abs(h) % PALETTE.length];
   return (
     <div
-      className={`${SIZE_CLASS[size]} ${tone} flex items-center justify-center font-semibold flex-shrink-0`}
+      className={`${SIZE_CLASS[size]} ${tone} flex items-center justify-center font-semibold flex-shrink-0${live ? ' flow-monogram-live' : ''}`}
     >
       {letter}
     </div>

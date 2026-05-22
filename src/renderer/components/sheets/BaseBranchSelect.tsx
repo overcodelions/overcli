@@ -21,13 +21,20 @@ export function BaseBranchSelect({
     [repoPaths.join('\0')],
   );
   const [options, setOptions] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  // Start in the loading state when we already have repos to query, so the
+  // "no branches" placeholder + amber empty-hint don't flash for a frame
+  // before the async fetch begins.
+  const [loading, setLoading] = useState(() => paths.length > 0);
+  // Only surface the empty-state hint after a fetch has actually completed
+  // — never during the initial render or while a (re)load is in flight.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (paths.length === 0) {
       setOptions([]);
       setLoading(false);
+      setLoaded(false);
       setError(null);
       return;
     }
@@ -45,7 +52,9 @@ export function BaseBranchSelect({
         setError(err instanceof Error ? err.message : 'Could not load branches.');
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        setLoading(false);
+        setLoaded(true);
       });
     return () => {
       cancelled = true;
@@ -66,7 +75,7 @@ export function BaseBranchSelect({
         ? 'No shared branches found'
         : 'No usable branches found';
   const emptyHint =
-    !loading && !error && options.length === 0
+    loaded && !loading && !error && options.length === 0
       ? paths.length > 1
         ? 'If any member repo has no commits yet, make an initial commit or fetch a remote branch first.'
         : 'If this repo has no commits yet, make an initial commit or fetch a remote branch first.'

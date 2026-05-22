@@ -64,10 +64,13 @@ describe('drafterModelFor', () => {
 
 describe('drafterModelHints', () => {
   it('maps a model to each speed tier for a backend', () => {
+    // sonnet is classified 'fast' now, so claude has no 'standard' model —
+    // standard degrades up to the thinking pick (opus), and fast is the
+    // first fast model (sonnet).
     expect(drafterModelHints('claude')).toEqual({
       thinking: 'claude-opus-4-7',
-      standard: 'claude-sonnet-4-6',
-      fast: 'claude-haiku-4-5',
+      standard: 'claude-opus-4-7',
+      fast: 'claude-sonnet-4-6',
     });
     expect(drafterModelHints('codex')).toEqual({
       thinking: 'gpt-5.5',
