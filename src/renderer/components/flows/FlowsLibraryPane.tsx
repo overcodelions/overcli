@@ -3,7 +3,7 @@
 // edit / delete; Run is wired in Phase 4 when the runtime can execute
 // the steps.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
@@ -386,7 +386,6 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] }) {
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [running, setRunning] = useState(false);
 
   // Picking "Run" swaps the row's contents for the shared run panel
@@ -407,7 +406,6 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
     });
     if (result.ok) {
       await reload(projectPaths);
-      setConfirmingDelete(false);
     } else {
       alert(result.error);
     }
@@ -437,44 +435,101 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
             })}
           </div>
         </div>
-        <div className="flex flex-col gap-2 flex-shrink-0">
+        {/* Run is the only permanent action; Edit + Delete live behind a ⋯
+            menu so a list of flows isn't a wall of buttons. */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           <button
             onClick={() => setRunning(true)}
             className="text-xs px-3 py-1 rounded-md bg-accent text-white hover:opacity-90"
           >
             Run
           </button>
+          <RowActionsMenu
+            onEdit={() => openEditor({ kind: 'editing', flowId: flow.id })}
+            onDelete={handleDelete}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/// Overflow menu for a flow row — holds the secondary Edit/Delete actions
+/// so they don't each claim a permanent button. Delete confirms inline
+/// inside the menu rather than firing a modal.
+function RowActionsMenu({
+  onEdit,
+  onDelete,
+}: {
+  onEdit: () => void;
+  onDelete: () => void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) {
+        setOpen(false);
+        setConfirming(false);
+      }
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="text-xs px-2.5 py-1 rounded-md bg-card hover:bg-card-strong text-ink-muted leading-none"
+        title="More actions"
+        aria-label="More actions"
+      >
+        ⋯
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 z-10 min-w-[130px] bg-surface border border-card-strong rounded-md shadow-lg py-1">
           <button
-            onClick={() => openEditor({ kind: 'editing', flowId: flow.id })}
-            className="text-xs px-3 py-1 rounded-md bg-card hover:bg-card-strong"
+            onClick={() => {
+              setOpen(false);
+              onEdit();
+            }}
+            className="w-full text-left text-xs px-3 py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink"
           >
             Edit
           </button>
-          {!confirmingDelete ? (
+          {!confirming ? (
             <button
-              onClick={() => setConfirmingDelete(true)}
-              className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-400 hover:bg-card-strong"
+              onClick={() => setConfirming(true)}
+              className="w-full text-left text-xs px-3 py-1.5 text-ink-muted hover:bg-card-strong hover:text-red-400"
             >
               Delete
             </button>
           ) : (
-            <div className="flex gap-1">
+            <div className="flex items-center gap-1 px-3 py-1.5">
               <button
-                onClick={handleDelete}
-                className="text-xs px-2 py-1 rounded-md bg-red-500/80 text-white"
+                onClick={() => {
+                  void onDelete();
+                  setOpen(false);
+                  setConfirming(false);
+                }}
+                className="text-[11px] px-2 py-0.5 rounded bg-red-500/80 text-white"
               >
-                Confirm
+                Delete
               </button>
               <button
-                onClick={() => setConfirmingDelete(false)}
-                className="text-xs px-2 py-1 rounded-md bg-card"
+                onClick={() => setConfirming(false)}
+                className="text-[11px] px-2 py-0.5 rounded bg-card"
               >
                 Cancel
               </button>
             </div>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }
