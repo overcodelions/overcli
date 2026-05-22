@@ -118,7 +118,7 @@ describe('friendlyModelLabel — ollama', () => {
 describe('modelSpeed', () => {
   it.each([
     ['claude-opus-4-7', 'thinking'],
-    ['claude-sonnet-4-6', 'standard'],
+    ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],
     ['gpt-5.5', 'thinking'],
     ['gpt-5.4', 'standard'],
@@ -126,7 +126,7 @@ describe('modelSpeed', () => {
     ['gemini-2.5-pro', 'thinking'],
     ['gemini-2.5-flash', 'fast'],
     ['claude-haiku-4.5', 'fast'],
-    ['claude-sonnet-4.6', 'standard'],
+    ['claude-sonnet-4.6', 'fast'],
   ] as const)('%s → %s', (model, expected) => {
     expect(modelSpeed(model)).toBe(expected);
   });

@@ -22,6 +22,9 @@ export interface CodexAppServerParserState {
   /// notification AND `turn/completed.turn.error` — without dedupe the user
   /// sees the same banner twice per turn.
   lastErrorNotice?: { text: string; at: number };
+  /// Previously-seen cumulative token total from `thread/tokenUsage/updated`,
+  /// so the next update can be emitted as a delta (see tokenUsageDelta).
+  lastTotalTokens?: { inputTokens: number; outputTokens: number; cachedInputTokens: number };
 }
 
 export function makeCodexAppServerParserState(): CodexAppServerParserState {
@@ -60,20 +63,17 @@ export function parseCodexAppServerNotification(
       return parseReasoningDelta(params, state, raw);
     case 'item/reasoning/summaryTextDelta':
       return parseReasoningDelta(params, state, raw);
-    case 'turn/completed': {
-      const events: StreamEvent[] = [];
-      const turnError = extractErrorMessage(params?.turn?.error);
-      if (turnError && shouldEmitErrorNotice(state, turnError)) {
-        events.push(event({ type: 'systemNotice', text: turnError }, raw));
-      }
-      // Codex reports token usage only at turn end (never on the streamed
-      // agentMessage items), so carry it on a text-less assistant event —
-      // the same surface the runtime + flow token meter sum usage from for
-      // every other backend. With empty text/tools it renders no bubble
+    case 'thread/tokenUsage/updated': {
+      // Codex never puts token counts on the streamed agentMessage items
+      // or on turn/completed — usage arrives only here, before the turn
+      // completes. Carry it on a text-less assistant event, the same
+      // surface the runtime + flow token meter sum usage from for every
+      // other backend. With empty text/tools it renders no bubble
       // (ChatView gates those out) but its usage still counts.
-      const usage = extractTurnUsage(params?.turn);
-      if (usage) {
-        events.push(
+      const usage = tokenUsageDelta(params?.tokenUsage?.total, state);
+      if (!usage) return { events: [] };
+      return {
+        events: [
           event(
             {
               type: 'assistant',
@@ -81,7 +81,14 @@ export function parseCodexAppServerNotification(
             },
             raw,
           ),
-        );
+        ],
+      };
+    }
+    case 'turn/completed': {
+      const events: StreamEvent[] = [];
+      const turnError = extractErrorMessage(params?.turn?.error);
+      if (turnError && shouldEmitErrorNotice(state, turnError)) {
+        events.push(event({ type: 'systemNotice', text: turnError }, raw));
       }
       events.push(
         event(
@@ -355,23 +362,34 @@ function extractErrorMessage(payload: any): string | null {
   return null;
 }
 
-/// Normalize a `turn/completed` payload's per-turn token usage into the
-/// app's ModelUsage shape. Reads field names defensively in both camelCase
-/// (the app-server v2 wire form) and snake_case (older builds), and looks
-/// under `turn.tokenUsage` — the cumulative thread total lives on a
-/// separate `thread/tokenUsage/updated` notification, so this stays a
-/// per-turn delta that's safe to sum. `cachedInputTokens` is a subset of
-/// `inputTokens` for OpenAI models, so it's surfaced as cache-read rather
-/// than re-added to the input total. Returns undefined when every counter
-/// is zero so the caller can skip emitting an empty usage event.
-function extractTurnUsage(turn: any): ModelUsage | undefined {
-  const u = turn?.tokenUsage ?? turn?.token_usage ?? turn?.usage;
-  if (!u || typeof u !== 'object') return undefined;
-  const inputTokens = numOrZero(u.inputTokens ?? u.input_tokens);
-  const outputTokens = numOrZero(u.outputTokens ?? u.output_tokens);
-  const cacheReadInputTokens = numOrZero(u.cachedInputTokens ?? u.cached_input_tokens);
-  if (inputTokens === 0 && outputTokens === 0 && cacheReadInputTokens === 0) return undefined;
-  return { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens: 0 };
+/// Turn a `thread/tokenUsage/updated` cumulative `total` breakdown into a
+/// per-update ModelUsage delta, so summing every emission across a step
+/// yields that step's true token spend. Codex reports `total` as a running
+/// thread cumulative (and may emit it several times per turn), so we
+/// subtract the previously-seen total held in parser state. Field names
+/// are read defensively in both camelCase (the app-server v2 wire form)
+/// and snake_case. `cachedInputTokens` is a subset of `inputTokens` for
+/// OpenAI models, so it's surfaced as cache-read rather than re-added to
+/// the input total. Returns undefined when nothing new was consumed.
+function tokenUsageDelta(total: any, state: CodexAppServerParserState): ModelUsage | undefined {
+  if (!total || typeof total !== 'object') return undefined;
+  const inputTokens = numOrZero(total.inputTokens ?? total.input_tokens);
+  const outputTokens = numOrZero(total.outputTokens ?? total.output_tokens);
+  const cachedInputTokens = numOrZero(total.cachedInputTokens ?? total.cached_input_tokens);
+  const prev = state.lastTotalTokens ?? { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 };
+  const delta: ModelUsage = {
+    // Clamp to >= 0: a thread can be compacted, which lowers the running
+    // total; a negative delta would corrupt the step's sum.
+    inputTokens: Math.max(0, inputTokens - prev.inputTokens),
+    outputTokens: Math.max(0, outputTokens - prev.outputTokens),
+    cacheReadInputTokens: Math.max(0, cachedInputTokens - prev.cachedInputTokens),
+    cacheCreationInputTokens: 0,
+  };
+  state.lastTotalTokens = { inputTokens, outputTokens, cachedInputTokens };
+  if (delta.inputTokens === 0 && delta.outputTokens === 0 && delta.cacheReadInputTokens === 0) {
+    return undefined;
+  }
+  return delta;
 }
 
 function numOrZero(v: unknown): number {

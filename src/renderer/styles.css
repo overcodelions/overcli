@@ -51,6 +51,9 @@
   /* Sidebar running-activity pulse. Green-400 washes to near-white on a
    * light surface, so light mode steps down to a saturated green-600. */
   --c-running-pulse: #16a34a;
+  /* Peak color a live flow monogram's letter brightens toward. Light mode
+   * darkens to near-black so the letter "lights up" against the pale tile. */
+  --c-monogram-live-peak: #101014;
 }
 
 :root.dark {
@@ -90,6 +93,8 @@
   --c-diff-hunk-ink: #22d3ee;
   --c-diff-file-ink: #c4b5fd;
   --c-running-pulse: #4ade80;
+  /* Dark mode brightens the letter toward white. */
+  --c-monogram-live-peak: #ffffff;
 }
 
 /* Diff rows share one set of semantic classes across every renderer
@@ -337,6 +342,30 @@ html, body {
 @keyframes git-stats-flash-pulse {
   0%, 100% { transform: scale(1); }
   20% { transform: scale(1.25); }
+}
+
+/* Live flow monogram: breathe the letter's color between its resting tint
+ * and a theme peak (near-white in dark, near-black in light) so a running
+ * flow reads as alive without flashing or dimming the tile. Only the 50%
+ * keyframe is declared, so the 0%/100% endpoints derive from the tile's
+ * own Tailwind tint — the letter animates tint → peak → tint regardless of
+ * which palette color the flow drew. `color` interpolates cleanly, so no
+ * snap. */
+.flow-monogram-live {
+  animation: flow-monogram-live-pulse 1500ms ease-in-out infinite;
+}
+@keyframes flow-monogram-live-pulse {
+  0%, 100% {
+    text-shadow:
+      0 0 0 var(--c-monogram-live-peak),
+      0 0 0 var(--c-monogram-live-peak);
+  }
+  50% {
+    color: var(--c-monogram-live-peak);
+    text-shadow:
+      0 0 6px var(--c-monogram-live-peak),
+      0 0 11px var(--c-monogram-live-peak);
+  }
 }
 
 /* Soft downward breath on the empty-state tether chevron — draws the eye
