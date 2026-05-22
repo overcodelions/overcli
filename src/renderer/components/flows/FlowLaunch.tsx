@@ -16,6 +16,7 @@ import { FlowMonogram } from './FlowMonogram';
 export function RunPanel({
   flow,
   targetLabel,
+  targetControl,
   draftKey,
   rootPath,
   error,
@@ -30,7 +31,12 @@ export function RunPanel({
   baseBranchRepoPaths,
 }: {
   flow: Flow;
+  /// Static "in <name>" label, shown when no `targetControl` is given.
   targetLabel: string;
+  /// Optional interactive target control (e.g. a project/workspace
+  /// picker) rendered in the footer in place of the static label. Hosts
+  /// that are already scoped to one context (the start page) omit it.
+  targetControl?: ReactNode;
   /// Store key the Composer reads/writes its draft + attachments under.
   draftKey: string;
   /// Project/workspace root, for @-mention file lookup in the Composer.
@@ -99,11 +105,14 @@ export function RunPanel({
           onSend={onRun}
           footer={
             <>
-              {/* Target chip */}
-              <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
-                <span className="text-ink-faint">in</span>
-                <span className="font-medium text-ink truncate max-w-[140px]">{targetLabel}</span>
-              </div>
+              {/* Target — a host-supplied picker, or a static label when
+                  the host is already scoped to one context. */}
+              {targetControl ?? (
+                <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
+                  <span className="text-ink-faint">in</span>
+                  <span className="font-medium text-ink truncate max-w-[140px]">{targetLabel}</span>
+                </div>
+              )}
 
               {canUseWorktree && (
                 <>

@@ -12,8 +12,10 @@ import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
 import { FlowMonogram } from './FlowMonogram';
+import { RunPanel } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
 import type { FlowRun } from '@shared/flows/schema';
+import type { Attachment } from '@shared/types';
 
 export function FlowsLibraryPane() {
   const projects = useStore((s) => s.projects);
@@ -385,6 +387,14 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [running, setRunning] = useState(false);
+
+  // Picking "Run" swaps the row's contents for the shared run panel
+  // (Composer + target/worktree controls) in place — no cramped popover,
+  // no vertical jump. Mirrors the start page's flow launcher.
+  if (running) {
+    return <FlowRunLauncher flow={flow} onClose={() => setRunning(false)} />;
+  }
 
   async function handleDelete() {
     const projectPath = flow.source === 'project'
@@ -428,7 +438,12 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
           </div>
         </div>
         <div className="flex flex-col gap-2 flex-shrink-0">
-          <RunButton flow={flow} />
+          <button
+            onClick={() => setRunning(true)}
+            className="text-xs px-3 py-1 rounded-md bg-accent text-white hover:opacity-90"
+          >
+            Run
+          </button>
           <button
             onClick={() => openEditor({ kind: 'editing', flowId: flow.id })}
             className="text-xs px-3 py-1 rounded-md bg-card hover:bg-card-strong"
@@ -464,44 +479,71 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   );
 }
 
-function RunButton({ flow }: { flow: Flow }) {
+/// Run launcher for a flow row. Owns the target (project/workspace)
+/// selection + worktree controls and drives the shared `RunPanel`. The
+/// target picker rides in the panel footer because — unlike the start
+/// page — the Flows library isn't scoped to a single context.
+function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void }) {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [prompt, setPrompt] = useState('');
-  /// `target` stores a string of the form `project:<path>` or `workspace:<rootPath>`.
-  /// On submit, we strip the prefix and pass the bare path to startRun.
-  const [target, setTarget] = useState<string>('');
+  const setDraft = useStore((s) => s.setDraft);
+  const clearAttachments = useStore((s) => s.clearAttachments);
+
+  /// `target` is `project:<path>` | `workspace:<rootPath>` | ''.
+  const [target, setTarget] = useState('');
   const [runIn, setRunIn] = useState<'cwd' | 'worktree'>('cwd');
-  const [baseBranch, setBaseBranch] = useState('main');
+  // Empty → BaseBranchSelect auto-detects the repo's default branch.
+  const [baseBranch, setBaseBranch] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Worktrees work for both projects and workspaces: a workspace run
-  // forks one worktree per member project and ties them together with a
-  // coordinator symlink root (the same primitive workspace-agent uses —
-  // see FlowRuntime.startRun). So the toggle is offered whenever a target
-  // is selected, not just for plain projects.
+  const targetPath = stripTargetPrefix(target);
   const targetIsWorkspace = target.startsWith('workspace:');
-  const targetSelected = targetIsWorkspace || target.startsWith('project:');
+  const canUseWorktree = !!targetPath;
+  const draftKey = `__flow-launch:${flow.id}__`;
 
-  async function handleRun() {
-    const path = stripTargetPrefix(target);
-    if (!path || !prompt.trim()) {
-      setError('Pick a target and enter a prompt.');
+  // Repos the worktree(s) are minted from. Workspace → each member's
+  // path (so the branch list is the intersection); single project → one.
+  const baseBranchRepoPaths = useMemo(() => {
+    if (targetIsWorkspace) {
+      const ws = workspaces.find((w) => w.rootPath === targetPath);
+      return ws
+        ? ws.projectIds
+            .map((pid) => projects.find((p) => p.id === pid))
+            .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
+            .map((p) => p.path)
+        : [];
+    }
+    return targetPath ? [targetPath] : [];
+  }, [target, targetPath, targetIsWorkspace, projects, workspaces]);
+
+  const targetLabel = useMemo(() => {
+    if (!targetPath) return 'Pick a target';
+    if (targetIsWorkspace) {
+      return workspaces.find((w) => w.rootPath === targetPath)?.name ?? targetPath;
+    }
+    return projects.find((p) => p.path === targetPath)?.name ?? targetPath;
+  }, [target, targetPath, targetIsWorkspace, projects, workspaces]);
+
+  async function handleRun(prompt: string, attachments: Attachment[]) {
+    const text = prompt.trim();
+    if (!targetPath || !text) {
+      setError('Pick a project or workspace, and tell the flow what to work on.');
       return;
     }
-    setError(null);
+    if (submitting) return;
     setSubmitting(true);
+    setError(null);
     try {
       const result = await window.overcli.invoke('flows:startRun', {
         flowId: flow.id,
-        projectPath: path,
-        userPrompt: prompt,
-        runIn,
-        baseBranch: runIn === 'worktree' ? baseBranch : undefined,
+        projectPath: targetPath,
+        userPrompt: text,
+        attachments: attachments.length > 0 ? attachments : undefined,
+        runIn: canUseWorktree ? runIn : 'cwd',
+        baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
       });
       if (!result.ok) {
         setError(result.error);
@@ -509,34 +551,27 @@ function RunButton({ flow }: { flow: Flow }) {
       }
       const run = await window.overcli.invoke('flows:getRun', { runId: result.runId });
       if (run) applyRunUpdate(run);
+      setDraft(draftKey, '');
+      clearAttachments(draftKey);
       setActiveRun(result.runId);
-      setPickerOpen(false);
     } finally {
       setSubmitting(false);
     }
   }
 
-  if (!pickerOpen) {
-    return (
-      <button
-        onClick={() => setPickerOpen(true)}
-        className="text-xs px-3 py-1 rounded-md bg-accent text-white hover:opacity-90"
-      >
-        Run
-      </button>
-    );
-  }
-
-  return (
-    <div className="absolute right-4 mt-8 z-10 bg-surface border border-card rounded-md shadow-lg p-3 w-72">
-      <div className="text-xs font-semibold mb-2">Run “{flow.name}”</div>
-      <label className="block text-[11px] text-ink-muted mb-1">Run in</label>
+  const targetControl = (
+    <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
+      <span className="text-ink-faint">in</span>
       <select
         value={target}
-        onChange={(e) => setTarget(e.target.value)}
-        className="w-full mb-2 bg-card border border-card-strong rounded px-2 py-1 text-xs"
+        onChange={(e) => {
+          setTarget(e.target.value);
+          // A workspace can't run a worktree until we know its members;
+          // safe to leave runIn — canUseWorktree gates the controls.
+        }}
+        className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-[11px] text-ink max-w-[160px]"
       >
-        <option value="">Pick a project or workspace…</option>
+        <option value="">Pick a target…</option>
         {projects.length > 0 && (
           <optgroup label="Projects">
             {projects.map((p) => (
@@ -552,80 +587,27 @@ function RunButton({ flow }: { flow: Flow }) {
           </optgroup>
         )}
       </select>
-      {targetSelected && (
-        <>
-          <label className="block text-[11px] text-ink-muted mb-1">Where the files live</label>
-          <div className="grid grid-cols-2 gap-1 mb-2">
-            <button
-              onClick={() => setRunIn('cwd')}
-              className={
-                'text-[11px] px-2 py-1 rounded border ' +
-                (runIn === 'cwd'
-                  ? 'border-accent bg-accent/20 text-ink'
-                  : 'border-card-strong bg-card text-ink-muted hover:bg-card-strong')
-              }
-            >
-              {targetIsWorkspace ? 'In place' : 'In project'}
-            </button>
-            <button
-              onClick={() => setRunIn('worktree')}
-              className={
-                'text-[11px] px-2 py-1 rounded border ' +
-                (runIn === 'worktree'
-                  ? 'border-accent bg-accent/20 text-ink'
-                  : 'border-card-strong bg-card text-ink-muted hover:bg-card-strong')
-              }
-            >
-              New worktree
-            </button>
-          </div>
-          {targetIsWorkspace && runIn === 'worktree' && (
-            <div className="text-[10px] text-ink-faint -mt-1 mb-2">
-              Forks one worktree per member project.
-            </div>
-          )}
-        </>
-      )}
-      {runIn === 'worktree' && (
-        <div className="mb-2">
-          <label className="block text-[11px] text-ink-muted mb-1">Base branch</label>
-          <input
-            value={baseBranch}
-            onChange={(e) => setBaseBranch(e.target.value)}
-            placeholder="main"
-            className="w-full bg-card border border-card-strong rounded px-2 py-1 text-xs font-mono"
-          />
-        </div>
-      )}
-      <label className="block text-[11px] text-ink-muted mb-1">Prompt</label>
-      <textarea
-        value={prompt}
-        onChange={(e) => setPrompt(e.target.value)}
-        rows={3}
-        placeholder="e.g. PROJ-123 or describe the task"
-        className="w-full mb-2 bg-card border border-card-strong rounded px-2 py-1 text-xs"
-      />
-      {error && (
-        <div className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded p-2 mb-2 whitespace-pre-wrap">
-          {error}
-        </div>
-      )}
-      <div className="flex gap-2 justify-end">
-        <button
-          onClick={() => setPickerOpen(false)}
-          className="text-xs px-2 py-1 rounded bg-card"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={handleRun}
-          disabled={submitting}
-          className="text-xs px-3 py-1 rounded bg-accent text-white disabled:opacity-50"
-        >
-          {submitting ? 'Starting…' : 'Run'}
-        </button>
-      </div>
     </div>
+  );
+
+  return (
+    <RunPanel
+      flow={flow}
+      targetLabel={targetLabel}
+      targetControl={targetControl}
+      draftKey={draftKey}
+      rootPath={targetPath}
+      error={error}
+      submitting={submitting}
+      onCancel={onClose}
+      onRun={handleRun}
+      canUseWorktree={canUseWorktree}
+      runIn={runIn}
+      onRunIn={setRunIn}
+      baseBranch={baseBranch}
+      onBaseBranch={setBaseBranch}
+      baseBranchRepoPaths={baseBranchRepoPaths}
+    />
   );
 }
 
