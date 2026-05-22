@@ -4,7 +4,7 @@
 // target/worktree controls so each host stays in charge of where a run
 // lands.
 
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { Attachment } from '@shared/types';
 import type { Flow } from '@shared/flows/schema';
 import { Composer } from '../Composer';
@@ -24,6 +24,7 @@ export function RunPanel({
   onCancel,
   onRun,
   canUseWorktree,
+  isWorkspace = false,
   runIn,
   onRunIn,
   baseBranch,
@@ -46,6 +47,9 @@ export function RunPanel({
   onCancel: () => void;
   onRun: (prompt: string, attachments: Attachment[]) => void;
   canUseWorktree: boolean;
+  /// True when the target is a workspace (multiple member repos). Switches
+  /// the base-branch control to "each repo's default + shared override".
+  isWorkspace?: boolean;
   runIn: 'cwd' | 'worktree';
   onRunIn: (v: 'cwd' | 'worktree') => void;
   baseBranch: string;
@@ -135,15 +139,12 @@ export function RunPanel({
                     </SegmentButton>
                   </div>
                   {runIn === 'worktree' && (
-                    <div className="inline-flex items-center gap-1.5 text-[11px]">
-                      <span className="text-ink-faint">off</span>
-                      <BaseBranchSelect
-                        repoPaths={baseBranchRepoPaths}
-                        value={baseBranch}
-                        onChange={onBaseBranch}
-                        className="text-[11px]"
-                      />
-                    </div>
+                    <WorktreeBaseControl
+                      isWorkspace={isWorkspace}
+                      repoPaths={baseBranchRepoPaths}
+                      value={baseBranch}
+                      onChange={onBaseBranch}
+                    />
                   )}
                 </>
               )}
@@ -191,6 +192,79 @@ function SegmentButton({
     >
       {children}
     </button>
+  );
+}
+
+/// Base-branch control for a worktree run.
+///   - Single repo → a branch picker (auto-selects the repo's default).
+///   - Workspace (multiple repos) → defaults to "each repo's own default
+///     branch" (empty value; the runtime forks each repo off its own
+///     default, so members that disagree — main vs master — still work),
+///     with an opt-in to instead align every repo on one shared branch.
+function WorktreeBaseControl({
+  isWorkspace,
+  repoPaths,
+  value,
+  onChange,
+}: {
+  isWorkspace: boolean;
+  repoPaths: string[];
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const [useShared, setUseShared] = useState(false);
+
+  if (!isWorkspace) {
+    return (
+      <div className="inline-flex items-center gap-1.5 text-[11px]">
+        <span className="text-ink-faint">off</span>
+        <BaseBranchSelect
+          repoPaths={repoPaths}
+          value={value}
+          onChange={onChange}
+          className="text-[11px]"
+        />
+      </div>
+    );
+  }
+
+  if (!useShared) {
+    return (
+      <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
+        <span className="text-ink-faint">off</span>
+        <span>each repo&rsquo;s default</span>
+        <button
+          type="button"
+          onClick={() => setUseShared(true)}
+          className="text-ink-faint hover:text-ink underline-offset-2 hover:underline"
+        >
+          use one branch
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="inline-flex items-center gap-1.5 text-[11px]">
+      <span className="text-ink-faint">off shared</span>
+      <BaseBranchSelect
+        repoPaths={repoPaths}
+        value={value}
+        onChange={onChange}
+        className="text-[11px]"
+      />
+      <button
+        type="button"
+        onClick={() => {
+          setUseShared(false);
+          onChange('');
+        }}
+        title="Back to each repo&rsquo;s default branch"
+        className="text-ink-faint hover:text-ink"
+      >
+        ×
+      </button>
+    </div>
   );
 }
 

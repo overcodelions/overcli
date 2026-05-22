@@ -624,6 +624,7 @@ function WelcomeFlowsRow({
           }}
           onRun={handleRun}
           canUseWorktree={canUseWorktree}
+          isWorkspace={!!workspaceRootPath}
           runIn={runIn}
           onRunIn={setRunIn}
           baseBranch={baseBranch}

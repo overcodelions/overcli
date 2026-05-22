@@ -602,6 +602,7 @@ function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void })
       onCancel={onClose}
       onRun={handleRun}
       canUseWorktree={canUseWorktree}
+      isWorkspace={targetIsWorkspace}
       runIn={runIn}
       onRunIn={setRunIn}
       baseBranch={baseBranch}
