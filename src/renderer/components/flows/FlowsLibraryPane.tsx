@@ -239,8 +239,10 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
     >
       <FlowMonogram name={run.flowSnapshot.name} size="sm" />
       <div className="flex-1 min-w-0 flex items-baseline gap-2">
-        <span className="text-sm font-semibold truncate">{run.flowSnapshot.name}</span>
+        <span className="text-sm font-semibold truncate" title={run.userPrompt}>{runTitle(run)}</span>
         <span className="text-[11px] text-ink-faint truncate">
+          {run.flowSnapshot.name}
+          <span className="mx-1">·</span>
           {projectLabel ?? pathBasenameSafe(flowRunOwnerPath(run))}
           {run.worktreePath && <span className="ml-1">· worktree</span>}
         </span>
@@ -309,6 +311,16 @@ function RunningDot() {
       className="inline-block w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse mr-1.5 align-middle"
     />
   );
+}
+
+/// Title for a run row: first non-empty line of the user prompt so runs
+/// of the same flow are distinguishable; falls back to the flow name.
+function runTitle(run: FlowRun): string {
+  const firstLine = run.userPrompt
+    ?.split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return firstLine || run.flowSnapshot.name;
 }
 
 function pathBasenameSafe(p: string): string {
@@ -467,12 +479,13 @@ function RunButton({ flow }: { flow: Flow }) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Worktree only makes sense for plain projects (not workspaces — those
-  // are symlink trees). Force back to cwd when target is a workspace.
+  // Worktrees work for both projects and workspaces: a workspace run
+  // forks one worktree per member project and ties them together with a
+  // coordinator symlink root (the same primitive workspace-agent uses —
+  // see FlowRuntime.startRun). So the toggle is offered whenever a target
+  // is selected, not just for plain projects.
   const targetIsWorkspace = target.startsWith('workspace:');
-  useEffect(() => {
-    if (targetIsWorkspace && runIn === 'worktree') setRunIn('cwd');
-  }, [targetIsWorkspace]);
+  const targetSelected = targetIsWorkspace || target.startsWith('project:');
 
   async function handleRun() {
     const path = stripTargetPrefix(target);
@@ -539,33 +552,40 @@ function RunButton({ flow }: { flow: Flow }) {
           </optgroup>
         )}
       </select>
-      <label className="block text-[11px] text-ink-muted mb-1">Where the files live</label>
-      <div className="grid grid-cols-2 gap-1 mb-2">
-        <button
-          onClick={() => setRunIn('cwd')}
-          className={
-            'text-[11px] px-2 py-1 rounded border ' +
-            (runIn === 'cwd'
-              ? 'border-accent bg-accent/20 text-ink'
-              : 'border-card-strong bg-card text-ink-muted hover:bg-card-strong')
-          }
-        >
-          In project
-        </button>
-        <button
-          onClick={() => setRunIn('worktree')}
-          disabled={targetIsWorkspace}
-          title={targetIsWorkspace ? 'Worktrees aren\'t supported for workspaces yet.' : ''}
-          className={
-            'text-[11px] px-2 py-1 rounded border disabled:opacity-40 disabled:cursor-not-allowed ' +
-            (runIn === 'worktree'
-              ? 'border-accent bg-accent/20 text-ink'
-              : 'border-card-strong bg-card text-ink-muted hover:bg-card-strong')
-          }
-        >
-          New worktree
-        </button>
-      </div>
+      {targetSelected && (
+        <>
+          <label className="block text-[11px] text-ink-muted mb-1">Where the files live</label>
+          <div className="grid grid-cols-2 gap-1 mb-2">
+            <button
+              onClick={() => setRunIn('cwd')}
+              className={
+                'text-[11px] px-2 py-1 rounded border ' +
+                (runIn === 'cwd'
+                  ? 'border-accent bg-accent/20 text-ink'
+                  : 'border-card-strong bg-card text-ink-muted hover:bg-card-strong')
+              }
+            >
+              {targetIsWorkspace ? 'In place' : 'In project'}
+            </button>
+            <button
+              onClick={() => setRunIn('worktree')}
+              className={
+                'text-[11px] px-2 py-1 rounded border ' +
+                (runIn === 'worktree'
+                  ? 'border-accent bg-accent/20 text-ink'
+                  : 'border-card-strong bg-card text-ink-muted hover:bg-card-strong')
+              }
+            >
+              New worktree
+            </button>
+          </div>
+          {targetIsWorkspace && runIn === 'worktree' && (
+            <div className="text-[10px] text-ink-faint -mt-1 mb-2">
+              Forks one worktree per member project.
+            </div>
+          )}
+        </>
+      )}
       {runIn === 'worktree' && (
         <div className="mb-2">
           <label className="block text-[11px] text-ink-muted mb-1">Base branch</label>

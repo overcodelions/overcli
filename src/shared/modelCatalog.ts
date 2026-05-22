@@ -30,7 +30,7 @@ export type ModelSpeed = 'fast' | 'standard' | 'thinking';
 const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Claude
   'claude-opus-4-7': 'thinking',
-  'claude-sonnet-4-6': 'standard',
+  'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',
   // Codex (OpenAI)
   'gpt-5.5': 'thinking',
@@ -43,7 +43,7 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'gemini-2.5-flash': 'fast',
   // Copilot (uses the underlying model's profile)
   'claude-haiku-4.5': 'fast',
-  'claude-sonnet-4.6': 'standard',
+  'claude-sonnet-4.6': 'fast',
 };
 
 export function modelSpeed(model: string): ModelSpeed {
