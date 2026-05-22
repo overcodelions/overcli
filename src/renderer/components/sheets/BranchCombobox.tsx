@@ -47,7 +47,12 @@ export function BranchCombobox({
       const el = triggerRef.current;
       if (!el) return;
       const r = el.getBoundingClientRect();
-      setPos({ top: r.bottom + 4, left: r.left, width: r.width });
+      // The trigger can be a narrow inline chip (e.g. the run-panel footer),
+      // which would squash the popover and truncate branch names. Give it a
+      // readable minimum width and keep it inside the viewport.
+      const width = Math.min(360, Math.max(r.width, 240));
+      const left = Math.max(8, Math.min(r.left, window.innerWidth - width - 8));
+      setPos({ top: r.bottom + 4, left, width });
     };
     update();
     window.addEventListener('resize', update);

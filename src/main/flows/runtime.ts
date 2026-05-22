@@ -50,7 +50,7 @@ import { FLOW_USER_PROMPT_REF, resolveStepModel } from '../../shared/flows/schem
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
-import { createWorktree, runGit } from '../git';
+import { createWorktree, detectBaseBranch, runGit } from '../git';
 import { ensureCoordinatorSymlinkRoot } from '../workspace';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
 
@@ -350,12 +350,11 @@ export class FlowRuntimeImpl {
       | Array<{ name: string; projectPath: string; worktreePath: string; branchName: string }>
       | undefined;
     if (args.runIn === 'worktree') {
-      if (!args.baseBranch?.trim()) {
-        return {
-          ok: false,
-          error: 'runIn=worktree requires baseBranch. Pick one (typically main or master).',
-        };
-      }
+      // Base branch is optional. When the user picked a single shared name we
+      // fork every repo off it; when absent, each repo forks off its OWN
+      // default branch (detectBaseBranch) — so a workspace whose members
+      // disagree (one `main`, one `master`) still runs.
+      const sharedBase = args.baseBranch?.trim() || undefined;
       const matchingWorkspaceForWorktree = this.getWorkspaces().find(
         (w) => w.rootPath === args.projectPath,
       );
@@ -384,7 +383,7 @@ export class FlowRuntimeImpl {
           const r = createWorktree({
             projectPath: p.path,
             agentName: wtNameBase,
-            baseBranch: args.baseBranch,
+            baseBranch: sharedBase ?? detectBaseBranch(p.path),
             branchPrefix: settings.agentBranchPrefix || 'agent/',
           });
           if (!r.ok) {
@@ -415,7 +414,7 @@ export class FlowRuntimeImpl {
         const result = createWorktree({
           projectPath: args.projectPath,
           agentName: wtName,
-          baseBranch: args.baseBranch,
+          baseBranch: sharedBase ?? detectBaseBranch(args.projectPath),
           branchPrefix: settings.agentBranchPrefix || 'agent/',
         });
         if (!result.ok) {

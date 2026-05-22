@@ -17,7 +17,13 @@ function loadTemplate(id: string) {
 }
 
 describe('resolveTemplateForUser — build-feature template', () => {
-  it('only-claude user: thinking→opus, fast→haiku, standard→sonnet', () => {
+  // claude-sonnet-4-6 is classified 'fast' (so its tokens group under the
+  // run token bar's "fast" tier). That makes both the build step (fast
+  // worker) and the verify step (sonnet placeholder, now also 'fast')
+  // resolve to the first fast claude model — sonnet. opus stays the
+  // 'thinking' pick; haiku is no longer auto-selected because sonnet
+  // precedes it among the 'fast' models in PREMIUM_MODELS.
+  it('only-claude user: thinking→opus, build+verify→sonnet (first fast model)', () => {
     const flow = loadTemplate('build-feature');
     const resolved = resolveTemplateForUser(flow, {
       healthyBackends: ['claude'],
@@ -27,7 +33,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
 
     expect(byParticipant.get(byStep.get('design')!)?.model).toBe('claude-opus-4-7');
-    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('claude-haiku-4-5');
+    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('claude-sonnet-4-6');
     expect(byParticipant.get(byStep.get('verify')!)?.model).toBe('claude-sonnet-4-6');
     for (const p of resolved.participants) {
       expect(p.backend).toBe('claude');
@@ -77,7 +83,8 @@ describe('resolveTemplateForUser — build-feature template', () => {
     const buildStep = resolved.steps.find((s) => s.id === 'build')!;
     const buildParticipant = resolved.participants.find((p) => p.id === buildStep.participantId)!;
     expect(buildParticipant.backend).toBe('claude');
-    expect(buildParticipant.model).toBe('claude-haiku-4-5');
+    // First fast claude model is sonnet (precedes haiku in PREMIUM_MODELS).
+    expect(buildParticipant.model).toBe('claude-sonnet-4-6');
   });
 });
 
@@ -89,8 +96,9 @@ describe('resolveTemplateForUser — friendly names updated', () => {
       ollamaModels: [],
     });
     const names = resolved.participants.map((p) => p.name);
+    // claude-only build-feature resolves to opus (thinking) + sonnet (fast)
+    // for the remaining steps; haiku is no longer auto-picked.
     expect(names).toContain('Claude Opus 4.7');
-    expect(names).toContain('Claude Haiku 4.5');
     expect(names).toContain('Claude Sonnet 4.6');
   });
 });

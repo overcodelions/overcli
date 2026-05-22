@@ -78,21 +78,17 @@ describe('parseCodexAppServerNotification', () => {
     expect(ev.kind.info).toMatchObject({ subtype: 'failed', isError: true, durationMs: 42 });
   });
 
-  it('emits per-turn token usage on a text-less assistant event before the result', () => {
-    const events = parse('turn/completed', {
-      turn: {
-        status: 'completed',
-        durationMs: 42,
-        tokenUsage: {
-          inputTokens: 1200,
-          cachedInputTokens: 800,
-          outputTokens: 340,
-          reasoningOutputTokens: 120,
-          totalTokens: 1540,
-        },
+  it('emits thread token usage on a text-less assistant event', () => {
+    const events = parse('thread/tokenUsage/updated', {
+      threadId: 't1',
+      turnId: 'turn-1',
+      tokenUsage: {
+        total: { totalTokens: 1540, inputTokens: 1200, cachedInputTokens: 800, outputTokens: 340, reasoningOutputTokens: 120 },
+        last: { totalTokens: 1540, inputTokens: 1200, cachedInputTokens: 800, outputTokens: 340, reasoningOutputTokens: 120 },
+        modelContextWindow: 258400,
       },
     }).result.events;
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(1);
     if (events[0].kind.type !== 'assistant') throw new Error();
     expect(events[0].kind.info.text).toBe('');
     expect(events[0].kind.info.usage).toEqual({
@@ -101,18 +97,45 @@ describe('parseCodexAppServerNotification', () => {
       cacheReadInputTokens: 800,
       cacheCreationInputTokens: 0,
     });
-    if (events[1].kind.type !== 'result') throw new Error();
   });
 
-  it('reads snake_case turn usage fields too', () => {
-    const events = parse('turn/completed', {
-      turn: { status: 'completed', usage: { input_tokens: 10, output_tokens: 5 } },
+  it('emits cumulative-total deltas so repeated updates sum to the true spend', () => {
+    const state = makeCodexAppServerParserState();
+    const first = parse('thread/tokenUsage/updated', {
+      tokenUsage: { total: { inputTokens: 1000, outputTokens: 100, cachedInputTokens: 0 } },
+    }, state).result.events;
+    if (first[0].kind.type !== 'assistant') throw new Error();
+    expect(first[0].kind.info.usage).toMatchObject({ inputTokens: 1000, outputTokens: 100 });
+    // Second update reports the running cumulative total, not a fresh delta.
+    const second = parse('thread/tokenUsage/updated', {
+      tokenUsage: { total: { inputTokens: 1500, outputTokens: 250, cachedInputTokens: 0 } },
+    }, state).result.events;
+    if (second[0].kind.type !== 'assistant') throw new Error();
+    expect(second[0].kind.info.usage).toMatchObject({ inputTokens: 500, outputTokens: 150 });
+  });
+
+  it('skips the usage event when the cumulative total has not advanced', () => {
+    const state = makeCodexAppServerParserState();
+    parse('thread/tokenUsage/updated', { tokenUsage: { total: { inputTokens: 10, outputTokens: 5 } } }, state);
+    const repeat = parse('thread/tokenUsage/updated', {
+      tokenUsage: { total: { inputTokens: 10, outputTokens: 5 } },
+    }, state).result.events;
+    expect(repeat).toHaveLength(0);
+  });
+
+  it('reads snake_case token usage fields too', () => {
+    const events = parse('thread/tokenUsage/updated', {
+      tokenUsage: { total: { input_tokens: 10, output_tokens: 5, cached_input_tokens: 3 } },
     }).result.events;
     if (events[0].kind.type !== 'assistant') throw new Error();
-    expect(events[0].kind.info.usage).toMatchObject({ inputTokens: 10, outputTokens: 5 });
+    expect(events[0].kind.info.usage).toMatchObject({
+      inputTokens: 10,
+      outputTokens: 5,
+      cacheReadInputTokens: 3,
+    });
   });
 
-  it('omits the usage event when the turn reports no tokens', () => {
+  it('maps turn completion with no usage to just a result event', () => {
     const events = parse('turn/completed', { turn: { status: 'completed', durationMs: 42 } }).result.events;
     expect(events).toHaveLength(1);
     expect(events[0].kind.type).toBe('result');
