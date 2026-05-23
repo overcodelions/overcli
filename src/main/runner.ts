@@ -9,6 +9,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { log } from './diagnostics';
 import {
   Backend,
   PermissionMode,
@@ -116,6 +117,20 @@ export function resumeSessionAfterParamChange(
   liveSessionId: string | undefined,
 ): string | undefined {
   return callerSessionId || liveSessionId;
+}
+
+/// True when CLI stderr indicates the cached --resume id no longer exists
+/// (history wiped, project moved, etc.). Substring-matched against the
+/// messages claude/codex/gemini emit for this case. Intentionally broad —
+/// `resume` + `not found` co-occurring is treated as stale even when not
+/// adjacent — so callers should only feed it stderr from a failed resume.
+export function isStaleSessionError(text: string): boolean {
+  const t = (text || '').toLowerCase();
+  return (
+    t.includes('no conversation found with session id') ||
+    t.includes('session not found') ||
+    (t.includes('resume') && t.includes('not found'))
+  );
 }
 
 interface SendArgs {
@@ -256,6 +271,11 @@ interface ActiveProcess {
   /// `--add-dir` flags and `--resume` the session without making the
   /// user type a fresh message.
   lastSendArgs?: SendArgs;
+  /// Rolling stderr tail kept separate from `stderrBuffer` (which is
+  /// reset to '' after each line is forwarded as a stream event). The
+  /// exit handler reads this so failure messages surface the CLI's real
+  /// complaint instead of "Run the CLI manually for details."
+  recentStderr: string;
 }
 
 interface GeminiAcpSession {
@@ -692,6 +712,7 @@ export class RunnerManager {
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
+      recentStderr: '',
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
       pendingUserInputs: new Map(),
@@ -935,7 +956,7 @@ export class RunnerManager {
       try {
         appendClaudeAllowRule(active.cwd, toolName);
       } catch (err) {
-        console.warn('[runner] failed to persist always-allow rule', err);
+        log('warn', 'runner.persistAllowRule', 'failed to persist always-allow rule', err);
       }
     }
     const cb = active.pendingPermissions.get(requestId);
@@ -2273,6 +2294,7 @@ export class RunnerManager {
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
+      recentStderr: '',
       codexMode,
       pendingPermissions: new Map(),
       pendingCodexApprovals: new Map(),
@@ -2514,7 +2536,12 @@ export class RunnerManager {
       }
     }
     if (code != null && code !== 0 && code !== 143) {
-      const tail = (active.stderrBuffer || active.stdoutBuffer || '').slice(-500);
+      if (this.maybeRetryStaleSession(conversationId, active)) {
+        return;
+      }
+      const tail = (active.recentStderr || active.stderrBuffer || active.stdoutBuffer || '')
+        .trim()
+        .slice(-500);
       this.emit({
         type: 'error',
         conversationId,
@@ -2566,6 +2593,38 @@ export class RunnerManager {
     return true;
   }
 
+  /// When the underlying CLI bails because the cached --resume id no
+  /// longer exists (history wiped, project moved, etc.), re-send the
+  /// turn without the session id so the user gets a working response
+  /// instead of "Run the CLI manually for details." Matches the
+  /// messages emitted by claude/codex/gemini for this case.
+  private maybeRetryStaleSession(conversationId: UUID, active: ActiveProcess): boolean {
+    const stashed = active.lastSendArgs;
+    if (!stashed?.sessionId) return false;
+    if (!isStaleSessionError(active.recentStderr)) return false;
+
+    this.emit({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: randomUUID(),
+          timestamp: Date.now(),
+          raw: '',
+          kind: {
+            type: 'systemNotice',
+            text: 'Previous session no longer exists in CLI history. Starting a fresh one…',
+          },
+          revision: 0,
+        },
+      ],
+    });
+
+    const retryArgs: SendArgs = { ...stashed, sessionId: undefined, localUserId: undefined };
+    this.send(retryArgs, { suppressLocalUser: true });
+    return true;
+  }
+
   private isCodexModelUnavailableError(text: string): boolean {
     const t = text.toLowerCase();
     return (
@@ -2589,6 +2648,13 @@ export class RunnerManager {
     // Keep only the last ~5KB so a chatty CLI doesn't bloat memory.
     if (active.stderrBuffer.length > 5000) {
       active.stderrBuffer = active.stderrBuffer.slice(-5000);
+    }
+    // Mirror to recentStderr so the exit handler has something to show
+    // after the consume-and-clear flow below empties stderrBuffer. Same
+    // 5KB cap.
+    active.recentStderr += chunk;
+    if (active.recentStderr.length > 5000) {
+      active.recentStderr = active.recentStderr.slice(-5000);
     }
     // Forward each complete line as a stderr stream event so the debug
     // viewer can show the raw output.
@@ -2690,6 +2756,7 @@ export class RunnerManager {
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
+      recentStderr: '',
       codexAppServerState: makeCodexAppServerParserState(),
       codexAppServer: client,
       codexMode: 'app-server',

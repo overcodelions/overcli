@@ -922,6 +922,7 @@ export interface IPCInvokeMap {
   'ollama:deleteSession': (sessionId: string) => void;
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
+  'diagnostics:log': (args: { level: LogLevel; scope: string; message: string }) => void;
   /// Flows — see src/shared/flows/. Library is the user-global +
   /// project-local YAML files; runs are in-memory state machines that
   /// drive a sequence of step Conversations.
@@ -1050,8 +1051,11 @@ export interface ProjectPreviewCommand {
   kind: 'dev' | 'storybook' | 'preview' | 'test';
 }
 
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
 export interface SilentLogEntry {
   timestamp: number;
+  level: LogLevel;
   scope: string;
   message: string;
   stack?: string;
