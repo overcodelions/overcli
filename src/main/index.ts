@@ -56,7 +56,7 @@ import {
   pullModel,
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
-import { clearSilentLog, listSilentLog } from './diagnostics';
+import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
@@ -522,6 +522,16 @@ function registerIpc(): void {
   });
   ipcMain.handle('diagnostics:list', () => listSilentLog());
   ipcMain.handle('diagnostics:clear', () => clearSilentLog());
+  ipcMain.handle('diagnostics:log', (_e, args) => {
+    // Renderer payload is untrusted: coerce scope/message and let log()
+    // normalize the level so a malformed entry can't be silently dropped.
+    const { level, scope, message } = (args ?? {}) as {
+      level?: LogLevel;
+      scope?: unknown;
+      message?: unknown;
+    };
+    log(level ?? 'info', String(scope ?? 'renderer'), String(message ?? ''));
+  });
 
   // Flows: library CRUD + tool catalog. The runtime handlers
   // (startRun/listRuns/etc.) are stubbed until Phase 4 wires
@@ -1240,6 +1250,15 @@ function buildMenu(): void {
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
+// Skia Graphite (Chromium's Metal GPU backend, default on macOS) produces
+// "Graphite insertRecording failed" GPU-process crashes and visible render
+// glitches on older Intel Macs. Apple Silicon handles it fine and benefits
+// from it, so only opt Intel Macs out. Mirrors the appleSilicon check in
+// ollama.ts. Must run before app `ready`.
+if (process.platform === 'darwin' && process.arch !== 'arm64') {
+  app.commandLine.appendSwitch('disable-features', 'SkiaGraphite');
+}
+
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
   // In dev the dock shows Electron's default icon because we're running the
@@ -1286,6 +1305,6 @@ app.on('before-quit', () => {
 // surface.
 if (isDev) {
   process.on('uncaughtException', (err) => {
-    console.error('Uncaught main-process exception:', err);
+    log('error', 'main.uncaughtException', 'Uncaught main-process exception', err);
   });
 }
