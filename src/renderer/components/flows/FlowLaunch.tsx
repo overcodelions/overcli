@@ -159,7 +159,7 @@ export function RunPanel({
         />
 
         {error && (
-          <div className="text-[11px] text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mt-3 whitespace-pre-wrap">
+          <div className="text-[11px] text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2 mt-3 whitespace-pre-wrap">
             {error}
           </div>
         )}

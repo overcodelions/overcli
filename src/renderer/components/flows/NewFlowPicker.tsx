@@ -359,7 +359,7 @@ function AIDraft({
         autoFocus
       />
       {error && (
-        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded p-3 mt-2">
+        <div className="text-xs text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/20 rounded p-3 mt-2">
           {error}
         </div>
       )}

@@ -233,7 +233,7 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
             ? 'No participants declared yet. Add one in Participants above, or pick a model below.'
             : `Currently running ${effective.backend}:${effective.model || '(none)'}. ` +
               `Edit models / add participants in Participants above.`}
-          {ollamaDetectError && <span className="text-amber-300"> · {ollamaDetectError}</span>}{' '}
+          {ollamaDetectError && <span className="text-amber-700 dark:text-amber-300"> · {ollamaDetectError}</span>}{' '}
           <button
             onClick={() => void refreshOllama()}
             className="text-ink-faint hover:text-ink underline-offset-2 hover:underline"
@@ -644,7 +644,7 @@ function SmallButton({
         (disabled
           ? 'text-ink-faint cursor-not-allowed'
           : danger
-            ? 'text-red-300 hover:bg-red-500/20'
+            ? 'text-red-700 dark:text-red-300 hover:bg-red-500/20'
             : 'text-ink-muted hover:bg-card-strong hover:text-ink')
       }
     >
