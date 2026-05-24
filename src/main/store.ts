@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
+import { log } from './diagnostics';
 import {
   Project,
   Workspace,
@@ -53,7 +54,7 @@ export function loadState(): StoreState {
       settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
     };
   } catch (err) {
-    console.error('Failed to load overcli.json, starting fresh:', err);
+    log('error', 'store.load', 'Failed to load overcli.json, starting fresh', err);
     return emptyState();
   }
 }

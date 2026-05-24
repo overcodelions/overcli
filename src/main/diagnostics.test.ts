@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { clearSilentLog, listSilentLog, logSilent } from './diagnostics';
+import { clearSilentLog, listSilentLog, log, logSilent } from './diagnostics';
 
 beforeEach(() => clearSilentLog());
 afterEach(() => clearSilentLog());
@@ -28,6 +28,31 @@ describe('silentLog', () => {
   it('records objects via JSON', () => {
     logSilent('s', { code: 42 });
     expect(listSilentLog()[0].message).toBe('{"code":42}');
+  });
+
+  it('records levels', () => {
+    log('info', 'x', 'hello');
+    log('warn', 'y', 'careful');
+    const list = listSilentLog();
+    expect(list[0].level).toBe('info');
+    expect(list[0].message).toBe('hello');
+    expect(list[1].level).toBe('warn');
+  });
+
+  it('logSilent records at error level', () => {
+    logSilent('s', new Error('boom'));
+    expect(listSilentLog()[0].level).toBe('error');
+  });
+
+  it('normalizes a malformed level to info instead of storing it raw', () => {
+    // The diagnostics:log IPC path can forward an undefined/garbage level
+    // from a malformed renderer payload; it must not poison the buffer entry.
+    log(undefined as unknown as 'info', 'x', 'no level');
+    log('verbose' as unknown as 'info', 'y', 'bad level');
+    const list = listSilentLog();
+    expect(list[0].level).toBe('info');
+    expect(list[0].message).toBe('no level');
+    expect(list[1].level).toBe('info');
   });
 
   it('caps the in-memory buffer at 500 entries', () => {

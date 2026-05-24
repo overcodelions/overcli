@@ -25,6 +25,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { log } from '../diagnostics';
 
 import type {
   AppSettings,
@@ -1107,7 +1108,7 @@ export class FlowRuntimeImpl {
         } catch (err) {
           // Disk write failed — fall back to inlining, the budget
           // truncation below will keep us from sending too much.
-          console.warn(`[flows] attachment write failed for ${p.name}:`, err);
+          log('warn', 'flows.attachmentWrite', `attachment write failed for ${p.name}`, err);
           return { kind: 'inline', name: p.name, body: p.body };
         }
       }

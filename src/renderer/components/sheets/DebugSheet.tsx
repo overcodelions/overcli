@@ -212,9 +212,9 @@ function DiagnosticsTab() {
     <div className="flex flex-col flex-1 min-h-0">
       <div className="px-5 pt-4 pb-3 border-b border-card flex items-baseline justify-between">
         <div>
-          <div className="text-lg font-semibold">Silent failures</div>
+          <div className="text-lg font-semibold">Diagnostics log</div>
           <div className="text-xs text-ink-faint">
-            Errors caught and swallowed during this session. Persistent log at <code>~/.overcli/session.log</code>.
+            Log entries recorded during this session. Persistent log at <code>~/.overcli/session.log</code>.
             {' '}
             {entries.length > 0 && `${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}.`}
           </div>
@@ -250,6 +250,7 @@ function DiagnosticsTab() {
                   <span className="text-ink-faint shrink-0">
                     {new Date(e.timestamp).toISOString().slice(11, 23)}
                   </span>
+                  <span className="text-ink-faint uppercase shrink-0">{e.level}</span>
                   <span className="text-accent font-medium">{e.scope}</span>
                   <span className="text-ink-muted truncate">{e.message}</span>
                 </div>
