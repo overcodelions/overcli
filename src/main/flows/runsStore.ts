@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
+import { log } from '../diagnostics';
 
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -66,7 +67,7 @@ export function saveRun(run: FlowRun): void {
     fs.writeFileSync(tmp, JSON.stringify(compact(run)), 'utf-8');
     fs.renameSync(tmp, file);
   } catch (err) {
-    console.error('[flows] failed to persist run', run.id, err);
+    log('error', 'flows.persistRun', `failed to persist run ${run.id}`, err);
   }
 }
 
@@ -78,7 +79,7 @@ export function deleteRun(runId: string): void {
   try {
     if (fs.existsSync(file)) fs.unlinkSync(file);
   } catch (err) {
-    console.error('[flows] failed to delete run', runId, err);
+    log('error', 'flows.deleteRun', `failed to delete run ${runId}`, err);
   }
 }
 
@@ -110,7 +111,7 @@ export function loadAllRuns(): FlowRun[] {
       }
       out.push(parsed);
     } catch (err) {
-      console.warn('[flows] failed to parse persisted run', name, err);
+      log('warn', 'flows.parseRun', `failed to parse persisted run ${name}`, err);
     }
   }
   return out.sort((a, b) => b.createdAt - a.createdAt);

@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import { OllamaChatMessage } from './ollama';
+import { log } from './diagnostics';
 
 const FILE_VERSION = 1;
 
@@ -83,7 +84,7 @@ export function saveOllamaSession(args: {
     fs.writeFileSync(tmp, JSON.stringify(payload), 'utf-8');
     fs.renameSync(tmp, file);
   } catch (err) {
-    console.error(`Failed to persist Ollama session ${args.sessionId}:`, err);
+    log('error', 'ollama.persistSession', `Failed to persist Ollama session ${args.sessionId}`, err);
   }
 }
 
