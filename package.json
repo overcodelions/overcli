@@ -175,5 +175,8 @@
     "react-virtuoso": "^4.18.6",
     "yaml": "^2.9.0",
     "zustand": "^5.0.13"
+  },
+  "overrides": {
+    "qs": "^6.15.2"
   }
 }
