@@ -73,6 +73,7 @@ import { ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
 import { ClaudeSdkClient } from './claude-sdk-client';
+import { claudeSdkExecutablePath } from './claudeSdkExecutable';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import {
   appendClaudeAllowRule,
@@ -744,6 +745,11 @@ export class RunnerManager {
       resumeSessionId: args.sessionId,
       effortLevel: args.effortLevel,
       canUseTool: this.buildClaudeSdkCanUseTool(convId),
+      // We don't ship the SDK's bundled binary; point it at the user's
+      // installed `claude` (the same one the cli transport spawns).
+      pathToClaudeCodeExecutable: claudeSdkExecutablePath(
+        this.settingsProvider().backendPaths.claude,
+      ),
     });
     active.claudeSdk = client;
     client.on('line', (line: string) => {
