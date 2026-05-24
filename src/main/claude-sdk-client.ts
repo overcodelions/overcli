@@ -32,6 +32,10 @@ export interface ClaudeSdkStartOptions {
   /// conversation; subsequent turns share the same long-lived query.
   resumeSessionId?: string;
   effortLevel?: EffortLevel;
+  /// Path to the Claude Code binary the SDK should spawn (the user's installed
+  /// `claude`). We don't bundle the SDK's own native binary — see
+  /// claudeSdkExecutable.ts. Undefined lets the SDK self-resolve (dev only).
+  pathToClaudeCodeExecutable?: string;
   /// Direct permission callback. Replaces the MCP permission-prompt-tool
   /// round-trip used by the CLI transport — the runner registers a
   /// pending-permission resolver and emits the same permissionRequest
@@ -87,6 +91,9 @@ export class ClaudeSdkClient extends EventEmitter {
     const o = this.startOpts;
     const options: Options = {
       cwd: o.cwd,
+      ...(o.pathToClaudeCodeExecutable
+        ? { pathToClaudeCodeExecutable: o.pathToClaudeCodeExecutable }
+        : {}),
       ...(o.model ? { model: o.model } : {}),
       permissionMode: o.permissionMode,
       ...(o.allowedDirs?.length ? { additionalDirectories: o.allowedDirs } : {}),

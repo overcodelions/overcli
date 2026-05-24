@@ -44,7 +44,8 @@
     "files": [
       "dist/**/*",
       "package.json",
-      "!**/*.map"
+      "!**/*.map",
+      "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
     ],
     "extraMetadata": {
       "main": "dist/main/index.js"
