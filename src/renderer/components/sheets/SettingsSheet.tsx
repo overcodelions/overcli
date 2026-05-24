@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import {
   Backend,
@@ -10,6 +10,11 @@ import {
 } from '@shared/types';
 
 type Section = 'general' | 'backends' | 'models' | 'local' | 'agents' | 'advanced';
+
+// Hoisted out of the panes so they aren't reallocated on every keystroke
+// re-render (each render would otherwise create fresh arrays).
+const ALL_BACKENDS_LIST: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
+const CLI_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot'];
 
 /// Redesigned to match the Mac app's sectioned layout — a narrow nav rail
 /// on the left, a scrollable content pane on the right, and a single
@@ -25,7 +30,12 @@ export function SettingsSheet() {
   useEffect(() => setLocal(settings), [settings]);
 
   const patch = (delta: Partial<AppSettings>) => setLocal((p) => ({ ...p, ...delta }));
-  const dirty = JSON.stringify(local) !== JSON.stringify(settings);
+  // Only recompute when local edits or the saved settings actually change,
+  // not on unrelated re-renders (e.g. backendHealth updates from a probe).
+  const dirty = useMemo(
+    () => JSON.stringify(local) !== JSON.stringify(settings),
+    [local, settings],
+  );
 
   return (
     <div className="flex flex-col w-full h-[min(640px,80vh)]">
@@ -274,8 +284,10 @@ function BackendsPane({
   health: Record<string, BackendHealth>;
   refresh: () => void;
 }) {
-  const backends: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
-  const enabled = backends.filter((b) => local.disabledBackends?.[b] !== true);
+  const enabled = useMemo(
+    () => ALL_BACKENDS_LIST.filter((b) => local.disabledBackends?.[b] !== true),
+    [local.disabledBackends],
+  );
   const enabledCount = enabled.length;
   const preferredValue =
     local.preferredBackend && enabled.includes(local.preferredBackend)
@@ -287,7 +299,7 @@ function BackendsPane({
         title="Enabled backends"
         description="Disabled backends are hidden from pickers and won't be used as defaults."
       >
-        {backends.map((b) => (
+        {ALL_BACKENDS_LIST.map((b) => (
           <Toggle
             key={b}
             label={b}
@@ -331,7 +343,7 @@ function BackendsPane({
         title="CLI paths"
         description="overcli auto-discovers CLIs in common install locations. Override here if yours is elsewhere."
       >
-        {(['claude', 'codex', 'gemini', 'copilot'] as Backend[]).map((b) => {
+        {CLI_BACKENDS.map((b) => {
           const h = health[b];
           return (
             <div key={b} className="grid grid-cols-[80px_1fr_auto] items-center gap-2">
@@ -362,14 +374,13 @@ function BackendsPane({
 }
 
 function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
-  const backends: Backend[] = ['claude', 'codex', 'gemini', 'copilot'];
   return (
     <div>
       <Group
         title="Default models"
         description="Used when a conversation doesn't have an explicit model override."
       >
-        {backends.map((b) => (
+        {CLI_BACKENDS.map((b) => (
           <Row key={b} label={b}>
             <input
               placeholder={placeholderFor(b)}
