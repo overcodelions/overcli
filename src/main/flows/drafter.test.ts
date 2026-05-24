@@ -18,14 +18,17 @@ vi.mock('../health', () => ({
 
 import { draftFlowFromPrompt, type DraftDeps } from './drafter';
 
-/// Deps that route the drafter to the mocked Claude SDK path. The runner is
-/// never touched when the backend resolves to Claude, so a stub suffices.
+/// Deps that route the drafter to the mocked Claude SDK path. The SDK path is
+/// only taken when the experimental SDK transport is enabled, so these deps
+/// opt in via claudeTransport: 'sdk'. The runner is never touched on this
+/// path, so a stub suffices.
 function claudeDeps(): DraftDeps {
   return {
     settings: {
       preferredBackend: 'claude',
       disabledBackends: {},
       backendPaths: {},
+      claudeTransport: 'sdk',
     } as unknown as AppSettings,
     runner: {} as DraftDeps['runner'],
   };
@@ -107,6 +110,27 @@ describe('draftFlowFromPrompt', () => {
       expect(result.error).toContain('failed validation');
       expect(result.error).toContain('steps');
     }
+  });
+
+  it('drafts Claude through runner.oneShot on the default cli transport', async () => {
+    const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('CLI Drafted') });
+    const deps: DraftDeps = {
+      settings: {
+        preferredBackend: 'claude',
+        disabledBackends: {},
+        backendPaths: {},
+        // no claudeTransport → defaults to 'cli', so drafting must NOT use the SDK
+      } as unknown as AppSettings,
+      runner: { oneShot } as unknown as DraftDeps['runner'],
+    };
+
+    const result = await draftFlowFromPrompt({ description: 'Build via Claude' }, deps);
+
+    expect(oneShot).toHaveBeenCalledTimes(1);
+    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'claude' });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow.name).toBe('CLI Drafted');
   });
 
   it('routes a non-Claude preferred backend through runner.oneShot', async () => {

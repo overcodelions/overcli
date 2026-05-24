@@ -6,15 +6,18 @@
 //
 // Backend selection mirrors the rest of the app: the user's preferred
 // backend when it's healthy, otherwise the first healthy premium backend
-// (see pickDrafterBackend). Claude takes a fast in-process path via the
-// @anthropic-ai/claude-agent-sdk (no subprocess, tools fully off); every
-// other CLI runs as a hidden one-shot through the RunnerManager, which
-// already speaks all the backends. Auth uses whatever credentials that CLI
-// relies on.
+// (see pickDrafterBackend). Every CLI runs as a hidden one-shot through the
+// RunnerManager, which already speaks all the backends — including Claude on
+// its default 'cli' transport (the user's installed `claude`). Claude only
+// takes the in-process @anthropic-ai/claude-agent-sdk path when the
+// experimental "Use Claude Agent SDK" transport is enabled (Settings →
+// Advanced). Auth uses whatever credentials that CLI relies on.
 
 import os from 'node:os';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+
+import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow } from '../../shared/flows/schema';
@@ -137,21 +140,29 @@ export async function draftFlowFromPrompt(
   const model = drafterModelFor(backend);
   const label = backendLabel(backend);
 
-  const text =
-    backend === 'claude'
-      ? await draftViaClaudeSdk(desc, model)
-      : await draftViaRunner(deps.runner, backend, model, desc);
+  // Only reach for the in-process Agent SDK when the user has opted into the
+  // experimental SDK transport. By default Claude drafts through the runner
+  // one-shot like every other CLI — spawning the user's installed `claude`,
+  // exactly as a normal chat does. (The hidden one-shot uses the 'cli'
+  // transport since `oneShot` never sets claudeTransport.)
+  const useClaudeSdk =
+    backend === 'claude' && deps.settings.claudeTransport === 'sdk';
+  const text = useClaudeSdk
+    ? await draftViaClaudeSdk(desc, model, deps.settings.backendPaths.claude)
+    : await draftViaRunner(deps.runner, backend, model, desc);
   if (!text.ok) return text;
 
   return finalizeDraft(text.text, label);
 }
 
-/// Fast in-process path for Claude: a pure-text generation with the
-/// claude_code preset bypassed and tools fully disabled.
+/// Direct SDK path for Claude: a pure-text generation with the claude_code
+/// preset bypassed and tools fully disabled.
 async function draftViaClaudeSdk(
   desc: string,
   model: string,
+  claudeBinOverride?: string,
 ): Promise<OneShotResult> {
+  const executable = claudeSdkExecutablePath(claudeBinOverride);
   let collected = '';
   try {
     const stream = query({
@@ -162,11 +173,13 @@ async function draftViaClaudeSdk(
         // task. The schema + example carries everything the model needs.
         systemPrompt: systemPrompt('claude'),
         model,
+        cwd: os.homedir(),
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         // No tools — this is text generation only. We explicitly forbid
         // them rather than relying on the model not to ask.
         allowedTools: [],
+        ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });
     for await (const event of stream) {
