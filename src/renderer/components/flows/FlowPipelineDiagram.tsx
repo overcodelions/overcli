@@ -20,8 +20,8 @@ import { useMemo } from 'react';
 import { resolveStepModel, type Flow, type FlowStep } from '@shared/flows/schema';
 
 const TIER_COLOR: Record<string, string> = {
-  premium: 'border-sky-400/60 bg-sky-500/15 text-sky-100',
-  local: 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100',
+  premium: 'border-sky-400/60 bg-sky-500/15 text-sky-800 dark:text-sky-100',
+  local: 'border-emerald-400/60 bg-emerald-500/15 text-emerald-800 dark:text-emerald-100',
   other: 'border-[color-mix(in_srgb,var(--c-card-border)_30%,transparent)] bg-card text-ink',
 };
 
@@ -107,7 +107,7 @@ export function FlowPipelineDiagram({ flow, onStepClick }: PipelineDiagramProps)
             {retryEdges.map(({ from, to }, i) => (
               <div
                 key={`${from}-${to}-${i}`}
-                className="text-[11px] px-2 py-1 rounded bg-amber-500/10 border border-amber-400/30 text-amber-200"
+                className="text-[11px] px-2 py-1 rounded bg-amber-500/10 border border-amber-400/30 text-amber-700 dark:text-amber-200"
               >
                 if <span className="font-semibold">{from}</span> fails → retry{' '}
                 <span className="font-semibold">{to}</span>
@@ -216,11 +216,11 @@ function ArtifactArrow({ name }: { name: string }) {
 function TerminatorArrow({ name }: { name: string }) {
   return (
     <div className="flex items-center gap-1.5 flex-shrink-0">
-      <svg width="20" height="14" viewBox="0 0 20 14" className="text-emerald-300/70">
+      <svg width="20" height="14" viewBox="0 0 20 14" className="text-emerald-700 dark:text-emerald-300/70">
         <path d="M2 7 H16" stroke="currentColor" strokeWidth="1.4" />
         <path d="M14 3 L18 7 L14 11" stroke="currentColor" strokeWidth="1.4" fill="none" />
       </svg>
-      <div className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[10px] text-emerald-200 font-mono">
+      <div className="rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-1 text-[10px] text-emerald-700 dark:text-emerald-200 font-mono">
         {name}
       </div>
     </div>
@@ -231,7 +231,7 @@ function PauseGlyph() {
   return (
     <div
       title="Paused — wait for me here"
-      className="rounded border border-amber-400/50 bg-amber-500/15 text-amber-200 px-1.5 py-0.5 text-[11px]"
+      className="rounded border border-amber-400/50 bg-amber-500/15 text-amber-700 dark:text-amber-200 px-1.5 py-0.5 text-[11px]"
     >
       ⏸
     </div>
@@ -242,7 +242,7 @@ function ReboundGlyph() {
   return (
     <span
       title="Critic loops on this step"
-      className="text-[10px] text-purple-300"
+      className="text-[10px] text-purple-700 dark:text-purple-300"
     >
       ↻
     </span>

@@ -123,7 +123,7 @@ export function FlowParticipantsCard() {
           {detectStatus === 'loading'
             ? 'detecting local models…'
             : detectStatus === 'error'
-              ? <span className="text-red-300">ollama detect failed</span>
+              ? <span className="text-red-700 dark:text-red-300">ollama detect failed</span>
               : `${ollamaModels.length} local model${ollamaModels.length === 1 ? '' : 's'}`}
           {' '}
           <button
@@ -140,7 +140,7 @@ export function FlowParticipantsCard() {
               const kept = draft.participants.filter((p) => usageByParticipantId[p.id]);
               updateDraft({ participants: kept });
             }}
-            className="text-[11px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-200 border border-amber-400/30 hover:bg-amber-500/25"
+            className="text-[11px] px-2 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-200 border border-amber-400/30 hover:bg-amber-500/25"
             title="Remove participants no step references"
           >
             Clean up {orphanCount} unused
@@ -150,7 +150,7 @@ export function FlowParticipantsCard() {
           <button
             onClick={() => add('primary')}
             disabled={participants.some((p) => p.kind === 'primary')}
-            className="text-[11px] px-2 py-1 rounded bg-sky-500/15 text-sky-200 hover:bg-sky-500/25 border border-sky-400/30 disabled:opacity-40"
+            className="text-[11px] px-2 py-1 rounded bg-sky-500/15 text-sky-700 dark:text-sky-200 hover:bg-sky-500/25 border border-sky-400/30 disabled:opacity-40"
             title="Add a Primary participant (premium planner/reviewer)"
           >
             + Primary
@@ -158,7 +158,7 @@ export function FlowParticipantsCard() {
           <button
             onClick={() => add('worker')}
             disabled={participants.some((p) => p.kind === 'worker')}
-            className="text-[11px] px-2 py-1 rounded bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25 border border-emerald-400/30 disabled:opacity-40"
+            className="text-[11px] px-2 py-1 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-200 hover:bg-emerald-500/25 border border-emerald-400/30 disabled:opacity-40"
             title="Add a Worker participant (local implementer)"
           >
             + Worker
@@ -166,7 +166,7 @@ export function FlowParticipantsCard() {
           <button
             onClick={() => add('reviewer')}
             disabled={participants.some((p) => p.kind === 'reviewer')}
-            className="text-[11px] px-2 py-1 rounded bg-purple-500/15 text-purple-200 hover:bg-purple-500/25 border border-purple-400/30 disabled:opacity-40"
+            className="text-[11px] px-2 py-1 rounded bg-purple-500/15 text-purple-700 dark:text-purple-200 hover:bg-purple-500/25 border border-purple-400/30 disabled:opacity-40"
             title="Add a Reviewer participant"
           >
             + Reviewer
@@ -291,7 +291,7 @@ function ParticipantRow({
           className={
             'text-[10px] text-center px-1 py-0.5 rounded ' +
             (usageCount === 0
-              ? 'bg-amber-500/15 text-amber-200 border border-amber-400/30'
+              ? 'bg-amber-500/15 text-amber-700 dark:text-amber-200 border border-amber-400/30'
               : 'text-ink-faint')
           }
           title={
@@ -304,7 +304,7 @@ function ParticipantRow({
         </span>
         <button
           onClick={onRemove}
-          className="text-[11px] w-6 h-6 rounded text-red-300 hover:bg-red-500/20"
+          className="text-[11px] w-6 h-6 rounded text-red-700 dark:text-red-300 hover:bg-red-500/20"
           title="Remove participant"
         >
           ×
