@@ -5,12 +5,12 @@
 // cards, and the run panel header.
 
 const PALETTE = [
-  'bg-sky-500/20 text-sky-200',
-  'bg-emerald-500/20 text-emerald-200',
-  'bg-amber-500/20 text-amber-200',
-  'bg-purple-500/20 text-purple-200',
-  'bg-rose-500/20 text-rose-200',
-  'bg-teal-500/20 text-teal-200',
+  'bg-sky-500/20 text-sky-700 dark:text-sky-200',
+  'bg-emerald-500/20 text-emerald-700 dark:text-emerald-200',
+  'bg-amber-500/20 text-amber-700 dark:text-amber-200',
+  'bg-purple-500/20 text-purple-700 dark:text-purple-200',
+  'bg-rose-500/20 text-rose-700 dark:text-rose-200',
+  'bg-teal-500/20 text-teal-700 dark:text-teal-200',
 ];
 
 const SIZE_CLASS: Record<MonogramSize, string> = {
