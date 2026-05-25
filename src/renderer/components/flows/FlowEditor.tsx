@@ -142,7 +142,7 @@ export function FlowEditor() {
       </div>
 
       {saveError && (
-        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/20 rounded p-3 mb-4">
+        <div className="text-xs text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/20 rounded p-3 mb-4">
           {saveError}
         </div>
       )}
@@ -229,12 +229,12 @@ export function FlowEditor() {
           </div>
 
           {validation && !validation.ok && (
-            <div className="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
+            <div className="text-xs text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
               <div className="font-semibold mb-1">Fix before saving</div>
               <ul className="space-y-0.5">
                 {validation.errors.map((e, i) => (
                   <li key={i}>
-                    <span className="text-amber-200">{e.path}</span>: {e.message}
+                    <span className="text-amber-700 dark:text-amber-200">{e.path}</span>: {e.message}
                   </li>
                 ))}
               </ul>
@@ -258,7 +258,7 @@ export function FlowEditor() {
                 {yamlMode && (
                   <button
                     onClick={applyYaml}
-                    className="text-[11px] text-emerald-300 hover:text-emerald-200 px-2 py-0.5 rounded hover:bg-white/5"
+                    className="text-[11px] text-emerald-700 hover:text-emerald-800 dark:text-emerald-300 dark:hover:text-emerald-200 px-2 py-0.5 rounded hover:bg-white/5"
                   >
                     Apply →
                   </button>

@@ -225,7 +225,7 @@ function FlowRunRow({
         // squeeze native dialog styling into the app. Compact two-button
         // affordance keyed off the same row chrome.
         <div className="flex items-center gap-1.5 flex-1 min-w-0 px-2 py-1">
-          <span className="text-[11px] text-red-300 truncate flex-1">
+          <span className="text-[11px] text-red-700 dark:text-red-300 truncate flex-1">
             Delete this run?
           </span>
           <button
@@ -301,7 +301,7 @@ function StateBadge({
   if (state === 'running' || (state === 'done' && isLive)) {
     return (
       <svg
-        className="w-3 h-3 animate-spin text-sky-300 flex-shrink-0"
+        className="w-3 h-3 animate-spin text-sky-700 dark:text-sky-300 flex-shrink-0"
         viewBox="0 0 16 16"
         fill="none"
         aria-label={state === 'done' ? 'responding' : 'running'}
@@ -316,7 +316,7 @@ function StateBadge({
   if (state === 'paused') {
     return (
       <span
-        className="text-[10px] text-amber-300 flex-shrink-0 leading-none"
+        className="text-[10px] text-amber-700 dark:text-amber-300 flex-shrink-0 leading-none"
         title="paused — waiting for you"
         aria-label="paused"
       >
@@ -327,7 +327,7 @@ function StateBadge({
   if (state === 'aborted') {
     return (
       <span
-        className="text-[10px] text-red-300 flex-shrink-0 leading-none"
+        className="text-[10px] text-red-700 dark:text-red-300 flex-shrink-0 leading-none"
         title="aborted"
         aria-label="aborted"
       >
@@ -339,7 +339,7 @@ function StateBadge({
   // it competing with active items.
   return (
     <span
-      className="text-[10px] text-emerald-300/70 flex-shrink-0 leading-none"
+      className="text-[10px] text-emerald-700 dark:text-emerald-300/70 flex-shrink-0 leading-none"
       title="done"
       aria-label="done"
     >
