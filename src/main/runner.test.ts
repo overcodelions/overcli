@@ -10,7 +10,7 @@ import {
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
-import { resumeSessionAfterParamChange } from './runner';
+import { isStaleSessionError, resumeSessionAfterParamChange } from './runner';
 import type { StreamEvent } from '../shared/types';
 
 describe('resumeSessionAfterParamChange', () => {
@@ -32,6 +32,38 @@ describe('resumeSessionAfterParamChange', () => {
 
   it('returns undefined when neither side has a session (first turn)', () => {
     expect(resumeSessionAfterParamChange(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('isStaleSessionError', () => {
+  it('matches claude "no conversation found with session id"', () => {
+    expect(isStaleSessionError('Error: No conversation found with session ID abc-123')).toBe(true);
+  });
+
+  it('matches a bare "session not found"', () => {
+    expect(isStaleSessionError('fatal: session not found')).toBe(true);
+  });
+
+  it('matches "resume" and "not found" co-occurring (gemini/codex phrasing)', () => {
+    expect(isStaleSessionError('Could not resume conversation: rollout not found')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isStaleSessionError('SESSION NOT FOUND')).toBe(true);
+  });
+
+  it('does not fire on unrelated "not found" errors', () => {
+    // Guards the substring matcher against false positives: these contain
+    // "not found" but are not stale-session failures.
+    expect(isStaleSessionError('file not found')).toBe(false);
+    expect(isStaleSessionError('model not found')).toBe(false);
+    expect(isStaleSessionError('command not found: claude')).toBe(false);
+    expect(isStaleSessionError('404 not found')).toBe(false);
+  });
+
+  it('returns false for empty / non-stale output', () => {
+    expect(isStaleSessionError('')).toBe(false);
+    expect(isStaleSessionError('rate limit exceeded')).toBe(false);
   });
 });
 

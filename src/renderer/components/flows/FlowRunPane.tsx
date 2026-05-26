@@ -151,7 +151,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 onClick={() => {
                   void window.overcli.invoke('flows:abortRun', { runId });
                 }}
-                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-200 hover:bg-red-500/30"
+                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30"
               >
                 Abort
               </button>
@@ -184,7 +184,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
             ) : (
               <button
                 onClick={() => setConfirmingDelete(true)}
-                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-300 hover:bg-card-strong"
+                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong"
                 title="Delete this run permanently"
               >
                 Delete
@@ -349,16 +349,16 @@ function InlineStepPill({
       </span>
       {participant && <FlowMonogram name={participant.name} size="xs" />}
       <span className="text-xs font-semibold text-ink">{step.id}</span>
-      {pulsing && <span className="text-sky-300 animate-spin text-[10px]">⟳</span>}
-      {done && !pulsing && <span className="text-emerald-300/80 text-[10px]">✓</span>}
-      {failed && !pulsing && <span className="text-red-300 text-[10px]">!</span>}
-      {isPausedNext && <span className="text-amber-300 text-[10px]">⏸</span>}
+      {pulsing && <span className="text-sky-700 dark:text-sky-300 animate-spin text-[10px]">⟳</span>}
+      {done && !pulsing && <span className="text-emerald-700 dark:text-emerald-300/80 text-[10px]">✓</span>}
+      {failed && !pulsing && <span className="text-red-700 dark:text-red-300 text-[10px]">!</span>}
+      {isPausedNext && <span className="text-amber-700 dark:text-amber-300 text-[10px]">⏸</span>}
     </button>
   );
 }
 
 function StepArrow({ done, pulsing }: { done: boolean; pulsing: boolean }) {
-  const color = done ? 'text-emerald-400/70' : 'text-ink-faint';
+  const color = done ? 'text-emerald-700 dark:text-emerald-400/70' : 'text-ink-faint';
   return (
     <div className="flex items-center px-0.5">
       <svg width="18" height="12" viewBox="0 0 22 14" className={color + (pulsing ? ' animate-pulse' : '')} aria-hidden>
@@ -470,8 +470,8 @@ function ParticipantBody({
                       : 'text-ink-faint')
                 }
               >
-                {done && <span className="text-emerald-300/80 mr-0.5">✓</span>}
-                {isCurrent && <span className="animate-pulse text-sky-300 mr-0.5">●</span>}
+                {done && <span className="text-emerald-700 dark:text-emerald-300/80 mr-0.5">✓</span>}
+                {isCurrent && <span className="animate-pulse text-sky-700 dark:text-sky-300 mr-0.5">●</span>}
                 {step.id}
               </span>
             );
@@ -573,7 +573,7 @@ function ArtifactsPanel({
                   {artifact.body.length.toLocaleString()} chars
                 </span>
                 {summary && (
-                  <span className="ml-auto text-[11px] text-emerald-300/80">{summary}</span>
+                  <span className="ml-auto text-[11px] text-emerald-700 dark:text-emerald-300/80">{summary}</span>
                 )}
               </button>
               {open && (
@@ -687,9 +687,9 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
       className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
       title="Click to view the diff"
     >
-      <span className="text-emerald-300">+{added}</span>
+      <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>
       <span className="text-ink-faint">/</span>
-      <span className="text-red-300">−{removed}</span>
+      <span className="text-red-700 dark:text-red-300">−{removed}</span>
       {files > 0 && (
         <span className="text-ink-faint">
           · {files} file{files === 1 ? '' : 's'}
@@ -731,7 +731,7 @@ function DiffSheet({ run, onClose }: { run: FlowRun; onClose: () => void }) {
   }, [run.attempts, run.artifacts]);
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onClick={onClose}
     >
       <div
@@ -788,9 +788,9 @@ function RunDiffStatsInline({ run }: { run: FlowRun }) {
   }
   return (
     <span className="text-[11px] font-mono">
-      <span className="text-emerald-300">+{added}</span>
+      <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>
       <span className="text-ink-faint">/</span>
-      <span className="text-red-300">−{removed}</span>
+      <span className="text-red-700 dark:text-red-300">−{removed}</span>
       {files > 0 && (
         <span className="text-ink-faint"> · {files} file{files === 1 ? '' : 's'}</span>
       )}
@@ -825,10 +825,10 @@ function colorizeDiff(body: string): React.ReactNode {
   return body.split('\n').map((line, i) => {
     let cls = 'text-ink';
     if (line.startsWith('+++') || line.startsWith('---')) cls = 'text-ink-muted';
-    else if (line.startsWith('+')) cls = 'text-emerald-300';
-    else if (line.startsWith('-')) cls = 'text-red-300';
-    else if (line.startsWith('@@')) cls = 'text-sky-300';
-    else if (line.startsWith('diff --git ')) cls = 'text-amber-300';
+    else if (line.startsWith('+')) cls = 'text-emerald-700 dark:text-emerald-300';
+    else if (line.startsWith('-')) cls = 'text-red-700 dark:text-red-300';
+    else if (line.startsWith('@@')) cls = 'text-sky-700 dark:text-sky-300';
+    else if (line.startsWith('diff --git ')) cls = 'text-amber-700 dark:text-amber-300';
     return (
       <div key={i} className={cls}>
         {line || ' '}
@@ -1331,15 +1331,15 @@ function PauseBanner({ run }: { run: FlowRun }) {
     <div className="px-6 py-3 border-b border-amber-400/30 bg-amber-400/5">
       <div className="flex items-start gap-3 max-w-[1200px] mx-auto">
         <div className="flex-1">
-          <div className="text-sm font-semibold text-amber-200 mb-0.5">
+          <div className="text-sm font-semibold text-amber-700 dark:text-amber-200 mb-0.5">
             {reason === 'preStep' ? 'Paused before next step' : 'Paused — step needs attention'}
           </div>
-          <div className="text-xs text-amber-100/80">
+          <div className="text-xs text-amber-700 dark:text-amber-100/80">
             Talk to any participant below to redirect or get questions answered. When you continue,
-            the prior step's latest <code className="text-amber-100">&lt;output&gt;</code> block
+            the prior step's latest <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
             becomes the artifact handed to the next step.
             {nextStep && nextModel && (
-              <span className="block mt-1 text-amber-200/70">
+              <span className="block mt-1 text-amber-700 dark:text-amber-200/70">
                 Next: <span className="font-semibold">{nextStep.id}</span>{' '}
                 ({nextModel.backend}:{nextModel.model})
               </span>
@@ -1363,12 +1363,12 @@ function RunStateBadge({ state }: { state: { kind: string } }) {
   const label = state.kind;
   const cls =
     label === 'running'
-      ? 'bg-sky-500/20 text-sky-300'
+      ? 'bg-sky-500/20 text-sky-700 dark:text-sky-300'
       : label === 'paused'
-        ? 'bg-amber-500/20 text-amber-300'
+        ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
         : label === 'done'
-          ? 'bg-emerald-500/20 text-emerald-300'
-          : 'bg-red-500/20 text-red-300';
+          ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
+          : 'bg-red-500/20 text-red-700 dark:text-red-300';
   return (
     <span className={`text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}>
       {label}
@@ -1429,9 +1429,9 @@ function RunTokenSummary({ run }: { run: FlowRun }) {
     label: string;
     cls: string;
   }> = [
-    { key: 'thinking', label: 'thinking', cls: 'text-amber-300' },
-    { key: 'standard', label: 'standard', cls: 'text-sky-300' },
-    { key: 'fast', label: 'fast', cls: 'text-emerald-300' },
+    { key: 'thinking', label: 'thinking', cls: 'text-amber-700 dark:text-amber-300' },
+    { key: 'standard', label: 'standard', cls: 'text-sky-700 dark:text-sky-300' },
+    { key: 'fast', label: 'fast', cls: 'text-emerald-700 dark:text-emerald-300' },
     { key: 'local', label: 'local', cls: 'text-ink-faint' },
   ];
   const visible = chips.filter((c) => buckets[c.key] > 0);

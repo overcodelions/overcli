@@ -32,6 +32,7 @@ import {
   PersonaKey,
   ReviewPreset,
   MainToRendererEvent,
+  LogLevel,
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { FileViewMode } from './filePreview';
@@ -48,6 +49,15 @@ import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
+
+/// Forward a diagnostic line to the main-process session log. Fire-and-forget:
+/// the `.catch` keeps an IPC rejection from becoming an unhandled rejection,
+/// and we still echo to the DevTools console so the message stays visible there.
+function logToMain(level: LogLevel, scope: string, message: string): void {
+  const sink = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
+  sink(`[${scope}] ${message}`);
+  void window.overcli.invoke('diagnostics:log', { level, scope, message }).catch(() => {});
+}
 
 export type ActiveSheet =
   | { type: 'settings' }
@@ -461,7 +471,7 @@ async function ensureWorkspaceRoot(
     instructions,
   });
   if (!res.ok) {
-    console.warn(`Failed to create workspace root: ${res.error}`);
+    logToMain('warn', 'renderer.createWorkspaceRoot', `Failed to create workspace root: ${res.error}`);
     return null;
   }
   return res.rootPath;
@@ -932,7 +942,8 @@ export const useStore = create<StoreState>((set, get) => ({
     }
     for (const ws of impactedWorkspaces.filter((w) => deletedWorkspaceIds.has(w.id))) {
       const res = await window.overcli.invoke('workspace:removeSymlinkRoot', ws.id);
-      if (!res.ok) console.warn(`Failed to remove workspace root for ${ws.name}: ${res.error}`);
+      if (!res.ok)
+        logToMain('warn', 'renderer.removeWorkspaceRoot', `Failed to remove workspace root for ${ws.name}: ${res.error}`);
     }
 
     const current = get();
@@ -1002,7 +1013,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
     const res = await window.overcli.invoke('workspace:removeSymlinkRoot', id);
     if (!res.ok) {
-      console.warn(`Failed to remove workspace root for ${workspace.name}: ${res.error}`);
+      logToMain('warn', 'renderer.removeWorkspaceRoot', `Failed to remove workspace root for ${workspace.name}: ${res.error}`);
     }
 
     set((s) => ({
@@ -1231,7 +1242,7 @@ export const useStore = create<StoreState>((set, get) => ({
       const projectId = project.id;
       const baseBranch = args.baseBranches[projectId];
       if (!baseBranch) {
-        console.warn(`No base branch for ${project.name}; skipping.`);
+        logToMain('warn', 'renderer.worktreeBaseBranch', `No base branch for ${project.name}; skipping.`);
         continue;
       }
       args.onProgress?.(
@@ -1244,7 +1255,7 @@ export const useStore = create<StoreState>((set, get) => ({
         branchPrefix: state.settings.agentBranchPrefix,
       });
       if (!res.ok) {
-        console.warn(`Worktree create failed in ${project.name}: ${res.error}`);
+        logToMain('warn', 'renderer.createWorktree', `Worktree create failed in ${project.name}: ${res.error}`);
         continue;
       }
       const memberId = uuid();
@@ -1290,7 +1301,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (rootRes.ok) {
       coordinatorRootPath = rootRes.rootPath;
     } else {
-      console.warn(`Coordinator root create failed: ${rootRes.error}`);
+      logToMain('warn', 'renderer.coordinatorRoot', `Coordinator root create failed: ${rootRes.error}`);
     }
 
     const coordinator: Conversation = {
