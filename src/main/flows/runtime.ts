@@ -673,6 +673,14 @@ export class FlowRuntimeImpl {
       }
     }
 
+    // Finalization needs a synthetic turn on the prior participant, which
+    // can run for a while. Leave the 'paused' state NOW so the renderer's
+    // "Continue" banner clears the instant the user hits Continue — the
+    // prior step is actively working (re-emitting its output), so surface
+    // that as the running step instead of looking paused the whole turn.
+    run.state = { kind: 'running', currentStepId: prior.id };
+    this.emitRunUpdate(run);
+
     const finalizePrompt = [
       `[Internal finalization request — the runtime is about to advance to step "${nextStepId}".]`,
       '',
