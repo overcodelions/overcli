@@ -31,53 +31,55 @@ export function EditWorkspaceSheet({ workspaceId }: { workspaceId: UUID }) {
   if (!workspace) return null;
 
   return (
-    <div className="flex flex-col p-5 gap-3">
-      <div>
-        <div className="text-lg font-semibold">Edit workspace</div>
-        <div className="text-xs text-ink-faint">
-          Add or remove member projects. Existing agents keep their worktrees — dropping a
-          project here only updates future agents.
+    <div className="flex flex-col min-h-0 flex-1">
+      <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-3">
+        <div>
+          <div className="text-lg font-semibold">Edit workspace</div>
+          <div className="text-xs text-ink-faint">
+            Add or remove member projects. Existing agents keep their worktrees — dropping a
+            project here only updates future agents.
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-ink-faint">Name</label>
+          <div className="mt-1 px-3 py-1.5 text-sm text-ink-muted">{workspace.name}</div>
+        </div>
+        <div>
+          <label className="text-xs text-ink-faint">Member projects</label>
+          <ProjectPicker
+            projects={projects}
+            picked={picked}
+            onChange={setPicked}
+            renderRowBadge={(p, checked) =>
+              referencedProjectIds.has(p.id) && !checked ? (
+                <div
+                  className="text-[10px] text-amber-500"
+                  title="Existing workspace agents reference this project — its worktrees stay but no new agents will include it."
+                >
+                  in use
+                </div>
+              ) : null
+            }
+          />
+        </div>
+        <div>
+          <label className="text-xs text-ink-faint">
+            Workspace instructions <span className="text-ink-faint/70">(optional)</span>
+          </label>
+          <textarea
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            placeholder={'e.g. product name, terminology, conventions, or anything every agent in this workspace should know.'}
+            rows={4}
+            className="field mt-1 w-full px-3 py-1.5 text-sm resize-y"
+          />
+          <div className="text-[10px] text-ink-faint mt-1">
+            Appended to CLAUDE.md / AGENTS.md / GEMINI.md in this workspace — every conversation
+            and agent sees it.
+          </div>
         </div>
       </div>
-      <div>
-        <label className="text-xs text-ink-faint">Name</label>
-        <div className="mt-1 px-3 py-1.5 text-sm text-ink-muted">{workspace.name}</div>
-      </div>
-      <div>
-        <label className="text-xs text-ink-faint">Member projects</label>
-        <ProjectPicker
-          projects={projects}
-          picked={picked}
-          onChange={setPicked}
-          renderRowBadge={(p, checked) =>
-            referencedProjectIds.has(p.id) && !checked ? (
-              <div
-                className="text-[10px] text-amber-500"
-                title="Existing workspace agents reference this project — its worktrees stay but no new agents will include it."
-              >
-                in use
-              </div>
-            ) : null
-          }
-        />
-      </div>
-      <div>
-        <label className="text-xs text-ink-faint">
-          Workspace instructions <span className="text-ink-faint/70">(optional)</span>
-        </label>
-        <textarea
-          value={instructions}
-          onChange={(e) => setInstructions(e.target.value)}
-          placeholder={'e.g. product name, terminology, conventions, or anything every agent in this workspace should know.'}
-          rows={4}
-          className="field mt-1 w-full px-3 py-1.5 text-sm resize-y"
-        />
-        <div className="text-[10px] text-ink-faint mt-1">
-          Appended to CLAUDE.md / AGENTS.md / GEMINI.md in this workspace — every conversation
-          and agent sees it.
-        </div>
-      </div>
-      <div className="flex justify-end gap-2 mt-2">
+      <div className="flex justify-end gap-2 px-5 py-3 border-t border-card bg-surface-elevated">
         <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
         <SheetActionButton
           primary

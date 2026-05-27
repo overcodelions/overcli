@@ -135,11 +135,26 @@ export function Sidebar() {
     [colosseums, sortedProjects],
   );
   const inactiveProjects = useMemo(
-    () => sortedProjects.filter((p) => !hasProjectActivity(p, colosseums)),
+    () =>
+      sortedProjects
+        .filter((p) => !hasProjectActivity(p, colosseums))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
     [colosseums, sortedProjects],
   );
-  const visibleProjectGroups = activeProjects.slice(0, 5);
-  const overflowActiveProjects = activeProjects.slice(5);
+  const visibleProjectGroups = useMemo(
+    () =>
+      [...activeProjects.slice(0, 5)].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      ),
+    [activeProjects],
+  );
+  const overflowActiveProjects = useMemo(
+    () =>
+      [...activeProjects.slice(5)].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      ),
+    [activeProjects],
+  );
   const selectedProjectId = useMemo(
     () =>
       selectedId

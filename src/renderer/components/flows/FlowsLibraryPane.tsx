@@ -7,7 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
-import { flowRunOwnerPath, resolveStepModel, type Flow } from '@shared/flows/schema';
+import { flowRunOwnerPath, resolveStepModel, flowStarKey, type Flow } from '@shared/flows/schema';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
@@ -387,6 +387,10 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
   const [running, setRunning] = useState(false);
+  const starred = useStore(
+    (s) => (s.settings.starredFlows ?? []).includes(flowStarKey(flow)),
+  );
+  const toggleFlowStar = useStore((s) => s.toggleFlowStar);
 
   // Picking "Run" swaps the row's contents for the shared run panel
   // (Composer + target/worktree controls) in place — no cramped popover,
@@ -462,6 +466,17 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
           className="flex items-center gap-2 flex-shrink-0"
           onClick={(e) => e.stopPropagation()}
         >
+          <button
+            onClick={() => void toggleFlowStar({ source: flow.source, id: flow.id })}
+            className={
+              'text-base leading-none px-2 py-1 rounded-md hover:bg-card-strong ' +
+              (starred ? 'text-amber-400' : 'text-ink-faint hover:text-amber-400')
+            }
+            title={starred ? 'Unstar' : 'Star to pin to the welcome pane'}
+            aria-label={starred ? 'Unstar flow' : 'Star flow'}
+          >
+            {starred ? '★' : '☆'}
+          </button>
           <button
             onClick={() => setRunning(true)}
             className="text-xs px-3 py-1 rounded-md bg-accent text-white hover:opacity-90"
