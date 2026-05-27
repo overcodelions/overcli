@@ -35,6 +35,7 @@ import {
   LogLevel,
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
+import { flowStarKey } from '@shared/flows/schema';
 import { FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import {
@@ -216,6 +217,7 @@ interface StoreState {
   saveWorkspaces(): Promise<void>;
   saveColosseums(): Promise<void>;
   saveSettings(next: AppSettings): Promise<void>;
+  toggleFlowStar(flow: { source: 'user' | 'project'; id: string }): Promise<void>;
 
   // Project / workspace mutations
   addProject(project: Project): Promise<void>;
@@ -879,6 +881,15 @@ export const useStore = create<StoreState>((set, get) => ({
     await window.overcli.invoke('store:saveSettings', next);
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
+  },
+
+  async toggleFlowStar(flow) {
+    const key = flowStarKey(flow);
+    const current = get().settings.starredFlows ?? [];
+    const next = current.includes(key)
+      ? current.filter((k) => k !== key)
+      : [...current, key];
+    await get().saveSettings({ ...get().settings, starredFlows: next });
   },
 
   async addProject(project) {
