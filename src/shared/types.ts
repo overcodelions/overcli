@@ -605,6 +605,9 @@ export interface AppSettings {
   /// restrictions on `-p` and exposes typed events / direct permission
   /// callbacks. Opt-in while the SDK transport is being built out.
   claudeTransport?: 'cli' | 'sdk';
+  /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
+  /// sort first in the welcome pane's "Or run a flow" row.
+  starredFlows?: string[];
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -1244,4 +1247,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showActiveSidebarSection: true,
   showDebug: false,
   claudeTransport: 'cli',
+  starredFlows: [],
 };

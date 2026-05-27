@@ -584,25 +584,60 @@ export class FlowRuntimeImpl {
     // fresh <output> block reflecting the discussion, then advance. This
     // is async — we return ok immediately and emit state updates as the
     // finalize turn streams in.
+    //
+    // EXCEPTION: when the prior step's output is diff-kind, we DO NOT
+    // finalize. The authoritative diff artifact is computed from the
+    // worktree (see `onStepFinished` → `computeRunDiffForRun`), not from
+    // the model's text. Re-prompting the implementer to "emit the FINAL
+    // updated <output name="diff">" makes it interpret the request as
+    // "go apply more file changes" — and with `acceptEdits` permission
+    // it actually does, mutating the user's tree after they hit Continue.
     if (pausedReason === 'preStep') {
       if (this.finalizingRuns.has(args.runId)) {
         // Continue already in flight — idempotent no-op.
         return { ok: true };
       }
       const priorParticipantKey = this.priorParticipantKey(args.runId, nextStepId);
-      if (priorParticipantKey && this.pauseChatHappened.has(priorParticipantKey)) {
+      const priorStep = this.priorStep(args.runId, nextStepId);
+      const priorIsDiff = priorStep ? detectArtifactKind(priorStep.output) === 'diff' : false;
+      if (
+        priorParticipantKey &&
+        this.pauseChatHappened.has(priorParticipantKey) &&
+        priorStep &&
+        !priorIsDiff
+      ) {
         this.pauseChatHappened.delete(priorParticipantKey);
         this.finalizingRuns.add(args.runId);
+        run.pendingContinue = {
+          priorStepId: priorStep.id,
+          priorOutput: priorStep.output,
+          startedAt: Date.now(),
+        };
+        this.emitRunUpdate(run);
         void this.finalizeAndAdvance(args.runId, nextStepId).finally(() => {
           this.finalizingRuns.delete(args.runId);
         });
         return { ok: true };
+      }
+      if (priorParticipantKey && this.pauseChatHappened.has(priorParticipantKey)) {
+        // Diff-output prior step — clear the chat flag so we don't
+        // accidentally trigger finalize on a future pause, then fall
+        // through to advance directly.
+        this.pauseChatHappened.delete(priorParticipantKey);
       }
     }
 
     // No chat happened (or it's a failure pause) — advance directly.
     this.advanceToStep(args.runId, nextStepId);
     return { ok: true };
+  }
+
+  private priorStep(runId: UUID, nextStepId: string): FlowStep | null {
+    const run = this.runs.get(runId);
+    if (!run) return null;
+    const idx = run.flowSnapshot.steps.findIndex((s) => s.id === nextStepId);
+    if (idx <= 0) return null;
+    return run.flowSnapshot.steps[idx - 1];
   }
 
   private priorParticipantKey(runId: UUID, nextStepId: string): string | null {
@@ -618,6 +653,12 @@ export class FlowRuntimeImpl {
     const run = this.runs.get(runId);
     if (!run) return;
     run.state = { kind: 'running', currentStepId: stepId };
+    // Continuing → actually running the next step now; clear the banner's
+    // transient "Continuing…" signal in lockstep with the state flip so
+    // the renderer transitions cleanly from pause-banner → running-strip.
+    if (run.pendingContinue) {
+      delete run.pendingContinue;
+    }
     this.emitRunUpdate(run);
     void this.executeStep(runId, stepId);
   }
@@ -675,10 +716,12 @@ export class FlowRuntimeImpl {
     }
 
     // Finalization needs a synthetic turn on the prior participant, which
-    // can run for a while. Leave the 'paused' state NOW so the renderer's
-    // "Continue" banner clears the instant the user hits Continue — the
-    // prior step is actively working (re-emitting its output), so surface
-    // that as the running step instead of looking paused the whole turn.
+    // can run for a while. Flip the run's `state` to running-on-prior so
+    // the pipeline diagram lights the prior step as actively working
+    // (re-emitting its output). The Pause banner stays visible because
+    // `pendingContinue` is set on the run (cleared by `advanceToStep`),
+    // so the user gets explicit "Continuing — finalizing X…" feedback
+    // instead of the banner vanishing instantly on click.
     run.state = { kind: 'running', currentStepId: prior.id };
     this.emitRunUpdate(run);
 
@@ -817,6 +860,11 @@ export class FlowRuntimeImpl {
       }
     }
     run.state = { kind: 'aborted' };
+    // If the run was aborted mid-Continue (rare but possible), the banner's
+    // transient "Continuing…" signal is no longer meaningful — clear it.
+    if (run.pendingContinue) {
+      delete run.pendingContinue;
+    }
     this.emitRunUpdate(run);
     this.checkpoint(run); // terminal — save final state
     return { ok: true };
