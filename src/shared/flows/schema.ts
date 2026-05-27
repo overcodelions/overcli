@@ -264,6 +264,19 @@ export interface FlowRun {
     worktreePath: string;
     branchName: string;
   }>;
+  /// Set while a Continue click is being processed and the runtime is
+  /// round-tripping a synthetic "finalize" turn through the prior step's
+  /// participant before advancing. Cleared once the next step actually
+  /// starts (or on abort). The renderer keeps the Pause banner visible
+  /// in a "Continuing…" state while this is set so the user sees that
+  /// their click was received and work is in flight, instead of the
+  /// banner vanishing instantly. Not persisted: it's a transient runtime
+  /// signal — on restart, any in-flight finalize is already dead.
+  pendingContinue?: {
+    priorStepId: string;
+    priorOutput: string;
+    startedAt: number;
+  };
 }
 
 /// The project/workspace a run logically belongs to — i.e. where the user
@@ -328,4 +341,11 @@ export function resolveStepParticipant(
 ): FlowParticipant | undefined {
   if (!step.participantId) return undefined;
   return flow.participants?.find((p) => p.id === step.participantId);
+}
+
+/// Stable identity for "the user starred this specific flow". Must
+/// combine `source` and `id` because the same id can exist in both the
+/// user and project layers (`storage.ts:81-89` — project wins).
+export function flowStarKey(flow: Pick<Flow, 'source' | 'id'>): string {
+  return `${flow.source}:${flow.id}`;
 }

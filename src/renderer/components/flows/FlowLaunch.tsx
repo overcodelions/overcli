@@ -7,6 +7,8 @@
 import { useState, type ReactNode } from 'react';
 import type { Attachment } from '@shared/types';
 import type { Flow } from '@shared/flows/schema';
+import { useStore } from '../../store';
+import { flowStarKey } from '@shared/flows/schema';
 import { Composer } from '../Composer';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
 import { FlowMonogram } from './FlowMonogram';
@@ -294,6 +296,10 @@ export function FlowCard({
   picked: boolean;
   onClick: () => void;
 }) {
+  const starred = useStore(
+    (s) => (s.settings.starredFlows ?? []).includes(flowStarKey(flow)),
+  );
+  const toggleFlowStar = useStore((s) => s.toggleFlowStar);
   return (
     <button
       onClick={onClick}
@@ -320,10 +326,23 @@ export function FlowCard({
             <StepPreview flow={flow} />
           </div>
         </div>
-        {/* Subtle play arrow on hover — reinforces "click to run". */}
-        <div className="text-ink-faint opacity-0 group-hover:opacity-100 group-hover:text-accent transition-opacity self-center flex-shrink-0">
-          →
-        </div>
+        <span
+          role="button"
+          aria-label={starred ? 'Unstar flow' : 'Star flow'}
+          title={starred ? 'Unstar' : 'Star to pin to the welcome pane'}
+          onClick={(e) => {
+            e.stopPropagation();
+            void toggleFlowStar({ source: flow.source, id: flow.id });
+          }}
+          className={
+            'self-start text-base leading-none cursor-pointer transition-colors ' +
+            (starred
+              ? 'text-amber-400'
+              : 'text-ink-faint opacity-0 group-hover:opacity-100 hover:text-amber-400')
+          }
+        >
+          {starred ? '★' : '☆'}
+        </span>
       </div>
     </button>
   );
