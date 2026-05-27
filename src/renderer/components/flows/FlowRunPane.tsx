@@ -197,8 +197,11 @@ export function FlowRunPane({ runId }: { runId: string }) {
         <RunPromptSubtitle prompt={run.userPrompt} activeStep={activeStep} />
       </div>
 
-      {/* Pause banner */}
-      {run.state.kind === 'paused' && (
+      {/* Pause banner — shown when actually paused AND while a Continue
+          click is being processed (`pendingContinue`), so the user gets
+          explicit "Continuing…" feedback instead of the banner vanishing
+          instantly on click. */}
+      {(run.state.kind === 'paused' || run.pendingContinue) && (
         <PauseBanner run={run} />
       )}
 
@@ -1320,6 +1323,17 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
 };
 
 function PauseBanner({ run }: { run: FlowRun }) {
+  // Local "click was just received" guard. The main process emits
+  // pendingContinue asynchronously, so without this the banner can sit
+  // unchanged for one round-trip after the click, looking unresponsive.
+  const [clicked, setClicked] = useState(false);
+  const continuing = !!run.pendingContinue;
+  // Reset the local optimistic flag once the main process has either
+  // confirmed via pendingContinue OR fully advanced (banner unmounts).
+  useEffect(() => {
+    if (continuing) setClicked(false);
+  }, [continuing]);
+
   const nextStepId = run.state.kind === 'paused' ? run.state.nextStepId : null;
   const reason = run.state.kind === 'paused' ? run.state.reason : null;
   const nextStep = nextStepId
@@ -1327,17 +1341,42 @@ function PauseBanner({ run }: { run: FlowRun }) {
     : null;
   const nextModel = nextStep ? resolveStepModel(run.flowSnapshot, nextStep) : null;
 
+  const inFlight = continuing || clicked;
+  const priorOutput = run.pendingContinue?.priorOutput;
+
   return (
     <div className="px-6 py-3 border-b border-amber-400/30 bg-amber-400/5">
       <div className="flex items-start gap-3 max-w-[1200px] mx-auto">
         <div className="flex-1">
-          <div className="text-sm font-semibold text-amber-700 dark:text-amber-200 mb-0.5">
-            {reason === 'preStep' ? 'Paused before next step' : 'Paused — step needs attention'}
+          <div className="text-sm font-semibold text-amber-700 dark:text-amber-200 mb-0.5 flex items-center gap-2">
+            {inFlight && (
+              <span
+                aria-hidden
+                className="inline-block h-3 w-3 rounded-full border-2 border-amber-500/40 border-t-amber-600 animate-spin"
+              />
+            )}
+            {inFlight
+              ? priorOutput
+                ? `Continuing — finalizing ${priorOutput}…`
+                : 'Continuing…'
+              : reason === 'preStep'
+                ? 'Paused before next step'
+                : 'Paused — step needs attention'}
           </div>
           <div className="text-xs text-amber-700 dark:text-amber-100/80">
-            Talk to any participant below to redirect or get questions answered. When you continue,
-            the prior step's latest <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
-            becomes the artifact handed to the next step.
+            {inFlight ? (
+              <>
+                Your Continue was received. The prior step's participant is
+                re-emitting its <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
+                to reflect your changes, then the next step will start.
+              </>
+            ) : (
+              <>
+                Talk to any participant below to redirect or get questions answered. When you continue,
+                the prior step's latest <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
+                becomes the artifact handed to the next step.
+              </>
+            )}
             {nextStep && nextModel && (
               <span className="block mt-1 text-amber-700 dark:text-amber-200/70">
                 Next: <span className="font-semibold">{nextStep.id}</span>{' '}
@@ -1348,11 +1387,24 @@ function PauseBanner({ run }: { run: FlowRun }) {
         </div>
         <button
           onClick={() => {
+            if (inFlight) return;
+            setClicked(true);
             void window.overcli.invoke('flows:resumeRun', { runId: run.id });
           }}
-          className="text-xs px-3 py-1.5 rounded-md bg-emerald-500/80 text-white hover:bg-emerald-500"
+          disabled={inFlight}
+          className={`text-xs px-3 py-1.5 rounded-md text-white flex items-center gap-1.5 ${
+            inFlight
+              ? 'bg-emerald-500/40 cursor-not-allowed'
+              : 'bg-emerald-500/80 hover:bg-emerald-500'
+          }`}
         >
-          Continue →
+          {inFlight && (
+            <span
+              aria-hidden
+              className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
+            />
+          )}
+          {inFlight ? 'Continuing…' : 'Continue →'}
         </button>
       </div>
     </div>

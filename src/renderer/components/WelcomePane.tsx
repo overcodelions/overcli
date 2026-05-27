@@ -16,6 +16,7 @@ import {
 } from '@shared/types';
 import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { pathBasename } from '@shared/workspaceNames';
+import { flowStarKey } from '@shared/flows/schema';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
 import { modeLabel, permissionTone } from './conversationHeaderHelpers';
@@ -464,6 +465,7 @@ function WelcomeFlowsRow({
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
+  const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
   const [pickedFlowId, setPickedFlowId] = useState<string | null>(null);
   // The launch prompt lives in the shared draft/attachment store (keyed per
   // flow) so the Composer can drive multi-line text + image attachments,
@@ -517,8 +519,18 @@ function WelcomeFlowsRow({
   if (!loaded) return null;
   if (flows.length === 0) return null;
 
-  const visibleFlows = showAll ? flows : flows.slice(0, MAX_VISIBLE_FLOWS);
-  const hiddenCount = flows.length - visibleFlows.length;
+  const orderedFlows = useMemo(() => {
+    const isStarred = (f: typeof flows[number]) =>
+      starredFlows.includes(flowStarKey(f));
+    return flows.slice().sort((a, b) => {
+      const sa = isStarred(a) ? 0 : 1;
+      const sb = isStarred(b) ? 0 : 1;
+      if (sa !== sb) return sa - sb;
+      return a.id.localeCompare(b.id);
+    });
+  }, [flows, starredFlows]);
+  const visibleFlows = showAll ? orderedFlows : orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
+  const hiddenCount = orderedFlows.length - visibleFlows.length;
 
   async function handleRun(prompt: string, attachments: Attachment[]) {
     const text = prompt.trim();
