@@ -308,6 +308,15 @@ export class FlowRuntimeImpl {
       // user hijack turn should NOT finish the step — that would extract
       // an artifact from a chat reply.
       if (run.state.kind !== 'running') return;
+      // A synthetic finalize turn (resumeRun → finalizeAndAdvance) runs as
+      // `running` on the PRIOR step purely so the pipeline pill pulses
+      // while it's in flight. Its `running:false` is NOT a real step
+      // boundary — treating it as one calls advanceAfterStep on the prior
+      // step, which re-pauses the run (next step's `pauseBefore` fires
+      // again) and ends up double-executing the next step once the user
+      // clicks Continue on the reappeared banner. finalizeAndAdvance will
+      // call advanceToStep itself when its await resolves.
+      if (this.finalizingRuns.has(runId)) return;
       this.onStepFinished(runId, run.state.currentStepId);
     }
   }
