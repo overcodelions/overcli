@@ -211,7 +211,7 @@ export function FlowEditor() {
             <div className="space-y-4">
               {draft.steps.map((step, i) => (
                 <div
-                  key={`${step.id}-${i}`}
+                  key={i}
                   id={stepCardDomId(step.id)}
                   className="relative"
                 >
