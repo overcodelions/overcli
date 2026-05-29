@@ -126,10 +126,12 @@ export class FlowRuntimeImpl {
   /// step's participant before advancing. Avoids paying for a finalize
   /// call when the user clicked Continue without saying anything.
   private pauseChatHappened = new Set<string>();
-  /// Promises waiting for the NEXT non-partial assistant message on a
-  /// participant's conversation. Used by `finalizeAndAdvance` to block
-  /// until the synthetic finalize reply lands. Keyed
-  /// `${runId}:${participantId}`. Resolvers self-clear from the map.
+  /// Promises waiting for the synthetic finalize turn to fully drain
+  /// (`running:false` on the prior participant's conversation). Used by
+  /// `finalizeAndAdvance` to block until the conv has actually finished
+  /// — not just sent its first assistant message — so the next step
+  /// starts on a clean event queue. Keyed `${runId}:${participantId}`.
+  /// Resolvers self-clear from the map.
   private finalizeWaiters = new Map<string, () => void>();
   /// Runs currently mid-finalize. Guards against the user clicking
   /// Continue twice while the synthetic finalize turn is still in flight
@@ -259,13 +261,12 @@ export class FlowRuntimeImpl {
             if (run.state.kind === 'paused') {
               this.pauseChatHappened.add(key);
             }
-            // Resolve any pending finalize waiter on this participant —
-            // the synthetic finalize prompt round-tripped successfully.
-            const waiter = this.finalizeWaiters.get(key);
-            if (waiter) {
-              this.finalizeWaiters.delete(key);
-              waiter();
-            }
+            // Waiter resolution lives in the `running:false` branch
+            // below (not here). Resolving on the first assistant message
+            // lets `finalizeAndAdvance` advance to the next step while
+            // the prior conv is still streaming — its delayed
+            // `running:false` then misfires as a step boundary on the
+            // already-running next step and re-pauses the run.
           }
         }
       }
@@ -304,19 +305,30 @@ export class FlowRuntimeImpl {
       if (!runId) return;
       const run = this.runs.get(runId);
       if (!run) return;
+      // A synthetic finalize turn (resumeRun → finalizeAndAdvance) pulses
+      // the pipeline pill on the prior step. Its `running:false` is not a
+      // real step boundary — resolve the awaiting finalize promise (so
+      // the runtime advances to the next step) and return. Doing this
+      // here rather than on the first assistant message guarantees the
+      // synthetic conv has fully drained before we kick off the next
+      // step, otherwise the prior conv's later `running:false` would
+      // misfire as a step finish on the just-started next step (empty
+      // buffer → no <output> → pause-on-failure → banner reappears).
+      const participantId = Object.entries(run.conversationIds).find(
+        ([, cid]) => cid === event.conversationId,
+      )?.[0];
+      if (participantId) {
+        const waiter = this.finalizeWaiters.get(`${runId}:${participantId}`);
+        if (waiter) {
+          this.finalizeWaiters.delete(`${runId}:${participantId}`);
+          waiter();
+          return;
+        }
+      }
       // Only react when the runtime itself is mid-step. running:false on a
       // user hijack turn should NOT finish the step — that would extract
       // an artifact from a chat reply.
       if (run.state.kind !== 'running') return;
-      // A synthetic finalize turn (resumeRun → finalizeAndAdvance) runs as
-      // `running` on the PRIOR step purely so the pipeline pill pulses
-      // while it's in flight. Its `running:false` is NOT a real step
-      // boundary — treating it as one calls advanceAfterStep on the prior
-      // step, which re-pauses the run (next step's `pauseBefore` fires
-      // again) and ends up double-executing the next step once the user
-      // clicks Continue on the reappeared banner. finalizeAndAdvance will
-      // call advanceToStep itself when its await resolves.
-      if (this.finalizingRuns.has(runId)) return;
       this.onStepFinished(runId, run.state.currentStepId);
     }
   }
