@@ -516,9 +516,6 @@ function WelcomeFlowsRow({
   const target = workspaceRootPath ?? projectPath ?? '';
   const pickedFlow = pickedFlowId ? flows.find((f) => f.id === pickedFlowId) : null;
 
-  if (!loaded) return null;
-  if (flows.length === 0) return null;
-
   const orderedFlows = useMemo(() => {
     const isStarred = (f: typeof flows[number]) =>
       starredFlows.includes(flowStarKey(f));
@@ -529,6 +526,10 @@ function WelcomeFlowsRow({
       return a.id.localeCompare(b.id);
     });
   }, [flows, starredFlows]);
+
+  if (!loaded) return null;
+  if (flows.length === 0) return null;
+
   const visibleFlows = showAll ? orderedFlows : orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
   const hiddenCount = orderedFlows.length - visibleFlows.length;
 
@@ -991,7 +992,7 @@ function modelOptionsFor(
     return list;
   }
   const base: Record<Exclude<Backend, 'ollama'>, string[]> = {
-    claude: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     // Copilot's --model accepts model ids served via GitHub's Bedrock

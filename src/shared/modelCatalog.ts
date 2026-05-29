@@ -6,11 +6,14 @@
 import type { Backend } from './types';
 
 /// Premium models per backend. New models added here automatically
-/// surface in every picker that imports `PREMIUM_MODELS`. Ordered with
-/// the strongest model first so a "(pick a model)" default with the
-/// first item is a sensible choice.
+/// surface in every picker that imports `PREMIUM_MODELS`. The first
+/// entry per backend is the auto-pick default — the "(pick a model)"
+/// fallback and the template resolver's per-tier substitution both take
+/// the first matching id. We intentionally keep `claude-opus-4-7` first
+/// (not the newer `claude-opus-4-8`) so the default Claude model stays
+/// 4.7; 4.8 is available right after it for anyone who selects it.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
@@ -29,6 +32,7 @@ export type ModelSpeed = 'fast' | 'standard' | 'thinking';
 
 const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Claude
+  'claude-opus-4-8': 'thinking',
   'claude-opus-4-7': 'thinking',
   'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',
