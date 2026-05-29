@@ -26,6 +26,10 @@ describe('PREMIUM_MODELS', () => {
 // ─── friendlyModelLabel ───────────────────────────────────────────────────────
 
 describe('friendlyModelLabel — claude', () => {
+  it('formats opus-4-8', () => {
+    expect(friendlyModelLabel('claude', 'claude-opus-4-8')).toBe('Claude Opus 4.8');
+  });
+
   it('formats opus-4-7', () => {
     expect(friendlyModelLabel('claude', 'claude-opus-4-7')).toBe('Claude Opus 4.7');
   });
@@ -117,6 +121,7 @@ describe('friendlyModelLabel — ollama', () => {
 
 describe('modelSpeed', () => {
   it.each([
+    ['claude-opus-4-8', 'thinking'],
     ['claude-opus-4-7', 'thinking'],
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],

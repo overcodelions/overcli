@@ -35,7 +35,7 @@ export interface PreflightResult {
 /// WelcomePane uses to populate model pickers. Kept here so changes to
 /// the picker propagate to validation automatically.
 const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   copilot: ['claude-haiku-4.5', 'claude-sonnet-4.6', 'gpt-5.5'],
