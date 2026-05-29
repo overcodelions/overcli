@@ -20,6 +20,7 @@ describe('DEFAULT_SETTINGS', () => {
       showActiveSidebarSection: true,
       showDebug: false,
       claudeTransport: 'cli',
+      starredFlows: [],
     });
   });
 
