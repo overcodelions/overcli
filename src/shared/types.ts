@@ -1023,6 +1023,8 @@ export interface IPCInvokeMap {
     { ok: true; entries: FlowRegistryEntry[]; errors: Array<{ registryId: string; error: string }> };
   'flows:installFromRegistry': (args: { registryId: string; id: string; version: string }) =>
     { ok: true; filePath: string } | { ok: false; error: string };
+  'flows:previewRegistryFlow': (args: { registryId: string; id: string; version: string }) =>
+    { ok: true; flow: Flow } | { ok: false; error: string };
 }
 
 export type ArtifactPreviewResult =

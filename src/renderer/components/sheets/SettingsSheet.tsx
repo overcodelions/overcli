@@ -699,6 +699,9 @@ function FlowsRegistriesPane() {
           onChange={(e) => setFormAuth(e.target.value)}
           className="text-xs px-2 py-1 rounded border border-card bg-card"
         />
+        <div className="text-[11px] text-ink-faint -mt-1">
+          Sent verbatim as the <code>Authorization</code> header. Use <code>Bearer &lt;token&gt;</code> for GitHub/GitLab/Bitbucket Cloud OAuth, or <code>Basic &lt;base64&gt;</code> for Bitbucket Cloud app passwords.
+        </div>
         <button
           onClick={handleAddRegistry}
           disabled={!formId || !formName || !formUrl}

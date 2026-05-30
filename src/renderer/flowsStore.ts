@@ -71,6 +71,7 @@ interface FlowsActions {
   setHijackModelOverride(runId: string, participantId: string, model: string | null): void;
   browseRegistries(force?: boolean): Promise<void>;
   installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string }>;
+  previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
 }
 
 export type FlowsStore = FlowsState & FlowsActions;
@@ -356,6 +357,10 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   async browseRegistries(force) {
     const res = await window.overcli.invoke('flows:browseRegistry', { force: !!force });
     set({ registryEntries: res.entries, registryErrors: res.errors, registryLoaded: true });
+  },
+
+  async previewRegistryFlow(args) {
+    return await window.overcli.invoke('flows:previewRegistryFlow', args);
   },
 
   async installFromRegistry(args) {
