@@ -11,6 +11,7 @@ import { flowRunOwnerPath, resolveStepModel, flowStarKey, type Flow } from '@sha
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
+import { BrowseLibraryModal } from './BrowseLibraryModal';
 import { FlowMonogram } from './FlowMonogram';
 import { RunPanel } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
@@ -28,6 +29,7 @@ export function FlowsLibraryPane() {
   const justSaved = useFlowsStore((s) => s.justSaved);
   const dismissJustSaved = useFlowsStore((s) => s.dismissJustSaved);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [browseOpen, setBrowseOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
 
   // Auto-dismiss the "Saved" banner after 3 seconds.
@@ -81,6 +83,12 @@ export function FlowsLibraryPane() {
         >
           + New flow
         </button>
+        <button
+          onClick={() => setBrowseOpen(true)}
+          className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
+        >
+          Browse library
+        </button>
       </div>
 
       {justSaved && (
@@ -112,6 +120,7 @@ export function FlowsLibraryPane() {
       )}
 
       {pickerOpen && <NewFlowPicker onClose={() => setPickerOpen(false)} />}
+      {browseOpen && <BrowseLibraryModal onClose={() => setBrowseOpen(false)} />}
       {aboutOpen && <FlowsAboutModal onClose={() => setAboutOpen(false)} />}
     </div>
   );

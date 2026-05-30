@@ -565,6 +565,31 @@ export interface OllamaServerLogLine {
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
+export interface FlowRegistry {
+  id: string;          // slug
+  name: string;
+  indexUrl: string;    // https URL to index.json
+}
+
+export interface FlowRegistryEntry {
+  registryId: string;
+  id: string;
+  name: string;
+  description?: string;
+  tags?: string[];
+  author?: { name: string; url?: string };
+  version: string;
+  sha256: string;
+  yamlUrl: string;     // absolute URL, resolved from index entry's yaml_url
+}
+
+export interface InstalledRegistryFlow {
+  registryId: string;
+  id: string;
+  version: string;
+  filename: string;    // basename under <userData>/flows/
+}
+
 export interface AppSettings {
   backendPaths: Partial<Record<Backend, string>>;
   backendDefaultModels: Partial<Record<Backend, string>>;
@@ -608,6 +633,8 @@ export interface AppSettings {
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
+  flowRegistries?: FlowRegistry[];
+  installedRegistryFlows?: InstalledRegistryFlow[];
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -987,6 +1014,15 @@ export interface IPCInvokeMap {
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
   'flows:deleteRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  'flows:listRegistries': () => FlowRegistry[];
+  'flows:upsertRegistry': (args: { registry: FlowRegistry; authHeader?: string | null }) =>
+    { ok: true } | { ok: false; error: string };
+  'flows:removeRegistry': (args: { registryId: string }) =>
+    { ok: true } | { ok: false; error: string };
+  'flows:browseRegistry': (args: { registryId?: string; force?: boolean }) =>
+    { ok: true; entries: FlowRegistryEntry[]; errors: Array<{ registryId: string; error: string }> };
+  'flows:installFromRegistry': (args: { registryId: string; id: string; version: string }) =>
+    { ok: true; filePath: string } | { ok: false; error: string };
 }
 
 export type ArtifactPreviewResult =
@@ -1248,4 +1284,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showDebug: false,
   claudeTransport: 'cli',
   starredFlows: [],
+  flowRegistries: [
+    { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
+  ],
+  installedRegistryFlows: [],
 };
