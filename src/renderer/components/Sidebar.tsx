@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
-import { flowRunOwnerPath } from '@shared/flows/schema';
+import { flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
 import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
@@ -38,6 +38,7 @@ export function Sidebar() {
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
   const runners = useAllRunners();
+  const flowRuns = useFlowsStore((s) => s.runs);
   const [search, setSearch] = useState('');
   const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
   const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
@@ -126,20 +127,21 @@ export function Sidebar() {
     () =>
       [...projects].sort(
         (a, b) =>
-          projectActivityAt(b, colosseums, runners) - projectActivityAt(a, colosseums, runners),
+          projectActivityAt(b, colosseums, runners, flowRuns) -
+          projectActivityAt(a, colosseums, runners, flowRuns),
       ),
-    [colosseums, projects, runners],
+    [colosseums, projects, runners, flowRuns],
   );
   const activeProjects = useMemo(
-    () => sortedProjects.filter((p) => hasProjectActivity(p, colosseums)),
-    [colosseums, sortedProjects],
+    () => sortedProjects.filter((p) => hasProjectActivity(p, colosseums, flowRuns)),
+    [colosseums, sortedProjects, flowRuns],
   );
   const inactiveProjects = useMemo(
     () =>
       sortedProjects
-        .filter((p) => !hasProjectActivity(p, colosseums))
+        .filter((p) => !hasProjectActivity(p, colosseums, flowRuns))
         .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
-    [colosseums, sortedProjects],
+    [colosseums, sortedProjects, flowRuns],
   );
   const visibleProjectGroups = useMemo(
     () =>
@@ -427,9 +429,25 @@ function collectTopConversations(
   });
 }
 
-function hasProjectActivity(project: Project, colosseums: Colosseum[]): boolean {
+// Latest meaningful timestamp for a single flow run: the most recent of its
+// creation and any step attempt's end (or start, while still running).
+function flowRunActivityAt(run: FlowRun): number {
+  return run.attempts.reduce(
+    (max, a) => Math.max(max, a.endedAt ?? a.startedAt ?? 0),
+    run.createdAt ?? 0,
+  );
+}
+
+function hasProjectActivity(
+  project: Project,
+  colosseums: Colosseum[],
+  flowRuns: Record<UUID, FlowRun>,
+): boolean {
   if (project.conversations.some((c) => !c.hidden)) return true;
   if (colosseums.some((c) => c.projectId === project.id)) return true;
+  // A flow run is real activity even when the project has no visible
+  // conversation of its own — keep such projects in the main list.
+  if (Object.values(flowRuns).some((r) => flowRunOwnerPath(r) === project.path)) return true;
   // A freshly picked project has no conversation yet — the welcome composer
   // creates one only on first send. Keep it in the main list for a short
   // grace window so it doesn't immediately hide in "More projects".
@@ -440,8 +458,17 @@ function projectActivityAt(
   project: Project,
   colosseums: Colosseum[],
   runners: Record<UUID, { isRunning: boolean } | undefined>,
+  flowRuns: Record<UUID, FlowRun>,
 ): number {
   if (project.conversations.some((c) => runners[c.id]?.isRunning)) return Date.now();
+  const projectRuns = Object.values(flowRuns).filter(
+    (r) => flowRunOwnerPath(r) === project.path,
+  );
+  // A live (running or paused) flow pins the project to the top, just like a
+  // running conversation does.
+  if (projectRuns.some((r) => r.state.kind === 'running' || r.state.kind === 'paused')) {
+    return Date.now();
+  }
   const newestConversation = project.conversations.reduce(
     (max, c) => (c.hidden ? max : Math.max(max, conversationActivityAt(c))),
     0,
@@ -449,7 +476,8 @@ function projectActivityAt(
   const newestColosseum = colosseums
     .filter((c) => c.projectId === project.id)
     .reduce((max, c) => Math.max(max, c.createdAt), 0);
-  return Math.max(project.lastOpenedAt ?? 0, newestConversation, newestColosseum);
+  const newestFlowRun = projectRuns.reduce((max, r) => Math.max(max, flowRunActivityAt(r)), 0);
+  return Math.max(project.lastOpenedAt ?? 0, newestConversation, newestColosseum, newestFlowRun);
 }
 
 function SidebarSectionTitle({ label }: { label: string }) {

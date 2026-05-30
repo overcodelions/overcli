@@ -329,7 +329,20 @@ export class FlowRuntimeImpl {
       // user hijack turn should NOT finish the step — that would extract
       // an artifact from a chat reply.
       if (run.state.kind !== 'running') return;
-      this.onStepFinished(runId, run.state.currentStepId);
+      // Guard against a late-arriving running:false from a DIFFERENT conv
+      // than the one the current step is running on. After
+      // finalizeAndAdvance resolves its waiter and advances to the next
+      // step, a stray running:false from the prior conv (or any earlier
+      // in-flight turn) would otherwise misfire here as a step boundary
+      // on the now-current step — extracting from its empty buffer,
+      // failing the step, and re-pausing the run with reason='failure'
+      // (the banner the user sees re-appear).
+      const currentStepId = run.state.currentStepId;
+      const currentStep = run.flowSnapshot.steps.find((s) => s.id === currentStepId);
+      if (!currentStep) return;
+      const currentConvId = run.conversationIds[currentStep.participantId];
+      if (currentConvId !== event.conversationId) return;
+      this.onStepFinished(runId, currentStepId);
     }
   }
 
