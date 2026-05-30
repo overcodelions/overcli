@@ -86,6 +86,28 @@ export async function browseRegistries(args: { registryId?: string; force?: bool
   return { ok: true as const, entries: out, errors };
 }
 
+export async function previewRegistryFlow(args: { registryId: string; id: string; version: string }) {
+  if (!SLUG_RE.test(args.registryId)) return { ok: false as const, error: 'Invalid registryId.' };
+  if (!SLUG_RE.test(args.id)) return { ok: false as const, error: 'Invalid flow id.' };
+  const settings = Store.load().settings;
+  const registry = (settings.flowRegistries ?? []).find((r) => r.id === args.registryId);
+  if (!registry) return { ok: false as const, error: `Unknown registry "${args.registryId}".` };
+  const entries = await fetchRegistry(registry, { force: false });
+  const entry = entries.find((e) => e.id === args.id && e.version === args.version);
+  if (!entry) return { ok: false as const, error: `Entry ${args.id}@${args.version} not in registry.` };
+  const res = await fetch(entry.yamlUrl, { headers: authHeadersFor(registry.id) });
+  if (!res.ok) return { ok: false as const, error: `HTTP ${res.status} fetching YAML.` };
+  const body = await res.text();
+  const sha = crypto.createHash('sha256').update(body, 'utf-8').digest('hex');
+  if (sha !== entry.sha256.toLowerCase()) {
+    return { ok: false as const, error: `SHA256 mismatch (expected ${entry.sha256}, got ${sha}).` };
+  }
+  const previewId = `preview-${registry.id}-${entry.id}`;
+  const flow = parseFlowYaml({ yaml: body, id: previewId, source: 'user', filePath: '' });
+  if (!flow) return { ok: false as const, error: 'YAML failed to parse.' };
+  return { ok: true as const, flow };
+}
+
 export async function installFromRegistry(args: { registryId: string; id: string; version: string }) {
   if (!SLUG_RE.test(args.registryId)) return { ok: false as const, error: 'Invalid registryId.' };
   if (!SLUG_RE.test(args.id)) return { ok: false as const, error: 'Invalid flow id.' };
