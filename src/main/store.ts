@@ -14,6 +14,7 @@ import {
   Colosseum,
   AppSettings,
   DEFAULT_SETTINGS,
+  FlowRegistry,
   SystemInitInfo,
   UUID,
 } from '../shared/types';
@@ -48,11 +49,19 @@ export function loadState(): StoreState {
     const parsed = JSON.parse(raw);
     // Merge in any new default-settings keys so a plist written by an older
     // build still decodes when we add fields later.
-    return {
+    const merged = {
       ...emptyState(),
       ...parsed,
       settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
     };
+    const regs: FlowRegistry[] = merged.settings.flowRegistries ?? [];
+    if (!regs.some((r) => r.id === 'official')) {
+      merged.settings.flowRegistries = [
+        ...regs,
+        { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
+      ];
+    }
+    return merged;
   } catch (err) {
     log('error', 'store.load', 'Failed to load overcli.json, starting fresh', err);
     return emptyState();
