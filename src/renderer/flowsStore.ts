@@ -40,6 +40,9 @@ interface FlowsState {
   /// run's declared participant.model still drives orchestration if
   /// the run is resumed or retried.
   hijackModelOverrides: Record<string, string>;
+  registryEntries: import('@shared/types').FlowRegistryEntry[];
+  registryLoaded: boolean;
+  registryErrors: Array<{ registryId: string; error: string }>;
 }
 
 interface FlowsActions {
@@ -66,6 +69,8 @@ interface FlowsActions {
   /// Set (or clear) the hijack-chat model override for a participant in
   /// a run. Pass `null` to revert to the participant's declared model.
   setHijackModelOverride(runId: string, participantId: string, model: string | null): void;
+  browseRegistries(force?: boolean): Promise<void>;
+  installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string }>;
 }
 
 export type FlowsStore = FlowsState & FlowsActions;
@@ -149,6 +154,9 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   editorSaveError: null,
   justSaved: null,
   hijackModelOverrides: {},
+  registryEntries: [],
+  registryLoaded: false,
+  registryErrors: [],
 
   async reload(projectPaths) {
     const flows = await window.overcli.invoke('flows:list', { projectPaths });
@@ -343,5 +351,17 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       if (s.hijackModelOverrides[key] === model) return {};
       return { hijackModelOverrides: { ...s.hijackModelOverrides, [key]: model } };
     });
+  },
+
+  async browseRegistries(force) {
+    const res = await window.overcli.invoke('flows:browseRegistry', { force: !!force });
+    set({ registryEntries: res.entries, registryErrors: res.errors, registryLoaded: true });
+  },
+
+  async installFromRegistry(args) {
+    const res = await window.overcli.invoke('flows:installFromRegistry', args);
+    if (!res.ok) return { ok: false, error: res.error };
+    await get().reload([]);
+    return { ok: true };
   },
 }));

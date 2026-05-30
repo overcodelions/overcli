@@ -60,6 +60,7 @@ import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
 import { draftFlowFromPrompt } from './flows/drafter';
 import {
@@ -569,6 +570,11 @@ function registerIpc(): void {
     }
     return result;
   });
+  ipcMain.handle('flows:listRegistries', () => listRegistries());
+  ipcMain.handle('flows:upsertRegistry', (_e, args) => upsertRegistry(args));
+  ipcMain.handle('flows:removeRegistry', (_e, args) => removeRegistry(args));
+  ipcMain.handle('flows:browseRegistry', (_e, args) => browseRegistries(args ?? {}));
+  ipcMain.handle('flows:installFromRegistry', (_e, args) => installFromRegistry(args));
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting

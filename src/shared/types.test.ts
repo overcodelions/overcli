@@ -21,6 +21,14 @@ describe('DEFAULT_SETTINGS', () => {
       showDebug: false,
       claudeTransport: 'cli',
       starredFlows: [],
+      flowRegistries: [
+        {
+          id: 'official',
+          name: 'Official',
+          indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json',
+        },
+      ],
+      installedRegistryFlows: [],
     });
   });
 

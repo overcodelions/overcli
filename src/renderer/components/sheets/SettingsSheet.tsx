@@ -9,7 +9,7 @@ import {
   BackendHealth,
 } from '@shared/types';
 
-type Section = 'general' | 'backends' | 'models' | 'local' | 'agents' | 'advanced';
+type Section = 'general' | 'backends' | 'models' | 'local' | 'agents' | 'flows' | 'advanced';
 
 // Hoisted out of the panes so they aren't reallocated on every keystroke
 // re-render (each render would otherwise create fresh arrays).
@@ -49,6 +49,7 @@ export function SettingsSheet() {
           <NavItem label="Models" active={section === 'models'} onClick={() => setSection('models')} />
           <NavItem label="Local models" active={section === 'local'} onClick={() => setSection('local')} />
           <NavItem label="Agents" active={section === 'agents'} onClick={() => setSection('agents')} />
+          <NavItem label="Flows" active={section === 'flows'} onClick={() => setSection('flows')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
         <div className="flex-1 min-w-0 overflow-y-auto p-5">
@@ -64,6 +65,7 @@ export function SettingsSheet() {
           {section === 'models' && <ModelsPane local={local} patch={patch} />}
           {section === 'local' && <OllamaPane local={local} patch={patch} />}
           {section === 'agents' && <AgentsPane local={local} patch={patch} />}
+          {section === 'flows' && <FlowsRegistriesPane />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
       </div>
@@ -557,6 +559,155 @@ function HealthBadge({ kind, message }: { kind: string; message?: string }) {
     >
       {kind}
     </span>
+  );
+}
+
+function FlowsRegistriesPane() {
+  const [registries, setRegistries] = useState<import('@shared/types').FlowRegistry[]>([]);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingAuth, setEditingAuth] = useState('');
+  const [formId, setFormId] = useState('');
+  const [formName, setFormName] = useState('');
+  const [formUrl, setFormUrl] = useState('');
+  const [formAuth, setFormAuth] = useState('');
+
+  useEffect(() => {
+    void window.overcli.invoke('flows:listRegistries').then(setRegistries);
+  }, []);
+
+  async function handleAddRegistry() {
+    if (!formId || !formName || !formUrl) return;
+    const result = await window.overcli.invoke('flows:upsertRegistry', {
+      registry: { id: formId, name: formName, indexUrl: formUrl },
+      authHeader: formAuth || undefined,
+    });
+    if (result.ok) {
+      setFormId('');
+      setFormName('');
+      setFormUrl('');
+      setFormAuth('');
+      const updated = await window.overcli.invoke('flows:listRegistries');
+      setRegistries(updated);
+    }
+  }
+
+  async function handleRemoveRegistry(id: string) {
+    const result = await window.overcli.invoke('flows:removeRegistry', { registryId: id });
+    if (result.ok) {
+      const updated = await window.overcli.invoke('flows:listRegistries');
+      setRegistries(updated);
+    }
+  }
+
+  async function handleSaveAuth(id: string) {
+    const reg = registries.find((r) => r.id === id);
+    if (!reg) return;
+    const result = await window.overcli.invoke('flows:upsertRegistry', {
+      registry: reg,
+      authHeader: editingAuth || null,
+    });
+    if (result.ok) {
+      setEditingId(null);
+      setEditingAuth('');
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      <Group title="Registries" description="Manage flow registries">
+        {registries.map((reg) => (
+          <div key={reg.id} className="flex items-center justify-between gap-4 p-2 rounded border border-card">
+            <div className="flex-1">
+              <div className="font-semibold text-sm">{reg.name}</div>
+              <div className="text-xs text-ink-faint mt-1 break-all">{reg.indexUrl}</div>
+            </div>
+            {editingId === reg.id ? (
+              <div className="flex items-center gap-2">
+                <input
+                  type="password"
+                  placeholder="Auth header (optional)"
+                  value={editingAuth}
+                  onChange={(e) => setEditingAuth(e.target.value)}
+                  className="text-xs px-2 py-1 rounded border border-card bg-card"
+                />
+                <button
+                  onClick={() => handleSaveAuth(reg.id)}
+                  className="text-xs px-2 py-1 rounded bg-accent/30 text-accent hover:bg-accent/40"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => {
+                    setEditingId(null);
+                    setEditingAuth('');
+                  }}
+                  className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => {
+                    setEditingId(reg.id);
+                    setEditingAuth('');
+                  }}
+                  className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
+                >
+                  Edit auth
+                </button>
+                <button
+                  onClick={() => handleRemoveRegistry(reg.id)}
+                  disabled={reg.id === 'official'}
+                  className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  Remove
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </Group>
+
+      <Group title="Add registry">
+        <input
+          type="text"
+          placeholder="Registry ID (slug)"
+          value={formId}
+          onChange={(e) => setFormId(e.target.value)}
+          className="text-xs px-2 py-1 rounded border border-card bg-card"
+        />
+        <input
+          type="text"
+          placeholder="Name"
+          value={formName}
+          onChange={(e) => setFormName(e.target.value)}
+          className="text-xs px-2 py-1 rounded border border-card bg-card"
+        />
+        <input
+          type="text"
+          placeholder="Index URL (https://...)"
+          value={formUrl}
+          onChange={(e) => setFormUrl(e.target.value)}
+          className="text-xs px-2 py-1 rounded border border-card bg-card"
+        />
+        <input
+          type="password"
+          placeholder="Auth header (optional)"
+          value={formAuth}
+          onChange={(e) => setFormAuth(e.target.value)}
+          className="text-xs px-2 py-1 rounded border border-card bg-card"
+        />
+        <button
+          onClick={handleAddRegistry}
+          disabled={!formId || !formName || !formUrl}
+          className="text-xs px-3 py-1 rounded bg-accent/30 text-accent hover:bg-accent/40 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Add registry
+        </button>
+      </Group>
+    </div>
   );
 }
 
