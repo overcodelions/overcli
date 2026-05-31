@@ -4,7 +4,7 @@
 // target/worktree controls so each host stays in charge of where a run
 // lands.
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { Attachment } from '@shared/types';
 import type { Flow } from '@shared/flows/schema';
 import { useStore } from '../../store';
@@ -63,6 +63,19 @@ export function RunPanel({
   /// can't pick a branch that one member doesn't have.
   baseBranchRepoPaths: string[];
 }) {
+  // Seed the composer with the flow's defaultPrompt the first time this
+  // panel is opened for a given draftKey. Reads the store snapshot once
+  // (no subscription) so user typing isn't fought by re-runs of this
+  // effect, and only writes when the slot is empty — clearing back to ""
+  // is a valid user action we must not overwrite.
+  const setDraft = useStore((s) => s.setDraft);
+  useEffect(() => {
+    if (!flow.defaultPrompt) return;
+    const existing = useStore.getState().conversationDrafts[draftKey];
+    if (existing && existing.length > 0) return;
+    setDraft(draftKey, flow.defaultPrompt);
+  }, [draftKey, flow.defaultPrompt, setDraft]);
+
   return (
     <div
       className={

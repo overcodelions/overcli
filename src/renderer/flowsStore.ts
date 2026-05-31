@@ -33,13 +33,6 @@ interface FlowsState {
   /// + a timestamp. The library shows a "✓ Saved {name}" banner that
   /// fades after a few seconds. Cleared by `dismissJustSaved`.
   justSaved: { name: string; at: number } | null;
-  /// Per-run, per-participant model override for hijack chat. Lets the
-  /// user upgrade (e.g. Haiku → Opus) while talking to a participant
-  /// whose declared model is struggling, without re-running the flow.
-  /// Keyed `${runId}:${participantId}`. Renderer-only state — the flow
-  /// run's declared participant.model still drives orchestration if
-  /// the run is resumed or retried.
-  hijackModelOverrides: Record<string, string>;
   registryEntries: import('@shared/types').FlowRegistryEntry[];
   registryLoaded: boolean;
   registryErrors: Array<{ registryId: string; error: string }>;
@@ -66,9 +59,13 @@ interface FlowsActions {
   setStepModel(index: number, model: FlowModelRef): void;
   saveDraft(target: 'user' | 'project', projectPath?: string): Promise<{ ok: boolean; error?: string }>;
   dismissJustSaved(): void;
-  /// Set (or clear) the hijack-chat model override for a participant in
-  /// a run. Pass `null` to revert to the participant's declared model.
-  setHijackModelOverride(runId: string, participantId: string, model: string | null): void;
+  /// Set (or clear) the per-participant model override for a run. Pass
+  /// `null` to revert to the participant's declared model. Persists on the
+  /// run in the main process and drives ALL subsequent turns for that
+  /// participant (orchestration, finalize, question-answers, hijack), so
+  /// it survives a restart. Optimistically patches the in-memory run so
+  /// the UI reflects the change before the main-process round-trip lands.
+  setParticipantModelOverride(runId: string, participantId: string, model: string | null): Promise<void>;
   browseRegistries(force?: boolean): Promise<void>;
   installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string }>;
   previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
@@ -154,7 +151,6 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   editorDraft: null,
   editorSaveError: null,
   justSaved: null,
-  hijackModelOverrides: {},
   registryEntries: [],
   registryLoaded: false,
   registryErrors: [],
@@ -172,14 +168,9 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     set(s => {
       if (!(id in s.runs)) return {};
       const { [id]: _drop, ...rest } = s.runs;
-      const prefix = `${id}:`;
-      const overrides = Object.fromEntries(
-        Object.entries(s.hijackModelOverrides).filter(([k]) => !k.startsWith(prefix)),
-      );
       return {
         runs: rest,
         activeRunId: s.activeRunId === id ? null : s.activeRunId,
-        hijackModelOverrides: overrides,
       };
     });
   },
@@ -341,17 +332,21 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     set({ justSaved: null });
   },
 
-  setHijackModelOverride(runId, participantId, model) {
-    const key = `${runId}:${participantId}`;
+  async setParticipantModelOverride(runId, participantId, model) {
+    // Optimistic local patch so the picker + badge update instantly; the
+    // main process emits an authoritative flowRunUpdate that reconciles.
     set((s) => {
-      if (model === null) {
-        if (!(key in s.hijackModelOverrides)) return {};
-        const { [key]: _drop, ...rest } = s.hijackModelOverrides;
-        return { hijackModelOverrides: rest };
-      }
-      if (s.hijackModelOverrides[key] === model) return {};
-      return { hijackModelOverrides: { ...s.hijackModelOverrides, [key]: model } };
+      const run = s.runs[runId];
+      if (!run) return {};
+      const participant = run.flowSnapshot.participants?.find((p) => p.id === participantId);
+      const next = { ...(run.modelOverrides ?? {}) };
+      const trimmed = model?.trim();
+      if (!trimmed || trimmed === participant?.model) delete next[participantId];
+      else next[participantId] = trimmed;
+      const modelOverrides = Object.keys(next).length > 0 ? next : undefined;
+      return { runs: { ...s.runs, [runId]: { ...run, modelOverrides } } };
     });
+    await window.overcli.invoke('flows:setModelOverride', { runId, participantId, model });
   },
 
   async browseRegistries(force) {

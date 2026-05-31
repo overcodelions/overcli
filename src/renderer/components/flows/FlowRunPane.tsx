@@ -26,7 +26,7 @@ import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
-  resolveStepModel,
+  resolveRunStepModel,
   type FlowArtifact,
   type FlowParticipant,
   type FlowRun,
@@ -934,11 +934,11 @@ function HijackComposer({
   const stop = useStore((s) => s.stop);
   const draftKey = `flow-hijack:${run.id}:${participant.id}`;
 
-  // Hijack-only model override. Lets the user bump from a struggling
-  // small model to a stronger one while talking the run home, without
-  // re-running the flow. Falls back to the participant's declared model.
-  const overrideKey = `${run.id}:${participant.id}`;
-  const modelOverride = useFlowsStore((s) => s.hijackModelOverrides[overrideKey]);
+  // Per-participant model override, persisted on the run. Lets the user
+  // bump from a struggling small model to a stronger one mid-run — it
+  // drives orchestration AND these hijack turns. Falls back to the
+  // participant's declared model.
+  const modelOverride = useFlowsStore((s) => s.runs[run.id]?.modelOverrides?.[participant.id]);
   const effectiveModel = modelOverride ?? participant.model;
 
   const handleSend = (prompt: string, attachments: Attachment[]) => {
@@ -992,11 +992,12 @@ function HijackComposer({
   );
 }
 
-// Compact backend+model picker for hijack chat. The participant's
-// declared model drives orchestration; this override only affects
-// hijack turns through `runner:send`. Premium model ids come from
-// the shared catalog; the input lets the user type any id (custom
-// fine-tunes, local Ollama tags) too.
+// Compact backend+model picker for a participant. Upgrading here applies
+// to EVERYTHING the participant does for the rest of the run —
+// orchestration, the finalize turn, answering questions, and hijack chat
+// — and persists across restart (the override lives on the run). Premium
+// model ids come from the shared catalog; the input lets the user type
+// any id (custom fine-tunes, local Ollama tags) too.
 function HijackModelPicker({
   runId,
   participant,
@@ -1004,8 +1005,8 @@ function HijackModelPicker({
   runId: string;
   participant: FlowParticipant;
 }) {
-  const setOverride = useFlowsStore((s) => s.setHijackModelOverride);
-  const override = useFlowsStore((s) => s.hijackModelOverrides[`${runId}:${participant.id}`]) ?? null;
+  const setOverride = useFlowsStore((s) => s.setParticipantModelOverride);
+  const override = useFlowsStore((s) => s.runs[runId]?.modelOverrides?.[participant.id]) ?? null;
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState(override ?? participant.model);
   const ref = useRef<HTMLDivElement>(null);
@@ -1040,7 +1041,7 @@ function HijackModelPicker({
             ? 'border-accent/25 bg-accent/[0.08] text-ink hover:bg-accent/[0.14]'
             : 'border-card/60 bg-card/20 text-ink-muted hover:bg-card/40 hover:text-ink')
         }
-        title={`Hijack chat is using ${friendlyModelLabel(participant.backend, effective)}` +
+        title={`${participant.name} is running ${friendlyModelLabel(participant.backend, effective)}` +
           (upgraded ? ` (overrides ${friendlyModelLabel(participant.backend, participant.model)})` : '')}
       >
         <span className="text-[10px] uppercase tracking-wider text-ink-faint">Model</span>
@@ -1050,7 +1051,7 @@ function HijackModelPicker({
       {open && (
         <div className="absolute right-0 top-full mt-1 w-[280px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">
           <div className="text-[10px] uppercase tracking-wider text-ink-faint">
-            Override model for this chat
+            Override model for this participant
           </div>
           {presets.length > 0 && (
             <div className="flex flex-col gap-0.5">
@@ -1061,7 +1062,7 @@ function HijackModelPicker({
                   <button
                     key={m}
                     onClick={() => {
-                      setOverride(runId, participant.id, isDeclared ? null : m);
+                      void setOverride(runId, participant.id, isDeclared ? null : m);
                       setOpen(false);
                     }}
                     className={
@@ -1085,7 +1086,7 @@ function HijackModelPicker({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 const trimmed = draft.trim();
-                setOverride(runId, participant.id, !trimmed || trimmed === participant.model ? null : trimmed);
+                void setOverride(runId, participant.id, !trimmed || trimmed === participant.model ? null : trimmed);
                 setOpen(false);
               }
             }}
@@ -1094,13 +1095,14 @@ function HijackModelPicker({
           />
           <div className="flex items-center justify-between text-[10px]">
             <span className="text-ink-faint">
-              Only affects your chat. Step orchestration still uses{' '}
+              Drives every turn this participant runs from here on
+              (orchestration, questions, chat). Declared model:{' '}
               <span className="font-mono">{participant.model}</span>.
             </span>
             {upgraded && (
               <button
                 onClick={() => {
-                  setOverride(runId, participant.id, null);
+                  void setOverride(runId, participant.id, null);
                   setOpen(false);
                 }}
                 className="text-accent hover:underline whitespace-nowrap ml-2"
@@ -1319,6 +1321,13 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   'test-writer': 'adds tests matching the project\'s existing style',
   researcher: 'gathers context, no code changes',
   shipper: 'commits, pushes, opens a PR',
+  'technical-writer': 'drafts clear technical prose from inputs',
+  editor: 'polishes a draft for accuracy and clarity',
+  debugger: 'traces a symptom to its root cause',
+  'code-reader': 'surveys how code works today, no changes',
+  'code-reviewer': 'judges a code change for correctness and quality',
+  'security-reviewer': 'audits for security issues with severities',
+  'adversarial-reviewer': 'skeptically tries to break the work',
   custom: 'Custom prompt',
 };
 
@@ -1339,7 +1348,7 @@ function PauseBanner({ run }: { run: FlowRun }) {
   const nextStep = nextStepId
     ? run.flowSnapshot.steps.find((s) => s.id === nextStepId)
     : null;
-  const nextModel = nextStep ? resolveStepModel(run.flowSnapshot, nextStep) : null;
+  const nextModel = nextStep ? resolveRunStepModel(run, nextStep) : null;
 
   const inFlight = continuing || clicked;
   const priorOutput = run.pendingContinue?.priorOutput;

@@ -22,6 +22,13 @@ export type FlowRolePreset =
   | 'test-writer'
   | 'researcher'
   | 'shipper'
+  | 'technical-writer'
+  | 'editor'
+  | 'debugger'
+  | 'code-reader'
+  | 'code-reviewer'
+  | 'security-reviewer'
+  | 'adversarial-reviewer'
   | 'custom';
 
 /// Backend + model selection. Models are strings here on purpose so the
@@ -131,6 +138,10 @@ export interface Flow {
   /// literal `'user_prompt'` (a free-text input collected at launch). Future
   /// values can be `jira:<ticket>`, `file:<path>`, etc.
   input: 'user_prompt';
+  /// Optional text prefilled into the launch composer when this flow is
+  /// run. Users can edit it before launching. Round-trips to YAML as
+  /// `default_prompt`. Absent when the flow has no canned prompt.
+  defaultPrompt?: string;
   /// Declared participants for the flow. Steps reference these by id.
   /// Every flow has at least one participant after load; the loader
   /// synthesizes them from per-step models for old-format flows.
@@ -211,6 +222,16 @@ export interface FlowRun {
   /// participant from any tab to chat directly with it. Conversations are
   /// created with `hidden: true` so they don't show up in the sidebar.
   conversationIds: Record<string, UUID>;
+  /// Per-participant model override applied AFTER launch. Keyed by
+  /// participantId → model id (same backend as the participant's declared
+  /// model — the picker only offers same-backend choices). When present it
+  /// becomes the participant's effective model for everything the rest of
+  /// the run does: step orchestration, the synthetic finalize turn,
+  /// answering questions the model asks, and hijack chat. Lets the user
+  /// bump a struggling small model mid-run without re-running the flow.
+  /// Persisted with the run, so the upgrade survives an app restart.
+  /// `resolveRunStepModel` / `effectiveParticipantModel` are the readers.
+  modelOverrides?: Record<string, string>;
   artifacts: Record<string, FlowArtifact>;
   state: FlowRunState;
   createdAt: number;
@@ -330,6 +351,29 @@ export function resolveStepModel(flow: Flow, step: FlowStep): FlowModelRef {
   }
   if (step.model) return step.model;
   return { backend: 'claude', model: '' };
+}
+
+/// The model a participant should actually run, accounting for any
+/// post-launch override on the run. Returns the override when present,
+/// otherwise the participant's declared model. Backend is unaffected —
+/// overrides are model-only within the same backend.
+export function effectiveParticipantModel(run: FlowRun, participantId: string): string {
+  const override = run.modelOverrides?.[participantId];
+  if (override) return override;
+  const p = run.flowSnapshot.participants?.find((x) => x.id === participantId);
+  return p?.model ?? '';
+}
+
+/// Like `resolveStepModel`, but run-aware: applies the run's per-
+/// participant `modelOverrides` so a mid-run model bump drives the actual
+/// step execution, not just hijack chat. Use this in the runtime; use
+/// `resolveStepModel` for pre-run / editor contexts where no run exists.
+export function resolveRunStepModel(run: FlowRun, step: FlowStep): FlowModelRef {
+  const base = resolveStepModel(run.flowSnapshot, step);
+  const override = step.participantId
+    ? run.modelOverrides?.[step.participantId]
+    : undefined;
+  return override ? { ...base, model: override } : base;
 }
 
 /// Resolve the FlowParticipant a step is assigned to. May be undefined
