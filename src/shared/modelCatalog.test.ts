@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   friendlyModelLabel,
   modelSpeed,
-  modelTier,
+  modelTierLabel,
   PREMIUM_MODELS,
 } from './modelCatalog';
 
@@ -141,15 +141,15 @@ describe('modelSpeed', () => {
   });
 });
 
-// ─── modelTier ────────────────────────────────────────────────────────────────
+// ─── modelTierLabel ───────────────────────────────────────────────────────────
 
-describe('modelTier', () => {
+describe('modelTierLabel', () => {
   it.each(['claude', 'codex', 'gemini', 'copilot'] as const)(
     '%s → Premium',
-    (backend) => expect(modelTier(backend)).toBe('Premium'),
+    (backend) => expect(modelTierLabel(backend)).toBe('Premium'),
   );
 
   it('ollama → Local', () => {
-    expect(modelTier('ollama')).toBe('Local');
+    expect(modelTierLabel('ollama')).toBe('Local');
   });
 });

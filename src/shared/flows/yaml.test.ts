@@ -2,7 +2,7 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import type { Flow } from './schema';
-import { parseFlowYaml, serializeFlow, yamlHasComments } from './yaml';
+import { parseFlowYaml, serializeFlow } from './yaml';
 
 function parseInline(yaml: string) {
   return parseFlowYaml({
@@ -227,16 +227,3 @@ describe('serializeFlow', () => {
   });
 });
 
-describe('yamlHasComments', () => {
-  it('returns true for a YAML body starting with a comment line', () => {
-    expect(yamlHasComments('# comment\nname: Test')).toBe(true);
-  });
-
-  it('returns true for an inline comment after a value', () => {
-    expect(yamlHasComments('name: Test # comment')).toBe(true);
-  });
-
-  it('returns false for a YAML body with no comments', () => {
-    expect(yamlHasComments('name: Test\nsteps: []')).toBe(false);
-  });
-});

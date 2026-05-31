@@ -357,12 +357,3 @@ export function serializeFlow(flow: Flow): string {
   doc.steps = flow.steps.map(serializeStep);
   return yamlStringify(doc, { lineWidth: 0, indent: 2 });
 }
-
-/// Detect whether the source YAML has comments — used by the editor to warn
-/// the user that GUI edits will drop them on next save.
-export function yamlHasComments(yaml: string): boolean {
-  // Cheap heuristic: any `#` outside of strings. Misses some edge cases
-  // (e.g. `#` inside a double-quoted string), but a false positive just
-  // means we warn slightly too often, which is harmless.
-  return /^\s*#/m.test(yaml) || /[^"'\\]#/m.test(yaml);
-}
