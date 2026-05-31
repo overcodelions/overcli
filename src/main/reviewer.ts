@@ -1020,12 +1020,6 @@ export function claudeSupportsEffort(bin: string): boolean {
   return supported;
 }
 
-/// Test-only: reset the probe cache between cases. Not part of the
-/// public surface beyond unit tests.
-export function _resetClaudeEffortSupportCache(): void {
-  claudeEffortSupport.clear();
-}
-
 export function buildReviewerArgs(
   backend: Backend,
   opts: {

@@ -130,7 +130,7 @@ function titleCaseGemini(model: string): string {
 /// API backends, Local = ollama, Other = the catch-all fallback for
 /// hand-typed model ids the user wants to use despite not being in the
 /// catalog.
-export function modelTier(backend: Backend): 'Premium' | 'Local' | 'Other' {
+export function modelTierLabel(backend: Backend): 'Premium' | 'Local' | 'Other' {
   if (backend === 'ollama') return 'Local';
   if (
     backend === 'claude' ||

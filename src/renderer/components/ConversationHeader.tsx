@@ -26,6 +26,7 @@ import {
   modelTier,
   resolvePreset,
 } from '@shared/reboundPresets';
+import { pathBasename } from '@shared/workspaceNames';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation, useConversationRoot } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
@@ -491,10 +492,6 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       </div>
     </header>
   );
-}
-
-function pathBasename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).slice(-1)[0] ?? path;
 }
 
 /// Warns when a project conversation's owning repo HEAD has drifted away
