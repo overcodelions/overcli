@@ -93,6 +93,12 @@ function synthesizeFlowConversation(
   if (!participant) return null;
   const backend = participant.backend as Backend;
   const sessionId = run.sessionIdsByParticipant?.[participantId];
+  // Honor a post-launch model override so EVERY turn driven through the
+  // generic conversation path — most importantly answering a question the
+  // model asked, which routes through `store.send` reading these model
+  // fields — runs on the upgraded model, not the declared one. Same
+  // source of truth the runtime uses for orchestration.
+  const model = run.modelOverrides?.[participantId] ?? participant.model;
   return {
     id: convId,
     name: participant.name,
@@ -101,14 +107,14 @@ function synthesizeFlowConversation(
     lastActiveAt: run.createdAt,
     totalCostUSD: 0,
     turnCount: 0,
-    currentModel: participant.model,
+    currentModel: model,
     permissionMode: 'bypassPermissions',
     hidden: true,
     primaryBackend: backend,
-    ...(backend === 'claude' ? { claudeModel: participant.model } : {}),
-    ...(backend === 'codex' ? { codexModel: participant.model } : {}),
-    ...(backend === 'gemini' ? { geminiModel: participant.model } : {}),
-    ...(backend === 'ollama' ? { ollamaModel: participant.model } : {}),
+    ...(backend === 'claude' ? { claudeModel: model } : {}),
+    ...(backend === 'codex' ? { codexModel: model } : {}),
+    ...(backend === 'gemini' ? { geminiModel: model } : {}),
+    ...(backend === 'ollama' ? { ollamaModel: model } : {}),
   };
 }
 

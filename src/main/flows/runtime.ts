@@ -47,7 +47,12 @@ import type {
   FlowStep,
   FlowStepAttempt,
 } from '../../shared/flows/schema';
-import { FLOW_USER_PROMPT_REF, resolveStepModel } from '../../shared/flows/schema';
+import {
+  FLOW_USER_PROMPT_REF,
+  resolveStepModel,
+  resolveRunStepModel,
+  effectiveParticipantModel,
+} from '../../shared/flows/schema';
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
@@ -788,7 +793,7 @@ export class FlowRuntimeImpl {
       displayText: `Finalizing ${prior.output} before continuing…`,
       backend: participant.backend,
       cwd: run.projectPath,
-      model: participant.model,
+      model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
       reviewBackend: null,
       reviewMode: null,
@@ -908,6 +913,38 @@ export class FlowRuntimeImpl {
   // Internals
   // ---------------------------------------------------------------------
 
+  /// Set (or clear) the per-participant model override for a run. Pass
+  /// `null`/empty to revert to the participant's declared model. The
+  /// override drives all subsequent turns for that participant (step
+  /// orchestration, finalize, question-answers, hijack) and is persisted
+  /// so it survives a restart. Emits a run update so the renderer's
+  /// synthesized conversation + badge reflect the change immediately.
+  setModelOverride(
+    runId: UUID,
+    participantId: string,
+    model: string | null,
+  ): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run) return { ok: false, error: `Run ${runId} not found.` };
+    const participant = run.flowSnapshot.participants?.find((p) => p.id === participantId);
+    if (!participant) {
+      return { ok: false, error: `Participant "${participantId}" not in run.` };
+    }
+    const next = { ...(run.modelOverrides ?? {}) };
+    const trimmed = model?.trim();
+    if (!trimmed || trimmed === participant.model) {
+      if (!(participantId in next)) return { ok: true }; // already declared
+      delete next[participantId];
+    } else {
+      if (next[participantId] === trimmed) return { ok: true };
+      next[participantId] = trimmed;
+    }
+    run.modelOverrides = Object.keys(next).length > 0 ? next : undefined;
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   private async executeStep(runId: UUID, stepId: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
@@ -953,7 +990,7 @@ export class FlowRuntimeImpl {
     run.attempts.push(attempt);
     this.emitRunUpdate(run);
 
-    const stepModel = resolveStepModel(run.flowSnapshot, step);
+    const stepModel = resolveRunStepModel(run, step);
     // Visible-bubble text — the cleaner view of the same step request,
     // formatted as markdown so the user sees:
     //   - their request prominently
@@ -1176,7 +1213,7 @@ export class FlowRuntimeImpl {
     type AttachedInput = { kind: 'attached'; name: string; path: string; size: number };
     type InputPart = InlineInput | AttachedInput;
 
-    const stepModel = resolveStepModel(run.flowSnapshot, step);
+    const stepModel = resolveRunStepModel(run, step);
     const canAttach = stepModel.backend !== 'ollama';
 
     const rawInputs: Array<{ name: string; body: string }> = [];

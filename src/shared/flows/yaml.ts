@@ -29,6 +29,7 @@ interface YamlFlow {
   name?: unknown;
   description?: unknown;
   input?: unknown;
+  default_prompt?: unknown;
   participants?: unknown;
   steps?: unknown;
 }
@@ -277,6 +278,10 @@ export function parseFlowYaml(args: {
     name: asString(y.name) || args.id,
     description: typeof y.description === 'string' ? y.description : undefined,
     input: 'user_prompt',
+    defaultPrompt:
+      typeof y.default_prompt === 'string' && y.default_prompt.trim()
+        ? y.default_prompt
+        : undefined,
     participants,
     steps,
     source: args.source,
@@ -341,6 +346,9 @@ export function serializeFlow(flow: Flow): string {
   };
   if (flow.description) doc.description = flow.description;
   doc.input = flow.input;
+  if (flow.defaultPrompt && flow.defaultPrompt.trim()) {
+    doc.default_prompt = flow.defaultPrompt;
+  }
   // Guard against legacy in-memory Flow objects (or persisted snapshots)
   // that pre-date the participants field — emit nothing rather than crash.
   if (flow.participants && flow.participants.length > 0) {
