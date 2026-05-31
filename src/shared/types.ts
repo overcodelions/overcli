@@ -1010,6 +1010,14 @@ export interface IPCInvokeMap {
     editedArtifacts?: Record<string, string>;
   }) => { ok: true } | { ok: false; error: string };
   'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Set (or clear) a per-participant model override on a live run. The
+  /// override drives all subsequent turns for that participant. Pass
+  /// `null` to revert to the declared model.
+  'flows:setModelOverride': (args: {
+    runId: UUID;
+    participantId: string;
+    model: string | null;
+  }) => { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
