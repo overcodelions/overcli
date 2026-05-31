@@ -12,7 +12,8 @@ import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { useAllRunners } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
-import { flowRunOwnerPath } from '@shared/flows/schema';
+import { flowRunActivityAt, flowRunOwnerPath } from '@shared/flows/schema';
+import { ACTIVE_CONVERSATION_WINDOW_MS } from '../../conversationLookup';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
 
@@ -26,6 +27,22 @@ function runIsLive(
 ): boolean {
   if (run.state.kind === 'running') return true;
   return Object.values(run.conversationIds).some((cid) => runners[cid]?.isRunning);
+}
+
+/// Whether a run belongs in the top-of-sidebar "Active" set. A run
+/// qualifies while it's live (orchestrating or a participant is
+/// streaming) or paused, AND — mirroring how recently-touched
+/// conversations linger in Active — for a grace window after its last
+/// activity. Without the recency clause a finished run dropped out of
+/// Active instantly, even seconds after completing.
+function runIsActive(
+  run: FlowRun,
+  runners: Record<string, { isRunning: boolean } | undefined>,
+  cutoff: number,
+): boolean {
+  if (runIsLive(run, runners)) return true;
+  if (run.state.kind === 'running' || run.state.kind === 'paused') return true;
+  return flowRunActivityAt(run) > cutoff;
 }
 
 interface FlowRunsSectionProps {
@@ -67,13 +84,10 @@ export function FlowRunsSection({ path }: FlowRunsSectionProps) {
 export function useHasActiveFlows(): boolean {
   const runs = useFlowsStore((s) => s.runs);
   const runners = useAllRunners();
-  return useMemo(
-    () =>
-      Object.values(runs).some(
-        (r) => r.state.kind === 'running' || r.state.kind === 'paused' || runIsLive(r, runners),
-      ),
-    [runs, runners],
-  );
+  return useMemo(() => {
+    const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
+    return Object.values(runs).some((r) => runIsActive(r, runners, cutoff));
+  }, [runs, runners]);
 }
 
 /// Top-of-sidebar "Active" listing for flow runs. Surfaces a run when
@@ -91,17 +105,16 @@ export function ActiveFlowsList({ limit = 4 }: { limit?: number }) {
   const setDetailMode = useStore((s) => s.setDetailMode);
 
   const active = useMemo(() => {
+    const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
     return Object.values(runs)
       .map((run) => ({ run, live: runIsLive(run, runners) }))
-      .filter(
-        ({ run, live }) => live || run.state.kind === 'running' || run.state.kind === 'paused',
-      )
+      .filter(({ run }) => runIsActive(run, runners, cutoff))
       .sort((a, b) => {
-        // Live > paused > by recency.
+        // Live > paused > recently-finished, then by recency.
         const aRank = a.live ? 2 : a.run.state.kind === 'paused' ? 1 : 0;
         const bRank = b.live ? 2 : b.run.state.kind === 'paused' ? 1 : 0;
         if (aRank !== bRank) return bRank - aRank;
-        return b.run.createdAt - a.run.createdAt;
+        return flowRunActivityAt(b.run) - flowRunActivityAt(a.run);
       })
       .slice(0, limit);
   }, [runs, runners, limit]);

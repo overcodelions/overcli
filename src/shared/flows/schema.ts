@@ -312,6 +312,17 @@ export function flowRunOwnerPath(run: FlowRun): string {
   return run.sourceProjectPath ?? run.projectPath;
 }
 
+/// Latest meaningful timestamp for a run: the most recent of its creation
+/// and any step attempt's end (or start, while still running). Used to
+/// keep recently-finished runs in the sidebar's "Active" set for a grace
+/// window, mirroring how recently-touched conversations linger there.
+export function flowRunActivityAt(run: FlowRun): number {
+  return run.attempts.reduce(
+    (max, a) => Math.max(max, a.endedAt ?? a.startedAt ?? 0),
+    run.createdAt ?? 0,
+  );
+}
+
 /// Descriptor for a tool that a step can be configured to use. Built from
 /// (Ollama built-in tools, Claude built-in tools, MCP servers, …). The
 /// builder renders these as a checkbox list; `available` controls whether
