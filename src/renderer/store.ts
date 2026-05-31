@@ -49,6 +49,7 @@ import {
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
+import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 /// Forward a diagnostic line to the main-process session log. Fire-and-forget:
@@ -598,14 +599,6 @@ function parentDir(p: string): string | null {
   const idx = p.lastIndexOf('/');
   if (idx <= 0) return null;
   return p.slice(0, idx);
-}
-
-function isBackendEnabled(settings: AppSettings, backend: Backend): boolean {
-  return settings.disabledBackends?.[backend] !== true;
-}
-
-function enabledBackends(settings: AppSettings): Backend[] {
-  return ALL_BACKENDS.filter((b) => isBackendEnabled(settings, b));
 }
 
 function defaultBackend(settings: AppSettings): Backend {

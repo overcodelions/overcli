@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { flowRunActivityAt, flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
+import { pathBasename } from '@shared/workspaceNames';
 import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
@@ -382,10 +383,6 @@ function SidebarIconButton({ label, onClick }: { label: string; onClick: () => v
       {label}
     </button>
   );
-}
-
-function pathBasename(path: string): string {
-  return path.split(/[\\/]/).filter(Boolean).slice(-1)[0] ?? path;
 }
 
 function projectLabel(project: Project): string {
