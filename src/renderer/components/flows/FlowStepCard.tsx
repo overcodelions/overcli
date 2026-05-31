@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Backend } from '@shared/types';
 import { resolveStepModel, type FlowStep, type FlowToolDescriptor } from '@shared/flows/schema';
 import { ROLE_PROMPTS } from '@shared/flows/roles';
-import { PREMIUM_MODELS, friendlyModelLabel, modelSpeed, modelTier } from '@shared/modelCatalog';
+import { PREMIUM_MODELS, friendlyModelLabel, modelSpeed, modelTierLabel } from '@shared/modelCatalog';
 import { reachableInputRefs, gotoCandidateStepIds } from '@shared/flows/validation';
 import { useFlowsStore } from '../../flowsStore';
 
@@ -42,7 +42,7 @@ const PREMIUM_CHOICES: ModelChoice[] = (
       backend,
       model,
       label: `${marker}${baseLabel}`,
-      tier: modelTier(backend),
+      tier: modelTierLabel(backend),
       value: `${backend}:${model}`,
     };
   }),

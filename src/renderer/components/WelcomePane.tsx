@@ -19,7 +19,13 @@ import { pathBasename } from '@shared/workspaceNames';
 import { flowStarKey } from '@shared/flows/schema';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
-import { modeLabel, permissionTone } from './conversationHeaderHelpers';
+import {
+  effortLabel,
+  enabledBackends,
+  isBackendEnabled,
+  modeLabel,
+  permissionTone,
+} from './conversationHeaderHelpers';
 
 const WELCOME_KEY = '__welcome__';
 
@@ -907,15 +913,6 @@ type BackendPrefs = {
   preferredBackend?: Backend;
 };
 
-function isBackendEnabled(settings: BackendPrefs, backend: Backend): boolean {
-  return settings.disabledBackends?.[backend] !== true;
-}
-
-function enabledBackends(settings: BackendPrefs): Backend[] {
-  const all: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
-  return all.filter((b) => isBackendEnabled(settings, b));
-}
-
 function firstEnabledBackend(settings: BackendPrefs): Backend {
   const preferred = settings.preferredBackend;
   if (preferred && isBackendEnabled(settings, preferred)) return preferred;
@@ -968,11 +965,6 @@ function shortPath(p: string): string {
   // We don't have $HOME in the renderer (contextIsolation), so just
   // collapse any /Users/<anything>/ prefix to ~/ as a best-effort.
   return p.replace(/^\/Users\/[^/]+\//, '~/');
-}
-
-function effortLabel(effort: EffortLevel): string {
-  if (!effort) return 'Effort';
-  return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
 /// Best-effort model suggestions per backend. The real CLI accepts any

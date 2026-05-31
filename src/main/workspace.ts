@@ -10,8 +10,6 @@ import path from 'node:path';
 import { app } from 'electron';
 import { workspaceSymlinkNames } from '../shared/workspaceNames';
 
-export { workspaceSymlinkNames };
-
 interface ProjectRef {
   name: string;
   path: string;
