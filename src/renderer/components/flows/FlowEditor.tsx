@@ -180,6 +180,18 @@ export function FlowEditor() {
               placeholder="What does this flow do? (1–2 sentences)"
               className="w-full bg-transparent text-sm text-ink-muted placeholder:text-ink-faint focus:outline-none resize-none mb-3"
             />
+            <div className="rounded-lg bg-card-strong/40 px-3 py-2 mt-1">
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">
+                Default prompt
+              </div>
+              <textarea
+                value={draft.defaultPrompt ?? ''}
+                onChange={(e) => updateDraft({ defaultPrompt: e.target.value })}
+                rows={2}
+                placeholder="Prefilled in the launch box. Users can edit before running."
+                className="w-full bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none resize-none"
+              />
+            </div>
             <div className="flex items-center gap-2 mt-3">
               <span className="text-[10px] uppercase tracking-wider text-ink-faint">id</span>
               <input

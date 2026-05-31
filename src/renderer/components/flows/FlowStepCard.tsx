@@ -260,6 +260,13 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
           <option value="test-writer">Write tests</option>
           <option value="researcher">Research / gather context</option>
           <option value="shipper">Commit, push, open PR</option>
+          <option value="technical-writer">Write documentation</option>
+          <option value="editor">Edit / polish a draft</option>
+          <option value="debugger">Debug / find root cause</option>
+          <option value="code-reader">Read / survey code</option>
+          <option value="code-reviewer">Review a code change</option>
+          <option value="security-reviewer">Security review</option>
+          <option value="adversarial-reviewer">Adversarial review</option>
           <option value="custom">Custom (write your own prompt)</option>
         </select>
       </Field>

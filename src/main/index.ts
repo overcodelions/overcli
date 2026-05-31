@@ -562,6 +562,11 @@ function registerIpc(): void {
   ipcMain.handle('flows:abortRun', (_e, args) =>
     flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:setModelOverride', (_e, { runId, participantId, model }) =>
+    flowRuntime
+      ? flowRuntime.setModelOverride(runId, participantId, model)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
   ipcMain.handle('flows:deleteRun', (_e, args) => {
     if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
     const result = flowRuntime.deleteRun(args);
