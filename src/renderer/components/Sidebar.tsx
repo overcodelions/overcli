@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../store';
 import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
-import { flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
+import { flowRunActivityAt, flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
 import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
@@ -427,15 +427,6 @@ function collectTopConversations(
     if (aRunning !== bRunning) return bRunning - aRunning;
     return conversationActivityAt(b.conv) - conversationActivityAt(a.conv);
   });
-}
-
-// Latest meaningful timestamp for a single flow run: the most recent of its
-// creation and any step attempt's end (or start, while still running).
-function flowRunActivityAt(run: FlowRun): number {
-  return run.attempts.reduce(
-    (max, a) => Math.max(max, a.endedAt ?? a.startedAt ?? 0),
-    run.createdAt ?? 0,
-  );
 }
 
 function hasProjectActivity(
