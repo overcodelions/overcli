@@ -120,8 +120,9 @@ export async function preflightRun(input: PreflightInput): Promise<PreflightResu
   // 4. For each step + critic, check backend health + model availability.
   for (let i = 0; i < flow.steps.length; i++) {
     const step = flow.steps[i];
+    const stepModel = resolveStepModel(flow, step);
     checkModelRef({
-      ref: resolveStepModel(flow, step),
+      ref: stepModel,
       path: `steps[${i}].model`,
       role: 'step',
       backendHealth,
@@ -136,7 +137,18 @@ export async function preflightRun(input: PreflightInput): Promise<PreflightResu
         problems,
       });
     }
-    if (step.tools.length === 0 && step.role !== 'researcher' && step.role !== 'custom') {
+    // The `tools` allowlist is only meaningful for Ollama — overcli
+    // dispatches those tool calls itself, so an empty list really does
+    // mean the step can't do anything. Claude/Codex/Gemini/Copilot own
+    // their own tool surface (gated by permission mode, not this list),
+    // so the UI never populates `tools` for them; flagging an empty list
+    // there is a false positive. Only check the Ollama case.
+    if (
+      stepModel.backend === 'ollama' &&
+      step.tools.length === 0 &&
+      step.role !== 'researcher' &&
+      step.role !== 'custom'
+    ) {
       // Researchers can do text-only outputs; everyone else without
       // tools is suspicious but not fatal. Surface as a warning-flavored
       // error so the user knows they may have forgotten to enable them.
