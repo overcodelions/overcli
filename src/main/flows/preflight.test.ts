@@ -146,7 +146,7 @@ describe('preflightRun — tool check', () => {
     mockDetectOllama.mockResolvedValue({
       installed: true,
       running: true,
-      models: [{ name: 'llama3.2' }],
+      models: [{ name: 'llama3.2', sizeBytes: 0 }],
     });
   });
 
@@ -315,7 +315,7 @@ describe('preflightRun — ollama', () => {
     mockDetectOllama.mockResolvedValue({
       installed: true,
       running: true,
-      models: [{ name: 'llama3.2' }],
+      models: [{ name: 'llama3.2', sizeBytes: 0 }],
     } as Awaited<ReturnType<typeof detectOllama>>);
     const result = await preflightRun({
       flow: flow(
