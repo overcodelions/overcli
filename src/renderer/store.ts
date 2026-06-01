@@ -362,6 +362,14 @@ interface StoreState {
   uninstallMarketplaceSkill(skillId: string, targets: SkillTarget[]): Promise<{ ok: true } | { ok: false; error: string }>;
   removeInstalledSkill(skillPath: string): Promise<{ ok: true } | { ok: false; error: string }>;
   copyMcpToCli(name: string, fromCli: Backend, toCli: Backend): Promise<{ ok: true } | { ok: false; error: string }>;
+  addMcpServer(
+    name: string,
+    config: Record<string, unknown>,
+    targets: Backend[],
+  ): Promise<
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string }
+  >;
   refreshGitStatus(conversationId: UUID): Promise<void>;
   refreshProjectGitStatus(projectId: UUID): Promise<void>;
 
@@ -2331,6 +2339,12 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async copyMcpToCli(name, fromCli, toCli) {
     const res = await window.overcli.invoke('capabilities:copyMcp', { name, fromCli, toCli });
+    if (res.ok) await get().refreshCapabilities();
+    return res;
+  },
+
+  async addMcpServer(name, config, targets) {
+    const res = await window.overcli.invoke('capabilities:addMcp', { name, config, targets });
     if (res.ok) await get().refreshCapabilities();
     return res;
   },

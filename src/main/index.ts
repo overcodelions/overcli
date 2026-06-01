@@ -241,6 +241,32 @@ function registerIpc(): void {
       return { ok: false as const, error: err?.message ?? String(err) };
     }
   });
+  ipcMain.handle('capabilities:addMcp', (_e, { name, config, targets }) => {
+    if (typeof name !== 'string' || !name.trim()) {
+      return { ok: false as const, error: 'Server name is required.' };
+    }
+    if (!config || typeof config !== 'object') {
+      return { ok: false as const, error: 'Config must be a JSON object.' };
+    }
+    const valid = (targets ?? []).filter(isMcpCli);
+    if (valid.length === 0) {
+      return { ok: false as const, error: 'Pick at least one MCP-capable CLI.' };
+    }
+    const written: typeof valid = [];
+    const errors: string[] = [];
+    for (const cli of valid) {
+      try {
+        writeMcpServer(cli, name.trim(), config as Record<string, never>);
+        written.push(cli);
+      } catch (err: any) {
+        errors.push(`${cli}: ${err?.message ?? String(err)}`);
+      }
+    }
+    if (written.length === 0) {
+      return { ok: false as const, error: errors.join('; ') || 'No writes succeeded.' };
+    }
+    return { ok: true as const, written, errors };
+  });
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
