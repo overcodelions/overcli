@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
-import { useRunnersStore } from '../runnersStore';
+import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
 
 export interface ComposerProps {
@@ -192,6 +192,8 @@ export function Composer({
   const [rejection, setRejection] = useState<string | null>(null);
   const [easterPlaceholder, setEasterPlaceholder] = useState<string | null>(null);
   const [konamiGlow, setKonamiGlow] = useState(false);
+  const historyIndexRef = useRef(-1);
+  const historyDraftRef = useRef('');
   const konamiProgressRef = useRef(0);
   const easterTimersRef = useRef<number[]>([]);
   const easterCooldownUntilRef = useRef(0);
@@ -206,6 +208,20 @@ export function Composer({
   }, []);
 
   useEffect(() => clearEasterPlaceholder, [clearEasterPlaceholder]);
+
+  const runnerEvents = useRunnerEvents(draftKey);
+  const promptHistory = useMemo(() => {
+    if (!runnerEvents || draftKey.startsWith('__')) return [];
+    return runnerEvents
+      .filter((ev) => ev.kind.type === 'localUser')
+      .map((ev) => ev.kind.text.trim())
+      .filter((text) => text.length > 0);
+  }, [draftKey, runnerEvents]);
+
+  useEffect(() => {
+    historyIndexRef.current = -1;
+    historyDraftRef.current = '';
+  }, [draftKey]);
 
   // Auto-grow the textarea up to the variant's max height. Welcome allows a
   // bigger pane since it dominates the screen; compact stays short so the
@@ -386,8 +402,38 @@ export function Composer({
   const commit = () => {
     const text = draft.trim();
     if (!text && attachments.length === 0) return;
+    historyIndexRef.current = -1;
+    historyDraftRef.current = '';
     onSend(text, attachments);
   };
+
+  const recallPrompt = useCallback(
+    (dir: 'up' | 'down'): boolean => {
+      if (promptHistory.length === 0) return false;
+      if (dir === 'up') {
+        if (historyIndexRef.current === -1) {
+          if (draft.length > 0) return false;
+          historyDraftRef.current = draft;
+          historyIndexRef.current = promptHistory.length - 1;
+        } else if (historyIndexRef.current > 0) {
+          historyIndexRef.current -= 1;
+        }
+        const next = promptHistory[historyIndexRef.current] ?? '';
+        setDraft(draftKey, next);
+        return true;
+      }
+      if (historyIndexRef.current === -1) return false;
+      if (historyIndexRef.current < promptHistory.length - 1) {
+        historyIndexRef.current += 1;
+        setDraft(draftKey, promptHistory[historyIndexRef.current] ?? '');
+      } else {
+        historyIndexRef.current = -1;
+        setDraft(draftKey, historyDraftRef.current);
+      }
+      return true;
+    },
+    [draft, draftKey, promptHistory, setDraft],
+  );
 
   const maybeFlashEasterPlaceholder = useCallback(() => {
     if (disabled) return;
@@ -545,6 +591,7 @@ export function Composer({
         onFocus={maybeFlashEasterPlaceholder}
         onChange={(e) => {
           if (easterPlaceholder) clearEasterPlaceholder();
+          historyIndexRef.current = -1;
           const value = e.target.value;
           setDraft(draftKey, value);
           const caret = e.target.selectionStart ?? value.length;
@@ -626,6 +673,18 @@ export function Composer({
             if (e.key === 'Escape') {
               e.preventDefault();
               setSlash(null);
+              return;
+            }
+          }
+          if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === 'ArrowUp') {
+            if (recallPrompt('up')) {
+              e.preventDefault();
+              return;
+            }
+          }
+          if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === 'ArrowDown') {
+            if (recallPrompt('down')) {
+              e.preventDefault();
               return;
             }
           }

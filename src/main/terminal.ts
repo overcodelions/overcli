@@ -28,9 +28,32 @@ end tell`;
   }
 }
 
+function runWindowsTerminal(command: string, cwd?: string): TerminalLaunchResult {
+  try {
+    // Launch through `start` so Windows reliably creates a visible
+    // console window even when the Electron parent has no attached TTY.
+    spawn(
+      'cmd.exe',
+      ['/d', '/c', 'start', '', 'powershell.exe', '-NoProfile', '-NoExit', '-Command', command],
+      {
+        cwd,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      },
+    ).unref();
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 export function runInTerminal(command: string): TerminalLaunchResult {
   if (FORBIDDEN_COMMAND_PATTERNS.test(command)) {
     return { ok: false, error: 'Command contains shell metacharacters and was refused.' };
+  }
+  if (process.platform === 'win32') {
+    return runWindowsTerminal(command);
   }
   if (process.platform !== 'darwin') {
     return {
@@ -50,11 +73,17 @@ export function runInTerminal(command: string): TerminalLaunchResult {
 // path is reliable, and the follow-up `do script` runs after the shell
 // is idle.
 export function openTerminalAt(cwd: string, command: string): TerminalLaunchResult {
-  if (!cwd || /['\n\r"\\]/.test(cwd)) {
+  // `cwd` is passed to `open` as a dedicated argv entry (not shell-
+  // interpolated), so quotes/backslashes are safe. Only reject blank or
+  // newline-delimited values to avoid malformed AppleScript fallback text.
+  if (!cwd || /[\n\r]/.test(cwd)) {
     return { ok: false, error: 'Workspace path contains characters unsafe for terminal launch.' };
   }
   if (FORBIDDEN_COMMAND_PATTERNS.test(command)) {
     return { ok: false, error: 'Command contains shell metacharacters and was refused.' };
+  }
+  if (process.platform === 'win32') {
+    return runWindowsTerminal(command, cwd);
   }
   if (process.platform !== 'darwin') {
     return {
