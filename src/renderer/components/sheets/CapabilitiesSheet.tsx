@@ -655,8 +655,20 @@ function GenericTab({
   entries: CapabilityEntry[];
   loading: boolean;
 }) {
+  const [showAdd, setShowAdd] = useState(false);
   return (
     <div className="px-8 py-6">
+      {tab === 'mcp' && (
+        <div className="mb-4 flex justify-end">
+          <button
+            onClick={() => setShowAdd((v) => !v)}
+            className="text-[11.5px] px-3 py-1.5 rounded-md border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15"
+          >
+            {showAdd ? 'Cancel' : '+ Add MCP server'}
+          </button>
+        </div>
+      )}
+      {tab === 'mcp' && showAdd && <AddMcpForm onDone={() => setShowAdd(false)} />}
       <InstallGuide tab={tab} hasInstalled={entries.length > 0} />
 
       {entries.length === 0 ? (
@@ -676,6 +688,111 @@ function GenericTab({
         </section>
       )}
     </div>
+  );
+}
+
+function AddMcpForm({ onDone }: { onDone: () => void }) {
+  const addMcpServer = useStore((s) => s.addMcpServer);
+  const [name, setName] = useState('');
+  const [json, setJson] = useState(
+    '{\n  "command": "npx",\n  "args": ["-y", "@example/mcp"],\n  "env": {}\n}',
+  );
+  const [targets, setTargets] = useState<Record<'claude' | 'codex' | 'gemini', boolean>>({
+    claude: true,
+    codex: true,
+    gemini: true,
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setError(null);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(json);
+    } catch (err: any) {
+      setError(`Invalid JSON: ${err?.message ?? String(err)}`);
+      return;
+    }
+    const picked = (Object.keys(targets) as Array<'claude' | 'codex' | 'gemini'>).filter(
+      (k) => targets[k],
+    );
+    if (picked.length === 0) {
+      setError('Pick at least one CLI.');
+      return;
+    }
+    setBusy(true);
+    const res = await addMcpServer(name, parsed, picked);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    if (res.errors.length > 0) {
+      setError(`Wrote ${res.written.join(', ')}. Errors: ${res.errors.join('; ')}`);
+      return;
+    }
+    onDone();
+  };
+
+  return (
+    <section className="mb-6 rounded-xl border border-accent/30 bg-accent/[0.04] p-4">
+      <div className="text-[13px] font-semibold text-ink mb-2">Add MCP server</div>
+      <label className="block text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+        Name
+      </label>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="linear"
+        className="field mt-1 w-full px-3 py-1.5 text-[12px]"
+      />
+      <label className="block mt-3 text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+        Config (JSON)
+      </label>
+      <textarea
+        value={json}
+        onChange={(e) => setJson(e.target.value)}
+        rows={8}
+        className="field mt-1 w-full px-3 py-1.5 text-[12px] font-mono"
+      />
+      <label className="block mt-3 text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+        Install on
+      </label>
+      <div className="mt-1.5 flex gap-3 flex-wrap">
+        {(['claude', 'codex', 'gemini'] as const).map((cli) => (
+          <label key={cli} className="flex items-center gap-1.5 text-[12px] text-ink-muted">
+            <input
+              type="checkbox"
+              checked={targets[cli]}
+              onChange={(e) => setTargets((t) => ({ ...t, [cli]: e.target.checked }))}
+            />
+            {CLI_LABEL[cli]}
+          </label>
+        ))}
+      </div>
+      {error && (
+        <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11.5px] text-red-300 font-mono">
+          {error}
+        </div>
+      )}
+      <div className="mt-3 flex gap-2">
+        <button
+          disabled={busy}
+          onClick={() => void submit()}
+          className="text-[11.5px] px-3 py-1.5 rounded-md bg-accent text-ink font-medium disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : 'Save to selected CLIs'}
+        </button>
+        <button
+          disabled={busy}
+          onClick={onDone}
+          className="text-[11.5px] px-3 py-1.5 rounded-md border border-card-strong text-ink-muted hover:text-ink"
+        >
+          Cancel
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -826,6 +943,18 @@ function McpCopyControls({ entry }: { entry: CapabilityEntry }) {
   return (
     <div className="mt-2 flex items-center gap-1.5 flex-wrap">
       <span className="text-[10px] text-ink-faint">Also install on:</span>
+      {missing.length > 1 && (
+        <button
+          disabled={busyTo !== null}
+          onClick={async () => {
+            for (const cli of missing) await onCopy(cli);
+          }}
+          className="text-[10.5px] px-2 py-0.5 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
+          title={`Copy "${entry.name}" to every missing CLI`}
+        >
+          {busyTo ? '…' : `+ All (${missing.length})`}
+        </button>
+      )}
       {missing.map((cli) => (
         <button
           key={cli}
