@@ -39,7 +39,7 @@ import {
 } from './git';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
-import { isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
+import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -241,6 +241,7 @@ function registerIpc(): void {
       return { ok: false as const, error: err?.message ?? String(err) };
     }
   });
+  ipcMain.handle('capabilities:addMcp', (_e, args) => addMcpServerToTargets(args));
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;

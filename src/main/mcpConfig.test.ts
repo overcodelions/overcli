@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  addMcpServerToTargets,
   extractTomlSection,
   formatTomlPairs,
   parseTomlPairs,
@@ -212,5 +213,95 @@ describe('readMcpServer / writeMcpServer round-trip', () => {
     expect(fs.existsSync(`${paths.claude}.bak`)).toBe(true);
     const parsed = JSON.parse(fs.readFileSync(paths.claude, 'utf-8'));
     expect(parsed.mcpServers).toEqual({ a: { command: 'x' }, b: { command: 'y' } });
+  });
+});
+
+describe('addMcpServerToTargets', () => {
+  const config = { command: 'npx', args: ['-y', '@linear/mcp'] };
+
+  it('rejects an empty or whitespace name', () => {
+    expect(addMcpServerToTargets({ name: '', config, targets: ['claude'] }, paths)).toEqual({
+      ok: false,
+      error: 'Server name is required.',
+    });
+    expect(addMcpServerToTargets({ name: '   ', config, targets: ['claude'] }, paths)).toEqual({
+      ok: false,
+      error: 'Server name is required.',
+    });
+  });
+
+  it('rejects a non-object config', () => {
+    expect(
+      addMcpServerToTargets({ name: 'linear', config: null, targets: ['claude'] }, paths),
+    ).toEqual({ ok: false, error: 'Config must be a JSON object.' });
+    expect(
+      addMcpServerToTargets({ name: 'linear', config: 'oops', targets: ['claude'] }, paths),
+    ).toEqual({ ok: false, error: 'Config must be a JSON object.' });
+  });
+
+  it('rejects when no targets are MCP-capable (copilot/ollama dropped)', () => {
+    expect(
+      addMcpServerToTargets({ name: 'linear', config, targets: ['copilot', 'ollama'] }, paths),
+    ).toEqual({ ok: false, error: 'Pick at least one MCP-capable CLI.' });
+    expect(
+      addMcpServerToTargets({ name: 'linear', config, targets: [] }, paths),
+    ).toEqual({ ok: false, error: 'Pick at least one MCP-capable CLI.' });
+  });
+
+  it('writes to all three MCP-capable CLIs and ignores non-MCP targets', () => {
+    const res = addMcpServerToTargets(
+      { name: 'linear', config, targets: ['claude', 'codex', 'gemini', 'copilot'] },
+      paths,
+    );
+    expect(res).toEqual({ ok: true, written: ['claude', 'codex', 'gemini'], errors: [] });
+
+    expect(readMcpServer('claude', 'linear', paths)).toEqual(config);
+    expect(readMcpServer('codex', 'linear', paths)).toEqual(config);
+    expect(readMcpServer('gemini', 'linear', paths)).toEqual(config);
+  });
+
+  it('trims whitespace from the name before writing', () => {
+    const res = addMcpServerToTargets(
+      { name: '  linear  ', config, targets: ['claude'] },
+      paths,
+    );
+    expect(res.ok).toBe(true);
+    expect(readMcpServer('claude', 'linear', paths)).toEqual(config);
+  });
+
+  it('reports partial success when one CLI write fails', () => {
+    // Pre-create the claude path as a directory so writeFileSync throws on it,
+    // while codex and gemini still succeed.
+    fs.mkdirSync(paths.claude, { recursive: true });
+
+    const res = addMcpServerToTargets(
+      { name: 'linear', config, targets: ['claude', 'codex', 'gemini'] },
+      paths,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.written).toEqual(['codex', 'gemini']);
+      expect(res.errors).toHaveLength(1);
+      expect(res.errors[0]).toMatch(/^claude: /);
+    }
+    expect(readMcpServer('codex', 'linear', paths)).toEqual(config);
+    expect(readMcpServer('gemini', 'linear', paths)).toEqual(config);
+  });
+
+  it('returns ok:false when every write fails', () => {
+    fs.mkdirSync(paths.claude, { recursive: true });
+    fs.mkdirSync(paths.codex, { recursive: true });
+    fs.mkdirSync(paths.gemini, { recursive: true });
+
+    const res = addMcpServerToTargets(
+      { name: 'linear', config, targets: ['claude', 'codex', 'gemini'] },
+      paths,
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toMatch(/claude: /);
+      expect(res.error).toMatch(/codex: /);
+      expect(res.error).toMatch(/gemini: /);
+    }
   });
 });
