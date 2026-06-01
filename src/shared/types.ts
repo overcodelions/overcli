@@ -768,6 +768,15 @@ export interface IPCInvokeMap {
     fromCli: Backend;
     toCli: Backend;
   }) => { ok: true } | { ok: false; error: string };
+  /// Creates an MCP server entry in every target CLI in one shot.
+  /// Partial success is reported via `written` + `errors`.
+  'capabilities:addMcp': (args: {
+    name: string;
+    config: Record<string, unknown>;
+    targets: Backend[];
+  }) =>
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string };
   'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>

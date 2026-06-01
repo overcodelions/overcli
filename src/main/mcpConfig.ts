@@ -66,6 +66,43 @@ export function writeMcpServer(
   return writeJsonServer(paths[cli], name, config);
 }
 
+export type AddMcpResult =
+  | { ok: true; written: McpCli[]; errors: string[] }
+  | { ok: false; error: string };
+
+/// Validates input and fan-writes one MCP server entry to every valid
+/// target CLI. Partial success returns `ok: true` with `errors[]`
+/// listing the CLIs that failed; total failure returns `ok: false`.
+export function addMcpServerToTargets(
+  args: { name: string; config: unknown; targets: unknown[] },
+  paths: Paths = defaultPaths(),
+): AddMcpResult {
+  if (typeof args.name !== 'string' || !args.name.trim()) {
+    return { ok: false, error: 'Server name is required.' };
+  }
+  if (!args.config || typeof args.config !== 'object') {
+    return { ok: false, error: 'Config must be a JSON object.' };
+  }
+  const valid = (args.targets ?? []).filter((t): t is McpCli => isMcpCli(t as Backend));
+  if (valid.length === 0) {
+    return { ok: false, error: 'Pick at least one MCP-capable CLI.' };
+  }
+  const written: McpCli[] = [];
+  const errors: string[] = [];
+  for (const cli of valid) {
+    try {
+      writeMcpServer(cli, args.name.trim(), args.config as McpServerConfig, paths);
+      written.push(cli);
+    } catch (err: any) {
+      errors.push(`${cli}: ${err?.message ?? String(err)}`);
+    }
+  }
+  if (written.length === 0) {
+    return { ok: false, error: errors.join('; ') || 'No writes succeeded.' };
+  }
+  return { ok: true, written, errors };
+}
+
 // ---------- JSON-based CLIs (Claude, Gemini) ----------
 
 function readJsonServer(file: string, name: string): McpServerConfig | null {
