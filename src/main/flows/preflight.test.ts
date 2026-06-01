@@ -138,9 +138,21 @@ describe('preflightRun — project path', () => {
 // ─── preflightRun — tool check ────────────────────────────────────────────────
 
 describe('preflightRun — tool check', () => {
-  it('flags a non-researcher step with no tools', async () => {
+  // The tools allowlist is only meaningful for Ollama, so the empty-tools
+  // check only fires for Ollama-backed steps. Use a pulled model so the
+  // only problem under test is the tools one.
+  const ollama = participant({ backend: 'ollama', model: 'llama3.2' });
+  beforeEach(() => {
+    mockDetectOllama.mockResolvedValue({
+      installed: true,
+      running: true,
+      models: [{ name: 'llama3.2', sizeBytes: 0 }],
+    });
+  });
+
+  it('flags an Ollama non-researcher step with no tools', async () => {
     const result = await preflightRun({
-      flow: flow([participant()], [step({ tools: [], role: 'implementer' })]),
+      flow: flow([ollama], [step({ tools: [], role: 'implementer' })]),
       projectPath: '/tmp',
       settings: SETTINGS,
     });
@@ -148,9 +160,9 @@ describe('preflightRun — tool check', () => {
     expect(result.problems.some(p => p.path === 'steps[0].tools')).toBe(true);
   });
 
-  it('does NOT flag a researcher step with no tools', async () => {
+  it('does NOT flag an Ollama researcher step with no tools', async () => {
     const result = await preflightRun({
-      flow: flow([participant()], [step({ tools: [], role: 'researcher' })]),
+      flow: flow([ollama], [step({ tools: [], role: 'researcher' })]),
       projectPath: '/tmp',
       settings: SETTINGS,
     });
@@ -158,9 +170,22 @@ describe('preflightRun — tool check', () => {
     expect(toolProblems).toHaveLength(0);
   });
 
-  it('does NOT flag a custom role step with no tools', async () => {
+  it('does NOT flag an Ollama custom role step with no tools', async () => {
     const result = await preflightRun({
-      flow: flow([participant()], [step({ tools: [], role: 'custom', systemPromptOverride: 'Do things.' })]),
+      flow: flow([ollama], [step({ tools: [], role: 'custom', systemPromptOverride: 'Do things.' })]),
+      projectPath: '/tmp',
+      settings: SETTINGS,
+    });
+    const toolProblems = result.problems.filter(p => p.path === 'steps[0].tools');
+    expect(toolProblems).toHaveLength(0);
+  });
+
+  it('does NOT flag a premium-backend step with no tools (CLI owns its tool surface)', async () => {
+    // Claude/Codex/Gemini/Copilot manage their own tools, gated by
+    // permission mode — the UI never populates `tools` for them, so an
+    // empty list is expected, not an error.
+    const result = await preflightRun({
+      flow: flow([participant()], [step({ tools: [], role: 'implementer' })]),
       projectPath: '/tmp',
       settings: SETTINGS,
     });
@@ -290,7 +315,7 @@ describe('preflightRun — ollama', () => {
     mockDetectOllama.mockResolvedValue({
       installed: true,
       running: true,
-      models: [{ name: 'llama3.2' }],
+      models: [{ name: 'llama3.2', sizeBytes: 0 }],
     } as Awaited<ReturnType<typeof detectOllama>>);
     const result = await preflightRun({
       flow: flow(
