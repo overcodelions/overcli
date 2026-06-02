@@ -38,6 +38,12 @@ export interface ComposerProps {
   /// filterable popover. Names are bare (no leading `/`).
   slashCommands?: SlashCommandEntry[];
   disabled?: boolean;
+  /// Runner id whose past `localUser` messages feed the ArrowUp prompt
+  /// history. Defaults to `draftKey`, which is correct for regular chat
+  /// where the draft key IS the conversation id. Flows draw on a separate
+  /// draft key (`flow-hijack:…`) while their messages live under the
+  /// participant's conversation id, so they pass that id here explicitly.
+  historyConvId?: string;
 }
 
 export interface SlashCommandEntry {
@@ -177,6 +183,7 @@ export function Composer({
   rootPath,
   slashCommands,
   disabled,
+  historyConvId,
 }: ComposerProps) {
   const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
   const setDraft = useStore((s) => s.setDraft);
@@ -209,14 +216,15 @@ export function Composer({
 
   useEffect(() => clearEasterPlaceholder, [clearEasterPlaceholder]);
 
-  const runnerEvents = useRunnerEvents(draftKey);
+  const historyKey = historyConvId ?? draftKey;
+  const runnerEvents = useRunnerEvents(historyKey);
   const promptHistory = useMemo(() => {
-    if (!runnerEvents || draftKey.startsWith('__')) return [];
+    if (!runnerEvents || historyKey.startsWith('__')) return [];
     return runnerEvents
       .filter((ev) => ev.kind.type === 'localUser')
       .map((ev) => ev.kind.text.trim())
       .filter((text) => text.length > 0);
-  }, [draftKey, runnerEvents]);
+  }, [historyKey, runnerEvents]);
 
   useEffect(() => {
     historyIndexRef.current = -1;
