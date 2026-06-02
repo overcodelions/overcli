@@ -16,7 +16,8 @@ describe('listToolCatalog', () => {
         'Grep',
         'Bash',
         'WebFetch',
-        'Task',
+        'Agent',
+        'Workflow',
       ]);
       expect(catalog.every(t => t.available)).toBe(true);
       expect(catalog.every(t => t.category === 'builtin')).toBe(true);

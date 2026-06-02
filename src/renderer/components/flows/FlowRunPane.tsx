@@ -536,6 +536,9 @@ function ArtifactsPanel({
   // Keyed by STEP id, not artifact name: two owned steps can produce the
   // same output name (e.g. both `diff`), so the name isn't unique per row.
   const [openSet, setOpenSet] = useState<Set<string>>(() => new Set());
+  // STEP id of the row whose "copy" was just clicked, for transient
+  // "copied" feedback on that row only.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   function toggle(key: string) {
     setOpenSet((prev) => {
       const next = new Set(prev);
@@ -543,6 +546,11 @@ function ArtifactsPanel({
       else next.add(key);
       return next;
     });
+  }
+  function copyBody(key: string, body: string) {
+    void navigator.clipboard.writeText(body);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1200);
   }
   // summarizeArtifact iterates every line of a diff body, so caching the
   // result keyed on the (memoized) items array keeps the `forceCollapsed`
@@ -565,20 +573,51 @@ function ArtifactsPanel({
               key={step.id}
               className="rounded-md border border-card-strong bg-card/40 overflow-hidden"
             >
-              <button
-                onClick={() => toggle(step.id)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02]"
-              >
-                <span className="text-[11px] text-ink-faint">{open ? '▼' : '▶'}</span>
-                <span className="text-xs font-mono text-ink">{artifact.name}</span>
-                <span className="text-[11px] text-ink-faint">
-                  · from <span className="font-semibold">{step.id}</span> ·{' '}
-                  {artifact.body.length.toLocaleString()} chars
-                </span>
-                {summary && (
-                  <span className="ml-auto text-[11px] text-emerald-700 dark:text-emerald-300/80">{summary}</span>
-                )}
-              </button>
+              {/* Header row: the toggle is its own button (can't nest the
+                  copy/open buttons inside it), with the actions as siblings
+                  so the whole strip reads as one bar. */}
+              <div className="flex items-center hover:bg-white/[0.02]">
+                <button
+                  onClick={() => toggle(step.id)}
+                  className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-left"
+                >
+                  <span className="text-[11px] text-ink-faint">{open ? '▼' : '▶'}</span>
+                  <span className="text-xs font-mono text-ink truncate">{artifact.name}</span>
+                  <span className="text-[11px] text-ink-faint whitespace-nowrap">
+                    · from <span className="font-semibold">{step.id}</span> ·{' '}
+                    {artifact.body.length.toLocaleString()} chars
+                  </span>
+                  {summary && (
+                    <span className="ml-2 text-[11px] text-emerald-700 dark:text-emerald-300/80 truncate">
+                      {summary}
+                    </span>
+                  )}
+                </button>
+                <div className="ml-auto flex items-center gap-1 pr-2 shrink-0">
+                  <button
+                    onClick={() => copyBody(step.id, artifact.body)}
+                    className="px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink"
+                    title="Copy the output to the clipboard"
+                  >
+                    {copiedKey === step.id ? 'copied' : 'copy'}
+                  </button>
+                  {artifact.kind !== 'url' && (
+                    <button
+                      onClick={() =>
+                        void window.overcli.invoke('flows:openArtifact', {
+                          name: artifact.name,
+                          kind: artifact.kind,
+                          body: artifact.body,
+                        })
+                      }
+                      className="px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink"
+                      title="Open the output in your default app"
+                    >
+                      open
+                    </button>
+                  )}
+                </div>
+              </div>
               {open && (
                 <>
                   {/* Cap the expanded view at 70% of the viewport so it
@@ -976,6 +1015,7 @@ function HijackComposer({
       <ChangesBar files={changes} />
       <Composer
         draftKey={draftKey}
+        historyConvId={convId}
         onSend={handleSend}
         onStop={() => {
           if (convId) void stop(convId);
