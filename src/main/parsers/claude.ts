@@ -91,6 +91,73 @@ export function claudeToolResultText(raw: unknown): string {
   return '';
 }
 
+/// Distill a `task_started` / `task_progress` / `task_notification`
+/// system line into a TaskProgressInfo. Returns null when the line has no
+/// tool_use_id to bucket against (nothing the renderer can attach it to).
+function taskProgressInfo(json: any): import('../../shared/types').TaskProgressInfo | null {
+  const toolUseId = typeof json.tool_use_id === 'string' ? json.tool_use_id : '';
+  const taskId = typeof json.task_id === 'string' ? json.task_id : '';
+  if (!toolUseId) return null;
+  const phase: import('../../shared/types').TaskProgressInfo['phase'] =
+    json.subtype === 'task_started'
+      ? 'started'
+      : json.subtype === 'task_notification'
+        ? 'completed'
+        : 'progress';
+  const usage = json.usage ?? {};
+  return {
+    taskId,
+    toolUseId,
+    phase,
+    status: typeof json.status === 'string' ? json.status : undefined,
+    taskType: typeof json.task_type === 'string' ? json.task_type : undefined,
+    workflowName: typeof json.workflow_name === 'string' ? json.workflow_name : undefined,
+    description:
+      typeof json.description === 'string'
+        ? json.description
+        : typeof json.summary === 'string'
+          ? json.summary
+          : undefined,
+    totalTokens: numOrZero(usage.total_tokens) || undefined,
+    toolUses: numOrZero(usage.tool_uses) || undefined,
+    durationMs: numOrZero(usage.duration_ms) || undefined,
+    agents: extractWorkflowAgents(json.workflow_progress),
+  };
+}
+
+/// Pull the per-agent rows out of a `workflow_progress` array. The array
+/// mixes `workflow_phase` markers with `workflow_agent` entries, and a
+/// single tick can list the same agent index twice (a queued snapshot
+/// then a started/done one). We keep the LAST entry per index — later
+/// entries are the more-advanced state — and sort by index so the card
+/// renders a stable, ordered list.
+function extractWorkflowAgents(
+  progress: unknown,
+): import('../../shared/types').TaskAgentProgress[] | undefined {
+  if (!Array.isArray(progress)) return undefined;
+  const byIndex = new Map<number, import('../../shared/types').TaskAgentProgress>();
+  for (const entry of progress) {
+    if (!entry || typeof entry !== 'object' || entry.type !== 'workflow_agent') continue;
+    const index = typeof entry.index === 'number' ? entry.index : -1;
+    byIndex.set(index, {
+      index,
+      label: typeof entry.label === 'string' ? entry.label : `agent ${index}`,
+      phaseTitle: typeof entry.phaseTitle === 'string' ? entry.phaseTitle : undefined,
+      state: typeof entry.state === 'string' ? entry.state : 'start',
+      promptPreview: typeof entry.promptPreview === 'string' ? entry.promptPreview : undefined,
+      resultPreview: typeof entry.resultPreview === 'string' ? entry.resultPreview : undefined,
+      lastToolName: typeof entry.lastToolName === 'string' ? entry.lastToolName : undefined,
+      lastToolSummary:
+        typeof entry.lastToolSummary === 'string' ? entry.lastToolSummary : undefined,
+      tokens: typeof entry.tokens === 'number' ? entry.tokens : undefined,
+      toolCalls: typeof entry.toolCalls === 'number' ? entry.toolCalls : undefined,
+      durationMs: typeof entry.durationMs === 'number' ? entry.durationMs : undefined,
+    });
+  }
+  if (byIndex.size === 0) return undefined;
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
 /// Incoming JSON shape varies by `type`. We keep it loose (`any`) at the
 /// boundary and narrow as we branch — the real contract is with Anthropic's
 /// CLI, not our types. `state` is optional so stateless callers (tests,
@@ -169,7 +236,24 @@ function parseClaudeLineInto(
           trimmed,
         );
       }
-      // stop_hook_summary, turn_duration, thinking_summary, etc — noise.
+      // Background Workflow/Task lifecycle. These carry a task_id +
+      // tool_use_id and report progress for the detached `Workflow` (and
+      // background `Agent`) tool runs. Without this they'd fall through to
+      // `return null` below and the inline Workflow card would never
+      // resolve past "launching…".
+      // `task_updated` is deliberately omitted: it carries only a task_id
+      // (no tool_use_id to bucket against) and its completion status is
+      // also delivered by `task_notification`, which does carry one.
+      if (
+        json.subtype === 'task_started' ||
+        json.subtype === 'task_progress' ||
+        json.subtype === 'task_notification'
+      ) {
+        const info = taskProgressInfo(json);
+        return info ? eventFromKind({ type: 'taskProgress', info }, trimmed) : null;
+      }
+      // stop_hook_summary, turn_duration, thinking_summary, status,
+      // task_updated, hook_started/hook_response, etc — noise.
       return null;
     }
     case 'stream_event': {

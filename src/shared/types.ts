@@ -174,6 +174,57 @@ export interface PatchApplyInfo {
   stderr?: string;
 }
 
+/// One sub-agent inside a running Workflow/Task, distilled from the
+/// `workflow_progress` array on `task_progress` system events. The CLI
+/// emits the full agent set on every progress tick, so the renderer keys
+/// these by `index` and lets newer ticks overwrite older ones.
+export interface TaskAgentProgress {
+  index: number;
+  label: string;
+  phaseTitle?: string;
+  /// 'start' | 'done' | 'error' | 'queued' … — whatever the CLI reports.
+  state: string;
+  /// First ~1 sentence of the agent's prompt, for the row subtitle.
+  promptPreview?: string;
+  /// First chunk of the agent's final answer once it's done.
+  resultPreview?: string;
+  lastToolName?: string;
+  lastToolSummary?: string;
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+}
+
+/// A background Workflow/Task lifecycle update. Claude Code runs the
+/// `Workflow` tool (and background `Agent`s) as a detached task and
+/// reports progress out-of-band via `system` lines carrying a `task_id`
+/// and the originating `tool_use_id`. We fold every subtype
+/// (task_started / task_progress / task_updated / task_notification)
+/// into this one shape; the renderer buckets them by `toolUseId` so the
+/// inline Workflow card can show live phase/agent progress instead of a
+/// dead generic tool card.
+export interface TaskProgressInfo {
+  taskId: string;
+  /// The `Workflow`/`Task` tool_use block this task belongs to. Ties the
+  /// out-of-band progress stream back to the inline card in the transcript.
+  toolUseId: string;
+  /// Coarse lifecycle phase derived from the system subtype.
+  phase: 'started' | 'progress' | 'completed';
+  /// Fine-grained status string when the CLI provides one ("completed",
+  /// "failed", …); undefined while merely running.
+  status?: string;
+  taskType?: string;
+  workflowName?: string;
+  description?: string;
+  /// Rolled-up usage for the whole task (tokens / tool calls / duration).
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  /// Per-agent progress, present on `task_progress` ticks. Empty on the
+  /// started/completed bookends.
+  agents?: TaskAgentProgress[];
+}
+
 export interface ReviewInfo {
   backend: string;
   text: string;
@@ -216,6 +267,7 @@ export type StreamEventKind =
   | { type: 'userInputRequest'; info: UserInputRequestInfo }
   | { type: 'patchApply'; info: PatchApplyInfo }
   | { type: 'reviewResult'; info: ReviewInfo }
+  | { type: 'taskProgress'; info: TaskProgressInfo }
   | { type: 'systemNotice'; text: string }
   | { type: 'metaReminder'; text: string }
   | { type: 'easterEgg'; text: string; from: string }
@@ -791,6 +843,14 @@ export interface IPCInvokeMap {
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Write a flow artifact's body to a temp file and open it with the OS
+  /// default app. Flow artifacts live only in memory (no on-disk path), so
+  /// this materializes one on demand. `kind` picks the file extension.
+  'flows:openArtifact': (args: {
+    name: string;
+    kind: 'markdown' | 'diff' | 'text' | 'url';
+    body: string;
+  }) => { ok: true } | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
   'preview:runProjectCommand': (args: {
     cwd: string;

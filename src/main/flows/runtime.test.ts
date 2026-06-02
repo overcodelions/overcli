@@ -4,7 +4,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { detectArtifactKind, extractOutput } from './runtime';
+import {
+  detectArtifactKind,
+  extractOutput,
+  isGatingReviewerRole,
+  isReviewApproved,
+} from './runtime';
 
 describe('extractOutput', () => {
   it('extracts a clean block', () => {
@@ -86,5 +91,63 @@ describe('detectArtifactKind', () => {
   it('is case-insensitive', () => {
     expect(detectArtifactKind('PLAN.MD')).toBe('markdown');
     expect(detectArtifactKind('FIX.PATCH')).toBe('diff');
+  });
+});
+
+describe('isGatingReviewerRole', () => {
+  it('is true for reviewer-family roles', () => {
+    for (const role of [
+      'reviewer',
+      'plan-reviewer',
+      'code-reviewer',
+      'security-reviewer',
+      'adversarial-reviewer',
+    ] as const) {
+      expect(isGatingReviewerRole(role)).toBe(true);
+    }
+  });
+
+  it('is false for non-reviewer roles', () => {
+    for (const role of [
+      'planner',
+      'implementer',
+      'test-writer',
+      'shipper',
+      'custom',
+    ] as const) {
+      expect(isGatingReviewerRole(role)).toBe(false);
+    }
+  });
+});
+
+describe('isReviewApproved', () => {
+  it('approves on a bare APPROVED line', () => {
+    expect(isReviewApproved('APPROVED\nLooks correct.')).toBe(true);
+    expect(isReviewApproved('Verified the diff.\nAPPROVED — ships clean.')).toBe(true);
+  });
+
+  it('approves through markdown decoration', () => {
+    expect(isReviewApproved('**APPROVED**\nrationale')).toBe(true);
+    expect(isReviewApproved('- APPROVED')).toBe(true);
+    expect(isReviewApproved('## APPROVED')).toBe(true);
+  });
+
+  it('is case-insensitive on the verdict word', () => {
+    expect(isReviewApproved('approved')).toBe(true);
+  });
+
+  it('does NOT approve an explicit rejection', () => {
+    expect(isReviewApproved('Status: REJECTED\nThe diff does not implement the plan.')).toBe(
+      false,
+    );
+  });
+
+  it('does NOT approve when no verdict line is present', () => {
+    expect(isReviewApproved('Here are some problems:\n- missing edge case')).toBe(false);
+  });
+
+  it('does NOT approve "NOT APPROVED"', () => {
+    expect(isReviewApproved('NOT APPROVED — needs work')).toBe(false);
+    expect(isReviewApproved('This is not approved yet.')).toBe(false);
   });
 });

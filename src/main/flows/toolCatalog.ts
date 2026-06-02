@@ -15,7 +15,8 @@ const CLAUDE_BUILTINS: Array<Omit<FlowToolDescriptor, 'supportedBackends' | 'ava
   { id: 'Grep', displayName: 'Grep', description: 'Search file contents with a regex.', category: 'builtin' },
   { id: 'Bash', displayName: 'Bash', description: 'Run a shell command in the project cwd.', category: 'builtin' },
   { id: 'WebFetch', displayName: 'WebFetch', description: 'Fetch a URL and summarize.', category: 'builtin' },
-  { id: 'Task', displayName: 'Task', description: 'Spawn a subagent.', category: 'builtin' },
+  { id: 'Agent', displayName: 'Agent', description: 'Spawn a subagent (formerly Task).', category: 'builtin' },
+  { id: 'Workflow', displayName: 'Workflow', description: 'Run a multi-agent workflow script.', category: 'builtin' },
 ];
 
 const OLLAMA_BUILTINS: Array<Omit<FlowToolDescriptor, 'supportedBackends' | 'available'>> = [

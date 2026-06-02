@@ -68,6 +68,119 @@ describe('parseClaudeLine', () => {
     expect(kindOf(line)).toEqual({ type: 'systemNotice', text: 'Conversation compacted' });
   });
 
+  it('parses a Workflow task_started into a taskProgress event', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'task_started',
+      task_id: 'w41ojn8o8',
+      tool_use_id: 'toolu_abc',
+      description: 'Fan out one agent per .js file',
+      task_type: 'local_workflow',
+      workflow_name: 'describe-js-files',
+      prompt: 'export const meta = {...}',
+    });
+    expect(kindOf(line)).toEqual({
+      type: 'taskProgress',
+      info: {
+        taskId: 'w41ojn8o8',
+        toolUseId: 'toolu_abc',
+        phase: 'started',
+        status: undefined,
+        taskType: 'local_workflow',
+        workflowName: 'describe-js-files',
+        description: 'Fan out one agent per .js file',
+        totalTokens: undefined,
+        toolUses: undefined,
+        durationMs: undefined,
+        agents: undefined,
+      },
+    });
+  });
+
+  it('extracts per-agent rows from a task_progress workflow_progress array', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'task_progress',
+      task_id: 'w41ojn8o8',
+      tool_use_id: 'toolu_abc',
+      description: 'Read & Describe: a.js',
+      usage: { total_tokens: 34650, tool_uses: 3, duration_ms: 4526 },
+      summary: 'Fan out one agent per .js file',
+      workflow_progress: [
+        { type: 'workflow_phase', index: 1, title: 'Read & Describe' },
+        // queued snapshot for index 1 — superseded by the done entry below
+        { type: 'workflow_agent', index: 1, label: 'a.js', state: 'start' },
+        {
+          type: 'workflow_agent',
+          index: 1,
+          label: 'a.js',
+          phaseTitle: 'Read & Describe',
+          state: 'done',
+          tokens: 11550,
+          toolCalls: 1,
+          durationMs: 4515,
+          lastToolName: 'Read',
+          resultPreview: 'a.js: The add function returns the sum.',
+        },
+        { type: 'workflow_agent', index: 2, label: 'b.js', state: 'start' },
+      ],
+    });
+    const kind = kindOf(line) as any;
+    expect(kind.type).toBe('taskProgress');
+    expect(kind.info.phase).toBe('progress');
+    expect(kind.info.totalTokens).toBe(34650);
+    expect(kind.info.agents).toHaveLength(2);
+    // Last entry per index wins: index 1 resolves to 'done', not 'start'.
+    expect(kind.info.agents[0]).toMatchObject({
+      index: 1,
+      label: 'a.js',
+      state: 'done',
+      resultPreview: 'a.js: The add function returns the sum.',
+      tokens: 11550,
+    });
+    expect(kind.info.agents[1]).toMatchObject({ index: 2, label: 'b.js', state: 'start' });
+  });
+
+  it('maps task_notification to a completed phase with summary fallback', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'task_notification',
+      task_id: 'w41ojn8o8',
+      tool_use_id: 'toolu_abc',
+      status: 'completed',
+      summary: 'Dynamic workflow completed',
+      usage: { total_tokens: 34650, tool_uses: 3, duration_ms: 4526 },
+    });
+    const kind = kindOf(line) as any;
+    expect(kind.info).toMatchObject({
+      toolUseId: 'toolu_abc',
+      phase: 'completed',
+      status: 'completed',
+      description: 'Dynamic workflow completed',
+      totalTokens: 34650,
+    });
+  });
+
+  it('drops task_updated (no tool_use_id to bucket against)', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'task_updated',
+      task_id: 'w41ojn8o8',
+      patch: { status: 'completed', end_time: 1780330958166 },
+    });
+    expect(parseClaudeLine(line)).toBeNull();
+  });
+
+  it('drops a task event with no tool_use_id', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'task_progress',
+      task_id: 'w41ojn8o8',
+      usage: { total_tokens: 1 },
+    });
+    expect(parseClaudeLine(line)).toBeNull();
+  });
+
   it('collects assistant text, thinking, and tool_use blocks', () => {
     const line = JSON.stringify({
       type: 'assistant',

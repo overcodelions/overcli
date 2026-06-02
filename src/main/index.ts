@@ -322,6 +322,26 @@ function registerIpc(): void {
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
   });
+  ipcMain.handle(
+    'flows:openArtifact',
+    async (_e, { name, kind, body }: { name: string; kind: string; body: string }) => {
+      // Flow artifacts have no on-disk path — materialize the body in a
+      // temp dir and hand it to the OS default app. The name is sanitized
+      // to a safe basename so it can't escape the temp dir.
+      const ext = kind === 'markdown' ? '.md' : kind === 'diff' ? '.diff' : '.txt';
+      const safeBase = (name || 'artifact').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+      const base = safeBase.toLowerCase().endsWith(ext) ? safeBase : `${safeBase}${ext}`;
+      try {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-artifact-'));
+        const file = path.join(dir, base);
+        fs.writeFileSync(file, body, 'utf-8');
+        const error = await shell.openPath(file);
+        return error ? { ok: false, error } : { ok: true };
+      } catch (err: any) {
+        return { ok: false, error: err?.message ?? 'Could not open artifact' };
+      }
+    },
+  );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
   );

@@ -47,7 +47,7 @@ import {
   isActiveConversation,
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
-import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
+import { useRunnersStore, getRunner, getAllRunners, mergeTaskProgress } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
@@ -2446,8 +2446,21 @@ export const useStore = create<StoreState>((set, get) => ({
         // SubagentDrawer's per-parent buckets.
         const mainIncoming: StreamEvent[] = [];
         const subBuckets: Record<string, StreamEvent[]> = {};
+        // Background Workflow/Task progress arrives out-of-band keyed by
+        // tool_use id; fold it into taskProgressByToolUse rather than the
+        // main transcript so the inline WorkflowCard can render it live.
+        let nextTaskProgress = runner.taskProgressByToolUse;
         for (const e of event.events) {
-          if (e.parentToolUseId) {
+          if (e.kind.type === 'taskProgress') {
+            const info = e.kind.info;
+            if (nextTaskProgress === runner.taskProgressByToolUse) {
+              nextTaskProgress = { ...runner.taskProgressByToolUse };
+            }
+            nextTaskProgress[info.toolUseId] = mergeTaskProgress(
+              nextTaskProgress[info.toolUseId],
+              info,
+            );
+          } else if (e.parentToolUseId) {
             (subBuckets[e.parentToolUseId] ??= []).push(e);
           } else {
             mainIncoming.push(e);
@@ -2477,6 +2490,7 @@ export const useStore = create<StoreState>((set, get) => ({
         return {
           events: nextEvents,
           subagentEvents: nextSubagentEvents,
+          taskProgressByToolUse: nextTaskProgress,
           pendingLocalUserIds: pending,
           currentModel,
         };
