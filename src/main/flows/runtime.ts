@@ -43,6 +43,7 @@ import { clearAttachments, writeAttachment } from './attachments';
 import type {
   Flow,
   FlowArtifact,
+  FlowRolePreset,
   FlowRun,
   FlowStep,
   FlowStepAttempt,
@@ -1103,6 +1104,22 @@ export class FlowRuntimeImpl {
     // resumed: on restart the run will be in `paused` (set by
     // advanceAfterStep below if there's another step) or `done`.
     this.checkpoint(run);
+
+    // Verdict gate: a reviewer-role step produced its artifact cleanly, but
+    // if the verdict isn't an approval the flow must NOT roll on to
+    // downstream steps (tests/push) over disapproved work. Route it through
+    // the normal `on_fail` policy — pause by default, or `goto` to loop
+    // back to an earlier step the user wired up. The artifact itself is
+    // already recorded above, so the user sees the rejecting review.
+    if (isGatingReviewerRole(step.role) && !isReviewApproved(body)) {
+      this.handleStepFailure(
+        runId,
+        step,
+        `Reviewer step "${step.id}" did not approve (no "APPROVED" verdict in ${step.output}).`,
+      );
+      return;
+    }
+
     this.advanceAfterStep(runId, step.id);
   }
 
@@ -1468,6 +1485,52 @@ export function detectArtifactKind(name: string): FlowArtifact['kind'] {
   if (lower === 'diff' || lower.endsWith('.diff') || lower.endsWith('.patch')) return 'diff';
   if (lower.endsWith('url') || lower.endsWith('_url')) return 'url';
   return 'text';
+}
+
+/// Role presets whose whole job is to render an APPROVE/REJECT verdict on
+/// prior work. A step with one of these roles GATES the flow: if its
+/// produced artifact doesn't clearly approve, the runtime treats the step
+/// as failed and routes it through `on_fail` (pause by default) instead of
+/// advancing to downstream steps — so a rejected review actually stops the
+/// pipeline rather than letting `tests`/`push` run on disapproved work.
+const GATING_REVIEWER_ROLES: ReadonlySet<FlowRolePreset> = new Set([
+  'plan-reviewer',
+  'reviewer',
+  'code-reviewer',
+  'security-reviewer',
+  'adversarial-reviewer',
+]);
+
+export function isGatingReviewerRole(role: FlowRolePreset): boolean {
+  return GATING_REVIEWER_ROLES.has(role);
+}
+
+/// Decide whether a reviewer's produced artifact represents an APPROVAL.
+/// The reviewer role prompts (see ../../shared/flows/roles.ts) instruct the
+/// model to put "APPROVED" on its OWN line when the work is good, and to
+/// list concrete problems otherwise. We mirror that contract:
+///   - Approved IFF some line, after stripping leading markdown bullets /
+///     emphasis / headings, BEGINS with the bare word "APPROVED" and is
+///     not negated ("NOT APPROVED", "not approved").
+///   - Anything else — explicit rejection markers (REJECTED, CHANGES
+///     REQUESTED), or simply the absence of an approval line — counts as
+///     NOT approved, so an ambiguous or rejecting review gates rather than
+///     slipping through. This is deliberately conservative: the documented
+///     contract is an explicit APPROVED line, so its absence means "stop
+///     and let the human look."
+export function isReviewApproved(reviewBody: string): boolean {
+  const lines = reviewBody.split('\n');
+  for (const raw of lines) {
+    // Strip leading markdown noise: list bullets, blockquotes, heading
+    // hashes, and bold/italic markers — so "**APPROVED**" or "- APPROVED"
+    // still read as a bare verdict line.
+    const line = raw
+      .replace(/^[\s>#*_-]+/, '')
+      .replace(/[*_`]+/g, '')
+      .trim();
+    if (/^APPROVED\b/i.test(line)) return true;
+  }
+  return false;
 }
 
 /// Pull the artifact body out of an assistant turn. Robust against the
