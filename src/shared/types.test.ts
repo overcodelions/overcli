@@ -30,6 +30,7 @@ describe('DEFAULT_SETTINGS', () => {
         },
       ],
       installedRegistryFlows: [],
+      updateChannel: 'stable',
     });
   });
 

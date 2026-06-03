@@ -94,10 +94,13 @@ jobs:
           elif [ "$RUNNER_OS" = "macOS" ]; then
             echo "No Apple credentials in repo secrets — building unsigned."
           fi
+          # -c.channel=nightly makes electron-builder emit nightly*.yml feed
+          # files and bake channel=nightly into the build, so installs follow
+          # the nightly auto-update channel (separate from stable `latest`).
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npx electron-builder --mac --arm64 --publish never
+            npx electron-builder --mac --arm64 -c.channel=nightly --publish never
           else
-            npx electron-builder --publish never
+            npx electron-builder -c.channel=nightly --publish never
           fi
 
       - name: Upload artifacts
@@ -110,6 +113,7 @@ jobs:
             release/*.exe
             release/*.AppImage
             release/*.deb
+            release/*.yml
           if-no-files-found: ignore
           retention-days: 1
 
