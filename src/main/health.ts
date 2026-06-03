@@ -53,7 +53,20 @@ export function probeBackendHealth(backend: Backend, override?: string): Backend
 
   // Fast check: does the binary execute and print a version? This also
   // verifies PATH/entitlement issues before we trust the CLI at all.
-  const versionRes = spawnSync(bin, ['--version'], { encoding: 'utf-8', timeout: 4000, env, shell });
+  //
+  // `input: ''` closes the child's stdin immediately (EOF). Some CLIs —
+  // codex notably — print an interactive "update available, update now?"
+  // prompt on launch and block waiting for an answer. With a closed stdin
+  // they get EOF and fall through instead of hanging until our timeout,
+  // which otherwise surfaces as a spurious `error` health badge / red-box
+  // preflight failure right when an update is pending.
+  const versionRes = spawnSync(bin, ['--version'], {
+    encoding: 'utf-8',
+    timeout: 4000,
+    env,
+    shell,
+    input: '',
+  });
   if (versionRes.error) {
     return { kind: 'error', message: versionRes.error.message };
   }
