@@ -22,7 +22,11 @@ import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow } from '../../shared/flows/schema';
 import { parseFlowYaml } from '../../shared/flows/yaml';
-import { validateFlow } from '../../shared/flows/validation';
+import {
+  validateFlow,
+  ARTIFACT_NAME_RE,
+  sanitizeArtifactName,
+} from '../../shared/flows/validation';
 import { FLOW_TEMPLATES } from '../../shared/flows/templates';
 import {
   pickDrafterBackend,
@@ -84,7 +88,9 @@ function systemPrompt(backend: Backend): string {
     '  inputs        — list of refs. May include "user_prompt" and outputs of EARLIER steps',
     '  tools         — list of tool ids. For claude/codex/gemini/copilot: Read, Write, Edit, Grep,',
     '                  Glob, Bash, WebFetch, Task. For ollama: read_file, list_dir, grep.',
-    '  output        — artifact name this step produces (e.g. plan.md, diff, review.md, pr_url)',
+    '  output        — artifact name this step produces. A SINGLE token of letters, digits, dot,',
+    '                  dash, or underscore only — NO spaces or slashes. Use snake_case or a file',
+    '                  extension (e.g. plan.md, diff, review.md, pr_url, audit_report).',
     '  permission_mode — optional. acceptEdits | bypassPermissions | default | plan | auto',
     '  pause_before  — optional bool. When true, the run pauses BEFORE this step so the user can',
     '                  review prior artifacts. NEVER set on the first step.',
@@ -234,6 +240,12 @@ function finalizeDraft(
   // collide with another flow named "drafted-flow".
   parsed.id = slugify(parsed.name) || 'drafted-flow';
 
+  // Salvage near-miss artifact names before validating. The model sometimes
+  // emits an `output` with spaces or slashes ("audit report", "zendesk
+  // metrics") — valid YAML the validator rejects. Coerce them to the allowed
+  // charset and rewire any input refs so handoff stays intact.
+  repairArtifactNames(parsed);
+
   const v = validateFlow(parsed);
   if (!v.ok) {
     return {
@@ -252,6 +264,27 @@ function stripCodeFences(text: string): string {
   const fenced = text.match(/^```(?:yaml|yml)?\n([\s\S]*?)\n```\s*$/);
   if (fenced) return fenced[1].trim();
   return text;
+}
+
+/// Rewrite any step `output` that violates ARTIFACT_NAME_RE into a valid
+/// name, then remap every input ref that pointed at the old name so the
+/// produced→consumed wiring survives the rename. Mutates `flow` in place.
+/// already-valid names and `user_prompt` pass through untouched.
+function repairArtifactNames(flow: Flow): void {
+  const rename = new Map<string, string>();
+  for (const step of flow.steps) {
+    const original = step.output;
+    if (typeof original !== 'string' || ARTIFACT_NAME_RE.test(original)) continue;
+    const fixed = sanitizeArtifactName(original);
+    if (!fixed || fixed === original) continue;
+    step.output = fixed;
+    rename.set(original, fixed);
+  }
+  if (rename.size === 0) return;
+  for (const step of flow.steps) {
+    if (!Array.isArray(step.inputs)) continue;
+    step.inputs = step.inputs.map((ref) => rename.get(ref) ?? ref);
+  }
 }
 
 function slugify(name: string): string {

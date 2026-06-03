@@ -29,7 +29,7 @@ export function CodexApprovalCard({ info, conversationId }: { info: CodexApprova
         <div className="mt-2 flex gap-2">
           <button
             onClick={() => void respond(conversationId, info.callId, info.kind, true)}
-            className="px-3 py-1 rounded text-xs bg-orange-500/25 text-orange-100 hover:bg-orange-500/40"
+            className="px-3 py-1 rounded text-xs bg-orange-500/90 text-white hover:bg-orange-500 dark:bg-orange-500/25 dark:text-orange-100 dark:hover:bg-orange-500/40"
           >
             Approve
           </button>

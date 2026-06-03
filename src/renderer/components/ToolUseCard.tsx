@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { useStore } from '../store';
 import { useInsideSubagentDrawer, useOpenFile } from '../openFile';
-import { useSubagentEvents, useTaskProgress } from '../runnersStore';
+import { useRunnerEvents, useSubagentEvents, useTaskProgress } from '../runnersStore';
 import { Diff } from './DiffView';
 
 /// Generic card for a single tool_use block. Specialized renderings (file
@@ -59,7 +59,7 @@ export function ToolUseCard({
     return <AskUserQuestionCard use={use} args={args} conversationId={conversationId} />;
   }
   if (use.name === 'ExitPlanMode') {
-    return <ExitPlanModeCard use={use} args={args} />;
+    return <ExitPlanModeCard args={args} conversationId={conversationId} />;
   }
   if (use.name === 'Workflow') {
     return <WorkflowCard use={use} args={args} result={result} conversationId={conversationId} />;
@@ -684,7 +684,7 @@ function AskUserQuestionCard({
           <button
             onClick={submit}
             disabled={!canSubmit}
-            className="text-xs px-3 py-1 rounded bg-blue-500/25 text-blue-100 hover:bg-blue-500/40 disabled:opacity-40"
+            className="text-xs px-3 py-1 rounded bg-accent text-white hover:bg-accent-600 disabled:opacity-40"
           >
             {hasOther ? 'Send reply' : 'Submit'}
           </button>
@@ -694,27 +694,72 @@ function AskUserQuestionCard({
   );
 }
 
-/// ExitPlanMode — claude proposed a plan and wants user approval. We
-/// submit "Approved, proceed" or "Denied, keep discussing" as the next
-/// user turn; claude will take it from there.
-function ExitPlanModeCard({ use, args }: { use: ToolUseBlock; args: Record<string, any> }) {
+/// ExitPlanMode — claude proposed a plan and wants user approval.
+///
+/// In plan mode the broker (CLI or SDK transport) gates ExitPlanMode like
+/// any other tool: it emits a permissionRequest and *blocks* Claude until
+/// we resolve it. Approve resolves `allow` (Claude leaves plan mode and
+/// implements in the same turn); Deny resolves `deny` (it stays in plan
+/// mode and revises). We must resolve that real request — auto-allowing it
+/// at the broker used to let the model barrel straight into coding while
+/// this card's buttons sat unclicked.
+///
+/// Modes that don't route ExitPlanMode through the broker (bypassPermissions
+/// never wires the prompt tool) leave no pending request; there the model
+/// has already proceeded, so we fall back to a follow-up message.
+function ExitPlanModeCard({
+  args,
+  conversationId: conversationIdProp,
+}: {
+  args: Record<string, any>;
+  conversationId?: UUID;
+}) {
   const plan = typeof args.plan === 'string' ? args.plan : '';
-  const [decided, setDecided] = useState<'approved' | 'denied' | null>(null);
   const send = useStore((s) => s.send);
+  const respondPermission = useStore((s) => s.respondPermission);
   const setPermissionMode = useStore((s) => s.setPermissionMode);
-  const convId = useStore((s) => s.selectedConversationId);
+  const selectedConversationId = useStore((s) => s.selectedConversationId);
+  const convId = conversationIdProp ?? selectedConversationId;
+  const events = useRunnerEvents(convId);
+
+  // The matching pending gate, if any. Only one plan is ever in flight per
+  // conversation, so the most recent ExitPlanMode request is ours.
+  const planReq = (() => {
+    if (!events) return undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const k = events[i].kind;
+      if (k.type === 'permissionRequest' && k.info.toolName === 'ExitPlanMode') return k.info;
+    }
+    return undefined;
+  })();
+
+  const [localDecided, setLocalDecided] = useState<'approved' | 'denied' | null>(null);
+  const decided: 'approved' | 'denied' | null =
+    planReq?.decided === 'allow'
+      ? 'approved'
+      : planReq?.decided === 'deny'
+        ? 'denied'
+        : localDecided;
 
   const respond = (approved: boolean) => {
     if (!convId) return;
-    setDecided(approved ? 'approved' : 'denied');
-    const msg = approved
-      ? 'Approved — go ahead with the plan.'
-      : 'Denied — let\'s keep iterating on the plan first.';
-    // Approve drops out of plan mode so the next turn actually executes;
-    // setPermissionMode updates the store synchronously, so the send()
-    // below picks up 'default' as the pending mode and commits it.
+    setLocalDecided(approved ? 'approved' : 'denied');
+    // Approve drops out of plan mode so subsequent turns execute;
+    // setPermissionMode is synchronous in the store, so this commits.
     if (approved) void setPermissionMode(convId, 'default');
-    void send(convId, msg);
+    if (planReq && !planReq.decided) {
+      // Resolve the real gate Claude is blocked on.
+      void respondPermission(convId, planReq.requestId, approved);
+      return;
+    }
+    // No pending gate (e.g. bypassPermissions): the model already left plan
+    // mode, so route the decision as the next user turn.
+    void send(
+      convId,
+      approved
+        ? 'Approved — go ahead with the plan.'
+        : 'Denied — let\'s keep iterating on the plan first.',
+    );
   };
 
   return (
