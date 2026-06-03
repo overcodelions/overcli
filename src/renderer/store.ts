@@ -20,6 +20,7 @@ import {
   Conversation,
   DEFAULT_SETTINGS,
   MarketplaceSkill,
+  McpCatalogItem,
   Project,
   SkillTarget,
   StreamEvent,
@@ -158,6 +159,9 @@ interface StoreState {
   installedReviewers: Record<string, boolean>;
   capabilities: CapabilitiesReport | null;
   marketplaceSkills: MarketplaceSkill[] | null;
+  /// Curated MCP server catalog with per-CLI installed status. Null until
+  /// the first `mcp:listCatalog` resolves.
+  mcpCatalog: McpCatalogItem[] | null;
   /// Live Ollama server status. Pushed from main via the
   /// `ollamaServerStatus` event. Used to warn users in-chat when they're
   /// talking to an Ollama-backed conversation and the server is down.
@@ -362,6 +366,29 @@ interface StoreState {
   uninstallMarketplaceSkill(skillId: string, targets: SkillTarget[]): Promise<{ ok: true } | { ok: false; error: string }>;
   removeInstalledSkill(skillPath: string): Promise<{ ok: true } | { ok: false; error: string }>;
   copyMcpToCli(name: string, fromCli: Backend, toCli: Backend): Promise<{ ok: true } | { ok: false; error: string }>;
+  refreshMcpCatalog(): Promise<void>;
+  installMcpCatalogEntry(
+    id: string,
+    targets: Backend[],
+    secrets?: Record<string, string>,
+  ): Promise<
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string }
+  >;
+  uninstallMcpCatalogEntry(
+    id: string,
+    targets: Backend[],
+  ): Promise<
+    | { ok: true; removed: Backend[]; errors: string[] }
+    | { ok: false; error: string }
+  >;
+  loginMcpServer(
+    cli: Backend,
+    name: string,
+  ): Promise<
+    | { ok: true; output: string }
+    | { ok: false; error: string; output?: string }
+  >;
   addMcpServer(
     name: string,
     config: Record<string, unknown>,
@@ -632,6 +659,7 @@ export const useStore = create<StoreState>((set, get) => ({
   installedReviewers: {},
   capabilities: null,
   marketplaceSkills: null,
+  mcpCatalog: null,
   ollamaServerStatus: 'unknown',
   welcomeFocusToken: 0,
   lastSelectedAt: {},
@@ -700,6 +728,7 @@ export const useStore = create<StoreState>((set, get) => ({
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
     void get().refreshMarketplaceSkills();
+    void get().refreshMcpCatalog();
     for (const p of state.projects) void get().refreshProjectGitStatus(p.id);
     // Seed Ollama server status once at startup so the conversation
     // banner can tell on first paint whether the local server is up.
@@ -2347,6 +2376,33 @@ export const useStore = create<StoreState>((set, get) => ({
     const res = await window.overcli.invoke('capabilities:addMcp', { name, config, targets });
     if (res.ok) await get().refreshCapabilities();
     return res;
+  },
+
+  async refreshMcpCatalog() {
+    const list = await window.overcli.invoke('mcp:listCatalog');
+    set({ mcpCatalog: list });
+  },
+
+  async installMcpCatalogEntry(id, targets, secrets) {
+    const res = await window.overcli.invoke('mcp:installCatalog', { id, targets, secrets });
+    if (res.ok) {
+      await get().refreshMcpCatalog();
+      await get().refreshCapabilities();
+    }
+    return res;
+  },
+
+  async uninstallMcpCatalogEntry(id, targets) {
+    const res = await window.overcli.invoke('mcp:uninstallCatalog', { id, targets });
+    if (res.ok) {
+      await get().refreshMcpCatalog();
+      await get().refreshCapabilities();
+    }
+    return res;
+  },
+
+  async loginMcpServer(cli, name) {
+    return window.overcli.invoke('mcp:login', { cli, name });
   },
 
   async refreshProjectGitStatus(projectId) {

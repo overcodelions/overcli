@@ -8,6 +8,8 @@ import {
   formatTomlPairs,
   parseTomlPairs,
   readMcpServer,
+  removeMcpServer,
+  removeMcpServerFromTargets,
   removeTomlSection,
   writeMcpServer,
 } from './mcpConfig';
@@ -303,5 +305,85 @@ describe('addMcpServerToTargets', () => {
       expect(res.error).toMatch(/codex: /);
       expect(res.error).toMatch(/gemini: /);
     }
+  });
+});
+
+describe('removeMcpServer', () => {
+  it('deletes a server from Claude JSON, leaving siblings intact', () => {
+    fs.mkdirSync(path.dirname(paths.claude), { recursive: true });
+    fs.writeFileSync(
+      paths.claude,
+      JSON.stringify({ mcpServers: { a: { command: 'x' }, linear: { command: 'npx' } } }),
+    );
+    removeMcpServer('claude', 'linear', paths);
+    const parsed = JSON.parse(fs.readFileSync(paths.claude, 'utf-8'));
+    expect(parsed.mcpServers).toEqual({ a: { command: 'x' } });
+    expect(fs.existsSync(`${paths.claude}.bak`)).toBe(true);
+  });
+
+  it('is a no-op when the server is absent (no file, no backup)', () => {
+    removeMcpServer('claude', 'missing', paths);
+    expect(fs.existsSync(paths.claude)).toBe(false);
+
+    fs.mkdirSync(path.dirname(paths.claude), { recursive: true });
+    fs.writeFileSync(paths.claude, JSON.stringify({ mcpServers: { a: { command: 'x' } } }));
+    removeMcpServer('claude', 'missing', paths);
+    expect(fs.existsSync(`${paths.claude}.bak`)).toBe(false);
+    expect(JSON.parse(fs.readFileSync(paths.claude, 'utf-8')).mcpServers).toEqual({
+      a: { command: 'x' },
+    });
+  });
+
+  it('removes a Codex section and its env subtable, preserving others', () => {
+    fs.mkdirSync(path.dirname(paths.codex), { recursive: true });
+    fs.writeFileSync(
+      paths.codex,
+      [
+        '[other]',
+        'preserved = true',
+        '',
+        '[mcp_servers.linear]',
+        'command = "npx"',
+        '',
+        '[mcp_servers.linear.env]',
+        'LINEAR_API_KEY = "k"',
+        '',
+      ].join('\n'),
+    );
+    removeMcpServer('codex', 'linear', paths);
+    const text = fs.readFileSync(paths.codex, 'utf-8');
+    expect(text).toContain('[other]');
+    expect(text).toContain('preserved = true');
+    expect(text).not.toContain('mcp_servers.linear');
+    expect(text).not.toContain('LINEAR_API_KEY');
+  });
+});
+
+describe('removeMcpServerFromTargets', () => {
+  it('rejects empty name and empty target set', () => {
+    expect(removeMcpServerFromTargets({ name: '', targets: ['claude'] }, paths)).toEqual({
+      ok: false,
+      error: 'Server name is required.',
+    });
+    expect(removeMcpServerFromTargets({ name: 'linear', targets: [] }, paths)).toEqual({
+      ok: false,
+      error: 'Pick at least one MCP-capable CLI.',
+    });
+  });
+
+  it('fan-deletes across CLIs and reports which were touched', () => {
+    const config = { command: 'npx', args: ['-y', '@linear/mcp'] };
+    addMcpServerToTargets(
+      { name: 'linear', config, targets: ['claude', 'codex', 'gemini'] },
+      paths,
+    );
+    const res = removeMcpServerFromTargets(
+      { name: 'linear', targets: ['claude', 'codex', 'gemini', 'copilot'] },
+      paths,
+    );
+    expect(res).toEqual({ ok: true, removed: ['claude', 'codex', 'gemini'], errors: [] });
+    expect(readMcpServer('claude', 'linear', paths)).toBeNull();
+    expect(readMcpServer('codex', 'linear', paths)).toBeNull();
+    expect(readMcpServer('gemini', 'linear', paths)).toBeNull();
   });
 });
