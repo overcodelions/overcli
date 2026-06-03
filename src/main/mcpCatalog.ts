@@ -235,19 +235,17 @@ const CATALOG: CatalogEntry[] = [
     transport: 'stdio',
     targets: ALL_CLIS,
     // AWS Labs servers are Python — run with uvx, not npx. Region carries a
-    // default so users who only paste keys still get a working server.
+    // default so the server starts; auth comes from the SDK's default
+    // credential chain, so we collect no secrets here (see authNote).
     config: { command: 'uvx', args: ['awslabs.aws-api-mcp-server@latest'], env: { AWS_REGION: 'us-east-1' } },
+    authNote:
+      'No keys to paste — the server uses your machine\'s AWS credentials via the standard SDK chain (env vars, `~/.aws/credentials`/`config`, SSO, or an IAM role). Run `aws configure` or `aws sso login` first.',
     secrets: [
       {
-        key: 'AWS_ACCESS_KEY_ID',
-        label: 'AWS access key ID',
-        help: 'From an IAM user/role scoped to the actions you want to expose. Prefer a profile or SSO via the manual "Add MCP server" form if you avoid long-lived keys.',
-        link: 'https://console.aws.amazon.com/iam/home#/security_credentials',
-      },
-      {
-        key: 'AWS_SECRET_ACCESS_KEY',
-        label: 'AWS secret access key',
-        help: 'The secret paired with the access key ID above.',
+        key: 'AWS_PROFILE',
+        label: 'AWS profile (optional)',
+        help: 'Leave blank to use your default profile / credential chain. Set it to a named profile from `~/.aws/config` to target a specific account. Not a secret.',
+        optional: true,
       },
     ],
     docsUrl: 'https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server',

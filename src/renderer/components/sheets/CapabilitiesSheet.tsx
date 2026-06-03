@@ -914,7 +914,7 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
             }
           }
         } else {
-          const missing = item.secrets.filter((s) => !secrets[s.key]?.trim());
+          const missing = item.secrets.filter((s) => !s.optional && !secrets[s.key]?.trim());
           if (missing.length > 0) {
             setError(`Enter: ${missing.map((m) => m.label).join(', ')}`);
             return;
@@ -1023,7 +1023,7 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
 
       {open && (
         <div className="mt-3 rounded-lg border border-accent/30 bg-accent/[0.04] p-3">
-          {item.transport === 'remote' && item.authNote && (
+          {item.authNote && (
             <div className="mb-2.5 text-[11px] text-ink-muted leading-snug">{item.authNote}</div>
           )}
 
@@ -1034,7 +1034,7 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
                   {field.label}
                 </label>
                 <input
-                  type="password"
+                  type={field.optional ? 'text' : 'password'}
                   value={secrets[field.key] ?? ''}
                   onChange={(e) => setSecrets((s) => ({ ...s, [field.key]: e.target.value }))}
                   placeholder={field.key}

@@ -159,7 +159,7 @@ function OllamaServerDownBanner({
       ? 'Ollama server errored — check the Local tab for details.'
       : 'Ollama server isn\'t running. Start it to send messages.';
   return (
-    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-center gap-3">
+    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 flex items-center gap-3">
       <span className="flex-1">{label}</span>
       <button
         onClick={async () => {
@@ -171,13 +171,13 @@ function OllamaServerDownBanner({
           }
         }}
         disabled={starting}
-        className="px-2 py-1 rounded border border-amber-400/50 text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
+        className="px-2 py-1 rounded border border-amber-400/50 text-amber-800 dark:text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
       >
         {starting ? 'Starting…' : 'Start server'}
       </button>
       <button
         onClick={onOpenLocalTab}
-        className="px-2 py-1 rounded text-amber-200/70 hover:text-amber-100"
+        className="px-2 py-1 rounded text-amber-700/70 dark:text-amber-200/70 hover:text-amber-900 dark:hover:text-amber-100"
       >
         Open Local tab
       </button>
@@ -213,7 +213,7 @@ function BackendAuthBanner({
     : `You're signed out of ${backendName(backend)}. Sign in to send messages.`;
 
   return (
-    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200 flex items-center gap-3">
+    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 flex items-center gap-3">
       <span className="flex-1">{label}</span>
       {launchError && <span className="text-amber-300/80">{launchError}</span>}
       <button
@@ -229,13 +229,13 @@ function BackendAuthBanner({
           }
         }}
         disabled={launching}
-        className="px-2 py-1 rounded border border-amber-400/50 text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
+        className="px-2 py-1 rounded border border-amber-400/50 text-amber-800 dark:text-amber-100 hover:bg-amber-500/20 disabled:opacity-50"
       >
         {launching ? 'Opening Terminal…' : launched ? 'Reopen Terminal' : 'Sign in'}
       </button>
       <button
         onClick={onRefresh}
-        className="px-2 py-1 rounded text-amber-200/70 hover:text-amber-100"
+        className="px-2 py-1 rounded text-amber-700/70 dark:text-amber-200/70 hover:text-amber-900 dark:hover:text-amber-100"
       >
         Refresh
       </button>

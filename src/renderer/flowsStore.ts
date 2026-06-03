@@ -229,8 +229,27 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       if (!s.editorDraft) return {};
       const steps = s.editorDraft.steps.slice();
       if (index < 0 || index >= steps.length) return {};
-      steps.splice(index, 1);
-      return { editorDraft: { ...s.editorDraft, steps } };
+      const [removed] = steps.splice(index, 1);
+
+      // Clean up references to the removed step so the remaining steps stay
+      // valid. Drop its output from later steps' inputs (unless another
+      // remaining step still produces an artifact by that name), and clear
+      // any onFail goto that targeted the removed step.
+      const stillProduced = new Set(
+        steps.map((st) => st.output).filter(Boolean),
+      );
+      const cleaned = steps.map((st) => {
+        let next = st;
+        if (removed.output && !stillProduced.has(removed.output) && st.inputs.includes(removed.output)) {
+          next = { ...next, inputs: next.inputs.filter((ref) => ref !== removed.output) };
+        }
+        if (next.onFail?.action === 'goto' && next.onFail.target === removed.id) {
+          next = { ...next, onFail: { action: 'pause' } };
+        }
+        return next;
+      });
+
+      return { editorDraft: { ...s.editorDraft, steps: cleaned } };
     });
   },
 

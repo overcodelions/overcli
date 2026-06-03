@@ -22,7 +22,22 @@ export interface FlowValidationResult {
 /// Exported so storage-layer path resolution can reject a malformed id
 /// before it reaches the filesystem (a flow id becomes a filename).
 export const SLUG_RE = /^[a-z][a-z0-9_-]*$/;
-const ARTIFACT_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+/// Artifact (step `output`) names: a single token of letters, digits, dot,
+/// dash, underscore. Exported so the AI drafter can both steer the model
+/// toward valid names and repair near-misses (see `sanitizeArtifactName`).
+export const ARTIFACT_NAME_RE = /^[a-zA-Z0-9._-]+$/;
+
+/// Coerce a free-text artifact name into one that satisfies
+/// `ARTIFACT_NAME_RE`: collapse any run of disallowed characters (spaces,
+/// slashes, punctuation) to a single underscore and trim leading/trailing
+/// separators. Returns '' if nothing usable remains. Used to salvage drafted
+/// flows where the model emitted e.g. "audit report" instead of "audit_report".
+export function sanitizeArtifactName(name: string): string {
+  return name
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^[_-]+|[_-]+$/g, '');
+}
 
 export function validateFlow(flow: Flow): FlowValidationResult {
   const errors: FlowValidationError[] = [];
