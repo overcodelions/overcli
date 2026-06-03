@@ -212,6 +212,55 @@ describe('removeStep', () => {
     useFlowsStore.getState().removeStep(99);
     expect(useFlowsStore.getState().editorDraft!.steps).toHaveLength(before);
   });
+
+  it("drops the removed step's output from later steps' inputs", () => {
+    useFlowsStore.setState({
+      editorDraft: minimalFlow({
+        steps: [
+          { id: 'plan', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: [], output: 'plan.md' },
+          { id: 'build', participantId: 'primary', role: 'implementer', inputs: ['user_prompt', 'plan.md'], tools: [], output: 'diff' },
+        ],
+      }),
+    });
+    useFlowsStore.getState().removeStep(0);
+    const steps = useFlowsStore.getState().editorDraft!.steps;
+    expect(steps).toHaveLength(1);
+    expect(steps[0].id).toBe('build');
+    expect(steps[0].inputs).toEqual(['user_prompt']);
+  });
+
+  it('keeps the input if another remaining step still produces that output', () => {
+    useFlowsStore.setState({
+      editorDraft: minimalFlow({
+        steps: [
+          { id: 'plan_a', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: [], output: 'plan.md' },
+          { id: 'plan_b', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: [], output: 'plan.md' },
+          { id: 'build', participantId: 'primary', role: 'implementer', inputs: ['plan.md'], tools: [], output: 'diff' },
+        ],
+      }),
+    });
+    useFlowsStore.getState().removeStep(0);
+    const steps = useFlowsStore.getState().editorDraft!.steps;
+    expect(steps.find((s) => s.id === 'build')!.inputs).toEqual(['plan.md']);
+  });
+
+  it('clears an onFail goto that targeted the removed step', () => {
+    useFlowsStore.setState({
+      editorDraft: minimalFlow({
+        steps: [
+          { id: 'plan', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: [], output: 'plan.md' },
+          {
+            id: 'build', participantId: 'primary', role: 'implementer', inputs: ['plan.md'], tools: [], output: 'diff',
+            onFail: { action: 'goto', target: 'plan', maxRetries: 2 },
+          },
+        ],
+      }),
+    });
+    useFlowsStore.getState().removeStep(0);
+    const build = useFlowsStore.getState().editorDraft!.steps.find((s) => s.id === 'build')!;
+    expect(build.onFail).toEqual({ action: 'pause' });
+    expect(build.inputs).toEqual([]);
+  });
 });
 
 describe('moveStep', () => {

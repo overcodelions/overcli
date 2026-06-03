@@ -112,6 +112,40 @@ describe('draftFlowFromPrompt', () => {
     }
   });
 
+  it('repairs near-miss output names and rewires input refs', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Audit Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: pull',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: researcher',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: zendesk metrics',
+        '  - id: report',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: reviewer',
+        '    inputs: [zendesk metrics]',
+        '    tools: [Read]',
+        '    output: audit report',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'Audit tickets' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps[0].output).toBe('zendesk_metrics');
+      expect(result.flow.steps[1].output).toBe('audit_report');
+      // The downstream input ref tracked the renamed output.
+      expect(result.flow.steps[1].inputs).toEqual(['zendesk_metrics']);
+    }
+  });
+
   it('drafts Claude through runner.oneShot on the default cli transport', async () => {
     const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('CLI Drafted') });
     const deps: DraftDeps = {
