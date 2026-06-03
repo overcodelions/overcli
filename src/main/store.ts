@@ -26,6 +26,10 @@ interface StoreState {
   settings: AppSettings;
   selectedConversationId?: UUID;
   lastInit?: SystemInitInfo;
+  /// Epoch-ms of the last time we triggered each backend CLI's self-updater
+  /// on startup. Keyed by Backend. Used to throttle the headless prime to
+  /// roughly once per day so we don't re-spawn updaters on every launch.
+  backendUpdateChecks?: Record<string, number>;
 }
 
 function storePath(): string {
@@ -119,6 +123,11 @@ export const Store = {
   setLastInit(info: SystemInitInfo): void {
     const s = current();
     s.lastInit = info;
+    save();
+  },
+  setBackendUpdateChecks(checks: Record<string, number>): void {
+    const s = current();
+    s.backendUpdateChecks = checks;
     save();
   },
 };
