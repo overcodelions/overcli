@@ -539,6 +539,12 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           value={(local.claudeTransport ?? 'cli') === 'sdk'}
           onChange={(v) => patch({ claudeTransport: v ? 'sdk' : 'cli' })}
         />
+        <Toggle
+          label="Claude MCP debug logging"
+          help="Launch the Claude CLI with `--debug mcp` so MCP server startup and registration diagnostics print to stderr. View them in the Debug sheet (enable “Show Debug button” above). Useful for diagnosing MCP issues like the permission broker failing to register in a crowded config. Noisy — leave off for normal use."
+          value={local.claudeMcpDebug ?? false}
+          onChange={(v) => patch({ claudeMcpDebug: v })}
+        />
       </Group>
     </div>
   );
