@@ -9,6 +9,7 @@ import { FileEditorPane } from './FileEditorPane';
 import { ExplorerPane } from './ExplorerPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
+import { RunningIndicator } from './RunningIndicator';
 import { useConversation } from '../hooks';
 import { Backend } from '@shared/types';
 import { backendName } from '../theme';
@@ -117,6 +118,7 @@ export function ConversationPane() {
         )}
         <ChatView conversationId={convId} />
         <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
+          <RunningIndicator conversationId={convId} />
           <ChangesBar files={gitStatus?.changes ?? []} />
           <InputBar conversationId={convId} />
           <StatsFooter conversationId={convId} />
