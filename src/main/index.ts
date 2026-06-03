@@ -14,6 +14,7 @@ import { Store } from './store';
 import { RunnerManager } from './runner';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
+import { primeBackendUpdates } from './backendUpdater';
 import {
   runGit,
   createWorktree,
@@ -40,6 +41,13 @@ import {
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
+import {
+  listMcpCatalog,
+  installMcpCatalogEntry,
+  uninstallMcpCatalogEntry,
+} from './mcpCatalog';
+import { loginCodexMcp } from './mcpLogin';
+import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -242,6 +250,38 @@ function registerIpc(): void {
     }
   });
   ipcMain.handle('capabilities:addMcp', (_e, args) => addMcpServerToTargets(args));
+  ipcMain.handle('mcp:listCatalog', () => listMcpCatalog());
+  ipcMain.handle('mcp:installCatalog', (_e, { id, targets, secrets }) =>
+    installMcpCatalogEntry(id, targets, secrets),
+  );
+  ipcMain.handle('mcp:uninstallCatalog', (_e, { id, targets }) =>
+    uninstallMcpCatalogEntry(id, targets),
+  );
+  ipcMain.handle('mcp:login', async (_e, { cli, name }) => {
+    if (cli !== 'codex') {
+      return {
+        ok: false as const,
+        error:
+          cli === 'claude'
+            ? 'Claude logs in to remote MCP servers from inside a session — open a Claude chat and run /mcp.'
+            : `overcli can't trigger login for ${cli} yet.`,
+      };
+    }
+    const settings = Store.load().settings;
+    const binary = resolveBackendPath('codex', settings.backendPaths.codex);
+    if (!binary) {
+      return { ok: false as const, error: 'Codex binary not found. Set its path in Settings.' };
+    }
+    return loginCodexMcp({
+      binary,
+      name,
+      env: buildBackendEnv(process.env, binary),
+      useShell: backendNeedsShell(binary),
+      onUrl: (url) => {
+        if (isSafeExternalUrl(url)) shell.openExternal(url);
+      },
+    });
+  });
 
   ipcMain.handle('fs:pickDirectory', async () => {
     if (!mainWindow) return null;
@@ -1317,6 +1357,11 @@ app.whenReady().then(() => {
   registerIpc();
   buildMenu();
   createWindow();
+
+  // Nudge self-updating CLIs (claude, codex) in the background, hidden, so
+  // they're on the latest version next time the user runs a turn. Throttled
+  // to once/day and fire-and-forget — never blocks window creation.
+  primeBackendUpdates();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
