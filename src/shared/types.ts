@@ -722,6 +722,12 @@ export interface AppSettings {
   /// restrictions on `-p` and exposes typed events / direct permission
   /// callbacks. Opt-in while the SDK transport is being built out.
   claudeTransport?: 'cli' | 'sdk';
+  /// When true, the Claude CLI is launched with `--debug mcp`, which prints
+  /// MCP server startup/registration diagnostics to stderr. overcli forwards
+  /// stderr as `stderr` stream events, so the output shows up in the Debug
+  /// viewer — use it to diagnose MCP issues (e.g. the permission broker not
+  /// registering in a crowded MCP config). Off by default; it's noisy.
+  claudeMcpDebug?: boolean;
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
@@ -1424,6 +1430,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showActiveSidebarSection: true,
   showDebug: false,
   claudeTransport: 'cli',
+  claudeMcpDebug: false,
   starredFlows: [],
   flowRegistries: [
     { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
