@@ -17,7 +17,6 @@ import { TurnCaption } from './TurnCaption';
 import { SystemNotice } from './SystemNotice';
 import { MetaReminder } from './MetaReminder';
 import { EasterEggBubble } from './EasterEggBubble';
-import { ActivityStrip } from './ActivityStrip';
 import { useConversation } from '../hooks';
 
 export function ChatView({ conversationId }: { conversationId: UUID }) {
@@ -25,7 +24,6 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
   const showToolActivity = useStore((s) => s.showToolActivity);
   const events = runner?.events ?? [];
   const isRunning = runner?.isRunning ?? false;
-  const activityLabel = runner?.activityLabel ?? '';
   const error = runner?.errorMessage;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const followingRef = useRef(true);
@@ -72,10 +70,6 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
     return { verdictIds: verdicts, intermediateIds: intermediates };
   }, [visibleEvents]);
   const currentReveal = useLatestToolReveal(events, toolResultIndex, showToolActivity, conversationId);
-  const pendingSubagents = useMemo(
-    () => countPendingSubagents(events, toolResultIndex),
-    [events, toolResultIndex],
-  );
 
   // Streaming tail-follow: virtuoso's `followOutput` only fires when the
   // data array length changes, but during streaming the same event mutates
@@ -161,21 +155,6 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
       </div>
     );
   }
-
-  const showActivityStrip =
-    isRunning && (activityLabel || !showToolActivity || pendingSubagents > 0);
-  const activityStripLabel = showActivityStrip
-    ? withSubagentSuffix(
-        // When tool activity is hidden, the user loses the visible signal
-        // of which tool is running — so promote the latest in-flight tool
-        // call to the strip. Falls back to whatever generic label the
-        // runner set ("Thinking…", "Running tools…") when no tool is
-        // currently pending.
-        (!showToolActivity && latestPendingToolLabel(events, toolResultIndex)) ||
-          activityLabel,
-        pendingSubagents,
-      )
-    : '';
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -295,7 +274,6 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
                   />
                 </div>
               )}
-              {showActivityStrip && <ActivityStrip label={activityStripLabel} />}
               {error && <SystemNotice text={error} />}
             </div>
           ),
@@ -959,7 +937,7 @@ function filterRendered(
 /// doesn't have a matching result yet. Rendered in the activity strip
 /// when `showToolActivity` is off so the user still sees *something*
 /// flicker by as each tool fires.
-function countPendingSubagents(
+export function countPendingSubagents(
   events: StreamEvent[],
   toolResultIndex: Map<string, ToolResultBlock>,
 ): number {
@@ -973,14 +951,14 @@ function countPendingSubagents(
   return n;
 }
 
-function withSubagentSuffix(label: string, pending: number): string {
+export function withSubagentSuffix(label: string, pending: number): string {
   if (pending <= 0) return label;
   const note = pending === 1 ? '1 subagent running' : `${pending} subagents running`;
   const base = label?.trim();
   return base ? `${base} · ${note}` : `${note}…`;
 }
 
-function latestPendingToolLabel(
+export function latestPendingToolLabel(
   events: StreamEvent[],
   toolResultIndex: Map<string, ToolResultBlock>,
 ): string | null {
@@ -1079,7 +1057,7 @@ function indexToolUses(events: StreamEvent[]): Map<string, ToolUseBlock> {
   return idx;
 }
 
-function indexToolResults(events: StreamEvent[]): Map<string, ToolResultBlock> {
+export function indexToolResults(events: StreamEvent[]): Map<string, ToolResultBlock> {
   const idx = new Map<string, ToolResultBlock>();
   for (const e of events) {
     if (e.kind.type === 'toolResult') {
