@@ -2545,9 +2545,11 @@ export class RunnerManager {
       if (this.maybeRetryStaleSession(conversationId, active)) {
         return;
       }
-      const tail = (active.recentStderr || active.stderrBuffer || active.stdoutBuffer || '')
-        .trim()
-        .slice(-500);
+      // CLI errors lead with the cause and trail with noise (e.g. a dump
+      // of every MCP tool name), so show the head — not just the tail —
+      // keeping a slice of the end for context.
+      const raw = (active.recentStderr || active.stderrBuffer || active.stdoutBuffer || '').trim();
+      const tail = raw.length > 600 ? `${raw.slice(0, 400)} … ${raw.slice(-200)}` : raw;
       this.emit({
         type: 'error',
         conversationId,
