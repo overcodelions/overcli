@@ -225,6 +225,45 @@ const CATALOG: CatalogEntry[] = [
     docsUrl: 'https://developers.hubspot.com/mcp',
   },
 
+  // ---------- Cloud platforms (stdio) ----------
+  {
+    id: 'aws',
+    name: 'AWS',
+    description:
+      'Run AWS CLI commands and query any AWS service via the official AWS API MCP server. Requires the `uv` toolchain (uvx) on PATH.',
+    category: 'Cloud',
+    transport: 'stdio',
+    targets: ALL_CLIS,
+    // AWS Labs servers are Python — run with uvx, not npx. Region carries a
+    // default so users who only paste keys still get a working server.
+    config: { command: 'uvx', args: ['awslabs.aws-api-mcp-server@latest'], env: { AWS_REGION: 'us-east-1' } },
+    secrets: [
+      {
+        key: 'AWS_ACCESS_KEY_ID',
+        label: 'AWS access key ID',
+        help: 'From an IAM user/role scoped to the actions you want to expose. Prefer a profile or SSO via the manual "Add MCP server" form if you avoid long-lived keys.',
+        link: 'https://console.aws.amazon.com/iam/home#/security_credentials',
+      },
+      {
+        key: 'AWS_SECRET_ACCESS_KEY',
+        label: 'AWS secret access key',
+        help: 'The secret paired with the access key ID above.',
+      },
+    ],
+    docsUrl: 'https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server',
+  },
+  {
+    id: 'google-cloud-run',
+    name: 'Google Cloud Run',
+    description:
+      'Deploy, list, and manage Google Cloud Run services and source via the official server. Authenticates with your local gcloud Application Default Credentials — run `gcloud auth application-default login` first.',
+    category: 'Cloud',
+    transport: 'stdio',
+    targets: ALL_CLIS,
+    config: { command: 'npx', args: ['-y', '@google-cloud/cloud-run-mcp'] },
+    docsUrl: 'https://github.com/GoogleCloudPlatform/cloud-run-mcp',
+  },
+
   // ---------- stdio / no auth ----------
   {
     id: 'sequential-thinking',

@@ -809,6 +809,7 @@ const MCP_CAT_META: Record<string, { color: string; icon: IconKey }> = {
   'Productivity':  { color: '#b587ff', icon: 'check' },
   'Search & web':  { color: '#36cfc9', icon: 'cloud' },
   'CRM & product': { color: '#ec4899', icon: 'book' },
+  'Cloud':         { color: '#ff9900', icon: 'cloud' },
   'Utilities':     { color: '#f59e0b', icon: 'server' },
 };
 
@@ -957,7 +958,7 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
               <span className="text-[12.5px] font-semibold text-ink truncate">{item.name}</span>
               <span
                 className="shrink-0 text-[9px] px-1 py-0.5 rounded border border-card-strong text-ink-faint uppercase tracking-wider"
-                title={item.transport === 'remote' ? 'Hosted server (OAuth login in CLI)' : 'Runs locally via npx'}
+                title={item.transport === 'remote' ? 'Hosted server (OAuth login in CLI)' : 'Runs locally (npx/uvx)'}
               >
                 {item.transport === 'remote' ? 'Remote' : 'Local'}
               </span>
