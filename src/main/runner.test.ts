@@ -10,7 +10,11 @@ import {
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
-import { isStaleSessionError, resumeSessionAfterParamChange } from './runner';
+import {
+  isBrokerPromptToolMissingError,
+  isStaleSessionError,
+  resumeSessionAfterParamChange,
+} from './runner';
 import type { StreamEvent } from '../shared/types';
 
 describe('resumeSessionAfterParamChange', () => {
@@ -64,6 +68,31 @@ describe('isStaleSessionError', () => {
   it('returns false for empty / non-stale output', () => {
     expect(isStaleSessionError('')).toBe(false);
     expect(isStaleSessionError('rate limit exceeded')).toBe(false);
+  });
+});
+
+describe('isBrokerPromptToolMissingError', () => {
+  it('matches the real "permission-prompt-tool not found" failure', () => {
+    const stderr =
+      'Error: MCP tool mcp__overcli__approve (passed via --permission-prompt-tool) not found. ' +
+      'Available MCP tools: mcp__claude_ai_Unifyr_MCP__authenticate, mcp__aws-knowledge-mcp-server__aws___recommend';
+    expect(isBrokerPromptToolMissingError(stderr)).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    expect(
+      isBrokerPromptToolMissingError(
+        'MCP TOOL MCP__OVERCLI__APPROVE PASSED VIA --PERMISSION-PROMPT-TOOL NOT FOUND',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not fire on unrelated tool-not-found errors', () => {
+    // A different MCP tool missing, or a stale-session "not found", must
+    // not trigger the SDK fallback.
+    expect(isBrokerPromptToolMissingError('Tool mcp__github__create_issue not found')).toBe(false);
+    expect(isBrokerPromptToolMissingError('No conversation found with session ID abc')).toBe(false);
+    expect(isBrokerPromptToolMissingError('')).toBe(false);
   });
 });
 

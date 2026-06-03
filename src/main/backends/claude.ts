@@ -36,6 +36,12 @@ export const claudeBackend: BackendSpec = {
       a.push('--permission-mode', args.permissionMode);
     }
     if (args.effortLevel) a.push('--thinking-effort', args.effortLevel);
+    // MCP debug logging. Prints server startup/registration diagnostics to
+    // stderr (which the runner forwards to the Debug viewer) — used to
+    // diagnose MCP issues like the permission broker failing to register in
+    // a crowded config. `--debug mcp` is the current form; `--mcp-debug` is
+    // deprecated.
+    if (args.mcpDebug) a.push('--debug', 'mcp');
     // In bypassPermissions mode Claude Code auto-allows everything
     // without prompting — wiring our permission-prompt-tool would force
     // it to route tool checks through us anyway, defeating the mode.
