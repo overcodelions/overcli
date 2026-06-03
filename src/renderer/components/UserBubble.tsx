@@ -9,10 +9,11 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
   // bubble — the flow driver is speaking, not the human. This covers both
   // the live form (a marker-prefixed display text) and the reloaded form
   // (the raw model prompt, restored from the CLI transcript after a
-  // restart). They never carry attachments (those go to the model via the
-  // step prompt, not the visible turn), so we hand the text to FlowStepCards.
+  // restart). Launch attachments ride along with the first step that
+  // consumes the user prompt; FlowStepCards renders them so the images the
+  // user dropped in are visible on the step card, not just sent to the model.
   if (isFlowStepTurn(text)) {
-    return <FlowStepCards text={text} />;
+    return <FlowStepCards text={text} attachments={attachments} />;
   }
 
   const hasText = text && text.trim().length > 0;

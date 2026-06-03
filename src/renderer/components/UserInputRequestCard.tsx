@@ -123,7 +123,7 @@ export function UserInputRequestCard({
           <button
             onClick={submit}
             disabled={info.questions.length === 0}
-            className="text-xs px-3 py-1 rounded bg-blue-500/25 text-blue-100 hover:bg-blue-500/40 disabled:opacity-40"
+            className="text-xs px-3 py-1 rounded bg-accent text-white hover:bg-accent-600 disabled:opacity-40"
           >
             Submit
           </button>

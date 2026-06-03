@@ -566,6 +566,10 @@ export interface McpSecretField {
   help?: string;
   /// URL to the provider's token page.
   link?: string;
+  /// When true, the field is non-blocking (Apply works if left empty) and
+  /// rendered as plain text rather than a masked secret — e.g. a profile
+  /// name that isn't actually a credential.
+  optional?: boolean;
 }
 
 /// A curated MCP server the user can one-click install into any of their

@@ -577,15 +577,20 @@ export class RunnerManager {
       });
       return;
     }
-    // Tools that carry their own in-card Approve/Deny UI — gating them at
-    // the broker too would force the user to click twice for one decision.
-    if (req.toolName === 'ExitPlanMode' || req.toolName === 'AskUserQuestion') {
+    // AskUserQuestion carries its own in-card answer UI and is not a
+    // permission gate — auto-allow so the user answers once, in the card.
+    if (req.toolName === 'AskUserQuestion') {
       this.claudeBroker.resolve(req.conversationId, req.requestId, {
         behavior: 'allow',
         updatedInput: req.toolInput,
       });
       return;
     }
+    // ExitPlanMode is a real gate: allowing it tells Claude the plan is
+    // approved, so it leaves plan mode and proceeds straight into coding.
+    // Do NOT auto-allow — fall through to the pending-permission path so
+    // the plan card's Approve/Deny drives the decision (allow → implement,
+    // deny → keep planning). Auto-allowing here silently defeated plan mode.
     active.pendingPermissions.set(req.requestId, (approved: boolean) => {
       this.claudeBroker.resolve(
         req.conversationId,
@@ -818,11 +823,15 @@ export class RunnerManager {
       if (active.sessionAllowedTools.has(toolName)) {
         return { behavior: 'allow', updatedInput: input };
       }
-      // Tools that carry their own in-card Approve/Deny UI — gating them
-      // here too would force the user to click twice for one decision.
-      if (toolName === 'ExitPlanMode' || toolName === 'AskUserQuestion') {
+      // AskUserQuestion carries its own in-card answer UI and is not a
+      // permission gate — auto-allow so the user answers once, in the card.
+      if (toolName === 'AskUserQuestion') {
         return { behavior: 'allow', updatedInput: input };
       }
+      // ExitPlanMode is a real gate: allowing it tells Claude the plan is
+      // approved and it leaves plan mode. Fall through to the pending-
+      // permission path so the plan card drives the decision; auto-allowing
+      // defeated plan mode (the model proceeded straight into coding).
       const requestId = randomUUID();
       const approved = await new Promise<boolean>((resolve) => {
         active.pendingPermissions.set(requestId, resolve);

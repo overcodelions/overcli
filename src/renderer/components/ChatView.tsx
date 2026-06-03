@@ -361,6 +361,11 @@ const EventRow = memo(function EventRow({
     case 'result':
       return <TurnCaption info={event.kind.info} />;
     case 'permissionRequest':
+      // ExitPlanMode is gated through the broker like any other tool, but
+      // its plan + Approve/Deny live on the ExitPlanMode tool_use card
+      // (which reads this request's id to resolve the gate). Suppress the
+      // generic card so the plan isn't shown — and approvable — twice.
+      if (event.kind.info.toolName === 'ExitPlanMode') return null;
       return <PermissionCard info={event.kind.info} conversationId={conversationId} />;
     case 'codexApproval':
       return <CodexApprovalCard info={event.kind.info} conversationId={conversationId} />;
