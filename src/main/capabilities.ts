@@ -12,7 +12,7 @@
 //     commands/*.md                  — user slash commands
 //     plugins/installed_plugins.json — plugin manifest
 //     plugins/cache/<ns>/<name>/<ver>/{skills,agents,commands}/ — plugin contents
-//     settings.json                  — mcpServers config
+//   ~/.claude.json                   — mcpServers config (user scope)
 //
 //   ~/.codex/
 //     skills/*/                      — codex skills (weaker convention)
@@ -216,14 +216,17 @@ function scanMcpAcrossClis(warnings: string[]): CapabilityEntry[] {
   return [...byName.values()].map((v) => v.entry);
 }
 
+// Claude Code keeps user-scope MCP server definitions in ~/.claude.json
+// (top-level `mcpServers`), not in ~/.claude/settings.json — so that's
+// what we scan, matching where mcpConfig.ts writes them.
 function scanClaudeMcp(): McpHit[] {
   const out: McpHit[] = [];
-  const settingsPath = path.join(HOME, '.claude', 'settings.json');
-  if (!fs.existsSync(settingsPath)) return out;
-  const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+  const configPath = path.join(HOME, '.claude.json');
+  if (!fs.existsSync(configPath)) return out;
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
   const servers = parsed?.mcpServers ?? {};
   for (const name of Object.keys(servers)) {
-    out.push({ name, cli: 'claude', path: settingsPath });
+    out.push({ name, cli: 'claude', path: configPath });
   }
   return out;
 }

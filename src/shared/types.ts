@@ -550,6 +550,46 @@ export interface MarketplaceSkill {
   installed: Partial<Record<SkillTarget, boolean>>;
 }
 
+/// CLIs that can host MCP servers. Unlike `SkillTarget`, Gemini is
+/// included — all three CLIs have an MCP server config format that
+/// `mcpConfig.ts` knows how to read and write.
+export type McpCli = Extract<Backend, 'claude' | 'codex' | 'gemini'>;
+
+/// One credential a catalog MCP server needs. Collected in overcli at
+/// install time and written verbatim into the server's `env` block in
+/// each target CLI's config (where the CLIs already read MCP env from).
+export interface McpSecretField {
+  /// Env var name, e.g. "BRAVE_API_KEY".
+  key: string;
+  label: string;
+  /// Short hint, e.g. where to generate the token.
+  help?: string;
+  /// URL to the provider's token page.
+  link?: string;
+}
+
+/// A curated MCP server the user can one-click install into any of their
+/// CLIs. Two auth shapes: `stdio` servers that take API keys via `env`
+/// (collected by overcli), and `remote` servers configured by URL whose
+/// OAuth login the CLI completes on first connect.
+export interface McpCatalogItem {
+  /// Stable id, also used as the MCP server name written to config.
+  id: string;
+  name: string;
+  description: string;
+  /// UI grouping bucket, e.g. "Dev tools".
+  category: string;
+  transport: 'stdio' | 'remote';
+  targets: McpCli[];
+  /// Env-var credentials to collect at install. Empty when none needed.
+  secrets: McpSecretField[];
+  /// Shown for remote/OAuth servers — explains login finishes in the CLI.
+  authNote?: string;
+  docsUrl?: string;
+  /// Per-target installed status, set by the main process at list time.
+  installed: Partial<Record<McpCli, boolean>>;
+}
+
 export interface OllamaModelInfo {
   name: string;
   sizeBytes: number;
@@ -829,6 +869,28 @@ export interface IPCInvokeMap {
   }) =>
     | { ok: true; written: Backend[]; errors: string[] }
     | { ok: false; error: string };
+  /// Curated MCP catalog: list entries with per-CLI installed status.
+  'mcp:listCatalog': () => McpCatalogItem[];
+  /// Install a catalog entry into the given CLIs, merging any collected
+  /// secrets into the server's `env` block. Partial success via `written`
+  /// + `errors`, same shape as `capabilities:addMcp`.
+  'mcp:installCatalog': (args: {
+    id: string;
+    targets: Backend[];
+    secrets?: Record<string, string>;
+  }) =>
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string };
+  /// Remove a catalog entry from the given CLIs.
+  'mcp:uninstallCatalog': (args: { id: string; targets: Backend[] }) =>
+    | { ok: true; removed: Backend[]; errors: string[] }
+    | { ok: false; error: string };
+  /// Trigger a remote MCP server's OAuth login. Only Codex supports this
+  /// (spawns `codex mcp login <name>`); Claude/Gemini return a message
+  /// pointing at their in-session login.
+  'mcp:login': (args: { cli: Backend; name: string }) =>
+    | { ok: true; output: string }
+    | { ok: false; error: string; output?: string };
   'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
