@@ -23,6 +23,10 @@ export interface BackendSendArgs {
   effortLevel?: EffortLevel;
   attachments?: Attachment[];
   allowedDirs?: string[];
+  /// When true, launch the CLI with MCP debug logging (claude: `--debug mcp`).
+  /// Surfaces MCP server startup/registration diagnostics on stderr, which the
+  /// runner forwards to the Debug viewer. Honored by the claude backend.
+  mcpDebug?: boolean;
 }
 
 /// Lookups the runner exposes to a spec. Lets a spec resolve per-conv
