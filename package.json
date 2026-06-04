@@ -37,6 +37,13 @@
   "build": {
     "appId": "com.overcli.app",
     "productName": "Overcli",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "overcodelions",
+        "repo": "overcli"
+      }
+    ],
     "directories": {
       "output": "release",
       "buildResources": "build"
@@ -74,6 +81,7 @@
         }
       ],
       "hardenedRuntime": true,
+      "notarize": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist"
@@ -165,6 +173,7 @@
     "@types/dompurify": "^3.2.0",
     "diff": "^9.0.0",
     "dompurify": "^3.4.5",
+    "electron-updater": "^6.8.3",
     "highlight.js": "^11.10.0",
     "marked": "^18.0.3",
     "react": "^18.3.1",

@@ -65,6 +65,7 @@ import {
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
+import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
@@ -195,8 +196,12 @@ function registerIpc(): void {
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
-  ipcMain.handle('store:saveSettings', (_e, settings) => Store.saveSettings(settings));
+  ipcMain.handle('store:saveSettings', (_e, settings) => {
+    Store.saveSettings(settings);
+    refreshUpdateChannel();
+  });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
+  ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
@@ -1362,6 +1367,10 @@ app.whenReady().then(() => {
   // they're on the latest version next time the user runs a turn. Throttled
   // to once/day and fire-and-forget — never blocks window creation.
   primeBackendUpdates();
+
+  // Self-update the app itself from the GitHub Releases feed. No-op in dev and
+  // on unsigned macOS builds (Squirrel rejects those).
+  initAutoUpdater(() => mainWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

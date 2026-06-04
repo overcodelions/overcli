@@ -512,6 +512,18 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           onChange={(v) => patch({ autoDowngrade: v })}
         />
       </Group>
+      <Group title="Updates" description="Which build channel this app auto-updates from.">
+        <Row label="Channel" help="Stable tracks tagged releases. Nightly tracks the rolling nightly prerelease — newer, less tested, and not notarized, so macOS Gatekeeper warns on a fresh nightly download. Switching takes effect immediately.">
+          <select
+            value={local.updateChannel ?? 'stable'}
+            onChange={(e) => patch({ updateChannel: e.target.value as 'stable' | 'nightly' })}
+            className="field px-2 py-1 text-xs"
+          >
+            <option value="stable">Stable</option>
+            <option value="nightly">Nightly</option>
+          </select>
+        </Row>
+      </Group>
       <Group title="Layout" description="Tuning reserved for when the defaults don't fit.">
         <Toggle
           label="Show Active conversations in sidebar"
