@@ -737,6 +737,11 @@ export interface AppSettings {
   starredFlows?: string[];
   flowRegistries?: FlowRegistry[];
   installedRegistryFlows?: InstalledRegistryFlow[];
+  /// Which auto-update feed the app follows. 'stable' tracks tagged
+  /// releases (the `latest` channel); 'nightly' tracks the rolling nightly
+  /// prerelease. The in-app updater is the single source of truth — whatever
+  /// build you installed, this setting decides what it upgrades to.
+  updateChannel?: 'stable' | 'nightly';
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -754,6 +759,8 @@ export interface IPCInvokeMap {
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
+  /// Quit and install a downloaded update now (triggered from UpdateToast).
+  'update:quitAndInstall': () => void;
   'runner:send': (args: {
     conversationId: UUID;
     prompt: string;
@@ -1415,7 +1422,12 @@ export type MainToRendererEvent =
       /// in-memory map so the library doesn't keep showing a ghost.
       type: 'flowRunDeleted';
       runId: UUID;
-    };
+    }
+  /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
+  /// conversation — consumed by the global UpdateToast.
+  | { type: 'update:available'; payload: { version: string } }
+  | { type: 'update:progress'; payload: { percent: number } }
+  | { type: 'update:downloaded'; payload: { version: string } };
 
 export const DEFAULT_SETTINGS: AppSettings = {
   backendPaths: {},
@@ -1440,4 +1452,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
     { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
   ],
   installedRegistryFlows: [],
+  updateChannel: 'stable',
 };
