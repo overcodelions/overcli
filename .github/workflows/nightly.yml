@@ -94,13 +94,15 @@ jobs:
           elif [ "$RUNNER_OS" = "macOS" ]; then
             echo "No Apple credentials in repo secrets — building unsigned."
           fi
-          # -c.channel=nightly makes electron-builder emit nightly*.yml feed
-          # files and bake channel=nightly into the build, so installs follow
-          # the nightly auto-update channel (separate from stable `latest`).
+          # The version is stamped x.y.z-nightly.<date>.<sha> above, so
+          # electron-builder's detectUpdateChannel (on by default) infers the
+          # `nightly` channel from the prerelease tag and emits nightly*.yml
+          # feed files — separate from the stable `latest` channel. No flag
+          # needed; `channel` is not a valid root config property.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npx electron-builder --mac --arm64 -c.channel=nightly --publish never
+            npx electron-builder --mac --arm64 --publish never
           else
-            npx electron-builder -c.channel=nightly --publish never
+            npx electron-builder --publish never
           fi
 
       - name: Upload artifacts
