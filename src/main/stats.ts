@@ -233,7 +233,10 @@ function scanClaude(
       if (entry.isTopLevel) {
         proj.sessions += 1;
       }
-      const sessionKey = entry.path;
+      // Use the top-level transcript path as the session key so subagent
+      // transcripts (which walkJsonl returns separately) don't each count
+      // as their own "active today" session.
+      const sessionKey = entry.isTopLevel ? entry.path : path.dirname(entry.path);
       const events = parseClaudeFileCached(entry.path);
       for (const e of events) {
         proj.turns += 1;
