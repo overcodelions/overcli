@@ -1,12 +1,13 @@
 import { app, BrowserWindow } from 'electron';
-import electronUpdater from 'electron-updater';
+import { autoUpdater } from 'electron-updater';
 import { log } from './diagnostics';
 import { Store } from './store';
 
-const { autoUpdater } = electronUpdater;
-
 let wired = false;
 let getWindowRef: () => BrowserWindow | null = () => null;
+// The channel currently applied to autoUpdater. Lets refreshUpdateChannel()
+// no-op when an unrelated settings save comes through with the same channel.
+let appliedChannel: 'stable' | 'nightly' | null = null;
 
 // Map the user's channel setting onto electron-updater's channel + prerelease
 // flags. 'stable' follows the `latest` feed (tagged releases); 'nightly'
@@ -14,6 +15,7 @@ let getWindowRef: () => BrowserWindow | null = () => null;
 // source of truth regardless of which build was originally installed.
 function applyChannel(): void {
   const channel = Store.load().settings.updateChannel ?? 'stable';
+  appliedChannel = channel;
   if (channel === 'nightly') {
     autoUpdater.channel = 'nightly';
     autoUpdater.allowPrerelease = true;
@@ -83,8 +85,12 @@ export function initAutoUpdater(getWindow: () => BrowserWindow | null): void {
 
 // Called from the store:saveSettings IPC handler so flipping the channel in
 // Settings takes effect immediately — re-point the feed and check right away.
+// saveSettings fires on every settings change, so skip the work unless the
+// update channel actually changed.
 export function refreshUpdateChannel(): void {
   if (!wired) return;
+  const channel = Store.load().settings.updateChannel ?? 'stable';
+  if (channel === appliedChannel) return;
   applyChannel();
   check();
 }
