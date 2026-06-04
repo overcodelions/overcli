@@ -17,6 +17,7 @@ import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
 import { SubagentDrawer } from './components/SubagentDrawer';
 import { FileEditorPane } from './components/FileEditorPane';
+import { UpdateToast } from './components/UpdateToast';
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 520;
@@ -229,6 +230,7 @@ export function App() {
         )}
       </div>
       <SheetHost />
+      <UpdateToast />
     </div>
   );
 }
