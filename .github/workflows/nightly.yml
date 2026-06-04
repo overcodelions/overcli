@@ -99,8 +99,14 @@ jobs:
           # `nightly` channel from the prerelease tag and emits nightly*.yml
           # feed files — separate from the stable `latest` channel. No flag
           # needed; `channel` is not a valid root config property.
+          #
+          # Skip notarization for nightly (-c.mac.notarize=false overrides the
+          # package.json default). Notarization is a ~15-min Apple round-trip
+          # and only affects the *first manual download's* Gatekeeper prompt;
+          # the build is still signed, so nightly auto-update keeps working.
+          # Stable releases (release.yml) stay notarized.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npx electron-builder --mac --arm64 --publish never
+            npx electron-builder --mac --arm64 -c.mac.notarize=false --publish never
           else
             npx electron-builder --publish never
           fi
