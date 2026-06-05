@@ -136,7 +136,14 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
   // Empty / loading states render outside virtuoso — virtuoso with zero
   // items renders nothing, and the intro card uses min-h-full layout that
   // a virtualized list can't provide.
-  if (runner?.historyLoading) {
+  //
+  // Only blank to "Loading history…" when there's nothing to show yet.
+  // Running/watching flows already have live events in the runner; clicking
+  // into one kicks off a lazy history load (historyLoading flips true) whose
+  // merge would otherwise replace the whole transcript with a spinner and
+  // snap back — the pinwheel flash on flow switches. With events present we
+  // keep rendering them and let history merge in silently.
+  if (runner?.historyLoading && visibleEvents.length === 0) {
     return (
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">

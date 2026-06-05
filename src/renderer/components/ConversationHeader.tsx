@@ -27,6 +27,7 @@ import {
   resolvePreset,
 } from '@shared/reboundPresets';
 import { pathBasename } from '@shared/workspaceNames';
+import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation, useConversationRoot } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
@@ -1648,6 +1649,23 @@ function ConversationSettingsButton({
             placeholder={settings.backendDefaultModels[backend] ?? '(default)'}
             className="field px-2 py-1 font-mono text-[11px]"
           />
+          {backend !== 'ollama' && (PREMIUM_MODELS[backend]?.length ?? 0) > 0 && (
+            <div className="flex flex-col gap-0.5">
+              <div className="text-[10px] uppercase tracking-wider text-ink-faint mt-1">Available models</div>
+              {PREMIUM_MODELS[backend].map((m) => (
+                <button
+                  key={m}
+                  onClick={() => onModelChange(backend, m)}
+                  className={
+                    'text-left px-2 py-1 rounded font-mono text-[11px] ' +
+                    (current === m ? 'bg-accent/15 text-ink' : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+                  }
+                >
+                  {friendlyModelLabel(backend, m)}
+                </button>
+              ))}
+            </div>
+          )}
           {backend === 'ollama' && ollamaPulled.length > 0 && (
             <div className="flex flex-col gap-0.5">
               <div className="text-[10px] uppercase tracking-wider text-ink-faint mt-1">Pulled locally</div>

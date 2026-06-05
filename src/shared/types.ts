@@ -1319,8 +1319,46 @@ export interface StatsReport {
     cacheRead: number;
     cacheCreation: number;
   }>;
-  /// Last 30 days of activity for the stats-page chart.
+  byTier: TierStats[];
+  flowImpact: FlowImpactStats;
+  /// Last 90 days of activity for the stats-page chart.
   daily: DailyBucket[];
+}
+
+export type ModelTier = 'thinking' | 'standard' | 'fast' | 'local';
+
+export interface TierStats {
+  tier: ModelTier;
+  models: string[];
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+export interface FlowImpactStats {
+  totalRuns: number;
+  completedRuns: number;
+  totalTurns: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostUSD: number;
+  totalWallClockMs: number;
+  byFlow: FlowImpactRow[];
+}
+
+export interface FlowImpactRow {
+  flowId: string;
+  flowName: string;
+  runs: number;
+  completedRuns: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  wallClockMs: number;
+  lastRunAt: number;
 }
 
 export interface BackendStats {
@@ -1329,6 +1367,7 @@ export interface BackendStats {
   turns: number;
   inputTokens: number;
   outputTokens: number;
+  cacheRead: number;
   tokensLast5h: number;
   tokensLast24h: number;
   tokensLast7d: number;
