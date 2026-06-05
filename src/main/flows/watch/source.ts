@@ -19,9 +19,9 @@ export interface WatchTickContext {
   /// What's being watched, in the source's addressing scheme. Jira key,
   /// PR URL, Zendesk id, or free text for the AI-defined source.
   binding: string;
-  /// High-water mark of the last handled item (source's own scheme), or
-  /// undefined on the very first tick.
-  cursor?: string;
+  /// Comment ids already replied to — the dedup set. The detect pass answers
+  /// any genuinely-unanswered question whose id isn't in here.
+  answeredIds?: string[];
   /// A short grounding summary of the work the flow completed, so the
   /// watcher answers questions about it accurately instead of guessing.
   workSummary: string;
@@ -41,10 +41,11 @@ export interface WatchAnswerContext extends WatchTickContext {
 /// The structured result the runtime extracts from a tick's reply. Shared
 /// across sources and both tiers (fields not relevant to a tier are absent).
 export interface WatchTickReport {
-  /// New high-water mark to persist. Absent → keep the prior cursor.
-  cursor?: string;
   /// How many comments the watcher answered this tick (ANSWER pass only).
   answered: number;
+  /// Comment ids the watcher actually replied to this tick (ANSWER pass) —
+  /// appended to the run's dedup set so they're never re-answered.
+  answeredIds?: string[];
   /// DETECT pass: a new item needs a careful, grounded reply → escalate to
   /// the answer tier. Absent/false on the answer pass.
   answerNeeded?: boolean;
@@ -65,6 +66,7 @@ function safetyPreamble(ctx: WatchTickContext): string {
   const instructionLines = ctx.instructions?.trim()
     ? ['', "User's watch instructions (authoritative — follow these):", ctx.instructions.trim()]
     : [];
+  const answered = ctx.answeredIds?.length ? ctx.answeredIds.join(', ') : '(none yet)';
   return [
     ...instructionLines,
     '',
@@ -73,10 +75,15 @@ function safetyPreamble(ctx: WatchTickContext): string {
     '  repository or the work product in any way. Do not use Write, Edit, or',
     "  mutating Bash. If you're unsure whether something counts as work, treat",
     '  it as work and flag it instead of acting.',
-    '- Only consider items NEWER than the cursor below. Never re-handle an',
-    '  item you (or anyone) already handled.',
     '',
-    `CURSOR (last handled item; empty = first check): ${ctx.cursor ?? '(none yet)'}`,
+    'WHAT COUNTS AS NEEDING A REPLY — dedup by id, not by recency:',
+    '- Scan the recent comment thread on the target.',
+    `- ALREADY ANSWERED (comment ids you have already replied to): ${answered}`,
+    '- A comment needs a reply if it is a genuinely-unanswered question about the',
+    '  completed work AND its id is NOT in the already-answered list above.',
+    '  A not-yet-answered question still counts even when newer comments exist —',
+    "  don't skip it just because it isn't the latest. Skip anything already",
+    '  resolved in the thread, anything in that list, and your own comments.',
     '',
     'Context on the work this watch is tending:',
     ctx.workSummary || '(no summary available)',
@@ -97,12 +104,9 @@ export function detectContract(ctx: WatchTickContext): string {
     'Emit EXACTLY ONE block, nothing after it:',
     '<watch_report>',
     '{',
-    '  "cursor": "<id/timestamp of the newest item you can safely skip as',
-    '             noise/your-own-comment; leave at the current cursor if a new',
-    '             question is still unanswered>",',
-    '  "answer_needed": <true if a NEW comment asks a question that deserves a',
-    '                    grounded reply, else false>,',
-    '  "needs_work": <true if a NEW comment requests actual work, else false>,',
+    '  "answer_needed": <true if there is a genuinely-unanswered question whose',
+    '                    id is NOT in the already-answered list, else false>,',
+    '  "needs_work": <true if a comment requests actual work, else false>,',
     '  "tools_unavailable": <true if you have NO working tool to actually reach',
     '                        the target (the needed MCP server / integration is',
     '                        not available to you), else false>,',
@@ -129,9 +133,9 @@ export function answerContract(ctx: WatchAnswerContext): string {
     'Emit EXACTLY ONE block, nothing after it:',
     '<watch_report>',
     '{',
-    '  "cursor": "<id/timestamp of the newest item now handled, including the',
-    '             one(s) you just answered>",',
     '  "answered": <number of comments you replied to this tick>,',
+    '  "answered_ids": [<the comment id of EACH comment you replied to — these',
+    '                    are recorded so they are never answered again>],',
     '  "needs_work": <true if a comment requested work you (correctly) did not',
     '                 do, else false>,',
     '  "note": "<one short sentence: what you answered>"',
@@ -173,11 +177,13 @@ export function parseWatchReport(text: string): WatchTickReport | null {
     typeof obj.answered === 'number' && Number.isFinite(obj.answered)
       ? Math.max(0, Math.floor(obj.answered))
       : 0;
-  const cursorRaw = typeof obj.cursor === 'string' ? obj.cursor.trim() : '';
   const note = typeof obj.note === 'string' ? obj.note.trim() : '';
+  const answeredIds = Array.isArray(obj.answered_ids)
+    ? obj.answered_ids.filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+    : undefined;
   return {
-    cursor: cursorRaw && cursorRaw !== '(none yet)' ? cursorRaw : undefined,
     answered,
+    answeredIds: answeredIds && answeredIds.length > 0 ? answeredIds : undefined,
     answerNeeded: obj.answer_needed === true,
     toolsUnavailable: obj.tools_unavailable === true,
     needsWork: obj.needs_work === true,
