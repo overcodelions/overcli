@@ -212,18 +212,35 @@ function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => 
   }
 }
 
-/// Strip the flow watcher's `<watch_report>…</watch_report>` block (and any
-/// stray fenced copy of it) from displayed assistant text. The block is
-/// machine-readable status the runtime parses; the user sees the same info,
-/// nicely formatted, in the watch banner + log. Also drops a partial block
-/// mid-stream (open tag not yet closed) so the JSON doesn't flash in as it
-/// streams. No-op for any text without the tag, so it's safe on all bubbles.
+/// Replace the flow watcher's machine-readable `<watch_report>…</watch_report>`
+/// block with its human `note`, rendered as a blockquote — the per-tick
+/// takeaway. So the transcript shows "what this tick actually did" instead of
+/// raw JSON (or, before, nothing — which left only terse mid-process
+/// narration). The structured fields are still parsed by the runtime; here we
+/// only surface the summary. A partial block mid-stream is dropped so nothing
+/// flashes in. No-op for any text without the tag, so it's safe on all bubbles.
 function stripWatchReport(text: string): string {
+  const replaceWithNote = (_m: string, inner: string): string => {
+    const note = extractWatchNote(inner);
+    return note ? `\n\n> ${note}\n` : '';
+  };
   return text
-    .replace(/```[a-z]*\s*<watch_report>[\s\S]*?<\/watch_report>\s*```/gi, '')
-    .replace(/<watch_report>[\s\S]*?<\/watch_report>/gi, '')
-    .replace(/<watch_report>[\s\S]*$/i, '')
-    .trimEnd();
+    .replace(/```[a-z]*\s*<watch_report>([\s\S]*?)<\/watch_report>\s*```/gi, replaceWithNote)
+    .replace(/<watch_report>([\s\S]*?)<\/watch_report>/gi, replaceWithNote)
+    .replace(/<watch_report>[\s\S]*$/i, '') // partial block still streaming
+    .trim();
+}
+
+/// Pull the `note` string out of a (possibly partial) watch_report body without
+/// a full JSON parse — tolerant of the model's formatting quirks.
+function extractWatchNote(inner: string): string | null {
+  const m = /"note"\s*:\s*"((?:[^"\\]|\\.)*)"/i.exec(inner);
+  if (!m) return null;
+  try {
+    return JSON.parse(`"${m[1]}"`).trim() || null;
+  } catch {
+    return m[1].trim() || null;
+  }
 }
 
 function ThinkingBlock({ text, label }: { text: string; label: string }) {
