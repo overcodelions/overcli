@@ -110,7 +110,10 @@ export function detectContract(ctx: WatchTickContext): string {
     '  "tools_unavailable": <true if you have NO working tool to actually reach',
     '                        the target (the needed MCP server / integration is',
     '                        not available to you), else false>,',
-    '  "note": "<one short sentence: what you saw>"',
+    '  "note": "<a clear 1-2 sentence summary FOR THE USER: name WHO commented and',
+    '           the gist of what they said or asked, plus your decision (a question',
+    '           to answer, a change to flag, or nothing new). Be specific — not a',
+    "           generic 'a new comment'. If nothing is new, say so plainly.>\"",
     '}',
     '</watch_report>',
   ].join('\n');
@@ -138,7 +141,9 @@ export function answerContract(ctx: WatchAnswerContext): string {
     '                    are recorded so they are never answered again>],',
     '  "needs_work": <true if a comment requested work you (correctly) did not',
     '                 do, else false>,',
-    '  "note": "<one short sentence: what you answered>"',
+    '  "note": "<a clear 1-2 sentence summary FOR THE USER: name WHO asked, the gist',
+    '           of their question, and the gist of how you answered it. Be specific',
+    '           so the user understands what happened without opening the ticket.>"',
     '}',
     '</watch_report>',
   ].join('\n');
