@@ -54,8 +54,8 @@ export function ArchiveAllSheet(props: Props) {
 
   /// Flow runs in this project/workspace that are safe to delete.
   /// "Safe" mirrors the conversation rule: skip anything still doing
-  /// work (running, paused, or with a participant conv currently
-  /// streaming from a hijack chat).
+  /// work (running, paused, watching, or with a participant conv
+  /// currently streaming from a hijack chat).
   const { flowTargets, flowSkipped } = useMemo(() => {
     const flowTargets: FlowRun[] = [];
     const flowSkipped: Array<{ run: FlowRun; reason: string }> = [];
@@ -68,6 +68,10 @@ export function ArchiveAllSheet(props: Props) {
       }
       if (run.state.kind === 'paused') {
         flowSkipped.push({ run, reason: 'paused' });
+        continue;
+      }
+      if (run.state.kind === 'watching') {
+        flowSkipped.push({ run, reason: 'watching' });
         continue;
       }
       const isLive = Object.values(run.conversationIds).some(
