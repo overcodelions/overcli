@@ -69,6 +69,7 @@ import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
 import { draftFlowFromPrompt } from './flows/drafter';
@@ -633,6 +634,13 @@ function registerIpc(): void {
       ? flowRuntime.setModelOverride(runId, participantId, model)
       : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:enterWatch', (_e, args) =>
+    flowRuntime ? flowRuntime.enterWatch(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:archiveRun', (_e, args) =>
+    flowRuntime ? flowRuntime.archiveRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:listWatchSources', () => listWatchSources());
   ipcMain.handle('flows:deleteRun', (_e, args) => {
     if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
     const result = flowRuntime.deleteRun(args);
