@@ -235,11 +235,13 @@ export interface WatchState {
   /// participant's full model for the grounded "answer" pass. Absent → ticks
   /// just run on the participant's model (no tiering).
   watchModel?: string;
-  /// Opaque high-water mark of the last item the watcher already handled,
-  /// in the source's own scheme (an ISO timestamp, a comment id, …).
-  /// Advanced after each tick; this is where dedup lives. Absent until the
-  /// first tick establishes it.
-  cursor?: string;
+  /// Comment ids the watcher has actually replied to — the dedup set, and the
+  /// ONLY thing gating re-answers (there is deliberately no high-water cursor).
+  /// Each tick re-scans the recent thread and answers any genuinely-unanswered
+  /// question whose id isn't in here, so a question that was skipped or blocked
+  /// stays answerable and is simply re-detected next tick rather than getting
+  /// stranded behind an advancing marker. Capped by the runtime.
+  answeredIds?: string[];
   /// Poll cadence in milliseconds. Floored by the runtime so a stray small
   /// value can't busy-loop the source's API.
   pollIntervalMs: number;
