@@ -59,7 +59,8 @@ import {
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
-import { createWorktree, detectBaseBranch, runGit } from '../git';
+import { createWorktree, detectBaseBranch, runGit, worktreeNameTaken } from '../git';
+import { branchSlugFromPrompt } from './branchName';
 import { ensureCoordinatorSymlinkRoot } from '../workspace';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
@@ -111,6 +112,20 @@ interface StepStreamBuffer {
   /// Replaced (not summed) each turn since result.totalCostUSD is itself
   /// cumulative for the conversation.
   costUSD: number;
+}
+
+/// Pick a worktree/branch name that's free in EVERY given repo, starting
+/// from `base` and appending `-2`, `-3`, … on collision. Workspace runs
+/// reuse one name across member repos, so it has to clear all of them —
+/// otherwise a clean ticket name like `WOW-1234` run twice would fail the
+/// second time instead of becoming `WOW-1234-2`.
+function uniqueWorktreeName(repoPaths: string[], base: string, branchPrefix: string): string {
+  let name = base;
+  let n = 2;
+  while (repoPaths.some((p) => worktreeNameTaken(p, name, branchPrefix))) {
+    name = `${base}-${n++}`;
+  }
+  return name;
 }
 
 export class FlowRuntimeImpl {
@@ -494,13 +509,18 @@ export class FlowRuntimeImpl {
           worktreePath: string;
           branchName: string;
         }> = [];
-        const wtNameBase = `flow-${flow.id}-${runId.slice(0, 8)}`;
+        const branchPrefix = settings.agentBranchPrefix || 'agent/';
+        const wtNameBase = uniqueWorktreeName(
+          members.map((p) => p.path),
+          branchSlugFromPrompt(args.userPrompt, flow.id),
+          branchPrefix,
+        );
         for (const p of members) {
           const r = createWorktree({
             projectPath: p.path,
             agentName: wtNameBase,
             baseBranch: sharedBase ?? detectBaseBranch(p.path),
-            branchPrefix: settings.agentBranchPrefix || 'agent/',
+            branchPrefix,
           });
           if (!r.ok) {
             return {
@@ -526,12 +546,17 @@ export class FlowRuntimeImpl {
         workspaceWorktrees = minted;
       } else {
         // Single-project worktree (original behavior).
-        const wtName = `flow-${flow.id}-${runId.slice(0, 8)}`;
+        const branchPrefix = settings.agentBranchPrefix || 'agent/';
+        const wtName = uniqueWorktreeName(
+          [args.projectPath],
+          branchSlugFromPrompt(args.userPrompt, flow.id),
+          branchPrefix,
+        );
         const result = createWorktree({
           projectPath: args.projectPath,
           agentName: wtName,
           baseBranch: sharedBase ?? detectBaseBranch(args.projectPath),
-          branchPrefix: settings.agentBranchPrefix || 'agent/',
+          branchPrefix,
         });
         if (!result.ok) {
           return { ok: false, error: `Failed to create worktree: ${result.error}` };
