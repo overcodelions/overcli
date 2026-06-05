@@ -1129,11 +1129,22 @@ function summarizeArtifact(
   return null;
 }
 
-// Aggregate +/- line counts across every diff artifact the run has
-// produced, surfaced as a compact `+X / −Y · N files` chip in the header.
-// Clicking opens a full-screen viewer so the user can read the actual
-// diff without scrolling through the participant's artifacts panel.
-function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
+// Aggregate +/- line counts across every diff artifact in a run. The scan
+// splits every diff body line-by-line, so on a run with large diffs it's
+// real work — and it's hit twice in the header (chip + sheet) plus on every
+// re-render (step clicks, watch ticks, local state). Cache the result against
+// the `artifacts` object: that reference is stable until the run next updates,
+// so rapid flow switching and incidental re-renders read the cached totals
+// instead of re-scanning thousands of diff lines on the main thread.
+const aggregateDiffStatsCache = new WeakMap<
+  object,
+  { files: number; added: number; removed: number } | null
+>();
+function aggregateDiffStats(
+  run: FlowRun,
+): { files: number; added: number; removed: number } | null {
+  const cached = aggregateDiffStatsCache.get(run.artifacts);
+  if (cached !== undefined) return cached;
   let files = 0;
   let added = 0;
   let removed = 0;
@@ -1147,7 +1158,19 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
     removed += s.removed;
     any = true;
   }
-  if (!any) return null;
+  const result = any ? { files, added, removed } : null;
+  aggregateDiffStatsCache.set(run.artifacts, result);
+  return result;
+}
+
+// Aggregate +/- line counts across every diff artifact the run has
+// produced, surfaced as a compact `+X / −Y · N files` chip in the header.
+// Clicking opens a full-screen viewer so the user can read the actual
+// diff without scrolling through the participant's artifacts panel.
+function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
+  const stats = aggregateDiffStats(run);
+  if (!stats) return null;
+  const { files, added, removed } = stats;
   return (
     <button
       onClick={onOpen}
@@ -1242,17 +1265,8 @@ function DiffSheet({ run, onClose }: { run: FlowRun; onClose: () => void }) {
 // DiffSheet header so the totals stay visible without an infinite
 // click-loop back into the sheet.
 function RunDiffStatsInline({ run }: { run: FlowRun }) {
-  let files = 0;
-  let added = 0;
-  let removed = 0;
-  for (const art of Object.values(run.artifacts)) {
-    if (art.kind !== 'diff') continue;
-    const s = computeDiffStats(art.body);
-    if (!s) continue;
-    files += s.files;
-    added += s.added;
-    removed += s.removed;
-  }
+  const stats = aggregateDiffStats(run);
+  const { files, added, removed } = stats ?? { files: 0, added: 0, removed: 0 };
   return (
     <span className="text-[11px] font-mono">
       <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>

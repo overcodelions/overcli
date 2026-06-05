@@ -221,8 +221,7 @@ export function Composer({
   const promptHistory = useMemo(() => {
     if (!runnerEvents || historyKey.startsWith('__')) return [];
     return runnerEvents
-      .filter((ev) => ev.kind.type === 'localUser')
-      .map((ev) => ev.kind.text.trim())
+      .flatMap((ev) => (ev.kind.type === 'localUser' ? [ev.kind.text.trim()] : []))
       .filter((text) => text.length > 0);
   }, [historyKey, runnerEvents]);
 

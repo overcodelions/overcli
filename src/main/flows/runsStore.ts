@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
+import { appendRunSummary } from './runSummaryLog';
 
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -68,6 +69,12 @@ export function saveRun(run: FlowRun): void {
     fs.renameSync(tmp, file);
   } catch (err) {
     log('error', 'flows.persistRun', `failed to persist run ${run.id}`, err);
+  }
+  // Mirror terminal runs into the all-time summary log so their totals
+  // outlive the LRU eviction of <userData>/flow-runs/<id>.json. The
+  // append is idempotent — same id never lands twice.
+  if (run.state.kind === 'done' || run.state.kind === 'archived') {
+    appendRunSummary(run);
   }
 }
 
