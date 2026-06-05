@@ -259,6 +259,11 @@ export interface WatchState {
   /// questions), but the UI shows the escalation so the user knows to step
   /// back in.
   escalated: boolean;
+  /// Set when the watcher is stuck unable to reach the source's tools even at
+  /// the top of the detect model ladder, and the user has been notified once.
+  /// Cleared as soon as a tick reaches the tools again, so the "can't reach
+  /// tools" notification fires once per stuck streak rather than every tick.
+  toolsUnreachable?: boolean;
   /// One-line, human-readable summary of what the most recent tick saw or
   /// did. Surfaced in the watch banner.
   lastNote?: string;
