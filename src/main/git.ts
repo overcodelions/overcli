@@ -259,6 +259,22 @@ export function createWorktree(
   return { ok: true, worktreePath, branchName };
 }
 
+/// Is `agentName` already used by a worktree dir or branch in this repo?
+/// Lets callers pick a clean, human-meaningful name (e.g. `WOW-1234`) and
+/// only fall back to a numbered suffix when there's an actual collision,
+/// instead of pre-emptively appending a uuid to every name.
+export function worktreeNameTaken(
+  projectPath: string,
+  agentName: string,
+  branchPrefix: string,
+): boolean {
+  const slug = path.basename(projectPath);
+  const worktreePath = path.join(os.homedir(), '.overcli', 'worktrees', slug, agentName);
+  if (fs.existsSync(worktreePath)) return true;
+  const branchName = `${branchPrefix}${agentName}`;
+  return runGit(['rev-parse', '--verify', branchName], projectPath).exitCode === 0;
+}
+
 /// Create a detached-HEAD worktree pointing at `targetBranch` — used by
 /// the review agent so the user can examine someone else's branch
 /// without disturbing their main checkout. We don't create a new branch

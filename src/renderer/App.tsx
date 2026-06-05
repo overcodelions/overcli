@@ -132,18 +132,59 @@ export function App() {
   // the page doesn't flash the wrong theme on load.
   useThemeEffect();
 
+  // Coalesce incoming main events over a one-frame window. Each streamed
+  // delta arrives as its own IPC message in a separate task, so React can't
+  // batch them: a single background watch tick that streams many deltas would
+  // otherwise fire one FULL global re-render per delta (every broad
+  // useAllRunners() subscriber — sidebar activity sort, headers, flow rows)
+  // AND one O(n) event-merge per delta. That storm is what beachballs the UI
+  // when a watch wakes up. Buffering collapses a burst into a single render
+  // pass, and concatenating consecutive same-conversation stream batches
+  // collapses the per-delta merges into one merge per conversation per flush.
   useEffect(() => {
+    type MainEvent = Parameters<typeof ingest>[0];
+    let buffer: MainEvent[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      timer = null;
+      const batch = buffer;
+      buffer = [];
+      const coalesced: MainEvent[] = [];
+      for (const e of batch) {
+        const last = coalesced[coalesced.length - 1];
+        if (
+          e.type === 'stream' &&
+          last &&
+          last.type === 'stream' &&
+          last.conversationId === e.conversationId
+        ) {
+          // Still streaming the same conversation — concatenate so the store
+          // merges once instead of once per IPC message. `last` is a private
+          // copy (made below), so mutating it here is safe.
+          last.events = last.events.concat(e.events);
+        } else {
+          coalesced.push(e.type === 'stream' ? { ...e, events: [...e.events] } : e);
+        }
+      }
+      for (const e of coalesced) ingest(e);
+    };
     const unsub = window.overcli.onMainEvent((e) => {
       if (e.type === 'running' && e.conversationId === '__menu_new_conversation__') {
         // Menu shortcut: open the composer-first welcome screen for the
-        // first project if we have one, otherwise prompt to pick.
+        // first project if we have one, otherwise prompt to pick. Routed
+        // immediately — it's a one-off, never part of a stream burst.
         const first = projects[0];
         if (first) startNewConversation(first.id);
         return;
       }
-      ingest(e);
+      buffer.push(e);
+      if (timer == null) timer = setTimeout(flush, 16);
     });
-    return () => unsub();
+    return () => {
+      if (timer != null) clearTimeout(timer);
+      if (buffer.length) flush();
+      unsub();
+    };
   }, [ingest, projects, startNewConversation]);
 
   useShortcuts();

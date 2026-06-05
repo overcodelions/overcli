@@ -24,6 +24,9 @@ import {
   StatsReport,
 } from '../shared/types';
 import { logSilent } from './diagnostics';
+import { modelSpeed } from '../shared/modelCatalog';
+import { loadAllRuns } from './flows/runsStore';
+import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
 
 interface BackendAgg {
   backend: Backend;
@@ -31,6 +34,7 @@ interface BackendAgg {
   turns: number;
   inputTokens: number;
   outputTokens: number;
+  cacheRead: number;
   tokensLast5h: number;
   tokensLast24h: number;
   tokensLast7d: number;
@@ -101,6 +105,51 @@ export function computeStats(): StatsReport {
   const modelRows = Array.from(byModel.entries())
     .map(([model, v]) => ({ model, ...v }))
     .sort((a, b) => b.outputTokens - a.outputTokens);
+  const tierAgg = new Map<
+    import('../shared/types').ModelTier,
+    {
+      models: Set<string>;
+      turns: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheRead: number;
+      cacheCreation: number;
+    }
+  >();
+  for (const m of modelRows) {
+    const tier: import('../shared/types').ModelTier =
+      m.model === 'ollama' || m.model.includes(':') ? 'local' : modelSpeed(m.model);
+    const cur = tierAgg.get(tier) ?? {
+      models: new Set<string>(),
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheRead: 0,
+      cacheCreation: 0,
+    };
+    cur.models.add(m.model);
+    cur.turns += m.turns;
+    cur.inputTokens += m.inputTokens;
+    cur.outputTokens += m.outputTokens;
+    cur.cacheRead += m.cacheRead;
+    cur.cacheCreation += m.cacheCreation;
+    tierAgg.set(tier, cur);
+  }
+  const TIER_ORDER: Array<import('../shared/types').ModelTier> = ['thinking', 'standard', 'fast', 'local'];
+  const byTier = TIER_ORDER
+    .filter((t) => tierAgg.has(t))
+    .map((tier) => {
+      const v = tierAgg.get(tier)!;
+      return {
+        tier,
+        models: Array.from(v.models).sort(),
+        turns: v.turns,
+        inputTokens: v.inputTokens,
+        outputTokens: v.outputTokens,
+        cacheRead: v.cacheRead,
+        cacheCreation: v.cacheCreation,
+      };
+    });
 
   const filledDaily = fillDays(daily, 90, now);
 
@@ -126,6 +175,8 @@ export function computeStats(): StatsReport {
     byBackend,
     byProject: projectRows,
     byModel: modelRows,
+    byTier,
+    flowImpact: computeFlowImpact(),
     daily: filledDaily,
   };
 }
@@ -252,6 +303,7 @@ function scanClaude(
         agg.turns += 1;
         agg.inputTokens += e.inT;
         agg.outputTokens += e.outT;
+        agg.cacheRead += e.cacheR;
         addRolling(agg, e.inT + e.outT, e.ts, now, sessionKey);
         addModel(byModel, e.model, {
           turns: 1,
@@ -469,6 +521,7 @@ function scanCodex(
     agg.turns += parsed.sessionTurns;
     agg.inputTokens += parsed.sessionIn;
     agg.outputTokens += parsed.sessionOut;
+    agg.cacheRead += parsed.sessionCache;
     agg.linesAdded += parsed.sessionLinesAdded;
     agg.linesDeleted += parsed.sessionLinesDeleted;
 
@@ -630,6 +683,7 @@ function scanGemini(
       agg.turns += sessionTurns;
       agg.inputTokens += sessionIn;
       agg.outputTokens += sessionOut;
+      agg.cacheRead += sessionCache;
 
       const proj = ensureProject(projects, projectKey, projectKey);
       proj.sessions += 1;
@@ -713,6 +767,134 @@ function scanOllama(
   }
 }
 
+function computeFlowImpact(): import('../shared/types').FlowImpactStats {
+  const liveRuns = safeLoadFlowRuns();
+  const summaries = safeLoadRunSummaries();
+  const seenIds = new Set<string>();
+  const byFlow = new Map<string, import('../shared/types').FlowImpactRow>();
+  let totalRuns = 0;
+  let completedRuns = 0;
+  let totalTurns = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCostUSD = 0;
+  let totalWallClockMs = 0;
+
+  function rowFor(flowId: string, flowName: string): import('../shared/types').FlowImpactRow {
+    let row = byFlow.get(flowId);
+    if (!row) {
+      row = {
+        flowId,
+        flowName,
+        runs: 0,
+        completedRuns: 0,
+        turns: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        costUSD: 0,
+        wallClockMs: 0,
+        lastRunAt: 0,
+      };
+      byFlow.set(flowId, row);
+    }
+    return row;
+  }
+
+  // Live runs (full fidelity — the LRU-retained window).
+  for (const run of liveRuns) {
+    seenIds.add(run.id);
+    totalRuns += 1;
+    const isDone = run.state.kind === 'done' || run.state.kind === 'archived';
+    if (isDone) completedRuns += 1;
+
+    const flowId = run.flowId || 'unknown';
+    const flowName = run.flowSnapshot?.name || flowId;
+    const row = rowFor(flowId, flowName);
+    row.runs += 1;
+    if (isDone) row.completedRuns += 1;
+
+    let runCost = 0;
+    let runWall = 0;
+    for (const a of run.attempts ?? []) {
+      if (a.usage) {
+        row.inputTokens += a.usage.inputTokens;
+        row.outputTokens += a.usage.outputTokens;
+        totalInputTokens += a.usage.inputTokens;
+        totalOutputTokens += a.usage.outputTokens;
+      }
+      if (typeof a.costUSD === 'number' && a.costUSD > runCost) {
+        runCost = a.costUSD;
+      }
+      if (a.endedAt && a.startedAt && a.endedAt > a.startedAt) {
+        runWall += a.endedAt - a.startedAt;
+      }
+      row.turns += 1;
+      totalTurns += 1;
+    }
+    row.costUSD += runCost;
+    row.wallClockMs += runWall;
+    totalCostUSD += runCost;
+    totalWallClockMs += runWall;
+    row.lastRunAt = Math.max(row.lastRunAt, run.createdAt ?? 0);
+  }
+
+  // All-time summaries for runs the LRU has evicted. Live wins on
+  // collision (seenIds), so an in-flight or recent run never gets
+  // shadowed by a stale summary record.
+  for (const s of summaries) {
+    if (seenIds.has(s.id)) continue;
+    totalRuns += 1;
+    if (s.completed) completedRuns += 1;
+    totalTurns += s.turns;
+    totalInputTokens += s.inputTokens;
+    totalOutputTokens += s.outputTokens;
+    totalCostUSD += s.costUSD;
+    totalWallClockMs += s.wallClockMs;
+
+    const row = rowFor(s.flowId, s.flowName);
+    row.runs += 1;
+    if (s.completed) row.completedRuns += 1;
+    row.turns += s.turns;
+    row.inputTokens += s.inputTokens;
+    row.outputTokens += s.outputTokens;
+    row.costUSD += s.costUSD;
+    row.wallClockMs += s.wallClockMs;
+    row.lastRunAt = Math.max(row.lastRunAt, s.terminalAt);
+  }
+
+  const rows = Array.from(byFlow.values()).sort(
+    (a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens),
+  );
+  return {
+    totalRuns,
+    completedRuns,
+    totalTurns,
+    totalInputTokens,
+    totalOutputTokens,
+    totalCostUSD,
+    totalWallClockMs,
+    byFlow: rows,
+  };
+}
+
+function safeLoadFlowRuns(): import('../shared/flows/schema').FlowRun[] {
+  try {
+    return loadAllRuns();
+  } catch (e) {
+    logSilent('stats.loadAllRuns', e);
+    return [];
+  }
+}
+
+function safeLoadRunSummaries(): RunSummary[] {
+  try {
+    return loadRunSummaries();
+  } catch (e) {
+    logSilent('stats.loadRunSummaries', e);
+    return [];
+  }
+}
+
 function overcliStorePath(): string | null {
   try {
     // During tests / CLI runs app may be unavailable; fall back to the
@@ -766,6 +948,7 @@ function newBackendAgg(name: Backend): BackendAgg {
     turns: 0,
     inputTokens: 0,
     outputTokens: 0,
+    cacheRead: 0,
     tokensLast5h: 0,
     tokensLast24h: 0,
     tokensLast7d: 0,
@@ -783,6 +966,7 @@ function finalizeBackend(agg: BackendAgg): BackendStats {
     turns: agg.turns,
     inputTokens: agg.inputTokens,
     outputTokens: agg.outputTokens,
+    cacheRead: agg.cacheRead,
     tokensLast5h: agg.tokensLast5h,
     tokensLast24h: agg.tokensLast24h,
     tokensLast7d: agg.tokensLast7d,
