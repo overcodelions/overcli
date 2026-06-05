@@ -1272,24 +1272,39 @@ export class FlowRuntimeImpl {
     }
     const report = parseWatchReport(text);
 
+    // A tick that DID reach its tools clears any prior "can't reach tools"
+    // escalation, so the next genuine outage notifies again.
+    if (report && !report.toolsUnavailable && run.state.watch.toolsUnreachable) {
+      run.state.watch.toolsUnreachable = false;
+    }
+
     // Self-heal: the detect model couldn't reach the source's tools (e.g. it
-    // can't drive the deferred Atlassian MCP). Climb ONE rung of the detect
-    // ladder (cheapest → … → the participant's full model) so the next tick
-    // tries a more capable model, then finalize this (wasted) tick. If we're
-    // already on the top rung, the tool is genuinely unreachable — just
-    // finalize and surface the note.
+    // can't drive the deferred Atlassian/Slack MCP). Climb ONE rung of the
+    // detect ladder (cheapest → … → the participant's full model) so the next
+    // tick tries a more capable model, then finalize this (wasted) tick. If
+    // we're already on the top rung the tool is genuinely unreachable — notify
+    // the user once (so a broken watch surfaces instead of silently spinning)
+    // and keep going.
     if (phase === 'detect' && report?.toolsUnavailable) {
       const w = run.state.watch;
       const participant = run.flowSnapshot.participants.find((p) => p.id === w.participantId);
       const full = effectiveParticipantModel(run, w.participantId);
-      if (participant) {
-        const ladder = detectModelLadder(participant.backend, full);
-        const idx = ladder.indexOf(w.watchModel ?? ladder[0]);
-        const next = idx >= 0 ? ladder[idx + 1] : ladder[ladder.length - 1];
-        if (next && next !== w.watchModel) {
-          w.watchModel = next;
-          report.note = `${report.note} — couldn't reach tools, escalated detect to ${friendlyModelLabel(participant.backend, next)}.`;
-        }
+      const ladder = participant ? detectModelLadder(participant.backend, full) : [];
+      const idx = ladder.indexOf(w.watchModel ?? ladder[0]);
+      const next = idx >= 0 ? ladder[idx + 1] : undefined;
+      if (participant && next && next !== w.watchModel) {
+        // Still have a stronger model to try.
+        w.watchModel = next;
+        report.note = `${report.note} — couldn't reach tools, escalated detect to ${friendlyModelLabel(participant.backend, next)}.`;
+      } else if (!w.toolsUnreachable) {
+        // Top of the ladder and still can't reach the tools — surface it once.
+        w.toolsUnreachable = true;
+        const label = w.binding || 'your watch';
+        notifyWatch(
+          `Overcli watch can't reach its tools — ${label}`,
+          report.note ||
+            'The watcher has no working tool to reach the target. Check that the connector/MCP is installed and authenticated.',
+        );
       }
       this.finalizeWatchTick(runId, report);
       return;
