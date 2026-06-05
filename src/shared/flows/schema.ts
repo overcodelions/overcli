@@ -198,11 +198,98 @@ export interface FlowStepAttempt {
   artifact?: FlowArtifact;
 }
 
+/// The "stewardship tail" of a run. After a flow's work is done, the user
+/// can put the run into a `watching` state: it stops doing work and instead
+/// periodically polls an external source (a Jira ticket, a PR, a Zendesk
+/// case, …) for new comments and ANSWERS them — reusing the participant's
+/// existing conversation, so it replies with full context of the work it
+/// did. It never does fresh work; if a comment actually requests work it
+/// escalates (notifies the user) and keeps watching. The user ends it by
+/// archiving the run. This struct is the persisted state of one such watch.
+export interface WatchState {
+  /// Which WatchSource drives this watch (e.g. `'jira'`, `'github-pr'`,
+  /// `'generic'`). Resolved against the source registry at tick time so a
+  /// run persisted under an unknown id degrades to the generic source
+  /// rather than crashing.
+  sourceId: string;
+  /// What's being watched, in the source's own addressing scheme — a Jira
+  /// key (`'PROJ-123'`), a PR URL, a Zendesk id, or free text for the
+  /// AI-defined source.
+  binding: string;
+  /// Free-text, natural-language description of WHAT to watch and HOW to
+  /// respond — written by the user (optionally AI-drafted). This is what
+  /// makes a watch definable without a dedicated integration: the watcher
+  /// is an LLM with tools, so a clear description plus whatever tools the
+  /// user has (MCP, web fetch, gh, …) is enough. Named sources (Jira, …)
+  /// are just presets that pre-phrase this; the `ai` source relies on it
+  /// entirely. Folded into every tick prompt.
+  instructions?: string;
+  /// Participant whose persistent conversation answers comments. Reusing a
+  /// participant means the watcher already holds the full context of the
+  /// work the flow did, so its answers are grounded, not cold.
+  participantId: string;
+  /// Model for the cheap "detect" pass that runs on EVERY tick (poll the
+  /// source, diff against the cursor, decide if anything genuinely needs a
+  /// reply). Most ticks are no-ops, so this is a fast/cheap same-backend
+  /// model. When a tick finds a real question, the runtime escalates to the
+  /// participant's full model for the grounded "answer" pass. Absent → ticks
+  /// just run on the participant's model (no tiering).
+  watchModel?: string;
+  /// Opaque high-water mark of the last item the watcher already handled,
+  /// in the source's own scheme (an ISO timestamp, a comment id, …).
+  /// Advanced after each tick; this is where dedup lives. Absent until the
+  /// first tick establishes it.
+  cursor?: string;
+  /// Poll cadence in milliseconds. Floored by the runtime so a stray small
+  /// value can't busy-loop the source's API.
+  pollIntervalMs: number;
+  /// Wall-clock (ms epoch) of the last completed tick. Absent before the
+  /// first one. The sweep fires the next tick at `lastTickAt + pollIntervalMs`.
+  lastTickAt?: number;
+  /// Auto-archive deadline (ms epoch). Absent = watch until the user
+  /// archives manually. A watcher past its deadline is archived on the
+  /// next sweep so a forgotten watch can't poll forever.
+  expiresAt?: number;
+  /// Running count of comments answered across all ticks. Surfaced in the UI.
+  answered: number;
+  /// Set once the watcher has flagged that a comment needs real work and
+  /// the user has been notified. The run stays `watching` (it still answers
+  /// questions), but the UI shows the escalation so the user knows to step
+  /// back in.
+  escalated: boolean;
+  /// One-line, human-readable summary of what the most recent tick saw or
+  /// did. Surfaced in the watch banner.
+  lastNote?: string;
+  /// Append-only log of every completed tick (oldest first), capped by the
+  /// runtime. This is what makes a watch *readable*: the user can open it
+  /// and see each check — when it ran, what it saw, how many comments it
+  /// answered, and whether it escalated — rather than just a running total.
+  log?: WatchTickLogEntry[];
+}
+
+/// One entry in a watch's tick log — a single poll cycle's outcome.
+export interface WatchTickLogEntry {
+  /// When the tick completed (ms epoch).
+  at: number;
+  /// Comments answered in this tick.
+  answered: number;
+  /// Whether this tick flagged that a comment needs real work.
+  needsWork: boolean;
+  /// One-line summary of what this tick saw or did.
+  note: string;
+}
+
 export type FlowRunState =
   | { kind: 'running'; currentStepId: string }
   | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' }
   | { kind: 'done'; success: boolean }
-  | { kind: 'aborted' };
+  | { kind: 'aborted' }
+  /// Post-completion stewardship tail — see WatchState. Reached from `done`
+  /// when the user opts the run into watching; left via `archived`.
+  | { kind: 'watching'; watch: WatchState }
+  /// Terminal end of a watched run. Keeps the final WatchState so the UI can
+  /// still show "answered N comments" after the watch is closed.
+  | { kind: 'archived'; watch?: WatchState };
 
 export interface FlowRun {
   id: UUID;

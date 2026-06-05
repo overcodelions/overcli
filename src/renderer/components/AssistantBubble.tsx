@@ -61,7 +61,12 @@ export function AssistantBubble({
         (u) => INTERACTIVE_TOOLS.has(u.name) || PERSISTENT_TOOLS.has(u.name),
       );
 
-  const hasContent = info.text.length > 0;
+  // Hide the machine-readable <watch_report> block the flow watcher emits for
+  // the runtime to parse — the human-facing status already shows in the watch
+  // banner + log, so the transcript only needs the surrounding prose. ("copy
+  // raw" below still copies the full untouched text.)
+  const displayText = stripWatchReport(info.text);
+  const hasContent = displayText.length > 0;
   const hasThinking = info.thinking.some((t) => t.trim().length > 0);
   const hasTools = visibleToolUses.length > 0;
   if (!hasContent && !hasThinking && !hasTools && !info.hasOpaqueReasoning) return null;
@@ -111,7 +116,7 @@ export function AssistantBubble({
                 )}
               </div>
             )}
-            <Markdown source={info.text} onOpenPath={(p) => handleOpenPath(p, openFile)} />
+            <Markdown source={displayText} onOpenPath={(p) => handleOpenPath(p, openFile)} />
           </div>
           <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
             <button
@@ -205,6 +210,20 @@ function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => 
   } else {
     openFile(path);
   }
+}
+
+/// Strip the flow watcher's `<watch_report>…</watch_report>` block (and any
+/// stray fenced copy of it) from displayed assistant text. The block is
+/// machine-readable status the runtime parses; the user sees the same info,
+/// nicely formatted, in the watch banner + log. Also drops a partial block
+/// mid-stream (open tag not yet closed) so the JSON doesn't flash in as it
+/// streams. No-op for any text without the tag, so it's safe on all bubbles.
+function stripWatchReport(text: string): string {
+  return text
+    .replace(/```[a-z]*\s*<watch_report>[\s\S]*?<\/watch_report>\s*```/gi, '')
+    .replace(/<watch_report>[\s\S]*?<\/watch_report>/gi, '')
+    .replace(/<watch_report>[\s\S]*$/i, '')
+    .trimEnd();
 }
 
 function ThinkingBlock({ text, label }: { text: string; label: string }) {
