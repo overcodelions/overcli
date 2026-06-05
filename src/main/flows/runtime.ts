@@ -1036,10 +1036,10 @@ export class FlowRuntimeImpl {
       args.pollIntervalSec ? args.pollIntervalSec * 1000 : FlowRuntimeImpl.WATCH_DEFAULT_POLL_MS,
     );
     // When re-arming an archived watch on the SAME target, carry over the
-    // cursor / log / tally so it picks up where it left off and doesn't
-    // re-answer old comments. If the target (source+binding) changed — e.g.
-    // the user fixed a typo — start fresh, because the old cursor no longer
-    // applies.
+    // answered-id dedup set / log / tally so it picks up where it left off and
+    // doesn't re-answer comments it already handled. If the target
+    // (source+binding) changed — e.g. the user fixed a typo — start fresh,
+    // because the old answered ids no longer apply.
     const sameTarget =
       !!priorWatch && priorWatch.sourceId === (args.sourceId || 'ai') && priorWatch.binding === binding;
     // The detect tier runs on a cheap/fast same-backend model so the frequent
@@ -1059,7 +1059,7 @@ export class FlowRuntimeImpl {
       expiresAt: args.ttlHours && args.ttlHours > 0 ? Date.now() + args.ttlHours * 3_600_000 : undefined,
       answered: sameTarget ? priorWatch!.answered : 0,
       escalated: sameTarget ? priorWatch!.escalated : false,
-      cursor: sameTarget ? priorWatch!.cursor : undefined,
+      answeredIds: sameTarget ? priorWatch!.answeredIds : undefined,
       log: sameTarget ? priorWatch!.log : undefined,
     };
     if (sameTarget && priorWatch!.watchModel) watch.watchModel = priorWatch!.watchModel;
@@ -1155,7 +1155,7 @@ export class FlowRuntimeImpl {
     const source = getWatchSource(w.sourceId);
     const prompt = source.buildDetectPrompt({
       binding: w.binding,
-      cursor: w.cursor,
+      answeredIds: w.answeredIds,
       instructions: w.instructions,
       workSummary: this.summarizeWork(run),
     });
@@ -1201,7 +1201,7 @@ export class FlowRuntimeImpl {
     const source = getWatchSource(w.sourceId);
     const prompt = source.buildAnswerPrompt({
       binding: w.binding,
-      cursor: w.cursor,
+      answeredIds: w.answeredIds,
       instructions: w.instructions,
       workSummary: this.summarizeWork(run),
       detected,
@@ -1219,8 +1219,8 @@ export class FlowRuntimeImpl {
     if (!sendResult.ok) {
       // Couldn't launch the answer pass — a real question is going unanswered,
       // so escalate to the human (needsWork → finalizeWatchTick notifies) rather
-      // than letting it pass silently. The cursor stays put on the unanswered
-      // item (detect only advanced past noise).
+      // than letting it pass silently. The question's id never lands in the
+      // answered set, so it's re-detected on the next tick.
       this.finalizeWatchTick(runId, {
         answered: 0,
         needsWork: true,
@@ -1295,11 +1295,14 @@ export class FlowRuntimeImpl {
       return;
     }
 
-    // Detect found a genuine question (and it's not purely a work request) →
-    // escalate to the premium answer pass instead of finalizing now.
-    if (phase === 'detect' && report?.answerNeeded && !report.needsWork) {
-      const w = run.state.watch;
-      if (report.cursor) w.cursor = report.cursor; // advance past noise only
+    // Detect found a genuine question → run the premium answer pass. Note we
+    // do NOT gate this on `!needsWork`: a tick can have BOTH an answerable
+    // question AND a standing work request, and a ticket with an open work
+    // item would otherwise suppress answering forever (every tick reports
+    // needsWork=true). The answer pass answers the question and re-reports
+    // needsWork itself, so the human still gets escalated — both happen,
+    // independently.
+    if (phase === 'detect' && report?.answerNeeded) {
       this.sendWatchAnswer(runId, report.note);
       return;
     }
@@ -1307,9 +1310,19 @@ export class FlowRuntimeImpl {
     this.finalizeWatchTick(runId, report);
   }
 
-  /// Close out a tick: advance the cursor, bump counters, log, notify /
-  /// escalate, checkpoint. `report` is null when the turn produced no
-  /// parsable block.
+  /// Record the comment ids the watcher replied to so they're never answered
+  /// again. Capped to bound the persisted run.
+  private static readonly WATCH_ANSWERED_CAP = 200;
+  private appendAnsweredIds(w: WatchState, ids: string[] | undefined): void {
+    if (!ids?.length) return;
+    const merged = [...(w.answeredIds ?? []), ...ids];
+    // Dedupe (last-wins order preserved) and cap to the most recent.
+    w.answeredIds = Array.from(new Set(merged)).slice(-FlowRuntimeImpl.WATCH_ANSWERED_CAP);
+  }
+
+  /// Close out a tick: fix the baseline (first tick), record answered ids,
+  /// bump counters, log, notify / escalate, checkpoint. `report` is null when
+  /// the turn produced no parsable block.
   private finalizeWatchTick(runId: UUID, report: WatchTickReport | null): void {
     this.watchTicking.delete(runId);
     this.watchPhase.delete(runId);
@@ -1325,7 +1338,7 @@ export class FlowRuntimeImpl {
       this.checkpoint(run);
       return;
     }
-    if (report.cursor) w.cursor = report.cursor;
+    this.appendAnsweredIds(w, report.answeredIds);
     if (report.answered > 0) w.answered += report.answered;
     w.lastNote = report.note;
     this.appendWatchLog(w, {
@@ -1948,7 +1961,8 @@ function formatInputBodyForDisplay(name: string, body: string): string {
 
 /// Escalation ladder for the watch DETECT tier, cheapest model first, ending
 /// at the participant's own model as the last resort. Detect is mechanical
-/// (fetch + diff against the cursor + emit a tiny report), so we start on the
+/// (scan recent comments, dedup against the answered set, emit a tiny report),
+/// so we start on the
 /// cheapest fast-tier model (Haiku for Claude, mini for Codex, Flash for
 /// Gemini) and only climb a rung when a tick reports it genuinely can't reach
 /// the source's tools (`tools_unavailable` → `onWatchTickFinished`). The
