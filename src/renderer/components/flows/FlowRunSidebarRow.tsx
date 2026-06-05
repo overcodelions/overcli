@@ -42,6 +42,9 @@ function runIsActive(
 ): boolean {
   if (runIsLive(run, runners)) return true;
   if (run.state.kind === 'running' || run.state.kind === 'paused') return true;
+  // A watching run is an ongoing commitment (it's polling for follow-ups),
+  // so it stays in Active until the user archives it.
+  if (run.state.kind === 'watching') return true;
   return flowRunActivityAt(run) > cutoff;
 }
 
@@ -270,7 +273,11 @@ function FlowRunRow({
             <span className={'truncate flex-1 ' + (visiblySelected ? 'font-semibold' : '')}>
               {runTitle(run)}
             </span>
-            <StateBadge state={run.state.kind} isLive={isLive} />
+            <StateBadge
+              state={run.state.kind}
+              isLive={isLive}
+              escalated={run.state.kind === 'watching' && run.state.watch.escalated}
+            />
           </button>
           <button
             onClick={(e) => {
@@ -307,10 +314,49 @@ function runTitle(run: FlowRun): string {
 function StateBadge({
   state,
   isLive,
+  escalated,
 }: {
-  state: 'running' | 'paused' | 'done' | 'aborted';
+  state: FlowRun['state']['kind'];
   isLive: boolean;
+  escalated?: boolean;
 }) {
+  if (state === 'watching') {
+    // A small eye with a live pulse dot, so a watching run reads as an
+    // ongoing commitment in the sidebar. Turns amber with a solid dot when
+    // the watcher has escalated (a comment asked for work — needs the user).
+    const tone = escalated
+      ? 'text-amber-600 dark:text-amber-300'
+      : 'text-sky-700 dark:text-sky-300';
+    return (
+      <span
+        className={'relative flex-shrink-0 ' + tone}
+        title={escalated ? 'watching — needs you (a comment asked for work)' : 'watching for follow-ups'}
+        aria-label={escalated ? 'watching, needs you' : 'watching'}
+      >
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path
+            d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <circle cx="12" cy="12" r="2.6" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+        <span className="absolute -right-0.5 -top-0.5 flex h-1.5 w-1.5">
+          {!escalated && (
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-500 opacity-70" />
+          )}
+          <span
+            className={
+              'relative inline-flex h-1.5 w-1.5 rounded-full ' +
+              (escalated ? 'bg-amber-500' : 'bg-sky-500')
+            }
+          />
+        </span>
+      </span>
+    );
+  }
   if (state === 'running' || (state === 'done' && isLive)) {
     return (
       <svg

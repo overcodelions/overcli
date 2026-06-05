@@ -1158,6 +1158,25 @@ export interface IPCInvokeMap {
     editedArtifacts?: Record<string, string>;
   }) => { ok: true } | { ok: false; error: string };
   'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Put a completed run into the post-completion `watching` state — it
+  /// stops doing work and periodically polls `binding` (via the named
+  /// source + the user's own tools) for follow-up comments, answering them
+  /// through `participantId`'s conversation. `instructions` is the natural-
+  /// language description for the AI-defined source (`sourceId: 'ai'`).
+  'flows:enterWatch': (args: {
+    runId: UUID;
+    sourceId: string;
+    binding: string;
+    instructions?: string;
+    participantId?: string;
+    pollIntervalSec?: number;
+    ttlHours?: number;
+  }) => { ok: true } | { ok: false; error: string };
+  /// End a watched run (the watch off-switch). Also marks any other run
+  /// `archived` as a clean terminal.
+  'flows:archiveRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// List the registered watch sources for the watch-entry picker.
+  'flows:listWatchSources': () => Array<{ id: string; displayName: string }>;
   /// Set (or clear) a per-participant model override on a live run. The
   /// override drives all subsequent turns for that participant. Pass
   /// `null` to revert to the declared model.
