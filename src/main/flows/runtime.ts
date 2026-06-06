@@ -2002,19 +2002,28 @@ function formatInputBodyForDisplay(name: string, body: string): string {
 /// Escalation ladder for the watch DETECT tier, cheapest model first, ending
 /// at the participant's own model as the last resort. Detect is mechanical
 /// (scan recent comments, dedup against the answered set, emit a tiny report),
-/// so we start on the
-/// cheapest fast-tier model (Haiku for Claude, mini for Codex, Flash for
-/// Gemini) and only climb a rung when a tick reports it genuinely can't reach
-/// the source's tools (`tools_unavailable` → `onWatchTickFinished`). The
-/// premium-model lists are ordered premium-first, so reversing the fast subset
-/// gives cheapest-first. Ollama is already local/cheap → just the participant
-/// model.
+/// so we start on the cheapest reliable fast-tier model (Sonnet for Claude,
+/// mini for Codex, Flash for Gemini) and only climb a rung when a tick
+/// reports it genuinely can't reach the source's tools (`tools_unavailable`
+/// → `onWatchTickFinished`). Haiku is deliberately EXCLUDED — it's the
+/// cheapest fast model but proved unreliable at the detect job (missed/garbled
+/// reports), so watch ticks skip it in favour of Sonnet. The premium-model
+/// lists are ordered premium-first, so reversing the fast subset gives
+/// cheapest-first. Ollama is already local/cheap → just the participant model.
 function detectModelLadder(backend: Backend, participantModel: string): string[] {
   if (backend === 'ollama') return [participantModel];
-  const fast = (PREMIUM_MODELS[backend] ?? []).filter((m) => modelSpeed(m) === 'fast');
+  const fast = (PREMIUM_MODELS[backend] ?? [])
+    .filter((m) => modelSpeed(m) === 'fast')
+    .filter((m) => !isHaikuModel(m));
   const ladder = [...fast].reverse(); // cheapest fast first
   if (!ladder.includes(participantModel)) ladder.push(participantModel); // top rung
   return ladder.length > 0 ? ladder : [participantModel];
+}
+
+/// Haiku (any spelling: `claude-haiku-4-5`, `claude-haiku-4.5`) is too
+/// unreliable for the watch detect tier — see `detectModelLadder`.
+function isHaikuModel(model: string): boolean {
+  return /haiku/i.test(model);
 }
 
 /// The cheapest detect model (bottom rung of the ladder).
