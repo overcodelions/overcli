@@ -131,7 +131,12 @@ Builds are produced by the release workflow and land on the [Releases page](http
 | **Windows** · x64 + arm64 | NSIS installer |
 | **Linux** · x64 + arm64 | `.AppImage` · `.deb` |
 
-> ⚠️ Builds are **unsigned**. macOS shows *"unidentified developer"* on first open — right-click the app → **Open**. Do it once, it sticks. Prefer to build it yourself? See [Build & package](#build--package) below.
+> **First-run notes per platform:**
+> - **macOS** — builds are **signed & notarized**, so they open normally (no "unidentified developer" workaround needed). On first launch macOS asks to allow **"Overcli Safe Storage"** keychain access — that's just the app encrypting its own local session data, the standard Electron mechanism Chrome, Slack, and VS Code all use. It can't read anything else in your keychain. Click **Always Allow**.
+> - **Windows** — builds are currently **unsigned**, so SmartScreen may warn on first run: click **More info → Run anyway**.
+> - **Linux** — for the AppImage, `chmod +x` then run.
+>
+> Prefer to build it yourself? See [Build & package](#build--package) below.
 
 ## Quick Start
 
