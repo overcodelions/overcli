@@ -12,6 +12,9 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 - Copilot in Settings → Backends (enable/disable, CLI path override) and Settings → Models (default model picker).
 - Rebound review mode supported with Copilot as primary — `same`-backend presets auto-route to Claude / Codex / Gemini and surface a "Routed via X" chip in the popover so the redirect is visible.
 
+### Fixed
+- Flow watch "detect" ticks no longer run on Haiku — any Haiku-named model is filtered out of the detect ladder, so the cheapest rung is Sonnet for Claude (Codex `mini` / Gemini `flash` unaffected). Haiku proved unreliable at the mechanical detect job.
+
 ### Known limitations
 - **Copilot as a reviewer backend is not supported.** Copilot's CLI takes prompts in argv, but the reviewer plumbing feeds prompts via stdin. Copilot is hidden from the reviewer picker.
 - **Collab-mode rebound is disabled when Copilot is the primary.** Copilot exits after each turn, so the runner can't push reviewer pingbacks into it. Greyed out in the popover with an explanation. Tracked in [#19](https://github.com/overcodelions/overcli/issues/19).
