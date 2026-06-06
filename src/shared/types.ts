@@ -969,6 +969,7 @@ export interface IPCInvokeMap {
   'git:removeWorktree': (args: { projectPath: string; worktreePath: string; branchName: string }) => {
     ok: boolean;
     error?: string;
+    warning?: string;
   };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;

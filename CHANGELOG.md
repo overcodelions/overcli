@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-06
+
 ### Added
 - GitHub Copilot CLI as a fifth backend. Streams the JSONL event protocol (`copilot -p PROMPT --output-format=json --stream=on`), renders tool calls (view / edit / create / bash / glob / grep) as overcli's canonical tool cards, and replays history from `~/.copilot/session-state/<id>/events.jsonl`. Session continuity via `--resume`.
 - Copilot health probe (binary auto-discovery, `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` detection, `~/.config/github-copilot` fallback).
@@ -38,5 +40,6 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/overcodelions/overcli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/overcodelions/overcli/releases/tag/v0.1.0
