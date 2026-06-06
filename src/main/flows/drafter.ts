@@ -22,7 +22,11 @@ import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow } from '../../shared/flows/schema';
 import { parseFlowYaml } from '../../shared/flows/yaml';
-import { validateFlow } from '../../shared/flows/validation';
+import {
+  validateFlow,
+  ARTIFACT_NAME_RE,
+  sanitizeArtifactName,
+} from '../../shared/flows/validation';
 import { FLOW_TEMPLATES } from '../../shared/flows/templates';
 import {
   pickDrafterBackend,
@@ -80,16 +84,63 @@ function systemPrompt(backend: Backend): string {
     'Each step has:',
     '  id            — kebab-case identifier referenced by other steps',
     '  model         — { backend: claude|codex|gemini|copilot|ollama, model: "<id>" }',
-    '  role          — planner | implementer | reviewer | test-writer | researcher | shipper | custom',
+    '  role          — one of the presets listed under ROLES below (or `custom`)',
     '  inputs        — list of refs. May include "user_prompt" and outputs of EARLIER steps',
     '  tools         — list of tool ids. For claude/codex/gemini/copilot: Read, Write, Edit, Grep,',
     '                  Glob, Bash, WebFetch, Task. For ollama: read_file, list_dir, grep.',
-    '  output        — artifact name this step produces (e.g. plan.md, diff, review.md, pr_url)',
+    '  output        — artifact name this step produces. A SINGLE token of letters, digits, dot,',
+    '                  dash, or underscore only — NO spaces or slashes. Use snake_case or a file',
+    '                  extension (e.g. plan.md, diff, review.md, pr_url, audit_report).',
     '  permission_mode — optional. acceptEdits | bypassPermissions | default | plan | auto',
     '  pause_before  — optional bool. When true, the run pauses BEFORE this step so the user can',
     '                  review prior artifacts. NEVER set on the first step.',
     '  rebound       — optional. { critic: {backend, model}, mode: review|collab, max_iters: N }',
     '  on_fail       — optional. { action: pause|goto|abort, target?: <stepId>, max_retries?: N }',
+    '',
+    'ROLES',
+    '=====',
+    'Each role is a preset with a fixed job. Pick by what the step ACTUALLY does.',
+    'The single most important distinction is READ-ONLY vs WRITES-CODE — get it',
+    'wrong and the flow either mangles the repo or refuses to approve.',
+    '',
+    'READ-ONLY roles (never edit files — safe for investigate / analyze / plan flows):',
+    '  - researcher        — gathers and reports FACTS about the request/codebase.',
+    '                        Makes no decisions, proposes no solution.',
+    '  - code-reader       — surveys how existing code works today. No decisions, no changes.',
+    '  - planner           — turns research into a concrete step-by-step plan. Writes the',
+    '                        PLAN, not code.',
+    '  - plan-reviewer     — judges whether a PLAN is sound BEFORE any code exists. Use this',
+    '                        to validate a plan. Gates the flow (must emit "APPROVED").',
+    '  - reviewer          — reviews the CODE DIFF an implementer produced against the plan.',
+    '                        Requires a prior code-writing step. Gates.',
+    '  - code-reviewer     — reviews an existing code change/PR for correctness. Requires',
+    '                        prior code changes. Gates.',
+    '  - security-reviewer — reviews an existing diff for security issues. Requires prior',
+    '                        code changes. Gates.',
+    '  - adversarial-reviewer — tries to BREAK an existing diff. Requires prior code changes. Gates.',
+    '  - debugger          — traces a symptom to its ROOT CAUSE and recommends a fix. Does',
+    '                        not edit code.',
+    '  - technical-writer  — turns inputs (briefs, plans, findings) into clear prose/docs for',
+    '                        humans. Use this to PRESENT or deliver a written result.',
+    '  - editor            — polishes an existing draft for clarity and accuracy.',
+    '',
+    'WRITES-CODE / SHIPS roles (only use when the user wants code changed or shipped):',
+    '  - implementer       — executes a plan by making the actual file edits.',
+    '  - test-writer       — adds tests covering already-implemented changes.',
+    '  - shipper           — stages, commits, pushes the branch, and opens a PR via `gh`.',
+    '',
+    'ROLE-SELECTION RULES (follow these — name-matching a role is the #1 mistake):',
+    '  - If the user wants to INVESTIGATE / ANALYZE / RESEARCH / PROPOSE a plan and does',
+    '    NOT ask for code to be written, use ONLY read-only roles. NEVER include',
+    '    implementer, test-writer, or shipper in such a flow.',
+    '  - To VALIDATE A PLAN (no code written yet), use `plan-reviewer`, NOT `reviewer`.',
+    '    `reviewer`/`code-reviewer`/`security-reviewer`/`adversarial-reviewer` all require a',
+    '    real code diff to look at and will fail to approve when there is none.',
+    '  - To PRESENT / DELIVER a written result (a plan, report, or findings) use',
+    '    `technical-writer`, NOT `shipper`. `shipper` commits and pushes code — only use it',
+    '    when the flow is meant to land and ship changes.',
+    '  - Only reach for `reviewer`/`code-reviewer`/etc. AFTER an `implementer` step in the',
+    '    same flow has produced a diff.',
     '',
     'CONVENTIONS',
     '===========',
@@ -234,6 +285,12 @@ function finalizeDraft(
   // collide with another flow named "drafted-flow".
   parsed.id = slugify(parsed.name) || 'drafted-flow';
 
+  // Salvage near-miss artifact names before validating. The model sometimes
+  // emits an `output` with spaces or slashes ("audit report", "zendesk
+  // metrics") — valid YAML the validator rejects. Coerce them to the allowed
+  // charset and rewire any input refs so handoff stays intact.
+  repairArtifactNames(parsed);
+
   const v = validateFlow(parsed);
   if (!v.ok) {
     return {
@@ -252,6 +309,27 @@ function stripCodeFences(text: string): string {
   const fenced = text.match(/^```(?:yaml|yml)?\n([\s\S]*?)\n```\s*$/);
   if (fenced) return fenced[1].trim();
   return text;
+}
+
+/// Rewrite any step `output` that violates ARTIFACT_NAME_RE into a valid
+/// name, then remap every input ref that pointed at the old name so the
+/// produced→consumed wiring survives the rename. Mutates `flow` in place.
+/// already-valid names and `user_prompt` pass through untouched.
+function repairArtifactNames(flow: Flow): void {
+  const rename = new Map<string, string>();
+  for (const step of flow.steps) {
+    const original = step.output;
+    if (typeof original !== 'string' || ARTIFACT_NAME_RE.test(original)) continue;
+    const fixed = sanitizeArtifactName(original);
+    if (!fixed || fixed === original) continue;
+    step.output = fixed;
+    rename.set(original, fixed);
+  }
+  if (rename.size === 0) return;
+  for (const step of flow.steps) {
+    if (!Array.isArray(step.inputs)) continue;
+    step.inputs = step.inputs.map((ref) => rename.get(ref) ?? ref);
+  }
 }
 
 function slugify(name: string): string {

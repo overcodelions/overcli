@@ -8,6 +8,7 @@
 - [ ] codex
 - [ ] gemini
 - [ ] ollama
+- [ ] copilot
 - [ ] none / cross-cutting
 
 ## Test plan

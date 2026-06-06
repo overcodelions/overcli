@@ -83,6 +83,18 @@ describe('claudeBackend.buildArgs', () => {
     expect(a).toContain('--permission-prompt-tool');
   });
 
+  it('omits --debug by default', () => {
+    const a = claudeBackend.buildArgs(baseArgs, noMcpCtx);
+    expect(a).not.toContain('--debug');
+  });
+
+  it('emits --debug mcp when mcpDebug is set', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, mcpDebug: true }, noMcpCtx);
+    const i = a.indexOf('--debug');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(a[i + 1]).toBe('mcp');
+  });
+
   it('appends --add-dir for each normalized allowed dir', () => {
     const a = claudeBackend.buildArgs(
       { ...baseArgs, allowedDirs: ['/opt/shared', '/tmp/project', '/tmp/other'] },

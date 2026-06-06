@@ -61,7 +61,12 @@ export function AssistantBubble({
         (u) => INTERACTIVE_TOOLS.has(u.name) || PERSISTENT_TOOLS.has(u.name),
       );
 
-  const hasContent = info.text.length > 0;
+  // Hide the machine-readable <watch_report> block the flow watcher emits for
+  // the runtime to parse — the human-facing status already shows in the watch
+  // banner + log, so the transcript only needs the surrounding prose. ("copy
+  // raw" below still copies the full untouched text.)
+  const displayText = stripWatchReport(info.text);
+  const hasContent = displayText.length > 0;
   const hasThinking = info.thinking.some((t) => t.trim().length > 0);
   const hasTools = visibleToolUses.length > 0;
   if (!hasContent && !hasThinking && !hasTools && !info.hasOpaqueReasoning) return null;
@@ -111,7 +116,7 @@ export function AssistantBubble({
                 )}
               </div>
             )}
-            <Markdown source={info.text} onOpenPath={(p) => handleOpenPath(p, openFile)} />
+            <Markdown source={displayText} onOpenPath={(p) => handleOpenPath(p, openFile)} />
           </div>
           <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
             <button
@@ -204,6 +209,37 @@ function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => 
     openFile(m[1], { startLine: start, endLine: end, requestId: crypto.randomUUID() });
   } else {
     openFile(path);
+  }
+}
+
+/// Replace the flow watcher's machine-readable `<watch_report>…</watch_report>`
+/// block with its human `note`, rendered as a blockquote — the per-tick
+/// takeaway. So the transcript shows "what this tick actually did" instead of
+/// raw JSON (or, before, nothing — which left only terse mid-process
+/// narration). The structured fields are still parsed by the runtime; here we
+/// only surface the summary. A partial block mid-stream is dropped so nothing
+/// flashes in. No-op for any text without the tag, so it's safe on all bubbles.
+function stripWatchReport(text: string): string {
+  const replaceWithNote = (_m: string, inner: string): string => {
+    const note = extractWatchNote(inner);
+    return note ? `\n\n> ${note}\n` : '';
+  };
+  return text
+    .replace(/```[a-z]*\s*<watch_report>([\s\S]*?)<\/watch_report>\s*```/gi, replaceWithNote)
+    .replace(/<watch_report>([\s\S]*?)<\/watch_report>/gi, replaceWithNote)
+    .replace(/<watch_report>[\s\S]*$/i, '') // partial block still streaming
+    .trim();
+}
+
+/// Pull the `note` string out of a (possibly partial) watch_report body without
+/// a full JSON parse — tolerant of the model's formatting quirks.
+function extractWatchNote(inner: string): string | null {
+  const m = /"note"\s*:\s*"((?:[^"\\]|\\.)*)"/i.exec(inner);
+  if (!m) return null;
+  try {
+    return JSON.parse(`"${m[1]}"`).trim() || null;
+  } catch {
+    return m[1].trim() || null;
   }
 }
 

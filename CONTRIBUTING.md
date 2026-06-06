@@ -37,7 +37,7 @@ If your change touches a backend adapter (`src/main/backends/`) or a parser (`sr
 2. What you expected
 3. What happened instead
 4. Platform + Overcli version (Help → About, or `package.json`)
-5. Which backend(s) the bug touches (claude / codex / gemini / ollama)
+5. Which backend(s) the bug touches (claude / codex / gemini / ollama / copilot)
 
 Attach a screenshot or a short transcript if relevant. Please scrub anything that looks like a credential or private path before sharing.
 

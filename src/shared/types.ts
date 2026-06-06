@@ -174,6 +174,57 @@ export interface PatchApplyInfo {
   stderr?: string;
 }
 
+/// One sub-agent inside a running Workflow/Task, distilled from the
+/// `workflow_progress` array on `task_progress` system events. The CLI
+/// emits the full agent set on every progress tick, so the renderer keys
+/// these by `index` and lets newer ticks overwrite older ones.
+export interface TaskAgentProgress {
+  index: number;
+  label: string;
+  phaseTitle?: string;
+  /// 'start' | 'done' | 'error' | 'queued' … — whatever the CLI reports.
+  state: string;
+  /// First ~1 sentence of the agent's prompt, for the row subtitle.
+  promptPreview?: string;
+  /// First chunk of the agent's final answer once it's done.
+  resultPreview?: string;
+  lastToolName?: string;
+  lastToolSummary?: string;
+  tokens?: number;
+  toolCalls?: number;
+  durationMs?: number;
+}
+
+/// A background Workflow/Task lifecycle update. Claude Code runs the
+/// `Workflow` tool (and background `Agent`s) as a detached task and
+/// reports progress out-of-band via `system` lines carrying a `task_id`
+/// and the originating `tool_use_id`. We fold every subtype
+/// (task_started / task_progress / task_updated / task_notification)
+/// into this one shape; the renderer buckets them by `toolUseId` so the
+/// inline Workflow card can show live phase/agent progress instead of a
+/// dead generic tool card.
+export interface TaskProgressInfo {
+  taskId: string;
+  /// The `Workflow`/`Task` tool_use block this task belongs to. Ties the
+  /// out-of-band progress stream back to the inline card in the transcript.
+  toolUseId: string;
+  /// Coarse lifecycle phase derived from the system subtype.
+  phase: 'started' | 'progress' | 'completed';
+  /// Fine-grained status string when the CLI provides one ("completed",
+  /// "failed", …); undefined while merely running.
+  status?: string;
+  taskType?: string;
+  workflowName?: string;
+  description?: string;
+  /// Rolled-up usage for the whole task (tokens / tool calls / duration).
+  totalTokens?: number;
+  toolUses?: number;
+  durationMs?: number;
+  /// Per-agent progress, present on `task_progress` ticks. Empty on the
+  /// started/completed bookends.
+  agents?: TaskAgentProgress[];
+}
+
 export interface ReviewInfo {
   backend: string;
   text: string;
@@ -216,6 +267,7 @@ export type StreamEventKind =
   | { type: 'userInputRequest'; info: UserInputRequestInfo }
   | { type: 'patchApply'; info: PatchApplyInfo }
   | { type: 'reviewResult'; info: ReviewInfo }
+  | { type: 'taskProgress'; info: TaskProgressInfo }
   | { type: 'systemNotice'; text: string }
   | { type: 'metaReminder'; text: string }
   | { type: 'easterEgg'; text: string; from: string }
@@ -498,6 +550,50 @@ export interface MarketplaceSkill {
   installed: Partial<Record<SkillTarget, boolean>>;
 }
 
+/// CLIs that can host MCP servers. Unlike `SkillTarget`, Gemini is
+/// included — all three CLIs have an MCP server config format that
+/// `mcpConfig.ts` knows how to read and write.
+export type McpCli = Extract<Backend, 'claude' | 'codex' | 'gemini'>;
+
+/// One credential a catalog MCP server needs. Collected in overcli at
+/// install time and written verbatim into the server's `env` block in
+/// each target CLI's config (where the CLIs already read MCP env from).
+export interface McpSecretField {
+  /// Env var name, e.g. "BRAVE_API_KEY".
+  key: string;
+  label: string;
+  /// Short hint, e.g. where to generate the token.
+  help?: string;
+  /// URL to the provider's token page.
+  link?: string;
+  /// When true, the field is non-blocking (Apply works if left empty) and
+  /// rendered as plain text rather than a masked secret — e.g. a profile
+  /// name that isn't actually a credential.
+  optional?: boolean;
+}
+
+/// A curated MCP server the user can one-click install into any of their
+/// CLIs. Two auth shapes: `stdio` servers that take API keys via `env`
+/// (collected by overcli), and `remote` servers configured by URL whose
+/// OAuth login the CLI completes on first connect.
+export interface McpCatalogItem {
+  /// Stable id, also used as the MCP server name written to config.
+  id: string;
+  name: string;
+  description: string;
+  /// UI grouping bucket, e.g. "Dev tools".
+  category: string;
+  transport: 'stdio' | 'remote';
+  targets: McpCli[];
+  /// Env-var credentials to collect at install. Empty when none needed.
+  secrets: McpSecretField[];
+  /// Shown for remote/OAuth servers — explains login finishes in the CLI.
+  authNote?: string;
+  docsUrl?: string;
+  /// Per-target installed status, set by the main process at list time.
+  installed: Partial<Record<McpCli, boolean>>;
+}
+
 export interface OllamaModelInfo {
   name: string;
   sizeBytes: number;
@@ -630,11 +726,22 @@ export interface AppSettings {
   /// restrictions on `-p` and exposes typed events / direct permission
   /// callbacks. Opt-in while the SDK transport is being built out.
   claudeTransport?: 'cli' | 'sdk';
+  /// When true, the Claude CLI is launched with `--debug mcp`, which prints
+  /// MCP server startup/registration diagnostics to stderr. overcli forwards
+  /// stderr as `stderr` stream events, so the output shows up in the Debug
+  /// viewer — use it to diagnose MCP issues (e.g. the permission broker not
+  /// registering in a crowded MCP config). Off by default; it's noisy.
+  claudeMcpDebug?: boolean;
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
   flowRegistries?: FlowRegistry[];
   installedRegistryFlows?: InstalledRegistryFlow[];
+  /// Which auto-update feed the app follows. 'stable' tracks tagged
+  /// releases (the `latest` channel); 'nightly' tracks the rolling nightly
+  /// prerelease. The in-app updater is the single source of truth — whatever
+  /// build you installed, this setting decides what it upgrades to.
+  updateChannel?: 'stable' | 'nightly';
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -652,6 +759,8 @@ export interface IPCInvokeMap {
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
+  /// Quit and install a downloaded update now (triggered from UpdateToast).
+  'update:quitAndInstall': () => void;
   'runner:send': (args: {
     conversationId: UUID;
     prompt: string;
@@ -768,6 +877,37 @@ export interface IPCInvokeMap {
     fromCli: Backend;
     toCli: Backend;
   }) => { ok: true } | { ok: false; error: string };
+  /// Creates an MCP server entry in every target CLI in one shot.
+  /// Partial success is reported via `written` + `errors`.
+  'capabilities:addMcp': (args: {
+    name: string;
+    config: Record<string, unknown>;
+    targets: Backend[];
+  }) =>
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string };
+  /// Curated MCP catalog: list entries with per-CLI installed status.
+  'mcp:listCatalog': () => McpCatalogItem[];
+  /// Install a catalog entry into the given CLIs, merging any collected
+  /// secrets into the server's `env` block. Partial success via `written`
+  /// + `errors`, same shape as `capabilities:addMcp`.
+  'mcp:installCatalog': (args: {
+    id: string;
+    targets: Backend[];
+    secrets?: Record<string, string>;
+  }) =>
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string };
+  /// Remove a catalog entry from the given CLIs.
+  'mcp:uninstallCatalog': (args: { id: string; targets: Backend[] }) =>
+    | { ok: true; removed: Backend[]; errors: string[] }
+    | { ok: false; error: string };
+  /// Trigger a remote MCP server's OAuth login. Only Codex supports this
+  /// (spawns `codex mcp login <name>`); Claude/Gemini return a message
+  /// pointing at their in-session login.
+  'mcp:login': (args: { cli: Backend; name: string }) =>
+    | { ok: true; output: string }
+    | { ok: false; error: string; output?: string };
   'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: { path: string; rootPath?: string }) =>
@@ -782,6 +922,14 @@ export interface IPCInvokeMap {
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Write a flow artifact's body to a temp file and open it with the OS
+  /// default app. Flow artifacts live only in memory (no on-disk path), so
+  /// this materializes one on demand. `kind` picks the file extension.
+  'flows:openArtifact': (args: {
+    name: string;
+    kind: 'markdown' | 'diff' | 'text' | 'url';
+    body: string;
+  }) => { ok: true } | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
   'preview:runProjectCommand': (args: {
     cwd: string;
@@ -821,6 +969,7 @@ export interface IPCInvokeMap {
   'git:removeWorktree': (args: { projectPath: string; worktreePath: string; branchName: string }) => {
     ok: boolean;
     error?: string;
+    warning?: string;
   };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;
@@ -1010,6 +1159,25 @@ export interface IPCInvokeMap {
     editedArtifacts?: Record<string, string>;
   }) => { ok: true } | { ok: false; error: string };
   'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Put a completed run into the post-completion `watching` state — it
+  /// stops doing work and periodically polls `binding` (via the named
+  /// source + the user's own tools) for follow-up comments, answering them
+  /// through `participantId`'s conversation. `instructions` is the natural-
+  /// language description for the AI-defined source (`sourceId: 'ai'`).
+  'flows:enterWatch': (args: {
+    runId: UUID;
+    sourceId: string;
+    binding: string;
+    instructions?: string;
+    participantId?: string;
+    pollIntervalSec?: number;
+    ttlHours?: number;
+  }) => { ok: true } | { ok: false; error: string };
+  /// End a watched run (the watch off-switch). Also marks any other run
+  /// `archived` as a clean terminal.
+  'flows:archiveRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// List the registered watch sources for the watch-entry picker.
+  'flows:listWatchSources': () => Array<{ id: string; displayName: string }>;
   /// Set (or clear) a per-participant model override on a live run. The
   /// override drives all subsequent turns for that participant. Pass
   /// `null` to revert to the declared model.
@@ -1152,8 +1320,46 @@ export interface StatsReport {
     cacheRead: number;
     cacheCreation: number;
   }>;
-  /// Last 30 days of activity for the stats-page chart.
+  byTier: TierStats[];
+  flowImpact: FlowImpactStats;
+  /// Last 90 days of activity for the stats-page chart.
   daily: DailyBucket[];
+}
+
+export type ModelTier = 'thinking' | 'standard' | 'fast' | 'local';
+
+export interface TierStats {
+  tier: ModelTier;
+  models: string[];
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+export interface FlowImpactStats {
+  totalRuns: number;
+  completedRuns: number;
+  totalTurns: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostUSD: number;
+  totalWallClockMs: number;
+  byFlow: FlowImpactRow[];
+}
+
+export interface FlowImpactRow {
+  flowId: string;
+  flowName: string;
+  runs: number;
+  completedRuns: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUSD: number;
+  wallClockMs: number;
+  lastRunAt: number;
 }
 
 export interface BackendStats {
@@ -1162,6 +1368,7 @@ export interface BackendStats {
   turns: number;
   inputTokens: number;
   outputTokens: number;
+  cacheRead: number;
   tokensLast5h: number;
   tokensLast24h: number;
   tokensLast7d: number;
@@ -1274,7 +1481,12 @@ export type MainToRendererEvent =
       /// in-memory map so the library doesn't keep showing a ghost.
       type: 'flowRunDeleted';
       runId: UUID;
-    };
+    }
+  /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
+  /// conversation — consumed by the global UpdateToast.
+  | { type: 'update:available'; payload: { version: string } }
+  | { type: 'update:progress'; payload: { percent: number } }
+  | { type: 'update:downloaded'; payload: { version: string } };
 
 export const DEFAULT_SETTINGS: AppSettings = {
   backendPaths: {},
@@ -1293,9 +1505,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showActiveSidebarSection: true,
   showDebug: false,
   claudeTransport: 'cli',
+  claudeMcpDebug: false,
   starredFlows: [],
   flowRegistries: [
     { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
   ],
   installedRegistryFlows: [],
+  updateChannel: 'stable',
 };

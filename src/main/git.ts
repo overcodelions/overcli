@@ -259,6 +259,22 @@ export function createWorktree(
   return { ok: true, worktreePath, branchName };
 }
 
+/// Is `agentName` already used by a worktree dir or branch in this repo?
+/// Lets callers pick a clean, human-meaningful name (e.g. `WOW-1234`) and
+/// only fall back to a numbered suffix when there's an actual collision,
+/// instead of pre-emptively appending a uuid to every name.
+export function worktreeNameTaken(
+  projectPath: string,
+  agentName: string,
+  branchPrefix: string,
+): boolean {
+  const slug = path.basename(projectPath);
+  const worktreePath = path.join(os.homedir(), '.overcli', 'worktrees', slug, agentName);
+  if (fs.existsSync(worktreePath)) return true;
+  const branchName = `${branchPrefix}${agentName}`;
+  return runGit(['rev-parse', '--verify', branchName], projectPath).exitCode === 0;
+}
+
 /// Create a detached-HEAD worktree pointing at `targetBranch` — used by
 /// the review agent so the user can examine someone else's branch
 /// without disturbing their main checkout. We don't create a new branch
@@ -419,16 +435,40 @@ export function removeWorktree(args: {
   projectPath: string;
   worktreePath: string;
   branchName: string;
-}): { ok: boolean; error?: string } {
+}): { ok: boolean; error?: string; warning?: string } {
   const res = runGit(['worktree', 'remove', '--force', args.worktreePath], args.projectPath);
   if (res.exitCode !== 0) {
     return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
   }
-  // Prune the branch too. If it still has commits we want, users can
-  // recover via reflog; this matches the Swift app's behavior. Review
-  // worktrees are detached so branchName may be empty — skip in that case.
+  // Prune the branch too. Try a safe delete first (`-d`), which refuses if
+  // the branch has commits not merged into HEAD or its upstream — so we
+  // never silently discard work the user might still want. Only when the
+  // branch is genuinely unmerged do we force-delete (`-D`) so dismissing
+  // the agent still cleans up, and we warn that the commits are recoverable
+  // via reflog. Review worktrees are detached (empty branchName) — skip.
   if (args.branchName) {
-    runGit(['branch', '-D', args.branchName], args.projectPath);
+    const safe = runGit(['branch', '-d', args.branchName], args.projectPath);
+    if (safe.exitCode !== 0) {
+      const stderr = (safe.stderr || safe.stdout).trim();
+      // Force-delete ONLY when the safe delete refused because the branch
+      // has unmerged commits. Any other failure (branch missing, checked
+      // out elsewhere, bad name) must not trigger `-D` — the worktree is
+      // already gone, so surface git's message as a non-fatal warning and
+      // leave the branch untouched.
+      if (/not fully merged/i.test(stderr)) {
+        runGit(['branch', '-D', args.branchName], args.projectPath);
+        return {
+          ok: true,
+          warning:
+            `Branch \`${args.branchName}\` had unmerged commits and was force-deleted. ` +
+            `Recover them with \`git reflog\` / \`git branch <name> <sha>\` if needed.`,
+        };
+      }
+      return {
+        ok: true,
+        warning: `Worktree removed, but couldn't delete branch \`${args.branchName}\`: ${stderr}`,
+      };
+    }
   }
   return { ok: true };
 }

@@ -20,6 +20,7 @@ import {
   Conversation,
   DEFAULT_SETTINGS,
   MarketplaceSkill,
+  McpCatalogItem,
   Project,
   SkillTarget,
   StreamEvent,
@@ -47,7 +48,7 @@ import {
   isActiveConversation,
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
-import { useRunnersStore, getRunner, getAllRunners } from './runnersStore';
+import { useRunnersStore, getRunner, getAllRunners, mergeTaskProgress } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
@@ -158,6 +159,9 @@ interface StoreState {
   installedReviewers: Record<string, boolean>;
   capabilities: CapabilitiesReport | null;
   marketplaceSkills: MarketplaceSkill[] | null;
+  /// Curated MCP server catalog with per-CLI installed status. Null until
+  /// the first `mcp:listCatalog` resolves.
+  mcpCatalog: McpCatalogItem[] | null;
   /// Live Ollama server status. Pushed from main via the
   /// `ollamaServerStatus` event. Used to warn users in-chat when they're
   /// talking to an Ollama-backed conversation and the server is down.
@@ -259,7 +263,7 @@ interface StoreState {
   /// Agent-specific teardown: git worktree remove (including branch),
   /// then remove the conversation entry. For workspace-agent
   /// coordinators, removes every member's worktree too.
-  removeAgent(id: UUID): Promise<{ ok: boolean; error?: string }>;
+  removeAgent(id: UUID): Promise<{ ok: boolean; error?: string; warning?: string }>;
   /// Auto-commit the dirty worktree, stash any project-side changes,
   /// remove the worktree (keeping the branch), switch the project repo
   /// onto that branch, and demote the conversation from agent to a normal
@@ -362,6 +366,37 @@ interface StoreState {
   uninstallMarketplaceSkill(skillId: string, targets: SkillTarget[]): Promise<{ ok: true } | { ok: false; error: string }>;
   removeInstalledSkill(skillPath: string): Promise<{ ok: true } | { ok: false; error: string }>;
   copyMcpToCli(name: string, fromCli: Backend, toCli: Backend): Promise<{ ok: true } | { ok: false; error: string }>;
+  refreshMcpCatalog(): Promise<void>;
+  installMcpCatalogEntry(
+    id: string,
+    targets: Backend[],
+    secrets?: Record<string, string>,
+  ): Promise<
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string }
+  >;
+  uninstallMcpCatalogEntry(
+    id: string,
+    targets: Backend[],
+  ): Promise<
+    | { ok: true; removed: Backend[]; errors: string[] }
+    | { ok: false; error: string }
+  >;
+  loginMcpServer(
+    cli: Backend,
+    name: string,
+  ): Promise<
+    | { ok: true; output: string }
+    | { ok: false; error: string; output?: string }
+  >;
+  addMcpServer(
+    name: string,
+    config: Record<string, unknown>,
+    targets: Backend[],
+  ): Promise<
+    | { ok: true; written: Backend[]; errors: string[] }
+    | { ok: false; error: string }
+  >;
   refreshGitStatus(conversationId: UUID): Promise<void>;
   refreshProjectGitStatus(projectId: UUID): Promise<void>;
 
@@ -624,6 +659,7 @@ export const useStore = create<StoreState>((set, get) => ({
   installedReviewers: {},
   capabilities: null,
   marketplaceSkills: null,
+  mcpCatalog: null,
   ollamaServerStatus: 'unknown',
   welcomeFocusToken: 0,
   lastSelectedAt: {},
@@ -692,6 +728,7 @@ export const useStore = create<StoreState>((set, get) => ({
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
     void get().refreshMarketplaceSkills();
+    void get().refreshMcpCatalog();
     for (const p of state.projects) void get().refreshProjectGitStatus(p.id);
     // Seed Ollama server status once at startup so the conversation
     // banner can tell on first paint whether the local server is up.
@@ -1440,6 +1477,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const ownerProjectPath = hit.ownerProjectPath;
 
     const errors: string[] = [];
+    const warnings: string[] = [];
     // Workspace-agent coordinator: remove every member's worktree, then
     // the coordinator's own symlink root. The coordinator itself has no
     // worktree, just a bookkeeping row + the synthetic root.
@@ -1455,6 +1493,7 @@ export const useStore = create<StoreState>((set, get) => ({
               branchName: m.branchName,
             });
             if (!res.ok && res.error) errors.push(`${p.name}: ${res.error}`);
+            if (res.warning) warnings.push(`${p.name}: ${res.warning}`);
           }
           await get().removeConversation(memberId);
           break;
@@ -1462,7 +1501,11 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       await window.overcli.invoke('workspace:removeCoordinatorSymlinkRoot', id);
       await get().removeConversation(id);
-      return { ok: errors.length === 0, error: errors.join('; ') || undefined };
+      return {
+        ok: errors.length === 0,
+        error: errors.join('; ') || undefined,
+        warning: warnings.join('\n') || undefined,
+      };
     }
 
     // Single-project agent: git worktree remove + drop the conversation.
@@ -1475,6 +1518,7 @@ export const useStore = create<StoreState>((set, get) => ({
         branchName: conv.branchName ?? '',
       });
       if (!res.ok && res.error) errors.push(res.error);
+      if (res.warning) warnings.push(res.warning);
     }
     await get().removeConversation(id);
     if (conv.colosseumId) {
@@ -1499,7 +1543,11 @@ export const useStore = create<StoreState>((set, get) => ({
       });
       await get().saveColosseums();
     }
-    return { ok: errors.length === 0, error: errors.join('; ') || undefined };
+    return {
+      ok: errors.length === 0,
+      error: errors.join('; ') || undefined,
+      warning: warnings.join('\n') || undefined,
+    };
   },
 
   async checkoutAgentLocally(id, commitSubject, commitBody) {
@@ -2335,6 +2383,39 @@ export const useStore = create<StoreState>((set, get) => ({
     return res;
   },
 
+  async addMcpServer(name, config, targets) {
+    const res = await window.overcli.invoke('capabilities:addMcp', { name, config, targets });
+    if (res.ok) await get().refreshCapabilities();
+    return res;
+  },
+
+  async refreshMcpCatalog() {
+    const list = await window.overcli.invoke('mcp:listCatalog');
+    set({ mcpCatalog: list });
+  },
+
+  async installMcpCatalogEntry(id, targets, secrets) {
+    const res = await window.overcli.invoke('mcp:installCatalog', { id, targets, secrets });
+    if (res.ok) {
+      await get().refreshMcpCatalog();
+      await get().refreshCapabilities();
+    }
+    return res;
+  },
+
+  async uninstallMcpCatalogEntry(id, targets) {
+    const res = await window.overcli.invoke('mcp:uninstallCatalog', { id, targets });
+    if (res.ok) {
+      await get().refreshMcpCatalog();
+      await get().refreshCapabilities();
+    }
+    return res;
+  },
+
+  async loginMcpServer(cli, name) {
+    return window.overcli.invoke('mcp:login', { cli, name });
+  },
+
   async refreshProjectGitStatus(projectId) {
     const project = get().projects.find((p) => p.id === projectId);
     if (!project?.path) return;
@@ -2432,8 +2513,21 @@ export const useStore = create<StoreState>((set, get) => ({
         // SubagentDrawer's per-parent buckets.
         const mainIncoming: StreamEvent[] = [];
         const subBuckets: Record<string, StreamEvent[]> = {};
+        // Background Workflow/Task progress arrives out-of-band keyed by
+        // tool_use id; fold it into taskProgressByToolUse rather than the
+        // main transcript so the inline WorkflowCard can render it live.
+        let nextTaskProgress = runner.taskProgressByToolUse;
         for (const e of event.events) {
-          if (e.parentToolUseId) {
+          if (e.kind.type === 'taskProgress') {
+            const info = e.kind.info;
+            if (nextTaskProgress === runner.taskProgressByToolUse) {
+              nextTaskProgress = { ...runner.taskProgressByToolUse };
+            }
+            nextTaskProgress[info.toolUseId] = mergeTaskProgress(
+              nextTaskProgress[info.toolUseId],
+              info,
+            );
+          } else if (e.parentToolUseId) {
             (subBuckets[e.parentToolUseId] ??= []).push(e);
           } else {
             mainIncoming.push(e);
@@ -2463,6 +2557,7 @@ export const useStore = create<StoreState>((set, get) => ({
         return {
           events: nextEvents,
           subagentEvents: nextSubagentEvents,
+          taskProgressByToolUse: nextTaskProgress,
           pendingLocalUserIds: pending,
           currentModel,
         };

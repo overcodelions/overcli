@@ -20,6 +20,7 @@ describe('DEFAULT_SETTINGS', () => {
       showActiveSidebarSection: true,
       showDebug: false,
       claudeTransport: 'cli',
+      claudeMcpDebug: false,
       starredFlows: [],
       flowRegistries: [
         {
@@ -29,6 +30,7 @@ describe('DEFAULT_SETTINGS', () => {
         },
       ],
       installedRegistryFlows: [],
+      updateChannel: 'stable',
     });
   });
 

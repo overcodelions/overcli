@@ -30,12 +30,14 @@ import { log } from '../diagnostics';
 import type {
   AppSettings,
   Attachment,
+  Backend,
   MainToRendererEvent,
   PermissionMode,
   Project,
   UUID,
   Workspace,
 } from '../../shared/types';
+import { PREMIUM_MODELS, modelSpeed, friendlyModelLabel } from '../../shared/modelCatalog';
 import { workspaceSymlinkNames } from '../../shared/workspaceNames';
 import { preflightRun, formatPreflight, type PreflightResult } from './preflight';
 import { filterNoiseFromDiff, isNoisyPath } from './diffFilter';
@@ -43,6 +45,7 @@ import { clearAttachments, writeAttachment } from './attachments';
 import type {
   Flow,
   FlowArtifact,
+  FlowRolePreset,
   FlowRun,
   FlowStep,
   FlowStepAttempt,
@@ -56,9 +59,16 @@ import {
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
-import { createWorktree, detectBaseBranch, runGit } from '../git';
+import { createWorktree, detectBaseBranch, runGit, worktreeNameTaken } from '../git';
+import { branchSlugFromPrompt } from './branchName';
 import { ensureCoordinatorSymlinkRoot } from '../workspace';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
+import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
+import { notifyWatch } from './watch/notify';
+// Importing this registers the bundled watch source(s) with the registry as a
+// side effect. Keep it even though the symbol isn't referenced directly.
+import './watch/generic';
+import type { WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
 
 export interface FlowRuntimeStartArgs {
   flowId: string;
@@ -102,6 +112,20 @@ interface StepStreamBuffer {
   /// Replaced (not summed) each turn since result.totalCostUSD is itself
   /// cumulative for the conversation.
   costUSD: number;
+}
+
+/// Pick a worktree/branch name that's free in EVERY given repo, starting
+/// from `base` and appending `-2`, `-3`, … on collision. Workspace runs
+/// reuse one name across member repos, so it has to clear all of them —
+/// otherwise a clean ticket name like `WOW-1234` run twice would fail the
+/// second time instead of becoming `WOW-1234-2`.
+function uniqueWorktreeName(repoPaths: string[], base: string, branchPrefix: string): string {
+  let name = base;
+  let n = 2;
+  while (repoPaths.some((p) => worktreeNameTaken(p, name, branchPrefix))) {
+    name = `${base}-${n++}`;
+  }
+  return name;
 }
 
 export class FlowRuntimeImpl {
@@ -163,10 +187,34 @@ export class FlowRuntimeImpl {
   private pendingAttachments = new Map<UUID, Attachment[]>();
 
   /// Cap on the number of past runs we keep in memory. Once we exceed
-  /// this, the oldest done/aborted runs are evicted. Running + paused
-  /// runs are NEVER evicted regardless of count (they're load-bearing).
-  /// Sized to be generous for a normal session — bump if it's not.
+  /// this, the oldest done/aborted runs are evicted. Running + paused +
+  /// watching runs are NEVER evicted regardless of count (they're load-
+  /// bearing). Sized to be generous for a normal session — bump if it's not.
   private static readonly MAX_RETAINED_RUNS = 20;
+
+  // ---- Watch engine (post-completion "stewardship tail") -----------------
+  /// The single sweep timer that drives ALL watching runs. Lazily started
+  /// the first time a run enters `watching` (or on restart if any restored
+  /// run is already watching); never one-timer-per-run.
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  /// Accumulated assistant text for the in-flight watch tick, keyed by run
+  /// id. Separate from `stepBuffers` because a watch tick is not a step.
+  private watchBuffers = new Map<UUID, string>();
+  /// Runs with a watch tick currently in flight — guards the sweep against
+  /// firing a second tick before the first reply lands.
+  private watchTicking = new Set<UUID>();
+  /// Which tier the in-flight tick is on: 'detect' (cheap, every tick) or
+  /// 'answer' (premium, only after detect escalates). Keyed by run id.
+  private watchPhase = new Map<UUID, 'detect' | 'answer'>();
+  /// How often the sweep wakes to check which watching runs are due. Coarse
+  /// on purpose: due-ness is decided per run from `lastTickAt + pollIntervalMs`,
+  /// so this only bounds scheduling granularity, not the poll cadence.
+  private static readonly WATCH_SWEEP_MS = 30_000;
+  /// Floor on a watch's poll interval, so a stray tiny value can't hammer
+  /// the source's API.
+  private static readonly WATCH_MIN_POLL_MS = 60_000;
+  /// Default poll cadence when the caller doesn't specify one (10 min).
+  private static readonly WATCH_DEFAULT_POLL_MS = 600_000;
 
   /// Max combined size of artifact inputs + system prompt we'll feed to a
   /// step's first turn before truncating. Local models choke on huge
@@ -200,6 +248,12 @@ export class FlowRuntimeImpl {
     // or paused — the latter resumable via resumeRun.
     for (const run of loadAllRuns()) {
       this.runs.set(run.id, run);
+    }
+    // If any restored run is still `watching`, re-arm the sweep so its poll
+    // loop resumes. The watcher's subprocess is dead, but its conversation
+    // session persists, so the next tick's `runner.send` warm-resumes it.
+    if (Array.from(this.runs.values()).some((r) => r.state.kind === 'watching')) {
+      this.ensureWatchTimer();
     }
   }
 
@@ -276,6 +330,29 @@ export class FlowRuntimeImpl {
         }
       }
 
+      // Watch tick: while a run is `watching` and a tick is in flight,
+      // accumulate the watcher participant's reply so `onWatchTickFinished`
+      // can parse the <watch_report> from it. A watch tick isn't a step, so
+      // it has its own buffer rather than touching `stepBuffers`.
+      if (run.state.kind === 'watching' && this.watchTicking.has(runId)) {
+        const watcherConv = run.conversationIds[run.state.watch.participantId];
+        if (watcherConv === event.conversationId) {
+          let acc = this.watchBuffers.get(runId) ?? '';
+          for (const ev of event.events) {
+            if (
+              ev.kind.type === 'assistant' &&
+              !ev.kind.info.isPartial &&
+              !ev.reviewer &&
+              ev.kind.info.text
+            ) {
+              acc += ev.kind.info.text + '\n';
+            }
+          }
+          this.watchBuffers.set(runId, acc);
+        }
+        return;
+      }
+
       // Only capture buffer state while the runtime is actually running a
       // step — user hijacks (chat between steps, or after a pause) flow
       // through the same conv but shouldn't pollute the current step's
@@ -330,6 +407,20 @@ export class FlowRuntimeImpl {
           return;
         }
       }
+      // Watch tick finished: the watcher participant's turn drained. Parse
+      // its report, advance the cursor, notify/escalate, and schedule the
+      // next tick. Guarded on `watchTicking` so a stray running:false on the
+      // watcher conv (e.g. a user hijack) doesn't misfire as a tick finish.
+      if (run.state.kind === 'watching') {
+        if (this.watchTicking.has(runId)) {
+          const watcherConv = run.conversationIds[run.state.watch.participantId];
+          if (watcherConv === event.conversationId) {
+            this.onWatchTickFinished(runId);
+          }
+        }
+        return;
+      }
+
       // Only react when the runtime itself is mid-step. running:false on a
       // user hijack turn should NOT finish the step — that would extract
       // an artifact from a chat reply.
@@ -418,13 +509,18 @@ export class FlowRuntimeImpl {
           worktreePath: string;
           branchName: string;
         }> = [];
-        const wtNameBase = `flow-${flow.id}-${runId.slice(0, 8)}`;
+        const branchPrefix = settings.agentBranchPrefix || 'agent/';
+        const wtNameBase = uniqueWorktreeName(
+          members.map((p) => p.path),
+          branchSlugFromPrompt(args.userPrompt, flow.id),
+          branchPrefix,
+        );
         for (const p of members) {
           const r = createWorktree({
             projectPath: p.path,
             agentName: wtNameBase,
             baseBranch: sharedBase ?? detectBaseBranch(p.path),
-            branchPrefix: settings.agentBranchPrefix || 'agent/',
+            branchPrefix,
           });
           if (!r.ok) {
             return {
@@ -450,12 +546,17 @@ export class FlowRuntimeImpl {
         workspaceWorktrees = minted;
       } else {
         // Single-project worktree (original behavior).
-        const wtName = `flow-${flow.id}-${runId.slice(0, 8)}`;
+        const branchPrefix = settings.agentBranchPrefix || 'agent/';
+        const wtName = uniqueWorktreeName(
+          [args.projectPath],
+          branchSlugFromPrompt(args.userPrompt, flow.id),
+          branchPrefix,
+        );
         const result = createWorktree({
           projectPath: args.projectPath,
           agentName: wtName,
           baseBranch: sharedBase ?? detectBaseBranch(args.projectPath),
-          branchPrefix: settings.agentBranchPrefix || 'agent/',
+          branchPrefix,
         });
         if (!result.ok) {
           return { ok: false, error: `Failed to create worktree: ${result.error}` };
@@ -559,7 +660,10 @@ export class FlowRuntimeImpl {
     const all = Array.from(this.runs.values());
     if (all.length < FlowRuntimeImpl.MAX_RETAINED_RUNS) return;
     const evictable = all
-      .filter((r) => r.state.kind === 'done' || r.state.kind === 'aborted')
+      .filter(
+        (r) =>
+          r.state.kind === 'done' || r.state.kind === 'aborted' || r.state.kind === 'archived',
+      )
       .sort((a, b) => a.createdAt - b.createdAt);
     const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
     for (const victim of evictable.slice(0, overflow)) {
@@ -859,6 +963,9 @@ export class FlowRuntimeImpl {
     this.stepBuffers.delete(args.runId);
     this.diffSnapshots.delete(args.runId);
     this.pendingAttachments.delete(args.runId);
+    this.watchTicking.delete(args.runId);
+    this.watchPhase.delete(args.runId);
+    this.watchBuffers.delete(args.runId);
     for (const key of this.retryCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
     }
@@ -907,6 +1014,422 @@ export class FlowRuntimeImpl {
     this.emitRunUpdate(run);
     this.checkpoint(run); // terminal — save final state
     return { ok: true };
+  }
+
+  // ---------------------------------------------------------------------
+  // Watch engine — post-completion "stewardship tail"
+  // ---------------------------------------------------------------------
+
+  /// Put a completed run into the `watching` state. From here the run stops
+  /// doing work and periodically polls `binding` (via the named source +
+  /// the user's own tools) for new comments, answering them through the
+  /// chosen participant's existing conversation. Only valid on a `done` run.
+  enterWatch(args: {
+    runId: UUID;
+    sourceId: string;
+    binding: string;
+    instructions?: string;
+    participantId?: string;
+    pollIntervalSec?: number;
+    ttlHours?: number;
+  }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    // Allow starting from a completed run OR re-arming an archived one (the
+    // "resume — possibly with edits" path).
+    const priorWatch = run.state.kind === 'archived' ? run.state.watch : undefined;
+    if (run.state.kind !== 'done' && run.state.kind !== 'archived') {
+      return {
+        ok: false,
+        error: `A watch can only start from a completed or archived run (state: ${run.state.kind}).`,
+      };
+    }
+    const binding = args.binding?.trim() ?? '';
+    const instructions = args.instructions?.trim() || undefined;
+    if (!binding && !instructions) {
+      return { ok: false, error: 'A watch needs either a target to watch or instructions describing one.' };
+    }
+    // Default the watcher to the participant that ran the LAST step — it has
+    // the freshest context of the finished work.
+    const lastStep = run.flowSnapshot.steps[run.flowSnapshot.steps.length - 1];
+    const participantId = args.participantId ?? lastStep?.participantId;
+    if (!participantId || !run.conversationIds[participantId]) {
+      return { ok: false, error: `Participant "${participantId}" has no conversation in this run.` };
+    }
+    const pollIntervalMs = Math.max(
+      FlowRuntimeImpl.WATCH_MIN_POLL_MS,
+      args.pollIntervalSec ? args.pollIntervalSec * 1000 : FlowRuntimeImpl.WATCH_DEFAULT_POLL_MS,
+    );
+    // When re-arming an archived watch on the SAME target, carry over the
+    // answered-id dedup set / log / tally so it picks up where it left off and
+    // doesn't re-answer comments it already handled. If the target
+    // (source+binding) changed — e.g. the user fixed a typo — start fresh,
+    // because the old answered ids no longer apply.
+    const sameTarget =
+      !!priorWatch && priorWatch.sourceId === (args.sourceId || 'ai') && priorWatch.binding === binding;
+    // The detect tier runs on a cheap/fast same-backend model so the frequent
+    // no-op ticks are near-free; the answer tier uses the participant's full
+    // model. Same-target resume keeps the prior detect model.
+    const participant = run.flowSnapshot.participants?.find((p) => p.id === participantId);
+    const fullModel = effectiveParticipantModel(run, participantId);
+    const watchModel =
+      participant ? cheapDetectModel(participant.backend, fullModel) : fullModel;
+    const watch: WatchState = {
+      sourceId: args.sourceId || 'ai',
+      binding,
+      instructions,
+      participantId,
+      watchModel,
+      pollIntervalMs,
+      expiresAt: args.ttlHours && args.ttlHours > 0 ? Date.now() + args.ttlHours * 3_600_000 : undefined,
+      answered: sameTarget ? priorWatch!.answered : 0,
+      escalated: sameTarget ? priorWatch!.escalated : false,
+      answeredIds: sameTarget ? priorWatch!.answeredIds : undefined,
+      log: sameTarget ? priorWatch!.log : undefined,
+    };
+    if (sameTarget && priorWatch!.watchModel) watch.watchModel = priorWatch!.watchModel;
+    run.state = { kind: 'watching', watch };
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+    this.ensureWatchTimer();
+    return { ok: true };
+  }
+
+  /// End a watched run. The off-switch for the stewardship tail — keeps the
+  /// final tally so the UI can still show "answered N". Also a clean no-op
+  /// terminal for a run that was never watching (just marks it archived).
+  archiveRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    const watch = run.state.kind === 'watching' ? run.state.watch : undefined;
+    // If a tick is in flight, stop the watcher's subprocess so it doesn't
+    // post a stray reply after the user closed the watch.
+    if (run.state.kind === 'watching' && this.watchTicking.has(run.id)) {
+      const convId = run.conversationIds[run.state.watch.participantId];
+      if (convId) {
+        try {
+          this.runner.stop(convId);
+        } catch {
+          // best-effort
+        }
+      }
+    }
+    this.watchTicking.delete(run.id);
+    this.watchPhase.delete(run.id);
+    this.watchBuffers.delete(run.id);
+    // The run is terminal now — drop its conversation routing entries so
+    // observeEvent doesn't keep resolving them to an archived run. A resume
+    // re-registers the watcher conversation via watchTick.
+    for (const cid of Object.values(run.conversationIds)) {
+      this.convIdToRun.delete(cid);
+    }
+    run.state = { kind: 'archived', watch };
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+    return { ok: true };
+  }
+
+  /// Lazily start the single sweep timer. Idempotent. Uses `unref` so the
+  /// timer never keeps the process alive on its own.
+  private ensureWatchTimer(): void {
+    if (this.watchTimer) return;
+    this.watchTimer = setInterval(() => this.sweepWatchers(), FlowRuntimeImpl.WATCH_SWEEP_MS);
+    this.watchTimer.unref?.();
+  }
+
+  /// One sweep: archive any expired watches, then fire a tick for each
+  /// watching run that's due and not already ticking.
+  private sweepWatchers(): void {
+    const now = Date.now();
+    let anyWatching = false;
+    for (const run of this.runs.values()) {
+      if (run.state.kind !== 'watching') continue;
+      anyWatching = true;
+      const w = run.state.watch;
+      if (w.expiresAt && now >= w.expiresAt) {
+        this.archiveRun({ runId: run.id });
+        continue;
+      }
+      if (this.watchTicking.has(run.id)) continue;
+      const due = (w.lastTickAt ?? 0) + w.pollIntervalMs;
+      if (now >= due) void this.watchTick(run.id);
+    }
+    // Nothing left to watch — stop the timer; enterWatch re-arms it.
+    if (!anyWatching && this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+  }
+
+  /// Fire one DETECT tick: send the source's detect prompt to the watcher
+  /// participant's conversation on the cheap watch model. The reply streams
+  /// back through `observeEvent`, which calls `onWatchTickFinished` when it
+  /// drains. Detect posts nothing — it only decides whether anything needs
+  /// the (expensive) answer pass.
+  private async watchTick(runId: UUID): Promise<void> {
+    const run = this.runs.get(runId);
+    if (!run || run.state.kind !== 'watching') return;
+    const w = run.state.watch;
+    const participant = run.flowSnapshot.participants.find((p) => p.id === w.participantId);
+    const convId = run.conversationIds[w.participantId];
+    if (!participant || !convId) {
+      // Can't tick without a participant conversation — back off a cycle.
+      w.lastTickAt = Date.now();
+      return;
+    }
+    const source = getWatchSource(w.sourceId);
+    const prompt = source.buildDetectPrompt({
+      binding: w.binding,
+      answeredIds: w.answeredIds,
+      instructions: w.instructions,
+      workSummary: this.summarizeWork(run),
+    });
+    this.watchTicking.add(runId);
+    this.watchPhase.set(runId, 'detect');
+    this.watchBuffers.set(runId, '');
+    this.convIdToRun.set(convId, runId);
+    // Detect runs on the cheap watch model (the frequent no-op case). Falls
+    // back to the participant's full model when no cheap model was resolved.
+    const detectModel = w.watchModel || effectiveParticipantModel(run, w.participantId);
+    const sendResult = this.sendWatchTurn({
+      convId,
+      backend: participant.backend,
+      cwd: run.projectPath,
+      model: detectModel,
+      prompt,
+      displayText: `Watching ${w.binding || 'follow-ups'} — checking for new comments…`,
+    });
+    if (!sendResult.ok) {
+      this.watchTicking.delete(runId);
+      this.watchPhase.delete(runId);
+      this.watchBuffers.delete(runId);
+      w.lastTickAt = Date.now(); // back off; the sweep retries next interval
+      w.lastNote = `Watch tick could not start: ${sendResult.error}`;
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+    }
+  }
+
+  /// Fire the ANSWER pass after detect escalated: same conversation, but the
+  /// participant's FULL model, told to post a grounded reply. `detected` is
+  /// the detect pass's note describing what to answer.
+  private sendWatchAnswer(runId: UUID, detected: string): void {
+    const run = this.runs.get(runId);
+    if (!run || run.state.kind !== 'watching') return;
+    const w = run.state.watch;
+    const participant = run.flowSnapshot.participants.find((p) => p.id === w.participantId);
+    const convId = run.conversationIds[w.participantId];
+    if (!participant || !convId) {
+      this.finalizeWatchTick(runId, null);
+      return;
+    }
+    const source = getWatchSource(w.sourceId);
+    const prompt = source.buildAnswerPrompt({
+      binding: w.binding,
+      answeredIds: w.answeredIds,
+      instructions: w.instructions,
+      workSummary: this.summarizeWork(run),
+      detected,
+    });
+    this.watchPhase.set(runId, 'answer');
+    this.watchBuffers.set(runId, '');
+    const sendResult = this.sendWatchTurn({
+      convId,
+      backend: participant.backend,
+      cwd: run.projectPath,
+      model: effectiveParticipantModel(run, w.participantId),
+      prompt,
+      displayText: `Answering on ${w.binding || 'the watched item'}…`,
+    });
+    if (!sendResult.ok) {
+      // Couldn't launch the answer pass — a real question is going unanswered,
+      // so escalate to the human (needsWork → finalizeWatchTick notifies) rather
+      // than letting it pass silently. The question's id never lands in the
+      // answered set, so it's re-detected on the next tick.
+      this.finalizeWatchTick(runId, {
+        answered: 0,
+        needsWork: true,
+        note: `A new comment needs a reply, but the answer pass could not start: ${sendResult.error}`,
+      });
+    }
+  }
+
+  /// Shared `runner.send` for both watch tiers — same unattended config
+  /// (bypassPermissions, no reviewer, unrestricted tools). Answer-only is
+  /// enforced by the prompt contract, not the permission mode: for non-Ollama
+  /// backends overcli can't restrict the CLI's tool surface, and the watch
+  /// runs unattended, so we rely on the "do not change anything" contract.
+  private sendWatchTurn(args: {
+    convId: UUID;
+    backend: Backend;
+    cwd: string;
+    model: string;
+    prompt: string;
+    displayText: string;
+  }): ReturnType<RunnerManager['send']> {
+    return this.runner.send({
+      conversationId: args.convId,
+      prompt: args.prompt,
+      displayText: args.displayText,
+      backend: args.backend,
+      cwd: args.cwd,
+      model: args.model,
+      permissionMode: 'bypassPermissions',
+      reviewBackend: null,
+      reviewMode: null,
+      reviewModel: null,
+      reviewPersona: null,
+      enabledTools: undefined,
+    });
+  }
+
+  /// A drained tick turn. Detect → maybe escalate to the answer pass;
+  /// answer (or a no-escalation detect) → finalize.
+  private onWatchTickFinished(runId: UUID): void {
+    const run = this.runs.get(runId);
+    const phase = this.watchPhase.get(runId);
+    const text = this.watchBuffers.get(runId) ?? '';
+    this.watchBuffers.delete(runId);
+    if (!run || run.state.kind !== 'watching') {
+      this.watchTicking.delete(runId);
+      this.watchPhase.delete(runId);
+      return;
+    }
+    const report = parseWatchReport(text);
+
+    // A tick that DID reach its tools clears any prior "can't reach tools"
+    // escalation, so the next genuine outage notifies again.
+    if (report && !report.toolsUnavailable && run.state.watch.toolsUnreachable) {
+      run.state.watch.toolsUnreachable = false;
+    }
+
+    // Self-heal: the detect model couldn't reach the source's tools (e.g. it
+    // can't drive the deferred Atlassian/Slack MCP). Climb ONE rung of the
+    // detect ladder (cheapest → … → the participant's full model) so the next
+    // tick tries a more capable model, then finalize this (wasted) tick. If
+    // we're already on the top rung the tool is genuinely unreachable — notify
+    // the user once (so a broken watch surfaces instead of silently spinning)
+    // and keep going.
+    if (phase === 'detect' && report?.toolsUnavailable) {
+      const w = run.state.watch;
+      const participant = run.flowSnapshot.participants.find((p) => p.id === w.participantId);
+      const full = effectiveParticipantModel(run, w.participantId);
+      const ladder = participant ? detectModelLadder(participant.backend, full) : [];
+      const idx = ladder.indexOf(w.watchModel ?? ladder[0]);
+      const next = idx >= 0 ? ladder[idx + 1] : undefined;
+      if (participant && next && next !== w.watchModel) {
+        // Still have a stronger model to try.
+        w.watchModel = next;
+        report.note = `${report.note} — couldn't reach tools, escalated detect to ${friendlyModelLabel(participant.backend, next)}.`;
+      } else if (!w.toolsUnreachable) {
+        // Top of the ladder and still can't reach the tools — surface it once.
+        w.toolsUnreachable = true;
+        const label = w.binding || 'your watch';
+        notifyWatch(
+          `Overcli watch can't reach its tools — ${label}`,
+          report.note ||
+            'The watcher has no working tool to reach the target. Check that the connector/MCP is installed and authenticated.',
+        );
+      }
+      this.finalizeWatchTick(runId, report);
+      return;
+    }
+
+    // Detect found a genuine question → run the premium answer pass. Note we
+    // do NOT gate this on `!needsWork`: a tick can have BOTH an answerable
+    // question AND a standing work request, and a ticket with an open work
+    // item would otherwise suppress answering forever (every tick reports
+    // needsWork=true). The answer pass answers the question and re-reports
+    // needsWork itself, so the human still gets escalated — both happen,
+    // independently.
+    if (phase === 'detect' && report?.answerNeeded) {
+      this.sendWatchAnswer(runId, report.note);
+      return;
+    }
+
+    this.finalizeWatchTick(runId, report);
+  }
+
+  /// Record the comment ids the watcher replied to so they're never answered
+  /// again. Capped to bound the persisted run.
+  private static readonly WATCH_ANSWERED_CAP = 200;
+  private appendAnsweredIds(w: WatchState, ids: string[] | undefined): void {
+    if (!ids?.length) return;
+    const merged = [...(w.answeredIds ?? []), ...ids];
+    // Dedupe (last-wins order preserved) and cap to the most recent.
+    w.answeredIds = Array.from(new Set(merged)).slice(-FlowRuntimeImpl.WATCH_ANSWERED_CAP);
+  }
+
+  /// Close out a tick: fix the baseline (first tick), record answered ids,
+  /// bump counters, log, notify / escalate, checkpoint. `report` is null when
+  /// the turn produced no parsable block.
+  private finalizeWatchTick(runId: UUID, report: WatchTickReport | null): void {
+    this.watchTicking.delete(runId);
+    this.watchPhase.delete(runId);
+    const run = this.runs.get(runId);
+    if (!run || run.state.kind !== 'watching') return;
+    const w = run.state.watch;
+    w.lastTickAt = Date.now();
+
+    if (!report) {
+      w.lastNote = 'Watch tick produced no report block.';
+      this.appendWatchLog(w, { at: w.lastTickAt, answered: 0, needsWork: false, note: w.lastNote });
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+      return;
+    }
+    this.appendAnsweredIds(w, report.answeredIds);
+    if (report.answered > 0) w.answered += report.answered;
+    w.lastNote = report.note;
+    this.appendWatchLog(w, {
+      at: w.lastTickAt,
+      answered: report.answered,
+      needsWork: report.needsWork,
+      note: report.note,
+    });
+
+    const label = w.binding || 'your watch';
+    if (report.answered > 0) {
+      notifyWatch(`Overcli watch — ${label}`, report.note || `Answered ${report.answered} comment(s).`);
+    }
+    if (report.needsWork) {
+      // Escalation is the trust boundary: the watcher saw work being asked
+      // for, did NOT do it, and pulls the human back in. Notify loudly the
+      // first time; keep the flag so the UI shows "needs you".
+      if (!w.escalated) {
+        notifyWatch(
+          `Overcli watch needs you — ${label}`,
+          report.note || 'A comment requests work. Reopen the flow to act.',
+        );
+      }
+      w.escalated = true;
+    }
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+  }
+
+  /// Append a tick to the watch log, capped to the most recent entries so a
+  /// long-lived watch can't grow the persisted run unbounded.
+  private static readonly WATCH_LOG_CAP = 50;
+  private appendWatchLog(w: WatchState, entry: WatchTickLogEntry): void {
+    const log = w.log ?? [];
+    log.push(entry);
+    w.log = log.slice(-FlowRuntimeImpl.WATCH_LOG_CAP);
+  }
+
+  /// A short grounding blurb describing what the flow accomplished, fed to
+  /// every watch tick so the watcher answers from the real work rather than
+  /// guessing. Kept compact — the participant's own conversation already
+  /// holds the full transcript.
+  private summarizeWork(run: FlowRun): string {
+    const parts: string[] = [];
+    const prompt = run.userPrompt?.trim();
+    if (prompt) parts.push(`Original request: ${prompt.slice(0, 600)}`);
+    const artifactNames = Object.keys(run.artifacts);
+    if (artifactNames.length > 0) {
+      parts.push(`Artifacts produced: ${artifactNames.join(', ')}.`);
+    }
+    return parts.join('\n') || '(this run produced no recorded artifacts)';
   }
 
   // ---------------------------------------------------------------------
@@ -1103,6 +1626,22 @@ export class FlowRuntimeImpl {
     // resumed: on restart the run will be in `paused` (set by
     // advanceAfterStep below if there's another step) or `done`.
     this.checkpoint(run);
+
+    // Verdict gate: a reviewer-role step produced its artifact cleanly, but
+    // if the verdict isn't an approval the flow must NOT roll on to
+    // downstream steps (tests/push) over disapproved work. Route it through
+    // the normal `on_fail` policy — pause by default, or `goto` to loop
+    // back to an earlier step the user wired up. The artifact itself is
+    // already recorded above, so the user sees the rejecting review.
+    if (isGatingReviewerRole(step.role) && !isReviewApproved(body)) {
+      this.handleStepFailure(
+        runId,
+        step,
+        `Reviewer step "${step.id}" did not approve (no "APPROVED" verdict in ${step.output}).`,
+      );
+      return;
+    }
+
     this.advanceAfterStep(runId, step.id);
   }
 
@@ -1460,6 +1999,38 @@ function formatInputBodyForDisplay(name: string, body: string): string {
   return '```\n' + body + '\n```';
 }
 
+/// Escalation ladder for the watch DETECT tier, cheapest model first, ending
+/// at the participant's own model as the last resort. Detect is mechanical
+/// (scan recent comments, dedup against the answered set, emit a tiny report),
+/// so we start on the cheapest reliable fast-tier model (Sonnet for Claude,
+/// mini for Codex, Flash for Gemini) and only climb a rung when a tick
+/// reports it genuinely can't reach the source's tools (`tools_unavailable`
+/// → `onWatchTickFinished`). Haiku is deliberately EXCLUDED — it's the
+/// cheapest fast model but proved unreliable at the detect job (missed/garbled
+/// reports), so watch ticks skip it in favour of Sonnet. The premium-model
+/// lists are ordered premium-first, so reversing the fast subset gives
+/// cheapest-first. Ollama is already local/cheap → just the participant model.
+function detectModelLadder(backend: Backend, participantModel: string): string[] {
+  if (backend === 'ollama') return [participantModel];
+  const fast = (PREMIUM_MODELS[backend] ?? [])
+    .filter((m) => modelSpeed(m) === 'fast')
+    .filter((m) => !isHaikuModel(m));
+  const ladder = [...fast].reverse(); // cheapest fast first
+  if (!ladder.includes(participantModel)) ladder.push(participantModel); // top rung
+  return ladder.length > 0 ? ladder : [participantModel];
+}
+
+/// Haiku (any spelling: `claude-haiku-4-5`, `claude-haiku-4.5`) is too
+/// unreliable for the watch detect tier — see `detectModelLadder`.
+function isHaikuModel(model: string): boolean {
+  return /haiku/i.test(model);
+}
+
+/// The cheapest detect model (bottom rung of the ladder).
+function cheapDetectModel(backend: Backend, participantModel: string): string {
+  return detectModelLadder(backend, participantModel)[0];
+}
+
 /// Detect artifact kind from its name. Markdown by default; "diff" by name
 /// → diff; "url" suffix → url. Everything else falls through to text.
 export function detectArtifactKind(name: string): FlowArtifact['kind'] {
@@ -1468,6 +2039,52 @@ export function detectArtifactKind(name: string): FlowArtifact['kind'] {
   if (lower === 'diff' || lower.endsWith('.diff') || lower.endsWith('.patch')) return 'diff';
   if (lower.endsWith('url') || lower.endsWith('_url')) return 'url';
   return 'text';
+}
+
+/// Role presets whose whole job is to render an APPROVE/REJECT verdict on
+/// prior work. A step with one of these roles GATES the flow: if its
+/// produced artifact doesn't clearly approve, the runtime treats the step
+/// as failed and routes it through `on_fail` (pause by default) instead of
+/// advancing to downstream steps — so a rejected review actually stops the
+/// pipeline rather than letting `tests`/`push` run on disapproved work.
+const GATING_REVIEWER_ROLES: ReadonlySet<FlowRolePreset> = new Set([
+  'plan-reviewer',
+  'reviewer',
+  'code-reviewer',
+  'security-reviewer',
+  'adversarial-reviewer',
+]);
+
+export function isGatingReviewerRole(role: FlowRolePreset): boolean {
+  return GATING_REVIEWER_ROLES.has(role);
+}
+
+/// Decide whether a reviewer's produced artifact represents an APPROVAL.
+/// The reviewer role prompts (see ../../shared/flows/roles.ts) instruct the
+/// model to put "APPROVED" on its OWN line when the work is good, and to
+/// list concrete problems otherwise. We mirror that contract:
+///   - Approved IFF some line, after stripping leading markdown bullets /
+///     emphasis / headings, BEGINS with the bare word "APPROVED" and is
+///     not negated ("NOT APPROVED", "not approved").
+///   - Anything else — explicit rejection markers (REJECTED, CHANGES
+///     REQUESTED), or simply the absence of an approval line — counts as
+///     NOT approved, so an ambiguous or rejecting review gates rather than
+///     slipping through. This is deliberately conservative: the documented
+///     contract is an explicit APPROVED line, so its absence means "stop
+///     and let the human look."
+export function isReviewApproved(reviewBody: string): boolean {
+  const lines = reviewBody.split('\n');
+  for (const raw of lines) {
+    // Strip leading markdown noise: list bullets, blockquotes, heading
+    // hashes, and bold/italic markers — so "**APPROVED**" or "- APPROVED"
+    // still read as a bare verdict line.
+    const line = raw
+      .replace(/^[\s>#*_-]+/, '')
+      .replace(/[*_`]+/g, '')
+      .trim();
+    if (/^APPROVED\b/i.test(line)) return true;
+  }
+  return false;
 }
 
 /// Pull the artifact body out of an assistant turn. Robust against the

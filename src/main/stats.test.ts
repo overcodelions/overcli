@@ -6,6 +6,7 @@ import {
   countToolUseLines,
   dayKey,
   fillDays,
+  computeStats,
   intVal,
   isSameDay,
   maxNum,
@@ -257,4 +258,16 @@ describe('countCodexFunctionCallLines', () => {
       countCodexFunctionCallLines({ arguments: JSON.stringify({ command: ['ls'] }) }),
     ).toEqual({ added: 0, deleted: 0 });
   });
+});
+
+describe('computeStats invariants', () => {
+  // Scans the real ~/.claude / ~/.codex history on the dev machine, which can
+  // be large — give it headroom past the 5s default. On CI there's no history,
+  // so byBackend is empty and the assertion is a fast no-op.
+  it('sessionsToday per backend never exceeds that backend\'s sessions', () => {
+    const report = computeStats();
+    for (const b of report.byBackend) {
+      expect(b.sessionsToday).toBeLessThanOrEqual(b.sessions);
+    }
+  }, 30_000);
 });

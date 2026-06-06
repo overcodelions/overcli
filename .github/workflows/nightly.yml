@@ -94,8 +94,19 @@ jobs:
           elif [ "$RUNNER_OS" = "macOS" ]; then
             echo "No Apple credentials in repo secrets — building unsigned."
           fi
+          # The version is stamped x.y.z-nightly.<date>.<sha> above, so
+          # electron-builder's detectUpdateChannel (on by default) infers the
+          # `nightly` channel from the prerelease tag and emits nightly*.yml
+          # feed files — separate from the stable `latest` channel. No flag
+          # needed; `channel` is not a valid root config property.
+          #
+          # Skip notarization for nightly (-c.mac.notarize=false overrides the
+          # package.json default). Notarization is a ~15-min Apple round-trip
+          # and only affects the *first manual download's* Gatekeeper prompt;
+          # the build is still signed, so nightly auto-update keeps working.
+          # Stable releases (release.yml) stay notarized.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npx electron-builder --mac --arm64 --publish never
+            npx electron-builder --mac --arm64 -c.mac.notarize=false --publish never
           else
             npx electron-builder --publish never
           fi
@@ -110,6 +121,7 @@ jobs:
             release/*.exe
             release/*.AppImage
             release/*.deb
+            release/*.yml
           if-no-files-found: ignore
           retention-days: 1
 

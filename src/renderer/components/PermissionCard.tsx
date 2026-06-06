@@ -40,7 +40,7 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
         <div className="mt-2 flex gap-2 flex-wrap">
           <button
             onClick={() => void respond(conversationId, info.requestId, true)}
-            className="px-3 py-1 rounded text-xs bg-blue-500/25 text-blue-100 hover:bg-blue-500/40"
+            className="px-3 py-1 rounded text-xs bg-accent text-white hover:bg-accent-600"
           >
             Allow
           </button>
@@ -48,7 +48,7 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
             onClick={() =>
               void respond(conversationId, info.requestId, true, undefined, 'always', info.toolName)
             }
-            className="px-3 py-1 rounded text-xs bg-blue-500/15 text-blue-100 hover:bg-blue-500/30 border border-blue-500/40"
+            className="px-3 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 border border-accent/40"
             title={`Auto-approve ${info.toolName} for the rest of this session`}
           >
             Always allow
@@ -56,7 +56,7 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
           {canAddDir && addDirTarget && (
             <button
               onClick={() => void respond(conversationId, info.requestId, true, addDirTarget)}
-              className="px-3 py-1 rounded text-xs bg-amber-500/25 text-amber-100 hover:bg-amber-500/40"
+              className="px-3 py-1 rounded text-xs bg-amber-500/20 text-amber-700 hover:bg-amber-500/30 dark:text-amber-200"
             >
               Allow + Add Dir
             </button>

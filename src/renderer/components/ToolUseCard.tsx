@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { useStore } from '../store';
 import { useInsideSubagentDrawer, useOpenFile } from '../openFile';
-import { useSubagentEvents } from '../runnersStore';
+import { useRunnerEvents, useSubagentEvents, useTaskProgress } from '../runnersStore';
 import { Diff } from './DiffView';
 
 /// Generic card for a single tool_use block. Specialized renderings (file
@@ -59,7 +59,10 @@ export function ToolUseCard({
     return <AskUserQuestionCard use={use} args={args} conversationId={conversationId} />;
   }
   if (use.name === 'ExitPlanMode') {
-    return <ExitPlanModeCard use={use} args={args} />;
+    return <ExitPlanModeCard args={args} conversationId={conversationId} />;
+  }
+  if (use.name === 'Workflow') {
+    return <WorkflowCard use={use} args={args} result={result} conversationId={conversationId} />;
   }
   if (use.name === 'Task' || use.name === 'Agent') {
     return <SubagentCard use={use} args={args} result={result} conversationId={conversationId} />;
@@ -153,6 +156,141 @@ function SubagentCard({
         )}
       </div>
     </button>
+  );
+}
+
+/// Inline card for a `Workflow` tool call. Unlike a subagent, a workflow
+/// runs as a detached background task: the tool_result lands almost
+/// immediately ("launched in background") and the real progress arrives
+/// out-of-band as `taskProgress` events, bucketed by this tool_use id.
+/// We render the live phase/agent breakdown so the card resolves to a
+/// real result instead of sitting on the launch message forever.
+function WorkflowCard({
+  use,
+  args,
+  result,
+  conversationId: conversationIdProp,
+}: {
+  use: ToolUseBlock;
+  args: Record<string, any>;
+  result?: ToolResultBlock;
+  conversationId?: UUID;
+}) {
+  const selectedConversationId = useStore((s) => s.selectedConversationId);
+  const conversationId = conversationIdProp ?? selectedConversationId;
+  const progress = useTaskProgress(conversationId, use.id);
+  const [expanded, setExpanded] = useState(true);
+
+  // Name comes from the workflow's own meta once progress lands; before
+  // that, fall back to the tool input (the SDK sends `name` for saved
+  // workflows, otherwise the script is inline under `script`).
+  const name =
+    progress?.workflowName ||
+    (typeof args.name === 'string' ? args.name : '') ||
+    'workflow';
+  const description = progress?.description || '';
+  const agents = progress?.agents ?? [];
+  const isDone = progress?.phase === 'completed';
+  const isError =
+    !!result?.isError || (progress?.status ? /fail|error/i.test(progress.status) : false);
+  // Progress arrives out-of-band and is NOT persisted to the on-disk
+  // transcript, so a reloaded conversation has the tool_result (the
+  // "launched in background" ack) but no progress. Distinguish that
+  // historical case from a genuinely just-launched run (no result yet) so
+  // we don't imply a finished workflow is still running. During a live
+  // run task_started lands before the tool_result, so neither fallback
+  // shows once progress exists.
+  const historical = !progress && !!result;
+
+  const doneCount = agents.filter((a) => a.state === 'done').length;
+  const statusIcon = isError
+    ? '✗'
+    : isDone
+      ? '✓'
+      : agents.length > 0
+        ? '●'
+        : historical
+          ? '▸'
+          : '…';
+
+  return (
+    <div className="rounded-lg border border-violet-500/35 bg-violet-500/10 dark:bg-violet-500/[0.10] text-xs">
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="w-full text-left px-3 py-1.5 flex items-center gap-2"
+      >
+        <span className="text-violet-400 text-[10px] uppercase tracking-wide font-medium">
+          Workflow
+        </span>
+        <span className="text-ink text-[11px] font-medium truncate">{name}</span>
+        <span className="ml-auto flex items-center gap-1.5 text-[10px] text-violet-300">
+          <span>{statusIcon}</span>
+          {agents.length > 0 && (
+            <span>
+              {doneCount}/{agents.length} agent{agents.length === 1 ? '' : 's'}
+            </span>
+          )}
+          {progress?.totalTokens ? (
+            <span className="text-ink-faint">· {formatTokens(progress.totalTokens)} tok</span>
+          ) : null}
+          {isDone && progress?.durationMs ? (
+            <span className="text-ink-faint">· {formatElapsed(progress.durationMs)}</span>
+          ) : null}
+        </span>
+        <span className="text-[10px] text-ink-faint">{expanded ? '▾' : '▸'}</span>
+      </button>
+      {expanded && (
+        <div className="px-3 pb-2 flex flex-col gap-1.5">
+          {description && (
+            <div className="text-[10px] text-ink-faint">{description}</div>
+          )}
+          {agents.length === 0 &&
+            (historical ? (
+              // Reloaded from history — progress wasn't persisted. The
+              // final results live in the assistant message below; point
+              // there instead of faking live activity.
+              <div className="text-[10px] text-ink-faint italic">
+                Ran in background — results in the reply below.
+              </div>
+            ) : (
+              <div className="text-[10px] text-ink-faint italic">Starting in background…</div>
+            ))}
+          {agents.map((a) => (
+            <div key={a.index} className="flex items-start gap-2">
+              <span className="mt-0.5 text-[10px] text-violet-300/80 w-3 flex-shrink-0">
+                {a.state === 'done' ? '✓' : a.state === 'error' ? '✗' : a.state === 'start' ? '●' : '○'}
+              </span>
+              <div className="flex flex-col min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="text-ink text-[11px] font-medium truncate">{a.label}</span>
+                  {a.phaseTitle && (
+                    <span className="text-[9px] uppercase tracking-wide text-ink-faint">
+                      {a.phaseTitle}
+                    </span>
+                  )}
+                  {a.tokens ? (
+                    <span className="ml-auto text-[9px] text-ink-faint">
+                      {formatTokens(a.tokens)} tok
+                    </span>
+                  ) : null}
+                </div>
+                {/* Once done, the agent's answer; while running, the live
+                    tool activity; before either, the prompt preview. */}
+                <div className="text-[10px] text-ink-faint truncate">
+                  {a.resultPreview
+                    ? a.resultPreview
+                    : a.lastToolName
+                      ? `${a.lastToolName}${a.lastToolSummary ? ` · ${trimDetail(a.lastToolSummary)}` : ''}`
+                      : a.promptPreview
+                        ? trimDetail(a.promptPreview)
+                        : a.state}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -546,7 +684,7 @@ function AskUserQuestionCard({
           <button
             onClick={submit}
             disabled={!canSubmit}
-            className="text-xs px-3 py-1 rounded bg-blue-500/25 text-blue-100 hover:bg-blue-500/40 disabled:opacity-40"
+            className="text-xs px-3 py-1 rounded bg-accent text-white hover:bg-accent-600 disabled:opacity-40"
           >
             {hasOther ? 'Send reply' : 'Submit'}
           </button>
@@ -556,27 +694,72 @@ function AskUserQuestionCard({
   );
 }
 
-/// ExitPlanMode — claude proposed a plan and wants user approval. We
-/// submit "Approved, proceed" or "Denied, keep discussing" as the next
-/// user turn; claude will take it from there.
-function ExitPlanModeCard({ use, args }: { use: ToolUseBlock; args: Record<string, any> }) {
+/// ExitPlanMode — claude proposed a plan and wants user approval.
+///
+/// In plan mode the broker (CLI or SDK transport) gates ExitPlanMode like
+/// any other tool: it emits a permissionRequest and *blocks* Claude until
+/// we resolve it. Approve resolves `allow` (Claude leaves plan mode and
+/// implements in the same turn); Deny resolves `deny` (it stays in plan
+/// mode and revises). We must resolve that real request — auto-allowing it
+/// at the broker used to let the model barrel straight into coding while
+/// this card's buttons sat unclicked.
+///
+/// Modes that don't route ExitPlanMode through the broker (bypassPermissions
+/// never wires the prompt tool) leave no pending request; there the model
+/// has already proceeded, so we fall back to a follow-up message.
+function ExitPlanModeCard({
+  args,
+  conversationId: conversationIdProp,
+}: {
+  args: Record<string, any>;
+  conversationId?: UUID;
+}) {
   const plan = typeof args.plan === 'string' ? args.plan : '';
-  const [decided, setDecided] = useState<'approved' | 'denied' | null>(null);
   const send = useStore((s) => s.send);
+  const respondPermission = useStore((s) => s.respondPermission);
   const setPermissionMode = useStore((s) => s.setPermissionMode);
-  const convId = useStore((s) => s.selectedConversationId);
+  const selectedConversationId = useStore((s) => s.selectedConversationId);
+  const convId = conversationIdProp ?? selectedConversationId;
+  const events = useRunnerEvents(convId);
+
+  // The matching pending gate, if any. Only one plan is ever in flight per
+  // conversation, so the most recent ExitPlanMode request is ours.
+  const planReq = (() => {
+    if (!events) return undefined;
+    for (let i = events.length - 1; i >= 0; i--) {
+      const k = events[i].kind;
+      if (k.type === 'permissionRequest' && k.info.toolName === 'ExitPlanMode') return k.info;
+    }
+    return undefined;
+  })();
+
+  const [localDecided, setLocalDecided] = useState<'approved' | 'denied' | null>(null);
+  const decided: 'approved' | 'denied' | null =
+    planReq?.decided === 'allow'
+      ? 'approved'
+      : planReq?.decided === 'deny'
+        ? 'denied'
+        : localDecided;
 
   const respond = (approved: boolean) => {
     if (!convId) return;
-    setDecided(approved ? 'approved' : 'denied');
-    const msg = approved
-      ? 'Approved — go ahead with the plan.'
-      : 'Denied — let\'s keep iterating on the plan first.';
-    // Approve drops out of plan mode so the next turn actually executes;
-    // setPermissionMode updates the store synchronously, so the send()
-    // below picks up 'default' as the pending mode and commits it.
+    setLocalDecided(approved ? 'approved' : 'denied');
+    // Approve drops out of plan mode so subsequent turns execute;
+    // setPermissionMode is synchronous in the store, so this commits.
     if (approved) void setPermissionMode(convId, 'default');
-    void send(convId, msg);
+    if (planReq && !planReq.decided) {
+      // Resolve the real gate Claude is blocked on.
+      void respondPermission(convId, planReq.requestId, approved);
+      return;
+    }
+    // No pending gate (e.g. bypassPermissions): the model already left plan
+    // mode, so route the decision as the next user turn.
+    void send(
+      convId,
+      approved
+        ? 'Approved — go ahead with the plan.'
+        : 'Denied — let\'s keep iterating on the plan first.',
+    );
   };
 
   return (

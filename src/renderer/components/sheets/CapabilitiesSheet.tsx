@@ -12,6 +12,8 @@ import type {
   CapabilityEntry,
   CapabilityKind,
   MarketplaceSkill,
+  McpCatalogItem,
+  McpCli,
   SkillTarget,
 } from '@shared/types';
 
@@ -655,9 +657,23 @@ function GenericTab({
   entries: CapabilityEntry[];
   loading: boolean;
 }) {
+  const [showAdd, setShowAdd] = useState(false);
   return (
     <div className="px-8 py-6">
+      {tab === 'mcp' && (
+        <div className="mb-4 flex justify-end">
+          <button
+            onClick={() => setShowAdd((v) => !v)}
+            className="text-[11.5px] px-3 py-1.5 rounded-md border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15"
+          >
+            {showAdd ? 'Cancel' : '+ Add MCP server'}
+          </button>
+        </div>
+      )}
+      {tab === 'mcp' && showAdd && <AddMcpForm onDone={() => setShowAdd(false)} />}
       <InstallGuide tab={tab} hasInstalled={entries.length > 0} />
+
+      {tab === 'mcp' && <McpCatalog />}
 
       {entries.length === 0 ? (
         <div className="mt-6 rounded-lg border border-card bg-card/30 px-5 py-6 text-center">
@@ -677,6 +693,416 @@ function GenericTab({
       )}
     </div>
   );
+}
+
+function AddMcpForm({ onDone }: { onDone: () => void }) {
+  const addMcpServer = useStore((s) => s.addMcpServer);
+  const [name, setName] = useState('');
+  const [json, setJson] = useState(
+    '{\n  "command": "npx",\n  "args": ["-y", "@example/mcp"],\n  "env": {}\n}',
+  );
+  const [targets, setTargets] = useState<Record<'claude' | 'codex' | 'gemini', boolean>>({
+    claude: true,
+    codex: true,
+    gemini: true,
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    setError(null);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(json);
+    } catch (err: any) {
+      setError(`Invalid JSON: ${err?.message ?? String(err)}`);
+      return;
+    }
+    const picked = (Object.keys(targets) as Array<'claude' | 'codex' | 'gemini'>).filter(
+      (k) => targets[k],
+    );
+    if (picked.length === 0) {
+      setError('Pick at least one CLI.');
+      return;
+    }
+    setBusy(true);
+    const res = await addMcpServer(name, parsed, picked);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    if (res.errors.length > 0) {
+      setError(`Wrote ${res.written.join(', ')}. Errors: ${res.errors.join('; ')}`);
+      return;
+    }
+    onDone();
+  };
+
+  return (
+    <section className="mb-6 rounded-xl border border-accent/30 bg-accent/[0.04] p-4">
+      <div className="text-[13px] font-semibold text-ink mb-2">Add MCP server</div>
+      <label className="block text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+        Name
+      </label>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="linear"
+        className="field mt-1 w-full px-3 py-1.5 text-[12px]"
+      />
+      <label className="block mt-3 text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+        Config (JSON)
+      </label>
+      <textarea
+        value={json}
+        onChange={(e) => setJson(e.target.value)}
+        rows={8}
+        className="field mt-1 w-full px-3 py-1.5 text-[12px] font-mono"
+      />
+      <label className="block mt-3 text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+        Install on
+      </label>
+      <div className="mt-1.5 flex gap-3 flex-wrap">
+        {(['claude', 'codex', 'gemini'] as const).map((cli) => (
+          <label key={cli} className="flex items-center gap-1.5 text-[12px] text-ink-muted">
+            <input
+              type="checkbox"
+              checked={targets[cli]}
+              onChange={(e) => setTargets((t) => ({ ...t, [cli]: e.target.checked }))}
+            />
+            {CLI_LABEL[cli]}
+          </label>
+        ))}
+      </div>
+      {error && (
+        <div className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11.5px] text-red-300 font-mono">
+          {error}
+        </div>
+      )}
+      <div className="mt-3 flex gap-2">
+        <button
+          disabled={busy}
+          onClick={() => void submit()}
+          className="text-[11.5px] px-3 py-1.5 rounded-md bg-accent text-ink font-medium disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : 'Save to selected CLIs'}
+        </button>
+        <button
+          disabled={busy}
+          onClick={onDone}
+          className="text-[11.5px] px-3 py-1.5 rounded-md border border-card-strong text-ink-muted hover:text-ink"
+        >
+          Cancel
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ---------- MCP catalog (curated, one-click install per CLI) ----------
+
+const MCP_CATALOG_CLIS: McpCli[] = ['claude', 'codex', 'gemini'];
+
+const MCP_CAT_META: Record<string, { color: string; icon: IconKey }> = {
+  'Dev tools':     { color: '#5b9cff', icon: 'branch' },
+  'Productivity':  { color: '#b587ff', icon: 'check' },
+  'Search & web':  { color: '#36cfc9', icon: 'cloud' },
+  'CRM & product': { color: '#ec4899', icon: 'book' },
+  'Cloud':         { color: '#ff9900', icon: 'cloud' },
+  'Utilities':     { color: '#f59e0b', icon: 'server' },
+};
+
+function mcpCatMeta(category: string): { color: string; icon: IconKey } {
+  return MCP_CAT_META[category] ?? { color: '#94a3b8', icon: 'server' };
+}
+
+function McpCatalog() {
+  const catalog = useStore((s) => s.mcpCatalog);
+
+  const byCategory = useMemo(() => {
+    const map = new Map<string, McpCatalogItem[]>();
+    for (const item of catalog ?? []) {
+      const list = map.get(item.category) ?? [];
+      list.push(item);
+      map.set(item.category, list);
+    }
+    return map;
+  }, [catalog]);
+
+  if (!catalog) {
+    return <div className="mt-6 text-[12px] text-ink-faint">Loading MCP catalog…</div>;
+  }
+
+  return (
+    <div className="mt-6">
+      {[...byCategory.keys()].map((cat) => (
+        <section key={cat} className="mb-7">
+          <SectionHeader title={cat} count={byCategory.get(cat)!.length} />
+          <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+            {byCategory.get(cat)!.map((item) => (
+              <McpCatalogCard key={item.id} item={item} />
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function McpCatalogCard({ item }: { item: McpCatalogItem }) {
+  const install = useStore((s) => s.installMcpCatalogEntry);
+  const uninstall = useStore((s) => s.uninstallMcpCatalogEntry);
+  const copy = useStore((s) => s.copyMcpToCli);
+  const login = useStore((s) => s.loginMcpServer);
+
+  const meta = mcpCatMeta(item.category);
+  const installedClis = item.targets.filter((c) => item.installed[c]);
+  const anyInstalled = installedClis.length > 0;
+  const canCodexLogin = item.transport === 'remote' && !!item.installed.codex;
+
+  const [loggingIn, setLoggingIn] = useState(false);
+  const [loginMsg, setLoginMsg] = useState<string | null>(null);
+
+  const doCodexLogin = async () => {
+    setLoggingIn(true);
+    setLoginMsg(null);
+    const res = await login('codex', item.id);
+    setLoggingIn(false);
+    setLoginMsg(res.ok ? 'Logged in to Codex ✓ — start a new Codex session.' : res.error);
+  };
+
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Record<McpCli, boolean>>(() => initialPicks(item));
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
+
+  const needsSecrets = !anyInstalled && item.secrets.length > 0;
+
+  const toggleOpen = () => {
+    setError(null);
+    if (!open) {
+      setPicked(initialPicks(item));
+      setSecrets({});
+    }
+    setOpen((v) => !v);
+  };
+
+  const save = async () => {
+    setError(null);
+    const toInstall = item.targets.filter((c) => picked[c] && !item.installed[c]);
+    const toRemove = item.targets.filter((c) => !picked[c] && item.installed[c]);
+    if (toInstall.length === 0 && toRemove.length === 0) {
+      setOpen(false);
+      return;
+    }
+
+    setBusy(true);
+    try {
+      if (toInstall.length > 0) {
+        // If the server already exists on a CLI, copy from it so secrets
+        // carry over; otherwise this is a first-time install and we write
+        // the collected secrets directly.
+        const source = item.targets.find((c) => item.installed[c]);
+        if (source) {
+          for (const target of toInstall) {
+            const res = await copy(item.id, source, target);
+            if (!res.ok) {
+              setError(res.error);
+              return;
+            }
+          }
+        } else {
+          const missing = item.secrets.filter((s) => !s.optional && !secrets[s.key]?.trim());
+          if (missing.length > 0) {
+            setError(`Enter: ${missing.map((m) => m.label).join(', ')}`);
+            return;
+          }
+          const res = await install(item.id, toInstall, secrets);
+          if (!res.ok) {
+            setError(res.error);
+            return;
+          }
+          if (res.errors.length > 0) {
+            setError(`Installed ${res.written.join(', ')}. Errors: ${res.errors.join('; ')}`);
+            return;
+          }
+        }
+      }
+      if (toRemove.length > 0) {
+        const res = await uninstall(item.id, toRemove);
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+      }
+      setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className={
+        'flex flex-col rounded-lg border p-3 transition-colors ' +
+        (anyInstalled ? 'border-accent/30 bg-accent/[0.04]' : 'border-card bg-card/30 hover:border-card-strong')
+      }
+    >
+      <div className="flex items-start gap-2.5">
+        <IconTile color={meta.color} icon={meta.icon} size={36} />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-1.5 min-w-0">
+              <span className="text-[12.5px] font-semibold text-ink truncate">{item.name}</span>
+              <span
+                className="shrink-0 text-[9px] px-1 py-0.5 rounded border border-card-strong text-ink-faint uppercase tracking-wider"
+                title={item.transport === 'remote' ? 'Hosted server (OAuth login in CLI)' : 'Runs locally (npx/uvx)'}
+              >
+                {item.transport === 'remote' ? 'Remote' : 'Local'}
+              </span>
+            </div>
+            {anyInstalled && <InstalledBadge compact />}
+          </div>
+          <div className="mt-0.5 text-[11px] text-ink-muted line-clamp-2 leading-snug">
+            {item.description}
+          </div>
+          {anyInstalled && (
+            <div className="mt-1 flex items-center gap-1 flex-wrap">
+              <span className="text-[10px] text-ink-faint">On:</span>
+              {installedClis.map((c) => (
+                <Chip key={c} tone="cli">{CLI_LABEL[c]}</Chip>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-2.5 flex items-center gap-1.5">
+        <button
+          onClick={toggleOpen}
+          className={
+            'text-[11px] px-2.5 py-1 rounded-md border font-medium transition-colors ' +
+            (open
+              ? 'border-card-strong text-ink-muted hover:text-ink'
+              : '')
+          }
+          style={
+            open
+              ? undefined
+              : { borderColor: `${meta.color}66`, color: meta.color, backgroundColor: `${meta.color}1a` }
+          }
+        >
+          {open ? 'Cancel' : anyInstalled ? 'Manage' : 'Install'}
+        </button>
+        {canCodexLogin && (
+          <button
+            disabled={loggingIn}
+            onClick={() => void doCodexLogin()}
+            title="Run codex mcp login and complete OAuth in your browser"
+            className="text-[10.5px] px-2 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
+          >
+            {loggingIn ? 'Opening browser…' : 'Log in (Codex)'}
+          </button>
+        )}
+        {item.docsUrl && (
+          <a
+            href={item.docsUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[10.5px] px-2 py-1 rounded border border-card-strong text-ink-faint hover:text-ink hover:bg-card-strong"
+          >
+            Docs ↗
+          </a>
+        )}
+      </div>
+      {loginMsg && (
+        <div className="mt-2 text-[10.5px] text-ink-muted font-mono break-words">{loginMsg}</div>
+      )}
+
+      {open && (
+        <div className="mt-3 rounded-lg border border-accent/30 bg-accent/[0.04] p-3">
+          {item.authNote && (
+            <div className="mb-2.5 text-[11px] text-ink-muted leading-snug">{item.authNote}</div>
+          )}
+
+          {needsSecrets &&
+            item.secrets.map((field) => (
+              <div key={field.key} className="mb-2.5">
+                <label className="block text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+                  {field.label}
+                </label>
+                <input
+                  type={field.optional ? 'text' : 'password'}
+                  value={secrets[field.key] ?? ''}
+                  onChange={(e) => setSecrets((s) => ({ ...s, [field.key]: e.target.value }))}
+                  placeholder={field.key}
+                  className="field mt-1 w-full px-3 py-1.5 text-[12px] font-mono"
+                />
+                {(field.help || field.link) && (
+                  <div className="mt-1 text-[10px] text-ink-faint">
+                    {field.help}{' '}
+                    {field.link && (
+                      <a href={field.link} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                        Get one ↗
+                      </a>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+
+          <label className="block text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+            Install on
+          </label>
+          <div className="mt-1.5 flex gap-3 flex-wrap">
+            {MCP_CATALOG_CLIS.map((cli) => (
+              <label key={cli} className="flex items-center gap-1.5 text-[12px] text-ink-muted">
+                <input
+                  type="checkbox"
+                  checked={!!picked[cli]}
+                  onChange={(e) => setPicked((p) => ({ ...p, [cli]: e.target.checked }))}
+                />
+                {CLI_LABEL[cli]}
+              </label>
+            ))}
+          </div>
+
+          {error && (
+            <div className="mt-2.5 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-[11px] text-red-300 font-mono">
+              {error}
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2">
+            <button
+              disabled={busy}
+              onClick={() => void save()}
+              className="text-[11.5px] px-3 py-1.5 rounded-md bg-accent text-ink font-medium disabled:opacity-50"
+            >
+              {busy ? 'Saving…' : 'Apply'}
+            </button>
+            <button
+              disabled={busy}
+              onClick={() => setOpen(false)}
+              className="text-[11.5px] px-3 py-1.5 rounded-md border border-card-strong text-ink-muted hover:text-ink"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function initialPicks(item: McpCatalogItem): Record<McpCli, boolean> {
+  return {
+    claude: !!item.installed.claude,
+    codex: !!item.installed.codex,
+    gemini: !!item.installed.gemini,
+  };
 }
 
 // ---------- Per-tab install guide (for non-skill tabs) ----------
@@ -764,7 +1190,7 @@ const GUIDES: Partial<Record<CapabilityKind, Guide>> = {
     body: 'MCP (Model Context Protocol) servers expose tools and data sources to the CLI — GitHub, Linear, Postgres, custom internal services. Configure once per CLI; reused across conversations.',
     bodyEmpty: 'MCP servers expose tools and data sources to the CLI. None are configured in any of your CLIs yet.',
     paths: [
-      { label: 'Claude', value: '~/.claude/settings.json  →  mcpServers' },
+      { label: 'Claude', value: '~/.claude.json  →  mcpServers (user scope)' },
       { label: 'Codex',  value: '~/.codex/config.toml  →  [mcp_servers.<name>]' },
       { label: 'Gemini', value: '~/.gemini/settings.json  →  mcpServers' },
     ],
@@ -826,6 +1252,18 @@ function McpCopyControls({ entry }: { entry: CapabilityEntry }) {
   return (
     <div className="mt-2 flex items-center gap-1.5 flex-wrap">
       <span className="text-[10px] text-ink-faint">Also install on:</span>
+      {missing.length > 1 && (
+        <button
+          disabled={busyTo !== null}
+          onClick={async () => {
+            for (const cli of missing) await onCopy(cli);
+          }}
+          className="text-[10.5px] px-2 py-0.5 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
+          title={`Copy "${entry.name}" to every missing CLI`}
+        >
+          {busyTo ? '…' : `+ All (${missing.length})`}
+        </button>
+      )}
       {missing.map((cli) => (
         <button
           key={cli}

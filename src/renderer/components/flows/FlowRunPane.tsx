@@ -20,6 +20,7 @@ import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { useRunner, useRunnerIsRunning } from '../../runnersStore';
 import { ChatView } from '../ChatView';
+import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
@@ -32,6 +33,7 @@ import {
   type FlowRun,
   type FlowStep,
   type FlowStepAttempt,
+  type WatchTickLogEntry,
 } from '@shared/flows/schema';
 import { modelSpeed, friendlyModelLabel, PREMIUM_MODELS } from '@shared/modelCatalog';
 import { FlowMonogram } from './FlowMonogram';
@@ -44,6 +46,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const openSheet = useStore((s) => s.openSheet);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [diffSheetOpen, setDiffSheetOpen] = useState(false);
+  const [watchSetupOpen, setWatchSetupOpen] = useState(false);
 
   useEffect(() => {
     if (!run) {
@@ -108,7 +111,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
           underneath. Treating the prompt as the run's identity rather
           than a separate banner reads cleaner than the colored strip
           and stops the page from having two competing "anchors". */}
-      <div className="px-6 py-4 border-b border-card">
+      <div className="pl-2 pr-3 pt-4 pb-2 border-b border-card">
         <div className="flex items-center gap-3 mb-1">
           <div className="flex items-center gap-1.5 text-xs text-ink-faint">
             <button
@@ -156,6 +159,21 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 Abort
               </button>
             )}
+            {run.state.kind === 'done' && (
+              <button
+                onClick={() => setWatchSetupOpen((v) => !v)}
+                className={
+                  'inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  (watchSetupOpen
+                    ? 'border-accent/50 bg-accent/10 text-accent'
+                    : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
+                }
+                title="Keep this run on call to answer follow-up comments while you're away — it answers questions, never does new work"
+              >
+                <WatchEye className="w-3.5 h-3.5" />
+                Watch
+              </button>
+            )}
             {confirmingDelete ? (
               <div className="flex items-center gap-1">
                 <span className="text-[11px] text-ink-faint mr-1">Delete this run?</span>
@@ -194,7 +212,13 @@ export function FlowRunPane({ runId }: { runId: string }) {
         </div>
         {/* Original prompt as subtitle. Sits directly under the flow
             name, treats the user's words as the run's identity. */}
-        <RunPromptSubtitle prompt={run.userPrompt} activeStep={activeStep} />
+        <RunPromptSubtitle
+          prompt={run.userPrompt}
+          activeStep={activeStep}
+          run={run}
+          activeParticipant={activeParticipant}
+          activeStepId={activeStepId}
+        />
       </div>
 
       {/* Pause banner — shown when actually paused AND while a Continue
@@ -204,6 +228,11 @@ export function FlowRunPane({ runId }: { runId: string }) {
       {(run.state.kind === 'paused' || run.pendingContinue) && (
         <PauseBanner run={run} />
       )}
+
+      {/* Watch ("stewardship tail") — entry form on a completed run (opened
+          from the header "Watch" button), status banner while watching,
+          summary once archived. */}
+      <WatchSection run={run} open={watchSetupOpen} setOpen={setWatchSetupOpen} />
 
       {/* Body */}
       {participants.length === 0 || !activeParticipant ? (
@@ -235,6 +264,418 @@ function pickFocusStepId(run: FlowRun): string | null {
   }
   if (state.kind === 'paused') return state.nextStepId;
   return run.flowSnapshot.steps[0]?.id ?? null;
+}
+
+// Watch ("stewardship tail") UI. Three modes keyed off run state:
+//   - done:     a collapsed "Watch for follow-ups" affordance that expands
+//               to a small setup form (source, target, plain-language
+//               instructions, cadence, optional auto-stop).
+//   - watching: a live status banner (what it's watching, how many comments
+//               it has answered, escalation flag, last tick note) + Archive.
+//   - archived: a one-line summary of how the watch went.
+// Everything routes through the flows:enterWatch / flows:archiveRun IPC.
+function WatchSection({
+  run,
+  open,
+  setOpen,
+}: {
+  run: FlowRun;
+  open: boolean;
+  setOpen: (open: boolean) => void;
+}) {
+  const [sources, setSources] = useState<Array<{ id: string; displayName: string }>>([]);
+  const [sourceId, setSourceId] = useState('ai');
+  const [binding, setBinding] = useState('');
+  const [instructions, setInstructions] = useState('');
+  const [pollMin, setPollMin] = useState(10);
+  const [ttlHours, setTtlHours] = useState<number | ''>(8);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open || sources.length > 0) return;
+    void window.overcli.invoke('flows:listWatchSources').then((s) => {
+      setSources(s);
+      // Default to the AI-defined source — the no-integration-needed path.
+      if (s.length > 0 && !s.some((x) => x.id === 'ai')) setSourceId(s[0].id);
+    });
+  }, [open, sources.length]);
+
+  // When opening the form to RESUME an archived watch, prefill it with the
+  // saved settings so the user can tweak (e.g. fix a mistyped target) rather
+  // than retype everything. Seeds once per open.
+  const resuming = run.state.kind === 'archived' && !!run.state.watch;
+  const priorWatch = run.state.kind === 'archived' ? run.state.watch : undefined;
+  useEffect(() => {
+    if (!open || !priorWatch) return;
+    setSourceId(priorWatch.sourceId);
+    setBinding(priorWatch.binding);
+    setInstructions(priorWatch.instructions ?? '');
+    setPollMin(Math.max(1, Math.round(priorWatch.pollIntervalMs / 60_000)));
+    setTtlHours('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const fieldCls =
+    'w-full bg-card border border-card-strong rounded-md px-2.5 py-1.5 text-xs text-ink ' +
+    'placeholder:text-ink-faint focus:outline-none focus:border-accent transition-colors';
+
+  if (open && (run.state.kind === 'done' || run.state.kind === 'archived')) {
+    return (
+      <div className="pl-2 pr-3 pt-1.5">
+        <div className="rounded-lg border border-card-strong bg-surface-elevated overflow-hidden">
+          {/* Header */}
+          <div className="flex items-start gap-3 px-4 py-3 border-b border-card-strong/70">
+            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent/15 text-accent">
+              <WatchEye className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-ink leading-tight">
+                {resuming ? 'Resume watching' : 'Watch for follow-ups'}
+              </div>
+              <div className="text-[11px] text-ink-faint leading-tight mt-0.5">
+                {resuming
+                  ? 'Edit anything and resume — if you keep the same target it picks up where it left off without re-answering old comments.'
+                  : "Keeps this run on call to answer comments while you're away — it answers questions, never does new work."}
+              </div>
+            </div>
+          </div>
+
+          {/* Body */}
+          <div className="px-4 py-3 space-y-3">
+            {/* The Source picker only earns its place once there's more than
+                one source — with just the universal AI-defined source, it's a
+                pointless one-option dropdown, so we hide it and let "What to
+                watch" take the full row. It returns automatically if a named
+                preset (GitHub, Zendesk, …) is ever registered. */}
+            <div
+              className={
+                'grid grid-cols-1 gap-3 ' + (sources.length > 1 ? 'sm:grid-cols-[200px_1fr]' : '')
+              }
+            >
+              {sources.length > 1 && (
+                <div className="space-y-1">
+                  <label className="block text-[10px] font-medium uppercase tracking-wide text-ink-faint">
+                    Source
+                  </label>
+                  <select
+                    value={sourceId}
+                    onChange={(e) => setSourceId(e.target.value)}
+                    className={fieldCls + ' appearance-none cursor-pointer'}
+                  >
+                    {sources.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="space-y-1">
+                <label className="block text-[10px] font-medium uppercase tracking-wide text-ink-faint">
+                  What to watch
+                </label>
+                <input
+                  value={binding}
+                  onChange={(e) => setBinding(e.target.value)}
+                  placeholder="URL, ticket id, or name"
+                  className={fieldCls}
+                />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="block text-[10px] font-medium uppercase tracking-wide text-ink-faint">
+                Instructions
+              </label>
+              <textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                placeholder={
+                  'Describe in plain language what to watch and how to respond — e.g. ' +
+                  '"Watch this ticket for tester comments and answer their questions about the ' +
+                  'fix. If they ask for changes, flag me instead of doing them."'
+                }
+                rows={3}
+                className={fieldCls + ' resize-y leading-relaxed'}
+              />
+            </div>
+
+            <div className="flex items-center gap-5">
+              <label className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+                <span>Check every</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={pollMin}
+                  onChange={(e) => setPollMin(Math.max(1, Number(e.target.value) || 1))}
+                  className="w-14 bg-card border border-card-strong rounded-md px-2 py-1 text-xs text-ink text-center focus:outline-none focus:border-accent"
+                />
+                <span>min</span>
+              </label>
+              <label className="flex items-center gap-1.5 text-[11px] text-ink-muted">
+                <span>Auto-stop after</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={ttlHours}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setTtlHours(v === '' ? '' : Math.max(0, Number(v) || 0));
+                  }}
+                  placeholder="∞"
+                  className="w-14 bg-card border border-card-strong rounded-md px-2 py-1 text-xs text-ink text-center placeholder:text-ink-faint focus:outline-none focus:border-accent"
+                />
+                <span>hrs</span>
+              </label>
+            </div>
+
+            {error && (
+              <div className="text-[11px] text-red-500 bg-red-500/10 border border-red-500/20 rounded-md px-2.5 py-1.5">
+                {error}
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex items-center justify-end gap-2 px-4 py-2.5 border-t border-card-strong/70 bg-card/30">
+            <button
+              onClick={() => {
+                setOpen(false);
+                setError(null);
+              }}
+              className="text-xs font-medium px-3 py-1.5 rounded-md text-ink-muted hover:text-ink hover:bg-card-strong transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                setError(null);
+                const result = await window.overcli.invoke('flows:enterWatch', {
+                  runId: run.id,
+                  sourceId,
+                  binding: binding.trim(),
+                  instructions: instructions.trim() || undefined,
+                  pollIntervalSec: pollMin * 60,
+                  ttlHours: ttlHours === '' ? undefined : ttlHours,
+                });
+                setBusy(false);
+                if (!result.ok) {
+                  setError(result.error);
+                  return;
+                }
+                setOpen(false);
+              }}
+              className="inline-flex items-center gap-1.5 text-xs font-medium px-3.5 py-1.5 rounded-md bg-accent text-white hover:bg-accent-600 disabled:opacity-50 shadow-sm transition-colors"
+            >
+              <WatchEye className="w-3.5 h-3.5" />
+              {busy ? (resuming ? 'Resuming…' : 'Starting…') : resuming ? 'Resume watching' : 'Start watching'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (run.state.kind === 'watching') {
+    const w = run.state.watch;
+    const lastTick = w.lastTickAt ? new Date(w.lastTickAt).toLocaleTimeString() : 'pending…';
+    const logCount = w.log?.length ?? 0;
+    return (
+      <div className="pl-2 pr-3 pt-1.5">
+        <div
+          className={
+            'rounded-lg border bg-surface-elevated overflow-hidden ' +
+            (w.escalated ? 'border-amber-500/50' : 'border-card-strong')
+          }
+        >
+          <div className="flex items-center gap-3 px-3.5 py-2">
+            <div
+              className={
+                'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md ' +
+                (w.escalated ? 'bg-amber-500/15 text-amber-600 dark:text-amber-300' : 'bg-accent/15 text-accent')
+              }
+            >
+              <WatchEye className="w-4 h-4" />
+              {!w.escalated && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-60" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-accent" />
+                </span>
+              )}
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-sm font-semibold text-ink leading-tight">
+                <span className="truncate">Watching {w.binding || 'follow-ups'}</span>
+                {w.escalated && (
+                  <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                    Needs you
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-ink-faint leading-tight mt-0.5 truncate">
+                {w.escalated ? 'A comment asked for work — reopen the flow to act. ' : ''}
+                {w.lastNote ? w.lastNote + ' · ' : ''}
+                answered {w.answered} · last checked {lastTick}
+              </div>
+            </div>
+
+            <button
+              onClick={() => setLogOpen((v) => !v)}
+              className="shrink-0 inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-md text-ink-muted hover:text-ink hover:bg-card-strong/60 transition-colors"
+              title="Read the watch log — every check this watch has done"
+            >
+              <Chevron open={logOpen} />
+              Log{logCount > 0 ? ` (${logCount})` : ''}
+            </button>
+            <button
+              onClick={() => {
+                void window.overcli.invoke('flows:archiveRun', { runId: run.id });
+              }}
+              className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink transition-colors"
+              title="Stop watching and archive this run"
+            >
+              Archive
+            </button>
+          </div>
+          {logOpen && <WatchLog log={w.log} />}
+        </div>
+      </div>
+    );
+  }
+
+  if (run.state.kind === 'archived' && run.state.watch) {
+    const w = run.state.watch;
+    const logCount = w.log?.length ?? 0;
+    return (
+      <div className="pl-2 pr-3 pt-1.5">
+        <div className="rounded-lg border border-card-strong bg-card/40 overflow-hidden">
+          <div className="flex items-center gap-2.5 px-3.5 py-2">
+            <ArchiveIcon className="w-4 h-4 shrink-0 text-ink-faint" />
+            <div className="min-w-0 flex-1 text-[11px] text-ink-muted truncate">
+              <span className="font-medium text-ink">Archived</span> · watched{' '}
+              {w.binding || '(AI-defined)'} · answered {w.answered} follow-up
+              {w.answered === 1 ? '' : 's'}
+              {w.escalated ? ' · escalated once' : ''}
+            </div>
+            {logCount > 0 && (
+              <button
+                onClick={() => setLogOpen((v) => !v)}
+                className="shrink-0 inline-flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-md text-ink-muted hover:text-ink hover:bg-card-strong/60 transition-colors"
+                title="Read the watch log — every check this watch did"
+              >
+                <Chevron open={logOpen} />
+                Log ({logCount})
+              </button>
+            )}
+            <button
+              onClick={() => setOpen(true)}
+              className="shrink-0 inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1 rounded-md border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition-colors"
+              title="Resume this watch — opens the settings so you can edit the target or instructions first"
+            >
+              <WatchEye className="w-3.5 h-3.5" />
+              Resume…
+            </button>
+          </div>
+          {logOpen && <WatchLog log={w.log} />}
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+/// The readable watch log: one row per completed poll tick, newest first,
+/// with time, what it saw, and answered / needs-work markers.
+function WatchLog({ log }: { log?: WatchTickLogEntry[] }) {
+  const entries = (log ?? []).slice().reverse();
+  return (
+    <div className="border-t border-card bg-surface/40 max-h-56 overflow-y-auto">
+      {entries.length === 0 ? (
+        <div className="px-3.5 py-3 text-[11px] text-ink-faint">
+          No checks recorded yet — the first one will appear here after the next poll.
+        </div>
+      ) : (
+        <ul>
+          {entries.map((e, i) => (
+            <li
+              key={i}
+              className="flex items-start gap-2.5 px-3.5 py-2 border-t border-card first:border-t-0"
+            >
+              <span className="shrink-0 w-16 text-[10px] tabular-nums text-ink-faint pt-0.5">
+                {new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </span>
+              <span className="min-w-0 flex-1 text-[11px] text-ink-muted leading-snug">{e.note}</span>
+              <span className="shrink-0 flex items-center gap-1.5">
+                {e.answered > 0 && (
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent/15 text-accent">
+                    {e.answered} answered
+                  </span>
+                )}
+                {e.needsWork && (
+                  <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300">
+                    needs you
+                  </span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/// Small archive-box glyph (replaces the 📦 emoji, which rendered
+/// inconsistently and clashed with the rest of the watch UI).
+function ArchiveIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M3 7.5 4.2 5.3A1.5 1.5 0 0 1 5.5 4.5h13a1.5 1.5 0 0 1 1.3.8L21 7.5M3 7.5V18a1.5 1.5 0 0 0 1.5 1.5h15A1.5 1.5 0 0 0 21 18V7.5M3 7.5h18M10 11h4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+/// Disclosure chevron that rotates when open.
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={'w-3 h-3 transition-transform ' + (open ? 'rotate-90' : '')}
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path d="m9 6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+/// Eye glyph used across the watch UI — a single inline SVG so the icon is
+/// crisp and tintable (the emoji 👁 rendered inconsistently across platforms).
+function WatchEye({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="2.6" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
 }
 
 // Compact step pills designed to live inside the page header row. Each
@@ -383,17 +824,12 @@ function ParticipantBody({
   convId: string | undefined;
   focusStepId: string | null;
 }) {
-  // Steps this participant owns, in order. The "in-thread" strip only
-  // matters when the same participant runs more than one step (where
-  // the persistent conv blends multiple steps' contributions).
+  // Steps this participant owns, in order. Still used for the "not called
+  // yet" hint below; the in-thread chips moved to the header.
   const ownedSteps = useMemo(
     () => run.flowSnapshot.steps.filter((s) => s.participantId === participant.id),
     [run.flowSnapshot.steps, participant.id],
   );
-  const showStrip = ownedSteps.length > 1;
-  const st = run.state;
-  const currentStepId =
-    st.kind === 'running' ? st.currentStepId : st.kind === 'paused' ? st.nextStepId : focusStepId;
 
   // Artifacts this participant produced — the persisted record of WHAT
   // GOT DONE. Surface these prominently above the chat so a user
@@ -453,47 +889,22 @@ function ParticipantBody({
           participant runs more than one step; single-step participants
           don't benefit from the strip (the top pipeline already labels
           it). */}
-      {showStrip && (
-        <div className="px-4 py-1.5 border-b border-card text-[11px] text-ink-faint flex items-center gap-1.5 flex-wrap">
-          <span className="uppercase tracking-wider mr-1">Steps in this thread</span>
-          {ownedSteps.map((step) => {
-            const attempts = run.attempts.filter((a) => a.stepId === step.id);
-            const last = attempts[attempts.length - 1];
-            const done = last?.outcome === 'success';
-            const isCurrent = step.id === currentStepId;
-            return (
-              <span
-                key={step.id}
-                className={
-                  'px-1.5 py-0.5 rounded ' +
-                  (isCurrent
-                    ? 'bg-accent/20 text-ink'
-                    : done
-                      ? 'text-ink-muted'
-                      : 'text-ink-faint')
-                }
-              >
-                {done && <span className="text-emerald-700 dark:text-emerald-300/80 mr-0.5">✓</span>}
-                {isCurrent && <span className="animate-pulse text-sky-700 dark:text-sky-300 mr-0.5">●</span>}
-                {step.id}
-              </span>
-            );
-          })}
-        </div>
-      )}
-
       {/* Artifacts panel — collapsible "what this participant produced"
           summary. Shown above the chat so it's visible at a glance,
           even when the chat transcript is empty (e.g. after a restart
-          when runnersStore lost its in-memory events). */}
+          when runnersStore lost its in-memory events). The "steps in this
+          thread" strip that used to sit here now lives next to the
+          produces/reads line in the header. */}
       {producedArtifacts.length > 0 && (
         <ArtifactsPanel items={producedArtifacts} forceCollapsed={isTyping} />
       )}
 
+      {/* Faint separator between the top block (watch banner + outputs) and
+          the conversation pane, so the chat reads as its own region. */}
       {/* ChatView's root uses `flex-1 min-h-0 flex flex-col`, so its
           immediate parent MUST be a column flex container — otherwise
           Virtuoso never gets a height and the chat renders blank. */}
-      <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-1 min-h-0 flex flex-col border-t border-card">
         {convId ? (
           <ChatView conversationId={convId} />
         ) : (
@@ -536,6 +947,12 @@ function ArtifactsPanel({
   // Keyed by STEP id, not artifact name: two owned steps can produce the
   // same output name (e.g. both `diff`), so the name isn't unique per row.
   const [openSet, setOpenSet] = useState<Set<string>>(() => new Set());
+  // STEP id of the row whose "copy" was just clicked, for transient
+  // "copied" feedback on that row only.
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  // Whole-panel collapse. Default collapsed so the produced summary stays a
+  // slim header bar instead of a bulky stack — expand to see the files.
+  const [panelOpen, setPanelOpen] = useState(false);
   function toggle(key: string) {
     setOpenSet((prev) => {
       const next = new Set(prev);
@@ -543,6 +960,11 @@ function ArtifactsPanel({
       else next.add(key);
       return next;
     });
+  }
+  function copyBody(key: string, body: string) {
+    void navigator.clipboard.writeText(body);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey((cur) => (cur === key ? null : cur)), 1200);
   }
   // summarizeArtifact iterates every line of a diff body, so caching the
   // result keyed on the (memoized) items array keeps the `forceCollapsed`
@@ -552,33 +974,73 @@ function ArtifactsPanel({
     [items],
   );
   return (
-    <div className="border-b border-card bg-card/20">
-      <div className="px-4 py-2 text-[10px] uppercase tracking-wider text-ink-faint">
-        What this participant produced
-      </div>
-      <div className="px-4 pb-3 space-y-2">
+    <div className="pl-2 pr-3 pt-1.5 pb-1.5">
+      <div className="rounded-lg border border-card-strong bg-surface-elevated overflow-hidden">
+        <button
+          onClick={() => setPanelOpen((v) => !v)}
+          className="w-full flex items-center gap-1.5 px-3.5 py-2 text-[10px] uppercase tracking-wider text-ink-faint hover:text-ink-muted transition-colors"
+        >
+          <Chevron open={panelOpen} />
+          <span>What this participant produced</span>
+          <span className="text-ink-faint/70 normal-case tracking-normal">
+            · {items.length} file{items.length === 1 ? '' : 's'}
+          </span>
+        </button>
+        {panelOpen && (
+        <div className="px-3.5 pb-3 space-y-2">
         {items.map(({ step, artifact }, idx) => {
           const open = !forceCollapsed && openSet.has(step.id);
           const summary = summaries[idx];
           return (
             <div
               key={step.id}
-              className="rounded-md border border-card-strong bg-card/40 overflow-hidden"
+              className="rounded-md border border-card bg-card/30 overflow-hidden"
             >
-              <button
-                onClick={() => toggle(step.id)}
-                className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-white/[0.02]"
-              >
-                <span className="text-[11px] text-ink-faint">{open ? '▼' : '▶'}</span>
-                <span className="text-xs font-mono text-ink">{artifact.name}</span>
-                <span className="text-[11px] text-ink-faint">
-                  · from <span className="font-semibold">{step.id}</span> ·{' '}
-                  {artifact.body.length.toLocaleString()} chars
-                </span>
-                {summary && (
-                  <span className="ml-auto text-[11px] text-emerald-700 dark:text-emerald-300/80">{summary}</span>
-                )}
-              </button>
+              {/* Header row: the toggle is its own button (can't nest the
+                  copy/open buttons inside it), with the actions as siblings
+                  so the whole strip reads as one bar. */}
+              <div className="flex items-center hover:bg-white/[0.02]">
+                <button
+                  onClick={() => toggle(step.id)}
+                  className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 text-left"
+                >
+                  <span className="text-[11px] text-ink-faint">{open ? '▼' : '▶'}</span>
+                  <span className="text-xs font-mono text-ink truncate">{artifact.name}</span>
+                  <span className="text-[11px] text-ink-faint whitespace-nowrap">
+                    · from <span className="font-semibold">{step.id}</span> ·{' '}
+                    {artifact.body.length.toLocaleString()} chars
+                  </span>
+                  {summary && (
+                    <span className="ml-2 text-[11px] text-emerald-700 dark:text-emerald-300/80 truncate">
+                      {summary}
+                    </span>
+                  )}
+                </button>
+                <div className="ml-auto flex items-center gap-1 pr-2 shrink-0">
+                  <button
+                    onClick={() => copyBody(step.id, artifact.body)}
+                    className="px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink"
+                    title="Copy the output to the clipboard"
+                  >
+                    {copiedKey === step.id ? 'copied' : 'copy'}
+                  </button>
+                  {artifact.kind !== 'url' && (
+                    <button
+                      onClick={() =>
+                        void window.overcli.invoke('flows:openArtifact', {
+                          name: artifact.name,
+                          kind: artifact.kind,
+                          body: artifact.body,
+                        })
+                      }
+                      className="px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink"
+                      title="Open the output in your default app"
+                    >
+                      open
+                    </button>
+                  )}
+                </div>
+              </div>
               {open && (
                 <>
                   {/* Cap the expanded view at 70% of the viewport so it
@@ -624,6 +1086,8 @@ function ArtifactsPanel({
             </div>
           );
         })}
+        </div>
+        )}
       </div>
     </div>
   );
@@ -665,11 +1129,22 @@ function summarizeArtifact(
   return null;
 }
 
-// Aggregate +/- line counts across every diff artifact the run has
-// produced, surfaced as a compact `+X / −Y · N files` chip in the header.
-// Clicking opens a full-screen viewer so the user can read the actual
-// diff without scrolling through the participant's artifacts panel.
-function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
+// Aggregate +/- line counts across every diff artifact in a run. The scan
+// splits every diff body line-by-line, so on a run with large diffs it's
+// real work — and it's hit twice in the header (chip + sheet) plus on every
+// re-render (step clicks, watch ticks, local state). Cache the result against
+// the `artifacts` object: that reference is stable until the run next updates,
+// so rapid flow switching and incidental re-renders read the cached totals
+// instead of re-scanning thousands of diff lines on the main thread.
+const aggregateDiffStatsCache = new WeakMap<
+  object,
+  { files: number; added: number; removed: number } | null
+>();
+function aggregateDiffStats(
+  run: FlowRun,
+): { files: number; added: number; removed: number } | null {
+  const cached = aggregateDiffStatsCache.get(run.artifacts);
+  if (cached !== undefined) return cached;
   let files = 0;
   let added = 0;
   let removed = 0;
@@ -683,7 +1158,19 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
     removed += s.removed;
     any = true;
   }
-  if (!any) return null;
+  const result = any ? { files, added, removed } : null;
+  aggregateDiffStatsCache.set(run.artifacts, result);
+  return result;
+}
+
+// Aggregate +/- line counts across every diff artifact the run has
+// produced, surfaced as a compact `+X / −Y · N files` chip in the header.
+// Clicking opens a full-screen viewer so the user can read the actual
+// diff without scrolling through the participant's artifacts panel.
+function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
+  const stats = aggregateDiffStats(run);
+  if (!stats) return null;
+  const { files, added, removed } = stats;
   return (
     <button
       onClick={onOpen}
@@ -778,17 +1265,8 @@ function DiffSheet({ run, onClose }: { run: FlowRun; onClose: () => void }) {
 // DiffSheet header so the totals stay visible without an infinite
 // click-loop back into the sheet.
 function RunDiffStatsInline({ run }: { run: FlowRun }) {
-  let files = 0;
-  let added = 0;
-  let removed = 0;
-  for (const art of Object.values(run.artifacts)) {
-    if (art.kind !== 'diff') continue;
-    const s = computeDiffStats(art.body);
-    if (!s) continue;
-    files += s.files;
-    added += s.added;
-    removed += s.removed;
-  }
+  const stats = aggregateDiffStats(run);
+  const { files, added, removed } = stats ?? { files: 0, added: 0, removed: 0 };
   return (
     <span className="text-[11px] font-mono">
       <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>
@@ -973,9 +1451,15 @@ function HijackComposer({
   // regular chat instead of feeling smushed against the bottom edge.
   return (
     <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
+      {/* Pinned "it's working…" strip — same component ConversationPane
+          mounts above its composer. The flow pane renders ChatView
+          directly (not via ConversationPane), so without this the live
+          Thinking/Working/Reading… cue never shows while a step runs. */}
+      {convId && <RunningIndicator conversationId={convId} />}
       <ChangesBar files={changes} />
       <Composer
         draftKey={draftKey}
+        historyConvId={convId}
         onSend={handleSend}
         onStop={() => {
           if (convId) void stop(convId);
@@ -1171,12 +1655,27 @@ function cryptoRandomUuid(): string {
 function RunPromptSubtitle({
   prompt,
   activeStep,
+  run,
+  activeParticipant,
+  activeStepId,
 }: {
   prompt: string;
   activeStep: FlowStep | null;
+  run: FlowRun;
+  activeParticipant: FlowParticipant | null;
+  activeStepId: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
+  // Steps the active participant owns, in order — relocated here from the
+  // body so the "which steps this thread covers" info sits next to the
+  // produces/reads line rather than floating above the chat. Only shown
+  // when the participant runs more than one step (otherwise the pipeline
+  // up top already says it all).
+  const ownedSteps = activeParticipant
+    ? run.flowSnapshot.steps.filter((s) => s.participantId === activeParticipant.id)
+    : [];
+  const showStepChips = ownedSteps.length > 1;
   return (
     <div className="mt-2.5">
       <button
@@ -1232,6 +1731,31 @@ function RunPromptSubtitle({
                   {activeStep.inputs.join(', ')}
                 </span>
               </span>
+            </>
+          )}
+          {showStepChips && (
+            <>
+              <span className="text-ink-faint/60">·</span>
+              <span className="uppercase tracking-wider text-[10px]">in thread</span>
+              {ownedSteps.map((step) => {
+                const attempts = run.attempts.filter((a) => a.stepId === step.id);
+                const last = attempts[attempts.length - 1];
+                const done = last?.outcome === 'success';
+                const isCurrent = step.id === activeStepId;
+                return (
+                  <span
+                    key={step.id}
+                    className={
+                      'px-1.5 py-0.5 rounded ' +
+                      (isCurrent ? 'bg-accent/20 text-ink' : done ? 'text-ink-muted' : 'text-ink-faint')
+                    }
+                  >
+                    {done && <span className="text-emerald-700 dark:text-emerald-300/80 mr-0.5">✓</span>}
+                    {isCurrent && <span className="animate-pulse text-sky-700 dark:text-sky-300 mr-0.5">●</span>}
+                    {step.id}
+                  </span>
+                );
+              })}
             </>
           )}
         </div>
@@ -1429,7 +1953,11 @@ function RunStateBadge({ state }: { state: { kind: string } }) {
         ? 'bg-amber-500/20 text-amber-700 dark:text-amber-300'
         : label === 'done'
           ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-          : 'bg-red-500/20 text-red-700 dark:text-red-300';
+          : label === 'watching'
+            ? 'bg-sky-500/20 text-sky-700 dark:text-sky-300'
+            : label === 'archived'
+              ? 'bg-card-strong text-ink-muted'
+              : 'bg-red-500/20 text-red-700 dark:text-red-300';
   return (
     <span className={`text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}>
       {label}

@@ -7,9 +7,15 @@
 // (`McpServerConfig`) that covers the fields MCP servers actually use.
 //
 // Files touched:
-//   ~/.claude/settings.json   →  mcpServers     (JSON)
+//   ~/.claude.json            →  mcpServers     (JSON, user scope)
 //   ~/.gemini/settings.json   →  mcpServers     (JSON, same shape)
 //   ~/.codex/config.toml      →  [mcp_servers.<name>]  (TOML)
+//
+// NOTE: Claude Code reads user-scope MCP server *definitions* from
+// ~/.claude.json (the file `claude mcp add --scope user` writes), NOT
+// from ~/.claude/settings.json — settings.json only carries MCP toggles
+// (enabledMcpjsonServers, etc.), so servers written there are silently
+// ignored by the CLI.
 //
 // We intentionally don't pull in a full TOML library — the section we
 // write is small and well-shaped, and we only mutate one section at a
@@ -41,7 +47,7 @@ interface Paths {
 
 function defaultPaths(home: string = os.homedir()): Paths {
   return {
-    claude: path.join(home, '.claude', 'settings.json'),
+    claude: path.join(home, '.claude.json'),
     codex: path.join(home, '.codex', 'config.toml'),
     gemini: path.join(home, '.gemini', 'settings.json'),
   };
@@ -66,6 +72,87 @@ export function writeMcpServer(
   return writeJsonServer(paths[cli], name, config);
 }
 
+export type AddMcpResult =
+  | { ok: true; written: McpCli[]; errors: string[] }
+  | { ok: false; error: string };
+
+/// Validates input and fan-writes one MCP server entry to every valid
+/// target CLI. Partial success returns `ok: true` with `errors[]`
+/// listing the CLIs that failed; total failure returns `ok: false`.
+export function addMcpServerToTargets(
+  args: { name: string; config: unknown; targets: unknown[] },
+  paths: Paths = defaultPaths(),
+): AddMcpResult {
+  if (typeof args.name !== 'string' || !args.name.trim()) {
+    return { ok: false, error: 'Server name is required.' };
+  }
+  if (!args.config || typeof args.config !== 'object') {
+    return { ok: false, error: 'Config must be a JSON object.' };
+  }
+  const valid = (args.targets ?? []).filter((t): t is McpCli => isMcpCli(t as Backend));
+  if (valid.length === 0) {
+    return { ok: false, error: 'Pick at least one MCP-capable CLI.' };
+  }
+  const written: McpCli[] = [];
+  const errors: string[] = [];
+  for (const cli of valid) {
+    try {
+      writeMcpServer(cli, args.name.trim(), args.config as McpServerConfig, paths);
+      written.push(cli);
+    } catch (err: any) {
+      errors.push(`${cli}: ${err?.message ?? String(err)}`);
+    }
+  }
+  if (written.length === 0) {
+    return { ok: false, error: errors.join('; ') || 'No writes succeeded.' };
+  }
+  return { ok: true, written, errors };
+}
+
+export function removeMcpServer(
+  cli: McpCli,
+  name: string,
+  paths: Paths = defaultPaths(),
+): void {
+  if (cli === 'codex') return removeCodexServer(paths.codex, name);
+  return removeJsonServer(paths[cli], name);
+}
+
+export type RemoveMcpResult =
+  | { ok: true; removed: McpCli[]; errors: string[] }
+  | { ok: false; error: string };
+
+/// Validates input and fan-deletes one MCP server entry from every valid
+/// target CLI. Mirrors `addMcpServerToTargets`. A CLI that doesn't have
+/// the server is a no-op (not an error); only real write failures land in
+/// `errors`.
+export function removeMcpServerFromTargets(
+  args: { name: string; targets: unknown[] },
+  paths: Paths = defaultPaths(),
+): RemoveMcpResult {
+  if (typeof args.name !== 'string' || !args.name.trim()) {
+    return { ok: false, error: 'Server name is required.' };
+  }
+  const valid = (args.targets ?? []).filter((t): t is McpCli => isMcpCli(t as Backend));
+  if (valid.length === 0) {
+    return { ok: false, error: 'Pick at least one MCP-capable CLI.' };
+  }
+  const removed: McpCli[] = [];
+  const errors: string[] = [];
+  for (const cli of valid) {
+    try {
+      removeMcpServer(cli, args.name.trim(), paths);
+      removed.push(cli);
+    } catch (err: any) {
+      errors.push(`${cli}: ${err?.message ?? String(err)}`);
+    }
+  }
+  if (removed.length === 0 && errors.length > 0) {
+    return { ok: false, error: errors.join('; ') };
+  }
+  return { ok: true, removed, errors };
+}
+
 // ---------- JSON-based CLIs (Claude, Gemini) ----------
 
 function readJsonServer(file: string, name: string): McpServerConfig | null {
@@ -86,6 +173,17 @@ function writeJsonServer(file: string, name: string, config: McpServerConfig): v
   const servers = parsed.mcpServers ?? {};
   servers[name] = config;
   parsed.mcpServers = servers;
+  fs.writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+}
+
+function removeJsonServer(file: string, name: string): void {
+  if (!fs.existsSync(file)) return;
+  const parsed = JSON.parse(fs.readFileSync(file, 'utf-8') || '{}') as {
+    mcpServers?: Record<string, McpServerConfig>;
+  } & Record<string, unknown>;
+  if (!parsed.mcpServers || !(name in parsed.mcpServers)) return;
+  backup(file);
+  delete parsed.mcpServers[name];
   fs.writeFileSync(file, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
 }
 
@@ -135,6 +233,16 @@ function writeCodexServer(file: string, name: string, config: McpServerConfig): 
   if (next.length > 0 && !next.endsWith('\n\n')) next += '\n';
   next += block;
 
+  fs.writeFileSync(file, next, 'utf-8');
+}
+
+function removeCodexServer(file: string, name: string): void {
+  if (!fs.existsSync(file)) return;
+  const existing = fs.readFileSync(file, 'utf-8');
+  let next = removeTomlSection(existing, `mcp_servers.${name}`);
+  next = removeTomlSection(next, `mcp_servers.${name}.env`);
+  if (next === existing) return;
+  backup(file);
   fs.writeFileSync(file, next, 'utf-8');
 }
 

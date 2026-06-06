@@ -138,10 +138,16 @@ function RunsOverview() {
     [runs],
   );
   const active = sorted.filter(
-    (r) => r.state.kind === 'running' || r.state.kind === 'paused',
+    (r) =>
+      r.state.kind === 'running' ||
+      r.state.kind === 'paused' ||
+      // A watching run is an ongoing commitment (it's polling), so it belongs
+      // with the active set, not buried in recent.
+      r.state.kind === 'watching',
   );
   const recent = sorted.filter(
-    (r) => r.state.kind === 'done' || r.state.kind === 'aborted',
+    (r) =>
+      r.state.kind === 'done' || r.state.kind === 'aborted' || r.state.kind === 'archived',
   );
   const [showRecent, setShowRecent] = useState(false);
 
@@ -203,27 +209,39 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
       ? 'running…'
       : run.state.kind === 'paused'
         ? 'paused'
-        : run.state.kind === 'done'
-          ? 'done'
-          : 'aborted';
+        : run.state.kind === 'watching'
+          ? 'watching'
+          : run.state.kind === 'done'
+            ? 'done'
+            : run.state.kind === 'archived'
+              ? 'archived'
+              : 'aborted';
   const stateColor =
     run.state.kind === 'running'
       ? 'text-sky-700 dark:text-sky-300'
       : run.state.kind === 'paused'
         ? 'text-amber-700 dark:text-amber-300'
-        : run.state.kind === 'done'
-          ? 'text-emerald-700 dark:text-emerald-300/80'
-          : 'text-red-700 dark:text-red-300';
-  const isActive = run.state.kind === 'running' || run.state.kind === 'paused';
+        : run.state.kind === 'watching'
+          ? 'text-sky-700 dark:text-sky-300'
+          : run.state.kind === 'done'
+            ? 'text-emerald-700 dark:text-emerald-300/80'
+            : run.state.kind === 'archived'
+              ? 'text-ink-muted'
+              : 'text-red-700 dark:text-red-300';
+  const isActive =
+    run.state.kind === 'running' ||
+    run.state.kind === 'paused' ||
+    run.state.kind === 'watching';
   // Latest attempt end-time → "completed at". Falls back to the run's
   // createdAt for runs with no completed attempts yet.
   const lastEnd = run.attempts
     .map((a) => a.endedAt)
     .filter((n): n is number => typeof n === 'number')
     .sort((a, b) => b - a)[0];
-  const completedAt = run.state.kind === 'done' || run.state.kind === 'aborted'
-    ? lastEnd ?? run.createdAt
-    : null;
+  const completedAt =
+    run.state.kind === 'done' || run.state.kind === 'aborted' || run.state.kind === 'archived'
+      ? lastEnd ?? run.createdAt
+      : null;
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();

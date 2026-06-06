@@ -134,6 +134,22 @@ export function isStaleSessionError(text: string): boolean {
   );
 }
 
+/// True when `claude -p` exited because the permission-prompt-tool we
+/// wired (`mcp__overcli__approve`) wasn't among the MCP tools it loaded.
+/// Our broker is a stdio MCP server registered via `--mcp-config`; in a
+/// config crowded with many other MCP servers, Claude can validate the
+/// prompt-tool before our server finishes registering, then bail. The
+/// SDK transport approves via a direct in-process callback with no broker,
+/// so this is the signal to fall the conversation back to it.
+export function isBrokerPromptToolMissingError(text: string): boolean {
+  const t = (text || '').toLowerCase();
+  return (
+    t.includes('mcp__overcli__approve') &&
+    t.includes('permission-prompt-tool') &&
+    t.includes('not found')
+  );
+}
+
 interface SendArgs {
   conversationId: UUID;
   prompt: string;
@@ -389,6 +405,12 @@ export class RunnerManager {
   /// the gap between the old proc exiting and the new one spawning gets
   /// its optimistic "Thinking…" strip clobbered.
   private claudeSendPending = new Set<UUID>();
+  /// Conversations that fell back to the SDK transport after the CLI's
+  /// permission-prompt-tool failed to load (broker server didn't register
+  /// among a crowded set of MCP servers). Sticky for the conversation's
+  /// life so follow-up turns don't re-attempt — and re-fail — the broker
+  /// path. In-memory only: a brand-new conversation always tries CLI first.
+  private claudeSdkFallbackConvs = new Set<UUID>();
 
   /// In-flight `oneShot` turns, keyed by their throwaway conversation id.
   /// `tapOneShot` accumulates assistant text into these and resolves them
@@ -520,6 +542,7 @@ export class RunnerManager {
       effortLevel: args.effortLevel,
       attachments: args.attachments,
       allowedDirs: args.allowedDirs,
+      mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
     };
   }
 
@@ -554,15 +577,20 @@ export class RunnerManager {
       });
       return;
     }
-    // Tools that carry their own in-card Approve/Deny UI — gating them at
-    // the broker too would force the user to click twice for one decision.
-    if (req.toolName === 'ExitPlanMode' || req.toolName === 'AskUserQuestion') {
+    // AskUserQuestion carries its own in-card answer UI and is not a
+    // permission gate — auto-allow so the user answers once, in the card.
+    if (req.toolName === 'AskUserQuestion') {
       this.claudeBroker.resolve(req.conversationId, req.requestId, {
         behavior: 'allow',
         updatedInput: req.toolInput,
       });
       return;
     }
+    // ExitPlanMode is a real gate: allowing it tells Claude the plan is
+    // approved, so it leaves plan mode and proceeds straight into coding.
+    // Do NOT auto-allow — fall through to the pending-permission path so
+    // the plan card's Approve/Deny drives the decision (allow → implement,
+    // deny → keep planning). Auto-allowing here silently defeated plan mode.
     active.pendingPermissions.set(req.requestId, (approved: boolean) => {
       this.claudeBroker.resolve(
         req.conversationId,
@@ -795,11 +823,15 @@ export class RunnerManager {
       if (active.sessionAllowedTools.has(toolName)) {
         return { behavior: 'allow', updatedInput: input };
       }
-      // Tools that carry their own in-card Approve/Deny UI — gating them
-      // here too would force the user to click twice for one decision.
-      if (toolName === 'ExitPlanMode' || toolName === 'AskUserQuestion') {
+      // AskUserQuestion carries its own in-card answer UI and is not a
+      // permission gate — auto-allow so the user answers once, in the card.
+      if (toolName === 'AskUserQuestion') {
         return { behavior: 'allow', updatedInput: input };
       }
+      // ExitPlanMode is a real gate: allowing it tells Claude the plan is
+      // approved and it leaves plan mode. Fall through to the pending-
+      // permission path so the plan card drives the decision; auto-allowing
+      // defeated plan mode (the model proceeded straight into coding).
       const requestId = randomUUID();
       const approved = await new Promise<boolean>((resolve) => {
         active.pendingPermissions.set(requestId, resolve);
@@ -866,6 +898,17 @@ export class RunnerManager {
     }
 
     const userEventAlreadyEmitted = !!options.suppressLocalUser;
+
+    // A conversation that previously hit the broker-not-found failure is
+    // pinned to the SDK transport for the rest of its life — retrying the
+    // CLI path would just fail the same way again.
+    if (
+      args.backend === 'claude' &&
+      args.claudeTransport !== 'sdk' &&
+      this.claudeSdkFallbackConvs.has(convId)
+    ) {
+      args = { ...args, claudeTransport: 'sdk' };
+    }
 
     // Prefer Gemini ACP when available. If a legacy Gemini subprocess is
     // already bound to this conversation (fallback path), keep using it
@@ -1081,6 +1124,10 @@ export class RunnerManager {
     if (active.backend === 'claude') {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
+      // Explicit teardown (stop / backend switch) clears the SDK-fallback
+      // pin, so the next Claude turn tries the default CLI path again —
+      // e.g. after the user trims a crowded MCP config.
+      this.claudeSdkFallbackConvs.delete(conversationId);
     }
     // Tear down any persistent reviewer too — the conversation's primary
     // is going away, so the warm reviewer thread has nothing left to
@@ -2339,6 +2386,19 @@ export class RunnerManager {
     proc.stdout.on('data', (chunk: string) => this.handleStdout(args.conversationId, active, chunk));
     proc.stderr.setEncoding('utf-8');
     proc.stderr.on('data', (chunk: string) => this.handleStderr(args.conversationId, active, chunk));
+    // A spawn failure (e.g. the CLI isn't installed / not on PATH) emits
+    // 'error' and often no 'close'. Without a listener Node rethrows it as
+    // an uncaught exception that crashes the main process, and the turn
+    // hangs forever. Surface a clean error and run the normal close cleanup.
+    proc.on('error', (err: NodeJS.ErrnoException) => {
+      const notFound = err.code === 'ENOENT';
+      const message = notFound
+        ? `Couldn't launch ${args.backend}: \`${binary}\` was not found. ` +
+          `Make sure the CLI is installed and on your PATH — see the install steps in the README.`
+        : `Couldn't launch ${args.backend}: ${err.message}`;
+      this.emit({ type: 'error', conversationId: args.conversationId, message });
+      this.handleActiveClose(args.conversationId, active, null);
+    });
     proc.on('close', (code) => this.handleActiveClose(args.conversationId, active, code));
     return active;
   }
@@ -2545,9 +2605,14 @@ export class RunnerManager {
       if (this.maybeRetryStaleSession(conversationId, active)) {
         return;
       }
-      const tail = (active.recentStderr || active.stderrBuffer || active.stdoutBuffer || '')
-        .trim()
-        .slice(-500);
+      if (this.maybeRetryClaudeSdkFallback(conversationId, active)) {
+        return;
+      }
+      // CLI errors lead with the cause and trail with noise (e.g. a dump
+      // of every MCP tool name), so show the head — not just the tail —
+      // keeping a slice of the end for context.
+      const raw = (active.recentStderr || active.stderrBuffer || active.stdoutBuffer || '').trim();
+      const tail = raw.length > 600 ? `${raw.slice(0, 400)} … ${raw.slice(-200)}` : raw;
       this.emit({
         type: 'error',
         conversationId,
@@ -2627,6 +2692,53 @@ export class RunnerManager {
     });
 
     const retryArgs: SendArgs = { ...stashed, sessionId: undefined, localUserId: undefined };
+    this.send(retryArgs, { suppressLocalUser: true });
+    return true;
+  }
+
+  /// When `claude -p` bails because our `mcp__overcli__approve`
+  /// permission-prompt-tool never loaded, re-run the turn on the in-process
+  /// SDK transport, which approves tools via a direct canUseTool callback
+  /// and needs no broker — so it's immune to whatever kept the broker from
+  /// registering. The conversation is pinned to SDK from here on (so
+  /// follow-ups don't re-fail the broker path); CLI stays the default for
+  /// every other conversation. Only fires from the CLI transport, so it
+  /// can't loop.
+  private maybeRetryClaudeSdkFallback(conversationId: UUID, active: ActiveProcess): boolean {
+    if (active.backend !== 'claude') return false;
+    if (active.claudeTransport === 'sdk') return false;
+    if (!isBrokerPromptToolMissingError(active.recentStderr)) return false;
+    const stashed = active.lastSendArgs;
+    if (!stashed) return false;
+
+    // The broker session is useless to the SDK path and its temp config
+    // would otherwise linger; drop it before re-sending.
+    this.claudeBroker.unregisterSession(conversationId);
+    this.claudeMcpByConv.delete(conversationId);
+    this.claudeSdkFallbackConvs.add(conversationId);
+
+    this.emit({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: randomUUID(),
+          timestamp: Date.now(),
+          raw: '',
+          kind: {
+            type: 'systemNotice',
+            text: 'Claude’s permission broker did not load (often a crowded MCP-server config); continuing this conversation on the in-process SDK transport.',
+          },
+          revision: 0,
+        },
+      ],
+    });
+
+    const retryArgs: SendArgs = {
+      ...stashed,
+      claudeTransport: 'sdk',
+      localUserId: undefined,
+    };
     this.send(retryArgs, { suppressLocalUser: true });
     return true;
   }

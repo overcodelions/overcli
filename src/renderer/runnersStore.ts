@@ -18,7 +18,7 @@
 
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
-import type { StreamEvent, UUID } from '@shared/types';
+import type { StreamEvent, TaskProgressInfo, UUID } from '@shared/types';
 
 /// Per-conversation runtime state. Keyed off conversation id.
 export interface RunnerState {
@@ -30,6 +30,13 @@ export interface RunnerState {
   /// nested stream from here. Insertion order in each bucket matches
   /// arrival order, just like `events`.
   subagentEvents: Record<string, StreamEvent[]>;
+  /// Live progress for background Workflow/Task tool runs, keyed by the
+  /// `Workflow`/`Task` tool_use id. Folded from `taskProgress` stream
+  /// events (which arrive out-of-band, not inline in the transcript) so
+  /// the inline WorkflowCard can show phases/agents resolving instead of
+  /// a dead generic tool card. Merged in place — each tick carries the
+  /// full agent snapshot; see `mergeTaskProgress`.
+  taskProgressByToolUse: Record<string, TaskProgressInfo>;
   isRunning: boolean;
   activityLabel?: string;
   errorMessage?: string;
@@ -56,6 +63,7 @@ export function newRunnerState(): RunnerState {
   return {
     events: [],
     subagentEvents: {},
+    taskProgressByToolUse: {},
     isRunning: false,
     pendingLocalUserIds: new Set(),
     currentModel: '',
@@ -132,6 +140,56 @@ export function useSubagentEvents(
     if (!id || !parentToolUseId) return EMPTY_SUBAGENT_EVENTS;
     return s.runners[id]?.subagentEvents[parentToolUseId] ?? EMPTY_SUBAGENT_EVENTS;
   });
+}
+
+/// Live workflow/task progress for a specific `Workflow`/`Task` tool_use
+/// block. Returns undefined until the first task event for it lands.
+export function useTaskProgress(
+  id: UUID | null | undefined,
+  toolUseId: string | null | undefined,
+): TaskProgressInfo | undefined {
+  return useRunnersStore((s) => {
+    if (!id || !toolUseId) return undefined;
+    return s.runners[id]?.taskProgressByToolUse[toolUseId];
+  });
+}
+
+/// Fold one task event's info into the accumulated state for its tool_use
+/// id. Each `task_progress` tick carries the full agent snapshot, but the
+/// `started`/`completed` bookends don't — so we overlay scalar fields
+/// when present and merge agents by index (incoming wins) rather than
+/// clobbering a populated agent list with an empty one.
+export function mergeTaskProgress(
+  prev: TaskProgressInfo | undefined,
+  next: TaskProgressInfo,
+): TaskProgressInfo {
+  if (!prev) return next;
+  const agents = mergeAgentsByIndex(prev.agents, next.agents);
+  return {
+    ...prev,
+    ...next,
+    // A later 'progress' tick must not downgrade a 'completed' phase.
+    phase: prev.phase === 'completed' ? 'completed' : next.phase,
+    status: next.status ?? prev.status,
+    taskType: next.taskType ?? prev.taskType,
+    workflowName: next.workflowName ?? prev.workflowName,
+    description: next.description ?? prev.description,
+    totalTokens: next.totalTokens ?? prev.totalTokens,
+    toolUses: next.toolUses ?? prev.toolUses,
+    durationMs: next.durationMs ?? prev.durationMs,
+    agents,
+  };
+}
+
+function mergeAgentsByIndex(
+  prev: TaskProgressInfo['agents'],
+  next: TaskProgressInfo['agents'],
+): TaskProgressInfo['agents'] {
+  if (!next || next.length === 0) return prev;
+  if (!prev || prev.length === 0) return next;
+  const byIndex = new Map(prev.map((a) => [a.index, a]));
+  for (const a of next) byIndex.set(a.index, a);
+  return [...byIndex.values()].sort((a, b) => a.index - b.index);
 }
 
 /// Parent tool-use ids of every subagent that has emitted at least one

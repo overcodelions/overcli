@@ -14,6 +14,7 @@ import { Store } from './store';
 import { RunnerManager } from './runner';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
+import { primeBackendUpdates } from './backendUpdater';
 import {
   runGit,
   createWorktree,
@@ -39,7 +40,14 @@ import {
 } from './git';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
-import { isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
+import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
+import {
+  listMcpCatalog,
+  installMcpCatalogEntry,
+  uninstallMcpCatalogEntry,
+} from './mcpCatalog';
+import { loginCodexMcp } from './mcpLogin';
+import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -57,9 +65,11 @@ import {
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
+import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
 import { draftFlowFromPrompt } from './flows/drafter';
@@ -187,8 +197,12 @@ function registerIpc(): void {
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
-  ipcMain.handle('store:saveSettings', (_e, settings) => Store.saveSettings(settings));
+  ipcMain.handle('store:saveSettings', (_e, settings) => {
+    Store.saveSettings(settings);
+    refreshUpdateChannel();
+  });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
+  ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
@@ -240,6 +254,39 @@ function registerIpc(): void {
     } catch (err: any) {
       return { ok: false as const, error: err?.message ?? String(err) };
     }
+  });
+  ipcMain.handle('capabilities:addMcp', (_e, args) => addMcpServerToTargets(args));
+  ipcMain.handle('mcp:listCatalog', () => listMcpCatalog());
+  ipcMain.handle('mcp:installCatalog', (_e, { id, targets, secrets }) =>
+    installMcpCatalogEntry(id, targets, secrets),
+  );
+  ipcMain.handle('mcp:uninstallCatalog', (_e, { id, targets }) =>
+    uninstallMcpCatalogEntry(id, targets),
+  );
+  ipcMain.handle('mcp:login', async (_e, { cli, name }) => {
+    if (cli !== 'codex') {
+      return {
+        ok: false as const,
+        error:
+          cli === 'claude'
+            ? 'Claude logs in to remote MCP servers from inside a session — open a Claude chat and run /mcp.'
+            : `overcli can't trigger login for ${cli} yet.`,
+      };
+    }
+    const settings = Store.load().settings;
+    const binary = resolveBackendPath('codex', settings.backendPaths.codex);
+    if (!binary) {
+      return { ok: false as const, error: 'Codex binary not found. Set its path in Settings.' };
+    }
+    return loginCodexMcp({
+      binary,
+      name,
+      env: buildBackendEnv(process.env, binary),
+      useShell: backendNeedsShell(binary),
+      onUrl: (url) => {
+        if (isSafeExternalUrl(url)) shell.openExternal(url);
+      },
+    });
   });
 
   ipcMain.handle('fs:pickDirectory', async () => {
@@ -321,6 +368,26 @@ function registerIpc(): void {
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
   });
+  ipcMain.handle(
+    'flows:openArtifact',
+    async (_e, { name, kind, body }: { name: string; kind: string; body: string }) => {
+      // Flow artifacts have no on-disk path — materialize the body in a
+      // temp dir and hand it to the OS default app. The name is sanitized
+      // to a safe basename so it can't escape the temp dir.
+      const ext = kind === 'markdown' ? '.md' : kind === 'diff' ? '.diff' : '.txt';
+      const safeBase = (name || 'artifact').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+      const base = safeBase.toLowerCase().endsWith(ext) ? safeBase : `${safeBase}${ext}`;
+      try {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-artifact-'));
+        const file = path.join(dir, base);
+        fs.writeFileSync(file, body, 'utf-8');
+        const error = await shell.openPath(file);
+        return error ? { ok: false, error } : { ok: true };
+      } catch (err: any) {
+        return { ok: false, error: err?.message ?? 'Could not open artifact' };
+      }
+    },
+  );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
   );
@@ -567,6 +634,13 @@ function registerIpc(): void {
       ? flowRuntime.setModelOverride(runId, participantId, model)
       : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:enterWatch', (_e, args) =>
+    flowRuntime ? flowRuntime.enterWatch(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:archiveRun', (_e, args) =>
+    flowRuntime ? flowRuntime.archiveRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:listWatchSources', () => listWatchSources());
   ipcMain.handle('flows:deleteRun', (_e, args) => {
     if (!flowRuntime) return { ok: false, error: 'Flow runtime not initialized.' } as const;
     const result = flowRuntime.deleteRun(args);
@@ -1296,6 +1370,15 @@ app.whenReady().then(() => {
   registerIpc();
   buildMenu();
   createWindow();
+
+  // Nudge self-updating CLIs (claude, codex) in the background, hidden, so
+  // they're on the latest version next time the user runs a turn. Throttled
+  // to once/day and fire-and-forget — never blocks window creation.
+  primeBackendUpdates();
+
+  // Self-update the app itself from the GitHub Releases feed. No-op in dev and
+  // on unsigned macOS builds (Squirrel rejects those).
+  initAutoUpdater(() => mainWindow);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
