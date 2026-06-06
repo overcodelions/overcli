@@ -37,7 +37,7 @@ body:
     attributes:
       label: Overcli version
       description: From Help → About, or `package.json`.
-      placeholder: "0.1.0"
+      placeholder: "0.2.0"
     validations:
       required: true
 
@@ -64,6 +64,7 @@ body:
         - label: codex
         - label: gemini
         - label: ollama
+        - label: copilot
         - label: none / cross-cutting
 
   - type: textarea

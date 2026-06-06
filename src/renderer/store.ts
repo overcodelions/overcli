@@ -263,7 +263,7 @@ interface StoreState {
   /// Agent-specific teardown: git worktree remove (including branch),
   /// then remove the conversation entry. For workspace-agent
   /// coordinators, removes every member's worktree too.
-  removeAgent(id: UUID): Promise<{ ok: boolean; error?: string }>;
+  removeAgent(id: UUID): Promise<{ ok: boolean; error?: string; warning?: string }>;
   /// Auto-commit the dirty worktree, stash any project-side changes,
   /// remove the worktree (keeping the branch), switch the project repo
   /// onto that branch, and demote the conversation from agent to a normal
@@ -1477,6 +1477,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const ownerProjectPath = hit.ownerProjectPath;
 
     const errors: string[] = [];
+    const warnings: string[] = [];
     // Workspace-agent coordinator: remove every member's worktree, then
     // the coordinator's own symlink root. The coordinator itself has no
     // worktree, just a bookkeeping row + the synthetic root.
@@ -1492,6 +1493,7 @@ export const useStore = create<StoreState>((set, get) => ({
               branchName: m.branchName,
             });
             if (!res.ok && res.error) errors.push(`${p.name}: ${res.error}`);
+            if (res.warning) warnings.push(`${p.name}: ${res.warning}`);
           }
           await get().removeConversation(memberId);
           break;
@@ -1499,7 +1501,11 @@ export const useStore = create<StoreState>((set, get) => ({
       }
       await window.overcli.invoke('workspace:removeCoordinatorSymlinkRoot', id);
       await get().removeConversation(id);
-      return { ok: errors.length === 0, error: errors.join('; ') || undefined };
+      return {
+        ok: errors.length === 0,
+        error: errors.join('; ') || undefined,
+        warning: warnings.join('\n') || undefined,
+      };
     }
 
     // Single-project agent: git worktree remove + drop the conversation.
@@ -1512,6 +1518,7 @@ export const useStore = create<StoreState>((set, get) => ({
         branchName: conv.branchName ?? '',
       });
       if (!res.ok && res.error) errors.push(res.error);
+      if (res.warning) warnings.push(res.warning);
     }
     await get().removeConversation(id);
     if (conv.colosseumId) {
@@ -1536,7 +1543,11 @@ export const useStore = create<StoreState>((set, get) => ({
       });
       await get().saveColosseums();
     }
-    return { ok: errors.length === 0, error: errors.join('; ') || undefined };
+    return {
+      ok: errors.length === 0,
+      error: errors.join('; ') || undefined,
+      warning: warnings.join('\n') || undefined,
+    };
   },
 
   async checkoutAgentLocally(id, commitSubject, commitBody) {

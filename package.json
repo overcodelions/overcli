@@ -1,7 +1,7 @@
 {
   "name": "overcli",
-  "version": "0.1.0",
-  "description": "A desktop GUI that sits over your coding-agent CLIs (claude, codex, gemini, ollama).",
+  "version": "0.2.0",
+  "description": "A desktop GUI that sits over your coding-agent CLIs (claude, codex, gemini, ollama, copilot).",
   "license": "Apache-2.0",
   "author": "Lionel Farr <lionel@codelionsllc.com>",
   "contributors": [
@@ -58,7 +58,7 @@
       "main": "dist/main/index.js"
     },
     "electronFuses": {
-      "runAsNode": true,
+      "runAsNode": false,
       "enableCookieEncryption": true,
       "enableNodeOptionsEnvironmentVariable": false,
       "enableNodeCliInspectArguments": false
