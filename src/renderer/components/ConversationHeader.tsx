@@ -366,6 +366,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
               if (!window.confirm('Remove this agent? The conversation and any worktree will be deleted.')) return;
               const res = await removeAgent(conversationId);
               if (!res.ok && res.error) window.alert(res.error);
+              else if (res.warning) window.alert(res.warning);
             }}
           />
         ) : (

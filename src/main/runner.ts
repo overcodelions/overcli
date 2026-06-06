@@ -2386,6 +2386,19 @@ export class RunnerManager {
     proc.stdout.on('data', (chunk: string) => this.handleStdout(args.conversationId, active, chunk));
     proc.stderr.setEncoding('utf-8');
     proc.stderr.on('data', (chunk: string) => this.handleStderr(args.conversationId, active, chunk));
+    // A spawn failure (e.g. the CLI isn't installed / not on PATH) emits
+    // 'error' and often no 'close'. Without a listener Node rethrows it as
+    // an uncaught exception that crashes the main process, and the turn
+    // hangs forever. Surface a clean error and run the normal close cleanup.
+    proc.on('error', (err: NodeJS.ErrnoException) => {
+      const notFound = err.code === 'ENOENT';
+      const message = notFound
+        ? `Couldn't launch ${args.backend}: \`${binary}\` was not found. ` +
+          `Make sure the CLI is installed and on your PATH — see the install steps in the README.`
+        : `Couldn't launch ${args.backend}: ${err.message}`;
+      this.emit({ type: 'error', conversationId: args.conversationId, message });
+      this.handleActiveClose(args.conversationId, active, null);
+    });
     proc.on('close', (code) => this.handleActiveClose(args.conversationId, active, code));
     return active;
   }

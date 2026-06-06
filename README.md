@@ -9,15 +9,15 @@
 </p>
 
 <p align="center">
-  <strong>Four coding agents. One honest window.</strong><br />
-  A cross-platform desktop app that wraps <code>claude</code>, <code>codex</code>, <code>gemini</code>, and <code>ollama</code> —
+  <strong>Five coding agents. One honest window.</strong><br />
+  A cross-platform desktop app that wraps <code>claude</code>, <code>codex</code>, <code>gemini</code>, <code>ollama</code>, and <code>copilot</code> —
   conversations, diffs, git worktrees, and usage stats in the same place.
 </p>
 
 <p align="center">
   <a href="https://github.com/overcodelions/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/overcodelions/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
-  <img alt="version" src="https://img.shields.io/badge/version-0.1.0-informational" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-informational" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
   <img alt="electron" src="https://img.shields.io/badge/electron-41-47848F" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-green" />
@@ -34,7 +34,7 @@
 
 ---
 
-> Overcli is a fan-built desktop client. It is **not** affiliated with Anthropic, OpenAI, or Google. It runs on top of the official `claude`, `codex`, and `gemini` CLIs and the open-source `ollama` runtime — whatever auth those already have is the auth Overcli uses. No API keys required.
+> Overcli is a fan-built desktop client. It is **not** affiliated with Anthropic, OpenAI, Google, or GitHub. It runs on top of the official `claude`, `codex`, `gemini`, and `copilot` CLIs and the open-source `ollama` runtime — whatever auth those already have is the auth Overcli uses. No API keys required.
 
 ## Why Overcli
 
@@ -84,7 +84,7 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 
 <p align="center">
   <em>Flow builder — design a pipeline visually: chain steps across models, hand off artifacts (<code>plan.md</code> → <code>diff</code> → <code>review.md</code>), add retry edges, and tune each step's role, tools, and checkpoints.</em><br />
-  <img alt="Overcli flow builder" src="docs/screenshots/flows-edit.png" width="920" />
+  <img alt="Overcli flow builder" src="docs/screenshots/flow-edit.png" width="920" />
 </p>
 
 <p align="center">
@@ -101,8 +101,8 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 
 | # | Feature | What it does |
 |---|---|---|
-| 01 | **Multi-backend chat** | Claude, Codex, Gemini, and Ollama — four stream parsers, one consistent UI. Markdown, syntax highlight, streaming tokens. Cloud or local, same window. |
-| 02 | **No API keys required** | Sits on top of the CLIs you already use. Whatever auth `claude` / `codex` / `gemini` / `ollama` have is the auth you get. No new billing. No new secrets on disk. |
+| 01 | **Multi-backend chat** | Claude, Codex, Gemini, Ollama, and Copilot — five stream parsers, one consistent UI. Markdown, syntax highlight, streaming tokens. Cloud or local, same window. |
+| 02 | **No API keys required** | Sits on top of the CLIs you already use. Whatever auth `claude` / `codex` / `gemini` / `ollama` / `copilot` have is the auth you get. No new billing. No new secrets on disk. |
 | 03 | **Workspaces** | Projects of projects. Group related repos and talk to them as one — the agent edits across repos, runs every test suite, shows one review. Polyrepo that feels like monorepo. |
 | 04 | **Silent agents** | Long-running background agents: a *doc-writer* that keeps `/docs` in sync, a *PR-reviewer* that comments the moment a PR opens. No Slack pings, no dashboards. |
 | 05 | **Rebound reviews** | After every turn, fire a second agent — on a different backend if you like — to review what just landed. Thinking blocks visible, round counter included. Collaboration mode loops until the reviewer is quiet. |
@@ -127,7 +127,7 @@ Builds are produced by the release workflow and land on the [Releases page](http
 
 | Platform | Artifacts |
 |---|---|
-| **macOS** · arm64 + x64 | `.dmg` · `.zip` |
+| **macOS** · arm64 (Apple Silicon) | `.dmg` · `.zip` |
 | **Windows** · x64 + arm64 | NSIS installer |
 | **Linux** · x64 + arm64 | `.AppImage` · `.deb` |
 
@@ -137,7 +137,7 @@ Builds are produced by the release workflow and land on the [Releases page](http
 
 ### 1. Install the backends you want to use
 
-Overcli is a thin GUI over CLIs you install separately. You don't need all four — health badges show you what it can reach, and the app works fine with just one installed.
+Overcli is a thin GUI over CLIs you install separately. You don't need all five — health badges show you what it can reach, and the app works fine with just one installed.
 
 | Backend | CLI | Install |
 |---|---|---|
@@ -145,6 +145,7 @@ Overcli is a thin GUI over CLIs you install separately. You don't need all four 
 | Codex | `codex` | `npm i -g @openai/codex` |
 | Gemini | `gemini` | `npm i -g @google/gemini-cli` |
 | Ollama | `ollama` | [ollama.com](https://ollama.com) |
+| Copilot | `copilot` | `npm i -g @github/copilot` |
 
 ### 2. Run Overcli in development
 

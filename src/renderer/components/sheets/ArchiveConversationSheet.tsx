@@ -165,6 +165,11 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
           setWorking(false);
           return;
         }
+        if (res.warning) {
+          setError(`Removed with warnings: ${res.warning}`);
+          setWorking(false);
+          return;
+        }
       } else {
         await removeConversation(conv.id);
       }

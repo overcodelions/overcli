@@ -172,7 +172,9 @@ export function BulkConversationActionsSheet() {
       const warnings: string[] = [];
       for (const id of plan.removeAgentIds) {
         const res = await removeAgent(id);
-        if (!res.ok && res.error) warnings.push(`${entryById.get(id)?.conv.name ?? id}: ${res.error}`);
+        const label = entryById.get(id)?.conv.name ?? id;
+        if (!res.ok && res.error) warnings.push(`${label}: ${res.error}`);
+        else if (res.warning) warnings.push(`${label}: ${res.warning}`);
       }
       for (const id of plan.removeConversationIds) {
         await removeConversation(id);
