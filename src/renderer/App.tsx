@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useStore } from './store';
+import { noBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
 import { useThemeEffect } from './useThemeEffect';
@@ -32,6 +32,7 @@ export function App() {
   const init = useStore((s) => s.init);
   const ingest = useStore((s) => s.ingestMainEvent);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const backendHealth = useStore((s) => s.backendHealth);
   const detailMode = useStore((s) => s.detailMode);
   const subagentDrawerParentId = useStore((s) => s.subagentDrawerParentId);
   const subagentDrawerConversationId = useStore((s) => s.subagentDrawerConversationId);
@@ -189,11 +190,18 @@ export function App() {
 
   useShortcuts();
 
+  // First-run onboarding: with no projects and no usable CLI the sidebar is
+  // empty (its add buttons are disabled anyway), so hide it and give the
+  // welcome/setup screen the full width. Settings stays reachable via the
+  // title-bar gear.
+  const onboarding = projects.length === 0 && noBackendReady(backendHealth);
+  const showSidebar = sidebarVisible && !onboarding;
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
       <TitleBar />
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {sidebarVisible && (
+        {showSidebar && (
           <>
             <div
               style={{ width: sidebarWidth }}
