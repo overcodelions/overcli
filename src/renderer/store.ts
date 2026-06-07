@@ -51,6 +51,7 @@ import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners, mergeTaskProgress } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
+import { isSupportedPremiumModel } from '@shared/modelCatalog';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 /// Forward a diagnostic line to the main-process session log. Fire-and-forget:
@@ -1895,6 +1896,9 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
   async setBackendModel(id, backend, model) {
+    if (backend !== 'ollama' && model && !isSupportedPremiumModel(backend, model)) {
+      return;
+    }
     mutateConversation(set, get, id, (c) => {
       const next = { ...c, currentModel: model };
       if (backend === 'claude') next.claudeModel = model;
@@ -1958,7 +1962,13 @@ export const useStore = create<StoreState>((set, get) => ({
   },
   async setReviewModel(id, model) {
     // Manual edit — preset no longer describes the configuration.
-    mutateConversation(set, get, id, (c) => ({ ...c, reviewModel: model, reviewPreset: 'custom' }));
+    mutateConversation(set, get, id, (c) => {
+      const backend = (c.reviewBackend ?? c.primaryBackend) as Backend | null | undefined;
+      if (backend && backend !== 'ollama' && model && !isSupportedPremiumModel(backend, model)) {
+        return c;
+      }
+      return { ...c, reviewModel: model, reviewPreset: 'custom' };
+    });
     await saveConversationState(get);
   },
   async setReviewPersona(id, persona) {
@@ -2088,6 +2098,15 @@ export const useStore = create<StoreState>((set, get) => ({
         : backend === 'ollama'
         ? conv.ollamaModel ?? conv.currentModel
         : conv.claudeModel ?? conv.currentModel;
+
+    if (backend !== 'ollama' && model && !isSupportedPremiumModel(backend, model)) {
+      useRunnersStore.getState().patchRunner(conversationId, {
+        errorMessage: `Model "${model}" is not supported for backend "${backend}".`,
+        isRunning: false,
+        activityLabel: undefined,
+      });
+      return;
+    }
 
     // Ollama has no account-level "default model" — the user must name a
     // pulled tag explicitly. If the conversation still has none (common

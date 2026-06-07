@@ -8,13 +8,14 @@ import {
   ThemePreference,
   BackendHealth,
 } from '@shared/types';
+import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
 
 type Section = 'general' | 'backends' | 'models' | 'local' | 'agents' | 'flows' | 'advanced';
 
 // Hoisted out of the panes so they aren't reallocated on every keystroke
 // re-render (each render would otherwise create fresh arrays).
 const ALL_BACKENDS_LIST: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
-const CLI_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot'];
+const CLI_BACKENDS: Exclude<Backend, 'ollama'>[] = ['claude', 'codex', 'gemini', 'copilot'];
 
 /// Redesigned to match the Mac app's sectioned layout — a narrow nav rail
 /// on the left, a scrollable content pane on the right, and a single
@@ -384,8 +385,7 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
       >
         {CLI_BACKENDS.map((b) => (
           <Row key={b} label={b}>
-            <input
-              placeholder={placeholderFor(b)}
+            <select
               value={local.backendDefaultModels[b] ?? ''}
               onChange={(e) =>
                 patch({
@@ -393,7 +393,14 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
                 })
               }
               className="field px-2 py-1 text-xs font-mono"
-            />
+            >
+              <option value="">{placeholderFor(b)}</option>
+              {PREMIUM_MODELS[b].map((m) => (
+                <option key={m} value={m}>
+                  {friendlyModelLabel(b, m)}
+                </option>
+              ))}
+            </select>
           </Row>
         ))}
       </Group>
@@ -436,14 +443,25 @@ function OllamaPane({
   local: AppSettings;
   patch: (p: Partial<AppSettings>) => void;
 }) {
+  const [ollamaPulledModels, setOllamaPulledModels] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    void window.overcli.invoke('ollama:detect').then((det) => {
+      if (cancelled) return;
+      setOllamaPulledModels(det.models.map((m) => m.name));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div>
       <Group
         title="Default model"
         description="Used when a conversation picks Ollama without an explicit model override."
       >
-        <input
-          placeholder={placeholderFor('ollama')}
+        <select
           value={local.backendDefaultModels.ollama ?? ''}
           onChange={(e) =>
             patch({
@@ -451,7 +469,14 @@ function OllamaPane({
             })
           }
           className="field px-2 py-1 text-xs font-mono"
-        />
+        >
+          <option value="">{placeholderFor('ollama')}</option>
+          {ollamaPulledModels.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
       </Group>
       <div className="text-xs text-ink-faint">
         Manage the Ollama server, pull models, and monitor logs from the{' '}
