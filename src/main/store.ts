@@ -21,7 +21,7 @@ import {
 } from '../shared/types';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 
-const DEPRECATED_CODEX_MODELS = [`gpt-${'5.3'}-codex`, 'gpt-5.2'];
+const DEPRECATED_CODEX_MODELS = ['gpt-5.3-codex', 'gpt-5.2'];
 
 interface StoreState {
   projects: Project[];

@@ -256,10 +256,10 @@ export function WelcomePane() {
                   // backend.
                   if (reviewPreset === 'cheap-paranoid') {
                     const cheap = TIERS[next]?.cheap;
-                    const allowed = modelOptionsFor(next, undefined, ollamaPulledModels);
+                    const allowed = modelOptionsFor(next, ollamaPulledModels);
                     setModel(cheap ?? allowed[0] ?? '');
                   } else {
-                    const allowed = modelOptionsFor(next, undefined, ollamaPulledModels);
+                    const allowed = modelOptionsFor(next, ollamaPulledModels);
                     setModel(allowed[0] ?? '');
                   }
                 }}
@@ -268,7 +268,6 @@ export function WelcomePane() {
                 label={model ? shortModel(model) : 'Model'}
                 items={modelOptionsFor(
                   backend,
-                  settings.backendDefaultModels[backend],
                   ollamaPulledModels,
                 ).map((m) => ({
                   value: m,
@@ -1064,7 +1063,6 @@ function shortPath(p: string): string {
 /// will reject anything else.
 function modelOptionsFor(
   backend: Backend,
-  configuredDefault?: string,
   ollamaPulled?: string[],
 ): string[] {
   if (backend === 'ollama') {
