@@ -7,7 +7,7 @@
 import { create } from 'zustand';
 
 import type { Flow, FlowModelRef, FlowParticipant, FlowRun, FlowStep } from '@shared/flows/schema';
-import { friendlyModelLabel as friendlyModelLabelImported } from '@shared/modelCatalog';
+import { friendlyModelLabel as friendlyModelLabelImported, isSupportedPremiumModel } from '@shared/modelCatalog';
 
 /// Pointer to the flow currently open in the editor. `'new'` is the
 /// "blank" state (no flow yet — fields render empty/defaults).
@@ -267,6 +267,9 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   setStepModel(index, model) {
     set(s => {
       if (!s.editorDraft) return {};
+      if (model.backend !== 'ollama' && !isSupportedPremiumModel(model.backend, model.model)) {
+        return {};
+      }
       const draft = s.editorDraft;
       const steps = draft.steps.slice();
       let participants = draft.participants.slice();
@@ -358,6 +361,10 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       const run = s.runs[runId];
       if (!run) return {};
       const participant = run.flowSnapshot.participants?.find((p) => p.id === participantId);
+      if (!participant) return {};
+      if (participant.backend !== 'ollama' && model && !isSupportedPremiumModel(participant.backend, model)) {
+        return {};
+      }
       const next = { ...(run.modelOverrides ?? {}) };
       const trimmed = model?.trim();
       if (!trimmed || trimmed === participant?.model) delete next[participantId];

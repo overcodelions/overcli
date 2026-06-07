@@ -5,6 +5,7 @@
 // boot the runtime into a bad state.
 
 import { FLOW_USER_PROMPT_REF, resolveStepModel, type Flow, type FlowStep } from './schema';
+import { isSupportedPremiumModel } from '../modelCatalog';
 
 export interface FlowValidationError {
   /// Dotted path to the field for editor highlight. Examples:
@@ -122,6 +123,25 @@ export function validateFlow(flow: Flow): FlowValidationResult {
     }
   }
 
+  for (let i = 0; i < (flow.participants ?? []).length; i++) {
+    const participant = flow.participants[i];
+    const base = `participants[${i}]`;
+    if (!participant.backend) {
+      errors.push({ path: `${base}.backend`, message: 'Participant backend is required.' });
+      continue;
+    }
+    if (!participant.model?.trim()) {
+      errors.push({ path: `${base}.model`, message: 'Participant model is required.' });
+      continue;
+    }
+    if (participant.backend !== 'ollama' && !isSupportedPremiumModel(participant.backend, participant.model)) {
+      errors.push({
+        path: `${base}.model`,
+        message: `Model "${participant.model}" is not supported for backend "${participant.backend}".`,
+      });
+    }
+  }
+
   // Multiple steps may produce the same artifact name (e.g. `build` writes
   // `diff`, then `tests` extends `diff` with new test files). Later writes
   // overwrite earlier ones in the run's artifact map; step `inputs` always
@@ -174,6 +194,14 @@ export function validateFlow(flow: Flow): FlowValidationResult {
         errors.push({
           path: `${base}.rebound.critic`,
           message: 'Rebound critic backend + model are required.',
+        });
+      } else if (
+        step.rebound.critic.backend !== 'ollama' &&
+        !isSupportedPremiumModel(step.rebound.critic.backend, step.rebound.critic.model)
+      ) {
+        errors.push({
+          path: `${base}.rebound.critic.model`,
+          message: `Model "${step.rebound.critic.model}" is not supported for backend "${step.rebound.critic.backend}".`,
         });
       }
       if (!Number.isFinite(step.rebound.maxIters) || step.rebound.maxIters < 1) {

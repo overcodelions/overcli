@@ -1479,9 +1479,9 @@ function HijackComposer({
 // Compact backend+model picker for a participant. Upgrading here applies
 // to EVERYTHING the participant does for the rest of the run —
 // orchestration, the finalize turn, answering questions, and hijack chat
-// — and persists across restart (the override lives on the run). Premium
-// model ids come from the shared catalog; the input lets the user type
-// any id (custom fine-tunes, local Ollama tags) too.
+// — and persists across restart (the override lives on the run). The
+// picker is limited to supported models so the run can't be pointed at a
+// model the CLI won't actually accept.
 function HijackModelPicker({
   runId,
   participant,
@@ -1492,14 +1492,9 @@ function HijackModelPicker({
   const setOverride = useFlowsStore((s) => s.setParticipantModelOverride);
   const override = useFlowsStore((s) => s.runs[runId]?.modelOverrides?.[participant.id]) ?? null;
   const [open, setOpen] = useState(false);
-  const [draft, setDraft] = useState(override ?? participant.model);
   const ref = useRef<HTMLDivElement>(null);
   const effective = override ?? participant.model;
   const upgraded = override != null && override !== participant.model;
-
-  useEffect(() => {
-    setDraft(override ?? participant.model);
-  }, [override, participant.model]);
 
   useEffect(() => {
     if (!open) return;
@@ -1564,19 +1559,9 @@ function HijackModelPicker({
             </div>
           )}
           <div className="text-[10px] uppercase tracking-wider text-ink-faint mt-1">Custom</div>
-          <input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                const trimmed = draft.trim();
-                void setOverride(runId, participant.id, !trimmed || trimmed === participant.model ? null : trimmed);
-                setOpen(false);
-              }
-            }}
-            placeholder={participant.model}
-            className="field px-2 py-1 font-mono text-[11px]"
-          />
+          <div className="px-2 py-1 text-[10px] text-ink-faint">
+            Manual model overrides are disabled. Pick a supported model above.
+          </div>
           <div className="flex items-center justify-between text-[10px]">
             <span className="text-ink-faint">
               Drives every turn this participant runs from here on

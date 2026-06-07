@@ -268,25 +268,23 @@ function ParticipantRow({
             <option key={b} value={b}>{b}</option>
           ))}
         </select>
-        {modelChoices.length > 0 ? (
-          <select
-            value={participant.model}
-            onChange={(e) => onPatch({ model: e.target.value })}
-            className="bg-card-strong rounded px-2 py-1.5 text-xs font-mono"
-          >
-            <option value="">(pick model)</option>
-            {modelChoices.map((m) => (
-              <option key={m} value={m}>{m}</option>
-            ))}
-          </select>
-        ) : (
-          <input
-            value={participant.model}
-            onChange={(e) => onPatch({ model: e.target.value })}
-            className="bg-card-strong rounded px-2 py-1.5 text-xs font-mono"
-            placeholder={participant.backend === 'ollama' ? 'no ollama models found' : ''}
-          />
-        )}
+        <select
+          value={participant.model}
+          onChange={(e) => onPatch({ model: e.target.value })}
+          className="bg-card-strong rounded px-2 py-1.5 text-xs font-mono"
+          disabled={modelChoices.length === 0}
+        >
+          <option value="">
+            {modelChoices.length === 0
+              ? participant.backend === 'ollama'
+                ? 'no ollama models found'
+                : '(pick model)'
+              : '(pick model)'}
+          </option>
+          {modelChoices.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))}
+        </select>
         <span
           className={
             'text-[10px] text-center px-1 py-0.5 rounded ' +
