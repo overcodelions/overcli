@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from '../store';
+import { noBackendReady, useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
@@ -212,7 +212,7 @@ export function WelcomePane() {
         <Composer
           draftKey={WELCOME_KEY}
           autoFocus
-          disabled={Object.keys(backendHealth).length > 0 && !Object.values(backendHealth).some((h) => h.kind === 'ready')}
+          disabled={noBackendReady(backendHealth)}
           focusSignal={welcomeFocusToken + composerFocusNudge}
           variant="welcome"
           rootPath={selectedProject?.path}
@@ -708,26 +708,29 @@ function EmptyWelcome({
   onPick: () => void;
   backendHealth: Record<string, BackendHealth>;
 }) {
-  const healthLoaded = Object.keys(backendHealth).length > 0;
-  const anyReady = Object.values(backendHealth).some((h) => h.kind === 'ready');
+  const blocked = noBackendReady(backendHealth);
 
   return (
-    <div className="flex-1 flex items-center justify-center p-8 overflow-y-auto">
-      <div className="w-full max-w-[760px] text-center">
-        <HeroArt />
-        <div className="mt-6 text-3xl font-semibold tracking-tight">
-          Welcome to <span className="text-accent">overcli</span>
+    <div className="flex-1 overflow-y-auto">
+      <div className="min-h-full flex items-center justify-center px-8 py-10">
+        <div className="w-full max-w-[760px] text-center">
+        <div className="flex items-center justify-center gap-2.5">
+          <HeroArt />
+          <span className="text-xl font-semibold tracking-tight">
+            <span className="text-ink-muted">over</span>
+            <span className="text-accent">cli</span>
+          </span>
         </div>
-        <div className="mt-3 text-sm text-ink-muted max-w-[520px] mx-auto">
-          A native desktop home for the Claude, Codex, Gemini, and Ollama CLIs.
-          Chat with any model, run background agents on isolated git worktrees,
-          and coordinate work across multiple repos — no API keys, just the
-          CLIs you already have signed in.
+        <div className="mt-3 text-[13px] leading-relaxed text-ink-muted max-w-[460px] mx-auto">
+          A desktop home for the Claude, Codex, Gemini, Copilot, and Ollama
+          CLIs — chat with any model, run background agents on isolated git
+          worktrees, and coordinate across repos. No API keys; just the CLIs
+          you've signed into.
         </div>
 
-        {healthLoaded && !anyReady && <CliSetupGuide backendHealth={backendHealth} />}
+        {blocked && <CliSetupGuide backendHealth={backendHealth} />}
 
-        <div className="mt-8 grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+        <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
           <FeatureCard
             accent="var(--c-backend-claude)"
             title="Projects"
@@ -741,6 +744,12 @@ function EmptyWelcome({
             icon={<BranchGlyph />}
           />
           <FeatureCard
+            accent="var(--c-accent)"
+            title="Flows"
+            body="Chain steps into a pipeline — each its own model, role, and tools — handing artifacts (plan → diff → review) step to step."
+            icon={<FlowGlyph />}
+          />
+          <FeatureCard
             accent="var(--c-backend-gemini)"
             title="Workspaces"
             body="Group several projects into one workspace and fire agents that span every repo at once."
@@ -751,13 +760,18 @@ function EmptyWelcome({
         <div className="mt-8 flex flex-col items-center gap-2">
           <button
             onClick={onPick}
-            className="px-5 py-2.5 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm font-medium"
+            disabled={blocked}
+            title={blocked ? 'Install a CLI first to add a project' : undefined}
+            className="px-5 py-2.5 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent/30"
           >
             Add your first project
           </button>
           <div className="text-[11px] text-ink-faint">
-            Pick a folder on disk. Git repos unlock agents; any folder works for chat.
+            {blocked
+              ? 'Install a CLI above to get started.'
+              : 'Pick a folder on disk. Git repos unlock agents; any folder works for chat.'}
           </div>
+        </div>
         </div>
       </div>
     </div>
@@ -769,12 +783,62 @@ const CLI_SETUP: {
   name: string;
   install: string;
   auth: string | null;
+  docs: string;
 }[] = [
-  { backend: 'claude', name: 'Claude', install: 'npm install -g @anthropic-ai/claude-code', auth: 'claude auth login' },
-  { backend: 'codex', name: 'Codex', install: 'npm install -g @openai/codex', auth: 'codex login' },
-  { backend: 'gemini', name: 'Gemini', install: 'npm install -g @google/gemini-cli', auth: 'gemini auth login' },
-  { backend: 'ollama', name: 'Ollama', install: 'Download from ollama.com', auth: null },
+  {
+    backend: 'claude',
+    name: 'Claude',
+    install: 'npm install -g @anthropic-ai/claude-code',
+    auth: 'claude auth login',
+    docs: 'https://docs.claude.com/en/docs/claude-code/setup',
+  },
+  {
+    backend: 'codex',
+    name: 'Codex',
+    install: 'npm install -g @openai/codex',
+    auth: 'codex login',
+    docs: 'https://github.com/openai/codex',
+  },
+  {
+    backend: 'gemini',
+    name: 'Gemini',
+    install: 'npm install -g @google/gemini-cli',
+    auth: 'gemini auth login',
+    docs: 'https://github.com/google-gemini/gemini-cli',
+  },
+  {
+    backend: 'copilot',
+    name: 'Copilot',
+    install: 'npm install -g @github/copilot',
+    auth: 'copilot login',
+    docs: 'https://www.npmjs.com/package/@github/copilot',
+  },
+  {
+    backend: 'ollama',
+    name: 'Ollama',
+    install: 'Download from ollama.com',
+    auth: null,
+    docs: 'https://ollama.com/download',
+  },
 ];
+
+function CopyButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-ink hover:bg-card-strong"
+      title="Copy command"
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
 
 function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
   const rows = CLI_SETUP.filter(({ backend }) => {
@@ -783,33 +847,44 @@ function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, Backen
   });
   if (rows.length === 0) return null;
   return (
-    <div className="mb-5 rounded-lg border border-amber-500/40 bg-surface-elevated p-4 text-left">
-      <div className="text-xs text-ink-muted mb-3">
+    <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
+      <div className="text-xs font-medium text-ink-muted mb-4">
         You'll need at least one CLI installed to get started
       </div>
-      <div className="flex flex-col gap-1">
-        {rows.map(({ backend, name, install, auth }) => {
+      <div className="flex flex-col gap-2">
+        {rows.map(({ backend, name, install, auth, docs }) => {
           const health = backendHealth[backend];
           const kind = health?.kind ?? 'missing';
           const isAuth = kind === 'unauthenticated';
           const command = isAuth && auth ? auth : install;
+          const canCopy = command.startsWith('npm') || isAuth;
           return (
             <div
               key={backend}
-              className="flex items-center gap-3 rounded-md px-2.5 py-2 bg-card/60"
+              className="flex items-center gap-3 rounded-md px-3 py-2 bg-card/60"
             >
               <span
-                className="text-xs font-semibold w-12 shrink-0"
+                className="text-xs font-semibold w-14 shrink-0"
                 style={{ color: backendColor(backend as Backend) }}
               >
                 {name}
               </span>
-              <code className="flex-1 text-[11px] font-mono text-ink truncate">
+              <code className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">
                 {command}
               </code>
               {isAuth && (
                 <span className="text-[10px] text-amber-400 shrink-0">needs login</span>
               )}
+              {canCopy && <CopyButton value={command} />}
+              <a
+                href={docs}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-accent hover:bg-card-strong"
+                title={`${name} install & sign-in docs`}
+              >
+                Docs ↗
+              </a>
             </div>
           );
         })}
@@ -849,18 +924,22 @@ function FeatureCard({
 /// Decorative hero. Matches the app icon: a shell-prompt mark — a bar
 /// above a right-pointing chevron — sized up and rendered in the
 /// current-ink color so it inherits the light/dark theme.
+/// The actual app icon (mirrors build/icon.svg) so onboarding matches the
+/// dock/installer brand. Inlined rather than imported as an asset so it's
+/// pixel-exact at any size and renders identically in light and dark.
 function HeroArt() {
   return (
     <svg
-      viewBox="0 0 120 120"
-      className="mx-auto text-ink"
-      width="120"
-      height="120"
-      aria-hidden="true"
+      width="38"
+      height="38"
+      viewBox="0 0 1024 1024"
+      className="shadow-sm rounded-[22%]"
+      aria-label="overcli"
     >
-      <g stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" fill="none">
-        <path d="M28 34 H92" strokeWidth="12" />
-        <path d="M36 58 L76 82 L36 106" strokeWidth="12" />
+      <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="#ffffff" />
+      <g fill="none" stroke="#000000" strokeWidth="45" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="395" y1="372" x2="630" y2="372" />
+        <polyline points="395,475 612,575 395,675" />
       </g>
     </svg>
   );
@@ -875,6 +954,17 @@ function ProjectGlyph() {
         strokeWidth="1.3"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function FlowGlyph() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1.5" y="5.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3" />
+      <rect x="10.5" y="5.5" width="4" height="4" rx="1" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M5.5 7.5h3.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <path d="M7.8 6.2L9.2 7.5L7.8 8.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

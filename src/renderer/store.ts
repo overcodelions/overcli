@@ -643,6 +643,25 @@ function defaultBackend(settings: AppSettings): Backend {
   return enabledBackends(settings)[0] ?? 'claude';
 }
 
+/// True once backend health has been probed at least once. Until then we
+/// avoid gating UI, since "nothing ready" is indistinguishable from "not
+/// checked yet" on a fresh launch.
+export function backendHealthLoaded(backendHealth: Record<string, BackendHealth>): boolean {
+  return Object.keys(backendHealth).length > 0;
+}
+
+/// True if at least one CLI is installed AND authenticated.
+export function anyBackendReady(backendHealth: Record<string, BackendHealth>): boolean {
+  return Object.values(backendHealth).some((h) => h.kind === 'ready');
+}
+
+/// Whether project/chat entry points should be blocked: health has been
+/// probed and no backend is usable. Shared by the welcome pane and sidebar
+/// so the gate stays consistent.
+export function noBackendReady(backendHealth: Record<string, BackendHealth>): boolean {
+  return backendHealthLoaded(backendHealth) && !anyBackendReady(backendHealth);
+}
+
 export const useStore = create<StoreState>((set, get) => ({
   projects: [],
   workspaces: [],
