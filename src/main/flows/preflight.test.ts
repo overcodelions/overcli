@@ -233,10 +233,10 @@ describe('preflightRun — backend health', () => {
   });
 });
 
-// ─── preflightRun — unknown model id ─────────────────────────────────────────
+// ─── preflightRun — unsupported model id ─────────────────────────────────────
 
-describe('preflightRun — unknown model id', () => {
-  it('flags a model id that is not in the known list', async () => {
+describe('preflightRun — unsupported model id', () => {
+  it('flags a premium model id that is not supported', async () => {
     const result = await preflightRun({
       flow: flow(
         [participant({ model: 'claude-fantasy-99' })],
@@ -246,7 +246,7 @@ describe('preflightRun — unknown model id', () => {
       settings: SETTINGS,
     });
     expect(result.ok).toBe(false);
-    expect(result.problems.some(p => p.message.includes('claude-fantasy-99'))).toBe(true);
+    expect(result.problems.some(p => p.message.includes('is not supported'))).toBe(true);
   });
 
   it('passes for a well-known claude model', async () => {
@@ -255,7 +255,7 @@ describe('preflightRun — unknown model id', () => {
       projectPath: '/tmp',
       settings: SETTINGS,
     });
-    const modelProblems = result.problems.filter(p => p.message.includes('isn\'t in the known list'));
+    const modelProblems = result.problems.filter(p => p.message.includes('is not supported'));
     expect(modelProblems).toHaveLength(0);
   });
 
@@ -274,7 +274,7 @@ describe('preflightRun — unknown model id', () => {
       settings: SETTINGS,
     });
     const modelListProblems = result.problems.filter(p =>
-      p.message.includes('isn\'t in the known list'),
+      p.message.includes('is not supported'),
     );
     expect(modelListProblems).toHaveLength(0);
   });

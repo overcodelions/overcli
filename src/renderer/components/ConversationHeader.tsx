@@ -1644,29 +1644,24 @@ function ConversationSettingsButton({
           }
         >
           <div className="text-[10px] uppercase tracking-wider text-ink-faint">Model override</div>
-          <input
+          <select
             value={current}
             onChange={(e) => onModelChange(backend, e.target.value)}
-            placeholder={settings.backendDefaultModels[backend] ?? '(default)'}
             className="field px-2 py-1 font-mono text-[11px]"
-          />
-          {backend !== 'ollama' && (PREMIUM_MODELS[backend]?.length ?? 0) > 0 && (
-            <div className="flex flex-col gap-0.5">
-              <div className="text-[10px] uppercase tracking-wider text-ink-faint mt-1">Available models</div>
-              {PREMIUM_MODELS[backend].map((m) => (
-                <button
-                  key={m}
-                  onClick={() => onModelChange(backend, m)}
-                  className={
-                    'text-left px-2 py-1 rounded font-mono text-[11px] ' +
-                    (current === m ? 'bg-accent/15 text-ink' : 'text-ink-muted hover:bg-card-strong hover:text-ink')
-                  }
-                >
-                  {friendlyModelLabel(backend, m)}
-                </button>
-              ))}
-            </div>
-          )}
+          >
+            <option value="">(default)</option>
+            {backend !== 'ollama'
+              ? PREMIUM_MODELS[backend]?.map((m) => (
+                  <option key={m} value={m}>
+                    {friendlyModelLabel(backend, m)}
+                  </option>
+                ))
+              : ollamaPulled.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+          </select>
           {backend === 'ollama' && ollamaPulled.length > 0 && (
             <div className="flex flex-col gap-0.5">
               <div className="text-[10px] uppercase tracking-wider text-ink-faint mt-1">Pulled locally</div>

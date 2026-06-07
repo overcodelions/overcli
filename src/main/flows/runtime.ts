@@ -37,7 +37,7 @@ import type {
   UUID,
   Workspace,
 } from '../../shared/types';
-import { PREMIUM_MODELS, modelSpeed, friendlyModelLabel } from '../../shared/modelCatalog';
+import { PREMIUM_MODELS, friendlyModelLabel, isSupportedPremiumModel, modelSpeed } from '../../shared/modelCatalog';
 import { workspaceSymlinkNames } from '../../shared/workspaceNames';
 import { preflightRun, formatPreflight, type PreflightResult } from './preflight';
 import { filterNoiseFromDiff, isNoisyPath } from './diffFilter';
@@ -1452,6 +1452,12 @@ export class FlowRuntimeImpl {
     const participant = run.flowSnapshot.participants?.find((p) => p.id === participantId);
     if (!participant) {
       return { ok: false, error: `Participant "${participantId}" not in run.` };
+    }
+    if (participant.backend !== 'ollama' && model && !isSupportedPremiumModel(participant.backend, model)) {
+      return {
+        ok: false,
+        error: `Model "${model}" is not supported for backend "${participant.backend}".`,
+      };
     }
     const next = { ...(run.modelOverrides ?? {}) };
     const trimmed = model?.trim();

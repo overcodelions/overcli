@@ -15,9 +15,13 @@ import {
   AppSettings,
   DEFAULT_SETTINGS,
   FlowRegistry,
+  Conversation,
   SystemInitInfo,
   UUID,
 } from '../shared/types';
+import { isSupportedPremiumModel } from '../shared/modelCatalog';
+
+const DEPRECATED_CODEX_MODELS = [`gpt-${'5.3'}-codex`, 'gpt-5.2'];
 
 interface StoreState {
   projects: Project[];
@@ -45,6 +49,67 @@ function emptyState(): StoreState {
   };
 }
 
+function stripDeprecatedCodexModel(model: string | null | undefined): string | undefined {
+  const trimmed = model?.trim();
+  if (!trimmed || DEPRECATED_CODEX_MODELS.includes(trimmed)) return undefined;
+  return trimmed;
+}
+
+function sanitizeConversation(conv: Conversation): Conversation {
+  const next = { ...conv };
+  next.currentModel = stripDeprecatedCodexModel(next.currentModel) ?? '';
+
+  const claudeModel = stripDeprecatedCodexModel(next.claudeModel);
+  if (claudeModel) next.claudeModel = claudeModel;
+  else delete next.claudeModel;
+
+  const codexModel = stripDeprecatedCodexModel(next.codexModel);
+  if (codexModel) next.codexModel = codexModel;
+  else delete next.codexModel;
+
+  const geminiModel = stripDeprecatedCodexModel(next.geminiModel);
+  if (geminiModel) next.geminiModel = geminiModel;
+  else delete next.geminiModel;
+
+  const ollamaModel = stripDeprecatedCodexModel(next.ollamaModel);
+  if (ollamaModel) next.ollamaModel = ollamaModel;
+  else delete next.ollamaModel;
+
+  const reviewModel = stripDeprecatedCodexModel(next.reviewModel ?? undefined);
+  next.reviewModel = reviewModel ?? null;
+
+  const reviewOllamaModel = stripDeprecatedCodexModel(next.reviewOllamaModel ?? undefined);
+  if (reviewOllamaModel) next.reviewOllamaModel = reviewOllamaModel;
+  else delete next.reviewOllamaModel;
+
+  return next;
+}
+
+function sanitizeProjects(projects: Project[]): Project[] {
+  return projects.map((project) => ({
+    ...project,
+    conversations: project.conversations.map((conv) => sanitizeConversation(conv)),
+  }));
+}
+
+function sanitizeWorkspaces(workspaces: Workspace[]): Workspace[] {
+  return workspaces.map((workspace) => ({
+    ...workspace,
+    conversations: (workspace.conversations ?? []).map((conv) => sanitizeConversation(conv)),
+  }));
+}
+
+function sanitizeSettings(settings: AppSettings): AppSettings {
+  const backendDefaultModels = { ...settings.backendDefaultModels };
+  for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
+    const model = backendDefaultModels[backend];
+    if (model && !isSupportedPremiumModel(backend, model)) {
+      delete backendDefaultModels[backend];
+    }
+  }
+  return { ...settings, backendDefaultModels };
+}
+
 export function loadState(): StoreState {
   const p = storePath();
   if (!fs.existsSync(p)) return emptyState();
@@ -56,8 +121,10 @@ export function loadState(): StoreState {
     const merged = {
       ...emptyState(),
       ...parsed,
-      settings: { ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) },
+      settings: sanitizeSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings ?? {}) }),
     };
+    merged.projects = sanitizeProjects(merged.projects);
+    merged.workspaces = sanitizeWorkspaces(merged.workspaces);
     const regs: FlowRegistry[] = merged.settings.flowRegistries ?? [];
     if (!regs.some((r) => r.id === 'official')) {
       merged.settings.flowRegistries = [
@@ -96,12 +163,12 @@ export const Store = {
   },
   saveProjects(projects: Project[]): void {
     const s = current();
-    s.projects = projects;
+    s.projects = sanitizeProjects(projects);
     save();
   },
   saveWorkspaces(workspaces: Workspace[]): void {
     const s = current();
-    s.workspaces = workspaces;
+    s.workspaces = sanitizeWorkspaces(workspaces);
     save();
   },
   saveColosseums(colosseums: Colosseum[]): void {
@@ -111,7 +178,7 @@ export const Store = {
   },
   saveSettings(settings: AppSettings): void {
     const s = current();
-    s.settings = settings;
+    s.settings = sanitizeSettings(settings);
     save();
   },
   saveSelection(id: UUID | null): void {

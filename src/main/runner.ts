@@ -89,6 +89,7 @@ import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
+import { isSupportedPremiumModel } from '../shared/modelCatalog';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -878,6 +879,12 @@ export class RunnerManager {
     options: { suppressLocalUser?: boolean } = {},
   ): { ok: true } | { ok: false; error: string } {
     args = materializeNonImageAttachments(args);
+    if (args.backend !== 'ollama' && args.model?.trim() && !isSupportedPremiumModel(args.backend, args.model)) {
+      return {
+        ok: false,
+        error: `Model "${args.model}" is not supported for backend "${args.backend}".`,
+      };
+    }
     const convId = args.conversationId;
     // Switching backends mid-conversation tears down whatever runtime was
     // holding this conversation's state (subprocess or Ollama session).

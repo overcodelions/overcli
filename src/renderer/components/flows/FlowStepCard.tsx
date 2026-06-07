@@ -71,7 +71,7 @@ const TOOL_LABELS: Record<string, string> = {
 
 const WRITE_TOOL_IDS = new Set(['Write', 'Edit', 'Bash', 'bash', 'write_file', 'edit_file']);
 
-function modelChoiceForStep(step: FlowStep, ollamaModels: string[]): ModelChoice[] {
+function modelChoiceForStep(ollamaModels: string[]): ModelChoice[] {
   const choices: ModelChoice[] = [
     ...PREMIUM_CHOICES,
     ...ollamaModels.map(
@@ -84,21 +84,6 @@ function modelChoiceForStep(step: FlowStep, ollamaModels: string[]): ModelChoice
       }),
     ),
   ];
-  // Resolve the step's effective model (via participant or legacy field)
-  // so the picker shows the current value even when it's not in the
-  // built-in catalog.
-  const draftFlow = useFlowsStore.getState().editorDraft;
-  const effective = draftFlow ? resolveStepModel(draftFlow, step) : { backend: 'claude' as Backend, model: '' };
-  const stepValue = `${effective.backend}:${effective.model}`;
-  if (effective.model && !choices.some((c) => c.value === stepValue)) {
-    choices.push({
-      backend: effective.backend,
-      model: effective.model,
-      label: stepValue,
-      tier: 'Other',
-      value: stepValue,
-    });
-  }
   return choices;
 }
 
@@ -142,8 +127,8 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
   }, []);
 
   const allModelChoices = useMemo(
-    () => modelChoiceForStep(step, ollamaModels),
-    [effective.backend, effective.model, ollamaModels],
+    () => modelChoiceForStep(ollamaModels),
+    [ollamaModels],
   );
 
   // Group choices by tier for the optgroup labels.
@@ -196,9 +181,9 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
           onChange={(e) => {
             const v = e.target.value;
             if (v.startsWith('__new_model__:')) {
-              // Sentinel value — user picked a raw model from the
-              // fallback group; route through setStepModel which mints
-              // (or repurposes) a participant for them.
+              // Sentinel value — user picked a supported model from the
+              // catalog; route through setStepModel which mints (or
+              // repurposes) a participant for them.
               const compound = v.slice('__new_model__:'.length);
               const pick = allModelChoices.find((c) => c.value === compound);
               if (pick) setStepModel(index, { backend: pick.backend, model: pick.model });
@@ -230,7 +215,7 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
         </select>
         <div className="text-[11px] text-ink-faint mt-1">
           {flow.participants.length === 0
-            ? 'No participants declared yet. Add one in Participants above, or pick a model below.'
+            ? 'No participants declared yet. Add one in Participants above, or pick a supported model below.'
             : `Currently running ${effective.backend}:${effective.model || '(none)'}. ` +
               `Edit models / add participants in Participants above.`}
           {ollamaDetectError && <span className="text-amber-700 dark:text-amber-300"> · {ollamaDetectError}</span>}{' '}

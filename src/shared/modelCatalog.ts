@@ -14,7 +14,7 @@ import type { Backend } from './types';
 /// 4.7; 4.8 is available right after it for anyone who selects it.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
   // gateway. These are the public Copilot-CLI-supported set as of
@@ -22,6 +22,14 @@ export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   // ships.
   copilot: ['claude-haiku-4.5', 'claude-sonnet-4.6', 'gpt-5.5'],
 };
+
+export function premiumModelsForBackend(backend: Exclude<Backend, 'ollama'>): string[] {
+  return PREMIUM_MODELS[backend];
+}
+
+export function isSupportedPremiumModel(backend: Exclude<Backend, 'ollama'>, model: string): boolean {
+  return PREMIUM_MODELS[backend]?.includes(model) ?? false;
+}
 
 /// Speed tier per model id. Drives a ⚡ marker in the picker so users
 /// can spot the fast/cheap tier at a glance.
@@ -40,8 +48,6 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'gpt-5.5': 'thinking',
   'gpt-5.4': 'standard',
   'gpt-5.4-mini': 'fast',
-  'gpt-5.3-codex': 'standard',
-  'gpt-5.2': 'standard',
   // Gemini
   'gemini-2.5-pro': 'thinking',
   'gemini-2.5-flash': 'fast',
@@ -109,7 +115,7 @@ function normalizeClaudeId(model: string): string {
   return model.replace(/(\d+)\.(\d+)$/, '$1-$2');
 }
 
-/// `gpt-5.4-mini` → `GPT-5.4 mini`. `gpt-5.3-codex` → `GPT-5.3 codex`.
+/// `gpt-5.4-mini` → `GPT-5.4 mini`.
 function formatGptId(model: string): string {
   // Capture the GPT prefix + version, then format any trailing qualifier.
   const m = model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
