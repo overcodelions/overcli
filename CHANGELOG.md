@@ -4,6 +4,20 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-07
+
+A polish release on top of 0.2.0: a real first-run onboarding experience, accurate install/signing docs, and a tightened Codex model list.
+
+### Added
+- **First-run setup screen** for users with no coding-agent CLI installed yet. Entry points (the welcome "Add your first project" button, sidebar **+ Add project** / **+ New workspace**, and the composer) are now gated behind a single `noBackendReady` helper with explanatory tooltips so they no longer dead-end. Each setup-guide row gets a **Copy** command button and a **Docs ↗** link, all five backends (incl. Copilot) are covered, a Flows feature card was added in a 2×2 grid, the header uses the real app icon, and the sidebar hides on a true first run so onboarding gets full width ([#78](https://github.com/overcodelions/overcli/pull/78)).
+
+### Changed
+- **Restricted the Codex model list to supported models.** Unavailable Codex model ids (`gpt-5.3-codex`, `gpt-5.2`) are removed from the picker catalog and renderer lists, scrubbed from persisted settings and conversations on load/save, and rejected across the renderer, flow validation, preflight, and runtime send paths ([#80](https://github.com/overcodelions/overcli/pull/80), [#81](https://github.com/overcodelions/overcli/pull/81)).
+
+### Documentation
+- Corrected the README Download section: macOS builds are **signed & notarized** and open normally. Replaced the blanket "unsigned" warning with per-platform first-run notes and an explanation of the **"Overcli Safe Storage"** keychain prompt (Electron `safeStorage`); Windows still uses SmartScreen → Run anyway and Linux needs `chmod +x` ([#77](https://github.com/overcodelions/overcli/pull/77)).
+- Backfilled the `[0.2.0]` changelog with its full feature history (Flows, Copilot, auto-update, MCP catalog, Opus 4.8, and the Fixed/Changed/Security sections) ([#76](https://github.com/overcodelions/overcli/pull/76)).
+
 ## [0.2.0] - 2026-06-06
 
 The biggest release since the project went public: a full multi-agent **Flows** system, a fifth backend (**GitHub Copilot**), in-app **auto-updates**, a curated **MCP catalog**, and a lot of polish.
@@ -80,6 +94,7 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/overcodelions/overcli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/overcodelions/overcli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/overcodelions/overcli/releases/tag/v0.1.0
