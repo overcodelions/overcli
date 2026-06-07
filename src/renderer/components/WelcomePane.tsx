@@ -252,13 +252,15 @@ export function WelcomePane() {
                   // (e.g. `sonnet-4-6` is not a Codex model). Re-pick:
                   // if a tier-shifting preset is active, snap to that
                   // preset's primary tier on the new CLI; otherwise
-                  // fall back to the user's configured default for the
-                  // new backend.
+                  // fall back to the first supported model for the new
+                  // backend.
                   if (reviewPreset === 'cheap-paranoid') {
                     const cheap = TIERS[next]?.cheap;
-                    setModel(cheap ?? settings.backendDefaultModels[next] ?? '');
+                    const allowed = modelOptionsFor(next, undefined, ollamaPulledModels);
+                    setModel(cheap ?? allowed[0] ?? '');
                   } else {
-                    setModel(settings.backendDefaultModels[next] ?? '');
+                    const allowed = modelOptionsFor(next, undefined, ollamaPulledModels);
+                    setModel(allowed[0] ?? '');
                   }
                 }}
               />
@@ -1057,25 +1059,20 @@ function shortPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+\//, '~/');
 }
 
-/// Best-effort model suggestions per backend. The real CLI accepts any
-/// model identifier it knows about — this is just a convenience dropdown.
-/// Ollama is special-cased: we only show models that are actually pulled
-/// locally, since the server will reject anything else.
+/// Supported model suggestions per backend. Ollama is special-cased: we
+/// only show models that are actually pulled locally, since the server
+/// will reject anything else.
 function modelOptionsFor(
   backend: Backend,
   configuredDefault?: string,
   ollamaPulled?: string[],
 ): string[] {
   if (backend === 'ollama') {
-    const list = ollamaPulled ?? [];
-    if (configuredDefault && !list.includes(configuredDefault)) {
-      return [configuredDefault, ...list];
-    }
-    return list;
+    return ollamaPulled ?? [];
   }
   const base: Record<Exclude<Backend, 'ollama'>, string[]> = {
     claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+    codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     // Copilot's --model accepts model ids served via GitHub's Bedrock
     // gateway. The default the CLI picks is `claude-haiku-4.5`; the
@@ -1083,11 +1080,7 @@ function modelOptionsFor(
     // Users can override via Settings → Models if a newer id ships.
     copilot: ['claude-haiku-4.5', 'claude-sonnet-4.6', 'gpt-5.5'],
   };
-  const list = base[backend];
-  if (configuredDefault && !list.includes(configuredDefault)) {
-    return [configuredDefault, ...list];
-  }
-  return list;
+  return base[backend as Exclude<Backend, 'ollama'>];
 }
 
 interface PillItem {

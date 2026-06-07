@@ -113,6 +113,13 @@ describe('validateFlow', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('rejects a participant using an unsupported premium model', () => {
+    const flow = makeFlow();
+    flow.participants[0].model = 'claude-fantasy-99';
+    const result = validateFlow(flow);
+    expect(result.ok).toBe(false);
+  });
+
   it('rejects a step referencing an unknown participant', () => {
     const flow = makeFlow();
     flow.steps[0].participantId = 'nope';
