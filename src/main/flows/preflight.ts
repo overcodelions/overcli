@@ -9,6 +9,7 @@ import fs from 'node:fs';
 
 import type { AppSettings, Backend, BackendHealth } from '../../shared/types';
 import { resolveStepModel, type Flow, type FlowModelRef } from '../../shared/flows/schema';
+import { isSupportedPremiumModel } from '../../shared/modelCatalog';
 import { probeBackendHealth } from '../health';
 import { detectOllama } from '../ollama';
 
@@ -31,15 +32,6 @@ export interface PreflightResult {
   problems: PreflightProblem[];
 }
 
-/// Catalog of premium-model ids the backends accept. Same list the
-/// WelcomePane uses to populate model pickers. Kept here so changes to
-/// the picker propagate to validation automatically.
-const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
-  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-  copilot: ['claude-haiku-4.5', 'claude-sonnet-4.6', 'gpt-5.5'],
-};
 
 
 export interface PreflightInput {
@@ -240,16 +232,11 @@ function checkModelRef(args: {
     });
   }
   if (ref.backend !== 'ollama') {
-    const known = PREMIUM_MODELS[ref.backend];
-    if (known && !known.includes(ref.model)) {
-      // Unknown model isn't necessarily wrong — the user might be on a
-      // newer model than the static list — but we flag it so misspellings
-      // surface here instead of failing the run with a cryptic CLI error.
+    if (!isSupportedPremiumModel(ref.backend, ref.model)) {
       problems.push({
         severity: 'error',
         path,
-        message: `Model "${ref.model}" isn't in the known list for backend "${ref.backend}".`,
-        hint: 'Double-check the model id — typos here will fail the run with a CLI error.',
+        message: `Model "${ref.model}" is not supported for backend "${ref.backend}".`,
       });
     }
   }

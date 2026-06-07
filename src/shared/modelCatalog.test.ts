@@ -56,12 +56,12 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
     expect(friendlyModelLabel('codex', 'gpt-5.4')).toBe('GPT-5.4 (Codex)');
   });
 
-  it('lowercases the mini qualifier', () => {
-    expect(friendlyModelLabel('codex', 'gpt-5.4-mini')).toBe('GPT-5.4 mini (Codex)');
+  it('does not expose gpt-5.2 as a supported Codex model', () => {
+    expect(PREMIUM_MODELS.codex).not.toContain('gpt-5.2');
   });
 
-  it('lowercases the codex qualifier', () => {
-    expect(friendlyModelLabel('codex', 'gpt-5.3-codex')).toBe('GPT-5.3 codex (Codex)');
+  it('lowercases the mini qualifier', () => {
+    expect(friendlyModelLabel('codex', 'gpt-5.4-mini')).toBe('GPT-5.4 mini (Codex)');
   });
 
   it('returns a pick-model placeholder when model is empty', () => {
