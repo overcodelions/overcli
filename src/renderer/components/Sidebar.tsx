@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useStore } from '../store';
+import { noBackendReady, useStore } from '../store';
 import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { flowRunActivityAt, flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
@@ -18,6 +18,8 @@ export function Sidebar() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const colosseums = useStore((s) => s.colosseums);
+  const backendHealth = useStore((s) => s.backendHealth);
+  const cliBlocked = noBackendReady(backendHealth);
   const rawSelectedId = useStore((s) => s.selectedConversationId);
   const detailMode = useStore((s) => s.detailMode);
   // The conversation sidebar rows should only HIGHLIGHT as selected
@@ -330,14 +332,17 @@ export function Sidebar() {
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
         <button
           onClick={pickProject}
-          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left"
+          disabled={cliBlocked}
+          title={cliBlocked ? 'Install a CLI first to add a project' : undefined}
+          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
         >
           + Add project
         </button>
         <button
           onClick={() => openSheet({ type: 'newWorkspace' })}
-          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left"
-          disabled={projects.length === 0}
+          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+          disabled={cliBlocked || projects.length === 0}
+          title={cliBlocked ? 'Install a CLI first to add a workspace' : undefined}
         >
           + New workspace
         </button>
