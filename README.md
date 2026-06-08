@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://github.com/overcodelions/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/overcodelions/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
-  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-informational" />
+  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-informational" />
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
   <img alt="electron" src="https://img.shields.io/badge/electron-41-47848F" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-green" />
@@ -119,17 +119,17 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 | 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
 | 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
 | 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. |
-| 15 | **Usage dashboard** | Rolling 5h / 24h / 7d stats, broken down by backend, model, and project. |
+| 15 | **Usage dashboard** | Rolling 5h / 24h / 7d and all-time stats, broken down by backend, model, and project. |
 | 16 | **Smart downgrades** | Near a rate or cost cap, Overcli can step down automatically — `opus` → `sonnet`, cloud → local Ollama — so the next turn still ships. Off by default. |
 | 17 | **Health badges** | Per-backend status pills: *ready*, *unauthenticated*, *missing*, *error*. Know what's broken before you try to use it. |
 | 18 | **Colosseum** | Fire one prompt at every backend in parallel. Compare the diffs side by side. Keep the winner, discard the rest. |
-| 19 | **Flows** | Chain LLM steps into a pipeline — each step its own model, tools, and role. A premium model plans and reviews, a local Ollama model executes, and artifacts (`plan.md`, `diff`, `review.md`) hand off step to step. Run in a worktree, pause before any step, or hijack a participant mid-flight. Start from a template or describe what you want and Claude drafts the YAML. |
+| 19 | **Flows** | Chain LLM steps into a pipeline — each step its own model, tools, and role. A premium model plans and reviews, a local Ollama model executes, and artifacts (`plan.md`, `diff`, `review.md`) hand off step to step. Run in a worktree, pause before any step, or hijack a participant mid-flight. Keep a finished run on **watch** to answer follow-up comments while you're away. Start from a template or describe what you want and Claude drafts the YAML. |
 
 ## Download
 
 See **[overcli.app](https://overcli.app)** for an overview of what Overcli does.
 
-Builds are produced by the release workflow and land on the [GitHub Releases page](https://github.com/overcodelions/overcli/releases) — grab the latest one for your platform.
+Builds are produced by the release workflow and land on the [GitHub Releases page](https://github.com/overcodelions/overcli/releases) — grab the latest one for your platform. Once installed, Overcli **updates itself in-app**, with a choice of **stable** or **nightly** channels in Settings.
 
 | Platform | Artifacts |
 |---|---|
