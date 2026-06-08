@@ -15,7 +15,7 @@ vi.mock('electron', () => ({
 }));
 
 import type { FlowRun } from '../../shared/flows/schema';
-import { deleteRun, loadAllRuns, saveRun } from './runsStore';
+import { deleteRun, flushRuns, loadAllRuns, saveRun } from './runsStore';
 
 const MAX_ARTIFACT_BYTES = 256 * 1024;
 
@@ -79,7 +79,7 @@ afterEach(() => {
 });
 
 describe('saveRun', () => {
-  it('truncates oversized artifact bodies before writing them to disk', () => {
+  it('truncates oversized artifact bodies before writing them to disk', async () => {
     const bigBody = 'a'.repeat(MAX_ARTIFACT_BYTES + 17);
     saveRun(
       makeRun({
@@ -94,6 +94,7 @@ describe('saveRun', () => {
         },
       }),
     );
+    await flushRuns();
 
     const stored = JSON.parse(fs.readFileSync(runPath('run-1'), 'utf8')) as FlowRun;
     expect(stored.artifacts.diff.body).toContain('truncated 17 characters when persisted');
@@ -102,8 +103,9 @@ describe('saveRun', () => {
 });
 
 describe('deleteRun', () => {
-  it('removes the persisted run file when it exists', () => {
+  it('removes the persisted run file when it exists', async () => {
     saveRun(makeRun({ id: 'run-delete' }));
+    await flushRuns();
     expect(fs.existsSync(runPath('run-delete'))).toBe(true);
 
     deleteRun('run-delete');
@@ -124,7 +126,7 @@ describe('loadAllRuns', () => {
     expect(runs.map((run) => run.id)).toEqual(['new', 'mid', 'old']);
   });
 
-  it('marks paused and running runs as aborted before restoring them', () => {
+  it('marks paused and running runs as aborted before restoring them', async () => {
     fs.mkdirSync(runDir(), { recursive: true });
     fs.writeFileSync(
       runPath('running'),
@@ -136,6 +138,9 @@ describe('loadAllRuns', () => {
     );
 
     const runs = loadAllRuns();
+    // loadAllRuns persists the corrected `aborted` state via the now-async
+    // saveRun, so flush before asserting the on-disk write landed.
+    await flushRuns();
 
     expect(runs.map((run) => run.state)).toEqual([
       { kind: 'aborted' },

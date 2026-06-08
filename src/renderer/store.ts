@@ -2348,9 +2348,26 @@ export const useStore = create<StoreState>((set, get) => ({
     useRunnersStore.getState().patchRunner(conversationId, (existingRunner) => {
       // History events are inserted at the front; live events (if any came
       // in during the load) stay at the back, in timestamp order.
-      const merged = [...events, ...existingRunner.events]
-        .filter((e, i, arr) => arr.findIndex((x) => x.id === e.id) === i)
-        .sort((a, b) => a.timestamp - b.timestamp);
+      //
+      // Dedup with a Set (O(n)) rather than filter+findIndex (O(n²)). A
+      // watched flow's watcher conversation accumulates a turn per tick, so
+      // its history can reach thousands of events — the quadratic scan here
+      // froze the renderer (macOS beachball) when such a flow was opened.
+      // First occurrence wins, so history events take precedence over any
+      // live duplicate, matching the prior behaviour.
+      const seen = new Set<string>();
+      const merged = [];
+      for (const e of events) {
+        if (seen.has(e.id)) continue;
+        seen.add(e.id);
+        merged.push(e);
+      }
+      for (const e of existingRunner.events) {
+        if (seen.has(e.id)) continue;
+        seen.add(e.id);
+        merged.push(e);
+      }
+      merged.sort((a, b) => a.timestamp - b.timestamp);
       return {
         events: merged,
         historyLoading: false,
