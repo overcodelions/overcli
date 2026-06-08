@@ -69,6 +69,7 @@ import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import { flushRuns } from './flows/runsStore';
 import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
@@ -1390,9 +1391,20 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+let flushedRuns = false;
+app.on('before-quit', (event) => {
   runner?.killAll();
   ollamaServer.stop();
+  // Run writes are async now (see runsStore.saveRun). Defer the first quit
+  // long enough to flush any in-flight checkpoint to disk, then quit for real.
+  // Writes are sub-10ms, so the delay is imperceptible.
+  if (!flushedRuns) {
+    event.preventDefault();
+    void flushRuns().finally(() => {
+      flushedRuns = true;
+      app.quit();
+    });
+  }
 });
 
 // Silence "uncaught exception" dialogs during dev — errors still land in
