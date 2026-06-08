@@ -58,24 +58,60 @@ function compact(run: FlowRun): FlowRun {
   return { ...run, artifacts };
 }
 
+// Per-run async write chain. Checkpoints fire on every state transition —
+// including every watch tick — and a synchronous fs.writeFileSync of a large
+// run JSON blocks the main process event loop (and thus the renderer's IPC),
+// which surfaced as a macOS beachball on watched flows. We move the write off
+// the synchronous path and serialize per run id so two checkpoints can't race
+// on the shared .tmp file. Writes coalesce: only the latest run state queued
+// for a given id is actually written, so a burst of checkpoints collapses to
+// one disk write of the newest state.
+const writeChains = new Map<string, Promise<void>>();
+const latestPending = new Map<string, FlowRun>();
+
 /// Atomic write. Writes to .tmp then renames so a crash mid-write can't
 /// leave a half-baked JSON file that fails to parse on next load.
-export function saveRun(run: FlowRun): void {
+async function writeRunFile(run: FlowRun): Promise<void> {
   ensureDir();
   const file = pathFor(run.id);
   const tmp = `${file}.tmp`;
-  try {
-    fs.writeFileSync(tmp, JSON.stringify(compact(run)), 'utf-8');
-    fs.renameSync(tmp, file);
-  } catch (err) {
-    log('error', 'flows.persistRun', `failed to persist run ${run.id}`, err);
-  }
+  await fs.promises.writeFile(tmp, JSON.stringify(compact(run)), 'utf-8');
+  await fs.promises.rename(tmp, file);
+}
+
+/// Schedule an atomic, coalesced async write of `run`. Returns immediately;
+/// the write happens on a microtask so it never blocks the caller.
+export function saveRun(run: FlowRun): void {
+  // Remember the newest state for this id; the queued write picks it up.
+  latestPending.set(run.id, run);
+  const prev = writeChains.get(run.id) ?? Promise.resolve();
+  const next = prev
+    .then(async () => {
+      const pending = latestPending.get(run.id);
+      if (!pending) return; // an earlier link in the chain already wrote it
+      latestPending.delete(run.id);
+      await writeRunFile(pending);
+    })
+    .catch((err) => {
+      log('error', 'flows.persistRun', `failed to persist run ${run.id}`, err);
+    })
+    .finally(() => {
+      // Drop the chain once it has drained so the map can't grow unbounded.
+      if (writeChains.get(run.id) === next) writeChains.delete(run.id);
+    });
+  writeChains.set(run.id, next);
   // Mirror terminal runs into the all-time summary log so their totals
   // outlive the LRU eviction of <userData>/flow-runs/<id>.json. The
   // append is idempotent — same id never lands twice.
   if (run.state.kind === 'done' || run.state.kind === 'archived') {
     appendRunSummary(run);
   }
+}
+
+/// Await all in-flight run writes. Call before app quit so the latest
+/// checkpoints are durably on disk despite the async write path.
+export async function flushRuns(): Promise<void> {
+  await Promise.allSettled([...writeChains.values()]);
 }
 
 /// Delete a run's JSON file. Called when the runtime evicts a run from
