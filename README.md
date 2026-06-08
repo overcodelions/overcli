@@ -24,6 +24,10 @@
 </p>
 
 <p align="center">
+  <a href="https://overcli.app"><strong>overcli.app →</strong></a>
+</p>
+
+<p align="center">
   <a href="#why-overcli">Why Overcli</a> ·
   <a href="#screenshots">Screenshots</a> ·
   <a href="#features">Features</a> ·
@@ -123,7 +127,9 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 
 ## Download
 
-Builds are produced by the release workflow and land on the [Releases page](https://github.com/overcodelions/overcli/releases).
+See **[overcli.app](https://overcli.app)** for an overview of what Overcli does.
+
+Builds are produced by the release workflow and land on the [GitHub Releases page](https://github.com/overcodelions/overcli/releases) — grab the latest one for your platform.
 
 | Platform | Artifacts |
 |---|---|
