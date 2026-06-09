@@ -1326,7 +1326,7 @@ export interface StatsReport {
   daily: DailyBucket[];
 }
 
-export type ModelTier = 'thinking' | 'standard' | 'fast' | 'local';
+export type ModelTier = 'frontier' | 'thinking' | 'standard' | 'fast' | 'local';
 
 export interface TierStats {
   tier: ModelTier;

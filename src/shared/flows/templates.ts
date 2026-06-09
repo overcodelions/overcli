@@ -37,7 +37,7 @@ description: |
 input: user_prompt
 steps:
   - id: plan
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-fable-5 }
     role: planner
     inputs: [user_prompt]
     tools: [Read, Grep, Glob]
@@ -134,7 +134,7 @@ description: |
 input: user_prompt
 steps:
   - id: plan
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-fable-5 }
     role: planner
     inputs: [user_prompt]
     tools: [Read, Grep, Glob]
@@ -168,7 +168,7 @@ description: |
 input: user_prompt
 steps:
   - id: design
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-fable-5 }
     role: planner
     inputs: [user_prompt]
     tools: [Read, Grep, Glob]
@@ -210,7 +210,7 @@ steps:
     output: research.md
 
   - id: design
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-fable-5 }
     role: planner
     inputs: [user_prompt, research.md]
     tools: [Read, Grep, Glob]

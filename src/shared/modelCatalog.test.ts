@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canonicalizePremiumModel,
   friendlyModelLabel,
   modelSpeed,
   modelTierLabel,
@@ -32,6 +33,10 @@ describe('friendlyModelLabel — claude', () => {
 
   it('formats opus-4-7', () => {
     expect(friendlyModelLabel('claude', 'claude-opus-4-7')).toBe('Claude Opus 4.7');
+  });
+
+  it('formats fable-5', () => {
+    expect(friendlyModelLabel('claude', 'claude-fable-5')).toBe('Claude Fable 5');
   });
 
   it('formats sonnet-4-6', () => {
@@ -121,6 +126,7 @@ describe('friendlyModelLabel — ollama', () => {
 
 describe('modelSpeed', () => {
   it.each([
+    ['claude-fable-5', 'frontier'],
     ['claude-opus-4-8', 'thinking'],
     ['claude-opus-4-7', 'thinking'],
     ['claude-sonnet-4-6', 'fast'],
@@ -138,6 +144,33 @@ describe('modelSpeed', () => {
 
   it('returns "standard" for an unknown model id', () => {
     expect(modelSpeed('some-future-model-99')).toBe('standard');
+  });
+});
+
+// ─── canonicalizePremiumModel ───────────────────────────────────────────────
+
+describe('canonicalizePremiumModel', () => {
+  it('passes through an exact catalog match', () => {
+    expect(canonicalizePremiumModel('claude', 'claude-haiku-4-5')).toBe('claude-haiku-4-5');
+  });
+
+  it('snaps a dotted claude id to the dashed catalog spelling', () => {
+    // The AI drafter bug: it emits the Copilot-style dotted form on the
+    // claude backend; without this it fails the exact-match validator.
+    expect(canonicalizePremiumModel('claude', 'claude-haiku-4.5')).toBe('claude-haiku-4-5');
+    expect(canonicalizePremiumModel('claude', 'claude-sonnet-4.6')).toBe('claude-sonnet-4-6');
+    expect(canonicalizePremiumModel('claude', 'claude-opus-4.8')).toBe('claude-opus-4-8');
+  });
+
+  it('snaps a dashed claude id to the dotted copilot spelling', () => {
+    expect(canonicalizePremiumModel('copilot', 'claude-haiku-4-5')).toBe('claude-haiku-4.5');
+  });
+
+  it('leaves a genuinely-unknown id unchanged so validation can reject it', () => {
+    expect(canonicalizePremiumModel('claude', 'claude-3-5-haiku-20241022')).toBe(
+      'claude-3-5-haiku-20241022',
+    );
+    expect(canonicalizePremiumModel('claude', 'totally-made-up')).toBe('totally-made-up');
   });
 });
 

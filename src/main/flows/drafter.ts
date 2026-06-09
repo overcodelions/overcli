@@ -20,7 +20,8 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
 import type { AppSettings, Backend } from '../../shared/types';
-import type { Flow } from '../../shared/flows/schema';
+import type { Flow, FlowModelRef } from '../../shared/flows/schema';
+import { canonicalizePremiumModel } from '../../shared/modelCatalog';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import {
   validateFlow,
@@ -291,6 +292,13 @@ function finalizeDraft(
   // charset and rewire any input refs so handoff stays intact.
   repairArtifactNames(parsed);
 
+  // Salvage near-miss model ids the same way. The model occasionally emits
+  // a model with the wrong version separator for the backend — most often
+  // `claude-haiku-4.5` (dotted) on the `claude` backend, whose catalog id is
+  // `claude-haiku-4-5` (dashed). The exact-match validator would reject these
+  // as "not supported"; snap each premium ref to its canonical spelling first.
+  repairModelIds(parsed);
+
   const v = validateFlow(parsed);
   if (!v.ok) {
     return {
@@ -309,6 +317,27 @@ function stripCodeFences(text: string): string {
   const fenced = text.match(/^```(?:yaml|yml)?\n([\s\S]*?)\n```\s*$/);
   if (fenced) return fenced[1].trim();
   return text;
+}
+
+/// Snap every premium model ref in the flow to its canonical catalog
+/// spelling, fixing dot-vs-dash version mismatches (e.g. drafted
+/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend). Walks
+/// participants, legacy step-level models, and rebound critics. Ollama and
+/// already-canonical refs pass through untouched. Mutates `flow` in place.
+function repairModelIds(flow: Flow): void {
+  const fix = (ref: FlowModelRef | undefined) => {
+    if (!ref || ref.backend === 'ollama') return;
+    ref.model = canonicalizePremiumModel(ref.backend, ref.model);
+  };
+  for (const p of flow.participants ?? []) {
+    if (p.backend !== 'ollama') {
+      p.model = canonicalizePremiumModel(p.backend, p.model);
+    }
+  }
+  for (const step of flow.steps) {
+    fix(step.model);
+    fix(step.rebound?.critic);
+  }
 }
 
 /// Rewrite any step `output` that violates ARTIFACT_NAME_RE into a valid
