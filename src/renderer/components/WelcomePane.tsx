@@ -1069,7 +1069,7 @@ function modelOptionsFor(
     return ollamaPulled ?? [];
   }
   const base: Record<Exclude<Backend, 'ollama'>, string[]> = {
-    claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
     gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
     // Copilot's --model accepts model ids served via GitHub's Bedrock

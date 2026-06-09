@@ -135,7 +135,7 @@ export function computeStats(): StatsReport {
     cur.cacheCreation += m.cacheCreation;
     tierAgg.set(tier, cur);
   }
-  const TIER_ORDER: Array<import('../shared/types').ModelTier> = ['thinking', 'standard', 'fast', 'local'];
+  const TIER_ORDER: Array<import('../shared/types').ModelTier> = ['frontier', 'thinking', 'standard', 'fast', 'local'];
   const byTier = TIER_ORDER
     .filter((t) => tierAgg.has(t))
     .map((tier) => {
