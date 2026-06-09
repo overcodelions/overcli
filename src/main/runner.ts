@@ -647,6 +647,12 @@ export class RunnerManager {
       existing.cwd === args.cwd;
     if (paramsMatch && this.claudeMcpByConv.has(convId)) return;
     const helperScript = path.join(__dirname, 'claudePermissionHelper.js');
+    // Claude spawns this helper itself (via the mcp-config `command`). We
+    // hand it our own binary + ELECTRON_RUN_AS_NODE=1 so it runs the helper
+    // script headlessly as Node. This REQUIRES the `runAsNode` electron fuse
+    // to stay enabled in package.json (build.electronFuses): with the fuse
+    // off, packaged binaries ignore ELECTRON_RUN_AS_NODE and boot a full
+    // Overcli GUI instance on every turn instead. Do not disable that fuse.
     const { configPath } = await this.claudeBroker.registerSession(
       convId,
       helperScript,
