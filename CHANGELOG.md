@@ -4,6 +4,16 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-09
+
+A bugfix release that makes packaged Claude usable again, plus the Fable 5 model.
+
+### Fixed
+- **Packaged builds spawned a fresh Overcli window on every Claude message turn**, making the app unusable. The `runAsNode` Electron fuse was disabled, so packaged binaries silently ignored `ELECTRON_RUN_AS_NODE` and booted a full GUI instance instead of running the Claude permission-broker helper headlessly as Node. Re-enabled the fuse (entitlements already permit it under hardened runtime) and documented the coupling at the helper spawn site so it isn't hardened back off ([#85](https://github.com/overcodelions/overcli/pull/85)).
+
+### Added
+- **Claude Fable 5 (`claude-fable-5`)** added to the model catalog as a new top `frontier` tier. The default Claude model is now **Opus 4.8**, and the bundled flow templates' planning steps (`plan` / `design`) use Fable 5, degrading to the backend's `thinking` model where Fable isn't available. Also salvages AI-drafted flows that named a near-miss model id (e.g. `claude-haiku-4.5` → `claude-haiku-4-5`) before validation ([#86](https://github.com/overcodelions/overcli/pull/86)).
+
 ## [0.3.0] - 2026-06-07
 
 A polish release on top of 0.2.0: a real first-run onboarding experience, accurate install/signing docs, and a tightened Codex model list.
@@ -94,7 +104,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/overcodelions/overcli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/overcodelions/overcli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/overcodelions/overcli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/overcodelions/overcli/releases/tag/v0.1.0
