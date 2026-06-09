@@ -9,11 +9,12 @@ import type { Backend } from './types';
 /// surface in every picker that imports `PREMIUM_MODELS`. The first
 /// entry per backend is the auto-pick default — the "(pick a model)"
 /// fallback and the template resolver's per-tier substitution both take
-/// the first matching id. We intentionally keep `claude-opus-4-7` first
-/// (not the newer `claude-opus-4-8`) so the default Claude model stays
-/// 4.7; 4.8 is available right after it for anyone who selects it.
+/// the first matching id. We keep `claude-opus-4-8` first so it's the
+/// default Claude model. `claude-fable-5` is the most premium/advanced
+/// model (roughly 2x the cost of Opus 4.8), listed right after the
+/// default for anyone who explicitly wants it.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
@@ -31,15 +32,42 @@ export function isSupportedPremiumModel(backend: Exclude<Backend, 'ollama'>, mod
   return PREMIUM_MODELS[backend]?.includes(model) ?? false;
 }
 
+/// Snap a near-miss model id to its canonical catalog spelling for a
+/// backend. AI-drafted flows frequently emit a model with the wrong
+/// version separator: most commonly `claude-haiku-4.5` (dotted — which is
+/// literally the Copilot spelling) on the `claude` backend, whose catalog
+/// id is `claude-haiku-4-5` (dashed). They name the same model, but
+/// `isSupportedPremiumModel` is an exact-string match, so the dotted form
+/// fails validation. This compares against the catalog ignoring `.` vs `-`
+/// version-separator differences and returns the catalog's spelling when
+/// one matches; otherwise returns the input unchanged so genuinely-unknown
+/// ids still surface a clear "not supported" error.
+export function canonicalizePremiumModel(
+  backend: Exclude<Backend, 'ollama'>,
+  model: string,
+): string {
+  const list = PREMIUM_MODELS[backend];
+  if (!list) return model;
+  if (list.includes(model)) return model;
+  const norm = (s: string) => s.toLowerCase().replace(/\./g, '-');
+  const wanted = norm(model);
+  return list.find((m) => norm(m) === wanted) ?? model;
+}
+
 /// Speed tier per model id. Drives a ⚡ marker in the picker so users
 /// can spot the fast/cheap tier at a glance.
 ///   - 'fast': low latency, low cost; good for workers and quick tasks
 ///   - 'standard': mid tier; balanced cost vs. quality
 ///   - 'thinking': premium reasoning models, slower + more expensive
-export type ModelSpeed = 'fast' | 'standard' | 'thinking';
+///   - 'frontier': the most advanced + most expensive tier (Fable 5,
+///     ~2x Opus). Kept distinct from 'thinking' so the template resolver
+///     only assigns it to steps that explicitly ask for it (e.g.
+///     planning) instead of substituting it for any thinking step.
+export type ModelSpeed = 'fast' | 'standard' | 'thinking' | 'frontier';
 
 const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Claude
+  'claude-fable-5': 'frontier',
   'claude-opus-4-8': 'thinking',
   'claude-opus-4-7': 'thinking',
   'claude-sonnet-4-6': 'fast',

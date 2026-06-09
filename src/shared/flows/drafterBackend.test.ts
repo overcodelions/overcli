@@ -56,7 +56,9 @@ describe('pickDrafterBackend', () => {
 
 describe('drafterModelFor', () => {
   it('returns the strongest premium model per backend', () => {
-    expect(drafterModelFor('claude')).toBe('claude-opus-4-7');
+    // claude defaults to opus-4-8 (first entry); fable-5 is the frontier
+    // opt-in, not the drafter default.
+    expect(drafterModelFor('claude')).toBe('claude-opus-4-8');
     expect(drafterModelFor('codex')).toBe('gpt-5.5');
     expect(drafterModelFor('gemini')).toBe('gemini-2.5-pro');
   });
@@ -64,12 +66,13 @@ describe('drafterModelFor', () => {
 
 describe('drafterModelHints', () => {
   it('maps a model to each speed tier for a backend', () => {
-    // sonnet is classified 'fast' now, so claude has no 'standard' model —
-    // standard degrades up to the thinking pick (opus), and fast is the
-    // first fast model (sonnet).
+    // fable-5 is 'frontier' (not 'thinking'), so the thinking hint is the
+    // first thinking model — opus-4-8. sonnet is classified 'fast', so
+    // claude has no 'standard' model — standard degrades up to the thinking
+    // pick (opus-4-8), and fast is the first fast model (sonnet).
     expect(drafterModelHints('claude')).toEqual({
-      thinking: 'claude-opus-4-7',
-      standard: 'claude-opus-4-7',
+      thinking: 'claude-opus-4-8',
+      standard: 'claude-opus-4-8',
       fast: 'claude-sonnet-4-6',
     });
     expect(drafterModelHints('codex')).toEqual({

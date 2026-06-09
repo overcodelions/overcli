@@ -157,6 +157,7 @@ export function StatsPage() {
 /* ------------------------------------------------------------------ */
 
 const TIER_LABEL: Record<ModelTier, string> = {
+  frontier: 'Frontier',
   thinking: 'Thinking',
   standard: 'Standard',
   fast: 'Fast',
@@ -164,6 +165,7 @@ const TIER_LABEL: Record<ModelTier, string> = {
 };
 
 const TIER_SUBLABEL: Record<ModelTier, string> = {
+  frontier: 'most advanced',
   thinking: 'premium reasoning',
   standard: 'balanced',
   fast: 'low-latency',
@@ -171,13 +173,14 @@ const TIER_SUBLABEL: Record<ModelTier, string> = {
 };
 
 const TIER_COLOR: Record<ModelTier, string> = {
+  frontier: '#c084fc',
   thinking: '#f59e0b',
   standard: '#38bdf8',
   fast: '#34d399',
   local: '#94a3b8',
 };
 
-const TIER_ORDER: ModelTier[] = ['thinking', 'standard', 'fast', 'local'];
+const TIER_ORDER: ModelTier[] = ['frontier', 'thinking', 'standard', 'fast', 'local'];
 
 function ModelMixPanel({ rows }: { rows: TierStats[] }) {
   const sorted = useMemo(
