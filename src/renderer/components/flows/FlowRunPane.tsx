@@ -1965,7 +1965,7 @@ function RunStateBadge({ state }: { state: { kind: string } }) {
 function RunTokenSummary({ run }: { run: FlowRun }) {
   const steps = run.flowSnapshot.steps;
   const participants = run.flowSnapshot.participants ?? [];
-  const buckets = { thinking: 0, standard: 0, fast: 0, local: 0 };
+  const buckets = { frontier: 0, thinking: 0, standard: 0, fast: 0, local: 0 };
 
   const inProgress = run.attempts.find((a) => !a.endedAt);
   const liveRunner = useRunner(inProgress?.conversationId ?? '');
@@ -2003,6 +2003,7 @@ function RunTokenSummary({ run }: { run: FlowRun }) {
     label: string;
     cls: string;
   }> = [
+    { key: 'frontier', label: 'frontier', cls: 'text-purple-700 dark:text-purple-300' },
     { key: 'thinking', label: 'thinking', cls: 'text-amber-700 dark:text-amber-300' },
     { key: 'standard', label: 'standard', cls: 'text-sky-700 dark:text-sky-300' },
     { key: 'fast', label: 'fast', cls: 'text-emerald-700 dark:text-emerald-300' },
