@@ -24,6 +24,15 @@ function isSyntheticPrompt(text: string, syntheticHashes: Set<string>): boolean 
   return syntheticHashes.has(h);
 }
 
+/// Cap on the total source size of replayed history, in bytes (measured by
+/// each event's original transcript-line length). A watched flow's
+/// conversation gains a turn on every poll tick, so its transcript can reach
+/// tens of MB; opening it shipped every event — each carrying a full copy of
+/// its source line — across IPC and into renderer memory, which is what made
+/// the "Loading history…" spinner drag. We keep only the most recent slice,
+/// since the tail is what the user wants on open.
+const HISTORY_TAIL_BUDGET_BYTES = 1_500_000;
+
 export function loadHistory(args: {
   backend: Backend;
   projectPath: string;
@@ -34,6 +43,13 @@ export function loadHistory(args: {
   syntheticPrompts?: string[];
 }): StreamEvent[] {
   const synthetic = new Set(args.syntheticPrompts ?? []);
+  return trimHistoryForReplay(loadFullHistory(args, synthetic), HISTORY_TAIL_BUDGET_BYTES);
+}
+
+function loadFullHistory(
+  args: { backend: Backend; projectPath: string; sessionId?: string; codexRolloutPaths?: string[]; conversationCreatedAt?: number; conversationLastActiveAt?: number },
+  synthetic: Set<string>,
+): StreamEvent[] {
   switch (args.backend) {
     case 'claude':
       return loadClaudeHistory(args.sessionId, args.projectPath, synthetic);
@@ -53,6 +69,41 @@ export function loadHistory(args: {
     case 'copilot':
       return loadCopilotHistory(args.sessionId, synthetic);
   }
+}
+
+/// Trim replayed history to the most recent ~budget bytes and shed each
+/// event's `raw` field. Two independent wins for large transcripts:
+///   - `raw` (a full copy of the source transcript line) is consumed ONLY by
+///     the live DebugSheet — replay rendering never reads it. Dropping it
+///     roughly halves the IPC payload and renderer memory for free.
+///   - The byte cap bounds how much we ever ship, so an unbounded watcher
+///     transcript can't dump tens of MB across the IPC boundary at once.
+/// When anything is dropped we prepend a `systemNotice` so the user knows
+/// older turns exist but were elided to keep the open fast.
+function trimHistoryForReplay(events: StreamEvent[], budgetBytes: number): StreamEvent[] {
+  let total = 0;
+  let startIdx = 0;
+  for (let i = events.length - 1; i >= 0; i--) {
+    total += events[i].raw?.length ?? 0;
+    if (total > budgetBytes) {
+      startIdx = i + 1;
+      break;
+    }
+  }
+  const kept = events.slice(startIdx).map((e) => (e.raw ? { ...e, raw: '' } : e));
+  if (startIdx > 0) {
+    kept.unshift(
+      event(
+        {
+          type: 'systemNotice',
+          text: `Showing the most recent part of a long transcript — ${startIdx} earlier event${startIdx === 1 ? '' : 's'} hidden so this loads faster.`,
+        },
+        '',
+        events[startIdx]?.timestamp ?? Date.now(),
+      ),
+    );
+  }
+  return kept;
 }
 
 function loadCopilotHistory(
