@@ -3,7 +3,7 @@
 // PATH is minimal (/usr/bin:/bin only), so we resolve git explicitly from
 // common install locations and extend PATH on every spawn.
 
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -175,6 +175,99 @@ export function runGit(args: string[], cwd: string, extraEnv?: NodeJS.ProcessEnv
   };
 }
 
+/// Async sibling of `runGit`. `runGit` uses `spawnSync`, which blocks the
+/// single main-process thread for the whole git invocation — fine for the
+/// fast metadata reads (`rev-parse`, `branch --show-current`) most callers
+/// do, but `git worktree add` checks out the entire working tree and can
+/// take seconds on a large repo. Run on the synchronous path it froze the
+/// app: history loads, watch ticks, and the UI all sit behind it in the
+/// event-loop queue. The flow-launch worktree path uses this async runner so
+/// that work yields to the event loop instead of stalling everything.
+export function runGitAsync(
+  args: string[],
+  cwd: string,
+  extraEnv?: NodeJS.ProcessEnv,
+): Promise<GitResult> {
+  const bin = resolveGitBinary();
+  return new Promise((resolve) => {
+    execFile(
+      bin,
+      args,
+      {
+        cwd,
+        encoding: 'utf-8',
+        env: extraEnv ? { ...gitEnv(), ...extraEnv } : gitEnv(),
+        // `git worktree add` is quiet, but guard against a verbose subcommand
+        // overflowing the default 1 MB pipe buffer and erroring spuriously.
+        maxBuffer: 64 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        // execFile sets `error` on non-zero exit (with numeric `error.code`)
+        // AND on spawn failure (with a string `error.code` like 'ENOENT').
+        // Distinguish: a numeric code is the real git exit status; anything
+        // else is a launch failure we report as -1, mirroring runGit.
+        const code =
+          error && typeof (error as NodeJS.ErrnoException).code === 'number'
+            ? ((error as unknown as { code: number }).code)
+            : error
+              ? -1
+              : 0;
+        const spawnErr = error && typeof (error as NodeJS.ErrnoException).code !== 'number'
+          ? error.message
+          : '';
+        resolve({ stdout: stdout ?? '', stderr: (stderr || spawnErr) ?? '', exitCode: code });
+      },
+    );
+  });
+}
+
+/// Async sibling of `detectBaseBranch` — same fallback chain, non-blocking
+/// git. Used by the flow-launch worktree path.
+export async function detectBaseBranchAsync(projectPath: string): Promise<string> {
+  const current = await runGitAsync(['branch', '--show-current'], projectPath);
+  if (current.exitCode === 0) {
+    const trimmed = current.stdout.trim();
+    if (trimmed) return trimmed;
+  }
+  const head = await runGitAsync(['symbolic-ref', 'refs/remotes/origin/HEAD'], projectPath);
+  if (head.exitCode === 0) {
+    const parts = head.stdout.trim().split('/');
+    const short = parts[parts.length - 1];
+    if (short) return short;
+  }
+  if ((await runGitAsync(['rev-parse', '--verify', 'main'], projectPath)).exitCode === 0) return 'main';
+  if ((await runGitAsync(['rev-parse', '--verify', 'master'], projectPath)).exitCode === 0)
+    return 'master';
+  return 'main';
+}
+
+async function resolveBaseBranchStartPointAsync(
+  projectPath: string,
+  baseBranch: string,
+): Promise<string | null> {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+  push(baseBranch);
+  push(`refs/heads/${baseBranch}`);
+  push(`origin/${baseBranch}`);
+  push(`refs/remotes/${baseBranch}`);
+  push(`refs/remotes/origin/${baseBranch}`);
+  for (const candidate of candidates) {
+    const ref = await runGitAsync(
+      ['rev-parse', '--verify', '--quiet', `${candidate}^{commit}`],
+      projectPath,
+    );
+    if (ref.exitCode === 0) return candidate;
+  }
+  return null;
+}
+
 function runGitNoPrompt(args: string[], cwd: string): GitResult {
   const bin = resolveGitBinary();
   const res = spawnSync(bin, args, {
@@ -250,6 +343,58 @@ export function createWorktree(
       ? ['worktree', 'add', worktreePath, branchName]
       : ['worktree', 'add', '-b', branchName, worktreePath, startPoint];
   const res = runGit(gitArgs, args.projectPath);
+  if (res.exitCode !== 0) {
+    return {
+      ok: false,
+      error: res.stderr.trim() || res.stdout.trim() || `git exited with ${res.exitCode}`,
+    };
+  }
+  return { ok: true, worktreePath, branchName };
+}
+
+/// Async sibling of `createWorktree`. Same behaviour and validation, but the
+/// git invocations — most importantly the potentially-slow `git worktree
+/// add` (a full working-tree checkout) — run via `runGitAsync` so launching
+/// a flow into a worktree no longer freezes the whole app. The local
+/// filesystem checks (`mkdirSync`/`existsSync`) stay synchronous; they're
+/// instant and not the bottleneck.
+export async function createWorktreeAsync(
+  args: CreateWorktreeArgs,
+): Promise<{ ok: true; worktreePath: string; branchName: string } | { ok: false; error: string }> {
+  const repoCheck = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.projectPath);
+  if (repoCheck.exitCode !== 0) {
+    return {
+      ok: false,
+      error: `${args.projectPath} isn't a git repo. Initialize one (\`git init\`) or pick a different project.`,
+    };
+  }
+  const startPoint = await resolveBaseBranchStartPointAsync(args.projectPath, args.baseBranch);
+  if (!startPoint) {
+    return {
+      ok: false,
+      error: `Base branch "${args.baseBranch}" doesn't exist in ${args.projectPath}. Pick one that does (e.g. main).`,
+    };
+  }
+
+  const slug = path.basename(args.projectPath);
+  const root = path.join(os.homedir(), '.overcli', 'worktrees', slug);
+  fs.mkdirSync(root, { recursive: true });
+  const worktreePath = path.join(root, args.agentName);
+  const branchName = `${args.branchPrefix}${args.agentName}`;
+
+  if (fs.existsSync(worktreePath)) {
+    return {
+      ok: false,
+      error: `A worktree already exists at ${worktreePath}. Remove it first or pick a different name.`,
+    };
+  }
+
+  const existsBranch = await runGitAsync(['rev-parse', '--verify', branchName], args.projectPath);
+  const gitArgs =
+    existsBranch.exitCode === 0
+      ? ['worktree', 'add', worktreePath, branchName]
+      : ['worktree', 'add', '-b', branchName, worktreePath, startPoint];
+  const res = await runGitAsync(gitArgs, args.projectPath);
   if (res.exitCode !== 0) {
     return {
       ok: false,

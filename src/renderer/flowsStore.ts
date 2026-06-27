@@ -36,6 +36,11 @@ interface FlowsState {
   registryEntries: import('@shared/types').FlowRegistryEntry[];
   registryLoaded: boolean;
   registryErrors: Array<{ registryId: string; error: string }>;
+  /// Live worktree-preparation progress during a launch, keyed by the
+  /// target `projectPath`. Set from the main `flowLaunchProgress` event and
+  /// read by the launching pane to label its spinner; cleared when the
+  /// launch resolves.
+  launchProgress: Record<string, { completed: number; total: number; message: string }>;
 }
 
 interface FlowsActions {
@@ -44,6 +49,13 @@ interface FlowsActions {
   /// `flowRunUpdate`).
   applyRunUpdate(run: FlowRun): void;
   removeRun(id: string): void;
+  /// Set (or clear, with `null`) the worktree-prep progress for a launch
+  /// target. Called from the `flowLaunchProgress` main event and reset by
+  /// the launching pane when its `startRun` resolves.
+  setLaunchProgress(
+    projectPath: string,
+    progress: { completed: number; total: number; message: string } | null,
+  ): void;
   setActiveRun(id: string | null): void;
   openEditor(target: EditorTarget, blank?: Flow): void;
   closeEditor(): void;
@@ -154,6 +166,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   registryEntries: [],
   registryLoaded: false,
   registryErrors: [],
+  launchProgress: {},
 
   async reload(projectPaths) {
     const flows = await window.overcli.invoke('flows:list', { projectPaths });
@@ -172,6 +185,17 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
         runs: rest,
         activeRunId: s.activeRunId === id ? null : s.activeRunId,
       };
+    });
+  },
+
+  setLaunchProgress(projectPath, progress) {
+    set(s => {
+      if (!progress) {
+        if (!(projectPath in s.launchProgress)) return {};
+        const { [projectPath]: _drop, ...rest } = s.launchProgress;
+        return { launchProgress: rest };
+      }
+      return { launchProgress: { ...s.launchProgress, [projectPath]: progress } };
     });
   },
 
