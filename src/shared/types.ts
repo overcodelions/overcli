@@ -1530,6 +1530,19 @@ export type MainToRendererEvent =
       runId: UUID;
     }
   | {
+      /// Progress of a flow launch's worktree preparation, before the run
+      /// exists. Worktree checkout can take a few seconds (more for a
+      /// multi-repo workspace), so the launching pane shows this under its
+      /// spinner instead of a blank wait. Keyed by the launch target's
+      /// `projectPath` (a pane guards its own in-flight launch, so two
+      /// concurrent launches to the same target don't happen).
+      type: 'flowLaunchProgress';
+      projectPath: string;
+      completed: number;
+      total: number;
+      message: string;
+    }
+  | {
       /// An orchestration (batch) changed — an item launched, a child run
       /// finished and the next pumped, or the batch completed. The
       /// renderer's orchestratorStore replaces its copy. Coarse-grained on

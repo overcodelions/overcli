@@ -32,6 +32,7 @@ export function RunPanel({
   baseBranch,
   onBaseBranch,
   baseBranchRepoPaths,
+  launchProgress,
 }: {
   flow: Flow;
   /// Static "in <name>" label, shown when no `targetControl` is given.
@@ -62,6 +63,10 @@ export function RunPanel({
   /// exist in EVERY listed repo (intersection) so a workspace flow
   /// can't pick a branch that one member doesn't have.
   baseBranchRepoPaths: string[];
+  /// Live worktree-preparation beat while `submitting`, shown in place of the
+  /// generic "Starting…" so a multi-second (or multi-repo) checkout reads as
+  /// progress rather than a hang. Absent on `cwd` launches (no worktree work).
+  launchProgress?: { completed: number; total: number; message: string } | null;
 }) {
   // Seed the composer with the flow's defaultPrompt the first time this
   // panel is opened for a given draftKey. Reads the store snapshot once
@@ -166,7 +171,12 @@ export function RunPanel({
 
               {submitting && (
                 <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-ink-faint">
-                  <Spinner /> Starting…
+                  <Spinner />{' '}
+                  {launchProgress
+                    ? launchProgress.total > 1
+                      ? `${launchProgress.message} (${launchProgress.completed}/${launchProgress.total})`
+                      : launchProgress.message
+                    : 'Starting…'}
                 </span>
               )}
             </>
