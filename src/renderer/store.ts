@@ -2773,6 +2773,14 @@ export const useStore = create<StoreState>((set, get) => ({
       void import('./flowsStore').then(({ useFlowsStore }) => {
         useFlowsStore.getState().removeRun(event.runId);
       });
+    } else if (event.type === 'flowLaunchProgress') {
+      void import('./flowsStore').then(({ useFlowsStore }) => {
+        useFlowsStore.getState().setLaunchProgress(event.projectPath, {
+          completed: event.completed,
+          total: event.total,
+          message: event.message,
+        });
+      });
     } else if (event.type === 'orchestrationUpdate') {
       void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
         useOrchestratorStore.getState().applyOrchestrationUpdate(event.orchestration);

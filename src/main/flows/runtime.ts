@@ -59,7 +59,13 @@ import {
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
-import { createWorktree, detectBaseBranch, runGit, worktreeNameTaken } from '../git';
+import {
+  createWorktreeAsync,
+  detectBaseBranchAsync,
+  runGit,
+  runGitAsync,
+  worktreeNameTaken,
+} from '../git';
 import { branchSlugFromPrompt } from './branchName';
 import { ensureCoordinatorSymlinkRoot } from '../workspace';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
@@ -517,38 +523,55 @@ export class FlowRuntimeImpl {
         if (members.length === 0) {
           return { ok: false, error: 'Workspace has no eligible member projects.' };
         }
-        const minted: Array<{
-          name: string;
-          projectPath: string;
-          worktreePath: string;
-          branchName: string;
-        }> = [];
         const branchPrefix = settings.agentBranchPrefix || 'agent/';
         const wtNameBase = uniqueWorktreeName(
           members.map((p) => p.path),
           branchSlugFromPrompt(args.userPrompt, flow.id),
           branchPrefix,
         );
-        for (const p of members) {
-          const r = createWorktree({
-            projectPath: p.path,
-            agentName: wtNameBase,
-            baseBranch: sharedBase ?? detectBaseBranch(p.path),
-            branchPrefix,
-          });
-          if (!r.ok) {
-            return {
-              ok: false,
-              error: `Failed to create worktree for ${p.name}: ${r.error}`,
-            };
-          }
-          minted.push({
+        // Mint every member's worktree CONCURRENTLY. They're independent
+        // repos, so a serial loop just stacked each repo's (potentially
+        // multi-second) `git worktree add` end to end; running them in
+        // parallel makes the whole launch take as long as the SLOWEST single
+        // repo rather than the sum. The async runner also keeps the rest of
+        // the app responsive while they check out.
+        let done = 0;
+        const results = await Promise.all(
+          members.map(async (p) => {
+            const baseBranch = sharedBase ?? (await detectBaseBranchAsync(p.path));
+            const r = await createWorktreeAsync({
+              projectPath: p.path,
+              agentName: wtNameBase,
+              baseBranch,
+              branchPrefix,
+            });
+            this.emitLaunchProgress(args.projectPath, {
+              completed: ++done,
+              total: members.length,
+              message: r.ok
+                ? `Prepared worktree for ${p.name}`
+                : `Worktree failed for ${p.name}`,
+            });
+            return { p, r };
+          }),
+        );
+        const failed = results.find((x) => !x.r.ok);
+        if (failed && !failed.r.ok) {
+          return {
+            ok: false,
+            error: `Failed to create worktree for ${failed.p.name}: ${failed.r.error}`,
+          };
+        }
+        const minted = results.map(({ p, r }) => {
+          // Narrowed by the `failed` guard above — every result is ok here.
+          const ok = r as Extract<typeof r, { ok: true }>;
+          return {
             name: p.name,
             projectPath: p.path,
-            worktreePath: r.worktreePath,
-            branchName: r.branchName,
-          });
-        }
+            worktreePath: ok.worktreePath,
+            branchName: ok.branchName,
+          };
+        });
         const linked = ensureCoordinatorSymlinkRoot(
           runId,
           minted.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
@@ -559,22 +582,30 @@ export class FlowRuntimeImpl {
         cwd = linked.rootPath;
         workspaceWorktrees = minted;
       } else {
-        // Single-project worktree (original behavior).
+        // Single-project worktree (original behavior). Async git so the
+        // `git worktree add` checkout doesn't block the main thread.
         const branchPrefix = settings.agentBranchPrefix || 'agent/';
         const wtName = uniqueWorktreeName(
           [args.projectPath],
           branchSlugFromPrompt(args.userPrompt, flow.id),
           branchPrefix,
         );
-        const result = createWorktree({
+        this.emitLaunchProgress(args.projectPath, {
+          completed: 0,
+          total: 1,
+          message: 'Preparing worktree…',
+        });
+        const baseBranch = sharedBase ?? (await detectBaseBranchAsync(args.projectPath));
+        const result = await createWorktreeAsync({
           projectPath: args.projectPath,
           agentName: wtName,
-          baseBranch: sharedBase ?? detectBaseBranch(args.projectPath),
+          baseBranch,
           branchPrefix,
         });
         if (!result.ok) {
           return { ok: false, error: `Failed to create worktree: ${result.error}` };
         }
+        this.emitLaunchProgress(args.projectPath, { completed: 1, total: 1, message: 'Worktree ready' });
         cwd = result.worktreePath;
         worktreeMeta = { worktreePath: result.worktreePath, branchName: result.branchName };
       }
@@ -601,16 +632,22 @@ export class FlowRuntimeImpl {
     //   - Single project in-place: the project directly.
     const matchingWorkspaceInPlace =
       !workspaceWorktrees && this.getWorkspaces().find((w) => w.rootPath === cwd);
+    // HEAD lookups are individually fast, but they're in the launch path —
+    // keep them async (and parallel across members) so nothing here re-blocks
+    // the main thread the async worktree work just freed up.
+    const captureHead = async (
+      key: string,
+      repoPath: string,
+    ): Promise<[string, { path: string; commit: string }] | null> => {
+      const res = await runGitAsync(['rev-parse', 'HEAD'], repoPath);
+      const commit = res.exitCode === 0 ? res.stdout.trim() : '';
+      return commit ? [key, { path: repoPath, commit }] : null;
+    };
     if (workspaceWorktrees) {
-      const captured: Record<string, { path: string; commit: string }> = {};
-      for (const m of workspaceWorktrees) {
-        const res = runGit(['rev-parse', 'HEAD'], m.worktreePath);
-        if (res.exitCode === 0) {
-          const commit = res.stdout.trim();
-          if (commit) captured[m.name] = { path: m.worktreePath, commit };
-        }
-      }
-      if (Object.keys(captured).length > 0) baselineCommitsByMember = captured;
+      const captured = (
+        await Promise.all(workspaceWorktrees.map((m) => captureHead(m.name, m.worktreePath)))
+      ).filter((x): x is NonNullable<typeof x> => !!x);
+      if (captured.length > 0) baselineCommitsByMember = Object.fromEntries(captured);
     } else if (matchingWorkspaceInPlace) {
       const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
       const members = matchingWorkspaceInPlace.projectIds
@@ -618,17 +655,12 @@ export class FlowRuntimeImpl {
         .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
         .map((p) => ({ name: p.name, path: p.path }));
       const named = workspaceSymlinkNames(members);
-      const captured: Record<string, { path: string; commit: string }> = {};
-      for (const { name, path: projPath } of named) {
-        const res = runGit(['rev-parse', 'HEAD'], projPath);
-        if (res.exitCode === 0) {
-          const commit = res.stdout.trim();
-          if (commit) captured[name] = { path: projPath, commit };
-        }
-      }
-      if (Object.keys(captured).length > 0) baselineCommitsByMember = captured;
+      const captured = (
+        await Promise.all(named.map(({ name, path: projPath }) => captureHead(name, projPath)))
+      ).filter((x): x is NonNullable<typeof x> => !!x);
+      if (captured.length > 0) baselineCommitsByMember = Object.fromEntries(captured);
     } else {
-      const baselineCommitRes = runGit(['rev-parse', 'HEAD'], cwd);
+      const baselineCommitRes = await runGitAsync(['rev-parse', 'HEAD'], cwd);
       baselineCommit =
         baselineCommitRes.exitCode === 0
           ? baselineCommitRes.stdout.trim() || undefined
@@ -2016,6 +2048,16 @@ export class FlowRuntimeImpl {
   /// time in main/index.ts after both the runtime and orchestrator exist.
   setRunObserver(cb: (run: FlowRun) => void): void {
     this.runObserver = cb;
+  }
+
+  /// Push a worktree-preparation progress beat to the renderer during a
+  /// launch, before the FlowRun exists. The launching pane (keyed on the
+  /// same target `projectPath`) renders it under its spinner.
+  private emitLaunchProgress(
+    projectPath: string,
+    p: { completed: number; total: number; message: string },
+  ): void {
+    this.emit({ type: 'flowLaunchProgress', projectPath, ...p });
   }
 
   private emitRunUpdate(run: FlowRun): void {
