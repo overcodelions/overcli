@@ -126,11 +126,14 @@ export function deleteRun(runId: string): void {
   }
 }
 
-/// Load every persisted run from disk. Called once at startup. Runs
-/// whose state is `running` or `paused` are NOT restored as-is — their
-/// underlying step subprocesses are gone, so we mark them `aborted` and
-/// persist the corrected state so a second restart doesn't keep
-/// re-aborting them.
+/// Load every persisted run from disk. Called once at startup. A
+/// `running` run is NOT restored as-is — it died mid-step, its subprocess
+/// and in-flight tool calls are gone, so we mark it `aborted` and persist
+/// the corrected state so a second restart doesn't keep re-aborting it.
+/// A `paused` run is left untouched: it sits BETWEEN steps with no live
+/// subprocess to lose, so the runtime can warm-resume it via `resumeRun`
+/// (which starts the next step fresh) — exactly like a restored `watching`
+/// run resumes its watcher.
 export function loadAllRuns(): FlowRun[] {
   const d = dir();
   if (!fs.existsSync(d)) return [];
@@ -148,7 +151,7 @@ export function loadAllRuns(): FlowRun[] {
       const body = fs.readFileSync(file, 'utf-8');
       const parsed = JSON.parse(body) as FlowRun;
       if (!parsed?.id || !parsed?.flowSnapshot) continue; // skip corrupt entries
-      if (parsed.state.kind === 'running' || parsed.state.kind === 'paused') {
+      if (parsed.state.kind === 'running') {
         parsed.state = { kind: 'aborted' };
         saveRun(parsed); // write the corrected state back so this is idempotent
       }

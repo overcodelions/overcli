@@ -628,6 +628,35 @@ function FlowWorkspaceReview({
     await refreshAll();
   };
 
+  const runCheckoutLocally = async (m: (typeof members)[number]) => {
+    const status = statuses[m.name];
+    const onBranch = status?.currentProjectBranch;
+    const stashNote =
+      onBranch && onBranch !== m.branchName
+        ? ` ${m.name}'s repo is on ${onBranch}; any work-in-progress there is auto-stashed (recover with \`git stash pop\`).`
+        : ' Any work-in-progress in the project repo is auto-stashed first.';
+    if (
+      !window.confirm(
+        `Check out ${m.branchName} locally in ${m.name}? The agent's worktree is removed and ${m.name}'s repo is switched to this branch so you can build/run it. Uncommitted worktree changes are auto-committed first.${stashNote}`,
+      )
+    )
+      return;
+    setWorkingName(m.name);
+    setActionMessage(null);
+    setActionError(null);
+    const res = await window.overcli.invoke('git:checkoutAgentLocally', {
+      projectPath: m.projectPath,
+      worktreePath: m.worktreePath,
+      branchName: m.branchName,
+      commitSubject: description.subject,
+      commitBody: description.body,
+    });
+    if (res.ok) setActionMessage(`${m.name}: ${res.message}`);
+    else setActionError(`${m.name}: ${res.error}`);
+    setWorkingName(null);
+    await refreshAll();
+  };
+
   const runOpenPR = async (m: (typeof members)[number]) => {
     setWorkingName(m.name);
     setActionMessage(null);
@@ -707,6 +736,7 @@ function FlowWorkspaceReview({
             onViewDiff={() => onPickMember(m.name)}
             onMerge={() => void runMerge(m)}
             onPush={() => void runPush(m)}
+            onCheckoutLocally={() => void runCheckoutLocally(m)}
             onOpenPR={() => void runOpenPR(m)}
             onReveal={() => void window.overcli.invoke('fs:openInFinder', m.worktreePath)}
           />
@@ -727,6 +757,7 @@ function MemberCard({
   onViewDiff,
   onMerge,
   onPush,
+  onCheckoutLocally,
   onOpenPR,
   onReveal,
 }: {
@@ -740,6 +771,7 @@ function MemberCard({
   onViewDiff: () => void;
   onMerge: () => void;
   onPush: () => void;
+  onCheckoutLocally: () => void;
   onOpenPR: () => void;
   onReveal: () => void;
 }) {
@@ -815,6 +847,14 @@ function MemberCard({
             Open PR
           </button>
         )}
+        <button
+          onClick={onCheckoutLocally}
+          disabled={status == null || busyGlobal}
+          title={`Remove this worktree and switch ${name}'s repo to ${branchName} so you can build/run it locally. Auto-commits the worktree and stashes any project work-in-progress first.`}
+          className="px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
+        >
+          {busy ? 'Working…' : 'Check out locally'}
+        </button>
         <div className="flex-1" />
         <button onClick={onReveal} className="px-2 py-1 text-[10px] text-ink-faint hover:text-ink">
           Reveal

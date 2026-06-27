@@ -178,6 +178,15 @@ html, body {
   -webkit-app-region: no-drag;
 }
 
+/* Opt-out for chip/pill rows where a reserved scrollbar gutter would offset
+   vertical alignment — content still scrolls via trackpad. */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Custom scrollbar — thin, theme-aware via CSS vars. */
 ::-webkit-scrollbar {
   width: 10px;
