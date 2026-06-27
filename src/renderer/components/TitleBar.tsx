@@ -54,14 +54,17 @@ export function TitleBar() {
             setDetailMode('orchestrator');
           }}
         />
-        {/* Separator: Chat / Flows / Orchestrator are action-oriented
-            (they start work); Local + Usage are passive dashboards. A
-            divider sets the latter apart so the grouping reads. */}
-        <div className="w-px h-4 bg-card-border mx-1.5" />
+      </div>
+      <div className="flex-1" />
+      {/* Local + Usage are passive dashboards, not action surfaces, so
+          they sit on the right alongside the info/settings controls.
+          They stay text tabs (they swap the main pane), with a divider
+          before the icon buttons so "tabs | icons" reads cleanly. */}
+      <div className="flex items-center gap-1 no-drag">
         <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
         <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
       </div>
-      <div className="flex-1" />
+      <div className="w-px h-4 bg-card-border mx-2" />
       <button
         onClick={() => openSheet({ type: 'about' })}
         className="no-drag p-1 mr-1 text-ink-muted hover:text-ink rounded hover:bg-card-strong"

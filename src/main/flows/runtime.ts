@@ -262,12 +262,25 @@ export class FlowRuntimeImpl {
     private getSettings: () => AppSettings,
     private getWorkspaces: () => Workspace[] = () => [],
   ) {
-    // Restore checkpointed runs from prior sessions. `loadAllRuns` already
-    // demotes any state === 'running' entries to 'aborted' (their step
-    // subprocesses are dead), so what comes back is either done, aborted,
-    // or paused — the latter resumable via resumeRun.
+    // Restore checkpointed runs from prior sessions. `loadAllRuns` demotes
+    // any `running` entry to 'aborted' (it died mid-step, its subprocess is
+    // gone), so what comes back is done, aborted, archived, watching, or
+    // paused. A paused run is resumable via `resumeRun`, which starts the
+    // next step fresh — no live subprocess required.
     for (const run of loadAllRuns()) {
       this.runs.set(run.id, run);
+      // Seed conversation→run routing for restored non-terminal runs so
+      // `observeEvent` can resolve their conversations again. Without this,
+      // hijack-chatting the prior participant during a restored `preStep`
+      // pause wouldn't be captured (`pauseChatHappened` never set), so the
+      // finalize-on-Continue round-trip couldn't fold that chat into the
+      // artifact. `executeStep`/`watchTick` re-register on their own once
+      // the run advances, but the pause window needs routing up front.
+      if (run.state.kind === 'paused' || run.state.kind === 'watching') {
+        for (const convId of Object.values(run.conversationIds)) {
+          this.convIdToRun.set(convId, run.id);
+        }
+      }
     }
     // If any restored run is still `watching`, re-arm the sweep so its poll
     // loop resumes. The watcher's subprocess is dead, but its conversation
