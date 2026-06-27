@@ -87,7 +87,13 @@ export type ActiveSheet =
   | { type: 'quickSwitcher' }
   | { type: 'shortcutsHelp' };
 
-export type DetailMode = 'conversation' | 'stats' | 'local' | 'explorer' | 'flows';
+export type DetailMode =
+  | 'conversation'
+  | 'stats'
+  | 'local'
+  | 'explorer'
+  | 'flows'
+  | 'orchestrator';
 
 export interface OpenFileHighlight {
   startLine: number;
@@ -2335,16 +2341,32 @@ export const useStore = create<StoreState>((set, get) => ({
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
     useRunnersStore.getState().patchRunner(conversationId, { historyLoading: true });
-    const events = await window.overcli.invoke('runner:loadHistory', {
-      conversationId,
-      backend: conv.primaryBackend ?? defaultBackend(state.settings),
-      projectPath: cwd,
-      sessionId: conv.sessionId,
-      codexRolloutPaths: conv.codexRolloutPaths,
-      conversationCreatedAt: conv.createdAt,
-      conversationLastActiveAt: conv.lastActiveAt,
-      syntheticPrompts: conv.syntheticPrompts,
-    });
+    let events;
+    try {
+      events = await window.overcli.invoke('runner:loadHistory', {
+        conversationId,
+        backend: conv.primaryBackend ?? defaultBackend(state.settings),
+        projectPath: cwd,
+        sessionId: conv.sessionId,
+        codexRolloutPaths: conv.codexRolloutPaths,
+        conversationCreatedAt: conv.createdAt,
+        conversationLastActiveAt: conv.lastActiveAt,
+        syntheticPrompts: conv.syntheticPrompts,
+      });
+    } catch (e) {
+      // The main-process load can reject — e.g. fs.readFileSync throwing on
+      // an oversized JSONL from a long-running watched flow, or any other
+      // disk/parse error. Without this catch, historyLoading would stay
+      // `true` forever: the "Loading history…" spinner would never clear,
+      // AND the historyLoading guard above would block every retry. Mark it
+      // loaded so the chat falls back to the empty/intro view, and clear the
+      // spinner so a re-open can try again.
+      console.error('loadHistoryIfNeeded failed', conversationId, e);
+      useRunnersStore
+        .getState()
+        .patchRunner(conversationId, { historyLoading: false, historyLoaded: true });
+      return;
+    }
     useRunnersStore.getState().patchRunner(conversationId, (existingRunner) => {
       // History events are inserted at the front; live events (if any came
       // in during the load) stay at the back, in timestamp order.
@@ -2750,6 +2772,18 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (event.type === 'flowRunDeleted') {
       void import('./flowsStore').then(({ useFlowsStore }) => {
         useFlowsStore.getState().removeRun(event.runId);
+      });
+    } else if (event.type === 'orchestrationUpdate') {
+      void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
+        useOrchestratorStore.getState().applyOrchestrationUpdate(event.orchestration);
+      });
+    } else if (event.type === 'orchestrationDeleted') {
+      void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
+        useOrchestratorStore.getState().removeOrchestration(event.id);
+      });
+    } else if (event.type === 'orchestrationProducerProgress') {
+      void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
+        useOrchestratorStore.getState().applyProducerProgress(event.text, event.tools);
       });
     }
   },

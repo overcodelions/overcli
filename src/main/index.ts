@@ -69,6 +69,7 @@ import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
+import { OrchestratorImpl } from './flows/orchestrator';
 import { flushRuns } from './flows/runsStore';
 import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
@@ -112,6 +113,7 @@ let runner: RunnerManager | null = null;
 // handlers below short-circuit to "not initialized" so the renderer can
 // already load flows and build them without a crash on Run.
 let flowRuntime: FlowRuntime | null = null;
+let orchestrator: OrchestratorImpl | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -193,6 +195,18 @@ function registerIpc(): void {
     () => Store.load().settings,
     () => Store.load().workspaces,
   );
+  // The orchestrator drives the runtime (launching child runs) and listens
+  // to it (pumping the queue when a child finishes). Wire the observer AFTER
+  // both exist so the runtime can notify the orchestrator on every terminal
+  // run update.
+  orchestrator = new OrchestratorImpl(
+    runner,
+    flowRuntime,
+    flowAwareEmit,
+    () => Store.load().projects,
+    () => Store.load().settings,
+  );
+  flowRuntime.setRunObserver((run) => orchestrator?.onRunUpdate(run));
 
   ipcMain.handle('store:load', () => Store.load());
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
@@ -656,6 +670,35 @@ function registerIpc(): void {
   ipcMain.handle('flows:browseRegistry', (_e, args) => browseRegistries(args ?? {}));
   ipcMain.handle('flows:installFromRegistry', (_e, args) => installFromRegistry(args));
   ipcMain.handle('flows:previewRegistryFlow', (_e, args) => previewRegistryFlow(args));
+
+  // Orchestrator: producer turn + batch dispatch over flows.
+  ipcMain.handle('orchestrator:propose', (_e, args) =>
+    orchestrator
+      ? orchestrator.propose(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:startBatch', (_e, args) =>
+    orchestrator
+      ? orchestrator.startBatch(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:list', () => (orchestrator ? orchestrator.list() : []));
+  ipcMain.handle('orchestrator:get', (_e, { id }) => (orchestrator ? orchestrator.get(id) : null));
+  ipcMain.handle('orchestrator:abort', (_e, args) =>
+    orchestrator
+      ? orchestrator.abort(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:retry', (_e, args) =>
+    orchestrator
+      ? orchestrator.retry(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:delete', (_e, args) =>
+    orchestrator
+      ? orchestrator.delete(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting

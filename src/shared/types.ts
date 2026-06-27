@@ -3,6 +3,7 @@
 // types so the JSON persistence shape stays compatible where it can.
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
+import type { Candidate, Orchestration } from './flows/orchestration';
 import type { FlowTemplate } from './flows/templates';
 
 export type UUID = string;
@@ -1201,6 +1202,52 @@ export interface IPCInvokeMap {
     { ok: true; filePath: string } | { ok: false; error: string };
   'flows:previewRegistryFlow': (args: { registryId: string; id: string; version: string }) =>
     { ok: true; flow: Flow } | { ok: false; error: string };
+
+  // ---- Orchestrator (batch fan-out over flows) --------------------------
+  /// Run one producer turn: ask the user's preferred AI (with its MCP
+  /// tools) to investigate `message` and return a list of small,
+  /// self-contained asks. The reply text is shown in the conversation
+  /// pane; `candidates` is the parsed `<candidates>` block. `priorReply`
+  /// carries the previous turn so a refinement ("only the docs ones")
+  /// builds on context. Read-only — the producer never edits files.
+  'orchestrator:propose': (args: {
+    message: string;
+    projectPath: string;
+    priorPrompt?: string;
+    priorReply?: string;
+  }) =>
+    | { ok: true; reply: string; candidates: Candidate[] }
+    | { ok: false; error: string };
+  /// Launch a batch: one child flow run per item, each in its own
+  /// worktree, never more than `maxConcurrent` in flight. Returns the new
+  /// orchestration id; progress streams back via `orchestrationUpdate`.
+  'orchestrator:startBatch': (args: {
+    title: string;
+    projectPath: string;
+    baseBranch?: string;
+    maxConcurrent: number;
+    producer?: { prompt: string; reply: string };
+    items: Array<{
+      candidate: Candidate;
+      flowId: string;
+      baseBranch?: string;
+    }>;
+  }) => { ok: true; orchestrationId: UUID } | { ok: false; error: string };
+  /// All orchestrations (in-memory + restored), newest first.
+  'orchestrator:list': () => Orchestration[];
+  'orchestrator:get': (args: { id: UUID }) => Orchestration | null;
+  /// Abort a whole batch: queued items become `cancelled`, running child
+  /// runs are aborted. Idempotent.
+  'orchestrator:abort': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Re-queue failed/cancelled items. With `candidateId`, retry just that
+  /// item; without, retry all failed/cancelled items in the batch. Each
+  /// retry launches a fresh child run in a new worktree.
+  'orchestrator:retry': (args: { id: UUID; candidateId?: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// Permanently delete a batch record (does not touch the child runs'
+  /// own history). Idempotent.
+  'orchestrator:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
 }
 
 export type ArtifactPreviewResult =
@@ -1481,6 +1528,30 @@ export type MainToRendererEvent =
       /// in-memory map so the library doesn't keep showing a ghost.
       type: 'flowRunDeleted';
       runId: UUID;
+    }
+  | {
+      /// An orchestration (batch) changed — an item launched, a child run
+      /// finished and the next pumped, or the batch completed. The
+      /// renderer's orchestratorStore replaces its copy. Coarse-grained on
+      /// purpose: a batch is small (a handful of items) so whole-record
+      /// updates are cheap and keep the ledger trivially consistent.
+      type: 'orchestrationUpdate';
+      orchestration: Orchestration;
+    }
+  | {
+      /// An orchestration record was deleted from main.
+      type: 'orchestrationDeleted';
+      id: UUID;
+    }
+  | {
+      /// Live progress of the in-flight producer turn — the running
+      /// assistant text and the tools it has invoked so far. Lets the
+      /// Orchestrator's Ask pane stream the investigation like the chat
+      /// interface instead of showing a blank spinner. Only one producer
+      /// turn runs at a time, so this carries no id.
+      type: 'orchestrationProducerProgress';
+      text: string;
+      tools: string[];
     }
   /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
   /// conversation — consumed by the global UpdateToast.

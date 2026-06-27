@@ -43,6 +43,21 @@ export function TitleBar() {
             setDetailMode('flows');
           }}
         />
+        <NavButton
+          label="Orchestrator"
+          active={detailMode === 'orchestrator'}
+          onClick={() => {
+            // Like Flows, clicking the tab should land on the Orchestrator's
+            // own surface, not a leftover run detail from another tab.
+            setActiveRun(null);
+            closeFlowEditor();
+            setDetailMode('orchestrator');
+          }}
+        />
+        {/* Separator: Chat / Flows / Orchestrator are action-oriented
+            (they start work); Local + Usage are passive dashboards. A
+            divider sets the latter apart so the grouping reads. */}
+        <div className="w-px h-4 bg-card-border mx-1.5" />
         <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
         <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
       </div>

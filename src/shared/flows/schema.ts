@@ -392,6 +392,15 @@ export interface FlowRun {
     priorOutput: string;
     startedAt: number;
   };
+  /// Set when this run was launched as one item of an Orchestrator batch.
+  /// Links the child run back to its parent orchestration so the batch
+  /// ledger can group it and the runtime can notify the orchestrator to
+  /// pump the next queued item when this run reaches a terminal state.
+  parentOrchestrationId?: UUID;
+  /// Human title of the orchestration item this run came from (the
+  /// candidate's title). Display only — lets a run surfaced on its own
+  /// (sidebar, run pane) show which ask spawned it.
+  orchestrationItemTitle?: string;
 }
 
 /// The project/workspace a run logically belongs to — i.e. where the user

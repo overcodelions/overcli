@@ -90,6 +90,13 @@ export interface FlowRuntimeStartArgs {
   /// Base branch to fork the worktree from. Required when
   /// `runIn === 'worktree'`. Ignored otherwise.
   baseBranch?: string;
+  /// Set when this run is one item of an Orchestrator batch. Recorded on
+  /// the FlowRun so the runtime's run observer can route the run's terminal
+  /// state back to the orchestrator (which pumps the next queued item).
+  parentOrchestrationId?: UUID;
+  /// The orchestration item's human title (the candidate's title), stored
+  /// on the run for display when it's surfaced on its own.
+  orchestrationItemTitle?: string;
 }
 
 export interface FlowRuntimeResumeArgs {
@@ -179,6 +186,13 @@ export class FlowRuntimeImpl {
   /// next diff step falls back to diffing against the run's baseline
   /// commit (i.e. cumulative), which degrades gracefully.
   private diffSnapshots = new Map<UUID, Map<string, string>>();
+
+  /// Optional observer notified on every run state change. The orchestrator
+  /// registers here so it can react when a child run (one launched as part
+  /// of a batch) reaches a terminal state and pump the next queued item.
+  /// Kept as a single callback rather than an event-emitter — there's
+  /// exactly one consumer and the runtime stays dependency-free of it.
+  private runObserver: ((run: FlowRun) => void) | null = null;
 
   /// Launch-prompt attachments (images / files) per run, handed to the
   /// step(s) that read `user_prompt`. In-memory only — they're consumed by
@@ -641,6 +655,8 @@ export class FlowRuntimeImpl {
       baselineCommit,
       baselineCommitsByMember,
       workspaceWorktrees,
+      parentOrchestrationId: args.parentOrchestrationId,
+      orchestrationItemTitle: args.orchestrationItemTitle,
     };
     this.runs.set(runId, run);
     if (args.attachments && args.attachments.length > 0) {
@@ -1101,7 +1117,20 @@ export class FlowRuntimeImpl {
   archiveRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
-    const watch = run.state.kind === 'watching' ? run.state.watch : undefined;
+    // Preserve a previously-saved watch when re-archiving an already-archived
+    // run. archiveRun can fire more than once on the same run (e.g. a quick
+    // double-click on Archive, or a click on a stale card after the run was
+    // already archived) because the Archive button isn't debounced and state
+    // propagates back to the renderer asynchronously. Only the FIRST call sees
+    // `watching`; if a later call fell through to `undefined` here it would
+    // clobber the saved watch, leaving an archived run with no `watch` and so
+    // no way to resume it.
+    const watch =
+      run.state.kind === 'watching'
+        ? run.state.watch
+        : run.state.kind === 'archived'
+          ? run.state.watch
+          : undefined;
     // If a tick is in flight, stop the watcher's subprocess so it doesn't
     // post a stray reply after the user closed the watch.
     if (run.state.kind === 'watching' && this.watchTicking.has(run.id)) {
@@ -1983,8 +2012,25 @@ export class FlowRuntimeImpl {
     this.emit({ type: 'error', conversationId: run.id, message });
   }
 
+  /// Register the run observer (see `runObserver`). Called once at wiring
+  /// time in main/index.ts after both the runtime and orchestrator exist.
+  setRunObserver(cb: (run: FlowRun) => void): void {
+    this.runObserver = cb;
+  }
+
   private emitRunUpdate(run: FlowRun): void {
     this.emit({ type: 'flowRunUpdate', run: structuredClone(run) });
+    // Notify the orchestrator (if any) so a batch child run's terminal
+    // state can pump the next queued item. Isolated in a try so an
+    // observer fault can never break the run's own update emission.
+    if (this.runObserver) {
+      try {
+        this.runObserver(run);
+      } catch {
+        // best-effort — orchestration is a side-channel, not load-bearing
+        // for the run itself.
+      }
+    }
   }
 }
 
