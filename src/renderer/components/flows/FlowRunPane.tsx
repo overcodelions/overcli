@@ -159,7 +159,15 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 Abort
               </button>
             )}
-            {run.state.kind === 'done' && (
+            {/* Watch entry point. Always offered on a completed run; also
+                offered on an archived run that has NO saved watch — otherwise
+                that run is stranded with no way to (re)start a watch, since
+                the archived summary row + its Resume button only render when
+                `state.watch` exists. An archived run that DOES still have its
+                watch gets its Resume affordance from WatchSection instead, so
+                we don't duplicate a trigger here. */}
+            {(run.state.kind === 'done' ||
+              (run.state.kind === 'archived' && !run.state.watch)) && (
               <button
                 onClick={() => setWatchSetupOpen((v) => !v)}
                 className={
@@ -292,6 +300,7 @@ function WatchSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [archiving, setArchiving] = useState(false);
 
   useEffect(() => {
     if (!open || sources.length > 0) return;
@@ -533,13 +542,20 @@ function WatchSection({
               Log{logCount > 0 ? ` (${logCount})` : ''}
             </button>
             <button
+              disabled={archiving}
               onClick={() => {
+                // Guard against a double-fire — the run state round-trips back
+                // through IPC asynchronously, so without this a quick second
+                // click would invoke archiveRun again on an already-archived
+                // run.
+                if (archiving) return;
+                setArchiving(true);
                 void window.overcli.invoke('flows:archiveRun', { runId: run.id });
               }}
-              className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink transition-colors"
+              className="shrink-0 text-xs font-medium px-3 py-1.5 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               title="Stop watching and archive this run"
             >
-              Archive
+              {archiving ? 'Archiving…' : 'Archive'}
             </button>
           </div>
           {logOpen && <WatchLog log={w.log} />}
