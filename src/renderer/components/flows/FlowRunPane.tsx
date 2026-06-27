@@ -126,13 +126,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
           <RunStateBadge state={run.state} />
           <RunTokenSummary run={run} />
           <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
-          <div className="flex-1 min-w-0 overflow-x-auto">
-            <InlineStepPipeline
-              run={run}
-              activeStepId={activeStepId}
-              onPick={setFocusStepId}
-            />
-          </div>
+          <div className="flex-1 min-w-0" />
           <div className="flex items-center gap-2">
             {activeParticipant && (
               <HijackModelPicker
@@ -217,6 +211,16 @@ export function FlowRunPane({ runId }: { runId: string }) {
               </button>
             )}
           </div>
+        </div>
+        {/* Step pipeline gets its own full-width row so it can breathe and
+            stays vertically clean — keeping it inline with the title/actions
+            row left the pills offset by the reserved scrollbar gutter. */}
+        <div className="overflow-x-auto no-scrollbar -mx-0.5 px-0.5 mb-1">
+          <InlineStepPipeline
+            run={run}
+            activeStepId={activeStepId}
+            onPick={setFocusStepId}
+          />
         </div>
         {/* Original prompt as subtitle. Sits directly under the flow
             name, treats the user's words as the run's identity. */}

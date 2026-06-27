@@ -126,15 +126,16 @@ describe('loadAllRuns', () => {
     expect(runs.map((run) => run.id)).toEqual(['new', 'mid', 'old']);
   });
 
-  it('marks paused and running runs as aborted before restoring them', async () => {
+  it('aborts running runs but restores paused runs as-is', async () => {
     fs.mkdirSync(runDir(), { recursive: true });
     fs.writeFileSync(
       runPath('running'),
       JSON.stringify(makeRun({ id: 'running', state: { kind: 'running', currentStepId: 'plan' } })),
     );
+    const pausedState = { kind: 'paused', nextStepId: 'plan', reason: 'failure' } as const;
     fs.writeFileSync(
       runPath('paused'),
-      JSON.stringify(makeRun({ id: 'paused', state: { kind: 'paused', nextStepId: 'plan', reason: 'failure' } })),
+      JSON.stringify(makeRun({ id: 'paused', state: pausedState })),
     );
 
     const runs = loadAllRuns();
@@ -142,11 +143,14 @@ describe('loadAllRuns', () => {
     // saveRun, so flush before asserting the on-disk write landed.
     await flushRuns();
 
-    expect(runs.map((run) => run.state)).toEqual([
-      { kind: 'aborted' },
-      { kind: 'aborted' },
-    ]);
+    const byId = Object.fromEntries(runs.map((run) => [run.id, run.state]));
+    // A `running` run died mid-step → demoted to aborted, and the fix is
+    // persisted so a second restart doesn't keep re-aborting it.
+    expect(byId.running).toEqual({ kind: 'aborted' });
     expect(JSON.parse(fs.readFileSync(runPath('running'), 'utf8')).state).toEqual({ kind: 'aborted' });
-    expect(JSON.parse(fs.readFileSync(runPath('paused'), 'utf8')).state).toEqual({ kind: 'aborted' });
+    // A `paused` run sits between steps with no live subprocess → survives
+    // restart untouched, so it stays resumable via resumeRun.
+    expect(byId.paused).toEqual(pausedState);
+    expect(JSON.parse(fs.readFileSync(runPath('paused'), 'utf8')).state).toEqual(pausedState);
   });
 });
