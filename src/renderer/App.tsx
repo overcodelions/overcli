@@ -11,6 +11,7 @@ import { LocalPane } from './components/LocalPane';
 import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
+import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { useFlowsStore } from './flowsStore';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
@@ -109,6 +110,12 @@ export function App() {
     void window.overcli.invoke('flows:listRuns').then((runs) => {
       const apply = useFlowsStore.getState().applyRunUpdate;
       for (const r of runs) apply(r);
+    });
+    // Hydrate orchestrations too, so an in-progress batch's ledger survives a
+    // window refresh even if the user lands on a different tab — the batch
+    // and its runs live in main and keep going regardless.
+    void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
+      void useOrchestratorStore.getState().reload();
     });
   }, []);
 
@@ -228,6 +235,8 @@ export function App() {
             <ExplorerPane />
           ) : detailMode === 'flows' ? (
             <FlowsLibraryPane />
+          ) : detailMode === 'orchestrator' ? (
+            <OrchestratorPane />
           ) : selectedConversationId ? (
             <ConversationPane />
           ) : (

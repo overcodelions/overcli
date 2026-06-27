@@ -418,7 +418,20 @@ export class RunnerManager {
   /// when the turn finishes — see `oneShot`.
   private oneShotWaiters = new Map<
     UUID,
-    { text: string; settled: boolean; finish: (r: OneShotResult) => void }
+    {
+      text: string;
+      settled: boolean;
+      finish: (r: OneShotResult) => void;
+      /// Live progress plumbing — populated only when the caller passed an
+      /// `onProgress` hook (the orchestrator producer, which streams its
+      /// investigation into the UI). `partial` is the cumulative snapshot of
+      /// the message currently streaming; `tools`/`seenToolIds` track which
+      /// tools the turn has invoked so the UI can show "calling X".
+      partial: string;
+      tools: string[];
+      seenToolIds: Set<string>;
+      onProgress?: (snap: { text: string; tools: string[] }) => void;
+    }
   >();
 
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
@@ -449,6 +462,19 @@ export class RunnerManager {
     prompt: string;
     cwd: string;
     timeoutMs?: number;
+    /// Permission mode for the hidden turn. Defaults to `'default'` — right
+    /// for pure text generation (the drafter), which never calls tools. A
+    /// caller that NEEDS the turn to invoke tools unattended (e.g. the
+    /// orchestrator producer calling MCP servers to gather requests) passes
+    /// `'bypassPermissions'`, otherwise tool calls stall on an approval no
+    /// one can answer until the turn times out.
+    permissionMode?: PermissionMode;
+    /// Live progress hook. When set, fires as the turn streams — with the
+    /// running assistant text and the list of tools it has invoked so far —
+    /// so a caller can surface "what it's doing" instead of a blank spinner.
+    /// Throttle/coalesce on the consumer side; the runner calls it once per
+    /// batched stream event.
+    onProgress?: (snap: { text: string; tools: string[] }) => void;
   }): Promise<OneShotResult> {
     const conversationId = randomUUID();
     const timeoutMs = args.timeoutMs ?? 120_000;
@@ -476,16 +502,25 @@ export class RunnerManager {
         () => finish({ ok: false, error: `Timed out after ${Math.round(timeoutMs / 1000)}s.` }),
         timeoutMs,
       );
-      this.oneShotWaiters.set(conversationId, { text: '', settled: false, finish });
+      this.oneShotWaiters.set(conversationId, {
+        text: '',
+        settled: false,
+        finish,
+        partial: '',
+        tools: [],
+        seenToolIds: new Set(),
+        onProgress: args.onProgress,
+      });
       const sent = this.send({
         conversationId,
         prompt: args.prompt,
         backend: args.backend,
         cwd: args.cwd,
         model: args.model,
-        // Read-only generation: no edits expected, but keep prompts off so
-        // the hidden conversation can't stall on an unanswerable approval.
-        permissionMode: 'default',
+        // Default: pure generation with no edits, prompts off so the hidden
+        // conversation can't stall on an unanswerable approval. Callers that
+        // need unattended tool use (the producer) override this.
+        permissionMode: args.permissionMode ?? 'default',
         reviewBackend: null,
         reviewMode: null,
         reviewModel: null,
@@ -510,15 +545,30 @@ export class RunnerManager {
     if (waiter.settled) return true; // mid-teardown — swallow trailing events
     if (event.type === 'stream') {
       for (const ev of event.events) {
-        if (
-          ev.kind.type === 'assistant' &&
-          !ev.kind.info.isPartial &&
-          !ev.reviewer &&
-          ev.kind.info.text
-        ) {
-          waiter.text += ev.kind.info.text;
+        if (ev.kind.type !== 'assistant' || ev.reviewer) continue;
+        const info = ev.kind.info;
+        if (info.isPartial) {
+          // Cumulative snapshot of the message currently streaming.
+          if (info.text) waiter.partial = info.text;
+        } else if (info.text) {
+          // A message finished — fold it into the final text and clear the
+          // in-progress snapshot.
+          waiter.text += info.text;
+          waiter.partial = '';
+        }
+        // Collect tool invocations (dedup by id) from partial or final
+        // events so live activity shows as soon as a tool is called.
+        for (const tu of info.toolUses ?? []) {
+          if (tu.id && !waiter.seenToolIds.has(tu.id)) {
+            waiter.seenToolIds.add(tu.id);
+            if (tu.name) waiter.tools.push(tu.name);
+          }
         }
       }
+      waiter.onProgress?.({
+        text: (waiter.text + waiter.partial).trim(),
+        tools: waiter.tools.slice(),
+      });
     } else if (event.type === 'error') {
       waiter.settled = true;
       waiter.finish({ ok: false, error: event.message });
