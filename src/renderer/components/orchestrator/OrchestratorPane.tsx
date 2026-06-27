@@ -10,7 +10,7 @@
 // with a concurrency cap. Launched candidates leave pane ② and appear in the
 // pane ③ queue with live status.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useStore } from '../../store';
 import { useFlowsStore } from '../../flowsStore';
@@ -76,8 +76,20 @@ export function OrchestratorPane() {
     [s.orchestrations],
   );
 
-  // Queue column width — drag the divider to resize, double-click to reset.
+  // Queue column width — defaults to a third of the bottom section, then the
+  // user can drag the divider to resize (double-click resets). Measured once
+  // after layout so it scales with the window instead of a fixed pixel guess.
+  const bottomRef = useRef<HTMLDivElement>(null);
   const [queueWidth, setQueueWidth] = useState(560);
+  const measuredQueueWidth = useRef(false);
+  useLayoutEffect(() => {
+    if (measuredQueueWidth.current) return;
+    const w = bottomRef.current?.clientWidth ?? 0;
+    if (w > 0) {
+      measuredQueueWidth.current = true;
+      setQueueWidth(Math.max(320, Math.min(900, Math.round(w / 3))));
+    }
+  }, []);
 
   const targetName = targets.find((t) => t.path === s.projectPath)?.name ?? null;
 
@@ -89,6 +101,7 @@ export function OrchestratorPane() {
           triaging while runs progress instead of scrolling between them. The
           divider is a draggable resize handle. */}
       <div
+        ref={bottomRef}
         className="flex-1 flex min-h-0 border-t"
         style={{ borderTopColor: 'var(--c-card-bg)' }}
       >
@@ -122,29 +135,34 @@ function StepBadge({ n }: { n: number }) {
 /// in the composer to edit + send. Deliberately source-agnostic in spirit:
 /// the producer uses whatever MCP/tools are connected, so these are examples,
 /// not a fixed integration list.
-const PRODUCER_EXAMPLES: Array<{ label: string; prompt: string }> = [
+const PRODUCER_EXAMPLES: Array<{ label: string; blurb: string; prompt: string }> = [
   {
     label: 'ProductBoard',
+    blurb: 'Recent insights → small, self-contained asks',
     prompt:
       'Pull the recent ProductBoard insights and pick out the small, self-contained asks I could knock out individually.',
   },
   {
     label: 'GitHub issues',
+    blurb: 'Open “good first issue” / “papercut” fixes',
     prompt:
       'List the open GitHub issues labeled "good first issue" or "papercut" and surface the ones that are a single, low-ambiguity fix.',
   },
   {
     label: 'Linear / Jira',
+    blurb: 'Well-scoped tickets in the current cycle',
     prompt:
       'Look at my open Linear tickets in the current cycle and find the small, well-scoped ones that could each be done in one focused change.',
   },
   {
     label: 'Zendesk tickets',
+    blurb: 'Recent bug tickets that map to one fix',
     prompt:
       'Scan recent Zendesk tickets tagged as bugs and pull out the small, reproducible ones that map to a single code fix.',
   },
   {
     label: 'Sentry errors',
+    blurb: 'Top recurring errors that look contained',
     prompt:
       'Look at the top recurring Sentry errors from the last week and find the ones that look like a small, contained fix.',
   },
@@ -298,29 +316,34 @@ function ProducerBody({
     <>
       <div ref={scrollRef} className="overflow-y-auto px-4 pb-2 max-h-[40vh]">
         {turns.length === 0 && !proposing && (
-          <div className="max-w-2xl mt-2">
-            <div className="text-sm text-ink-faint leading-relaxed">
-              Ask the AI to pull a source of requests and find the small,
-              self-contained asks. It investigates with whatever tools and MCP
-              servers you have connected, then returns a candidate list below.
-              Try one of these:
+          <div className="max-w-3xl mx-auto mt-6 mb-3 text-center">
+            <h3 className="text-lg font-semibold text-ink">Turn a backlog into a batch of flows</h3>
+            <p className="text-sm text-ink-faint leading-relaxed mt-1.5 max-w-xl mx-auto">
+              The producer investigates with your connected tools and MCP servers, then
+              returns a list of small, self-contained asks. Map each to a flow and launch
+              them together — one git worktree per ask.
+            </p>
+            <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mt-5 mb-2">
+              Start from an example
             </div>
-            <div className="flex flex-col gap-1.5 mt-3">
+            <div className="grid grid-cols-2 gap-2 text-left">
               {PRODUCER_EXAMPLES.map((ex) => (
                 <button
                   key={ex.label}
                   onClick={() => setDraft(ex.prompt)}
-                  className="text-left text-sm px-3 py-2 rounded-lg bg-card hover:bg-card-strong"
+                  className="group p-3 rounded-lg bg-card hover:bg-card-strong transition-colors"
                 >
-                  <span className="text-ink-muted font-medium">{ex.label}</span>
-                  <span className="text-ink-faint"> — {ex.prompt}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-[13px] text-ink">{ex.label}</span>
+                    <span className="ml-auto text-[11px] text-accent opacity-0 group-hover:opacity-100 transition-opacity">
+                      use →
+                    </span>
+                  </div>
+                  <div className="text-xs text-ink-faint mt-0.5 leading-snug">{ex.blurb}</div>
                 </button>
               ))}
             </div>
-            <div className="text-xs text-ink-faint mt-2">
-              Pick a starter to drop it in the box, then edit and send — or just
-              type your own.
-            </div>
+            <p className="text-xs text-ink-faint mt-3">…or just type your own below.</p>
           </div>
         )}
         {turns.map((t, i) => (
@@ -516,8 +539,12 @@ function MapPane({
 
       <div className="flex-1 overflow-y-auto px-4 pb-3 min-h-0">
         {candidates.length === 0 ? (
-          <div className="text-sm text-ink-faint mt-3">
-            No candidates yet — ask the producer above for a list.
+          <div className="h-full min-h-[140px] grid place-items-center text-center">
+            <div className="text-sm text-ink-faint max-w-xs">
+              Candidates you map to flows will appear here.
+              <br />
+              Ask the producer above to get a list.
+            </div>
           </div>
         ) : (
           <>
