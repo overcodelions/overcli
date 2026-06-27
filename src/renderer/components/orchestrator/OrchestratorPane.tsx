@@ -921,7 +921,7 @@ function LedgerRow({
   return (
     <div
       className="relative grid items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors"
-      style={{ gridTemplateColumns: '1fr 128px 78px' }}
+      style={{ gridTemplateColumns: '1fr 112px 96px' }}
     >
       <span
         className={
@@ -953,10 +953,18 @@ function LedgerRow({
       {retryable ? (
         <button
           onClick={retry}
-          className="text-xs font-medium text-right text-ink-faint hover:text-accent"
+          className="text-xs font-medium text-right text-ink-faint hover:text-accent whitespace-nowrap"
           title={item.note ? `${item.note} — click to retry` : 'Retry this item'}
         >
           ↻ retry
+        </button>
+      ) : item.status === 'paused' ? (
+        <button
+          onClick={openRun}
+          className="text-xs font-medium text-right text-amber-400 hover:text-amber-300 whitespace-nowrap"
+          title="Paused at a checkpoint — continue this run in the Flows tab"
+        >
+          continue →
         </button>
       ) : (
         <StatusLabel item={item} />
@@ -968,7 +976,7 @@ function LedgerRow({
 function StatusLabel({ item }: { item: OrchestrationItem }) {
   const map: Record<string, { text: string; cls: string }> = {
     running: { text: 'running…', cls: 'text-green-400' },
-    paused: { text: 'paused · continue in Flows', cls: 'text-amber-400' },
+    paused: { text: 'paused', cls: 'text-amber-400' },
     queued: { text: 'queued', cls: 'text-ink-muted' },
     done: { text: 'done', cls: 'text-accent' },
     failed: { text: 'failed', cls: 'text-red-400' },
@@ -976,7 +984,10 @@ function StatusLabel({ item }: { item: OrchestrationItem }) {
   };
   const v = map[item.status] ?? map.queued;
   return (
-    <span className={`text-xs font-semibold text-right ${v.cls}`} title={item.note ?? undefined}>
+    <span
+      className={`text-xs font-semibold text-right whitespace-nowrap ${v.cls}`}
+      title={item.note ?? undefined}
+    >
       {v.text}
     </span>
   );
