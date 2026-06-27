@@ -609,6 +609,8 @@ function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void })
   const workspaces = useStore((s) => s.workspaces);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
+  const setLaunchProgress = useFlowsStore((s) => s.setLaunchProgress);
+  const launchProgressMap = useFlowsStore((s) => s.launchProgress);
   const setDraft = useStore((s) => s.setDraft);
   const clearAttachments = useStore((s) => s.clearAttachments);
 
@@ -677,6 +679,7 @@ function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void })
       setActiveRun(result.runId);
     } finally {
       setSubmitting(false);
+      setLaunchProgress(targetPath, null);
     }
   }
 
@@ -729,6 +732,7 @@ function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void })
       baseBranch={baseBranch}
       onBaseBranch={setBaseBranch}
       baseBranchRepoPaths={baseBranchRepoPaths}
+      launchProgress={launchProgressMap[targetPath]}
     />
   );
 }

@@ -470,6 +470,8 @@ function WelcomeFlowsRow({
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
+  const setLaunchProgress = useFlowsStore((s) => s.setLaunchProgress);
+  const launchProgressMap = useFlowsStore((s) => s.launchProgress);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
@@ -572,6 +574,7 @@ function WelcomeFlowsRow({
       setDetailMode('flows');
     } finally {
       setSubmitting(false);
+      setLaunchProgress(target, null);
     }
   }
 
@@ -650,6 +653,7 @@ function WelcomeFlowsRow({
           baseBranch={baseBranch}
           onBaseBranch={setBaseBranch}
           baseBranchRepoPaths={baseBranchRepoPaths}
+          launchProgress={launchProgressMap[target]}
         />
       )}
     </div>
