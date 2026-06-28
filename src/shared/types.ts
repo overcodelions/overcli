@@ -3,7 +3,7 @@
 // types so the JSON persistence shape stays compatible where it can.
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
-import type { Candidate, Orchestration } from './flows/orchestration';
+import type { Candidate, Orchestration, RecentPrompt } from './flows/orchestration';
 import type { FlowTemplate } from './flows/templates';
 
 export type UUID = string;
@@ -1236,6 +1236,14 @@ export interface IPCInvokeMap {
   /// All orchestrations (in-memory + restored), newest first.
   'orchestrator:list': () => Orchestration[];
   'orchestrator:get': (args: { id: UUID }) => Orchestration | null;
+  /// Recent producer seed prompts (newest first) for the Ask pane's
+  /// quick-pick. Only fresh asks are recorded — never refinements.
+  'orchestrator:recentPrompts': () => RecentPrompt[];
+  /// Record a fresh seed prompt. Dedupes by exact text + caps; returns the
+  /// updated list.
+  'orchestrator:recordRecentPrompt': (args: { text: string }) => RecentPrompt[];
+  /// Forget one recent prompt by exact text. Returns the updated list.
+  'orchestrator:deleteRecentPrompt': (args: { text: string }) => RecentPrompt[];
   /// Abort a whole batch: queued items become `cancelled`, running child
   /// runs are aborted. Idempotent.
   'orchestrator:abort': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
