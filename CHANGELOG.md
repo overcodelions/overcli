@@ -4,6 +4,24 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-28
+
+The Orchestrator: fan a backlog out into a batch of flow runs, one git worktree per ask. Plus paused-run durability, snappier flow launches, and a security dependency sweep.
+
+### Added
+- **Orchestrator — batch fan-out of flows.** A new tab turns a source of requests (product feedback, tickets, a backlog — reached through your connected MCP tools) into a list of small, self-contained asks, maps each to a flow, and launches them together under a concurrency cap, one git worktree per ask. The producer turn investigates read-only and emits a candidate list you can triage and remap before launching, and each batch persists as a ledger ("why did I launch these?") across restarts ([#88](https://github.com/overcodelions/overcli/pull/88)).
+- **Recent producer prompts.** The Orchestrator's Ask pane remembers the prompts you start fresh asks with and offers the most recent as one-click starters, so a good backlog query is re-runnable without retyping. Refinements are never recorded (they're meaningless out of context), and the list is deduped, capped, and persisted globally across projects ([#92](https://github.com/overcodelions/overcli/pull/92)).
+
+### Changed
+- **Launching a flow no longer freezes the app.** Worktree creation for a new run now happens asynchronously, so kicking off a flow — or a whole batch — keeps the UI responsive instead of blocking on git ([#89](https://github.com/overcodelions/overcli/pull/89)).
+
+### Fixed
+- **Paused flow runs stay paused across an app restart** instead of being demoted or silently resumed, so a human checkpoint survives a relaunch ([#90](https://github.com/overcodelions/overcli/pull/90)).
+- **Opening a flow run no longer duplicates its chat,** and opening runs is faster ([#91](https://github.com/overcodelions/overcli/pull/91)).
+
+### Security
+- **Patched vulnerable dependencies to clear every open Dependabot alert (16 → 0).** `dompurify` — the renderer's HTML sanitizer — was bumped to 3.4.11; `hono`, `shell-quote`, `form-data`, and `tar` were forced to patched versions via npm `overrides`, and regenerating the lockfile cleared four further dev-tooling advisories (babel/core, joi, js-yaml, vite) ([#93](https://github.com/overcodelions/overcli/pull/93)).
+
 ## [0.3.1] - 2026-06-09
 
 A bugfix release that makes packaged Claude usable again, plus the Fable 5 model.
@@ -104,7 +122,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/overcodelions/overcli/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/overcodelions/overcli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/overcodelions/overcli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/overcodelions/overcli/compare/v0.1.0...v0.2.0
