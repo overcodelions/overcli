@@ -97,6 +97,18 @@ export interface Orchestration {
   completedAt?: number;
 }
 
+/// A producer seed prompt the user has run before, offered as a one-click
+/// starter in the Ask pane. Only FRESH asks are recorded — refinements
+/// ("only the docs ones") are meaningless without their prior turn, so they
+/// never become standalone entries. Global, not per-project: a good ask is
+/// worth reusing across repos.
+export interface RecentPrompt {
+  /// The prompt text, trimmed.
+  text: string;
+  /// When it was last used (ms epoch) — drives newest-first ordering.
+  lastUsedAt: number;
+}
+
 /// Pull the `<candidates>…</candidates>` JSON block out of a producer reply
 /// and coerce it into Candidate[]. Tolerant by design — the model is told to
 /// emit clean JSON, but we salvage common near-misses (a bare array with no

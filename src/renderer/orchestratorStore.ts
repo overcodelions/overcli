@@ -10,7 +10,7 @@
 
 import { create } from 'zustand';
 
-import type { Candidate, Orchestration } from '@shared/flows/orchestration';
+import type { Candidate, Orchestration, RecentPrompt } from '@shared/flows/orchestration';
 
 /// Client-side overlay on a Candidate: the mapping decisions that aren't part
 /// of the producer's output. Keyed by candidate id in `itemConfig`.
@@ -46,6 +46,9 @@ interface OrchestratorState {
   projectPath: string | null;
   /// Producer conversation turns.
   turns: ProducerTurn[];
+  /// Past fresh asks (newest first), offered as one-click starters in the Ask
+  /// pane. Refinements are never recorded — they're meaningless out of context.
+  recentPrompts: RecentPrompt[];
   /// Whether a producer turn is in flight.
   proposing: boolean;
   /// Live streamed text of the in-flight producer turn (cleared when it
@@ -90,6 +93,9 @@ interface OrchestratorActions {
 
   propose(message: string): Promise<void>;
 
+  /// Forget a recent seed prompt from the quick-pick list.
+  removeRecentPrompt(text: string): Promise<void>;
+
   toggleCandidate(id: string): void;
   setCandidateFlow(id: string, flowId: string | null): void;
   setCandidateBranch(id: string, branch: string | null): void;
@@ -120,6 +126,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
 
   projectPath: null,
   turns: [],
+  recentPrompts: [],
   proposing: false,
   liveText: '',
   liveTools: [],
@@ -132,10 +139,13 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   openPrOnFinish: true,
 
   async reload() {
-    const list = await window.overcli.invoke('orchestrator:list');
+    const [list, recentPrompts] = await Promise.all([
+      window.overcli.invoke('orchestrator:list'),
+      window.overcli.invoke('orchestrator:recentPrompts'),
+    ]);
     const byId: Record<string, Orchestration> = {};
     for (const o of list) byId[o.id] = o;
-    set({ orchestrations: byId, loaded: true });
+    set({ orchestrations: byId, recentPrompts, loaded: true });
   },
 
   applyOrchestrationUpdate(o) {
@@ -203,6 +213,9 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     const priorTurns = get().turns;
     const priorPrompt = [...priorTurns].reverse().find((t) => t.role === 'user')?.text;
     const priorReply = [...priorTurns].reverse().find((t) => t.role === 'assistant')?.text;
+    // A fresh ask (no prior user turn) is what we record as a reusable prompt;
+    // refinements only make sense against their prior turn, so they're skipped.
+    const isFreshAsk = !priorPrompt;
 
     set((s) => ({
       turns: [...s.turns, { role: 'user', text: trimmed }],
@@ -224,6 +237,17 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       return;
     }
 
+    // Remember a successful fresh ask so it's a one-click starter next time.
+    // The main store dedupes + caps and hands back the updated list.
+    if (isFreshAsk) {
+      void window.overcli
+        .invoke('orchestrator:recordRecentPrompt', { text: trimmed })
+        .then((recentPrompts) => set({ recentPrompts }))
+        .catch(() => {
+          /* a failed recency write shouldn't disrupt the batch */
+        });
+    }
+
     set((s) => {
       // Merge config: keep overlays for candidates that survive (same id),
       // give fresh ones a default config (selected, suggested flow).
@@ -240,6 +264,11 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
         itemConfig: nextConfig,
       };
     });
+  },
+
+  async removeRecentPrompt(text) {
+    const recentPrompts = await window.overcli.invoke('orchestrator:deleteRecentPrompt', { text });
+    set({ recentPrompts });
   },
 
   toggleCandidate(id) {

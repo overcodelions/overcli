@@ -71,6 +71,11 @@ import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { flushRuns } from './flows/runsStore';
+import {
+  listRecentPrompts,
+  recordRecentPrompt,
+  deleteRecentPrompt,
+} from './flows/recentPromptsStore';
 import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
@@ -699,6 +704,11 @@ function registerIpc(): void {
       ? orchestrator.delete(args)
       : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
+  // Recent producer prompts live in their own tiny store, independent of
+  // whether the orchestrator engine is up — they're just a UI convenience.
+  ipcMain.handle('orchestrator:recentPrompts', () => listRecentPrompts());
+  ipcMain.handle('orchestrator:recordRecentPrompt', (_e, { text }) => recordRecentPrompt(text));
+  ipcMain.handle('orchestrator:deleteRecentPrompt', (_e, { text }) => deleteRecentPrompt(text));
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting
