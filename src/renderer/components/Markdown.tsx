@@ -33,9 +33,45 @@ interface RenderMarkdownOptions {
   escapeRawHtml?: boolean;
 }
 
+/// Bounded cache of rendered HTML keyed by (options + source). marked +
+/// hljs + DOMPurify is ms-scale per bubble, and that work was repeated every
+/// time a bubble mounted — opening a flow run, and especially switching steps
+/// (ChatView re-keys Virtuoso on conversationId, remounting and re-rendering
+/// every visible bubble from scratch). Message text in history is immutable,
+/// so the same source always yields the same HTML: cache it. Insertion-order
+/// eviction caps memory — streaming bubbles produce a new source every ~80ms
+/// (each a distinct key), so without a bound the map would grow unbounded.
+const MARKDOWN_HTML_CACHE = new Map<string, string>();
+const MARKDOWN_HTML_CACHE_MAX = 400;
+
 export function renderMarkdownHtml(
   source: string,
-  { enableFilePathLinks = true, escapeRawHtml = false }: RenderMarkdownOptions = {},
+  options: RenderMarkdownOptions = {},
+): string {
+  const { enableFilePathLinks = true, escapeRawHtml = false } = options;
+  const cacheKey = `${enableFilePathLinks ? 1 : 0}${escapeRawHtml ? 1 : 0}\n${source ?? ''}`;
+  const cached = MARKDOWN_HTML_CACHE.get(cacheKey);
+  if (cached !== undefined) {
+    // Refresh recency: delete + re-set moves it to the end of insertion order
+    // so the hottest entries survive eviction.
+    MARKDOWN_HTML_CACHE.delete(cacheKey);
+    MARKDOWN_HTML_CACHE.set(cacheKey, cached);
+    return cached;
+  }
+  const html = renderMarkdownHtmlUncached(source, enableFilePathLinks, escapeRawHtml);
+  MARKDOWN_HTML_CACHE.set(cacheKey, html);
+  if (MARKDOWN_HTML_CACHE.size > MARKDOWN_HTML_CACHE_MAX) {
+    // Evict the oldest (first-inserted) entry.
+    const oldest = MARKDOWN_HTML_CACHE.keys().next().value;
+    if (oldest !== undefined) MARKDOWN_HTML_CACHE.delete(oldest);
+  }
+  return html;
+}
+
+function renderMarkdownHtmlUncached(
+  source: string,
+  enableFilePathLinks: boolean,
+  escapeRawHtml: boolean,
 ): string {
   const renderer = new Renderer();
 

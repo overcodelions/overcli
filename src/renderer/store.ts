@@ -363,6 +363,12 @@ interface StoreState {
     answers: Record<string, { answers: string[] }>,
   ): Promise<void>;
   loadHistoryIfNeeded(conversationId: UUID): Promise<void>;
+  /// Background warm-up: after startup hydration, ensure each flow run's
+  /// conversations have their transcript in the runner AND their markdown
+  /// pre-rendered, so the first click into a run paints instantly instead of
+  /// reading history off disk and highlighting on the spot. Idle-scheduled
+  /// and self-throttling; safe to call once after runs hydrate.
+  prefetchFlowRunHistories(): Promise<void>;
 
   // Health
   refreshBackendHealth(): Promise<void>;
@@ -2338,6 +2344,21 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!conv) return;
     const existing = getRunner(conversationId);
     if (existing && (existing.historyLoaded || existing.historyLoading)) return;
+    // If the runner already holds live events for this conversation, those
+    // ARE the transcript — captured in full this session as the run/chat
+    // streamed. Merging the on-disk history on top would DOUBLE every
+    // message: history events are minted with fresh random ids (and so are
+    // live events), so the two id namespaces never match and the id-based
+    // dedup in the merge below can't collapse them. This is the "messages
+    // duplicate when I click into a step / click away and back" bug — the
+    // first visit to a participant tab that streamed this session would
+    // merge a second copy of everything. Treat it as loaded and skip the
+    // disk read; history is only needed to repopulate an EMPTY runner (e.g.
+    // after an app restart, when the in-memory events are gone).
+    if (existing && existing.events.length > 0) {
+      useRunnersStore.getState().patchRunner(conversationId, { historyLoaded: true });
+      return;
+    }
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
     useRunnersStore.getState().patchRunner(conversationId, { historyLoading: true });
@@ -2396,6 +2417,63 @@ export const useStore = create<StoreState>((set, get) => ({
         historyLoaded: true,
       };
     });
+  },
+
+  async prefetchFlowRunHistories() {
+    const { useFlowsStore } = await import('./flowsStore');
+    // Most-recent runs first — they're the ones the user is most likely to
+    // click, so they get warmed before the cap is hit.
+    const runs = Object.values(useFlowsStore.getState().runs).sort(
+      (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0),
+    );
+    // Yield to the browser's idle time between conversations so warming never
+    // competes with user interaction or the main process's own work.
+    const idle = () =>
+      new Promise<void>((resolve) => {
+        const ric = (globalThis as unknown as {
+          requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+        }).requestIdleCallback;
+        if (ric) ric(() => resolve(), { timeout: 500 });
+        else setTimeout(resolve, 50);
+      });
+    // Markdown pre-render is the bigger first-paint cost for in-session runs
+    // (whose history is already in the runner). Lazy-import so the warmer
+    // doesn't statically pull marked/hljs into the store's module graph.
+    let renderMarkdownHtml: ((s: string) => string) | null = null;
+    try {
+      ({ renderMarkdownHtml } = await import('./components/Markdown'));
+    } catch {
+      renderMarkdownHtml = null;
+    }
+    // Cap total conversations warmed so a session with many runs can't turn
+    // this into an unbounded background crawl; the rest warm lazily on click.
+    const MAX_PREFETCH_CONVS = 60;
+    // Only the tail of each transcript paints first (ChatView scrolls to the
+    // bottom on open and Virtuoso renders just the visible window), so warm
+    // the last few text bubbles rather than the whole history.
+    const WARM_TAIL_EVENTS = 12;
+    let warmed = 0;
+    for (const run of runs) {
+      for (const convId of Object.values(run.conversationIds)) {
+        if (warmed >= MAX_PREFETCH_CONVS) return;
+        await idle();
+        await get().loadHistoryIfNeeded(convId);
+        warmed += 1;
+        if (!renderMarkdownHtml) continue;
+        const runner = getRunner(convId);
+        if (!runner) continue;
+        const tail = runner.events.slice(-WARM_TAIL_EVENTS);
+        for (const ev of tail) {
+          const text =
+            ev.kind.type === 'assistant'
+              ? ev.kind.info.text
+              : ev.kind.type === 'localUser' || ev.kind.type === 'metaReminder'
+                ? ev.kind.text
+                : '';
+          if (text) renderMarkdownHtml(text);
+        }
+      }
+    }
   },
 
   async refreshBackendHealth() {
