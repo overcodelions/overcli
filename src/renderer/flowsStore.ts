@@ -48,6 +48,11 @@ interface FlowsActions {
   /// Patch the in-memory map for a single run (used by main event
   /// `flowRunUpdate`).
   applyRunUpdate(run: FlowRun): void;
+  /// Merge many runs in ONE store update. Startup hydration (`flows:listRuns`)
+  /// returns every persisted run; applying them one-by-one fired a separate
+  /// `set` (and re-render of every `runs` subscriber) per run, so opening the
+  /// Flows view with N runs did O(N) renders. Batching collapses that to one.
+  applyRunsBulk(runs: FlowRun[]): void;
   removeRun(id: string): void;
   /// Set (or clear, with `null`) the worktree-prep progress for a launch
   /// target. Called from the `flowLaunchProgress` main event and reset by
@@ -175,6 +180,15 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
 
   applyRunUpdate(run) {
     set(s => ({ runs: { ...s.runs, [run.id]: run } }));
+  },
+
+  applyRunsBulk(runs) {
+    if (runs.length === 0) return;
+    set(s => {
+      const next = { ...s.runs };
+      for (const r of runs) next[r.id] = r;
+      return { runs: next };
+    });
   },
 
   removeRun(id) {

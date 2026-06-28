@@ -51,8 +51,7 @@ export function FlowsLibraryPane() {
   // showing runs started this session.
   useEffect(() => {
     void window.overcli.invoke('flows:listRuns').then((runs) => {
-      const apply = useFlowsStore.getState().applyRunUpdate;
-      for (const r of runs) apply(r);
+      useFlowsStore.getState().applyRunsBulk(runs);
     });
   }, []);
 
