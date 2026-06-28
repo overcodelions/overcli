@@ -135,6 +135,11 @@ function StepBadge({ n }: { n: number }) {
 /// in the composer to edit + send. Deliberately source-agnostic in spirit:
 /// the producer uses whatever MCP/tools are connected, so these are examples,
 /// not a fixed integration list.
+/// How many recent prompts surface as quick-pick pills. We persist more (the
+/// store caps at 30), but only the most-recent ones are worth one-click reach —
+/// keeps the empty state from growing into a long scroll.
+const RECENT_VISIBLE = 15;
+
 const PRODUCER_EXAMPLES: Array<{ label: string; blurb: string; prompt: string }> = [
   {
     label: 'ProductBoard',
@@ -312,6 +317,8 @@ function ProducerBody({
   setDraft: (v: string) => void;
   send: () => void;
 }) {
+  const recentPrompts = useOrchestratorStore((s) => s.recentPrompts);
+  const removeRecentPrompt = useOrchestratorStore((s) => s.removeRecentPrompt);
   return (
     <>
       <div ref={scrollRef} className="overflow-y-auto px-4 pb-2 max-h-[40vh]">
@@ -343,6 +350,40 @@ function ProducerBody({
                 </button>
               ))}
             </div>
+            {recentPrompts.length > 0 && (
+              <>
+                <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mt-5 mb-2">
+                  Recent
+                </div>
+                {/* Compact wrapping pills (not stacked rows) so the list stays a
+                    couple of rows tall no matter how many are stored — only the
+                    most-recent handful surface as quick-picks. */}
+                <div className="flex flex-wrap justify-center gap-1.5">
+                  {recentPrompts.slice(0, RECENT_VISIBLE).map((rp) => (
+                    <span
+                      key={rp.text}
+                      className="group inline-flex items-center max-w-[340px] rounded-full bg-card hover:bg-card-strong transition-colors"
+                    >
+                      <button
+                        onClick={() => setDraft(rp.text)}
+                        className="min-w-0 truncate pl-3 pr-1.5 py-1 text-xs text-ink"
+                        title={rp.text}
+                      >
+                        {rp.text}
+                      </button>
+                      <button
+                        onClick={() => void removeRecentPrompt(rp.text)}
+                        className="flex-none pl-0.5 pr-2.5 py-1 text-ink-faint hover:text-ink opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Remove from recent"
+                        aria-label="Remove from recent"
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
             <p className="text-xs text-ink-faint mt-3">…or just type your own below.</p>
           </div>
         )}
