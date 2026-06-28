@@ -108,8 +108,10 @@ export function App() {
   // the original IPC call lived).
   useEffect(() => {
     void window.overcli.invoke('flows:listRuns').then((runs) => {
-      const apply = useFlowsStore.getState().applyRunUpdate;
-      for (const r of runs) apply(r);
+      useFlowsStore.getState().applyRunsBulk(runs);
+      // Warm each run's transcript + markdown in the background (idle-paced)
+      // so the first click into a run paints instantly.
+      void useStore.getState().prefetchFlowRunHistories();
     });
     // Hydrate orchestrations too, so an in-progress batch's ledger survives a
     // window refresh even if the user lands on a different tab — the batch
