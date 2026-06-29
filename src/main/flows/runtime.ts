@@ -836,6 +836,67 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Rewind the run and re-execute starting at `stepId`, then roll forward
+  /// through every later step in order. This is the user-facing "Re-run from
+  /// this step" affordance — the one form of going BACKWARD the runtime
+  /// allows at the user's request (vs. `on_fail.goto`, which is automatic).
+  ///
+  /// Why this exists: artifacts handed between steps are snapshotted at the
+  /// moment each step finished, and downstream steps never re-read an
+  /// upstream artifact once they've run. So editing `plan.md` (via hijack
+  /// chat) while paused before `review` does nothing — `build` already
+  /// consumed the old plan and won't re-run on its own. Re-running from
+  /// `build` re-reads the now-updated `plan.md` and propagates it forward.
+  ///
+  /// Artifacts produced by steps BEFORE `stepId` are kept intact (they're
+  /// this step's inputs). `stepId` and everything after it re-execute and
+  /// overwrite their own outputs as they go. The worktree is NOT reverted —
+  /// a re-run of a build/diff step continues editing from the current tree,
+  /// same as `on_fail.goto`.
+  ///
+  /// Only valid from a settled state (paused / done / aborted). Refused
+  /// while a step is actively running (it would race the live subprocess)
+  /// or while the run is watching (archive it first).
+  rerunFromStep(args: { runId: UUID; stepId: string }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.state.kind === 'running') {
+      return {
+        ok: false,
+        error: 'A step is still running — abort or let it finish before re-running.',
+      };
+    }
+    if (run.state.kind === 'watching' || run.state.kind === 'archived') {
+      return { ok: false, error: 'This run is being watched — archive it before re-running.' };
+    }
+    if (this.finalizingRuns.has(args.runId)) {
+      return { ok: false, error: 'Still finalizing the previous step — try again in a moment.' };
+    }
+    const step = run.flowSnapshot.steps.find((s) => s.id === args.stepId);
+    if (!step) return { ok: false, error: `Step "${args.stepId}" not found in this flow.` };
+
+    // Rewinding abandons any pending pause/continue bookkeeping for this run:
+    // we're no longer advancing out of that pause, we're jumping elsewhere.
+    delete run.pendingContinue;
+    for (const key of Array.from(this.pauseChatHappened)) {
+      if (key.startsWith(`${args.runId}:`)) this.pauseChatHappened.delete(key);
+    }
+    // Reset `goto` retry budgets for the whole run so the re-run segment gets
+    // a fresh allowance — otherwise a step that exhausted its retries on the
+    // first pass would refuse to loop on this one.
+    for (const key of Array.from(this.retryCounts.keys())) {
+      if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
+    }
+
+    // Mirror `advanceToStep`: flip to running and kick the step. Deliberately
+    // no checkpoint here — like every other 'running' transition, a mid-step
+    // crash isn't resumable, so we persist at the next step boundary instead.
+    run.state = { kind: 'running', currentStepId: step.id };
+    this.emitRunUpdate(run);
+    void this.executeStep(args.runId, step.id);
+    return { ok: true };
+  }
+
   private priorStep(runId: UUID, nextStepId: string): FlowStep | null {
     const run = this.runs.get(runId);
     if (!run) return null;

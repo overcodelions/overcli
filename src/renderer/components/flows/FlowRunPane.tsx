@@ -45,6 +45,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingRerun, setConfirmingRerun] = useState(false);
   const [diffSheetOpen, setDiffSheetOpen] = useState(false);
   const [watchSetupOpen, setWatchSetupOpen] = useState(false);
 
@@ -143,6 +144,53 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 Review &amp; merge
               </button>
             )}
+            {/* Re-run from the currently-viewed step. The user's "how do I
+                go back?" answer: rewind to this step and re-execute it plus
+                every later step, picking up any edits made to upstream
+                artifacts via hijack chat. Only offered on a settled run for
+                a step that has actually run — re-running a never-reached step
+                is meaningless, and re-running while a step is live would race
+                the subprocess (Abort shows instead in that case). */}
+            {activeStep &&
+              (run.state.kind === 'paused' ||
+                run.state.kind === 'done' ||
+                run.state.kind === 'aborted') &&
+              run.attempts.some((a) => a.stepId === activeStep.id) &&
+              (confirmingRerun ? (
+                <div className="flex items-center gap-1">
+                  <span className="text-[11px] text-ink-faint mr-1">
+                    Re-run from <span className="font-mono">{activeStep.id}</span>? Re-does it
+                    and every later step.
+                  </span>
+                  <button
+                    onClick={async () => {
+                      const result = await window.overcli.invoke('flows:rerunFromStep', {
+                        runId,
+                        stepId: activeStep.id,
+                      });
+                      setConfirmingRerun(false);
+                      if (!result.ok) alert(`Couldn't re-run: ${result.error}`);
+                    }}
+                    className="text-xs px-2 py-1 rounded-md bg-amber-500/80 text-white"
+                  >
+                    Re-run
+                  </button>
+                  <button
+                    onClick={() => setConfirmingRerun(false)}
+                    className="text-xs px-2 py-1 rounded-md bg-card"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingRerun(true)}
+                  className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-amber-500/50"
+                  title={`Rewind and re-run from "${activeStep.id}" — re-does this step and every later step using the current (possibly edited) upstream artifacts`}
+                >
+                  ↻ Re-run from here
+                </button>
+              ))}
             {(run.state.kind === 'running' || run.state.kind === 'paused') && (
               <button
                 onClick={() => {
@@ -219,7 +267,13 @@ export function FlowRunPane({ runId }: { runId: string }) {
           <InlineStepPipeline
             run={run}
             activeStepId={activeStepId}
-            onPick={setFocusStepId}
+            onPick={(id) => {
+              // Switching steps abandons any half-open re-run confirmation —
+              // it's bound to the step being viewed, so it must never carry
+              // over to the step the user just navigated to.
+              setConfirmingRerun(false);
+              setFocusStepId(id);
+            }}
           />
         </div>
         {/* Original prompt as subtitle. Sits directly under the flow
