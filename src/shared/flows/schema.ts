@@ -288,7 +288,17 @@ export interface WatchTickLogEntry {
 
 export type FlowRunState =
   | { kind: 'running'; currentStepId: string }
-  | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' }
+  /// `reason`:
+  /// - `preStep`: parked at a `pause_before` step; Continue finalizes the
+  ///   prior step's artifact from any hijack chat, then advances.
+  /// - `failure`: a step failed (or a reviewer rejected) and the on-fail
+  ///   policy left the run for the user to decide.
+  /// - `interrupted`: the run was mid-step when the app last closed. On
+  ///   restart it's demoted from `running` to here (its subprocess is dead)
+  ///   with `nextStepId` pointing at the interrupted step, so Continue
+  ///   re-runs that step from scratch instead of the run being abandoned as
+  ///   `aborted`. Earlier steps' artifacts are intact and kept as inputs.
+  | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' | 'interrupted' }
   | { kind: 'done'; success: boolean }
   | { kind: 'aborted' }
   /// Post-completion stewardship tail — see WatchState. Reached from `done`

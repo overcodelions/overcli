@@ -126,11 +126,18 @@ describe('loadAllRuns', () => {
     expect(runs.map((run) => run.id)).toEqual(['new', 'mid', 'old']);
   });
 
-  it('aborts running runs but restores paused runs as-is', async () => {
+  it('demotes running runs to paused(interrupted) but restores paused runs as-is', async () => {
     fs.mkdirSync(runDir(), { recursive: true });
     fs.writeFileSync(
       runPath('running'),
-      JSON.stringify(makeRun({ id: 'running', state: { kind: 'running', currentStepId: 'plan' } })),
+      JSON.stringify(
+        makeRun({
+          id: 'running',
+          state: { kind: 'running', currentStepId: 'plan' },
+          // A dangling in-flight attempt for the interrupted step.
+          attempts: [{ stepId: 'plan', startedAt: 5, conversationId: 'conv-1' }],
+        }),
+      ),
     );
     const pausedState = { kind: 'paused', nextStepId: 'plan', reason: 'failure' } as const;
     fs.writeFileSync(
@@ -139,15 +146,24 @@ describe('loadAllRuns', () => {
     );
 
     const runs = loadAllRuns();
-    // loadAllRuns persists the corrected `aborted` state via the now-async
-    // saveRun, so flush before asserting the on-disk write landed.
+    // loadAllRuns persists the corrected state via the now-async saveRun, so
+    // flush before asserting the on-disk write landed.
     await flushRuns();
 
     const byId = Object.fromEntries(runs.map((run) => [run.id, run.state]));
-    // A `running` run died mid-step → demoted to aborted, and the fix is
-    // persisted so a second restart doesn't keep re-aborting it.
-    expect(byId.running).toEqual({ kind: 'aborted' });
-    expect(JSON.parse(fs.readFileSync(runPath('running'), 'utf8')).state).toEqual({ kind: 'aborted' });
+    // A `running` run died mid-step → demoted to paused(interrupted) pointing
+    // at the step it died on, and the fix is persisted so a second restart is
+    // a no-op. Earlier work is kept; resume re-runs the interrupted step.
+    expect(byId.running).toEqual({ kind: 'paused', nextStepId: 'plan', reason: 'interrupted' });
+    expect(JSON.parse(fs.readFileSync(runPath('running'), 'utf8')).state).toEqual({
+      kind: 'paused',
+      nextStepId: 'plan',
+      reason: 'interrupted',
+    });
+    // The dangling attempt is closed out as aborted so the timeline is honest.
+    const restored = runs.find((r) => r.id === 'running')!;
+    expect(restored.attempts[0].outcome).toBe('aborted');
+    expect(restored.attempts[0].endedAt).toBeGreaterThan(0);
     // A `paused` run sits between steps with no live subprocess → survives
     // restart untouched, so it stays resumable via resumeRun.
     expect(byId.paused).toEqual(pausedState);

@@ -258,6 +258,31 @@ export function migrateClaudeSessionCwd(args: {
   }
 }
 
+/// Resolve the on-disk `~/.claude/projects/<slug>` directory for a slug,
+/// tolerating case drift. `claudeProjectSlug` recovers the cwd's true
+/// casing via `realpathSync.native` — but ONLY while the cwd still exists.
+/// Once a flow's worktree/coordinator cwd is cleaned up, realpath throws
+/// and the slug falls back to the raw stored path, whose casing can differ
+/// from the directory Claude actually created (e.g. stored `…overcli…` vs
+/// Claude's `…Overcli…` under "Application Support"). The session JSONLs
+/// outlive the cwd, so a case-sensitive `path.join` would miss them and the
+/// transcript would silently vanish. Match the directory case-insensitively
+/// to find it regardless.
+function resolveClaudeProjectDir(slug: string): string {
+  const root = path.join(os.homedir(), '.claude', 'projects');
+  const exact = path.join(root, slug);
+  if (fs.existsSync(exact)) return exact;
+  try {
+    const want = slug.toLowerCase();
+    for (const name of fs.readdirSync(root)) {
+      if (name.toLowerCase() === want) return path.join(root, name);
+    }
+  } catch {
+    /* projects root missing — fall through to the exact path (existsSync fails → []) */
+  }
+  return exact;
+}
+
 function loadClaudeHistory(
   sessionId: string | undefined,
   projectPath: string,
@@ -265,7 +290,8 @@ function loadClaudeHistory(
 ): StreamEvent[] {
   if (!sessionId) return [];
   const slug = claudeProjectSlug(projectPath);
-  const file = path.join(os.homedir(), '.claude', 'projects', slug, `${sessionId}.jsonl`);
+  const dir = resolveClaudeProjectDir(slug);
+  const file = path.join(dir, `${sessionId}.jsonl`);
   if (!fs.existsSync(file)) return [];
   const lines = fs.readFileSync(file, 'utf-8').split('\n');
   const out: StreamEvent[] = [];

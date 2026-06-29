@@ -1322,30 +1322,64 @@ function listFileEntriesRecursive(root: string): Array<{ path: string; sizeBytes
     '.DS_Store',
     'DerivedData',
     '.swiftpm',
+    // IDE + JVM build output: on large multi-project checkouts these dwarf
+    // the actual source and used to push the walk past its 20k cap, leaving
+    // the tree both slow and silently truncated.
+    'out',
+    'target',
+    '.gradle',
+    '.idea',
+    '.metadata',
+    '.settings',
+    '.angular',
+    'coverage',
   ]);
   const out: Array<{ path: string; sizeBytes: number }> = [];
   const stack: string[] = [root];
   while (stack.length) {
     const cur = stack.pop()!;
-    let entries: string[];
+    let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(cur);
+      // withFileTypes lets us classify dirs from the readdir result alone,
+      // so we only pay a per-entry statSync on files (for size) instead of
+      // on every node in the tree — roughly halving syscalls on a big repo.
+      entries = fs.readdirSync(cur, { withFileTypes: true });
     } catch {
       continue;
     }
-    for (const name of entries) {
+    for (const entry of entries) {
+      const name = entry.name;
       if (skipDirs.has(name)) continue;
       const full = path.join(cur, name);
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(full);
-      } catch {
+      if (entry.isDirectory()) {
+        stack.push(full);
         continue;
       }
-      if (stat.isDirectory()) {
-        stack.push(full);
-      } else if (stat.isFile()) {
-        out.push({ path: full, sizeBytes: stat.size });
+      if (entry.isSymbolicLink()) {
+        // Symlinks (e.g. workspace roots that symlink several projects)
+        // need a follow-stat to resolve their real type and size.
+        let stat: fs.Stats;
+        try {
+          stat = fs.statSync(full);
+        } catch {
+          continue;
+        }
+        if (stat.isDirectory()) {
+          stack.push(full);
+        } else if (stat.isFile()) {
+          out.push({ path: full, sizeBytes: stat.size });
+          if (out.length > 20000) return out; // safety cap
+        }
+        continue;
+      }
+      if (entry.isFile()) {
+        let size = 0;
+        try {
+          size = fs.statSync(full).size;
+        } catch {
+          continue;
+        }
+        out.push({ path: full, sizeBytes: size });
         if (out.length > 20000) return out; // safety cap
       }
     }

@@ -1953,7 +1953,9 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 : 'Continuing…'
               : reason === 'preStep'
                 ? 'Paused before next step'
-                : 'Paused — step needs attention'}
+                : reason === 'interrupted'
+                  ? 'Interrupted — resume to re-run this step'
+                  : 'Paused — step needs attention'}
           </div>
           <div className="text-xs text-amber-700 dark:text-amber-100/80">
             {inFlight ? (
@@ -1961,6 +1963,13 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 Your Continue was received. The prior step's participant is
                 re-emitting its <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
                 to reflect your changes, then the next step will start.
+              </>
+            ) : reason === 'interrupted' ? (
+              <>
+                This run was still working on a step when the app last closed, so it
+                couldn't continue on its own. Earlier steps' results are kept — resume to
+                re-run <span className="font-semibold">{nextStep?.id ?? 'this step'}</span> from
+                the start and roll forward.
               </>
             ) : (
               <>
@@ -1996,7 +2005,7 @@ function PauseBanner({ run }: { run: FlowRun }) {
               className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
             />
           )}
-          {inFlight ? 'Continuing…' : 'Continue →'}
+          {inFlight ? 'Continuing…' : reason === 'interrupted' ? 'Re-run step →' : 'Continue →'}
         </button>
       </div>
     </div>
