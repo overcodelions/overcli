@@ -210,7 +210,7 @@ export class FlowRuntimeImpl {
   /// this, the oldest done/aborted runs are evicted. Running + paused +
   /// watching runs are NEVER evicted regardless of count (they're load-
   /// bearing). Sized to be generous for a normal session — bump if it's not.
-  private static readonly MAX_RETAINED_RUNS = 20;
+  private static readonly MAX_RETAINED_RUNS = 50;
 
   // ---- Watch engine (post-completion "stewardship tail") -----------------
   /// The single sweep timer that drives ALL watching runs. Lazily started

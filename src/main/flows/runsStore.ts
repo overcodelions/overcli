@@ -118,7 +118,7 @@ export async function flushRuns(): Promise<void> {
 }
 
 /// Delete a run's JSON file. Called when the runtime evicts a run from
-/// its in-memory map (the 20-run LRU cap) — we don't want the on-disk
+/// its in-memory map (the MAX_RETAINED_RUNS LRU cap) — we don't want the on-disk
 /// store to grow unbounded either.
 export function deleteRun(runId: string): void {
   const file = pathFor(runId);
