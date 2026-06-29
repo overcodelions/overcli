@@ -24,6 +24,7 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
@@ -229,14 +230,16 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 <span className="text-[11px] text-ink-faint mr-1">Delete this run?</span>
                 <button
                   onClick={async () => {
-                    const result = await window.overcli.invoke('flows:deleteRun', { runId });
-                    if (!result.ok) {
-                      alert(`Couldn't delete: ${result.error}`);
+                    const res = await deleteFlowRunWithDirtyGuard(runId);
+                    if (res.error) {
+                      alert(`Couldn't delete: ${res.error}`);
                       return;
                     }
                     setConfirmingDelete(false);
-                    removeRun(runId);
-                    setActiveRun(null);
+                    if (res.deleted) {
+                      removeRun(runId);
+                      setActiveRun(null);
+                    }
                   }}
                   className="text-xs px-2 py-1 rounded-md bg-red-500/80 text-white"
                 >

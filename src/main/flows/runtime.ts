@@ -62,6 +62,7 @@ import { loadAllFlows } from './storage';
 import {
   createWorktreeAsync,
   detectBaseBranchAsync,
+  removeWorktree,
   runGit,
   runGitAsync,
   worktreeNameTaken,
@@ -1054,10 +1055,91 @@ export class FlowRuntimeImpl {
     this.advanceToStep(runId, nextStepId);
   }
 
+  /// Report each of a run's worktrees that has uncommitted changes (a
+  /// dirty working tree, including untracked files). Used by `deleteRun`
+  /// to warn before `removeRunWorktrees` discards that work with
+  /// `git worktree remove --force`. A worktree whose status can't be read
+  /// (path gone, not a git dir) is treated as clean — we don't block a
+  /// delete on a directory we can't inspect.
+  private runDirtyWorktrees(
+    run: FlowRun,
+  ): Array<{ name: string; worktreePath: string; fileCount: number }> {
+    const out: Array<{ name: string; worktreePath: string; fileCount: number }> = [];
+    const check = (name: string, worktreePath: string): void => {
+      const status = runGit(['status', '--porcelain'], worktreePath);
+      if (status.exitCode !== 0) return;
+      const fileCount = status.stdout.split('\n').filter((l) => l.trim().length > 0).length;
+      if (fileCount > 0) out.push({ name, worktreePath, fileCount });
+    };
+    if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
+      for (const m of run.workspaceWorktrees) check(m.name, m.worktreePath);
+    } else if (run.worktreePath) {
+      check(run.flowSnapshot.name, run.worktreePath);
+    }
+    return out;
+  }
+
+  /// Remove the git worktree(s) a run forked, if any. Only invoked from
+  /// the explicit `deleteRun` path — NOT from `pruneOldRuns` auto-eviction,
+  /// which only frees in-memory/on-disk run metadata and must leave the
+  /// user's worktrees and branches untouched. Best-effort: a failure here
+  /// never blocks the run deletion itself, since the metadata is already
+  /// gone. Mirrors the agent-conversation cleanup in `removeAgent`.
+  private removeRunWorktrees(run: FlowRun): void {
+    // Workspace worktree run: one worktree per member project.
+    if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
+      for (const m of run.workspaceWorktrees) {
+        try {
+          const res = removeWorktree({
+            projectPath: m.projectPath,
+            worktreePath: m.worktreePath,
+            branchName: m.branchName,
+          });
+          if (!res.ok && res.error) {
+            log('warn', 'flows.deleteRun', `worktree remove failed for ${m.name}: ${res.error}`);
+          } else if (res.warning) {
+            log('warn', 'flows.deleteRun', `${m.name}: ${res.warning}`);
+          }
+        } catch (err) {
+          log('error', 'flows.deleteRun', `worktree remove threw for ${m.name}`, err);
+        }
+      }
+      return;
+    }
+    // Single-project worktree run. `git worktree remove` must run from the
+    // source repo the worktree was forked from, not the worktree path.
+    if (run.worktreePath) {
+      const projectPath = run.sourceProjectPath ?? run.projectPath;
+      try {
+        const res = removeWorktree({
+          projectPath,
+          worktreePath: run.worktreePath,
+          branchName: run.branchName ?? '',
+        });
+        if (!res.ok && res.error) {
+          log('warn', 'flows.deleteRun', `worktree remove failed: ${res.error}`);
+        } else if (res.warning) {
+          log('warn', 'flows.deleteRun', res.warning);
+        }
+      } catch (err) {
+        log('error', 'flows.deleteRun', 'worktree remove threw', err);
+      }
+    }
+  }
+
   /// Permanently remove a run from memory + disk. Aborts it first if
   /// it's still active so any in-flight subprocess gets a chance to
-  /// stop. Used by the library's "Delete run" affordance.
-  deleteRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
+  /// stop, then removes any git worktree(s) the run forked. Used by the
+  /// library's "Delete run" affordance — an explicit user action, distinct
+  /// from `pruneOldRuns` auto-eviction which leaves worktrees in place.
+  deleteRun(args: { runId: UUID; force?: boolean }):
+    | { ok: true }
+    | { ok: false; error: string }
+    | {
+        ok: false;
+        needsConfirm: true;
+        dirty: Array<{ name: string; worktreePath: string; fileCount: number }>;
+      } {
     const run = this.runs.get(args.runId);
     if (!run) {
       // Idempotent: deleting an unknown run is a no-op success rather
@@ -1066,6 +1148,17 @@ export class FlowRuntimeImpl {
       deleteRunFromDisk(args.runId);
       clearAttachments(args.runId);
       return { ok: true };
+    }
+    // Guard uncommitted work: unless the caller already confirmed via
+    // `force`, refuse to delete a run whose worktree(s) are dirty and
+    // hand the renderer the details so it can prompt. Checked before any
+    // mutation (stop / evict / disk delete) so a declined confirm leaves
+    // the run completely intact.
+    if (!args.force) {
+      const dirty = this.runDirtyWorktrees(run);
+      if (dirty.length > 0) {
+        return { ok: false, needsConfirm: true, dirty };
+      }
     }
     if (run.state.kind === 'running') {
       const step = run.flowSnapshot.steps.find((s) => s.id === (run.state as any).currentStepId);
@@ -1106,6 +1199,8 @@ export class FlowRuntimeImpl {
         resolver?.();
       }
     }
+    // Explicit delete only: tear down the worktree(s) the run forked.
+    this.removeRunWorktrees(run);
     deleteRunFromDisk(args.runId);
     clearAttachments(args.runId);
     // Tell the renderer so its in-memory `runs` map evicts in lockstep.
