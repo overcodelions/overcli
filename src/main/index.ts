@@ -646,6 +646,9 @@ function registerIpc(): void {
   ipcMain.handle('flows:resumeRun', (_e, args) =>
     flowRuntime ? flowRuntime.resumeRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:rerunFromStep', (_e, args) =>
+    flowRuntime ? flowRuntime.rerunFromStep(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
   ipcMain.handle('flows:abortRun', (_e, args) =>
     flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
