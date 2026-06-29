@@ -14,6 +14,7 @@ import { useAllRunners } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
 import { flowRunActivityAt, flowRunOwnerPath } from '@shared/flows/schema';
 import { ACTIVE_CONVERSATION_WINDOW_MS } from '../../conversationLookup';
+import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
 
@@ -218,8 +219,8 @@ function FlowRunRow({
 
   async function commitDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    const result = await window.overcli.invoke('flows:deleteRun', { runId: run.id });
-    if (result.ok) removeRun(run.id);
+    const res = await deleteFlowRunWithDirtyGuard(run.id);
+    if (res.deleted) removeRun(run.id);
     setConfirming(false);
   }
   // Only show as selected when the user is actually viewing the flows
