@@ -16,9 +16,17 @@ const noTranscriptCtx: BackendCtx = {
 };
 
 describe('codexBackend.buildArgs', () => {
-  it('always emits exec - at the end', () => {
+  it('emits the exec subcommand with - as the final stdin marker', () => {
     const a = codexBackend.buildArgs(baseArgs, noTranscriptCtx);
-    expect(a.slice(-2)).toEqual(['exec', '-']);
+    expect(a).toContain('exec');
+    expect(a[a.length - 1]).toBe('-');
+  });
+
+  it('passes --skip-git-repo-check so non-repo coordinator cwds work', () => {
+    const a = codexBackend.buildArgs(baseArgs, noTranscriptCtx);
+    expect(a).toContain('--skip-git-repo-check');
+    // must come after the exec subcommand, not as a top-level flag
+    expect(a.indexOf('--skip-git-repo-check')).toBeGreaterThan(a.indexOf('exec'));
   });
 
   it('includes -m when a model is provided', () => {

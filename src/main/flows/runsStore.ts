@@ -2,9 +2,12 @@
 // run JSON atomically to <userData>/flow-runs/<runId>.json so completed
 // runs survive an app restart and the user can review their plan/diff/
 // review artifacts later. In-flight runs (running, paused) are persisted
-// too, but on startup the runtime down-converts them to `aborted` —
-// their underlying step subprocesses are dead by then and there's no
-// safe resume path.
+// too. On startup a `running` run can't keep going — its step subprocess
+// is dead — so we down-convert it to `paused` with `reason: 'interrupted'`
+// pointing at the step it died on, which Continue re-runs from scratch.
+// (It used to become `aborted`, which stranded the work; the artifacts of
+// earlier steps are intact, so re-running the interrupted step forward is
+// safe and far more useful than abandoning the run.)
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -115,7 +118,7 @@ export async function flushRuns(): Promise<void> {
 }
 
 /// Delete a run's JSON file. Called when the runtime evicts a run from
-/// its in-memory map (the 20-run LRU cap) — we don't want the on-disk
+/// its in-memory map (the MAX_RETAINED_RUNS LRU cap) — we don't want the on-disk
 /// store to grow unbounded either.
 export function deleteRun(runId: string): void {
   const file = pathFor(runId);
@@ -128,12 +131,14 @@ export function deleteRun(runId: string): void {
 
 /// Load every persisted run from disk. Called once at startup. A
 /// `running` run is NOT restored as-is — it died mid-step, its subprocess
-/// and in-flight tool calls are gone, so we mark it `aborted` and persist
-/// the corrected state so a second restart doesn't keep re-aborting it.
-/// A `paused` run is left untouched: it sits BETWEEN steps with no live
-/// subprocess to lose, so the runtime can warm-resume it via `resumeRun`
-/// (which starts the next step fresh) — exactly like a restored `watching`
-/// run resumes its watcher.
+/// and in-flight tool calls are gone. Rather than abandon it as `aborted`,
+/// we demote it to `paused` with `reason: 'interrupted'` and `nextStepId`
+/// set to the step it died on: earlier steps' artifacts are intact, so
+/// `resumeRun` can re-run the interrupted step from scratch and roll
+/// forward. The corrected state is persisted so a second restart is a
+/// no-op. A run already `paused` is left untouched — it sits BETWEEN steps
+/// with no live subprocess to lose, exactly like a restored `watching` run
+/// resumes its watcher.
 export function loadAllRuns(): FlowRun[] {
   const d = dir();
   if (!fs.existsSync(d)) return [];
@@ -152,7 +157,24 @@ export function loadAllRuns(): FlowRun[] {
       const parsed = JSON.parse(body) as FlowRun;
       if (!parsed?.id || !parsed?.flowSnapshot) continue; // skip corrupt entries
       if (parsed.state.kind === 'running') {
-        parsed.state = { kind: 'aborted' };
+        const interruptedStepId = parsed.state.currentStepId;
+        // Close out the dangling attempt for the step that was in flight —
+        // its subprocess is gone, so it neither succeeded nor will it ever.
+        // Marking it `aborted` keeps the attempts timeline honest (the UI
+        // shows the interrupted step as failed, then a fresh attempt on
+        // resume) instead of leaving an open-ended "still running" entry.
+        const open = parsed.attempts.find(
+          (a) => a.stepId === interruptedStepId && !a.endedAt,
+        );
+        if (open) {
+          open.endedAt = Date.now();
+          open.outcome = 'aborted';
+        }
+        parsed.state = {
+          kind: 'paused',
+          nextStepId: interruptedStepId,
+          reason: 'interrupted',
+        };
         saveRun(parsed); // write the corrected state back so this is idempotent
       }
       out.push(parsed);

@@ -459,13 +459,7 @@ export function ActionButton({
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={
-        'px-2 py-1 rounded text-xs ' +
-        (prominent
-          ? 'bg-accent/20 text-accent hover:bg-accent/30 border border-accent/40'
-          : 'bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30') +
-        (disabled ? ' opacity-40 cursor-not-allowed' : '')
-      }
+      className={prominent ? 'review-btn-primary' : 'review-btn'}
     >
       {label}
     </button>

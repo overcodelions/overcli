@@ -857,16 +857,20 @@ export const useStore = create<StoreState>((set, get) => ({
     // a file browser alongside the chat — not to swap the whole right
     // side over to the standalone explorer view and lose the
     // conversation. Branch on whether a conversation is selected:
-    //   - Conversation active → open the explorer in the conversation's
-    //     right pane (ConversationPane swaps FileEditorPane out for
-    //     ExplorerPane when explorerRootPath is non-null). detailMode,
-    //     selectedConversationId, focus IDs all stay put.
-    //   - No conversation → original behavior: switch detailMode to
-    //     'explorer' so App.tsx renders the standalone ExplorerPane,
-    //     and clear focus so the sidebar doesn't lie about what's
-    //     selected.
+    //   - Conversation view showing → open the explorer in the
+    //     conversation's right pane (ConversationPane swaps FileEditorPane
+    //     out for ExplorerPane when explorerRootPath is non-null).
+    //     detailMode, selectedConversationId, focus IDs all stay put.
+    //   - Anywhere else (Flows / Orchestrator / Stats / Local / Welcome) →
+    //     switch detailMode to 'explorer' so App.tsx renders the standalone
+    //     ExplorerPane full-screen, and clear focus so the sidebar doesn't
+    //     lie about what's selected. Gate on detailMode, not just
+    //     selectedConversationId: those other views often leave a
+    //     conversation selected under the hood, and keying off it alone
+    //     made Explore a no-op there (it set the root but never swapped the
+    //     visible pane).
     const state = get();
-    if (state.selectedConversationId) {
+    if (state.detailMode === 'conversation' && state.selectedConversationId) {
       set({
         explorerRootPath: rootPath,
         openFilePath: null,
