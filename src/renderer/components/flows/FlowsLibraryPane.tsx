@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { flowRunOwnerPath, resolveStepModel, flowStarKey, type Flow } from '@shared/flows/schema';
+import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
@@ -244,15 +245,15 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    const result = await window.overcli.invoke('flows:deleteRun', { runId: run.id });
-    if (!result.ok) {
+    const res = await deleteFlowRunWithDirtyGuard(run.id);
+    if (res.error) {
       // Server failed but the optimistic remove already happened — re-add isn't
       // worth the complexity; the next listRuns refresh would restore it. Just
       // surface the error.
-      alert(`Couldn't delete: ${result.error}`);
+      alert(`Couldn't delete: ${res.error}`);
       return;
     }
-    removeRun(run.id);
+    if (res.deleted) removeRun(run.id);
   }
 
   return (
