@@ -1159,6 +1159,14 @@ export interface IPCInvokeMap {
     /// reads its inputs. Used by the pause-card "edit artifact" affordance.
     editedArtifacts?: Record<string, string>;
   }) => { ok: true } | { ok: false; error: string };
+  /// Rewind a run and re-execute from `stepId`, rolling forward through
+  /// every later step. Artifacts from EARLIER steps are kept (they're this
+  /// step's inputs); this step and everything after it re-run and overwrite
+  /// their own outputs — so edits made to an upstream artifact via hijack
+  /// chat finally propagate downstream. Valid only from a settled state
+  /// (paused / done / aborted), never while a step is actively running.
+  'flows:rerunFromStep': (args: { runId: UUID; stepId: string }) =>
+    { ok: true } | { ok: false; error: string };
   'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Put a completed run into the post-completion `watching` state — it
   /// stops doing work and periodically polls `binding` (via the named
