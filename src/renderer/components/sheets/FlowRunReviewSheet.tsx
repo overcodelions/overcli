@@ -691,7 +691,7 @@ function FlowWorkspaceReview({
           <button
             onClick={() => void refreshAll()}
             disabled={loading || workingName != null}
-            className="text-xs px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
+            className="review-btn"
           >
             Refresh
           </button>
@@ -746,6 +746,12 @@ function FlowWorkspaceReview({
   );
 }
 
+/// Card action buttons: clean filled chips (no heavy outline) so they read
+/// like the rest of the product's buttons. `cardButtonPrimary` is the solid
+/// accent CTA (Open PR).
+const cardButton = 'review-btn';
+const cardButtonPrimary = 'review-btn-primary';
+
 function MemberCard({
   name,
   branchName,
@@ -786,14 +792,16 @@ function MemberCard({
   const canPush = status != null && kind !== 'none' && (hasWork || status.commitsAhead > 0);
 
   return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
-      <div className="flex items-start gap-2">
+    <div className="review-card p-3.5">
+      <div className="flex items-start gap-2.5">
         <span className="w-2 h-2 rounded-full mt-1.5 flex-shrink-0" style={{ background: tone }} />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium truncate">{name}</div>
-          <div className="text-[11px] text-ink-faint truncate">{label}</div>
-          <div className="text-[10px] text-ink-faint truncate mt-0.5">
-            {branchName} · {worktreePath}
+          <div className="text-[11px] text-ink-muted truncate">{label}</div>
+          <div className="mt-1 text-[11px] font-mono text-ink-muted truncate" title={worktreePath}>
+            <span className="text-accent">{branchName}</span>
+            <span className="text-ink-faint"> · </span>
+            {worktreePath}
           </div>
         </div>
         <div className="text-xs text-right space-y-0.5">
@@ -816,34 +824,18 @@ function MemberCard({
         </div>
       </div>
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-xs">
-        <button
-          onClick={onViewDiff}
-          disabled={!hasWork}
-          className="px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
-        >
+      <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
+        <button onClick={onViewDiff} disabled={!hasWork} className={cardButton}>
           View Diff
         </button>
-        <button
-          onClick={onMerge}
-          disabled={!canMerge || busyGlobal}
-          className="px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
-        >
+        <button onClick={onMerge} disabled={!canMerge || busyGlobal} className={cardButton}>
           {busy ? 'Working…' : `Merge to ${baseBranch}`}
         </button>
-        <button
-          onClick={onPush}
-          disabled={!canPush || busyGlobal}
-          className="px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
-        >
+        <button onClick={onPush} disabled={!canPush || busyGlobal} className={cardButton}>
           Push branch
         </button>
         {kind === 'github' && (
-          <button
-            onClick={onOpenPR}
-            disabled={!hasWork || busyGlobal}
-            className="px-2 py-1 rounded bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40"
-          >
+          <button onClick={onOpenPR} disabled={!hasWork || busyGlobal} className={cardButtonPrimary}>
             Open PR
           </button>
         )}
@@ -851,12 +843,15 @@ function MemberCard({
           onClick={onCheckoutLocally}
           disabled={status == null || busyGlobal}
           title={`Remove this worktree and switch ${name}'s repo to ${branchName} so you can build/run it locally. Auto-commits the worktree and stashes any project work-in-progress first.`}
-          className="px-2 py-1 rounded bg-accent/5 text-ink-muted hover:text-ink hover:bg-accent/10 border border-accent/30 disabled:opacity-40"
+          className={cardButton}
         >
           {busy ? 'Working…' : 'Check out locally'}
         </button>
         <div className="flex-1" />
-        <button onClick={onReveal} className="px-2 py-1 text-[10px] text-ink-faint hover:text-ink">
+        <button
+          onClick={onReveal}
+          className="px-2 py-1 rounded-md text-[11px] text-ink-faint hover:text-ink hover:bg-white/[0.06] transition-colors"
+        >
           Reveal
         </button>
       </div>
