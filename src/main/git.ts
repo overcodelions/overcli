@@ -1001,7 +1001,18 @@ export function worktreeStatus(args: {
   );
   // exit 0 = HEAD is already in base, 1 = diverged. Treat errors (2) as
   // "not merged" so we don't wrongly disable the merge button.
-  const isMergedIntoBase = isAncestor.exitCode === 0 && commitsAhead === 0;
+  //
+  // "Merged" must mean there's nothing left to bring back: HEAD is in base,
+  // no commits ahead, AND no pending work. Without the last two clauses a
+  // worktree whose changes were never committed reads as merged — HEAD still
+  // equals base, so it's trivially an ancestor — which both mislabels it and
+  // disables the merge button even though there are uncommitted changes to
+  // land.
+  const isMergedIntoBase =
+    isAncestor.exitCode === 0 &&
+    commitsAhead === 0 &&
+    !hasUncommittedChanges &&
+    filesChanged === 0;
 
   const projectBranch = runGit(['branch', '--show-current'], args.projectPath);
   const currentProjectBranch =
