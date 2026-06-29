@@ -1198,7 +1198,18 @@ export interface IPCInvokeMap {
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
-  'flows:deleteRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Pass `force: true` to skip the uncommitted-changes guard. Without it,
+  /// a run whose worktree(s) have uncommitted changes returns
+  /// `{ ok: false, needsConfirm: true, dirty }` and deletes nothing, so the
+  /// renderer can warn before the work is discarded.
+  'flows:deleteRun': (args: { runId: UUID; force?: boolean }) =>
+    | { ok: true }
+    | { ok: false; error: string }
+    | {
+        ok: false;
+        needsConfirm: true;
+        dirty: Array<{ name: string; worktreePath: string; fileCount: number }>;
+      };
   'flows:listRegistries': () => FlowRegistry[];
   'flows:upsertRegistry': (args: { registry: FlowRegistry; authHeader?: string | null }) =>
     { ok: true } | { ok: false; error: string };
