@@ -69,11 +69,12 @@ describe('drafterModelHints', () => {
     // fable-5 is 'frontier' (not 'thinking'), so the thinking hint is the
     // first thinking model — opus-4-8. sonnet is classified 'fast', so
     // claude has no 'standard' model — standard degrades up to the thinking
-    // pick (opus-4-8), and fast is the first fast model (sonnet).
+    // pick (opus-4-8), and fast is the first fast model (sonnet-5, which
+    // precedes sonnet-4.6 and haiku among the 'fast' models).
     expect(drafterModelHints('claude')).toEqual({
       thinking: 'claude-opus-4-8',
       standard: 'claude-opus-4-8',
-      fast: 'claude-sonnet-4-6',
+      fast: 'claude-sonnet-5',
     });
     expect(drafterModelHints('codex')).toEqual({
       thinking: 'gpt-5.5',
