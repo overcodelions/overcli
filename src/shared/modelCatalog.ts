@@ -12,9 +12,12 @@ import type { Backend } from './types';
 /// the first matching id. We keep `claude-opus-4-8` first so it's the
 /// default Claude model. `claude-fable-5` is the most premium/advanced
 /// model (roughly 2x the cost of Opus 4.8), listed right after the
-/// default for anyone who explicitly wants it.
+/// default for anyone who explicitly wants it. Order also picks the
+/// per-tier default: the template resolver substitutes the *first* id at
+/// a given speed tier, so `claude-sonnet-5` precedes `claude-sonnet-4-6`
+/// to make Sonnet 5 the default 'fast' Claude model.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
@@ -70,6 +73,7 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'claude-fable-5': 'frontier',
   'claude-opus-4-8': 'thinking',
   'claude-opus-4-7': 'thinking',
+  'claude-sonnet-5': 'fast',
   'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',
   // Codex (OpenAI)

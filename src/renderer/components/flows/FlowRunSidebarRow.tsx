@@ -55,14 +55,32 @@ interface FlowRunsSectionProps {
   /// symlink root. Runs whose `projectPath` equals this string surface
   /// here.
   path: string;
+  /// Lowercased sidebar search query. When non-empty, only runs whose
+  /// title/flow name match are shown — so a search narrows the Flows
+  /// list the same way it narrows conversations. Empty (the default)
+  /// shows every run for the path.
+  query?: string;
 }
 
-export function FlowRunsSection({ path }: FlowRunsSectionProps) {
+/// Whether a flow run matches the sidebar search query. Matches against
+/// the run's display title (first prompt line, or flow name when blank)
+/// and the underlying flow name, so users can find a run by either what
+/// they asked for or which flow produced it. `query` is expected to be
+/// already trimmed + lowercased; an empty query matches everything.
+export function flowRunMatchesQuery(run: FlowRun, query: string): boolean {
+  if (!query) return true;
+  return (
+    runTitle(run).toLowerCase().includes(query) ||
+    run.flowSnapshot.name.toLowerCase().includes(query)
+  );
+}
+
+export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   const runs = useFlowsStore((s) => s.runs);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const runners = useAllRunners();
   const matches = Object.values(runs)
-    .filter((r) => flowRunOwnerPath(r) === path)
+    .filter((r) => flowRunOwnerPath(r) === path && flowRunMatchesQuery(r, query))
     .sort((a, b) => b.createdAt - a.createdAt);
   if (matches.length === 0) return null;
   return (

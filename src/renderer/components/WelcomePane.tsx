@@ -15,6 +15,7 @@ import {
   Workspace,
 } from '@shared/types';
 import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
+import { PREMIUM_MODELS } from '@shared/modelCatalog';
 import { pathBasename } from '@shared/workspaceNames';
 import { flowStarKey } from '@shared/flows/schema';
 import { backendColor, backendName, shortModel } from '../theme';
@@ -1072,17 +1073,10 @@ function modelOptionsFor(
   if (backend === 'ollama') {
     return ollamaPulled ?? [];
   }
-  const base: Record<Exclude<Backend, 'ollama'>, string[]> = {
-    claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-    codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
-    gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
-    // Copilot's --model accepts model ids served via GitHub's Bedrock
-    // gateway. The default the CLI picks is `claude-haiku-4.5`; the
-    // others are the public Copilot-CLI-supported set as of mid-2026.
-    // Users can override via Settings → Models if a newer id ships.
-    copilot: ['claude-haiku-4.5', 'claude-sonnet-4.6', 'gpt-5.5'],
-  };
-  return base[backend as Exclude<Backend, 'ollama'>];
+  // Single source of truth: the shared catalog. (Previously this kept a
+  // hand-maintained copy, which silently went stale when a new model
+  // shipped — e.g. Sonnet 5 was added to the catalog but not here.)
+  return PREMIUM_MODELS[backend as Exclude<Backend, 'ollama'>];
 }
 
 interface PillItem {

@@ -11,7 +11,12 @@ import {
   isActiveConversation,
 } from '../conversationLookup';
 import { useFlowsStore } from '../flowsStore';
-import { ActiveFlowsList, FlowRunsSection, useHasActiveFlows } from './flows/FlowRunSidebarRow';
+import {
+  ActiveFlowsList,
+  FlowRunsSection,
+  flowRunMatchesQuery,
+  useHasActiveFlows,
+} from './flows/FlowRunSidebarRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 
 export function Sidebar() {
@@ -78,6 +83,19 @@ export function Sidebar() {
   const query = search.trim().toLowerCase();
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
+  // Owner paths (project repo path / workspace root) that have at least
+  // one flow run matching the search. Lets a project/workspace surface in
+  // results purely because one of its flow runs matches, even when its
+  // name and conversations don't.
+  const flowMatchPaths = useMemo(() => {
+    const set = new Set<string>();
+    if (!query) return set;
+    for (const run of Object.values(flowRuns)) {
+      if (flowRunMatchesQuery(run, query)) set.add(flowRunOwnerPath(run));
+    }
+    return set;
+  }, [flowRuns, query]);
+
   const allGroupIds = useMemo(
     () => [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
     [projects, workspaces],
@@ -99,8 +117,13 @@ export function Sidebar() {
             (c.sessionId ?? '').toLowerCase().includes(query),
         ),
       }))
-      .filter((p) => p.name.toLowerCase().includes(query) || p.conversations.length > 0);
-  }, [projects, query]);
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(query) ||
+          p.conversations.length > 0 ||
+          flowMatchPaths.has(p.path),
+      );
+  }, [projects, query, flowMatchPaths]);
 
   const visibleWorkspaces = useMemo(() => {
     if (!query) return workspaces;
@@ -117,9 +140,14 @@ export function Sidebar() {
         const memberMatch = w.projectIds.some((pid) =>
           projectsById.get(pid)?.name.toLowerCase().includes(query),
         );
-        return w.name.toLowerCase().includes(query) || memberMatch || w.conversations.length > 0;
+        return (
+          w.name.toLowerCase().includes(query) ||
+          memberMatch ||
+          w.conversations.length > 0 ||
+          flowMatchPaths.has(w.rootPath)
+        );
       });
-  }, [projectsById, query, workspaces]);
+  }, [projectsById, query, workspaces, flowMatchPaths]);
 
   const topConversations = useMemo(
     () => collectTopConversations(projects, workspaces, runners).slice(0, 3),
@@ -194,6 +222,7 @@ export function Sidebar() {
       onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
       onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
       onExplore={() => openExplorer(project.path)}
+      searchQuery={query}
     />
   );
   const renderMoreProjectGroup = (project: Project) => (
@@ -280,6 +309,7 @@ export function Sidebar() {
             onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
             onRemove={() => void removeWorkspace(ws.id)}
             onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
+            searchQuery={query}
           />
         ))}
         {!query && (visibleProjectGroups.length > 0 || overflowActiveProjects.length > 0 || inactiveProjects.length > 0) && (
@@ -570,6 +600,7 @@ function ProjectGroup({
   onNewAgent,
   onNewColosseum,
   onExplore,
+  searchQuery = '',
 }: {
   project: Project;
   colosseums: Colosseum[];
@@ -582,6 +613,7 @@ function ProjectGroup({
   onNewAgent: () => void;
   onNewColosseum: () => void;
   onExplore: () => void;
+  searchQuery?: string;
 }) {
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
@@ -731,7 +763,7 @@ function ProjectGroup({
               onSelect={onSelect}
             />
           ))}
-          <FlowRunsSection path={project.path} />
+          <FlowRunsSection path={project.path} query={searchQuery} />
           <div className="flex gap-1 my-1 pl-1">
             {isGitRepo !== false && (
               <button
@@ -1027,6 +1059,7 @@ function WorkspaceGroup({
   onEdit,
   onRemove,
   onExplore,
+  searchQuery = '',
 }: {
   workspace: Workspace;
   expanded: boolean;
@@ -1038,6 +1071,7 @@ function WorkspaceGroup({
   onEdit: () => void;
   onRemove: () => void;
   onExplore?: () => void;
+  searchQuery?: string;
 }) {
   const convs = (workspace.conversations ?? []).filter((c) => !c.hidden);
   const plain = convs.filter((c) => !isAgentConversation(c));
@@ -1152,7 +1186,7 @@ function WorkspaceGroup({
               onClick={() => onSelect(conv.id)}
             />
           ))}
-          <FlowRunsSection path={workspace.rootPath} />
+          <FlowRunsSection path={workspace.rootPath} query={searchQuery} />
           <div className="flex gap-1 my-1 pl-1">
             <button
               onClick={onNewAgent}
