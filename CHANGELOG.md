@@ -4,6 +4,24 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-30
+
+### Added
+- **Claude Sonnet 5 (`claude-sonnet-5`)** added to the model catalog as the default `fast` Claude model — used for rebound reviewers and the cheap tier, and auto-selected as the worker/verify model in claude-only flow templates (ahead of Sonnet 4.6). The Welcome pane's model picker now reads from the shared catalog so newly added models can't silently go stale ([#98](https://github.com/overcodelions/overcli/pull/98)).
+- **Untracked files now appear in worktree reviews.** The review and diff sheets show a synthetic `new file` block for each untracked path, mirroring what a merge would bring across, so files an agent wrote but never staged are no longer silently dropped — and the "N files ±X" badge counts them too ([#98](https://github.com/overcodelions/overcli/pull/98)).
+
+### Changed
+- **Deleting a flow run now removes its git worktree** instead of leaving it orphaned on disk ([#97](https://github.com/overcodelions/overcli/pull/97)).
+- **Snappier file opens.** Main-process git status probes went async so they no longer block the event loop, realpath'd project roots are memoized, and absolute path hints skip the recursive same-name walk — cutting the antivirus-taxed syscalls on every file IPC ([#98](https://github.com/overcodelions/overcli/pull/98)).
+- **Sidebar search matches flow runs** by title or flow name, surfacing the owning project/workspace even when its name and conversations don't match ([#98](https://github.com/overcodelions/overcli/pull/98)).
+
+### Fixed
+- **Switching flow runs closes the open side-file editor** so it re-roots at the new run's worktree instead of re-resolving the old file against the wrong tree ([#98](https://github.com/overcodelions/overcli/pull/98)).
+
+## [0.4.1] - 2026-06-29
+
+A bugfix release: flow runs resume correctly after an app restart, plus review-sheet, explorer, Codex, and git fixes ([#96](https://github.com/overcodelions/overcli/pull/96)).
+
 ## [0.4.0] - 2026-06-28
 
 The Orchestrator: fan a backlog out into a batch of flow runs, one git worktree per ask. Plus paused-run durability, snappier flow launches, and a security dependency sweep.
@@ -122,7 +140,9 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/overcodelions/overcli/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/overcodelions/overcli/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/overcodelions/overcli/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/overcodelions/overcli/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/overcodelions/overcli/compare/v0.2.0...v0.3.0
