@@ -1024,6 +1024,11 @@ export interface IPCInvokeMap {
     branchName: string;
     baseBranch: string;
   }) => WorktreeStatus;
+  'git:worktreeDiff': (args: { cwd: string; baseBranch: string }) => {
+    stdout: string;
+    stderr: string;
+    exitCode: number;
+  };
   'git:rescueMainTree': (args: {
     projectPath: string;
     worktreePath: string;

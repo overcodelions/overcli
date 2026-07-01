@@ -249,7 +249,7 @@ function WorktreeReviewPane({
   const reload = async () => {
     setLoading(true);
     const [diff, stat] = await Promise.all([
-      window.overcli.invoke('git:run', { args: ['diff', diffBase], cwd: worktreePath }),
+      window.overcli.invoke('git:worktreeDiff', { cwd: worktreePath, baseBranch: diffBase }),
       window.overcli.invoke('git:worktreeStatus', {
         projectPath,
         worktreePath,

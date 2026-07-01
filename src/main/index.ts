@@ -31,6 +31,7 @@ import {
   pushBranch,
   openPR,
   worktreeStatus,
+  worktreeDiff,
   rescueMainTree,
   commitStatus,
   currentBranch,
@@ -461,6 +462,7 @@ function registerIpc(): void {
   ipcMain.handle('git:pushBranch', (_e, args) => pushBranch(args));
   ipcMain.handle('git:openPR', (_e, args) => openPR(args));
   ipcMain.handle('git:worktreeStatus', (_e, args) => worktreeStatus(args));
+  ipcMain.handle('git:worktreeDiff', (_e, args) => worktreeDiff(args));
   ipcMain.handle('git:rescueMainTree', (_e, args) => rescueMainTree(args));
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
   ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranch(cwd));
@@ -1122,6 +1124,47 @@ function registeredRoots(): string[] {
   return [...roots];
 }
 
+// Containment checks compare a target against the realpath'd form of every
+// registered root. Computing that means a `realpathSync` per root on EVERY
+// file IPC call (open / preview / diff / git) — and each syscall is
+// intercepted by on-access antivirus, so on a busy machine these dominate
+// file-open latency.
+//
+// `realpath` of a registered directory is effectively immutable for the app's
+// lifetime, so memoize it per raw path. The root *set* is NOT cached —
+// `registeredRoots()` is recomputed fresh each call (cheap: in-memory store
+// state + a list walk, no syscalls) — so a newly-added project or flow-run
+// worktree is recognized immediately and a removed one drops out at once.
+// Only successful realpaths are memoized; a root not yet on disk (a worktree
+// registered just before it's created) is retried each call until it exists.
+const rootRealpathMemo = new Map<string, string>();
+
+function realpathRoot(root: string): string | null {
+  const key = path.resolve(root);
+  const memo = rootRealpathMemo.get(key);
+  if (memo !== undefined) return memo;
+  try {
+    const real = fs.realpathSync(key);
+    rootRealpathMemo.set(key, real);
+    return real;
+  } catch {
+    return null; // not memoized — the directory may appear later
+  }
+}
+
+function resolvedRegisteredRoots(): string[] {
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  for (const root of registeredRoots()) {
+    const real = realpathRoot(root);
+    if (real && !seen.has(real)) {
+      seen.add(real);
+      resolved.push(real);
+    }
+  }
+  return resolved;
+}
+
 // The renderer only needs a handful of read-oriented git subcommands to
 // power the file editor, diff sheets, and branch pickers. Anything else —
 // `clone`, `fetch`, `push`, `-c core.sshCommand=…`, `-C /some/dir` — is
@@ -1160,16 +1203,10 @@ function isRendererSafeGitInvocation(args: unknown, cwd: unknown): boolean {
 // symlink planted inside a project can't point out to an unrelated file.
 function isPathUnderRegisteredRoot(target: string): boolean {
   if (!target) return false;
-  const roots = registeredRoots();
+  const roots = resolvedRegisteredRoots();
   if (roots.length === 0) return false;
   const resolvedTarget = resolveExistingAncestor(path.resolve(target));
-  for (const root of roots) {
-    let resolvedRoot: string;
-    try {
-      resolvedRoot = fs.realpathSync(path.resolve(root));
-    } catch {
-      continue;
-    }
+  for (const resolvedRoot of roots) {
     const rel = path.relative(resolvedRoot, resolvedTarget);
     if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
   }
@@ -1260,6 +1297,13 @@ function resolveFilePath(hint: string, rootPath?: string): string | null {
   const hintSegments = hint.split(/[\\/]/).filter(Boolean);
   const basename = hintSegments[hintSegments.length - 1];
   if (!basename) return null;
+
+  // An absolute hint that didn't resolve to an existing file in the direct
+  // checks above won't be found by scanning for a same-named file elsewhere —
+  // and silently redirecting an absolute path to a different file would be
+  // wrong. Skip the recursive walk (each readdir/stat is antivirus-taxed and
+  // covers up to 20k files per root) for absolute hints.
+  if (path.isAbsolute(hint)) return null;
 
   const searchRoots: string[] = [];
   const seenRoot = new Set<string>();

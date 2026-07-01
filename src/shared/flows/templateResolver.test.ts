@@ -19,12 +19,12 @@ function loadTemplate(id: string) {
 describe('resolveTemplateForUser — build-feature template', () => {
   // The design step is a planner — it uses claude-fable-5, classified
   // 'frontier', so it resolves to fable-5 (the only frontier claude model).
-  // claude-sonnet-4-6 is classified 'fast' (so its tokens group under the
-  // run token bar's "fast" tier). That makes both the build step (fast
-  // worker) and the verify step (sonnet placeholder, now also 'fast')
-  // resolve to the first fast claude model — sonnet; haiku is no longer
-  // auto-selected because sonnet precedes it among the 'fast' models.
-  it('only-claude user: design→fable (frontier), build+verify→sonnet (first fast model)', () => {
+  // The sonnet models are classified 'fast' (so their tokens group under
+  // the run token bar's "fast" tier). That makes both the build step (fast
+  // worker) and the verify step (sonnet placeholder, also 'fast') resolve
+  // to the first fast claude model — claude-sonnet-5, which precedes
+  // sonnet-4.6 and haiku among the 'fast' models.
+  it('only-claude user: design→fable (frontier), build+verify→sonnet-5 (first fast model)', () => {
     const flow = loadTemplate('build-feature');
     const resolved = resolveTemplateForUser(flow, {
       healthyBackends: ['claude'],
@@ -34,8 +34,8 @@ describe('resolveTemplateForUser — build-feature template', () => {
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
 
     expect(byParticipant.get(byStep.get('design')!)?.model).toBe('claude-fable-5');
-    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('claude-sonnet-4-6');
-    expect(byParticipant.get(byStep.get('verify')!)?.model).toBe('claude-sonnet-4-6');
+    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('claude-sonnet-5');
+    expect(byParticipant.get(byStep.get('verify')!)?.model).toBe('claude-sonnet-5');
     for (const p of resolved.participants) {
       expect(p.backend).toBe('claude');
     }
@@ -84,8 +84,9 @@ describe('resolveTemplateForUser — build-feature template', () => {
     const buildStep = resolved.steps.find((s) => s.id === 'build')!;
     const buildParticipant = resolved.participants.find((p) => p.id === buildStep.participantId)!;
     expect(buildParticipant.backend).toBe('claude');
-    // First fast claude model is sonnet (precedes haiku in PREMIUM_MODELS).
-    expect(buildParticipant.model).toBe('claude-sonnet-4-6');
+    // First fast claude model is sonnet-5 (precedes sonnet-4.6 and haiku
+    // in PREMIUM_MODELS).
+    expect(buildParticipant.model).toBe('claude-sonnet-5');
   });
 });
 
@@ -98,8 +99,9 @@ describe('resolveTemplateForUser — friendly names updated', () => {
     });
     const names = resolved.participants.map((p) => p.name);
     // claude-only build-feature resolves to fable (frontier, design) +
-    // sonnet (fast) for the remaining steps; haiku is no longer auto-picked.
+    // sonnet-5 (fast) for the remaining steps; sonnet-4.6 and haiku are no
+    // longer auto-picked because sonnet-5 precedes them among 'fast' models.
     expect(names).toContain('Claude Fable 5');
-    expect(names).toContain('Claude Sonnet 4.6');
+    expect(names).toContain('Claude Sonnet 5');
   });
 });
