@@ -39,6 +39,10 @@ describe('friendlyModelLabel — claude', () => {
     expect(friendlyModelLabel('claude', 'claude-fable-5')).toBe('Claude Fable 5');
   });
 
+  it('formats sonnet-5', () => {
+    expect(friendlyModelLabel('claude', 'claude-sonnet-5')).toBe('Claude Sonnet 5');
+  });
+
   it('formats sonnet-4-6', () => {
     expect(friendlyModelLabel('claude', 'claude-sonnet-4-6')).toBe('Claude Sonnet 4.6');
   });
@@ -129,6 +133,7 @@ describe('modelSpeed', () => {
     ['claude-fable-5', 'frontier'],
     ['claude-opus-4-8', 'thinking'],
     ['claude-opus-4-7', 'thinking'],
+    ['claude-sonnet-5', 'fast'],
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],
     ['gpt-5.5', 'thinking'],

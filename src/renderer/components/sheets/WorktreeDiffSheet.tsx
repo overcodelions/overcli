@@ -89,11 +89,12 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
     setLoading(true);
     // `git diff <base>` (two-dot, working-tree-vs-base) rolls committed
     // and uncommitted changes into one view — the most useful
-    // "everything the agent has done" diff for the reviewer.
+    // "everything the agent has done" diff for the reviewer. `worktreeDiff`
+    // adds the untracked new files a plain `git diff` would drop.
     const [diff, stat] = await Promise.all([
-      window.overcli.invoke('git:run', {
-        args: ['diff', baseBranch],
+      window.overcli.invoke('git:worktreeDiff', {
         cwd: conv.worktreePath,
+        baseBranch,
       }),
       window.overcli.invoke('git:worktreeStatus', {
         projectPath,

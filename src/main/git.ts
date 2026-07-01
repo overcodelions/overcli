@@ -706,8 +706,8 @@ function ghAvailable(): boolean {
 /// Classify the worktree's `origin` so the UI can decide between Push and
 /// Open PR. Returns 'github' only if `gh` is on PATH — so the Open PR
 /// action doesn't dead-end at a missing CLI.
-export function detectRemoteKind(cwd: string): RemoteKind {
-  const res = runGit(['remote', 'get-url', 'origin'], cwd);
+export async function detectRemoteKind(cwd: string): Promise<RemoteKind> {
+  const res = await runGitAsync(['remote', 'get-url', 'origin'], cwd);
   if (res.exitCode !== 0) return 'none';
   const url = res.stdout.trim();
   if (!url) return 'none';
@@ -960,16 +960,16 @@ export function openPR(args: {
 /// merged status, and whether the *main* project checkout has dirty files
 /// that belong in the worktree. Individual git calls are cheap enough that
 /// batching via `--numstat` + a few shortstat queries keeps this sub-100ms.
-export function worktreeStatus(args: {
+export async function worktreeStatus(args: {
   projectPath: string;
   worktreePath: string;
   branchName: string;
   baseBranch: string;
-}): WorktreeStatus {
+}): Promise<WorktreeStatus> {
   // `git diff --numstat <base>` (working-tree-vs-base) rolls committed +
   // uncommitted divergence into a single pass, so every file the agent
   // has touched shows up exactly once — no double-counting.
-  const numstat = runGit(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch], args.worktreePath);
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
@@ -986,16 +986,34 @@ export function worktreeStatus(args: {
     }
   }
 
-  const ahead = runGit(
+  // numstat omits untracked files, so a net-new file the agent wrote but
+  // never staged wouldn't be counted — leaving the badge ("1 file +3") out
+  // of sync with the diff sheet, which now includes those files. Tally the
+  // same `--exclude-standard` set the diff uses, counting added lines from
+  // disk (untracked files are pure additions).
+  const untracked = await runGitAsync(
+    ['ls-files', '--others', '--exclude-standard'],
+    args.worktreePath,
+  );
+  if (untracked.exitCode === 0) {
+    for (const line of untracked.stdout.split('\n')) {
+      const p = line.trim();
+      if (!p) continue;
+      filesChanged += 1;
+      insertions += await countLinesOnDiskAsync(path.join(args.worktreePath, p));
+    }
+  }
+
+  const ahead = await runGitAsync(
     ['rev-list', '--count', `${args.baseBranch}..HEAD`],
     args.worktreePath,
   );
   const commitsAhead = ahead.exitCode === 0 ? parseInt(ahead.stdout.trim(), 10) || 0 : 0;
 
-  const status = runGit(['status', '--porcelain'], args.worktreePath);
+  const status = await runGitAsync(['status', '--porcelain'], args.worktreePath);
   const hasUncommittedChanges = status.exitCode === 0 && !!status.stdout.trim();
 
-  const isAncestor = runGit(
+  const isAncestor = await runGitAsync(
     ['merge-base', '--is-ancestor', 'HEAD', args.baseBranch],
     args.worktreePath,
   );
@@ -1014,19 +1032,19 @@ export function worktreeStatus(args: {
     !hasUncommittedChanges &&
     filesChanged === 0;
 
-  const projectBranch = runGit(['branch', '--show-current'], args.projectPath);
+  const projectBranch = await runGitAsync(['branch', '--show-current'], args.projectPath);
   const currentProjectBranch =
     projectBranch.exitCode === 0 && projectBranch.stdout.trim()
       ? projectBranch.stdout.trim()
       : null;
 
-  const remoteKind = detectRemoteKind(args.worktreePath);
+  const remoteKind = await detectRemoteKind(args.worktreePath);
 
   // "agent wrote to the wrong tree" detector: count dirty files in the
   // main project checkout. This is noisy (the user may have their own
   // WIP) but is the only signal we have without spelunking into the
   // runner's event stream.
-  const mainStatus = runGit(['status', '--porcelain'], args.projectPath);
+  const mainStatus = await runGitAsync(['status', '--porcelain'], args.projectPath);
   const mainTreeDirtyFiles =
     mainStatus.exitCode === 0
       ? mainStatus.stdout.split('\n').filter((l) => l.trim()).length
@@ -1043,6 +1061,42 @@ export function worktreeStatus(args: {
     remoteKind,
     mainTreeDirtyFiles,
   };
+}
+
+/// Unified diff of a worktree against `baseBranch`, including newly created
+/// files. A plain `git diff <base>` only reports *tracked* changes, so a file
+/// the agent wrote but never `git add`-ed (untracked) is silently dropped from
+/// the review sheet. We mirror what `git merge` would actually bring across:
+/// the tracked diff, plus a synthetic `new file` block per untracked path via
+/// `git diff --no-index /dev/null <path>`. `--exclude-standard` honours
+/// .gitignore so build output and node_modules stay out. Returns the same
+/// `{ stdout, stderr, exitCode }` shape as `git:run` so the renderer can treat
+/// it identically.
+export async function worktreeDiff(args: {
+  cwd: string;
+  baseBranch: string;
+}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', args.baseBranch], args.cwd);
+  // A failed tracked diff (bad ref, not a repo) is fatal — surface it as-is
+  // rather than returning a partial untracked-only diff that hides the error.
+  if (tracked.exitCode !== 0) return tracked;
+
+  const untrackedList = await runGitAsync(['ls-files', '--others', '--exclude-standard'], args.cwd);
+  const untrackedPaths =
+    untrackedList.exitCode === 0
+      ? untrackedList.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+      : [];
+
+  const blocks = [tracked.stdout];
+  for (const p of untrackedPaths) {
+    // `--no-index` exits 1 when the two inputs differ — the normal case when
+    // diffing a real file against /dev/null — so 1 isn't a failure here.
+    // Anything else (missing file, etc.) we skip rather than abort.
+    const r = await runGitAsync(['diff', '--no-color', '--no-ext-diff', '--no-index', '/dev/null', p], args.cwd);
+    if ((r.exitCode === 0 || r.exitCode === 1) && r.stdout) blocks.push(r.stdout);
+  }
+
+  return { stdout: blocks.filter(Boolean).join(''), stderr: tracked.stderr, exitCode: 0 };
 }
 
 /// Cheapest possible "what branch is this repo on right now". One git
@@ -1063,25 +1117,25 @@ export function currentBranch(cwd: string): { isRepo: boolean; branch: string } 
 /// the path doesn't exist) so the renderer can hide the button entirely.
 /// Porcelain v1 status codes are preserved in `.status` (e.g. ` M`, `??`,
 /// `A `) so the UI can show staged vs unstaged vs untracked.
-export function commitStatus(cwd: string): {
+export async function commitStatus(cwd: string): Promise<{
   isRepo: boolean;
   currentBranch: string;
   changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
   insertions: number;
   deletions: number;
-} {
+}> {
   if (!cwd) {
     return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
   }
-  const check = runGit(['rev-parse', '--is-inside-work-tree'], cwd);
+  const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], cwd);
   if (check.exitCode !== 0 || check.stdout.trim() !== 'true') {
     return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
   }
-  const branch = runGit(['branch', '--show-current'], cwd);
+  const branch = await runGitAsync(['branch', '--show-current'], cwd);
   // `--untracked-files=all` so a newly-created directory is listed as one
   // entry per file inside it, not a single `?? path/to/dir/` line that
   // collapses everything the agent wrote into a zero-line directory row.
-  const status = runGit(['status', '--porcelain=v1', '--untracked-files=all'], cwd);
+  const status = await runGitAsync(['status', '--porcelain=v1', '--untracked-files=all'], cwd);
   const statusByPath = new Map<string, string>();
   if (status.exitCode === 0) {
     for (const line of status.stdout.split('\n')) {
@@ -1100,7 +1154,7 @@ export function commitStatus(cwd: string): {
   const deletionsByPath = new Map<string, number>();
   let insertions = 0;
   let deletions = 0;
-  const numstat = runGit(['diff', 'HEAD', '--numstat'], cwd);
+  const numstat = await runGitAsync(['diff', 'HEAD', '--numstat'], cwd);
   if (numstat.exitCode === 0) {
     for (const line of numstat.stdout.split('\n')) {
       const parts = line.trim().split(/\s+/);
@@ -1126,7 +1180,7 @@ export function commitStatus(cwd: string): {
 
   for (const [p, code] of statusByPath) {
     if (code !== '??') continue;
-    const lines = countLinesOnDisk(path.join(cwd, p));
+    const lines = await countLinesOnDiskAsync(path.join(cwd, p));
     if (lines > 0) {
       insertions += lines;
       additionsByPath.set(p, (additionsByPath.get(p) ?? 0) + lines);
@@ -1155,15 +1209,15 @@ export function commitStatus(cwd: string): {
 /// returned path is prefixed with the project's symlink name so it
 /// resolves through the workspace root via the on-disk symlinks, and so
 /// the ChangesBar shows which project a file belongs to.
-export function workspaceCommitStatus(
+export async function workspaceCommitStatus(
   members: Array<{ name: string; path: string }>,
-): {
+): Promise<{
   isRepo: boolean;
   currentBranch: string;
   changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
   insertions: number;
   deletions: number;
-} {
+}> {
   let insertions = 0;
   let deletions = 0;
   const changes: Array<{ path: string; status: string; additions: number; deletions: number }> = [];
@@ -1173,7 +1227,7 @@ export function workspaceCommitStatus(
   // name), so `name` is used verbatim as the path prefix.
   for (const { name, path: projPath } of members) {
     if (!name || !projPath) continue;
-    const res = commitStatus(projPath);
+    const res = await commitStatus(projPath);
     if (!res.isRepo) continue;
     anyRepo = true;
     insertions += res.insertions;
@@ -1198,6 +1252,27 @@ function countLinesOnDisk(filePath: string): number {
     if (stat.size > 1024 * 1024) return 0;
     const buf = fs.readFileSync(filePath);
     // Cheap binary sniff: any NUL in the first 8 KB → skip.
+    const sniffEnd = Math.min(buf.length, 8192);
+    for (let i = 0; i < sniffEnd; i++) if (buf[i] === 0) return 0;
+    const text = buf.toString('utf8');
+    let n = 0;
+    for (const raw of text.split('\n')) {
+      if (raw.replace(/\r$/, '').length > 0) n++;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
+/// Async sibling of `countLinesOnDisk` - same logic, non-blocking fs so it
+/// never stalls the main-process event loop during a status probe.
+async function countLinesOnDiskAsync(filePath: string): Promise<number> {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (stat.isDirectory()) return 0;
+    if (stat.size > 1024 * 1024) return 0;
+    const buf = await fs.promises.readFile(filePath);
     const sniffEnd = Math.min(buf.length, 8192);
     for (let i = 0; i < sniffEnd; i++) if (buf[i] === 0) return 0;
     const text = buf.toString('utf8');
@@ -1321,4 +1396,3 @@ export function rescueMainTree(args: {
   }
   return { ok: true, message: `Moved dirty files into worktree ${args.worktreePath}` };
 }
-
