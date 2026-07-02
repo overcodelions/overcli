@@ -97,6 +97,21 @@ type Emit = (event: MainToRendererEvent) => void;
 /// success, or a surfaced error string.
 export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
 
+/// True once an AskUserQuestion tool_use's inputJSON actually carries a
+/// non-empty `questions` array. A streaming snapshot or a consolidated
+/// message with omitted input parses to `{}`, which would otherwise pass
+/// the presence check below and end the turn before there's anything for
+/// the question card to render, leaving the UI on its empty-options
+/// fallback until the process is already dead.
+export function askUserQuestionHasData(inputJSON: string): boolean {
+  try {
+    const parsed = JSON.parse(inputJSON);
+    return Array.isArray(parsed?.questions) && parsed.questions.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /// SHA-256 hex of a synthetic collab pingPrompt, used to mark it for
 /// skip-on-replay. Hashing keeps `Conversation.syntheticPrompts` bounded
 /// at 64 chars/entry regardless of prompt size, so a long collab
@@ -2549,7 +2564,9 @@ export class RunnerManager {
       const asksQuestion = emitted.some(
         (e) =>
           e.kind.type === 'assistant' &&
-          e.kind.info.toolUses.some((t) => t.name === 'AskUserQuestion'),
+          e.kind.info.toolUses.some(
+            (t) => t.name === 'AskUserQuestion' && askUserQuestionHasData(t.inputJSON),
+          ),
       );
 
       if (turnEnded) {

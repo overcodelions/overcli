@@ -11,6 +11,7 @@ import {
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
 import {
+  askUserQuestionHasData,
   isBrokerPromptToolMissingError,
   isStaleSessionError,
   resumeSessionAfterParamChange,
@@ -93,6 +94,55 @@ describe('isBrokerPromptToolMissingError', () => {
     expect(isBrokerPromptToolMissingError('Tool mcp__github__create_issue not found')).toBe(false);
     expect(isBrokerPromptToolMissingError('No conversation found with session ID abc')).toBe(false);
     expect(isBrokerPromptToolMissingError('')).toBe(false);
+  });
+});
+
+describe('askUserQuestionHasData', () => {
+  // Regression: the runner used to end the Claude turn (and kill the proc)
+  // the moment an AskUserQuestion tool_use was merely *present*, even when
+  // its inputJSON hadn't accumulated any questions yet. That left
+  // AskUserQuestionCard stuck on "No options provided — type your reply
+  // below." because the process was already dead by the time real data
+  // would have arrived.
+  it('returns true when questions is a non-empty array', () => {
+    expect(
+      askUserQuestionHasData(
+        JSON.stringify({ questions: [{ header: 'Pick one', question: 'Which?', options: [] }] }),
+      ),
+    ).toBe(true);
+  });
+
+  it('returns true for multiple questions', () => {
+    expect(
+      askUserQuestionHasData(JSON.stringify({ questions: [{ question: 'A' }, { question: 'B' }] })),
+    ).toBe(true);
+  });
+
+  it('returns false for the omitted-input case ("{}")', () => {
+    // This is exactly what claude.ts:283 produces when the SDK's
+    // consolidated assistant message omits `block.input`.
+    expect(askUserQuestionHasData('{}')).toBe(false);
+  });
+
+  it('returns false when questions is present but empty', () => {
+    expect(askUserQuestionHasData(JSON.stringify({ questions: [] }))).toBe(false);
+  });
+
+  it('returns false when questions is not an array', () => {
+    expect(askUserQuestionHasData(JSON.stringify({ questions: 'not-an-array' }))).toBe(false);
+    expect(askUserQuestionHasData(JSON.stringify({ questions: { header: 'oops' } }))).toBe(false);
+  });
+
+  it('returns false for unparseable JSON (partial streaming snapshot)', () => {
+    expect(askUserQuestionHasData('{"questions": [')).toBe(false);
+    expect(askUserQuestionHasData('')).toBe(false);
+  });
+
+  it('returns false when the payload parses to a non-object', () => {
+    // Guards the optional-chaining access: these must not throw.
+    expect(askUserQuestionHasData('null')).toBe(false);
+    expect(askUserQuestionHasData('42')).toBe(false);
+    expect(askUserQuestionHasData('"a string"')).toBe(false);
   });
 });
 
