@@ -2588,10 +2588,17 @@ export class RunnerManager {
   }
 
   private handleActiveClose(conversationId: UUID, active: ActiveProcess, code: number | null): void {
-    if (this.procs.get(conversationId) === active) {
+    // A superseded proc (param change / quick resend spawned a replacement)
+    // can fire its async 'close' AFTER the new proc registered a fresh broker
+    // session + temp mcp-config for the same conversation. Only tear down
+    // broker/mcp state when THIS close belongs to the current proc — otherwise
+    // we'd unlink the live proc's --mcp-config file out from under it, and it
+    // dies with "MCP config file not found".
+    const isCurrent = this.procs.get(conversationId) === active;
+    if (isCurrent) {
       this.procs.delete(conversationId);
     }
-    if (active.backend === 'claude') {
+    if (active.backend === 'claude' && isCurrent) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
     }
