@@ -968,15 +968,27 @@ function ParticipantBody({
   // confusion reported for a `pause_before` step sharing a model with the
   // step right before it). Surface which step the content actually
   // belongs to instead of leaving it unlabeled.
+  //
+  // Point at the step whose turn is actually the TAIL of the shared
+  // transcript — i.e. the most recently-run owned step — not the first.
+  // `run.attempts` is chronological, so walk it backwards. Using the
+  // first owned step (pipeline order) mislabeled the thread as an early
+  // step's when the visible content really ended with a later one (e.g.
+  // viewing unrun `review` showed `research`'s name while the transcript
+  // ended at `validate`, another step sharing the same model).
   const focusStepHasRun = !!focusStepId && run.attempts.some((a) => a.stepId === focusStepId);
   const focusStepIsRunning =
     run.state.kind === 'running' && run.state.currentStepId === focusStepId;
-  const priorRunStep =
-    !focusStepHasRun && !focusStepIsRunning
-      ? ownedSteps.find(
-          (s) => s.id !== focusStepId && run.attempts.some((a) => a.stepId === s.id),
-        )
-      : null;
+  const priorRunStep = useMemo(() => {
+    if (focusStepHasRun || focusStepIsRunning) return null;
+    for (let i = run.attempts.length - 1; i >= 0; i--) {
+      const stepId = run.attempts[i].stepId;
+      if (stepId === focusStepId) continue;
+      const step = ownedSteps.find((s) => s.id === stepId);
+      if (step) return step;
+    }
+    return null;
+  }, [focusStepHasRun, focusStepIsRunning, run.attempts, focusStepId, ownedSteps]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
