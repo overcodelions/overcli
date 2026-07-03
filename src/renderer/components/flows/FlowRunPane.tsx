@@ -959,6 +959,25 @@ function ParticipantBody({
     if (convId) void loadHistoryIfNeeded(convId);
   }, [convId, loadHistoryIfNeeded]);
 
+  // A participant's conversation is shared across every step assigned to
+  // it (see `executeStep` in runtime.ts). If the user is viewing a step
+  // that hasn't produced an attempt yet — e.g. it's paused, waiting for
+  // Continue — but an EARLIER step on this same participant already ran,
+  // the chat below is that earlier step's transcript, not this step's.
+  // Shown bare, that reads as "this step already ran" (the exact
+  // confusion reported for a `pause_before` step sharing a model with the
+  // step right before it). Surface which step the content actually
+  // belongs to instead of leaving it unlabeled.
+  const focusStepHasRun = !!focusStepId && run.attempts.some((a) => a.stepId === focusStepId);
+  const focusStepIsRunning =
+    run.state.kind === 'running' && run.state.currentStepId === focusStepId;
+  const priorRunStep =
+    !focusStepHasRun && !focusStepIsRunning
+      ? ownedSteps.find(
+          (s) => s.id !== focusStepId && run.attempts.some((a) => a.stepId === s.id),
+        )
+      : null;
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Context strip — "this participant ran/will-run these steps; you're
@@ -983,7 +1002,16 @@ function ParticipantBody({
           Virtuoso never gets a height and the chat renders blank. */}
       <div className="flex-1 min-h-0 flex flex-col border-t border-card">
         {convId ? (
-          <ChatView conversationId={convId} />
+          <>
+            {priorRunStep && (
+              <div className="px-4 py-2 text-xs text-amber-700 dark:text-amber-200 bg-amber-400/10 border-b border-amber-400/20 flex-shrink-0">
+                ⏸ <span className="font-semibold">{focusStepId}</span> hasn't run yet — the
+                conversation below is <span className="font-semibold">{priorRunStep.id}</span>
+                's, which shares this model. It'll run once you continue.
+              </div>
+            )}
+            <ChatView conversationId={convId} />
+          </>
         ) : (
           <div className="flex-1 flex items-center justify-center p-6 text-center">
             <div>
