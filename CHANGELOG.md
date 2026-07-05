@@ -4,6 +4,19 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-05
+
+### Added
+- **Override a stuck reviewer gate.** A failure pause (e.g. a gating reviewer that didn't approve) now offers an **Override & continue** action that rolls the run forward past the failed step — handing that step's already-recorded output to the next step — instead of only ever re-running it. The primary button is relabelled **Re-run step** to match what it does ([#101](https://github.com/overcodelions/overcli/pull/101)).
+
+### Fixed
+- **Labelled reviewer verdicts are recognized as approvals.** A review that says `Verdict: APPROVED` (or `Decision:` / `Result:` / `Status:` / `Outcome:`) now passes the gate. Previously only a line *beginning* with `APPROVED` counted, so a labelled approval failed the gate, paused the flow, and every Continue silently re-ran the same reviewer in a loop. `Verdict: NOT APPROVED` still correctly fails ([#101](https://github.com/overcodelions/overcli/pull/101)).
+- **Pause banner no longer sticks on "Continuing…".** When a resume landed on a new paused state (e.g. Override rolling onto a pre-step pause) or was rejected, the optimistic spinner never cleared even though the run had advanced. It now clears on any pause-identity change or a not-ok resume ([#101](https://github.com/overcodelions/overcli/pull/101)).
+- **Undo/redo works in the file editor.** The Edit menu is spelled out with `registerAccelerator: false` on Undo/Redo so `Cmd/Ctrl+Z` falls through to CodeMirror's own history instead of the native `execCommand` no-op that silently swallowed the keystroke ([#101](https://github.com/overcodelions/overcli/pull/101)).
+- **Registered roots match across filesystem case.** `realpathSync.native` canonicalizes case on case-insensitive filesystems, so path-containment checks still recognize files under a root persisted with different casing (e.g. after an app-name case change) ([#101](https://github.com/overcodelions/overcli/pull/101)).
+- **Runner races fixed:** a superseded Claude process no longer unlinks the live process's `--mcp-config` file, and an `AskUserQuestion` tool_use isn't killed until its `questions` have actually been parsed ([#99](https://github.com/overcodelions/overcli/pull/99)).
+- **Shared-conversation step labels are correct.** When viewing a step that hasn't run yet but shares a model (and conversation) with earlier steps, the banner now names the most recently-run step whose transcript is actually shown, instead of the first step in pipeline order ([#99](https://github.com/overcodelions/overcli/pull/99), [#100](https://github.com/overcodelions/overcli/pull/100)).
+
 ## [0.5.0] - 2026-06-30
 
 ### Added
@@ -140,7 +153,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/overcodelions/overcli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/overcodelions/overcli/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/overcodelions/overcli/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/overcodelions/overcli/compare/v0.3.1...v0.4.0
