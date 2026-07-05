@@ -9,9 +9,7 @@ on:
     - cron: '0 9 * * 1'
 
 permissions:
-  actions: read
-  contents: read
-  security-events: write
+  contents: read   # least privilege at the top; the analyze job elevates itself
 
 jobs:
   preflight:
@@ -37,6 +35,10 @@ jobs:
     needs: preflight
     if: needs.preflight.outputs.is_public == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write   # upload CodeQL results to code scanning
     strategy:
       fail-fast: false
       matrix:
