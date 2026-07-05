@@ -6,7 +6,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read   # least privilege at the top; the publish job elevates itself
 
 jobs:
   build:
