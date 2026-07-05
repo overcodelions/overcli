@@ -109,6 +109,10 @@ export interface FlowRuntimeStartArgs {
 export interface FlowRuntimeResumeArgs {
   runId: UUID;
   editedArtifacts?: Record<string, string>;
+  /// Force a FAILURE pause to roll forward past the failed step instead of
+  /// re-running it — the "override the gate" escape hatch. Ignored on
+  /// non-failure pauses. See `resumeRun`.
+  override?: boolean;
 }
 
 export interface FlowRuntimeDeleteArgs {
@@ -771,6 +775,20 @@ export class FlowRuntimeImpl {
     }
     const pausedReason = run.state.reason;
     const nextStepId = run.state.nextStepId;
+
+    // Gate override: on a FAILURE pause, `nextStepId` is the step that
+    // failed (a rejecting reviewer, or a step whose on_fail is `pause`).
+    // A plain Continue re-runs it — which loops forever when the failure
+    // is a false negative (e.g. a reviewer that approved in a phrasing
+    // the verdict gate didn't recognize). Override rolls the run FORWARD
+    // past the failed step instead: its artifact is already recorded, so
+    // `advanceAfterStep` hands that output to the next step (or finishes
+    // the run / parks on a pause_before), exactly as if the step had
+    // passed. Only meaningful for a failure pause — ignored otherwise.
+    if (args.override && pausedReason === 'failure') {
+      this.advanceAfterStep(args.runId, nextStepId);
+      return { ok: true };
+    }
 
     // Explicit artifact overrides always win — apply, then advance.
     if (args.editedArtifacts) {
@@ -2344,6 +2362,12 @@ export function isReviewApproved(reviewBody: string): boolean {
     const line = raw
       .replace(/^[\s>#*_-]+/, '')
       .replace(/[*_`]+/g, '')
+      // Drop a leading verdict label so "Verdict: APPROVED" /
+      // "Decision: APPROVED" read as approvals — models routinely
+      // prefix the word rather than putting it bare on its own line.
+      // A negated verdict ("Verdict: NOT APPROVED") still fails the
+      // test below because the remaining text starts with "NOT".
+      .replace(/^(?:verdict|decision|result|status|outcome)\s*[:\-–]\s*/i, '')
       .trim();
     if (/^APPROVED\b/i.test(line)) return true;
   }

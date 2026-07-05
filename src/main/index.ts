@@ -1144,7 +1144,13 @@ function realpathRoot(root: string): string | null {
   const memo = rootRealpathMemo.get(key);
   if (memo !== undefined) return memo;
   try {
-    const real = fs.realpathSync(key);
+    // `.native` (vs plain realpathSync) canonicalizes CASE on case-insensitive
+    // filesystems (macOS/Windows). A registered root persisted with different
+    // casing than the live userData dir — e.g. `.../overcli/…` vs the on-disk
+    // `.../Overcli/…` after an app-name case change — resolves to the same
+    // directory, and normalizing both sides here lets the case-sensitive
+    // `path.relative` containment check still recognize files under it.
+    const real = fs.realpathSync.native(key);
     rootRealpathMemo.set(key, real);
     return real;
   } catch {
@@ -1226,7 +1232,7 @@ function isReadablePlanPath(target: string): boolean {
   const resolvedTarget = resolveExistingAncestor(path.resolve(target));
   let resolvedRoot: string;
   try {
-    resolvedRoot = fs.realpathSync(plansRoot);
+    resolvedRoot = fs.realpathSync.native(plansRoot);
   } catch {
     return false;
   }
@@ -1249,7 +1255,9 @@ function resolveExistingAncestor(p: string): string {
   let current = absolute;
   while (true) {
     try {
-      return path.join(fs.realpathSync(current), ...tail);
+      // `.native` canonicalizes case on case-insensitive filesystems so this
+      // matches the same-cased roots from `realpathRoot` (see note there).
+      return path.join(fs.realpathSync.native(current), ...tail);
     } catch {
       const parent = path.dirname(current);
       if (parent === current) return absolute;
@@ -1464,7 +1472,37 @@ function buildMenu(): void {
         { role: 'close' },
       ],
     },
-    { role: 'editMenu' },
+    {
+      // Spelled out instead of `role: 'editMenu'` so we can stop the
+      // native Undo/Redo accelerators from swallowing Cmd/Ctrl+Z before
+      // it reaches the web content. The native role runs
+      // document.execCommand('undo'), which is a no-op inside CodeMirror
+      // (it manages its own history), so the menu was silently eating the
+      // keystroke and undo looked broken in the file editor. With
+      // `registerAccelerator: false` the shortcut is still shown in the
+      // menu but the keydown falls through to CodeMirror's / the browser's
+      // own undo handling.
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', accelerator: 'CmdOrCtrl+Z', registerAccelerator: false },
+        { role: 'redo', accelerator: 'Shift+CmdOrCtrl+Z', registerAccelerator: false },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        ...(isMac
+          ? ([
+              { role: 'pasteAndMatchStyle' },
+              { role: 'delete' },
+              { role: 'selectAll' },
+            ] as Electron.MenuItemConstructorOptions[])
+          : ([
+              { role: 'delete' },
+              { type: 'separator' },
+              { role: 'selectAll' },
+            ] as Electron.MenuItemConstructorOptions[])),
+      ],
+    },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
   ];
