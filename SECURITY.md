@@ -1,5 +1,9 @@
 # Security Policy
 
+> Looking for how Overcli handles your code, credentials, and network access,
+> and how to verify a download? See **[Security & Privacy](docs/SECURITY.md)**.
+> This page is only about **reporting** a vulnerability.
+
 ## Reporting a vulnerability
 
 **Please do not open a public GitHub issue for security bugs.**

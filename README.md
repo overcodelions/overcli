@@ -16,8 +16,10 @@
 
 <p align="center">
   <a href="https://github.com/overcodelions/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/overcodelions/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
+  <a href="https://github.com/overcodelions/overcli/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/overcodelions/overcli/actions/workflows/codeql.yml/badge.svg?branch=master" /></a>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/overcodelions/overcli"><img alt="OpenSSF Scorecard" src="https://api.securityscorecards.dev/projects/github.com/overcodelions/overcli/badge" /></a>
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
-  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-informational" />
+  <a href="https://github.com/overcodelions/overcli/releases/latest"><img alt="version" src="https://img.shields.io/github/v/release/overcodelions/overcli?sort=semver" /></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
   <img alt="electron" src="https://img.shields.io/badge/electron-41-47848F" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-green" />
@@ -33,6 +35,7 @@
   <a href="#features">Features</a> ·
   <a href="#download">Download</a> ·
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#security">Security</a> ·
   <a href="#a-fatherson-project">About</a>
 </p>
 
@@ -251,6 +254,21 @@ src/
 - **Replay bundles** — exporting a conversation as a self-contained replay
 
 Anything else missing that you'd expect? It's a bug — please file it.
+
+## Security
+
+Overcli can read your code, run commands, and use the credentials your CLIs
+already hold — so we take being trustworthy seriously:
+
+- **No API keys, no telemetry, no tracking.** It uses your CLIs' existing auth
+  and sends no usage data anywhere.
+- **Signed & notarized** macOS builds, with a **cryptographic build provenance
+  attestation** and `SHA256SUMS.txt` on every release — [verify your download](docs/SECURITY.md#verify-your-download).
+- **Watched supply chain** — CodeQL, Dependabot, an SBOM per release, and a
+  public [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/overcodelions/overcli).
+
+Full details: **[Security & Privacy](docs/SECURITY.md)**. Reporting a
+vulnerability: **[SECURITY.md](SECURITY.md)**.
 
 ## A father–son project
 

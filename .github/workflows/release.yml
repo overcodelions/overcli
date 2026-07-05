@@ -69,11 +69,41 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the release
+      id-token: write        # sign the provenance attestation (OIDC)
+      attestations: write    # store the provenance attestation
     steps:
+      - uses: actions/checkout@v6
+
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        working-directory: artifacts
+        run: |
+          shopt -s nullglob
+          sha256sum *.dmg *.zip *.exe *.AppImage *.deb > SHA256SUMS.txt || true
+          echo "Checksums:" && cat SHA256SUMS.txt
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: artifacts/overcli-sbom.cyclonedx.json
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/*.exe
+            artifacts/*.AppImage
+            artifacts/*.deb
 
       - uses: softprops/action-gh-release@v3
         with:
