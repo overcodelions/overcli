@@ -1163,6 +1163,10 @@ export interface IPCInvokeMap {
     /// artifact body in the run's artifact map before the next step
     /// reads its inputs. Used by the pause-card "edit artifact" affordance.
     editedArtifacts?: Record<string, string>;
+    /// On a FAILURE pause, roll forward past the failed step (handing its
+    /// already-recorded output to the next step) instead of re-running it.
+    /// The "override the gate" escape hatch; ignored on other pauses.
+    override?: boolean;
   }) => { ok: true } | { ok: false; error: string };
   /// Rewind a run and re-execute from `stepId`, rolling forward through
   /// every later step. Artifacts from EARLIER steps are kept (they're this

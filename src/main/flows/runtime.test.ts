@@ -136,6 +136,17 @@ describe('isReviewApproved', () => {
     expect(isReviewApproved('approved')).toBe(true);
   });
 
+  it('approves through a leading verdict label', () => {
+    expect(isReviewApproved('Verdict: APPROVED (against the current repo state)')).toBe(true);
+    expect(isReviewApproved('# Review\n\n**Verdict: APPROVED**\nrationale')).toBe(true);
+    expect(isReviewApproved('Decision - APPROVED')).toBe(true);
+    expect(isReviewApproved('Status: APPROVED')).toBe(true);
+  });
+
+  it('does NOT approve a negated labelled verdict', () => {
+    expect(isReviewApproved('Verdict: NOT APPROVED — needs work')).toBe(false);
+  });
+
   it('does NOT approve an explicit rejection', () => {
     expect(isReviewApproved('Status: REJECTED\nThe diff does not implement the plan.')).toBe(
       false,

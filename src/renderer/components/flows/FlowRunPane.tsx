@@ -1963,14 +1963,25 @@ function PauseBanner({ run }: { run: FlowRun }) {
   // unchanged for one round-trip after the click, looking unresponsive.
   const [clicked, setClicked] = useState(false);
   const continuing = !!run.pendingContinue;
-  // Reset the local optimistic flag once the main process has either
-  // confirmed via pendingContinue OR fully advanced (banner unmounts).
-  useEffect(() => {
-    if (continuing) setClicked(false);
-  }, [continuing]);
 
   const nextStepId = run.state.kind === 'paused' ? run.state.nextStepId : null;
   const reason = run.state.kind === 'paused' ? run.state.reason : null;
+
+  // Clear the optimistic "clicked" flag once the main process has responded.
+  // Every SUCCESSFUL resume that leaves us still mounted in this banner
+  // changes one of these deps:
+  //   - a finalize turn started (pendingContinue set → `continuing` flips), or
+  //   - the resume moved us to a DIFFERENT pause — e.g. Override rolls past a
+  //     failed step and lands on the next step's pre-step pause, flipping
+  //     reason/nextStepId while staying `paused`.
+  // Without this the spinner sticks on "Continuing…" forever even though the
+  // run advanced correctly (the banner is wedged, not the flow). A resume that
+  // returns not-ok changes none of these deps, so the click handler clears the
+  // flag itself in that case.
+  useEffect(() => {
+    setClicked(false);
+  }, [continuing, nextStepId, reason]);
+
   const nextStep = nextStepId
     ? run.flowSnapshot.steps.find((s) => s.id === nextStepId)
     : null;
@@ -1978,6 +1989,19 @@ function PauseBanner({ run }: { run: FlowRun }) {
 
   const inFlight = continuing || clicked;
   const priorOutput = run.pendingContinue?.priorOutput;
+
+  // Fire a resume and keep the optimistic spinner honest: if the main process
+  // rejects it (run no longer paused, etc.) the pause state won't change, so
+  // the dep-driven effect above won't clear `clicked` — do it here.
+  const resume = (extra?: { override?: boolean }) => {
+    if (inFlight) return;
+    setClicked(true);
+    void window.overcli
+      .invoke('flows:resumeRun', { runId: run.id, ...extra })
+      .then((res) => {
+        if (!res || res.ok === false) setClicked(false);
+      });
+  };
 
   return (
     <div className="px-6 py-3 border-b border-amber-400/30 bg-amber-400/5">
@@ -2014,6 +2038,14 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 re-run <span className="font-semibold">{nextStep?.id ?? 'this step'}</span> from
                 the start and roll forward.
               </>
+            ) : reason === 'failure' ? (
+              <>
+                <span className="font-semibold">{nextStep?.id ?? 'This step'}</span> didn't
+                pass — a reviewer that didn't approve, or a step whose failure policy is to
+                pause. Redirect the participant below and <span className="font-semibold">Re-run
+                step</span> to try again, or <span className="font-semibold">Override</span> to
+                accept this step's current result and roll forward to the next step.
+              </>
             ) : (
               <>
                 Talk to any participant below to redirect or get questions answered. When you continue,
@@ -2029,27 +2061,41 @@ function PauseBanner({ run }: { run: FlowRun }) {
             )}
           </div>
         </div>
-        <button
-          onClick={() => {
-            if (inFlight) return;
-            setClicked(true);
-            void window.overcli.invoke('flows:resumeRun', { runId: run.id });
-          }}
-          disabled={inFlight}
-          className={`text-xs px-3 py-1.5 rounded-md text-white flex items-center gap-1.5 ${
-            inFlight
-              ? 'bg-emerald-500/40 cursor-not-allowed'
-              : 'bg-emerald-500/80 hover:bg-emerald-500'
-          }`}
-        >
-          {inFlight && (
-            <span
-              aria-hidden
-              className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
-            />
+        <div className="flex items-center gap-2">
+          {reason === 'failure' && !inFlight && (
+            // Escape hatch for a false-negative gate: accept the failed
+            // step's current output and roll forward to the next step
+            // instead of re-running the step (the primary button's job).
+            <button
+              onClick={() => resume({ override: true })}
+              title="Accept this step's current result and continue to the next step"
+              className="text-xs px-3 py-1.5 rounded-md border border-amber-500/50 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10"
+            >
+              Override & continue →
+            </button>
           )}
-          {inFlight ? 'Continuing…' : reason === 'interrupted' ? 'Re-run step →' : 'Continue →'}
-        </button>
+          <button
+            onClick={() => resume()}
+            disabled={inFlight}
+            className={`text-xs px-3 py-1.5 rounded-md text-white flex items-center gap-1.5 ${
+              inFlight
+                ? 'bg-emerald-500/40 cursor-not-allowed'
+                : 'bg-emerald-500/80 hover:bg-emerald-500'
+            }`}
+          >
+            {inFlight && (
+              <span
+                aria-hidden
+                className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
+              />
+            )}
+            {inFlight
+              ? 'Continuing…'
+              : reason === 'interrupted' || reason === 'failure'
+                ? 'Re-run step →'
+                : 'Continue →'}
+          </button>
+        </div>
       </div>
     </div>
   );
