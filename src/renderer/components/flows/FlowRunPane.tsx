@@ -1768,6 +1768,7 @@ function RunPromptSubtitle({
   activeStepId: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
   // Steps the active participant owns, in order — relocated here from the
   // body so the "which steps this thread covers" info sits next to the
@@ -1798,6 +1799,34 @@ function RunPromptSubtitle({
           >
             {prompt}
           </div>
+          <span
+            role="button"
+            tabIndex={0}
+            title="Copy prompt"
+            onClick={(e) => {
+              e.stopPropagation();
+              void navigator.clipboard.writeText(prompt);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                void navigator.clipboard.writeText(prompt);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1200);
+              }
+            }}
+            className={
+              'text-[10px] flex-shrink-0 rounded px-1.5 py-0.5 transition-colors cursor-pointer ' +
+              (copied
+                ? 'text-emerald-700 dark:text-emerald-300'
+                : 'text-ink-faint opacity-0 group-hover:opacity-100 hover:text-ink hover:bg-card-strong')
+            }
+          >
+            {copied ? 'copied' : 'copy'}
+          </span>
           <span
             aria-hidden
             className={
