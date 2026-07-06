@@ -164,6 +164,33 @@ describe('OrchestratorImpl dispatch', () => {
     expect(o.completedAt).toBeGreaterThan(0);
   });
 
+  it('abort settles paused items so the batch completes and can be cleared', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(3),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+
+    // run-1 parks at a checkpoint (frees the slot → run-2 pumps), so the batch
+    // has a paused item + a running one + a queued one when we abort.
+    await h.transition('run-1', { kind: 'paused', nextStepId: 's2', reason: 'preStep' });
+    let o = h.engine.get(id)!;
+    expect(o.items[0].status).toBe('paused');
+    expect(o.completedAt).toBeUndefined();
+
+    h.engine.abort({ id });
+    o = h.engine.get(id)!;
+    // paused → cancelled, running → failed, queued → cancelled. Nothing left
+    // non-terminal, so the batch completes and the UI can show "Clear".
+    expect(o.items[0].status).toBe('cancelled'); // was paused
+    expect(o.items.some((i) => i.status === 'failed')).toBe(true); // was running
+    expect(o.items.every((i) => i.status === 'failed' || i.status === 'cancelled')).toBe(true);
+    expect(o.completedAt).toBeGreaterThan(0);
+  });
+
   it('a paused item frees its slot, pumps the next, then resumes + finishes', async () => {
     const h = makeHarness();
     const res = await h.engine.startBatch({

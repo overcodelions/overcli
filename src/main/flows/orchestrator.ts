@@ -385,16 +385,26 @@ export class OrchestratorImpl {
     // mid-abort. Draining the queue up front means there's nothing left for
     // that pump to start.
     for (const item of o.items) {
-      if (item.status === 'queued') {
+      // `queued` never launched; a `paused` item with no run (shouldn't
+      // happen, but be defensive) has nothing to kill — settle both straight
+      // to cancelled so they can't hold the batch open.
+      if (item.status === 'queued' || (item.status === 'paused' && !item.runId)) {
         item.status = 'cancelled';
         item.finishedAt = Date.now();
       }
     }
     for (const item of o.items) {
-      if (item.status === 'running' && item.runId) {
+      // Kill anything tied to a live or checkpointed child run: `running`
+      // items hold a concurrency slot, `paused` ones are parked at a
+      // `pause_before` step waiting for the user. Neither is terminal, so if
+      // abort skips them the batch never completes — leaving the ledger stuck
+      // on "Abort batch" with no "Clear" and abort appearing to do nothing.
+      if ((item.status === 'running' || item.status === 'paused') && item.runId) {
         const runId = item.runId;
         this.runToBatch.delete(runId);
-        item.status = 'failed';
+        // running was in flight → failed; paused never produced a result and
+        // the user chose to abort → cancelled.
+        item.status = item.status === 'running' ? 'failed' : 'cancelled';
         item.note = item.note ?? 'Batch aborted.';
         item.finishedAt = Date.now();
         try {

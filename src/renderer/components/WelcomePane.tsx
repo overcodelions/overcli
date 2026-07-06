@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
+import { createBranchedAgent } from './sheets/NewAgentSheet';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import {
   Backend,
@@ -57,6 +58,9 @@ export function WelcomePane() {
   const addAttachment = useStore((s) => s.addAttachment);
   const clearAttachments = useStore((s) => s.clearAttachments);
   const setDraft = useStore((s) => s.setDraft);
+  const selectConversation = useStore((s) => s.selectConversation);
+  const saveProjects = useStore((s) => s.saveProjects);
+  const newWorkspaceAgent = useStore((s) => s.newWorkspaceAgent);
 
   const focusedWorkspace = useMemo(
     () => workspaces.find((w) => w.id === focusedWorkspaceId) ?? null,
@@ -77,6 +81,15 @@ export function WelcomePane() {
   const [model, setModel] = useState<string>('');
   const [reviewPreset, setLocalReviewPreset] = useState<ReviewPreset | 'off'>('off');
   const [branch, setBranch] = useState<string>('');
+  // 'local' chats in the project directory; 'agent' mints an isolated git
+  // worktree on a fresh branch (same wiring as the sidebar "+ agent"),
+  // letting background work stay off the working checkout.
+  const [runMode, setRunMode] = useState<'local' | 'agent'>('local');
+  const [agentError, setAgentError] = useState<string | null>(null);
+  // Live worktree-creation status. Workspace agents mint one worktree per
+  // member repo, which can take a few seconds, so we surface progress.
+  const [agentProgress, setAgentProgress] = useState<string | null>(null);
+  const creatingAgent = useRef(false);
   const [ollamaPulledModels, setOllamaPulledModels] = useState<string[]>([]);
   const slashCommands = useSlashCommands(backend);
 
@@ -135,6 +148,16 @@ export function WelcomePane() {
   // git project. `true`/`undefined` keep the default coding framing.
   const projectIsGitRepo = useStore((s) => s.projectIsGitRepo);
   const isNonGitProject = !focusedWorkspace && !!selectedProject && projectIsGitRepo[selectedProject.id] === false;
+  // Agent mode mints git worktrees: one for a single git-backed project,
+  // or one per member repo for a workspace (wired through a coordinator).
+  // Excludes non-git folders and empty workspaces.
+  const canRunAgent =
+    (!!focusedWorkspace && focusedWorkspace.projectIds.length > 0) ||
+    (!!selectedProject && !focusedWorkspace && projectIsGitRepo[selectedProject.id] !== false);
+  // Keep the toggle honest if the target changes out from under it.
+  useEffect(() => {
+    if (!canRunAgent && runMode === 'agent') setRunMode('local');
+  }, [canRunAgent, runMode]);
 
   // Resolve current branch for the selected project once we know which one
   // the user picked. Cheap — one git command — and updates reactively.
@@ -154,7 +177,89 @@ export function WelcomePane() {
     };
   }, [selectedProject]);
 
+  // Agent mode: mint git worktree(s) on fresh branch(es), then fire the
+  // prompt into the resulting agent. For a single project that's a
+  // branched build agent; for a workspace it's a coordinator spanning one
+  // worktree per member repo. Either way we apply the pill selections and
+  // move welcome-key attachments over, exactly like handleSend.
+  const handleSendAsAgent = async (prompt: string, attachments: Attachment[]) => {
+    if (creatingAgent.current) return;
+    creatingAgent.current = true;
+    setAgentError(null);
+    setAgentProgress(null);
+    const applyAndSend = async (convId: UUID) => {
+      clearAttachments(convId);
+      for (const a of attachments) addAttachment(convId, a);
+      void setPrimaryBackend(convId, backend);
+      void setPermissionMode(convId, permissionMode);
+      if (effort) void setEffortLevel(convId, effort);
+      if (model) void setBackendModel(convId, backend, model);
+      if (reviewPreset !== 'off') void setReviewPreset(convId, reviewPreset);
+      setDraft(WELCOME_KEY, '');
+      clearAttachments(WELCOME_KEY);
+      await saveProjects();
+      selectConversation(convId);
+      await send(convId, prompt);
+    };
+    try {
+      if (focusedWorkspace) {
+        // Resolve each member's base branch (repos may differ, e.g. one on
+        // `main` and one on `master`), then let the store mint a worktree
+        // per member and wire them through a coordinator.
+        const members = focusedWorkspace.projectIds
+          .map((pid) => projects.find((p) => p.id === pid))
+          .filter((p): p is NonNullable<typeof p> => !!p);
+        const baseBranches: Record<UUID, string> = {};
+        await Promise.all(
+          members.map(async (p) => {
+            const detected = await window.overcli
+              .invoke('git:detectBaseBranch', p.path)
+              .catch(() => '');
+            if (detected?.trim()) baseBranches[p.id] = detected.trim();
+          }),
+        );
+        setAgentProgress(
+          members.length === 1
+            ? 'Creating worktree…'
+            : `Creating worktrees across ${members.length} repos…`,
+        );
+        const conv = await newWorkspaceAgent({
+          workspaceId: focusedWorkspace.id,
+          name: deriveAgentName(prompt),
+          baseBranches,
+          onProgress: setAgentProgress,
+        });
+        if (!conv) {
+          setAgentError(
+            'All worktree creations failed. Check that each member repo has a usable branch.',
+          );
+          return;
+        }
+        await applyAndSend(conv.id);
+      } else if (selectedProject) {
+        setAgentProgress('Creating worktree…');
+        await createBranchedAgent({
+          project: selectedProject,
+          projectId: selectedProject.id,
+          settings,
+          preferredBackend: backend,
+          name: deriveAgentName(prompt),
+          baseBranch: branch,
+          onError: setAgentError,
+          onCreated: applyAndSend,
+        });
+      }
+    } finally {
+      creatingAgent.current = false;
+      setAgentProgress(null);
+    }
+  };
+
   const handleSend = async (prompt: string, attachments: Attachment[]) => {
+    if (runMode === 'agent' && canRunAgent) {
+      await handleSendAsAgent(prompt, attachments);
+      return;
+    }
     const conv = focusedWorkspace
       ? await newConversationInWorkspace(focusedWorkspace.id)
       : selectedProject
@@ -433,11 +538,37 @@ export function WelcomePane() {
             onPickWorkspace={(id) => startNewConversationInWorkspace(id)}
             onAdd={pickProject}
           />
-          <Pill label="Work locally" items={[{ value: 'local', label: 'Work locally' }]} onPick={() => {}} />
+          <Pill
+            label={runMode === 'agent' ? 'Run as agent' : 'Work locally'}
+            color={runMode === 'agent' ? '#7dd3fc' : undefined}
+            items={
+              canRunAgent
+                ? [
+                    { value: 'local', label: 'Work locally', note: 'Chat in the project directory' },
+                    {
+                      value: 'agent',
+                      label: 'Run as agent',
+                      note: 'Isolated git worktree on a new branch',
+                    },
+                  ]
+                : [{ value: 'local', label: 'Work locally' }]
+            }
+            onPick={(v) => setRunMode(v as 'local' | 'agent')}
+          />
           {!focusedWorkspace && !isNonGitProject && branch && (
-            <Pill label={branch} items={[{ value: branch, label: branch }]} onPick={() => {}} />
+            <Pill
+              label={runMode === 'agent' ? `off ${branch}` : branch}
+              items={[{ value: branch, label: branch }]}
+              onPick={() => {}}
+            />
           )}
         </div>
+        {agentProgress && (
+          <div className="mt-2 text-[11px] text-ink-muted text-center">{agentProgress}</div>
+        )}
+        {agentError && (
+          <div className="mt-2 text-[11px] text-red-400 text-center">{agentError}</div>
+        )}
         <WelcomeFlowsRow
           projectPath={selectedProject?.path}
           workspaceRootPath={focusedWorkspace?.rootPath}
@@ -446,6 +577,19 @@ export function WelcomePane() {
       </div>
     </div>
   );
+}
+
+/// Turn the first words of the prompt into a readable agent/branch name
+/// (createBranchedAgent slugifies it for the actual git branch). Falls
+/// back to a generic label when the prompt has no word characters.
+function deriveAgentName(prompt: string): string {
+  const words = prompt
+    .trim()
+    .split(/\s+/)
+    .filter((w) => /[a-z0-9]/i.test(w))
+    .slice(0, 6)
+    .join(' ');
+  return words || 'agent';
 }
 
 /// "Or run a flow" section beneath the welcome composer. Surfaces saved

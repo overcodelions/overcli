@@ -1496,11 +1496,22 @@ function HijackComposer({
   // typing feel laggy. Attempt boundaries + the running-flip are when
   // diffs actually land anyway.
   const attemptCount = run.attempts.length;
+  // For a single-project worktree run, count changes against the run's fork
+  // point (committed + uncommitted) so the bar matches the review sheet —
+  // `git:commitStatus` is HEAD-relative and loses files the moment a step
+  // commits. Workspace and in-place runs keep the HEAD-relative probe.
+  const worktreeBase = run.worktreePath ? (run.baselineCommit ?? run.baseBranch ?? '') : '';
+  const worktreePath = run.worktreePath ?? '';
   useEffect(() => {
     let cancelled = false;
     const probe = workspaceProjects
       ? window.overcli.invoke('git:workspaceCommitStatus', { projects: workspaceProjects })
-      : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
+      : worktreePath && worktreeBase
+        ? window.overcli.invoke('git:worktreeChanges', {
+            worktreePath,
+            baseBranch: worktreeBase,
+          })
+        : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
     void probe
       .then((res) => {
         if (cancelled) return;
@@ -1516,7 +1527,7 @@ function HijackComposer({
     return () => {
       cancelled = true;
     };
-  }, [run.projectPath, workspaceProjects, attemptCount, isRunning]);
+  }, [run.projectPath, workspaceProjects, worktreePath, worktreeBase, attemptCount, isRunning]);
 
   // Pull the draft setters so we can clear the composer immediately
   // after a send. The shared `store.send` action does this for the
@@ -1768,6 +1779,7 @@ function RunPromptSubtitle({
   activeStepId: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
   // Steps the active participant owns, in order — relocated here from the
   // body so the "which steps this thread covers" info sits next to the
@@ -1798,6 +1810,34 @@ function RunPromptSubtitle({
           >
             {prompt}
           </div>
+          <span
+            role="button"
+            tabIndex={0}
+            title="Copy prompt"
+            onClick={(e) => {
+              e.stopPropagation();
+              void navigator.clipboard.writeText(prompt);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                void navigator.clipboard.writeText(prompt);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1200);
+              }
+            }}
+            className={
+              'text-[10px] flex-shrink-0 rounded px-1.5 py-0.5 transition-colors cursor-pointer ' +
+              (copied
+                ? 'text-emerald-700 dark:text-emerald-300'
+                : 'text-ink-faint opacity-0 group-hover:opacity-100 hover:text-ink hover:bg-card-strong')
+            }
+          >
+            {copied ? 'copied' : 'copy'}
+          </span>
           <span
             aria-hidden
             className={

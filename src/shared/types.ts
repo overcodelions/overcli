@@ -1041,6 +1041,16 @@ export interface IPCInvokeMap {
     insertions: number;
     deletions: number;
   };
+  /// Base-relative twin of `git:commitStatus` for flow worktrees: counts
+  /// committed + uncommitted changes vs the run's fork point so the chat
+  /// ChangesBar matches the review sheet's diff.
+  'git:worktreeChanges': (args: { worktreePath: string; baseBranch: string }) => {
+    isRepo: boolean;
+    currentBranch: string;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+    insertions: number;
+    deletions: number;
+  };
   'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
   'git:workspaceCommitStatus': (args: { projects: Array<{ name: string; path: string }> }) => {
     isRepo: boolean;

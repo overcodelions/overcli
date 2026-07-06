@@ -34,6 +34,7 @@ import {
   worktreeDiff,
   rescueMainTree,
   commitStatus,
+  worktreeChanges,
   currentBranch,
   workspaceCommitStatus,
   commitAll,
@@ -465,6 +466,7 @@ function registerIpc(): void {
   ipcMain.handle('git:worktreeDiff', (_e, args) => worktreeDiff(args));
   ipcMain.handle('git:rescueMainTree', (_e, args) => rescueMainTree(args));
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
+  ipcMain.handle('git:worktreeChanges', (_e, args) => worktreeChanges(args));
   ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranch(cwd));
   ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));

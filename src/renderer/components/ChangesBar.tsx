@@ -11,10 +11,12 @@ export interface FileChangeSummary {
   deletions: number;
 }
 
-/// Collapsible bar above the composer. Numbers come straight from
-/// `git diff HEAD --numstat` (plus line counts for untracked files) so
-/// they match the header commit badge — see `refreshGitStatus` in the
-/// store.
+/// Collapsible bar above the composer. Numbers come straight from a
+/// `git diff --numstat` pass (plus line counts for untracked files). The
+/// main chat feeds it `HEAD`-relative counts (`git:commitStatus`, matching
+/// the header commit badge — see `refreshGitStatus`); flow worktree runs
+/// feed it fork-point-relative counts (`git:worktreeChanges`) so it matches
+/// the review sheet's diff.
 export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
   const openFile = useStore((s) => s.openFile);
   const [expanded, setExpanded] = useState(false);
