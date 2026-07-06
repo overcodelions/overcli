@@ -4,6 +4,20 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+### Added
+- **"Run as agent" from the welcome composer.** The run pill now offers **Run as agent** next to **Work locally**: it mints an isolated git worktree on a fresh branch (single project) or one per member repo through a coordinator (workspace), then fires the prompt into the resulting agent — reusing the sidebar "+ agent" wiring ([#102](https://github.com/overcodelions/overcli/pull/102)).
+- **Copy button on the run prompt card** to quickly grab the prompt that kicked off a flow run ([#102](https://github.com/overcodelions/overcli/pull/102)).
+
+### Fixed
+- **The flow ChangesBar counts changes against the run's fork point.** The chat ChangesBar used a HEAD-relative probe, so a flow worktree's files dropped out of the bar the moment a step committed them — even though the review sheet still counted them (it diffs against the run's captured fork point). Committed + uncommitted divergence vs base is now rolled into one pass, so the bar and the review diff agree. This covers both single-project ([#102](https://github.com/overcodelions/overcli/pull/102)) and workspace ([#103](https://github.com/overcodelions/overcli/pull/103)) runs — a workspace run with 1 committed + 1 uncommitted file per member showed 2 instead of 4.
+- **Aborting a batch settles paused items.** A run parked at a `pause_before` checkpoint is non-terminal, so aborting a batch that had one left the ledger stuck on "Abort batch" with no "Clear". Paused runs are now cancelled alongside killing running ones ([#102](https://github.com/overcodelions/overcli/pull/102)).
+- **Deleting a flow run no longer blocks the UI** ([#102](https://github.com/overcodelions/overcli/pull/102)).
+
+### Security
+- **CI supply-chain hardening.** Third-party GitHub Actions are pinned to commit SHAs, workflow `GITHUB_TOKEN` permissions are scoped to least privilege per job, and `scorecard-action` is pinned to v2.4.3.
+
 ## [0.6.0] - 2026-07-05
 
 ### Added
@@ -153,7 +167,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/overcodelions/overcli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/overcodelions/overcli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/overcodelions/overcli/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/overcodelions/overcli/compare/v0.4.0...v0.4.1

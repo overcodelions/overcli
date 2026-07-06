@@ -1,6 +1,6 @@
 {
   "name": "overcli",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A desktop GUI that sits over your coding-agent CLIs (claude, codex, gemini, ollama, copilot).",
   "license": "Apache-2.0",
   "author": "Lionel Farr <lionel@codelionsllc.com>",
