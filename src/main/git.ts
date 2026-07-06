@@ -618,6 +618,46 @@ export function removeWorktree(args: {
   return { ok: true };
 }
 
+/// Async sibling of `removeWorktree`. `removeWorktree` shells out via the
+/// blocking `runGit`/`spawnSync`, which freezes the main-process thread for
+/// the whole `git worktree remove --force` — noticeable as a UI beachball on
+/// a large repo. The flow-delete path runs teardown in the background and has
+/// no need for a synchronous result, so it uses this version, which yields to
+/// the event loop between git calls. Behaviour otherwise mirrors `removeWorktree`.
+export async function removeWorktreeAsync(args: {
+  projectPath: string;
+  worktreePath: string;
+  branchName: string;
+}): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  const res = await runGitAsync(
+    ['worktree', 'remove', '--force', args.worktreePath],
+    args.projectPath,
+  );
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
+  }
+  if (args.branchName) {
+    const safe = await runGitAsync(['branch', '-d', args.branchName], args.projectPath);
+    if (safe.exitCode !== 0) {
+      const stderr = (safe.stderr || safe.stdout).trim();
+      if (/not fully merged/i.test(stderr)) {
+        await runGitAsync(['branch', '-D', args.branchName], args.projectPath);
+        return {
+          ok: true,
+          warning:
+            `Branch \`${args.branchName}\` had unmerged commits and was force-deleted. ` +
+            `Recover them with \`git reflog\` / \`git branch <name> <sha>\` if needed.`,
+        };
+      }
+      return {
+        ok: true,
+        warning: `Worktree removed, but couldn't delete branch \`${args.branchName}\`: ${stderr}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /// Auto-commit dirty worktree state, stash any uncommitted changes in the
 /// project repo, remove the worktree (keeping the branch), then
 /// `git switch` the project repo onto it — so the user can keep working on
