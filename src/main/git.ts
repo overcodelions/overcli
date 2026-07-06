@@ -1367,7 +1367,7 @@ export async function worktreeChanges(args: {
 /// resolves through the workspace root via the on-disk symlinks, and so
 /// the ChangesBar shows which project a file belongs to.
 export async function workspaceCommitStatus(
-  members: Array<{ name: string; path: string }>,
+  members: Array<{ name: string; path: string; baseBranch?: string }>,
 ): Promise<{
   isRepo: boolean;
   currentBranch: string;
@@ -1382,9 +1382,15 @@ export async function workspaceCommitStatus(
   // Names come pre-assigned by the caller (workspace members use the
   // shared basename-dedup rule; coordinator members use the project
   // name), so `name` is used verbatim as the path prefix.
-  for (const { name, path: projPath } of members) {
+  for (const { name, path: projPath, baseBranch } of members) {
     if (!name || !projPath) continue;
-    const res = await commitStatus(projPath);
+    // A worktree workspace run captures a per-member fork point; count
+    // against it (committed + uncommitted) so the bar matches the review
+    // sheet. In-place workspace runs have no baseline — fall back to the
+    // HEAD-relative probe.
+    const res = baseBranch
+      ? await worktreeChanges({ worktreePath: projPath, baseBranch })
+      : await commitStatus(projPath);
     if (!res.isRepo) continue;
     anyRepo = true;
     insertions += res.insertions;
