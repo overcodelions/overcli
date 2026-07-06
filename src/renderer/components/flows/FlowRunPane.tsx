@@ -1476,7 +1476,15 @@ function HijackComposer({
   const workspaces = useStore((s) => s.workspaces);
   const workspaceProjects = useMemo(() => {
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
-      return run.workspaceWorktrees.map((w) => ({ name: w.name, path: w.worktreePath }));
+      // Thread each member's captured fork point through so the aggregate
+      // counts committed + uncommitted changes (base-relative), matching
+      // the per-member review diff. Members that predate baseline capture
+      // fall back to HEAD-relative in the aggregate.
+      return run.workspaceWorktrees.map((w) => ({
+        name: w.name,
+        path: w.worktreePath,
+        baseBranch: run.baselineCommitsByMember?.[w.name]?.commit,
+      }));
     }
     const ws = workspaces.find((w) => w.rootPath === run.projectPath);
     if (!ws) return null;
@@ -1485,7 +1493,7 @@ function HijackComposer({
       .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
       .map((p) => ({ name: p.name, path: p.path }));
     return workspaceSymlinkNames(projs);
-  }, [workspaces, projects, run.projectPath, run.workspaceWorktrees]);
+  }, [workspaces, projects, run.projectPath, run.workspaceWorktrees, run.baselineCommitsByMember]);
 
   // Re-probe the working tree whenever a step attempt finishes or the
   // runner flips running/idle. Mirrors how ConversationPane keeps its

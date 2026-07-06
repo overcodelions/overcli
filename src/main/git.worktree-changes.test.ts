@@ -22,7 +22,7 @@ vi.mock('node:fs', async importOriginal => {
   };
 });
 
-import { worktreeChanges } from './git';
+import { workspaceCommitStatus, worktreeChanges } from './git';
 
 /// Route each git invocation to a canned stdout by matching the argv. Any
 /// unmatched command resolves empty (exit 0) so the function's optional
@@ -94,5 +94,45 @@ describe('worktreeChanges', () => {
     const res = await worktreeChanges({ worktreePath: '/wt', baseBranch: '' });
     expect(res.isRepo).toBe(false);
     expect(mockExecFile).not.toHaveBeenCalled();
+  });
+});
+
+describe('workspaceCommitStatus base-relative routing', () => {
+  it('counts a member with a baseBranch against its fork point and prefixes the path', async () => {
+    routeGit({
+      'rev-parse --is-inside-work-tree': 'true\n',
+      'branch --show-current': 'feature/x\n',
+      'diff --numstat base-sha': '3\t0\tsrc/a.ts\n2\t1\tsrc/b.ts\n',
+      'diff --name-status base-sha': 'A\tsrc/a.ts\nM\tsrc/b.ts\n',
+      'ls-files --others --exclude-standard': '',
+    });
+
+    const res = await workspaceCommitStatus([
+      { name: 'unifyr-r', path: '/wt/unifyr-r', baseBranch: 'base-sha' },
+    ]);
+
+    // A base-relative member routes through worktreeChanges (`diff --numstat
+    // <base>`), so a committed file still shows — the whole point of the fix.
+    const calls = mockExecFile.mock.calls.map((c) => (c[1] as string[]).join(' '));
+    expect(calls).toContain('diff --numstat base-sha');
+    expect(calls).not.toContain('diff HEAD --numstat');
+    expect(res.changes.map((c) => c.path)).toEqual(['unifyr-r/src/a.ts', 'unifyr-r/src/b.ts']);
+    expect(res.insertions).toBe(5);
+    expect(res.deletions).toBe(1);
+  });
+
+  it('falls back to HEAD-relative for a member without a baseBranch', async () => {
+    routeGit({
+      'rev-parse --is-inside-work-tree': 'true\n',
+      'branch --show-current': 'main\n',
+      'status --porcelain=v1 --untracked-files=all': ' M src/c.ts\n',
+      'diff HEAD --numstat': '4\t2\tsrc/c.ts\n',
+    });
+
+    const res = await workspaceCommitStatus([{ name: 'proj', path: '/main/proj' }]);
+
+    const calls = mockExecFile.mock.calls.map((c) => (c[1] as string[]).join(' '));
+    expect(calls).toContain('diff HEAD --numstat');
+    expect(res.changes.map((c) => c.path)).toEqual(['proj/src/c.ts']);
   });
 });
