@@ -1496,11 +1496,22 @@ function HijackComposer({
   // typing feel laggy. Attempt boundaries + the running-flip are when
   // diffs actually land anyway.
   const attemptCount = run.attempts.length;
+  // For a single-project worktree run, count changes against the run's fork
+  // point (committed + uncommitted) so the bar matches the review sheet —
+  // `git:commitStatus` is HEAD-relative and loses files the moment a step
+  // commits. Workspace and in-place runs keep the HEAD-relative probe.
+  const worktreeBase = run.worktreePath ? (run.baselineCommit ?? run.baseBranch ?? '') : '';
+  const worktreePath = run.worktreePath ?? '';
   useEffect(() => {
     let cancelled = false;
     const probe = workspaceProjects
       ? window.overcli.invoke('git:workspaceCommitStatus', { projects: workspaceProjects })
-      : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
+      : worktreePath && worktreeBase
+        ? window.overcli.invoke('git:worktreeChanges', {
+            worktreePath,
+            baseBranch: worktreeBase,
+          })
+        : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
     void probe
       .then((res) => {
         if (cancelled) return;
@@ -1516,7 +1527,7 @@ function HijackComposer({
     return () => {
       cancelled = true;
     };
-  }, [run.projectPath, workspaceProjects, attemptCount, isRunning]);
+  }, [run.projectPath, workspaceProjects, worktreePath, worktreeBase, attemptCount, isRunning]);
 
   // Pull the draft setters so we can clear the composer immediately
   // after a send. The shared `store.send` action does this for the
