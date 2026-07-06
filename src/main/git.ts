@@ -618,6 +618,46 @@ export function removeWorktree(args: {
   return { ok: true };
 }
 
+/// Async sibling of `removeWorktree`. `removeWorktree` shells out via the
+/// blocking `runGit`/`spawnSync`, which freezes the main-process thread for
+/// the whole `git worktree remove --force` — noticeable as a UI beachball on
+/// a large repo. The flow-delete path runs teardown in the background and has
+/// no need for a synchronous result, so it uses this version, which yields to
+/// the event loop between git calls. Behaviour otherwise mirrors `removeWorktree`.
+export async function removeWorktreeAsync(args: {
+  projectPath: string;
+  worktreePath: string;
+  branchName: string;
+}): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  const res = await runGitAsync(
+    ['worktree', 'remove', '--force', args.worktreePath],
+    args.projectPath,
+  );
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
+  }
+  if (args.branchName) {
+    const safe = await runGitAsync(['branch', '-d', args.branchName], args.projectPath);
+    if (safe.exitCode !== 0) {
+      const stderr = (safe.stderr || safe.stdout).trim();
+      if (/not fully merged/i.test(stderr)) {
+        await runGitAsync(['branch', '-D', args.branchName], args.projectPath);
+        return {
+          ok: true,
+          warning:
+            `Branch \`${args.branchName}\` had unmerged commits and was force-deleted. ` +
+            `Recover them with \`git reflog\` / \`git branch <name> <sha>\` if needed.`,
+        };
+      }
+      return {
+        ok: true,
+        warning: `Worktree removed, but couldn't delete branch \`${args.branchName}\`: ${stderr}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /// Auto-commit dirty worktree state, stash any uncommitted changes in the
 /// project repo, remove the worktree (keeping the branch), then
 /// `git switch` the project repo onto it — so the user can keep working on
@@ -1199,6 +1239,123 @@ export async function commitStatus(cwd: string): Promise<{
   return {
     isRepo: true,
     currentBranch: branch.stdout.trim(),
+    changes,
+    insertions,
+    deletions,
+  };
+}
+
+/// Base-relative per-file changes for a flow worktree, returned in the same
+/// `{ path, status, additions, deletions }` shape the ChangesBar renders.
+/// `commitStatus` only sees `HEAD` (`git diff HEAD`), so the moment a flow
+/// step commits, its files drop out of the chat bar while still showing in
+/// the review sheet — which diffs against the run's fork point. This mirrors
+/// `worktreeStatus`'s scope (`git diff --numstat <base>` = committed +
+/// uncommitted vs base, plus untracked files) so the bar and the review diff
+/// agree on the file set.
+export async function worktreeChanges(args: {
+  worktreePath: string;
+  baseBranch: string;
+}): Promise<{
+  isRepo: boolean;
+  currentBranch: string;
+  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  insertions: number;
+  deletions: number;
+}> {
+  const empty = { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
+  if (!args.worktreePath || !args.baseBranch) return empty;
+  const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.worktreePath);
+  if (check.exitCode !== 0 || check.stdout.trim() !== 'true') return empty;
+
+  const branch = await runGitAsync(['branch', '--show-current'], args.worktreePath);
+
+  // `git diff --numstat <base>` rolls committed + uncommitted divergence into
+  // one pass — the exact tracked-file set the review badge counts. Tab
+  // separated: `add\tdel\tpath` (a rename keeps a single `old => new` field).
+  const additionsByPath = new Map<string, number>();
+  const deletionsByPath = new Map<string, number>();
+  let insertions = 0;
+  let deletions = 0;
+  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  if (numstat.exitCode === 0) {
+    for (const line of numstat.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      if (parts.length < 3) continue;
+      const add = parseInt(parts[0], 10);
+      const del = parseInt(parts[1], 10);
+      const p = parts.slice(2).join('\t').trim();
+      if (!p) continue;
+      if (!Number.isNaN(add)) {
+        insertions += add;
+        additionsByPath.set(p, add);
+      }
+      if (!Number.isNaN(del)) {
+        deletions += del;
+        deletionsByPath.set(p, del);
+      }
+    }
+  }
+
+  // Per-file status letter (A/M/D/R/…) for the left-column indicator. Keyed
+  // by the final path so a modified file lines up with its numstat row.
+  const statusByPath = new Map<string, string>();
+  const nameStatus = await runGitAsync(
+    ['diff', '--name-status', args.baseBranch],
+    args.worktreePath,
+  );
+  if (nameStatus.exitCode === 0) {
+    for (const line of nameStatus.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const code = parts[0]?.charAt(0) ?? '';
+      const p = parts[parts.length - 1]?.trim();
+      if (p && code) statusByPath.set(p, code);
+    }
+  }
+
+  const changes: Array<{ path: string; status: string; additions: number; deletions: number }> = [];
+  const seen = new Set<string>();
+  for (const p of additionsByPath.keys()) {
+    seen.add(p);
+    changes.push({
+      path: p,
+      status: statusByPath.get(p) ?? 'M',
+      additions: additionsByPath.get(p) ?? 0,
+      deletions: deletionsByPath.get(p) ?? 0,
+    });
+  }
+  // Safety net for a name-status entry the numstat pass didn't surface
+  // (e.g. a binary file, which numstat reports as `-\t-`).
+  for (const [p, code] of statusByPath) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      changes.push({ path: p, status: code, additions: 0, deletions: 0 });
+    }
+  }
+
+  // Untracked files: numstat omits them, but the review diff includes them
+  // as pure additions — count them off disk so the bar matches the diff.
+  const untracked = await runGitAsync(
+    ['ls-files', '--others', '--exclude-standard'],
+    args.worktreePath,
+  );
+  if (untracked.exitCode === 0) {
+    for (const line of untracked.stdout.split('\n')) {
+      const p = line.trim();
+      if (!p || seen.has(p)) continue;
+      seen.add(p);
+      const lines = await countLinesOnDiskAsync(path.join(args.worktreePath, p));
+      insertions += lines;
+      changes.push({ path: p, status: '??', additions: lines, deletions: 0 });
+    }
+  }
+
+  changes.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    isRepo: true,
+    currentBranch: branch.exitCode === 0 ? branch.stdout.trim() : '',
     changes,
     insertions,
     deletions,

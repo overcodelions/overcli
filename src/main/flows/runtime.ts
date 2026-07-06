@@ -62,7 +62,7 @@ import { loadAllFlows } from './storage';
 import {
   createWorktreeAsync,
   detectBaseBranchAsync,
-  removeWorktree,
+  removeWorktreeAsync,
   runGit,
   runGitAsync,
   worktreeNameTaken,
@@ -1102,13 +1102,15 @@ export class FlowRuntimeImpl {
   /// which only frees in-memory/on-disk run metadata and must leave the
   /// user's worktrees and branches untouched. Best-effort: a failure here
   /// never blocks the run deletion itself, since the metadata is already
-  /// gone. Mirrors the agent-conversation cleanup in `removeAgent`.
-  private removeRunWorktrees(run: FlowRun): void {
+  /// gone. Mirrors the agent-conversation cleanup in `removeAgent`. Runs
+  /// async (and is fired without awaiting from `deleteRun`) so the git
+  /// worktree teardown never blocks the delete round-trip or freezes the UI.
+  private async removeRunWorktrees(run: FlowRun): Promise<void> {
     // Workspace worktree run: one worktree per member project.
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
       for (const m of run.workspaceWorktrees) {
         try {
-          const res = removeWorktree({
+          const res = await removeWorktreeAsync({
             projectPath: m.projectPath,
             worktreePath: m.worktreePath,
             branchName: m.branchName,
@@ -1129,7 +1131,7 @@ export class FlowRuntimeImpl {
     if (run.worktreePath) {
       const projectPath = run.sourceProjectPath ?? run.projectPath;
       try {
-        const res = removeWorktree({
+        const res = await removeWorktreeAsync({
           projectPath,
           worktreePath: run.worktreePath,
           branchName: run.branchName ?? '',
@@ -1217,12 +1219,18 @@ export class FlowRuntimeImpl {
         resolver?.();
       }
     }
-    // Explicit delete only: tear down the worktree(s) the run forked.
-    this.removeRunWorktrees(run);
     deleteRunFromDisk(args.runId);
     clearAttachments(args.runId);
     // Tell the renderer so its in-memory `runs` map evicts in lockstep.
     this.emit({ type: 'flowRunUpdate', run: { ...run, state: { kind: 'aborted' } } });
+    // Explicit delete only: tear down the worktree(s) the run forked. This
+    // shells out to `git worktree remove`, which can take a second on a large
+    // repo — but the run's metadata is already gone and the teardown is
+    // best-effort, so fire it in the background rather than making the delete
+    // round-trip (and the UI) wait on it. Errors are logged inside.
+    void this.removeRunWorktrees(run).catch((err) => {
+      log('error', 'flows.deleteRun', 'worktree teardown failed', err);
+    });
     return { ok: true };
   }
 
