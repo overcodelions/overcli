@@ -250,6 +250,14 @@ interface ActiveProcess {
   currentUserPrompt: string;
   currentAssistantText: string;
   currentToolActivity: string[];
+  /// Tool_use_ids of background `Agent`/`Workflow` tasks the primary has
+  /// launched this burst that haven't reported `completed` yet. A detached
+  /// agent keeps streaming `taskProgress` out-of-band AFTER the launching
+  /// turn's `result` fires, so a non-empty set at turn end means "primary
+  /// paused waiting on a background agent" — we hold the reviewer/rebound
+  /// until it drains rather than reviewing a half-finished step. Cleared
+  /// per fresh send; drained by `task_notification` (phase 'completed').
+  pendingBackgroundTasks: Set<string>;
   /// Prior turns of (user, assistant) text so the reviewer has the
   /// conversation context, not just the latest exchange. Without this
   /// the reviewer can't tell what e.g. "ok 2" is answering. Pushed at
@@ -778,6 +786,7 @@ export class RunnerManager {
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
+      active.pendingBackgroundTasks.clear();
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
       active.reviewModel = args.reviewModel ?? null;
@@ -820,6 +829,7 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      pendingBackgroundTasks: new Set(),
       priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
@@ -1283,6 +1293,7 @@ export class RunnerManager {
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
+      active.pendingBackgroundTasks.clear();
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
       active.reviewModel = args.reviewModel ?? null;
@@ -2433,6 +2444,7 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      pendingBackgroundTasks: new Set(),
       priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
@@ -2551,6 +2563,16 @@ export class RunnerManager {
           else if (e.kind.info.text.length > 0 || e.kind.info.thinking.length > 0) nextActivity = 'Writing…';
         } else if (e.kind.type === 'toolResult' || e.kind.type === 'patchApply') {
           nextActivity = 'Reading tool output…';
+        } else if (e.kind.type === 'taskProgress') {
+          // Track detached background agents/workflows so the reviewer
+          // doesn't fire while one is still working. `started`/`progress`
+          // mark it in-flight; `completed` (from task_notification) drains
+          // it. See pendingBackgroundTasks + the turnEnded gate below.
+          const { toolUseId, phase } = e.kind.info;
+          if (toolUseId) {
+            if (phase === 'completed') active.pendingBackgroundTasks.delete(toolUseId);
+            else active.pendingBackgroundTasks.add(toolUseId);
+          }
         }
       }
       this.emit({ type: 'stream', conversationId: convId, events: emitted });
@@ -2569,7 +2591,20 @@ export class RunnerManager {
           ),
       );
 
-      if (turnEnded) {
+      if (turnEnded && active.pendingBackgroundTasks.size > 0) {
+        // The primary ended its turn but launched a background agent that's
+        // still working (e.g. "I'll wait for the Explore agent to complete
+        // and then produce the plan"). Firing the rebound now would review a
+        // half-finished step. Hold it: when the agent completes, Claude
+        // auto-continues into a follow-up turn whose `result` fires the
+        // reviewer with the pending set drained.
+        this.emit({
+          type: 'running',
+          conversationId: convId,
+          isRunning: true,
+          activityLabel: 'Agent working…',
+        });
+      } else if (turnEnded) {
         if (active.reviewBackend) {
           this.emit({
             type: 'running',
@@ -2971,6 +3006,7 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      pendingBackgroundTasks: new Set(),
       priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
@@ -3274,6 +3310,7 @@ export class RunnerManager {
       active.currentUserPrompt = pingPrompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
+      active.pendingBackgroundTasks.clear();
       this.emit({
         type: 'running',
         conversationId: convId,
