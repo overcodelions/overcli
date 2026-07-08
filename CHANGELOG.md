@@ -4,6 +4,23 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-08
+
+### Added
+- **Browse a run's worktree files without leaving the run.** A **Files** toggle in the flow run header opens a lazy file tree rooted at the run's cwd — the worktree for a single-project run, or the coordinator symlink root for a workspace run — with a resizable divider that reuses the shared explorer width. Picking a file opens it in the side editor ([#105](https://github.com/overcodelions/overcli/pull/105)).
+- **Open-in-Finder button on the file tree header** to reveal the current folder in the system file browser ([#105](https://github.com/overcodelions/overcli/pull/105)).
+
+### Fixed
+- **Opening a file mid-run no longer hangs the preview.** The Claude SDK message loop ran the whole parse → merge → send chain synchronously and never yielded, so a burst of streamed messages starved the main-process IPC handlers backing the Diff/File pane — the preview spinner spun until the round finished. The loop now yields a tick between messages, so file reads are serviced immediately during an active turn ([#105](https://github.com/overcodelions/overcli/pull/105)).
+- **The reviewer rebound waits for background agents.** When the primary ends its turn but a detached background agent or workflow it launched is still working, the reviewer no longer fires against a half-finished step — it's held until the background work drains ([#104](https://github.com/overcodelions/overcli/pull/104)).
+- **Hijacking a flow participant continues the step's session.** A hijack side-chat started a fresh session, so the model answered as if newly woken on a disconnected thread. It now resumes the participant's existing step session with full context, and a hijack that starts a new session can no longer overwrite the step's real transcript ([#105](https://github.com/overcodelions/overcli/pull/105)).
+- **Stranded transcript loads retry instead of blanking.** An empty runner that cached a failed or raced history load blocked every retry, leaving the transcript blank until an app restart. Loads are now gated on a staleness window so a load that never settled self-heals, and reloads of an already-settled runner run quietly ([#105](https://github.com/overcodelions/overcli/pull/105)).
+- **Workspace symlink reconcile no longer deletes agent files.** The reconcile, which re-runs on every app launch/reload, unlinked any root entry no member/project owned — silently destroying standalone deliverables and scratch notes agents wrote there. It now only reclaims its own stale symlinks and leaves regular files and directories alone ([#105](https://github.com/overcodelions/overcli/pull/105)).
+- **Enabled buttons show a pointer cursor.** Tailwind's Preflight left buttons on the default arrow cursor; enabled buttons now read as clickable while disabled ones keep `not-allowed` ([#105](https://github.com/overcodelions/overcli/pull/105)).
+
+### Changed
+- **Attio MCP uses the hosted remote endpoint.** The Attio catalog entry switched from the community stdio server (`npx attio-mcp-server` + `ATTIO_API_KEY`) to Attio's hosted HTTP MCP endpoint with OAuth, dropping the API-key prompt ([#105](https://github.com/overcodelions/overcli/pull/105)).
+
 ## [0.7.0] - 2026-07-06
 
 ### Added
@@ -167,7 +184,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/overcodelions/overcli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/overcodelions/overcli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/overcodelions/overcli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/overcodelions/overcli/compare/v0.4.1...v0.5.0
