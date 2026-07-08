@@ -24,6 +24,8 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { FileTree } from '../FileTree';
+import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
@@ -39,16 +41,31 @@ import {
 import { modelSpeed, friendlyModelLabel, PREMIUM_MODELS } from '@shared/modelCatalog';
 import { FlowMonogram } from './FlowMonogram';
 
+// Bounds for the worktree file-browser tree (same feel as ExplorerPane).
+const TREE_MIN = 200;
+const TREE_MAX = 520;
+
 export function FlowRunPane({ runId }: { runId: string }) {
   const run = useFlowsStore((s) => s.runs[runId]);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
+  const settings = useStore((s) => s.settings);
+  const saveSettings = useStore((s) => s.saveSettings);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [confirmingRerun, setConfirmingRerun] = useState(false);
   const [diffSheetOpen, setDiffSheetOpen] = useState(false);
   const [watchSetupOpen, setWatchSetupOpen] = useState(false);
+  // Worktree file browser — a lazy FileTree rooted at the run's cwd
+  // (which IS the worktree for `runIn: 'worktree'` runs). Off by default;
+  // toggled from the header "Files" button. Reuses the shared
+  // `explorerTreeWidth` preference so the column feels like the standalone
+  // explorer's tree.
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [treeWidth, setTreeWidth] = useState(() =>
+    Math.max(TREE_MIN, Math.min(TREE_MAX, settings.explorerTreeWidth ?? 280)),
+  );
 
   useEffect(() => {
     if (!run) {
@@ -108,7 +125,8 @@ export function FlowRunPane({ runId }: { runId: string }) {
     : undefined;
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="flex-1 flex min-h-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Header — flow name as h1, original prompt as a real subtitle
           underneath. Treating the prompt as the run's identity rather
           than a separate banner reads cleaner than the colored strip
@@ -135,6 +153,20 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 runId={run.id}
                 participant={activeParticipant}
               />
+            )}
+            {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
+              <button
+                onClick={() => setFilesOpen((v) => !v)}
+                className={
+                  'text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  (filesOpen
+                    ? 'border-accent/50 bg-accent/10 text-accent'
+                    : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
+                }
+                title="Browse the files in this run's worktree"
+              >
+                Files
+              </button>
             )}
             {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
               <button
@@ -317,6 +349,32 @@ export function FlowRunPane({ runId }: { runId: string }) {
         />
       )}
       {diffSheetOpen && <DiffSheet run={run} onClose={() => setDiffSheetOpen(false)} />}
+      </div>
+      {/* Worktree file browser. Rooted at the run's cwd — the worktree for
+          a single-project run, or the coordinator symlink root for a
+          workspace run (the file walker follows the member symlinks, so
+          files list as `<member>/…`). Picking a file routes through the
+          store's openFile, which the right-hand side-file editor (App.tsx,
+          rooted at the same path) then renders. Sits between the run body
+          and that editor so tree and editor end up adjacent. */}
+      {filesOpen && (run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
+        <>
+          <ResizableDivider
+            width={treeWidth}
+            onChange={setTreeWidth}
+            onCommit={(w) => void saveSettings({ ...settings, explorerTreeWidth: w })}
+            minWidth={TREE_MIN}
+            maxWidth={TREE_MAX}
+            side="right"
+          />
+          <div
+            style={{ width: treeWidth }}
+            className="flex-shrink-0 h-full border-l border-card overflow-hidden"
+          >
+            <FileTree rootPath={run.projectPath} />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1564,12 +1622,22 @@ function HijackComposer({
       // it'll get synced once a real flow event arrives. For now the
       // local runner store handles per-conv state by id.
     }
+    // Resume the participant's EXISTING step session (via the CLI's
+    // --resume) so the hijack chat continues the same thread the flow
+    // step ran on — with its full context (the plan, the diff it
+    // reviewed, its own output). Without this the send starts a brand-new
+    // session and the model answers as if it just woke up ("this looks
+    // like the start of our conversation"), and the visible transcript is
+    // a disconnected fresh thread rather than the step's. Undefined when
+    // this participant hasn't run yet — then it correctly starts fresh.
+    const resumeSessionId = run.sessionIdsByParticipant?.[participant.id];
     void window.overcli.invoke('runner:send', {
       conversationId: id,
       prompt,
       backend: participant.backend,
       cwd: run.projectPath,
       model: effectiveModel,
+      sessionId: resumeSessionId,
       // Hijack turns inherit the run's default permission — bypass for
       // worker/primary participants that need write access, default
       // otherwise. The user can be more conservative by adjusting
