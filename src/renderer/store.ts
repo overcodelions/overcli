@@ -438,6 +438,13 @@ function uuid(): string {
 /// Long enough to register, short enough to feel like a flash.
 const COMPLETION_FLASH_MS = 3000;
 
+/// How long a history-load read may be in flight before a re-select is
+/// allowed to retry it. A disk read of a trimmed transcript settles in
+/// well under a second even when the main process is busy, so a load
+/// still "in flight" past this window has been stranded (the invoke never
+/// settled) — retrying self-heals instead of leaving the transcript blank.
+const STALE_HISTORY_LOAD_MS = 15_000;
+
 /// Clear the completion marker after a brief flash, but only if the
 /// conversation hasn't completed *again* in the meantime — comparing
 /// the captured timestamp avoids racing a fresh completion that landed
@@ -2347,7 +2354,6 @@ export const useStore = create<StoreState>((set, get) => ({
     const conv = findConversation(state, conversationId);
     if (!conv) return;
     const existing = getRunner(conversationId);
-    if (existing && (existing.historyLoaded || existing.historyLoading)) return;
     // If the runner already holds live events for this conversation, those
     // ARE the transcript — captured in full this session as the run/chat
     // streamed. Merging the on-disk history on top would DOUBLE every
@@ -2360,12 +2366,38 @@ export const useStore = create<StoreState>((set, get) => ({
     // disk read; history is only needed to repopulate an EMPTY runner (e.g.
     // after an app restart, when the in-memory events are gone).
     if (existing && existing.events.length > 0) {
-      useRunnersStore.getState().patchRunner(conversationId, { historyLoaded: true });
+      if (!existing.historyLoaded) {
+        useRunnersStore.getState().patchRunner(conversationId, { historyLoaded: true });
+      }
+      return;
+    }
+    // A load that started recently (visible OR quiet) is still settling —
+    // don't fire a second read on top of it. `historyLoadStartedAt` is
+    // cleared when the load settles, so a load that somehow never settles
+    // self-heals after the window rather than blocking every retry. Note we
+    // deliberately do NOT gate on `historyLoaded`/`historyLoading` here: an
+    // EMPTY runner that cached `historyLoaded: true` — from a load that
+    // errored, or raced a not-yet-present worktree/session file (the
+    // workspace-coordinator "history never loads" bug) — must be allowed to
+    // re-attempt, otherwise the stale flag hides an intact transcript
+    // forever until the app restarts.
+    if (
+      existing?.historyLoadStartedAt != null &&
+      Date.now() - existing.historyLoadStartedAt < STALE_HISTORY_LOAD_MS
+    ) {
       return;
     }
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
-    useRunnersStore.getState().patchRunner(conversationId, { historyLoading: true });
+    // First load shows the "Loading history…" spinner. A RELOAD of a runner
+    // that already settled empty runs QUIETLY (no spinner flip): a
+    // genuinely-empty new conversation shouldn't flash a spinner on every
+    // open, while a conversation whose transcript is now readable gets it
+    // merged in silently.
+    const quiet = !!existing?.historyLoaded;
+    useRunnersStore
+      .getState()
+      .patchRunner(conversationId, { historyLoading: !quiet, historyLoadStartedAt: Date.now() });
     let events;
     try {
       events = await window.overcli.invoke('runner:loadHistory', {
@@ -2387,9 +2419,11 @@ export const useStore = create<StoreState>((set, get) => ({
       // loaded so the chat falls back to the empty/intro view, and clear the
       // spinner so a re-open can try again.
       console.error('loadHistoryIfNeeded failed', conversationId, e);
-      useRunnersStore
-        .getState()
-        .patchRunner(conversationId, { historyLoading: false, historyLoaded: true });
+      useRunnersStore.getState().patchRunner(conversationId, {
+        historyLoading: false,
+        historyLoaded: true,
+        historyLoadStartedAt: null,
+      });
       return;
     }
     useRunnersStore.getState().patchRunner(conversationId, (existingRunner) => {
@@ -2419,6 +2453,7 @@ export const useStore = create<StoreState>((set, get) => ({
         events: merged,
         historyLoading: false,
         historyLoaded: true,
+        historyLoadStartedAt: null,
       };
     });
   },
