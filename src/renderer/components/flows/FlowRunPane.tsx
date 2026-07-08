@@ -1622,12 +1622,22 @@ function HijackComposer({
       // it'll get synced once a real flow event arrives. For now the
       // local runner store handles per-conv state by id.
     }
+    // Resume the participant's EXISTING step session (via the CLI's
+    // --resume) so the hijack chat continues the same thread the flow
+    // step ran on — with its full context (the plan, the diff it
+    // reviewed, its own output). Without this the send starts a brand-new
+    // session and the model answers as if it just woke up ("this looks
+    // like the start of our conversation"), and the visible transcript is
+    // a disconnected fresh thread rather than the step's. Undefined when
+    // this participant hasn't run yet — then it correctly starts fresh.
+    const resumeSessionId = run.sessionIdsByParticipant?.[participant.id];
     void window.overcli.invoke('runner:send', {
       conversationId: id,
       prompt,
       backend: participant.backend,
       cwd: run.projectPath,
       model: effectiveModel,
+      sessionId: resumeSessionId,
       // Hijack turns inherit the run's default permission — bypass for
       // worker/primary participants that need write access, default
       // otherwise. The user can be more conservative by adjusting
