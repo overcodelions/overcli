@@ -118,6 +118,18 @@ export class ClaudeSdkClient extends EventEmitter {
         } catch (err) {
           this.emit('error', err as Error);
         }
+        // Yield a macrotask tick between messages. `emit('line')` runs the
+        // whole parse → merge → webContents.send chain synchronously, and
+        // when the SDK hands us a burst of buffered messages the `for await`
+        // loop drains them through microtasks with no macrotask boundary —
+        // starving main-process IPC handlers (the file-preview reads that
+        // back the Diff/File pane) until the stream pauses on the network,
+        // i.e. until the turn ends. That's the spinner that hangs on an open
+        // file and only resolves once the round finishes. `setImmediate`
+        // lets the event loop complete a full iteration (including the poll
+        // phase where renderer IPC lands) between messages; the tick is
+        // cheap and does not reorder emitted events.
+        await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } catch (err) {
       if (!this.consumerDone) this.emit('error', err as Error);
