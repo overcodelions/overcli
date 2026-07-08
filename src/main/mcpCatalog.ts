@@ -187,24 +187,17 @@ const CATALOG: CatalogEntry[] = [
     docsUrl: 'https://github.com/modelcontextprotocol/servers/tree/main/src/slack',
   },
 
-  // ---------- CRM & product (stdio / API-key) ----------
+  // ---------- CRM & product ----------
   {
     id: 'attio',
     name: 'Attio',
     description: 'Query and update records in Attio, the AI-native CRM.',
     category: 'CRM & product',
-    transport: 'stdio',
+    transport: 'remote',
     targets: ALL_CLIS,
-    config: { command: 'npx', args: ['-y', 'attio-mcp-server'] },
-    secrets: [
-      {
-        key: 'ATTIO_API_KEY',
-        label: 'Attio API key',
-        help: 'Bearer token from Attio → Settings → Developers (or the API Explorer).',
-        link: 'https://app.attio.com/settings/developers',
-      },
-    ],
-    docsUrl: 'https://github.com/hmk/attio-mcp-server',
+    config: { type: 'http', url: 'https://mcp.attio.com/mcp' },
+    authNote: OAUTH_NOTE,
+    docsUrl: 'https://docs.attio.com/docs/mcp',
   },
   {
     id: 'hubspot',
