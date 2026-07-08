@@ -48,6 +48,11 @@ export interface RunnerState {
   /// loading indicator in ChatView.
   historyLoaded: boolean;
   historyLoading: boolean;
+  /// Timestamp (ms) the most recent history-load read started, cleared
+  /// once it settles. Lets `loadHistoryIfNeeded` tell a load that's still
+  /// in flight (skip) from one that never settled (retry after a window),
+  /// so a stranded flag can't block the transcript from ever loading.
+  historyLoadStartedAt?: number | null;
   /// Timestamp (ms) of the most recent run that finished without the
   /// user having acknowledged it yet. Drives the green checkmark in the
   /// sidebar — cleared once the user views the conversation (or after a
@@ -69,6 +74,7 @@ export function newRunnerState(): RunnerState {
     currentModel: '',
     historyLoaded: false,
     historyLoading: false,
+    historyLoadStartedAt: null,
     completedAt: null,
     codexRuntimeMode: undefined,
     codexSandboxMode: undefined,

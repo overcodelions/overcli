@@ -314,7 +314,22 @@ export class FlowRuntimeImpl {
           )?.[0];
           if (participantId) {
             const existing = run.sessionIdsByParticipant?.[participantId];
-            if (existing !== event.sessionId) {
+            // Only let a NEW session id REPLACE an existing one while the
+            // runtime is actively executing THIS participant's step.
+            // Otherwise this `sessionConfigured` comes from a hijack/side
+            // chat — the user talking to the participant during a pause or
+            // after the run settled. If that hijack started a fresh session
+            // (e.g. it didn't resume), letting it overwrite the pointer
+            // discards the step's real transcript, and the chat panel then
+            // shows only the hijack turn ("can't see the step history").
+            // We still SET the pointer when there's none yet, so a
+            // hijack-only participant that never ran a step is resumable.
+            const st = run.state;
+            const executingThisParticipant =
+              st.kind === 'running' &&
+              run.flowSnapshot.steps.find((s) => s.id === st.currentStepId)?.participantId ===
+                participantId;
+            if (existing !== event.sessionId && (!existing || executingThisParticipant)) {
               run.sessionIdsByParticipant = {
                 ...(run.sessionIdsByParticipant ?? {}),
                 [participantId]: event.sessionId,

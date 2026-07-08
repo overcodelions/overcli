@@ -54,6 +54,15 @@ export function FileTree({ rootPath }: { rootPath: string }) {
         <div className="text-xs text-ink-muted truncate flex-1">
           {shortenPath(rootPath)}
         </div>
+        <button
+          type="button"
+          onClick={() => window.overcli.invoke('fs:openPath', rootPath)}
+          title="Open folder in Finder/Explorer"
+          aria-label="Open folder in Finder/Explorer"
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card"
+        >
+          ⤢
+        </button>
       </div>
       <div className="px-3 py-2 border-b border-card">
         <input
