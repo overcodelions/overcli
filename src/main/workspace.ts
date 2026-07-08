@@ -73,7 +73,16 @@ export function ensureWorkspaceSymlinkRoot(
       const full = path.join(rootPath, entry.name);
       const target = desired.get(entry.name);
       if (!target) {
-        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        // No current member/project owns this name. Only reclaim entries
+        // WE manage — symlinks (stale links from an earlier reconcile). NEVER
+        // delete regular files or directories: agents write standalone
+        // deliverables / scratch notes at this root, and this reconcile
+        // re-runs on every app launch/reload — so unlinking unknown entries
+        // silently destroys the agent's work "between edits". Leave anything
+        // that isn't one of our symlinks alone.
+        if (entry.isSymbolicLink()) {
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+        }
         continue;
       }
       try {
@@ -190,7 +199,16 @@ export function ensureCoordinatorSymlinkRoot(
       const full = path.join(rootPath, entry.name);
       const target = desired.get(entry.name);
       if (!target) {
-        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        // No current member/project owns this name. Only reclaim entries
+        // WE manage — symlinks (stale links from an earlier reconcile). NEVER
+        // delete regular files or directories: agents write standalone
+        // deliverables / scratch notes at this root, and this reconcile
+        // re-runs on every app launch/reload — so unlinking unknown entries
+        // silently destroys the agent's work "between edits". Leave anything
+        // that isn't one of our symlinks alone.
+        if (entry.isSymbolicLink()) {
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+        }
         continue;
       }
       try {
@@ -260,7 +278,12 @@ export function rebindCoordinatorRootToProjects(
       const full = path.join(rootPath, entry.name);
       const spec = desired.get(entry.name);
       if (!spec) {
-        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        // Only reclaim our own stale symlinks — never delete regular files
+        // or directories the agent wrote at this root (see the note in
+        // ensureCoordinatorSymlinkRoot). This runs on every app reload.
+        if (entry.isSymbolicLink()) {
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+        }
         continue;
       }
       try {

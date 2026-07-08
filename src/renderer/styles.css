@@ -2,6 +2,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Browsers default <button> to an arrow cursor, and Tailwind v3's
+ * Preflight doesn't override it — so clickable controls (the whole
+ * sidenav is buttons) don't read as clickable. Restore the pointer for
+ * enabled buttons; disabled ones keep their not-allowed cursor. */
+@layer base {
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
 /* Theme palettes. Every semantic color (surface, ink, accent, backend
  * tints) is driven by a CSS custom property so the whole app switches
  * theme by toggling `html.dark`. Tailwind's colors map to these vars in
