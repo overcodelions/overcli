@@ -4,6 +4,17 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-10
+
+### Added
+- **Compare two files in the explorer.** ⌥-click a file in the tree to pick a base, then ⌥-click a second to open a line diff in the right pane. Per changed block, arrows move it onto the other side (← left file, → right file); moves are staged in memory and nothing touches disk until Save (⌘S), with undo/redo (⌘Z / ⌘⇧Z), a dirty indicator, and a discard prompt when navigating away with unsaved moves. Reads both files through the existing file IPC, so the same size caps and binary rejection apply, and it works outside git repositories ([#106](https://github.com/overcodelions/overcli/pull/106)).
+- **Revert a file from its diff.** A **Revert** button on a HEAD-based diff of a tracked file discards all uncommitted changes back to HEAD after a confirm — hidden for untracked files and for agent/flow views that diff against a base branch. Backed by a new, path-validated `git:restoreFile` handler kept off the read-only renderer git allowlist ([#106](https://github.com/overcodelions/overcli/pull/106)).
+- **Committed vs uncommitted badges in the changes bar.** Each file now carries a `commitState` — `committed` (on the branch vs the fork point), `uncommitted` (pending working-tree edit), or `both` — computed by splitting `git diff --name-status <base> HEAD` against `git status --porcelain`, so the bar shows what's already committed apart from what's still pending ([#106](https://github.com/overcodelions/overcli/pull/106)).
+- **Figma Dev Mode MCP server in the catalog.** Lists the Figma desktop app's built-in Dev Mode server (local http endpoint on `127.0.0.1:3845`, no OAuth or API key) under a new **Design** category, targeting Claude and Gemini ([#106](https://github.com/overcodelions/overcli/pull/106)).
+
+### Fixed
+- **Switching flows resets per-run state.** The flow run pane is now keyed on the active run id so per-run local state (focused step / auto-follow) no longer carries across flow switches — previously a step selected in the prior flow stayed "picked", and because that id didn't exist in the new flow, nothing highlighted and the body falsely read "no participants" ([#106](https://github.com/overcodelions/overcli/pull/106)).
+
 ## [0.8.0] - 2026-07-08
 
 ### Added
@@ -184,7 +195,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/overcodelions/overcli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/overcodelions/overcli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/overcodelions/overcli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/overcodelions/overcli/compare/v0.5.0...v0.6.0
