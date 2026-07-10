@@ -1043,7 +1043,10 @@ export interface IPCInvokeMap {
   'git:commitStatus': (args: { cwd: string }) => {
     isRepo: boolean;
     currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+    // `commitState` splits committed-on-branch from uncommitted working-tree
+    // edits (`'both'` = committed with further pending edits). HEAD-relative,
+    // so `git:commitStatus` reports every file as `'uncommitted'`.
+    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
     insertions: number;
     deletions: number;
   };
@@ -1053,7 +1056,7 @@ export interface IPCInvokeMap {
   'git:worktreeChanges': (args: { worktreePath: string; baseBranch: string }) => {
     isRepo: boolean;
     currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
     insertions: number;
     deletions: number;
   };
@@ -1063,7 +1066,7 @@ export interface IPCInvokeMap {
   }) => {
     isRepo: boolean;
     currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
     insertions: number;
     deletions: number;
   };

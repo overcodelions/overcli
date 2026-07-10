@@ -1177,6 +1177,22 @@ export function currentBranch(cwd: string): { isRepo: boolean; branch: string } 
   return { isRepo: true, branch };
 }
 
+/// Per-file change entry shared by the status probes below and the
+/// renderer's ChangesBar. `commitState` distinguishes changes already
+/// committed on the branch (relative to the fork point) from still-
+/// uncommitted working-tree edits — `'both'` means a file was committed
+/// *and* has further pending edits on top. `commitStatus` is HEAD-relative
+/// so everything it sees is `'uncommitted'` by definition; `worktreeChanges`
+/// computes the real split.
+export type CommitState = 'committed' | 'uncommitted' | 'both';
+export type FileChange = {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  commitState: CommitState;
+};
+
 /// Quick probe for the header commit button. Returns `isRepo: false` when
 /// `cwd` isn't a git working tree (missing `.git`, git binary missing, or
 /// the path doesn't exist) so the renderer can hide the button entirely.
@@ -1185,7 +1201,7 @@ export function currentBranch(cwd: string): { isRepo: boolean; branch: string } 
 export async function commitStatus(cwd: string): Promise<{
   isRepo: boolean;
   currentBranch: string;
-  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  changes: FileChange[];
   insertions: number;
   deletions: number;
 }> {
@@ -1252,12 +1268,15 @@ export async function commitStatus(cwd: string): Promise<{
     }
   }
 
-  const changes = Array.from(statusByPath.entries())
+  const changes: FileChange[] = Array.from(statusByPath.entries())
     .map(([p, code]) => ({
       path: p,
       status: code,
       additions: additionsByPath.get(p) ?? 0,
       deletions: deletionsByPath.get(p) ?? 0,
+      // HEAD-relative probe: every file here is a working-tree change that
+      // hasn't been committed yet. Once committed, `git diff HEAD` drops it.
+      commitState: 'uncommitted' as const,
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
 
@@ -1284,11 +1303,11 @@ export async function worktreeChanges(args: {
 }): Promise<{
   isRepo: boolean;
   currentBranch: string;
-  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  changes: FileChange[];
   insertions: number;
   deletions: number;
 }> {
-  const empty = { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
+  const empty = { isRepo: false, currentBranch: '', changes: [] as FileChange[], insertions: 0, deletions: 0 };
   if (!args.worktreePath || !args.baseBranch) return empty;
   const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.worktreePath);
   if (check.exitCode !== 0 || check.stdout.trim() !== 'true') return empty;
@@ -1340,7 +1359,48 @@ export async function worktreeChanges(args: {
     }
   }
 
-  const changes: Array<{ path: string; status: string; additions: number; deletions: number }> = [];
+  // Split the merged set into committed-vs-fork-point and still-dirty so
+  // each file gets a `commitState`. `git diff --name-status <base> HEAD` is
+  // what's already committed on the branch; `git status --porcelain` is
+  // what's uncommitted in the working tree (staged + unstaged + untracked).
+  // A file can be in both — committed once, then edited again.
+  const committedPaths = new Set<string>();
+  const nameStatusHead = await runGitAsync(
+    ['diff', '--name-status', args.baseBranch, 'HEAD'],
+    args.worktreePath,
+  );
+  if (nameStatusHead.exitCode === 0) {
+    for (const line of nameStatusHead.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const p = parts[parts.length - 1]?.trim();
+      if (p) committedPaths.add(p);
+    }
+  }
+  const uncommittedPaths = new Set<string>();
+  const porcelain = await runGitAsync(
+    ['status', '--porcelain=v1', '--untracked-files=all'],
+    args.worktreePath,
+  );
+  if (porcelain.exitCode === 0) {
+    for (const line of porcelain.stdout.split('\n')) {
+      if (line.length < 3) continue;
+      // Renames read `R  old -> new`; the new path is what the diff keys on.
+      const rest = line.slice(3).trim();
+      const arrow = rest.indexOf(' -> ');
+      const p = arrow >= 0 ? rest.slice(arrow + 4).trim() : rest;
+      if (p) uncommittedPaths.add(p);
+    }
+  }
+  const commitStateFor = (p: string): CommitState => {
+    const committed = committedPaths.has(p);
+    const uncommitted = uncommittedPaths.has(p);
+    if (committed && uncommitted) return 'both';
+    if (committed) return 'committed';
+    return 'uncommitted';
+  };
+
+  const changes: FileChange[] = [];
   const seen = new Set<string>();
   for (const p of additionsByPath.keys()) {
     seen.add(p);
@@ -1349,6 +1409,7 @@ export async function worktreeChanges(args: {
       status: statusByPath.get(p) ?? 'M',
       additions: additionsByPath.get(p) ?? 0,
       deletions: deletionsByPath.get(p) ?? 0,
+      commitState: commitStateFor(p),
     });
   }
   // Safety net for a name-status entry the numstat pass didn't surface
@@ -1356,7 +1417,7 @@ export async function worktreeChanges(args: {
   for (const [p, code] of statusByPath) {
     if (!seen.has(p)) {
       seen.add(p);
-      changes.push({ path: p, status: code, additions: 0, deletions: 0 });
+      changes.push({ path: p, status: code, additions: 0, deletions: 0, commitState: commitStateFor(p) });
     }
   }
 
@@ -1373,7 +1434,7 @@ export async function worktreeChanges(args: {
       seen.add(p);
       const lines = await countLinesOnDiskAsync(path.join(args.worktreePath, p));
       insertions += lines;
-      changes.push({ path: p, status: '??', additions: lines, deletions: 0 });
+      changes.push({ path: p, status: '??', additions: lines, deletions: 0, commitState: 'uncommitted' });
     }
   }
 
@@ -1396,13 +1457,13 @@ export async function workspaceCommitStatus(
 ): Promise<{
   isRepo: boolean;
   currentBranch: string;
-  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  changes: FileChange[];
   insertions: number;
   deletions: number;
 }> {
   let insertions = 0;
   let deletions = 0;
-  const changes: Array<{ path: string; status: string; additions: number; deletions: number }> = [];
+  const changes: FileChange[] = [];
   let anyRepo = false;
   // Names come pre-assigned by the caller (workspace members use the
   // shared basename-dedup rule; coordinator members use the project
