@@ -18,7 +18,7 @@ import type { Backend } from './types';
 /// to make Sonnet 5 the default 'fast' Claude model.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  codex: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
   // gateway. These are the public Copilot-CLI-supported set as of
@@ -76,7 +76,15 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'claude-sonnet-5': 'fast',
   'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',
-  // Codex (OpenAI)
+  // Codex (OpenAI). GPT-5.6 (sol/terra/luna) is the current generation:
+  // sol is the flagship reasoning model, terra the balanced everyday
+  // workhorse (Sonnet-5-class — hence 'fast', mirroring how Claude parks
+  // Sonnet at the fast tier), luna the cheapest of the family. terra
+  // precedes luna in PREMIUM_MODELS, so it's the default 'fast' codex
+  // model for per-tier template substitution.
+  'gpt-5.6-sol': 'thinking',
+  'gpt-5.6-terra': 'fast',
+  'gpt-5.6-luna': 'fast',
   'gpt-5.5': 'thinking',
   'gpt-5.4': 'standard',
   'gpt-5.4-mini': 'fast',
@@ -97,9 +105,11 @@ export function modelSpeed(model: string): ModelSpeed {
 ///
 /// Conventions:
 ///   - Claude: "Claude Opus 4.7" — title-cased name, dot version
-///   - Codex (GPT): "GPT-5.4 mini" — keep "GPT" as a literal initialism;
-///     dot version; lowercase qualifier ("mini") since "MINI" looked
-///     shouty in the picker
+///   - Codex (GPT): "GPT-5.4 mini" / "GPT-5.6 Sol" — keep "GPT" as a
+///     literal initialism; dot version. Descriptor qualifiers stay
+///     lowercase ("mini") since "MINI" looked shouty; the GPT-5.6
+///     codenames (Sol/Terra/Luna) are proper names, so they're
+///     title-cased like the Gemini qualifiers.
 ///   - Gemini: "Gemini 2.5 Pro" — title-cased qualifier
 ///   - Copilot: "{underlying model} (Copilot)" — render the underlying
 ///     model's nice form, suffix with the gateway in parens
@@ -147,13 +157,18 @@ function normalizeClaudeId(model: string): string {
   return model.replace(/(\d+)\.(\d+)$/, '$1-$2');
 }
 
-/// `gpt-5.4-mini` → `GPT-5.4 mini`.
+/// `gpt-5.4-mini` → `GPT-5.4 mini`; `gpt-5.6-sol` → `GPT-5.6 Sol`.
 function formatGptId(model: string): string {
   // Capture the GPT prefix + version, then format any trailing qualifier.
   const m = model.match(/^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/i);
   if (!m) return model;
   const [, version, qualifier] = m;
-  return qualifier ? `GPT-${version} ${qualifier.toLowerCase()}` : `GPT-${version}`;
+  if (!qualifier) return `GPT-${version}`;
+  // "mini" is a size descriptor and stays lowercase; the GPT-5.6
+  // codenames (sol/terra/luna) are proper names, so title-case them.
+  const lower = qualifier.toLowerCase();
+  const nice = lower === 'mini' ? 'mini' : (lower[0]?.toUpperCase() ?? '') + lower.slice(1);
+  return `GPT-${version} ${nice}`;
 }
 
 /// `gemini-2.5-pro` → `Gemini 2.5 Pro`.
