@@ -59,7 +59,7 @@ describe('drafterModelFor', () => {
     // claude defaults to opus-4-8 (first entry); fable-5 is the frontier
     // opt-in, not the drafter default.
     expect(drafterModelFor('claude')).toBe('claude-opus-4-8');
-    expect(drafterModelFor('codex')).toBe('gpt-5.5');
+    expect(drafterModelFor('codex')).toBe('gpt-5.6-sol');
     expect(drafterModelFor('gemini')).toBe('gemini-2.5-pro');
   });
 });
@@ -76,10 +76,13 @@ describe('drafterModelHints', () => {
       standard: 'claude-opus-4-8',
       fast: 'claude-sonnet-5',
     });
+    // codex: sol is the first thinking model, terra the first fast model
+    // (both precede the legacy gpt-5.x entries); gpt-5.4 is the sole
+    // 'standard' pick.
     expect(drafterModelHints('codex')).toEqual({
-      thinking: 'gpt-5.5',
+      thinking: 'gpt-5.6-sol',
       standard: 'gpt-5.4',
-      fast: 'gpt-5.4-mini',
+      fast: 'gpt-5.6-terra',
     });
   });
 
