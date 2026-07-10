@@ -1139,6 +1139,31 @@ export async function worktreeDiff(args: {
   return { stdout: blocks.filter(Boolean).join(''), stderr: tracked.stderr, exitCode: 0 };
 }
 
+/// Discard all uncommitted changes to a single tracked file, resetting both
+/// the index and working tree to the file's HEAD version. Backs the
+/// explorer diff view's "Revert" action.
+///
+/// This is destructive, so the renderer confirms with the user first and
+/// the IPC handler re-validates `cwd` against the registered roots before
+/// calling in. `checkout HEAD -- <path>` (rather than plain `restore`)
+/// clears staged and unstaged edits in one shot; the `--` guards a path
+/// that might otherwise parse as a ref or option. Untracked (brand-new)
+/// files aren't in HEAD, so git reports an error we surface verbatim.
+export function restoreFileToHead(args: {
+  cwd: string;
+  path: string;
+}): { ok: true } | { ok: false; error: string } {
+  const { cwd, path } = args;
+  if (!path || path === '.') {
+    return { ok: false, error: 'Refusing to revert without a specific file path.' };
+  }
+  const res = runGit(['checkout', 'HEAD', '--', path], cwd);
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || `git checkout exited ${res.exitCode}` };
+  }
+  return { ok: true };
+}
+
 /// Cheapest possible "what branch is this repo on right now". One git
 /// invocation, no diff math, no file walks. Used by the
 /// base-branch-mismatch banner which only needs the branch name and is

@@ -941,6 +941,12 @@ export interface IPCInvokeMap {
     stderr: string;
     exitCode: number;
   };
+  /// Discard uncommitted changes to a single file, resetting it to HEAD.
+  /// Destructive; the renderer confirms first and the main process
+  /// re-validates the cwd against registered roots.
+  'git:restoreFile': (args: { cwd: string; path: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
   'git:createWorktree': (args: {
     projectPath: string;
     agentName: string;

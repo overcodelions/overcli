@@ -107,6 +107,13 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const [loading, setLoading] = useState(false);
   const [dirty, setDirty] = useState(false);
   const [copiedPath, setCopiedPath] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  // True when the diff is a brand-new untracked file — it has no HEAD
+  // version to revert to, so we hide the Revert action for it.
+  const [diffUntracked, setDiffUntracked] = useState(false);
+  // Bumped to force a re-read of the file + diff after a revert, so the
+  // view reflects the restored-to-HEAD content.
+  const [refreshToken, setRefreshToken] = useState(0);
   const previewKind = detectFilePreviewKind(path);
   const previewable = canPreviewFile(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
@@ -194,7 +201,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     return () => {
       cancelled = true;
     };
-  }, [binaryPreview, highlight, mode, openFile, path, rootPath, unsupportedBinary, workspaceMembers]);
+  }, [binaryPreview, highlight, mode, openFile, path, rootPath, unsupportedBinary, workspaceMembers, refreshToken]);
 
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
@@ -222,6 +229,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     }
     setLoading(true);
     setError(null);
+    setDiffUntracked(false);
     (async () => {
       // Agents commit as they go, so `HEAD` already includes their
       // edits — diffing HEAD returns empty and the no-index fallback
@@ -247,6 +255,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
           cwd: diffTarget.cwd,
         });
         const isTracked = ls.exitCode === 0 && !!ls.stdout?.trim();
+        setDiffUntracked(!isTracked);
         if (!isTracked) {
           const untracked = await window.overcli.invoke('git:run', {
             args: ['diff', '--no-index', '--', '/dev/null', diffTarget.path],
@@ -265,7 +274,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, diffTarget, unsupportedBinary, fileInfo]);
+  }, [path, mode, diffTarget, unsupportedBinary, fileInfo, refreshToken]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
@@ -273,6 +282,37 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     if (res.ok) setDirty(false);
     else setError(res.error);
   }, [path, dirty, content]);
+
+  // Discard all uncommitted changes to the current file, back to HEAD.
+  // Only offered on HEAD-based diffs (see `canRevert`) where "revert" is
+  // unambiguous — destructive, so we confirm first.
+  const revertFile = useCallback(async () => {
+    if (!diffTarget || reverting) return;
+    const name = diffTarget.path.split('/').pop() || diffTarget.path;
+    if (
+      !window.confirm(
+        `Revert ${name}?\n\nThis discards all uncommitted changes to it and cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setReverting(true);
+    setError(null);
+    try {
+      const res = await window.overcli.invoke('git:restoreFile', {
+        cwd: diffTarget.cwd,
+        path: diffTarget.path,
+      });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      setDirty(false);
+      setRefreshToken((t) => t + 1);
+    } finally {
+      setReverting(false);
+    }
+  }, [diffTarget, reverting]);
 
   // Keyboard: Cmd/Ctrl+S or Cmd/Ctrl+Enter saves; Cmd/Ctrl+Shift+D
   // toggles between Diff and File modes (Preview is button-only).
@@ -311,6 +351,19 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       </div>
     );
   }
+  // Offer Revert only on a HEAD-based diff with real changes to a tracked
+  // file — that's where "discard uncommitted changes" is unambiguous.
+  // Agent/flow views diff against a base branch (baseBranch set) and can
+  // include committed work, so reverting there would mean something riskier
+  // than a checkout; we leave those out.
+  const canRevert =
+    mode === 'diff' &&
+    !loading &&
+    !error &&
+    !!diffText.trim() &&
+    !diffUntracked &&
+    !!diffTarget &&
+    diffTarget.baseBranch == null;
   return (
     <div className="flex flex-col h-full">
       <div className="flex flex-col flex-1 min-h-0">
@@ -389,6 +442,16 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
                 File
               </button>
             </div>
+            {canRevert && (
+              <button
+                onClick={() => void revertFile()}
+                disabled={reverting}
+                title="Discard all uncommitted changes to this file (git checkout HEAD)"
+                className="text-xs font-medium px-2.5 py-1 rounded border border-card text-red-300 hover:text-red-200 hover:bg-red-500/10 disabled:opacity-40"
+              >
+                {reverting ? 'Reverting…' : 'Revert'}
+              </button>
+            )}
             {dirty && (
               <button
                 onClick={() => void save()}
