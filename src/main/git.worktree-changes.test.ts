@@ -54,6 +54,10 @@ describe('worktreeChanges', () => {
         '26\t1\tsrc/app/api-explorer.component.html\n54\t0\tsrc/app/api-explorer.component.spec.ts\n',
       'diff --name-status base-sha':
         'M\tsrc/app/api-explorer.component.html\nA\tsrc/app/api-explorer.component.spec.ts\n',
+      // base..HEAD: only the .html is committed on the branch.
+      'diff --name-status base-sha HEAD': 'M\tsrc/app/api-explorer.component.html\n',
+      // working tree vs HEAD: only the .spec.ts is still uncommitted.
+      'status --porcelain=v1 --untracked-files=all': 'A  src/app/api-explorer.component.spec.ts\n',
       'ls-files --others --exclude-standard': '',
     });
 
@@ -66,16 +70,36 @@ describe('worktreeChanges', () => {
         status: 'M',
         additions: 26,
         deletions: 1,
+        commitState: 'committed',
       },
       {
         path: 'src/app/api-explorer.component.spec.ts',
         status: 'A',
         additions: 54,
         deletions: 0,
+        commitState: 'uncommitted',
       },
     ]);
     expect(res.insertions).toBe(80);
     expect(res.deletions).toBe(1);
+  });
+
+  it('flags a file that is committed and has further uncommitted edits as "both"', async () => {
+    routeGit({
+      'rev-parse --is-inside-work-tree': 'true\n',
+      'branch --show-current': 'feature/x\n',
+      'diff --numstat base-sha': '10\t2\tsrc/app/thing.ts\n',
+      'diff --name-status base-sha': 'M\tsrc/app/thing.ts\n',
+      'diff --name-status base-sha HEAD': 'M\tsrc/app/thing.ts\n',
+      'status --porcelain=v1 --untracked-files=all': ' M src/app/thing.ts\n',
+      'ls-files --others --exclude-standard': '',
+    });
+
+    const res = await worktreeChanges({ worktreePath: '/wt', baseBranch: 'base-sha' });
+
+    expect(res.changes).toEqual([
+      { path: 'src/app/thing.ts', status: 'M', additions: 10, deletions: 2, commitState: 'both' },
+    ]);
   });
 
   it('returns an empty, non-repo result when the path is not a work tree', async () => {

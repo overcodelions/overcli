@@ -108,6 +108,29 @@ const CATALOG: CatalogEntry[] = [
     docsUrl: 'https://docs.sentry.io/product/sentry-mcp/',
   },
 
+  // ---------- Design ----------
+  {
+    id: 'figma-desktop',
+    name: 'Figma (Dev Mode)',
+    description:
+      'Pull frames, layers, variables, and code from your designs via the Dev Mode MCP server built into the Figma desktop app.',
+    category: 'Design',
+    // http-shaped like the OAuth servers (writes `type` + `url`), but it's a
+    // LOCAL server the Figma desktop app hosts on 127.0.0.1:3845 — no OAuth,
+    // no API key. The auth handshake the OAUTH_NOTE describes doesn't apply,
+    // hence the custom authNote below.
+    transport: 'remote',
+    // Both Claude and Gemini speak the http transport. Codex is
+    // streamable-HTTP only and untested against Figma's endpoint, so it's
+    // left out until verified.
+    targets: ['claude', 'gemini'],
+    config: { type: 'http', url: 'http://127.0.0.1:3845/mcp' },
+    authNote:
+      'No login or API key. Requires the Figma desktop app running with the Dev Mode MCP server enabled (Figma → Preferences → Enable Dev Mode MCP server). The server listens on 127.0.0.1:3845.',
+    docsUrl:
+      'https://help.figma.com/hc/en-us/articles/32132100833559-Guide-to-the-Dev-Mode-MCP-Server',
+  },
+
   // ---------- stdio / API-key ----------
   {
     id: 'brave-search',

@@ -808,6 +808,7 @@ const MCP_CAT_META: Record<string, { color: string; icon: IconKey }> = {
   'Dev tools':     { color: '#5b9cff', icon: 'branch' },
   'Productivity':  { color: '#b587ff', icon: 'check' },
   'Search & web':  { color: '#36cfc9', icon: 'cloud' },
+  'Design':        { color: '#f24e1e', icon: 'figma' },
   'CRM & product': { color: '#ec4899', icon: 'book' },
   'Cloud':         { color: '#ff9900', icon: 'cloud' },
   'Utilities':     { color: '#f59e0b', icon: 'server' },
