@@ -56,7 +56,13 @@ export function FlowsLibraryPane() {
     });
   }, []);
 
-  if (activeRunId) return <FlowRunPane runId={activeRunId} />;
+  // Key on the run id so switching flows mounts a fresh FlowRunPane
+  // instead of reusing the instance — otherwise per-run local state
+  // (focusStepId / autoFollowedId) carries over. A step manually picked
+  // in the previous flow would stay selected, and since that step id
+  // doesn't exist in the new flow, nothing highlights and the body
+  // falsely reads "no participants".
+  if (activeRunId) return <FlowRunPane key={activeRunId} runId={activeRunId} />;
   if (editor.kind !== 'idle') return <FlowEditor />;
 
   return (
