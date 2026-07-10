@@ -7,7 +7,24 @@ import type { FileTreeEntry } from '@shared/types';
 /// which already walks the tree skipping `node_modules`, `.git`, build
 /// outputs, etc. Files are grouped into a nested shape and rendered as
 /// an expandable tree; clicking a file opens it in the editor pane.
-export function FileTree({ rootPath }: { rootPath: string }) {
+///
+/// ⌥-clicking a file instead picks it for comparison (`onCompare`): the
+/// first pick is held as the base (`compareBase`, highlighted), the second
+/// opens a two-file diff. The compare wiring lives in ExplorerPane; the
+/// tree just reports the gesture.
+export function FileTree({
+  rootPath,
+  compareBase,
+  onCompare,
+  onBeforeOpen,
+}: {
+  rootPath: string;
+  compareBase?: string | null;
+  onCompare?: (path: string) => void;
+  /// Vetoes a plain file-open (returns false to cancel) — used to confirm
+  /// discarding unsaved comparison moves before navigating away.
+  onBeforeOpen?: () => boolean;
+}) {
   const [entries, setEntries] = useState<FileTreeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -103,12 +120,33 @@ export function FileTree({ rootPath }: { rootPath: string }) {
                 })
               }
               selectedPath={openFilePath}
-              onPick={(p) => openFile(p)}
+              onPick={(p) => {
+                if (onBeforeOpen && !onBeforeOpen()) return;
+                openFile(p);
+              }}
+              compareBase={compareBase ?? null}
+              onCompare={onCompare}
               forceOpen={filter.length > 0}
             />
           ))
         )}
       </div>
+      {onCompare && (
+        <div className="px-3 py-1.5 border-t border-card text-[10px] text-ink-faint leading-relaxed">
+          {compareBase ? (
+            <span>
+              Comparing{' '}
+              <span className="font-mono text-amber-300/80">{baseName(compareBase)}</span> — ⌥-click
+              another file to diff.
+            </span>
+          ) : (
+            <span>
+              <span className="text-ink-muted">Click</span> to open ·{' '}
+              <span className="text-ink-muted">⌥-click</span> two files to compare
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -184,6 +222,8 @@ function TreeNode({
   toggle,
   selectedPath,
   onPick,
+  compareBase,
+  onCompare,
   forceOpen,
 }: {
   node: TreeNode;
@@ -192,22 +232,34 @@ function TreeNode({
   toggle: (key: string) => void;
   selectedPath: string | null;
   onPick: (path: string) => void;
+  compareBase: string | null;
+  onCompare?: (path: string) => void;
   forceOpen: boolean;
 }) {
   const isOpen = forceOpen || expanded.has(node.key);
   const selected = selectedPath === node.fullPath;
+  const isCompareBase = compareBase === node.fullPath;
   if (!node.isDir) {
     return (
       <button
-        onClick={() => onPick(node.fullPath)}
+        // ⌥-click compares files; plain click opens in the editor.
+        onClick={(e) => {
+          if (onCompare && (e.altKey || (compareBase && compareBase !== node.fullPath))) {
+            onCompare(node.fullPath);
+          } else {
+            onPick(node.fullPath);
+          }
+        }}
         style={{ paddingLeft: 8 + depth * 12 }}
         className={
           'w-full text-left flex items-center gap-1.5 py-0.5 rounded text-xs truncate ' +
-          (selected
+          (isCompareBase
+            ? 'bg-amber-400/20 text-ink ring-1 ring-amber-300/40'
+            : selected
             ? 'bg-accent/20 text-ink'
             : 'text-ink-muted hover:bg-white/5 hover:text-ink')
         }
-        title={node.fullPath}
+        title={onCompare ? node.fullPath + '\n(⌥-click to compare)' : node.fullPath}
       >
         <FileGlyph />
         <span className="truncate">{node.name}</span>
@@ -246,6 +298,8 @@ function TreeNode({
             toggle={toggle}
             selectedPath={selectedPath}
             onPick={onPick}
+            compareBase={compareBase}
+            onCompare={onCompare}
             forceOpen={forceOpen}
           />
         ))}
@@ -280,6 +334,10 @@ function FileGlyph() {
 
 function shortenPath(p: string): string {
   return p.replace(/^\/Users\/[^/]+\//, '~/');
+}
+
+function baseName(p: string): string {
+  return p.split(/[/\\]/).pop() ?? p;
 }
 
 const BLOCKED_EXTENSIONS = new Set([

@@ -36,6 +36,7 @@ import {
   commitStatus,
   worktreeChanges,
   currentBranch,
+  restoreFileToHead,
   workspaceCommitStatus,
   commitAll,
   workspaceCommitAll,
@@ -468,6 +469,14 @@ function registerIpc(): void {
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
   ipcMain.handle('git:worktreeChanges', (_e, args) => worktreeChanges(args));
   ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranch(cwd));
+  ipcMain.handle('git:restoreFile', (_e, { cwd, path }) => {
+    // Destructive git write — re-validate the cwd here rather than trusting
+    // the renderer, mirroring the `git:run` allowlist gate.
+    if (typeof cwd !== 'string' || typeof path !== 'string' || !isPathUnderRegisteredRoot(cwd)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return restoreFileToHead({ cwd, path });
+  });
   ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
   ipcMain.handle('git:workspaceCommitAll', (_e, args) => workspaceCommitAll(args));

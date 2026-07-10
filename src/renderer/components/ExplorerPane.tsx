@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { FileTree } from './FileTree';
 import { FileEditorPane } from './FileEditorPane';
+import { CompareView } from './CompareView';
 import { ResizableDivider } from './ResizableDivider';
 
 const TREE_MIN = 200;
@@ -29,6 +30,43 @@ export function ExplorerPane() {
   // switches detailMode back), and in-conversation right pane (just
   // clears the root, leaving the chat untouched).
   const closeExplorer = useStore((s) => s.closeExplorer);
+
+  // Two-file comparison picked from the tree via ⌥-click. `compareBase` is
+  // the first pick (highlighted, pending a second); `comparePair` is the
+  // completed A/B shown in the right pane.
+  const [compareBase, setCompareBase] = useState<string | null>(null);
+  const [comparePair, setComparePair] = useState<{ a: string; b: string } | null>(null);
+  const [compareDirty, setCompareDirty] = useState(false);
+  // Confirm before throwing away unsaved comparison moves. Returns false if
+  // the user cancels — callers bail on navigation in that case.
+  const confirmDiscard = () =>
+    !(comparePair && compareDirty) ||
+    window.confirm('Discard unsaved changes to these files?');
+  const handleCompare = (path: string) => {
+    if (!compareBase) {
+      setCompareBase(path);
+      return;
+    }
+    if (compareBase === path) {
+      setCompareBase(null); // ⌥-click the base again to cancel
+      return;
+    }
+    if (!confirmDiscard()) {
+      setCompareBase(null);
+      return;
+    }
+    setComparePair({ a: compareBase, b: path });
+    setCompareBase(null);
+  };
+  // Reset the picker when the explorer root changes, and drop a stale
+  // comparison once the user opens a file normally so the editor wins.
+  useEffect(() => {
+    setCompareBase(null);
+    setComparePair(null);
+  }, [rootPath]);
+  useEffect(() => {
+    if (openFilePath) setComparePair(null);
+  }, [openFilePath]);
 
   const [treeWidth, setTreeWidth] = useState(
     () => clamp(settings.explorerTreeWidth ?? 280, TREE_MIN, TREE_MAX),
@@ -95,7 +133,12 @@ export function ExplorerPane() {
         style={{ width: treeWidth }}
         className="flex-shrink-0 h-full border-r border-card overflow-hidden"
       >
-        <FileTree rootPath={rootPath} />
+        <FileTree
+          rootPath={rootPath}
+          compareBase={compareBase}
+          onCompare={handleCompare}
+          onBeforeOpen={confirmDiscard}
+        />
       </div>
       <ResizableDivider
         width={treeWidth}
@@ -106,11 +149,24 @@ export function ExplorerPane() {
         side="left"
       />
       <div className="flex-1 min-w-0 h-full overflow-hidden">
-        {openFilePath ? (
+        {comparePair ? (
+          <CompareView
+            pathA={comparePair.a}
+            pathB={comparePair.b}
+            rootPath={rootPath}
+            onClose={() => setComparePair(null)}
+            onDirtyChange={setCompareDirty}
+          />
+        ) : openFilePath ? (
           <FileEditorPane rootPathOverride={rootPath} />
+        ) : compareBase ? (
+          <div className="h-full flex items-center justify-center text-xs text-ink-faint px-6 text-center">
+            Comparing <span className="font-mono text-amber-300/80 mx-1">{basename(compareBase)}</span> —
+            ⌥-click another file to diff, or click it again to cancel.
+          </div>
         ) : (
-          <div className="h-full flex items-center justify-center text-xs text-ink-faint">
-            Select a file from the tree to open it.
+          <div className="h-full flex items-center justify-center text-xs text-ink-faint px-6 text-center">
+            Select a file to open it, or ⌥-click two files to compare them.
           </div>
         )}
       </div>
@@ -190,4 +246,8 @@ function dirname(p: string): string {
   const sep = p.includes('\\') ? '\\' : '/';
   const i = p.lastIndexOf(sep);
   return i <= 0 ? p : p.slice(0, i);
+}
+
+function basename(p: string): string {
+  return p.split(/[/\\]/).pop() ?? p;
 }
