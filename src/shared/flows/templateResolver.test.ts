@@ -53,7 +53,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     expect(buildParticipant.model).toBe('qwen2.5-coder:32b');
   });
 
-  it('codex-only user: thinking→gpt-5.5, fast→gpt-5.4-mini', () => {
+  it('codex-only user: thinking→gpt-5.6-sol, fast→gpt-5.6-terra', () => {
     const flow = loadTemplate('build-feature');
     const resolved = resolveTemplateForUser(flow, {
       healthyBackends: ['codex'],
@@ -61,8 +61,8 @@ describe('resolveTemplateForUser — build-feature template', () => {
     });
     const byStep = new Map(resolved.steps.map((s) => [s.id, s.participantId]));
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
-    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-5.5');
-    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('gpt-5.4-mini');
+    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-5.6-sol');
+    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('gpt-5.6-terra');
   });
 
   it('no healthy backends: leaves participants alone', () => {
