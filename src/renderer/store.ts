@@ -253,6 +253,19 @@ interface StoreState {
     /// repos can take seconds per repo, so the sheet shows a live status.
     onProgress?: (message: string) => void;
   }): Promise<Conversation | null>;
+  /// Apply newly-added workspace projects to every existing worktree agent
+  /// (coordinator) in the workspace: mint a worktree per agent for each
+  /// added project, extend the coordinator's member set, rebuild its
+  /// symlink root, and queue a context notice. Lets an agent created before
+  /// the projects existed pick them up. Idempotent — a project the agent
+  /// already has a worktree for is skipped. Returns how many agents were
+  /// updated plus any per-worktree failure messages.
+  applyProjectsToWorkspaceAgents(args: {
+    workspaceId: UUID;
+    projectIds: UUID[];
+    baseBranches: Record<UUID, string>;
+    onProgress?: (message: string) => void;
+  }): Promise<{ appliedAgents: number; failures: string[] }>;
   /// Read-only docs agent that spans every member repo in a workspace.
   /// Creates no worktrees — the coordinator runs in the workspace's
   /// symlink root so it can read every member project at HEAD, and the
@@ -561,6 +574,26 @@ function buildWorkspaceUpdateNotice(
   return lines.join('\n');
 }
 
+/// Notice queued onto a worktree-agent coordinator after new member
+/// projects are provisioned into it. Unlike the workspace-conversation
+/// notice, the paths that matter here are the coordinator's own symlink
+/// root and its per-member worktrees — the branches the agent should
+/// actually edit — not the workspace's read-only symlink tree.
+function buildWorkspaceAgentUpdateNotice(
+  coordinatorRootPath: string | undefined,
+  added: Array<{ name: string }>,
+): string {
+  const lines: string[] = ['[Workspace agent update]', 'New member projects were added to this agent:'];
+  for (const p of added) lines.push(`- ${p.name}`);
+  lines.push('');
+  lines.push(
+    coordinatorRootPath
+      ? `Your working root ${coordinatorRootPath} now includes a fresh git worktree for each new project above. Read them before continuing — edits there land on this agent's branch, not the main tree.`
+      : 'A fresh git worktree for each new project above was linked into your working root. Read them before continuing.',
+  );
+  return lines.join('\n');
+}
+
 /// For a coordinator's memberIds, return the list of
 /// `{name, worktreePath}` records the main-process helper wants. The
 /// name is the project's human name (with numeric dedup on collision)
@@ -587,6 +620,51 @@ function collectCoordinatorMembers(
     }
   }
   return out;
+}
+
+/// Provision one member for a workspace-agent coordinator: mint a git
+/// worktree in `project` off `baseBranch`, then build the hidden member
+/// Conversation that lives under the project and points the coordinator at
+/// it. Returns the conversation plus the `{name, worktreePath}` record the
+/// coordinator symlink root wants, or an error string when the worktree
+/// couldn't be created. Shared by `newWorkspaceAgent` (initial members)
+/// and `applyProjectsToWorkspaceAgents` (members added to a running agent).
+async function provisionCoordinatorMember(params: {
+  project: { id: UUID; name: string; path: string };
+  agentSlug: string;
+  agentName: string;
+  baseBranch: string;
+  branchPrefix: string;
+  coordinatorId: UUID;
+  permissionMode: Conversation['permissionMode'];
+  backend: Backend;
+}): Promise<
+  | { ok: true; conversation: Conversation; member: { name: string; worktreePath: string } }
+  | { ok: false; error: string }
+> {
+  const res = await window.overcli.invoke('git:createWorktree', {
+    projectPath: params.project.path,
+    agentName: params.agentSlug,
+    baseBranch: params.baseBranch,
+    branchPrefix: params.branchPrefix,
+  });
+  if (!res.ok) return { ok: false, error: res.error };
+  const conversation: Conversation = {
+    id: uuid(),
+    name: `${params.agentName} · ${params.project.name}`,
+    createdAt: Date.now(),
+    totalCostUSD: 0,
+    turnCount: 0,
+    currentModel: '',
+    permissionMode: params.permissionMode,
+    primaryBackend: params.backend,
+    worktreePath: res.worktreePath,
+    branchName: res.branchName,
+    baseBranch: params.baseBranch,
+    workspaceAgentCoordinatorId: params.coordinatorId,
+    hidden: true, // members are visible under the coordinator, not in the project list
+  };
+  return { ok: true, conversation, member: { name: params.project.name, worktreePath: res.worktreePath } };
 }
 
 function findContainerPath(state: StoreState, convId: UUID): string | null {
@@ -1332,37 +1410,23 @@ export const useStore = create<StoreState>((set, get) => ({
       args.onProgress?.(
         `Creating worktree in ${project.name} (${i + 1} of ${memberProjects.length})…`,
       );
-      const res = await window.overcli.invoke('git:createWorktree', {
-        projectPath: project.path,
-        agentName: agentSlug,
+      const res = await provisionCoordinatorMember({
+        project,
+        agentSlug,
+        agentName: name,
         baseBranch,
         branchPrefix: state.settings.agentBranchPrefix,
+        coordinatorId,
+        permissionMode: state.settings.defaultPermissionMode,
+        backend: preferred,
       });
       if (!res.ok) {
         logToMain('warn', 'renderer.createWorktree', `Worktree create failed in ${project.name}: ${res.error}`);
         continue;
       }
-      const memberId = uuid();
-      memberIds.push(memberId);
-      coordinatorMembers.push({
-        name: project.name,
-        worktreePath: res.worktreePath,
-      });
-      const memberConv: Conversation = {
-        id: memberId,
-        name: `${name} · ${project.name}`,
-        createdAt: Date.now(),
-        totalCostUSD: 0,
-        turnCount: 0,
-        currentModel: '',
-        permissionMode: state.settings.defaultPermissionMode,
-        primaryBackend: preferred,
-        worktreePath: res.worktreePath,
-        branchName: res.branchName,
-        baseBranch,
-        workspaceAgentCoordinatorId: coordinatorId,
-        hidden: true, // members are visible under the coordinator, not in the project list
-      };
+      const memberConv = res.conversation;
+      memberIds.push(memberConv.id);
+      coordinatorMembers.push(res.member);
       set((s) => ({
         projects: s.projects.map((p) =>
           p.id === projectId ? { ...p, conversations: [...p.conversations, memberConv] } : p,
@@ -1414,6 +1478,128 @@ export const useStore = create<StoreState>((set, get) => ({
     await get().saveWorkspaces();
     get().selectConversation(coordinatorId);
     return coordinator;
+  },
+
+  async applyProjectsToWorkspaceAgents(args) {
+    const state = get();
+    const ws = state.workspaces.find((w) => w.id === args.workspaceId);
+    if (!ws) return { appliedAgents: 0, failures: [] };
+    const coordinators = (ws.conversations ?? []).filter(
+      (c) => (c.workspaceAgentMemberIds?.length ?? 0) > 0,
+    );
+    if (coordinators.length === 0) return { appliedAgents: 0, failures: [] };
+    const projectsById = new Map(state.projects.map((p) => [p.id, p]));
+    const addedProjects = args.projectIds
+      .map((id) => projectsById.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p);
+    if (addedProjects.length === 0) return { appliedAgents: 0, failures: [] };
+
+    const backend = defaultBackend(state.settings);
+    const failures: string[] = [];
+    let appliedAgents = 0;
+
+    for (const coordinator of coordinators) {
+      // Re-derive the slug the same way newWorkspaceAgent does, so each new
+      // member's branch matches the agent's other members.
+      const agentSlug = coordinator.name
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      if (!agentSlug) continue;
+
+      // Projects this coordinator already has a worktree for — skip them so
+      // re-applying (or a project that was added twice) is idempotent.
+      const existingProjectPaths = new Set<string>();
+      for (const memberId of coordinator.workspaceAgentMemberIds ?? []) {
+        for (const proj of get().projects) {
+          const m = proj.conversations.find((x) => x.id === memberId);
+          if (m?.worktreePath) existingProjectPaths.add(proj.path);
+        }
+      }
+
+      const newMemberIds: UUID[] = [];
+      const addedForCoordinator: typeof addedProjects = [];
+      for (const project of addedProjects) {
+        if (existingProjectPaths.has(project.path)) continue;
+        const baseBranch = args.baseBranches[project.id];
+        if (!baseBranch) {
+          failures.push(`${coordinator.name} · ${project.name}: no base branch selected`);
+          continue;
+        }
+        args.onProgress?.(`Creating worktree in ${project.name} for ${coordinator.name}…`);
+        const res = await provisionCoordinatorMember({
+          project,
+          agentSlug,
+          agentName: coordinator.name,
+          baseBranch,
+          branchPrefix: state.settings.agentBranchPrefix,
+          coordinatorId: coordinator.id,
+          permissionMode: state.settings.defaultPermissionMode,
+          backend,
+        });
+        if (!res.ok) {
+          failures.push(`${coordinator.name} · ${project.name}: ${res.error}`);
+          continue;
+        }
+        const memberConv = res.conversation;
+        const projectId = project.id;
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === projectId ? { ...p, conversations: [...p.conversations, memberConv] } : p,
+          ),
+        }));
+        newMemberIds.push(memberConv.id);
+        addedForCoordinator.push(project);
+      }
+
+      if (newMemberIds.length === 0) continue;
+
+      // Rebuild the coordinator's symlink root over the full member set so
+      // the new worktrees show up in its cwd. collectCoordinatorMembers reads
+      // the freshly-set project conversations, so it sees the new members.
+      const allMemberIds = [...(coordinator.workspaceAgentMemberIds ?? []), ...newMemberIds];
+      const members = collectCoordinatorMembers(get().projects, allMemberIds);
+      args.onProgress?.(`Linking ${coordinator.name}…`);
+      let coordinatorRootPath = coordinator.coordinatorRootPath;
+      const rootRes = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
+        coordinatorId: coordinator.id,
+        members,
+      });
+      if (rootRes.ok) {
+        coordinatorRootPath = rootRes.rootPath;
+      } else {
+        logToMain('warn', 'renderer.coordinatorRoot', `Coordinator root rebuild failed: ${rootRes.error}`);
+        failures.push(`${coordinator.name}: link refresh failed (${rootRes.error})`);
+      }
+
+      const notice = buildWorkspaceAgentUpdateNotice(coordinatorRootPath, addedForCoordinator);
+      set((s) => ({
+        workspaces: s.workspaces.map((w) =>
+          w.id === args.workspaceId
+            ? {
+                ...w,
+                conversations: (w.conversations ?? []).map((c) =>
+                  c.id === coordinator.id
+                    ? {
+                        ...c,
+                        workspaceAgentMemberIds: allMemberIds,
+                        coordinatorRootPath,
+                        pendingContextUpdate: c.pendingContextUpdate
+                          ? `${c.pendingContextUpdate}\n\n${notice}`
+                          : notice,
+                      }
+                    : c,
+                ),
+              }
+            : w,
+        ),
+      }));
+      appliedAgents += 1;
+    }
+
+    await get().saveProjects();
+    await get().saveWorkspaces();
+    return { appliedAgents, failures };
   },
 
   async newWorkspaceDocsAgent(args) {

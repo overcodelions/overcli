@@ -120,6 +120,57 @@ function hashSyntheticPrompt(prompt: string): string {
   return createHash('sha256').update(prompt, 'utf8').digest('hex');
 }
 
+/// True when `binary` starts with a `#!` shebang, i.e. it's an
+/// interpreter script (e.g. npm's `#!/usr/bin/env node` codex) rather
+/// than a self-contained native executable. Used to break codex-version
+/// ties toward the native binary, which has no `node`-on-PATH dependency.
+function isShebangScript(binary: string): boolean {
+  try {
+    const fd = fs.openSync(binary, 'r');
+    try {
+      const buf = Buffer.alloc(2);
+      const read = fs.readSync(fd, buf, 0, 2, 0);
+      return read === 2 && buf[0] === 0x23 && buf[1] === 0x21; // "#!"
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+export interface CodexBinaryCaps {
+  hasAppServer: boolean;
+  /// [major, minor, patch]; [-1, -1, -1] when unknown (not probed / unparsable).
+  version: [number, number, number];
+  isScript: boolean;
+}
+
+/// True when candidate `a` should be preferred over `b`: a higher version
+/// wins, and on a version tie a native binary beats a `#!node` script
+/// (which can't run without `node` on PATH). Pure so the selection policy
+/// is unit-testable without spawning real binaries.
+export function codexCandidateBeats(a: CodexBinaryCaps, b: CodexBinaryCaps): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (a.version[i] !== b.version[i]) return a.version[i] > b.version[i];
+  }
+  return !a.isScript && b.isScript;
+}
+
+/// From probed (binary, caps) pairs, pick the best app-server-capable
+/// binary — newest version, native over script on a tie — or null when
+/// none support app-server. Pure: the caller supplies the probed caps.
+export function pickBestCodexCandidate(
+  candidates: Array<{ binary: string; caps: CodexBinaryCaps }>,
+): string | null {
+  let best: { binary: string; caps: CodexBinaryCaps } | null = null;
+  for (const c of candidates) {
+    if (!c.caps.hasAppServer) continue;
+    if (!best || codexCandidateBeats(c.caps, best.caps)) best = c;
+  }
+  return best?.binary ?? null;
+}
+
 /// When a live conversation is torn down to apply changed launch params
 /// (model / permission mode / cwd / transport), the respawn must resume
 /// the same backend session or all prior context is lost. The caller's
@@ -408,7 +459,7 @@ export class RunnerManager {
   private emit: Emit;
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
-  private codexCapabilities = new Map<string, { hasAppServer: boolean }>();
+  private codexCapabilities = new Map<string, CodexBinaryCaps>();
   /// codex exec has no --resume: every turn spawns a fresh session that
   /// knows nothing about prior exchanges. The exec fallback (used for
   /// pre-0.30 codex binaries that lack app-server) stitches context back
@@ -2878,6 +2929,11 @@ export class RunnerManager {
 
   private nextCodexFallbackModel(model: string): string | null {
     const m = (model || '').trim().toLowerCase();
+    // GPT-5.6 (sol/terra/luna) may not be enabled on every account yet;
+    // fall back to the equivalent-tier 5.5/5.4 model when it's rejected.
+    if (m === 'gpt-5.6-sol') return 'gpt-5.5';
+    if (m === 'gpt-5.6-terra') return 'gpt-5.5';
+    if (m === 'gpt-5.6-luna') return 'gpt-5.4-mini';
     if (m === 'gpt-5.5-mini') return 'gpt-5.4-mini';
     if (m === 'gpt-5.4-mini') return 'gpt-5.4';
     return null;
@@ -2929,29 +2985,33 @@ export class RunnerManager {
   /// builds (e.g. homebrew 0.29) only have `exec`, which fails outside a
   /// trusted git repo. When multiple codex binaries are installed (common
   /// when `npm i -g @openai/codex` lands a fresh one alongside a stale
-  /// homebrew install), PATH order alone can pick the older one. Walk
-  /// every visible candidate and return the first that supports
-  /// app-server; null falls back to the default first-match resolver.
+  /// homebrew install), PATH order alone can pick the older one. Probe
+  /// every visible candidate and return the *newest* app-server-capable
+  /// one — first-match would let a stale-but-app-server binary earlier on
+  /// PATH win over a newer install. On a version tie, prefer a native
+  /// binary over a `#!/usr/bin/env node` script: the script only runs when
+  /// `node` is itself resolvable, so it fails (exit 127) under a bare
+  /// launchd PATH. null falls back to the default first-match resolver.
   private pickCodexBinary(): string | null {
     const env = buildBackendEnv(process.env);
-    for (const candidate of listBackendPathCandidates('codex', env)) {
-      if (this.detectCodexCapabilities(candidate, env).hasAppServer) {
-        return candidate;
-      }
-    }
-    return null;
+    return pickBestCodexCandidate(
+      listBackendPathCandidates('codex', env).map((binary) => ({
+        binary,
+        caps: this.detectCodexCapabilities(binary, env),
+      })),
+    );
   }
 
-  private detectCodexCapabilities(
-    binary: string,
-    env: NodeJS.ProcessEnv,
-  ): { hasAppServer: boolean } {
+  private detectCodexCapabilities(binary: string, env: NodeJS.ProcessEnv): CodexBinaryCaps {
     const cached = this.codexCapabilities.get(binary);
     if (cached) return cached;
     const shell = backendNeedsShell(binary);
+    // Cold node-shebang scripts spawn a child interpreter; give the probe
+    // headroom over a warm run (~0.1s) so a slow disk doesn't misreport a
+    // capable binary as exec-only.
     const help = spawnSync(binary, ['--help'], {
       encoding: 'utf-8',
-      timeout: 3000,
+      timeout: 5000,
       env,
       shell,
     });
@@ -2959,9 +3019,31 @@ export class RunnerManager {
     // app-server arrived in codex 0.30+ (still marked experimental). Older
     // binaries fall back to the `exec --json` one-shot path.
     const hasAppServer = /^\s*app-server\s+/m.test(helpText);
-    const caps = { hasAppServer };
+    // Only app-server-capable candidates compete on version, so skip the
+    // extra `--version` spawn for the rest.
+    const version = hasAppServer
+      ? this.probeCodexVersion(binary, env, shell)
+      : ([-1, -1, -1] as [number, number, number]);
+    const caps = { hasAppServer, version, isScript: isShebangScript(binary) };
     this.codexCapabilities.set(binary, caps);
     return caps;
+  }
+
+  private probeCodexVersion(
+    binary: string,
+    env: NodeJS.ProcessEnv,
+    shell: boolean,
+  ): [number, number, number] {
+    const res = spawnSync(binary, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      env,
+      shell,
+    });
+    const text = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+    const m = text.match(/(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return [-1, -1, -1];
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
   }
 
   private pickCodexMode(

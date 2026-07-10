@@ -61,6 +61,16 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
     expect(friendlyModelLabel('codex', 'gpt-5.5')).toBe('GPT-5.5 (Codex)');
   });
 
+  it('title-cases the GPT-5.6 codenames', () => {
+    expect(friendlyModelLabel('codex', 'gpt-5.6-sol')).toBe('GPT-5.6 Sol (Codex)');
+    expect(friendlyModelLabel('codex', 'gpt-5.6-terra')).toBe('GPT-5.6 Terra (Codex)');
+    expect(friendlyModelLabel('codex', 'gpt-5.6-luna')).toBe('GPT-5.6 Luna (Codex)');
+  });
+
+  it('lists gpt-5.6-sol first so it is the codex default', () => {
+    expect(PREMIUM_MODELS.codex[0]).toBe('gpt-5.6-sol');
+  });
+
   it('formats gpt-5.4 with Codex suffix', () => {
     expect(friendlyModelLabel('codex', 'gpt-5.4')).toBe('GPT-5.4 (Codex)');
   });
@@ -136,6 +146,9 @@ describe('modelSpeed', () => {
     ['claude-sonnet-5', 'fast'],
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],
+    ['gpt-5.6-sol', 'thinking'],
+    ['gpt-5.6-terra', 'fast'],
+    ['gpt-5.6-luna', 'fast'],
     ['gpt-5.5', 'thinking'],
     ['gpt-5.4', 'standard'],
     ['gpt-5.4-mini', 'fast'],

@@ -181,7 +181,7 @@ describe('draftFlowFromPrompt', () => {
     const result = await draftFlowFromPrompt({ description: 'Build via Codex' }, deps);
 
     expect(oneShot).toHaveBeenCalledTimes(1);
-    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'codex', model: 'gpt-5.5' });
+    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'codex', model: 'gpt-5.6-sol' });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.flow.name).toBe('Codex Drafted');
