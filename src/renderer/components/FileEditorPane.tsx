@@ -115,9 +115,14 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // view reflects the restored-to-HEAD content.
   const [refreshToken, setRefreshToken] = useState(0);
   const previewKind = detectFilePreviewKind(path);
-  const previewable = canPreviewFile(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
   const unsupportedBinary = isUnsupportedBinaryFile(path);
+  // The file isn't on disk — almost always because the agent deleted it.
+  // There's nothing to read, edit or preview, so the only view that means
+  // anything is the diff (which renders the deletion hunk).
+  const missingFile =
+    fileInfo?.requestedPath === path && !fileInfo.ok && !!fileInfo.missing;
+  const previewable = canPreviewFile(path) && !missingFile;
   const blockedFile =
     (fileInfo?.requestedPath === path &&
       fileInfo.ok &&
@@ -153,7 +158,11 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       if (cancelled) return;
       setFileInfo({ ...info, requestedPath: path });
       if (!info.ok) {
-        setError(info.error);
+        // A deleted file isn't an error to surface — the diff effect picks
+        // it up and renders the deletion. Anything else (unreadable, outside
+        // a project) still gets the raw message.
+        if (!info.missing) setError(info.error);
+        setContent('');
         return;
       }
       if (!isWorkspaceMemberPath && info.resolvedPath && info.resolvedPath !== path) {
@@ -211,21 +220,28 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase],
   );
   useEffect(() => {
-    if (!path || mode !== 'diff' || !diffTarget) return;
+    // A missing file has no readable content, so we fetch its diff whatever
+    // the mode says — the deletion is the only thing left to show.
+    if (!path || !diffTarget || (mode !== 'diff' && !missingFile)) return;
     if (!fileInfo || fileInfo.requestedPath !== path) return;
-    if (!fileInfo.ok) {
+    // A file that's gone from disk still has a diff — the deletion itself.
+    // Only bail on failures that aren't "it isn't there".
+    const deleted = !fileInfo.ok && !!fileInfo.missing;
+    if (!fileInfo.ok && !deleted) {
       setDiffText('');
       setError(fileInfo.error);
       return;
     }
-    if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
-      setDiffText('');
-      setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
-      return;
-    }
-    if (unsupportedBinary) {
-      setDiffText('');
-      return;
+    if (fileInfo.ok) {
+      if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
+        setDiffText('');
+        setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
+        return;
+      }
+      if (unsupportedBinary) {
+        setDiffText('');
+        return;
+      }
     }
     setLoading(true);
     setError(null);
@@ -249,6 +265,14 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       // add. `git ls-files` exits 0 with the path on stdout iff git
       // knows about the file. Untracked files print nothing, so the
       // fallback fires only for genuine adds.
+      if (deleted) {
+        // No `--no-index` fallback for a file that isn't on disk — it would
+        // just fail. An empty diff here means the deletion is already part
+        // of `baseRef`, or the path never existed; the missing-file panel
+        // covers both.
+        setDiffText(text);
+        return;
+      }
       if (tracked.exitCode === 0 && !text.trim()) {
         const ls = await window.overcli.invoke('git:run', {
           args: ['ls-files', '--', diffTarget.path],
@@ -274,7 +298,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, diffTarget, unsupportedBinary, fileInfo, refreshToken]);
+  }, [path, mode, diffTarget, unsupportedBinary, fileInfo, missingFile, refreshToken]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
@@ -285,15 +309,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
 
   // Discard all uncommitted changes to the current file, back to HEAD.
   // Only offered on HEAD-based diffs (see `canRevert`) where "revert" is
-  // unambiguous — destructive, so we confirm first.
+  // unambiguous — destructive, so we confirm first. For a deleted file the
+  // same checkout brings it back, so it's offered as "Restore" instead.
   const revertFile = useCallback(async () => {
     if (!diffTarget || reverting) return;
     const name = diffTarget.path.split('/').pop() || diffTarget.path;
-    if (
-      !window.confirm(
-        `Revert ${name}?\n\nThis discards all uncommitted changes to it and cannot be undone.`,
-      )
-    ) {
+    const prompt = missingFile
+      ? `Restore ${name}?\n\nThis brings the deleted file back from HEAD.`
+      : `Revert ${name}?\n\nThis discards all uncommitted changes to it and cannot be undone.`;
+    if (!window.confirm(prompt)) {
       return;
     }
     setReverting(true);
@@ -312,7 +336,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     } finally {
       setReverting(false);
     }
-  }, [diffTarget, reverting]);
+  }, [diffTarget, reverting, missingFile]);
 
   // Keyboard: Cmd/Ctrl+S or Cmd/Ctrl+Enter saves; Cmd/Ctrl+Shift+D
   // toggles between Diff and File modes (Preview is button-only).
@@ -333,12 +357,13 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       }
       if ((e.key === 'd' || e.key === 'D') && e.shiftKey) {
         e.preventDefault();
+        if (missingFile) return; // nothing to toggle to — the file is gone
         setMode(mode === 'diff' ? 'edit' : 'diff');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [path, mode, save, setMode]);
+  }, [path, mode, save, setMode, missingFile]);
 
   // The folder icon (conversation header) and the project/workspace
   // Explore buttons now route through ExplorerPane, which owns its
@@ -357,7 +382,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // include committed work, so reverting there would mean something riskier
   // than a checkout; we leave those out.
   const canRevert =
-    mode === 'diff' &&
+    (mode === 'diff' || missingFile) &&
     !loading &&
     !error &&
     !!diffText.trim() &&
@@ -391,16 +416,26 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             >
               {copiedPath ? 'Copied' : 'Copy'}
             </button>
-            <button
-              onClick={async () => {
-                const res = await window.overcli.invoke('fs:openPath', path);
-                if (!res.ok) setError(res.error);
-              }}
-              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
-              title="Open in default app (e.g. VS Code)"
-            >
-              Open
-            </button>
+            {!missingFile && (
+              <button
+                onClick={async () => {
+                  const res = await window.overcli.invoke('fs:openPath', path);
+                  if (!res.ok) setError(res.error);
+                }}
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+                title="Open in default app (e.g. VS Code)"
+              >
+                Open
+              </button>
+            )}
+            {missingFile && (
+              <span
+                title="This file is no longer on disk"
+                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-red-500/15 text-red-700 dark:text-red-200"
+              >
+                deleted
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
@@ -431,10 +466,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               )}
               <button
                 onClick={() => setMode('edit')}
-                title="Toggle Diff/File (⌘⇧D)"
+                disabled={missingFile}
+                title={
+                  missingFile
+                    ? 'This file is no longer on disk — only the diff is available'
+                    : 'Toggle Diff/File (⌘⇧D)'
+                }
                 className={
-                  'px-2.5 py-1 ' +
-                  (mode === 'edit'
+                  'px-2.5 py-1 disabled:opacity-40 disabled:cursor-not-allowed ' +
+                  (mode === 'edit' && !missingFile
                     ? 'bg-accent text-surface'
                     : 'text-ink hover:bg-card-strong')
                 }
@@ -446,10 +486,25 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               <button
                 onClick={() => void revertFile()}
                 disabled={reverting}
-                title="Discard all uncommitted changes to this file (git checkout HEAD)"
-                className="text-xs font-medium px-2.5 py-1 rounded border border-card text-red-300 hover:text-red-200 hover:bg-red-500/10 disabled:opacity-40"
+                title={
+                  missingFile
+                    ? 'Bring this deleted file back (git checkout HEAD)'
+                    : 'Discard all uncommitted changes to this file (git checkout HEAD)'
+                }
+                className={
+                  'text-xs font-medium px-2.5 py-1 rounded border border-card disabled:opacity-40 ' +
+                  (missingFile
+                    ? 'text-emerald-300 hover:text-emerald-200 hover:bg-emerald-500/10'
+                    : 'text-red-300 hover:text-red-200 hover:bg-red-500/10')
+                }
               >
-                {reverting ? 'Reverting…' : 'Revert'}
+                {missingFile
+                  ? reverting
+                    ? 'Restoring…'
+                    : 'Restore'
+                  : reverting
+                    ? 'Reverting…'
+                    : 'Revert'}
               </button>
             )}
             {dirty && (
@@ -476,6 +531,17 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             <BlockedFilePanel path={path} message={error ?? 'This file cannot be previewed in Overcli.'} />
           ) : error ? (
             <div className="p-4 text-xs text-red-300">{error}</div>
+          ) : missingFile ? (
+            diffText.trim() ? (
+              <>
+                <div className="px-4 py-2 text-xs text-ink-muted border-b border-card">
+                  This file was deleted. Showing the diff of what it contained.
+                </div>
+                <UnifiedDiffBody text={diffText} />
+              </>
+            ) : (
+              <MissingFilePanel path={path} />
+            )
           ) : mode === 'diff' ? (
             diffText.trim() ? (
               <UnifiedDiffBody text={diffText} />
@@ -522,6 +588,27 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/// Shown when the open path isn't on disk *and* git has no deletion diff for
+/// it — the file was deleted in an earlier commit, or the path is stale.
+/// Either way there's nothing to read: say so instead of leaking an ENOENT.
+function MissingFilePanel({ path }: { path: string }) {
+  return (
+    <div className="h-full min-h-0 bg-surface-muted p-4">
+      <div className="max-w-xl border border-card-strong bg-surface rounded-lg p-4">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">File not on disk</div>
+        <div className="mt-1 text-sm font-semibold text-ink truncate">
+          {path.split(/[/\\]/).pop() ?? path}
+        </div>
+        <div className="mt-3 text-xs text-ink-muted leading-relaxed">
+          This file has been deleted, so there's nothing to open. Its contents are still in git
+          history if you need them back.
+        </div>
+        <div className="mt-3 text-[11px] text-ink-faint font-mono break-all">{path}</div>
       </div>
     </div>
   );
