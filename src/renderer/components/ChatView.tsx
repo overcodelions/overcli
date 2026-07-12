@@ -16,6 +16,7 @@ import { PatchApplyCard } from './PatchApplyCard';
 import { TurnCaption } from './TurnCaption';
 import { SystemNotice } from './SystemNotice';
 import { MetaReminder } from './MetaReminder';
+import { TaskNotification } from './TaskNotification';
 import { EasterEggBubble } from './EasterEggBubble';
 import { useConversation } from '../hooks';
 
@@ -364,6 +365,8 @@ const EventRow = memo(function EventRow({
       return <SystemNotice text={event.kind.text} />;
     case 'metaReminder':
       return <MetaReminder text={event.kind.text} />;
+    case 'taskNotification':
+      return <TaskNotification summary={event.kind.summary} body={event.kind.body} />;
     case 'easterEgg':
       return <EasterEggBubble text={event.kind.text} from={event.kind.from} />;
     default:

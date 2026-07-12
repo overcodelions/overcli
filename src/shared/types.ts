@@ -271,6 +271,10 @@ export type StreamEventKind =
   | { type: 'taskProgress'; info: TaskProgressInfo }
   | { type: 'systemNotice'; text: string }
   | { type: 'metaReminder'; text: string }
+  /// A background Task/Agent finishing. The harness injects these into the
+  /// transcript as plain `user` messages with no distinguishing flag, so
+  /// without this they render as something the user typed.
+  | { type: 'taskNotification'; summary: string; body: string }
   | { type: 'easterEgg'; text: string; from: string }
   | { type: 'stderr'; line: string }
   | { type: 'parseError'; message: string }
