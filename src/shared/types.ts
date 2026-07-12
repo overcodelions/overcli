@@ -1357,7 +1357,10 @@ export type FileInfoResult =
       unsupportedBinary: boolean;
       error?: string;
     }
-  | { ok: false; error: string };
+  /// `missing` means the path resolved to nothing on disk — usually a file
+  /// the agent deleted. The file view treats that as "show me the deletion
+  /// diff", not as a hard error.
+  | { ok: false; error: string; missing?: boolean };
 
 export interface FileTreeEntry {
   path: string;

@@ -34,6 +34,17 @@ const COMMIT_STATE_BADGE: Record<CommitState, { label: string; title: string; cl
   },
 };
 
+/// Porcelain v1 puts the index code first and the worktree code second, so a
+/// deletion shows up as `D `, ` D` or `AD` depending on what's staged. Any `D`
+/// in either column means the file is gone from disk — clicking it can only
+/// ever show the diff, never file contents.
+/// `DU`/`UD` are merge-conflict states, not deletions — the file is still
+/// there with conflict markers, so they're excluded.
+function isDeletedStatus(status: string): boolean {
+  const code = status.trim();
+  return code.includes('D') && !code.includes('U');
+}
+
 /// Collapsible bar above the composer. Numbers come straight from a
 /// `git diff --numstat` pass (plus line counts for untracked files). The
 /// main chat feeds it `HEAD`-relative counts (`git:commitStatus`, matching
@@ -67,16 +78,26 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
       </button>
       {expanded && (
         <div className="border-t border-card">
-          {files.map((f) => (
+          {files.map((f) => {
+            const deleted = isDeletedStatus(f.status);
+            return (
             <button
               key={f.path}
               onClick={() => openFile(f.path, undefined, 'diff')}
+              title={deleted ? 'File deleted — opens the diff of what it contained' : f.path}
               className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-card-strong border-t border-card first:border-t-0"
             >
               <span className="text-ink-faint text-[10px] font-mono w-6 shrink-0">
                 {f.status.trim() || '??'}
               </span>
-              <code className="text-ink flex-1 truncate">{f.path}</code>
+              <code
+                className={
+                  'flex-1 truncate ' +
+                  (deleted ? 'text-ink-faint line-through decoration-ink-faint/60' : 'text-ink')
+                }
+              >
+                {f.path}
+              </code>
               {f.commitState && (
                 <span
                   title={COMMIT_STATE_BADGE[f.commitState].title}
@@ -88,7 +109,8 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
               <span className="diff-add-ink text-[11px]">+{Number(f.additions) || 0}</span>
               <span className="diff-remove-ink text-[11px]">-{Number(f.deletions) || 0}</span>
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
