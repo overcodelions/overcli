@@ -91,6 +91,19 @@ export function claudeToolResultText(raw: unknown): string {
   return '';
 }
 
+/// One line describing a `model_refusal_fallback`: the API refused the turn on
+/// the model we asked for and the CLI retried on a different one. Shared by the
+/// live parser and history replay so a reopened conversation shows the same
+/// warning it showed live. The refusal category ('bio', 'cyber', …) is the most
+/// actionable part — it's usually the subject matter, not the request.
+export function modelFallbackText(json: any): string {
+  const from = typeof json?.originalModel === 'string' ? json.originalModel : 'the selected model';
+  const to = typeof json?.fallbackModel === 'string' ? json.fallbackModel : 'another model';
+  const category = typeof json?.apiRefusalCategory === 'string' ? json.apiRefusalCategory : '';
+  const why = category ? ` (flagged: ${category})` : '';
+  return `Model fallback — ${from} refused this message${why}. Ran on ${to} instead.`;
+}
+
 /// Distill a `task_started` / `task_progress` / `task_notification`
 /// system line into a TaskProgressInfo. Returns null when the line has no
 /// tool_use_id to bucket against (nothing the renderer can attach it to).
@@ -233,6 +246,16 @@ function parseClaudeLineInto(
       if (json.subtype === 'compact_boundary') {
         return eventFromKind(
           { type: 'systemNotice', text: 'Conversation compacted' },
+          trimmed,
+        );
+      }
+      // The API refused the turn on the selected model and the CLI silently
+      // retried on another one. We pass --model explicitly, so without this the
+      // conversation just runs on a different model than the header claims,
+      // with nothing anywhere to say so.
+      if (json.subtype === 'model_refusal_fallback') {
+        return eventFromKind(
+          { type: 'systemNotice', text: modelFallbackText(json) },
           trimmed,
         );
       }

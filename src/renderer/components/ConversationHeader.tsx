@@ -166,6 +166,8 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       ? conv.codexModel ?? conv.currentModel
       : backend === 'gemini'
       ? conv.geminiModel ?? conv.currentModel
+      : backend === 'copilot'
+      ? conv.copilotModel ?? conv.currentModel
       : conv.claudeModel ?? conv.currentModel;
   const sessionModel = runnerModel || configuredModel || settings.backendDefaultModels[backend] || '';
   const refocusComposer = useCallback(() => {
@@ -430,6 +432,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 	                    cwd,
 	                    backend,
 	                    sessionId: conv.sessionId,
+	                    model: sessionModel || undefined,
 	                  });
 	                  if (!res.ok) {
 	                    window.alert(res.error);

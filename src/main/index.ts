@@ -553,7 +553,15 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'terminal:popConversation',
-    (_e, { cwd, backend, sessionId }: { cwd: string; backend: Backend; sessionId?: string }) => {
+    (
+      _e,
+      {
+        cwd,
+        backend,
+        sessionId,
+        model,
+      }: { cwd: string; backend: Backend; sessionId?: string; model?: string },
+    ) => {
       if (backend === 'ollama') {
         return { ok: false, error: 'Ollama runs in-app — there is no CLI to resume in a terminal.' };
       }
@@ -577,7 +585,14 @@ function registerIpc(): void {
       // Codex has no --resume flag; just drop the user into the interactive
       // TUI in the workspace and they can pick up from there.
       const resumeSuffix = sessionId && needsResumeId ? ` --resume ${sessionId}` : '';
-      return openTerminalAt(cwd, `${quoted}${resumeSuffix}`);
+      // Carry the session's model across. Without it the CLI resumes on its own
+      // default and silently swaps the model out from under the conversation.
+      // Same metacharacter guard as the session id — this lands in a `do script`
+      // line, so anything exotic is dropped rather than escaped.
+      const modelFlag = backend === 'claude' || backend === 'copilot' ? '--model' : '-m';
+      const modelSuffix =
+        model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
+      return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`);
     },
   );
 
@@ -735,9 +750,13 @@ function fileInfo(hint: string, rootPath?: string) {
   const resolved = resolveFilePath(hint, rootPath);
   if (!resolved) {
     if (path.isAbsolute(hint) && isReadablePath(hint)) {
-      return { ok: false, error: `File not found at ${hint}.` };
+      return { ok: false, missing: true, error: `File not found at ${hint}.` };
     }
-    return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+    return {
+      ok: false,
+      missing: true,
+      error: `Could not find "${hint}" in any registered project.`,
+    };
   }
   if (!isReadablePath(resolved)) {
     return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
@@ -765,6 +784,9 @@ function fileInfo(hint: string, rootPath?: string) {
           : undefined,
     };
   } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      return { ok: false, missing: true, error: `File not found at ${resolved}.` };
+    }
     return { ok: false, error: err?.message ?? 'Could not inspect file' };
   }
 }
