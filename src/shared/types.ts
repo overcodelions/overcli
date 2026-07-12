@@ -271,6 +271,10 @@ export type StreamEventKind =
   | { type: 'taskProgress'; info: TaskProgressInfo }
   | { type: 'systemNotice'; text: string }
   | { type: 'metaReminder'; text: string }
+  /// A background Task/Agent finishing. The harness injects these into the
+  /// transcript as plain `user` messages with no distinguishing flag, so
+  /// without this they render as something the user typed.
+  | { type: 'taskNotification'; summary: string; body: string }
   | { type: 'easterEgg'; text: string; from: string }
   | { type: 'stderr'; line: string }
   | { type: 'parseError'; message: string }
@@ -377,6 +381,7 @@ export interface Conversation {
   codexModel?: string;
   geminiModel?: string;
   ollamaModel?: string;
+  copilotModel?: string;
   codexRolloutPath?: string;
   /// Every rollout file codex has created for this conversation. codex proto
   /// has no --resume, each spawn writes a fresh file — we merge on load.
@@ -1106,6 +1111,9 @@ export interface IPCInvokeMap {
     cwd: string;
     backend: Backend;
     sessionId?: string;
+    /// The session's model. Without it the popped-out CLI resumes on its own
+    /// default, silently dropping the model the conversation was running on.
+    model?: string;
   }) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
@@ -1349,7 +1357,10 @@ export type FileInfoResult =
       unsupportedBinary: boolean;
       error?: string;
     }
-  | { ok: false; error: string };
+  /// `missing` means the path resolved to nothing on disk — usually a file
+  /// the agent deleted. The file view treats that as "show me the deletion
+  /// diff", not as a hard error.
+  | { ok: false; error: string; missing?: boolean };
 
 export interface FileTreeEntry {
   path: string;

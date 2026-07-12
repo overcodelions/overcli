@@ -8,7 +8,7 @@ import os from 'node:os';
 import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/types';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadOllamaSession } from './ollamaStore';
-import { claudeToolResultText } from './parsers/claude';
+import { claudeToolResultText, modelFallbackText } from './parsers/claude';
 import { makeCopilotParserState, parseCopilotLine } from './parsers/copilot';
 import { logSilent } from './diagnostics';
 
@@ -330,12 +330,32 @@ export function parseClaudeHistoryLine(line: string): StreamEvent[] {
       : json.isSidechain
         ? '__sidechain__'
         : undefined;
+  // The API refused the turn on the model we asked for and the CLI retried on
+  // another. Surface it on replay too — otherwise reopening the conversation
+  // shows Opus's answers under a header that says Fable, with no explanation.
+  if (type === 'system' && json.subtype === 'model_refusal_fallback') {
+    return [
+      tag(event({ type: 'systemNotice', text: modelFallbackText(json) }, trimmed, timestamp), parentToolUseId),
+    ];
+  }
   if (type === 'user' && typeof json.message?.content === 'string') {
     const content = json.message.content;
     if (json.isMeta === true) {
       const match = content.match(/^\s*<system-reminder>([\s\S]*?)<\/system-reminder>\s*$/);
       const text = match ? match[1].trim() : content;
       return [tag(event({ type: 'metaReminder', text }, trimmed, timestamp), parentToolUseId)];
+    }
+    // A finished background Task. The harness injects it as an ordinary user
+    // message — no isMeta, no isSidechain, no parent_tool_use_id — so it is
+    // indistinguishable from something the user typed unless we sniff the
+    // wrapper. Left alone it renders as the user's own bubble, attributing a
+    // subagent's report to them.
+    const task = content.match(/<task-notification>([\s\S]*?)<\/task-notification>/);
+    if (task) {
+      const inner = task[1];
+      const summary = inner.match(/<summary>([\s\S]*?)<\/summary>/)?.[1]?.trim() ?? 'Agent finished';
+      const body = inner.match(/<result>([\s\S]*?)<\/result>/)?.[1]?.trim() ?? inner.trim();
+      return [tag(event({ type: 'taskNotification', summary, body }, trimmed, timestamp), parentToolUseId)];
     }
     return [tag(event({ type: 'localUser', text: content }, trimmed, timestamp), parentToolUseId)];
   }

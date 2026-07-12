@@ -111,6 +111,44 @@ describe('parseClaudeHistoryLine', () => {
     expect(ev.kind).toEqual({ type: 'metaReminder', text: 'be brief' });
   });
 
+  it('surfaces a model_refusal_fallback as a systemNotice', () => {
+    // The CLI silently retries on another model when the API refuses; without
+    // this the conversation just runs on a model the user never picked.
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'model_refusal_fallback',
+      timestamp: 1000,
+      originalModel: 'claude-fable-5',
+      fallbackModel: 'claude-opus-4-8',
+      apiRefusalCategory: 'bio',
+    });
+    const [ev] = parseClaudeHistoryLine(line);
+    expect(ev.kind).toEqual({
+      type: 'systemNotice',
+      text: 'Model fallback — claude-fable-5 refused this message (flagged: bio). Ran on claude-opus-4-8 instead.',
+    });
+  });
+
+  it('routes a task-notification user message to taskNotification, not localUser', () => {
+    // The harness injects these with no isMeta/isSidechain flag, so they are
+    // otherwise indistinguishable from a message the user typed.
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: 1000,
+      isSidechain: false,
+      message: {
+        content:
+          '<task-notification><task-id>abc</task-id><summary>Agent "Fix ch02" finished</summary><result>Done. Both chapters updated.</result></task-notification>',
+      },
+    });
+    const [ev] = parseClaudeHistoryLine(line);
+    expect(ev.kind).toEqual({
+      type: 'taskNotification',
+      summary: 'Agent "Fix ch02" finished',
+      body: 'Done. Both chapters updated.',
+    });
+  });
+
   it('parses an assistant event with text, thinking, and a tool_use block', () => {
     const line = JSON.stringify({
       type: 'assistant',

@@ -2472,6 +2472,28 @@ export class RunnerManager {
       return this.spawnCodexAppServer(args, binary, env, codexPerms);
     }
     const spawnArgs = this.buildArgs(args, codexMode);
+    // An empty model means `buildArgs` drops `--model` and the CLI silently
+    // picks its own default — the user ends up on a model they didn't choose
+    // while the header still shows the one they did. Callers are expected to
+    // resolve a concrete id (flow steps carry their participant's model; chat
+    // falls back to the configured default), so blank here is a bug upstream.
+    // Warn rather than substitute: guessing a model would hide the defect the
+    // same way the CLI's default did.
+    // Copilot rides the prompt in argv (claude/codex/gemini use stdin), so the
+    // raw text would otherwise land in session.log on disk. Redact it, and cap
+    // any other long arg, so this line stays a diagnostic and not a transcript.
+    const safeArgs = spawnArgs.map((a) =>
+      args.prompt && a === args.prompt
+        ? '<prompt redacted>'
+        : a.length > 120
+          ? `${a.slice(0, 120)}…`
+          : a,
+    );
+    log(
+      args.model ? 'info' : 'warn',
+      'runner.spawn',
+      `${args.backend} conv=${args.conversationId} model=${args.model || '(unset — CLI will pick its own default)'} :: ${binary} ${safeArgs.join(' ')}`,
+    );
     const shell = backendNeedsShell(binary);
     const proc = spawn(binary, spawnArgs, {
       cwd: args.cwd,
