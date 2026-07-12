@@ -51,7 +51,7 @@ import { createUiSlice, uiSliceInitialState } from './uiSlice';
 import { useRunnersStore, getRunner, getAllRunners, mergeTaskProgress } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
-import { isSupportedPremiumModel } from '@shared/modelCatalog';
+import { isSupportedPremiumModel, premiumModelsForBackend } from '@shared/modelCatalog';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 /// Forward a diagnostic line to the main-process session log. Fire-and-forget:
@@ -2133,6 +2133,7 @@ export const useStore = create<StoreState>((set, get) => ({
       if (backend === 'codex') next.codexModel = model;
       if (backend === 'gemini') next.geminiModel = model;
       if (backend === 'ollama') next.ollamaModel = model;
+      if (backend === 'copilot') next.copilotModel = model;
       return next;
     });
     await saveConversationState(get);
@@ -2325,7 +2326,20 @@ export const useStore = create<StoreState>((set, get) => ({
         ? conv.geminiModel ?? conv.currentModel
         : backend === 'ollama'
         ? conv.ollamaModel ?? conv.currentModel
+        : backend === 'copilot'
+        ? conv.copilotModel ?? conv.currentModel
         : conv.claudeModel ?? conv.currentModel;
+
+    // Never ship an empty premium model. `buildArgs` omits `--model` when it's
+    // blank, and the backend CLI then silently substitutes its own default —
+    // so the user runs on a model they didn't pick, with the header still
+    // showing the one they did. Resolve the configured default, then the
+    // catalog's first id, so the flag is always explicit. (Ollama resolves its
+    // own tag from the local pull list below.)
+    if (backend !== 'ollama' && !model) {
+      model =
+        state.settings.backendDefaultModels?.[backend] ?? premiumModelsForBackend(backend)[0] ?? '';
+    }
 
     if (backend !== 'ollama' && model && !isSupportedPremiumModel(backend, model)) {
       useRunnersStore.getState().patchRunner(conversationId, {

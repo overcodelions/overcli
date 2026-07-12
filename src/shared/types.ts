@@ -377,6 +377,7 @@ export interface Conversation {
   codexModel?: string;
   geminiModel?: string;
   ollamaModel?: string;
+  copilotModel?: string;
   codexRolloutPath?: string;
   /// Every rollout file codex has created for this conversation. codex proto
   /// has no --resume, each spawn writes a fresh file — we merge on load.
@@ -1106,6 +1107,9 @@ export interface IPCInvokeMap {
     cwd: string;
     backend: Backend;
     sessionId?: string;
+    /// The session's model. Without it the popped-out CLI resumes on its own
+    /// default, silently dropping the model the conversation was running on.
+    model?: string;
   }) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;

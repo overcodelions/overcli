@@ -553,7 +553,15 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'terminal:popConversation',
-    (_e, { cwd, backend, sessionId }: { cwd: string; backend: Backend; sessionId?: string }) => {
+    (
+      _e,
+      {
+        cwd,
+        backend,
+        sessionId,
+        model,
+      }: { cwd: string; backend: Backend; sessionId?: string; model?: string },
+    ) => {
       if (backend === 'ollama') {
         return { ok: false, error: 'Ollama runs in-app — there is no CLI to resume in a terminal.' };
       }
