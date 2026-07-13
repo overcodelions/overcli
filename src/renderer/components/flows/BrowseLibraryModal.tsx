@@ -289,6 +289,13 @@ function PreviewPane({
         <div className="mt-1 flex items-center gap-2 text-[11px] text-ink-faint">
           <span className="bg-card rounded px-1.5 py-0.5">{entry.registryId}</span>
           <span>v{entry.version}</span>
+          {/* Local registries only. overcli never pulls the folder, so the
+              file's mtime is the only freshness signal it can honestly give. */}
+          {entry.updatedAt != null && (
+            <span title={new Date(entry.updatedAt).toLocaleString()}>
+              · updated {new Date(entry.updatedAt).toLocaleDateString()}
+            </span>
+          )}
         </div>
 
         {entry.description && (

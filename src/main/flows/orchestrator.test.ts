@@ -20,7 +20,13 @@ import type { FlowRun } from '../../shared/flows/schema';
 function makeHarness() {
   const runs = new Map<string, FlowRun>();
   let counter = 0;
-  const started: Array<{ runId: string; prompt: string; flowId: string }> = [];
+  const started: Array<{
+    runId: string;
+    prompt: string;
+    flowId: string;
+    runIn?: string;
+    baseBranch?: string;
+  }> = [];
 
   const emitted: any[] = [];
   let observer: ((run: FlowRun) => void) | null = null;
@@ -37,7 +43,13 @@ function makeHarness() {
         parentOrchestrationId: args.parentOrchestrationId,
       } as unknown as FlowRun;
       runs.set(runId, run);
-      started.push({ runId, prompt: args.userPrompt, flowId: args.flowId });
+      started.push({
+        runId,
+        prompt: args.userPrompt,
+        flowId: args.flowId,
+        runIn: args.runIn,
+        baseBranch: args.baseBranch,
+      });
       return { ok: true, runId };
     },
     abortRun({ runId }) {
@@ -293,5 +305,97 @@ describe('OrchestratorImpl dispatch', () => {
     await h.finish('run-1');
     const updatesAfter = h.emitted.filter((e) => e.type === 'orchestrationUpdate').length;
     expect(updatesAfter).toBeGreaterThan(updatesBefore);
+  });
+});
+
+describe('OrchestratorImpl runIn', () => {
+  it('defaults to a worktree per item, forked from the batch base branch', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      baseBranch: 'main',
+      maxConcurrent: 2,
+      items: items(2),
+    });
+    expect(h.started.map((s) => s.runIn)).toEqual(['worktree', 'worktree']);
+    expect(h.started.map((s) => s.baseBranch)).toEqual(['main', 'main']);
+  });
+
+  it('launches cwd items in the project tree, with no base branch to fork from', async () => {
+    const h = makeHarness();
+    // A base branch is meaningless in the main tree — it must not leak through
+    // to the launch even when the caller sends one.
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      runIn: 'cwd',
+      baseBranch: 'main',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    expect(h.started[0].runIn).toBe('cwd');
+    expect(h.started[0].baseBranch).toBeUndefined();
+  });
+
+  it('serializes a cwd batch even when the caller asks for concurrency', async () => {
+    const h = makeHarness();
+    // Two agents in one working tree would edit the same files underneath each
+    // other, so the cap is overruled to 1 no matter what was requested.
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      runIn: 'cwd',
+      maxConcurrent: 4,
+      items: items(3),
+    });
+    expect(res.ok).toBe(true);
+
+    expect(h.started).toHaveLength(1);
+    await h.finish('run-1');
+    expect(h.started).toHaveLength(2);
+    await h.finish('run-2');
+    expect(h.started).toHaveLength(3);
+
+    const o = h.engine.list()[0];
+    expect(o.maxConcurrent).toBe(1);
+    expect(o.runIn).toBe('cwd');
+  });
+
+  it('keeps a retried cwd item in the project tree', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      runIn: 'cwd',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    await h.finish('run-1', 'aborted');
+
+    const o = h.engine.list()[0];
+    expect(h.engine.retry({ id: o.id }).ok).toBe(true);
+    await h.flush();
+
+    expect(h.started).toHaveLength(2);
+    expect(h.started[1].runIn).toBe('cwd');
+  });
+
+  it('treats a batch persisted before runIn existed as a worktree batch', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    // Simulate the legacy record: no `runIn` on disk at all.
+    const o = h.engine.list()[0];
+    delete (o as { runIn?: string }).runIn;
+    await h.finish('run-1', 'aborted');
+    h.engine.retry({ id: o.id });
+    await h.flush();
+
+    expect(h.started[1].runIn).toBe('worktree');
   });
 });
