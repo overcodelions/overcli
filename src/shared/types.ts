@@ -3,7 +3,7 @@
 // types so the JSON persistence shape stays compatible where it can.
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
-import type { Candidate, Orchestration, RecentPrompt } from './flows/orchestration';
+import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
 import type { FlowTemplate } from './flows/templates';
 
 export type UUID = string;
@@ -1294,12 +1294,17 @@ export interface IPCInvokeMap {
   }) =>
     | { ok: true; reply: string; candidates: Candidate[] }
     | { ok: false; error: string };
-  /// Launch a batch: one child flow run per item, each in its own
-  /// worktree, never more than `maxConcurrent` in flight. Returns the new
-  /// orchestration id; progress streams back via `orchestrationUpdate`.
+  /// Launch a batch: one child flow run per item, never more than
+  /// `maxConcurrent` in flight. `runIn` decides where those runs work —
+  /// `worktree` (the default) gives each item its own fresh worktree forked
+  /// from `baseBranch`; `cwd` runs them in the project's own working tree,
+  /// which forces `maxConcurrent` to 1 (one checkout can't host two agents)
+  /// and ignores `baseBranch`. Returns the new orchestration id; progress
+  /// streams back via `orchestrationUpdate`.
   'orchestrator:startBatch': (args: {
     title: string;
     projectPath: string;
+    runIn?: RunIn;
     baseBranch?: string;
     maxConcurrent: number;
     producer?: { prompt: string; reply: string };

@@ -18,6 +18,7 @@ import { useOrchestratorStore, type ProducerTurn } from '../../orchestratorStore
 import { backendColor } from '../../theme';
 import { Markdown } from '../Markdown';
 import { ResizableDivider } from '../ResizableDivider';
+import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 
@@ -328,7 +329,8 @@ function ProducerBody({
             <p className="text-sm text-ink-faint leading-relaxed mt-1.5 max-w-xl mx-auto">
               The producer investigates with your connected tools and MCP servers, then
               returns a list of small, self-contained asks. Map each to a flow and launch
-              them together — one git worktree per ask.
+              them together — one git worktree per ask, or one at a time in your own
+              working tree.
             </p>
             <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mt-5 mb-2">
               Start from an example
@@ -555,6 +557,8 @@ function MapPane({
   const itemConfig = useOrchestratorStore((s) => s.itemConfig);
   const defaultFlowId = useOrchestratorStore((s) => s.defaultFlowId);
   const defaultBaseBranch = useOrchestratorStore((s) => s.defaultBaseBranch);
+  const runIn = useOrchestratorStore((s) => s.runIn);
+  const setRunIn = useOrchestratorStore((s) => s.setRunIn);
   const setDefaultFlow = useOrchestratorStore((s) => s.setDefaultFlow);
   const setDefaultBaseBranch = useOrchestratorStore((s) => s.setDefaultBaseBranch);
   const selectAll = useOrchestratorStore((s) => s.selectAll);
@@ -598,13 +602,38 @@ function MapPane({
                 onChange={(id) => setDefaultFlow(id)}
                 placeholder="Pick a flow…"
               />
-              <span className="font-medium text-sm text-ink-muted ml-1">Base</span>
-              <input
-                value={defaultBaseBranch}
-                onChange={(e) => setDefaultBaseBranch(e.target.value)}
-                placeholder="(repo default)"
-                className="text-xs font-mono bg-card-strong rounded-md px-2 py-1.5 text-ink w-32 border-0 outline-none"
-              />
+              {/* Where the whole batch works. Same idiom as a single flow
+                  launch, but batch-wide — mixing the two inside one batch
+                  would just be a confusing way to serialize half of it. */}
+              <div className="inline-flex p-0.5 rounded-lg bg-card-strong">
+                <SegmentButton
+                  active={runIn === 'cwd'}
+                  onClick={() => setRunIn('cwd')}
+                  title="Run every ask in the project's own working tree, one at a time"
+                >
+                  main tree
+                </SegmentButton>
+                <SegmentButton
+                  active={runIn === 'worktree'}
+                  onClick={() => setRunIn('worktree')}
+                  title="Give each ask its own fresh worktree so they can run in parallel"
+                >
+                  worktree each
+                </SegmentButton>
+              </div>
+              {/* Nothing forks from a base branch in the main tree — the runs
+                  use whatever it already has checked out. */}
+              {runIn === 'worktree' && (
+                <>
+                  <span className="font-medium text-sm text-ink-muted ml-1">Base</span>
+                  <input
+                    value={defaultBaseBranch}
+                    onChange={(e) => setDefaultBaseBranch(e.target.value)}
+                    placeholder="(repo default)"
+                    className="text-xs font-mono bg-card-strong rounded-md px-2 py-1.5 text-ink w-32 border-0 outline-none"
+                  />
+                </>
+              )}
               <div className="flex-1" />
               <button
                 className="text-xs text-accent font-medium disabled:opacity-40"
@@ -640,9 +669,15 @@ function LaunchFooter() {
   const itemConfig = useOrchestratorStore((s) => s.itemConfig);
   const maxConcurrent = useOrchestratorStore((s) => s.maxConcurrent);
   const setMaxConcurrent = useOrchestratorStore((s) => s.setMaxConcurrent);
+  const runIn = useOrchestratorStore((s) => s.runIn);
   const openPr = useOrchestratorStore((s) => s.openPrOnFinish);
   const setOpenPr = useOrchestratorStore((s) => s.setOpenPrOnFinish);
   const startBatch = useOrchestratorStore((s) => s.startBatch);
+
+  // One working tree can't host two agents editing the same files, so a
+  // main-tree batch drains strictly one at a time. Show that as a fact
+  // rather than a stepper the user can move but main will overrule.
+  const serialized = runIn === 'cwd';
 
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -659,25 +694,34 @@ function LaunchFooter() {
 
   return (
     <div className="flex-none px-4 py-2.5 bg-surface-muted/40 flex items-center gap-3 flex-wrap">
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-ink-faint">Run at most</span>
-        <div className="flex items-center bg-card-strong rounded-md overflow-hidden">
-          <button
-            className="w-6 h-6 text-ink hover:bg-card-border"
-            onClick={() => setMaxConcurrent(maxConcurrent - 1)}
-          >
-            −
-          </button>
-          <span className="w-7 text-center text-sm font-semibold">{maxConcurrent}</span>
-          <button
-            className="w-6 h-6 text-ink hover:bg-card-border"
-            onClick={() => setMaxConcurrent(maxConcurrent + 1)}
-          >
-            +
-          </button>
+      {serialized ? (
+        <span
+          className="text-xs text-ink-faint"
+          title="Every ask runs in the project's working tree, so they can't overlap — the queue runs them one after another."
+        >
+          Running <b className="text-ink">one at a time</b> in the main tree
+        </span>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-ink-faint">Run at most</span>
+          <div className="flex items-center bg-card-strong rounded-md overflow-hidden">
+            <button
+              className="w-6 h-6 text-ink hover:bg-card-border"
+              onClick={() => setMaxConcurrent(maxConcurrent - 1)}
+            >
+              −
+            </button>
+            <span className="w-7 text-center text-sm font-semibold">{maxConcurrent}</span>
+            <button
+              className="w-6 h-6 text-ink hover:bg-card-border"
+              onClick={() => setMaxConcurrent(maxConcurrent + 1)}
+            >
+              +
+            </button>
+          </div>
+          <span className="text-xs text-ink-faint">at a time</span>
         </div>
-        <span className="text-xs text-ink-faint">at a time</span>
-      </div>
+      )}
       <label className="text-xs text-ink-faint flex items-center gap-1.5">
         <input type="checkbox" checked={openPr} onChange={(e) => setOpenPr(e.target.checked)} />
         open a PR when each finishes
