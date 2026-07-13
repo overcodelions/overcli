@@ -193,7 +193,9 @@ export function RunPanel({
   );
 }
 
-function SegmentButton({
+/// One segment of a small inline toggle (the cwd/worktree control here, and
+/// the Orchestrator's batch-level copy of it).
+export function SegmentButton({
   active,
   onClick,
   title,

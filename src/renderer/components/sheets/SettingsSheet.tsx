@@ -609,28 +609,45 @@ function FlowsRegistriesPane() {
   const [registries, setRegistries] = useState<import('@shared/types').FlowRegistry[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingAuth, setEditingAuth] = useState('');
+  const [formKind, setFormKind] = useState<'remote' | 'local'>('remote');
   const [formId, setFormId] = useState('');
   const [formName, setFormName] = useState('');
   const [formUrl, setFormUrl] = useState('');
+  const [formDir, setFormDir] = useState('');
   const [formAuth, setFormAuth] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const formLocator = formKind === 'local' ? formDir : formUrl;
 
   useEffect(() => {
     void window.overcli.invoke('flows:listRegistries').then(setRegistries);
   }, []);
 
+  async function handlePickDir() {
+    const picked = await window.overcli.invoke('fs:pickDirectory');
+    if (picked && picked.length > 0) setFormDir(picked[0]);
+  }
+
   async function handleAddRegistry() {
-    if (!formId || !formName || !formUrl) return;
+    if (!formId || !formName || !formLocator) return;
     const result = await window.overcli.invoke('flows:upsertRegistry', {
-      registry: { id: formId, name: formName, indexUrl: formUrl },
-      authHeader: formAuth || undefined,
+      registry:
+        formKind === 'local'
+          ? { id: formId, name: formName, dir: formDir }
+          : { id: formId, name: formName, indexUrl: formUrl },
+      authHeader: formKind === 'local' ? undefined : formAuth || undefined,
     });
     if (result.ok) {
       setFormId('');
       setFormName('');
       setFormUrl('');
+      setFormDir('');
       setFormAuth('');
+      setFormError(null);
       const updated = await window.overcli.invoke('flows:listRegistries');
       setRegistries(updated);
+    } else {
+      setFormError(result.error);
     }
   }
 
@@ -661,10 +678,29 @@ function FlowsRegistriesPane() {
         {registries.map((reg) => (
           <div key={reg.id} className="flex items-center justify-between gap-4 p-2 rounded border border-card">
             <div className="flex-1">
-              <div className="font-semibold text-sm">{reg.name}</div>
-              <div className="text-xs text-ink-faint mt-1 break-all">{reg.indexUrl}</div>
+              <div className="font-semibold text-sm flex items-center gap-2">
+                {reg.name}
+                {reg.dir && (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-card text-ink-faint font-normal"
+                    title="Read straight from this folder. overcli never runs git — pull it yourself."
+                  >
+                    local folder
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-ink-faint mt-1 break-all">{reg.dir ?? reg.indexUrl}</div>
             </div>
-            {editingId === reg.id ? (
+            {reg.dir ? (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => handleRemoveRegistry(reg.id)}
+                  className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
+                >
+                  Remove
+                </button>
+              </div>
+            ) : editingId === reg.id ? (
               <div className="flex items-center gap-2">
                 <input
                   type="password"
@@ -714,6 +750,23 @@ function FlowsRegistriesPane() {
       </Group>
 
       <Group title="Add registry">
+        <div className="flex gap-1 p-0.5 rounded bg-card w-fit">
+          {(['remote', 'local'] as const).map((kind) => (
+            <button
+              key={kind}
+              onClick={() => {
+                setFormKind(kind);
+                setFormError(null);
+              }}
+              className={
+                'text-xs px-2.5 py-1 rounded ' +
+                (formKind === kind ? 'bg-accent/30 text-accent' : 'text-ink-muted hover:text-ink')
+              }
+            >
+              {kind === 'remote' ? 'Remote URL' : 'Local folder'}
+            </button>
+          ))}
+        </div>
         <input
           type="text"
           placeholder="Registry ID (slug)"
@@ -728,26 +781,56 @@ function FlowsRegistriesPane() {
           onChange={(e) => setFormName(e.target.value)}
           className="text-xs px-2 py-1 rounded border border-card bg-card"
         />
-        <input
-          type="text"
-          placeholder="Index URL (https://...)"
-          value={formUrl}
-          onChange={(e) => setFormUrl(e.target.value)}
-          className="text-xs px-2 py-1 rounded border border-card bg-card"
-        />
-        <input
-          type="password"
-          placeholder="Auth header (optional)"
-          value={formAuth}
-          onChange={(e) => setFormAuth(e.target.value)}
-          className="text-xs px-2 py-1 rounded border border-card bg-card"
-        />
-        <div className="text-[11px] text-ink-faint -mt-1">
-          Sent verbatim as the <code>Authorization</code> header. Use <code>Bearer &lt;token&gt;</code> for GitHub/GitLab/Bitbucket Cloud OAuth, or <code>Basic &lt;base64&gt;</code> for Bitbucket Cloud app passwords.
-        </div>
+        {formKind === 'local' ? (
+          <>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="/path/to/my-flows"
+                value={formDir}
+                onChange={(e) => setFormDir(e.target.value)}
+                className="flex-1 text-xs px-2 py-1 rounded border border-card bg-card"
+              />
+              <button
+                onClick={handlePickDir}
+                className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0"
+              >
+                Choose…
+              </button>
+            </div>
+            <div className="text-[11px] text-ink-faint -mt-1">
+              Every <code>*.yaml</code> file in the folder is offered as a flow — no index file to
+              maintain. Point it at a git repo you already have and keep it current the usual way;
+              overcli only reads the folder, it never pulls.
+            </div>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              placeholder="Index URL (https://...)"
+              value={formUrl}
+              onChange={(e) => setFormUrl(e.target.value)}
+              className="text-xs px-2 py-1 rounded border border-card bg-card"
+            />
+            <input
+              type="password"
+              placeholder="Auth header (optional)"
+              value={formAuth}
+              onChange={(e) => setFormAuth(e.target.value)}
+              className="text-xs px-2 py-1 rounded border border-card bg-card"
+            />
+            <div className="text-[11px] text-ink-faint -mt-1">
+              Sent verbatim as the <code>Authorization</code> header. Use <code>Bearer &lt;token&gt;</code> for GitHub/GitLab/Bitbucket Cloud OAuth, or <code>Basic &lt;base64&gt;</code> for Bitbucket Cloud app passwords.
+            </div>
+          </>
+        )}
+        {formError && (
+          <div className="text-[11px] text-red-600 bg-red-500/10 rounded px-2 py-1">{formError}</div>
+        )}
         <button
           onClick={handleAddRegistry}
-          disabled={!formId || !formName || !formUrl}
+          disabled={!formId || !formName || !formLocator}
           className="text-xs px-3 py-1 rounded bg-accent/30 text-accent hover:bg-accent/40 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Add registry

@@ -1,14 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { app } from 'electron';
 
 import { Store } from '../store';
+import { isLocalRegistry } from '../../shared/types';
 import type { FlowRegistry, FlowRegistryEntry, InstalledRegistryFlow } from '../../shared/types';
 import { SLUG_RE } from '../../shared/flows/validation';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { validateFlow } from '../../shared/flows/validation';
 import { getAuthHeader } from './registryAuth';
+import { readLocalEntry, scanLocalRegistry, sha256Of } from './localRegistry';
 
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
@@ -44,6 +45,15 @@ export async function fetchRegistry(
   registry: FlowRegistry,
   opts: { force?: boolean } = {},
 ): Promise<FlowRegistryEntry[]> {
+  // A local registry is a directory read: cheap enough to do every time, and
+  // always-fresh is the behaviour you want — edit a flow in the folder and it
+  // shows up on the next browse without hunting for the Refresh button.
+  if (isLocalRegistry(registry)) {
+    return scanLocalRegistry({ registryId: registry.id, dir: registry.dir });
+  }
+  const indexUrl = registry.indexUrl;
+  if (!indexUrl) throw new Error(`Registry "${registry.id}" has no index URL or local directory.`);
+
   const file = cacheFile(registry.id);
   if (!opts.force && fs.existsSync(file)) {
     const stat = fs.statSync(file);
@@ -52,8 +62,8 @@ export async function fetchRegistry(
       return cached.entries as FlowRegistryEntry[];
     }
   }
-  const res = await fetch(registry.indexUrl, { headers: authHeadersFor(registry.id) });
-  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${registry.indexUrl}`);
+  const res = await fetch(indexUrl, { headers: authHeadersFor(registry.id) });
+  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${indexUrl}`);
   const raw = (await res.json()) as RawIndex;
   const entries: FlowRegistryEntry[] = (raw.flows ?? [])
     .filter((e) => e.id && SLUG_RE.test(e.id) && e.version && e.sha256 && e.yaml_url)
@@ -66,11 +76,46 @@ export async function fetchRegistry(
       author: e.author as FlowRegistryEntry['author'],
       version: e.version as string,
       sha256: e.sha256 as string,
-      yamlUrl: resolveYamlUrl(registry.indexUrl, e.yaml_url as string),
+      yamlUrl: resolveYamlUrl(indexUrl, e.yaml_url as string),
     }));
   fs.mkdirSync(cacheDir(), { recursive: true });
   fs.writeFileSync(cacheFile(registry.id), JSON.stringify({ entries }), 'utf-8');
   return entries;
+}
+
+/// Fetch the YAML body behind an entry and confirm it matches the hash the
+/// listing carried. Remote entries come over http(s) with the registry's auth
+/// header; local ones are read off disk.
+async function loadEntryBody(
+  registry: FlowRegistry,
+  entry: FlowRegistryEntry,
+): Promise<{ ok: true; body: string } | { ok: false; error: string }> {
+  if (isLocalRegistry(registry)) return readLocalEntry(entry);
+  if (!entry.yamlUrl) return { ok: false, error: 'Entry has no YAML URL.' };
+  const res = await fetch(entry.yamlUrl, { headers: authHeadersFor(registry.id) });
+  if (!res.ok) return { ok: false, error: `HTTP ${res.status} fetching YAML.` };
+  const body = await res.text();
+  const sha = sha256Of(body);
+  if (sha !== entry.sha256.toLowerCase()) {
+    return { ok: false, error: `SHA256 mismatch (expected ${entry.sha256}, got ${sha}).` };
+  }
+  return { ok: true, body };
+}
+
+/// Resolve a (registryId, id, version) triple to its registry + entry. Shared
+/// by preview and install, which differ only in what they do with the body.
+async function resolveEntry(args: { registryId: string; id: string; version: string }): Promise<
+  { ok: true; registry: FlowRegistry; entry: FlowRegistryEntry } | { ok: false; error: string }
+> {
+  if (!SLUG_RE.test(args.registryId)) return { ok: false, error: 'Invalid registryId.' };
+  if (!SLUG_RE.test(args.id)) return { ok: false, error: 'Invalid flow id.' };
+  const settings = Store.load().settings;
+  const registry = (settings.flowRegistries ?? []).find((r) => r.id === args.registryId);
+  if (!registry) return { ok: false, error: `Unknown registry "${args.registryId}".` };
+  const entries = await fetchRegistry(registry, { force: false });
+  const entry = entries.find((e) => e.id === args.id && e.version === args.version);
+  if (!entry) return { ok: false, error: `Entry ${args.id}@${args.version} not in registry.` };
+  return { ok: true, registry, entry };
 }
 
 export async function browseRegistries(args: { registryId?: string; force?: boolean }) {
@@ -87,43 +132,25 @@ export async function browseRegistries(args: { registryId?: string; force?: bool
 }
 
 export async function previewRegistryFlow(args: { registryId: string; id: string; version: string }) {
-  if (!SLUG_RE.test(args.registryId)) return { ok: false as const, error: 'Invalid registryId.' };
-  if (!SLUG_RE.test(args.id)) return { ok: false as const, error: 'Invalid flow id.' };
-  const settings = Store.load().settings;
-  const registry = (settings.flowRegistries ?? []).find((r) => r.id === args.registryId);
-  if (!registry) return { ok: false as const, error: `Unknown registry "${args.registryId}".` };
-  const entries = await fetchRegistry(registry, { force: false });
-  const entry = entries.find((e) => e.id === args.id && e.version === args.version);
-  if (!entry) return { ok: false as const, error: `Entry ${args.id}@${args.version} not in registry.` };
-  const res = await fetch(entry.yamlUrl, { headers: authHeadersFor(registry.id) });
-  if (!res.ok) return { ok: false as const, error: `HTTP ${res.status} fetching YAML.` };
-  const body = await res.text();
-  const sha = crypto.createHash('sha256').update(body, 'utf-8').digest('hex');
-  if (sha !== entry.sha256.toLowerCase()) {
-    return { ok: false as const, error: `SHA256 mismatch (expected ${entry.sha256}, got ${sha}).` };
-  }
+  const resolved = await resolveEntry(args);
+  if (!resolved.ok) return { ok: false as const, error: resolved.error };
+  const { registry, entry } = resolved;
+  const loaded = await loadEntryBody(registry, entry);
+  if (!loaded.ok) return { ok: false as const, error: loaded.error };
   const previewId = `preview-${registry.id}-${entry.id}`;
-  const flow = parseFlowYaml({ yaml: body, id: previewId, source: 'user', filePath: '' });
+  const flow = parseFlowYaml({ yaml: loaded.body, id: previewId, source: 'user', filePath: '' });
   if (!flow) return { ok: false as const, error: 'YAML failed to parse.' };
   return { ok: true as const, flow };
 }
 
 export async function installFromRegistry(args: { registryId: string; id: string; version: string }) {
-  if (!SLUG_RE.test(args.registryId)) return { ok: false as const, error: 'Invalid registryId.' };
-  if (!SLUG_RE.test(args.id)) return { ok: false as const, error: 'Invalid flow id.' };
+  const resolved = await resolveEntry(args);
+  if (!resolved.ok) return { ok: false as const, error: resolved.error };
+  const { registry, entry } = resolved;
+  const loaded = await loadEntryBody(registry, entry);
+  if (!loaded.ok) return { ok: false as const, error: loaded.error };
+  const body = loaded.body;
   const settings = Store.load().settings;
-  const registry = (settings.flowRegistries ?? []).find((r) => r.id === args.registryId);
-  if (!registry) return { ok: false as const, error: `Unknown registry "${args.registryId}".` };
-  const entries = await fetchRegistry(registry, { force: false });
-  const entry = entries.find((e) => e.id === args.id && e.version === args.version);
-  if (!entry) return { ok: false as const, error: `Entry ${args.id}@${args.version} not in registry.` };
-  const res = await fetch(entry.yamlUrl, { headers: authHeadersFor(registry.id) });
-  if (!res.ok) return { ok: false as const, error: `HTTP ${res.status} fetching YAML.` };
-  const body = await res.text();
-  const sha = crypto.createHash('sha256').update(body, 'utf-8').digest('hex');
-  if (sha !== entry.sha256.toLowerCase()) {
-    return { ok: false as const, error: `SHA256 mismatch (expected ${entry.sha256}, got ${sha}).` };
-  }
   const filename = `installed-${registry.id}-${entry.id}.yaml`;
   const filePath = path.join(userFlowsDir(), filename);
   const flow = parseFlowYaml({ yaml: body, id: filename.slice(0, -5), source: 'user', filePath });
@@ -144,14 +171,34 @@ export async function installFromRegistry(args: { registryId: string; id: string
 }
 
 export function upsertRegistry(args: { registry: FlowRegistry; authHeader?: string | null }) {
-  if (!SLUG_RE.test(args.registry.id)) return { ok: false as const, error: 'Invalid registry id.' };
-  if (!/^https?:\/\//.test(args.registry.indexUrl)) return { ok: false as const, error: 'indexUrl must be http(s).' };
+  const { id, name, indexUrl, dir } = args.registry;
+  if (!SLUG_RE.test(id)) return { ok: false as const, error: 'Invalid registry id.' };
+  if (!!indexUrl === !!dir) {
+    return { ok: false as const, error: 'A registry needs either an index URL or a local directory, not both.' };
+  }
+  if (indexUrl && !/^https?:\/\//.test(indexUrl)) {
+    return { ok: false as const, error: 'indexUrl must be http(s).' };
+  }
+  if (dir) {
+    if (!path.isAbsolute(dir)) {
+      return { ok: false as const, error: 'Local registry directory must be an absolute path.' };
+    }
+    if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+      return { ok: false as const, error: `No directory at ${dir}.` };
+    }
+  }
+  // Store only the field for the kind we resolved, so a registry edited from
+  // remote to local (or back) can't keep a stale locator for the other kind.
+  const registry: FlowRegistry = dir ? { id, name, dir } : { id, name, indexUrl };
   const settings = Store.load().settings;
-  const list = (settings.flowRegistries ?? []).filter((r) => r.id !== args.registry.id);
-  list.push(args.registry);
+  const list = (settings.flowRegistries ?? []).filter((r) => r.id !== id);
+  list.push(registry);
   Store.saveSettings({ ...settings, flowRegistries: list });
-  if (args.authHeader !== undefined) {
-    require('./registryAuth').setAuthHeader(args.registry.id, args.authHeader);
+  // Local registries never send a request, so there's nothing to authenticate.
+  if (dir) {
+    require('./registryAuth').removeAuthHeader(id);
+  } else if (args.authHeader !== undefined) {
+    require('./registryAuth').setAuthHeader(id, args.authHeader);
   }
   return { ok: true as const };
 }
