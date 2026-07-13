@@ -25,6 +25,7 @@ import type {
   Candidate,
   Orchestration,
   OrchestrationItem,
+  RunIn,
 } from '../../shared/flows/orchestration';
 import { isOrchestrationComplete, parseCandidates } from '../../shared/flows/orchestration';
 import { pickDrafterBackend, drafterModelFor } from '../../shared/flows/drafterBackend';
@@ -226,6 +227,7 @@ export class OrchestratorImpl {
   async startBatch(args: {
     title: string;
     projectPath: string;
+    runIn?: RunIn;
     baseBranch?: string;
     maxConcurrent: number;
     producer?: { prompt: string; reply: string };
@@ -236,19 +238,31 @@ export class OrchestratorImpl {
     const items = args.items.filter((i) => i.candidate && i.flowId);
     if (items.length === 0) return { ok: false, error: 'No items to launch.' };
 
-    const cap = Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1));
+    const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
+    // A cwd batch shares one working tree across every item, so two items in
+    // flight would edit the same files underneath each other. Serialize it —
+    // the queue still drains, just strictly one at a time. (The UI pins the
+    // stepper to 1 in cwd mode; this is the load-bearing enforcement.)
+    const cap =
+      runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1));
+    // Nothing forks from a base branch in cwd mode — the run just uses
+    // whatever the tree has checked out. Drop it rather than record a value
+    // the launch will ignore.
+    const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
     const orchestration: Orchestration = {
       id: randomUUID(),
       title: args.title?.trim() || 'Batch',
       projectPath,
-      baseBranch: args.baseBranch?.trim() || undefined,
+      runIn,
+      baseBranch,
       maxConcurrent: cap,
       producer: args.producer,
       createdAt: Date.now(),
       items: items.map<OrchestrationItem>((i) => ({
         candidate: i.candidate,
         flowId: i.flowId,
-        baseBranch: i.baseBranch?.trim() || args.baseBranch?.trim() || undefined,
+        baseBranch:
+          runIn === 'cwd' ? undefined : i.baseBranch?.trim() || baseBranch,
         status: 'queued',
       })),
     };
@@ -259,10 +273,11 @@ export class OrchestratorImpl {
   }
 
   /// Fill open concurrency slots with queued items. Each launch mints a
-  /// child FlowRun in its own worktree; the run links back via
-  /// `parentOrchestrationId` so `onRunUpdate` can pump the next item when
-  /// it finishes. Safe to call repeatedly — it's a no-op once the cap is
-  /// reached or the queue is empty.
+  /// child FlowRun — in its own worktree, or in the project's working tree
+  /// for a `runIn: 'cwd'` batch (which is capped at one slot, so those items
+  /// land one at a time). The run links back via `parentOrchestrationId` so
+  /// `onRunUpdate` can pump the next item when it finishes. Safe to call
+  /// repeatedly — it's a no-op once the cap is reached or the queue is empty.
   private async pump(orchestrationId: UUID): Promise<void> {
     const o = this.batches.get(orchestrationId);
     if (!o) return;
@@ -282,12 +297,15 @@ export class OrchestratorImpl {
       launchedAny = true;
       let res: Awaited<ReturnType<FlowLauncher['startRun']>>;
       try {
+        // Batches persisted before `runIn` existed have it undefined — they
+        // were all worktree batches, so that's the default.
+        const runIn: RunIn = o.runIn ?? 'worktree';
         res = await this.launcher.startRun({
           flowId: next.flowId,
           projectPath: o.projectPath,
           userPrompt: next.candidate.prompt,
-          runIn: 'worktree',
-          baseBranch: next.baseBranch ?? o.baseBranch,
+          runIn,
+          baseBranch: runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch),
           parentOrchestrationId: o.id,
           orchestrationItemTitle: next.candidate.title,
         });
@@ -422,9 +440,10 @@ export class OrchestratorImpl {
     return { ok: true };
   }
 
-  /// Re-queue failed/cancelled items so they launch again (fresh worktree,
-  /// fresh run). With `candidateId`, retry just that one; without, retry every
-  /// failed/cancelled item in the batch. Reactivates a completed batch.
+  /// Re-queue failed/cancelled items so they launch again as fresh runs (in a
+  /// fresh worktree, or back in the project's tree for a cwd batch — `pump`
+  /// re-reads the batch's `runIn`). With `candidateId`, retry just that one;
+  /// without, retry every failed/cancelled item. Reactivates a completed batch.
   retry(args: { id: UUID; candidateId?: string }): { ok: true } | { ok: false; error: string } {
     const o = this.batches.get(args.id);
     if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
@@ -437,7 +456,7 @@ export class OrchestratorImpl {
     for (const item of targets) {
       // Drop any stale run mapping and clear the prior attempt's traces so the
       // item launches clean. The old child run (if any) keeps its own history;
-      // retry mints a brand-new run + worktree.
+      // retry mints a brand-new run.
       if (item.runId) this.runToBatch.delete(item.runId);
       item.status = 'queued';
       item.runId = undefined;
