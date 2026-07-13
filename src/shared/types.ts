@@ -667,10 +667,22 @@ export interface OllamaServerLogLine {
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
+/// A source of installable flows. Exactly one of `indexUrl` / `dir` is set:
+/// a registry is either remote (an index.json served over http(s)) or local
+/// (a folder of YAML files on disk).
 export interface FlowRegistry {
   id: string;          // slug
   name: string;
-  indexUrl: string;    // https URL to index.json
+  indexUrl?: string;   // http(s) URL to index.json
+  /// Absolute path to a directory of `*.yaml` flow files. Read directly —
+  /// no index.json, no sha256 to hand-maintain. overcli only reads the
+  /// folder; keeping it current (e.g. `git pull` on a repo you own) is the
+  /// user's job, which is what makes a private registry cost nothing to run.
+  dir?: string;
+}
+
+export function isLocalRegistry(r: FlowRegistry): r is FlowRegistry & { dir: string } {
+  return typeof r.dir === 'string' && r.dir.length > 0;
 }
 
 export interface FlowRegistryEntry {
@@ -682,7 +694,14 @@ export interface FlowRegistryEntry {
   author?: { name: string; url?: string };
   version: string;
   sha256: string;
-  yamlUrl: string;     // absolute URL, resolved from index entry's yaml_url
+  /// Where the YAML lives — `yamlUrl` for remote registries (absolute,
+  /// resolved from the index entry's `yaml_url`), `yamlPath` for local ones.
+  yamlUrl?: string;
+  yamlPath?: string;
+  /// Local registries only: the file's mtime. Surfaced in the browse UI
+  /// because overcli can't tell you whether the folder is behind its remote —
+  /// it never talks to git — so the honest signal is "last touched when".
+  updatedAt?: number;
 }
 
 export interface InstalledRegistryFlow {
