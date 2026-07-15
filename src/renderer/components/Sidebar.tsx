@@ -10,12 +10,15 @@ import {
   conversationActivityAt,
   isActiveConversation,
 } from '../conversationLookup';
+import { type ActiveCandidate, selectActiveEntries } from '../activeSection';
 import { useFlowsStore } from '../flowsStore';
 import {
-  ActiveFlowsList,
+  ActiveFlowRow,
   FlowRunsSection,
   flowRunMatchesQuery,
-  useHasActiveFlows,
+  resolveOwner as resolveFlowOwner,
+  runIsActive as flowRunIsActive,
+  runIsLive as flowRunIsLive,
 } from './flows/FlowRunSidebarRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 
@@ -47,6 +50,7 @@ export function Sidebar() {
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
   const runners = useAllRunners();
   const flowRuns = useFlowsStore((s) => s.runs);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const [search, setSearch] = useState('');
   const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
   const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
@@ -149,11 +153,10 @@ export function Sidebar() {
       });
   }, [projectsById, query, workspaces, flowMatchPaths]);
 
-  const topConversations = useMemo(
-    () => collectTopConversations(projects, workspaces, runners).slice(0, 3),
-    [projects, runners, workspaces],
+  const activeEntries = useMemo(
+    () => selectActiveEntries(collectActiveCandidates(projects, workspaces, flowRuns, runners)),
+    [flowRuns, projects, runners, workspaces],
   );
-  const hasActiveFlows = useHasActiveFlows();
   const sortedProjects = useMemo(
     () =>
       [...projects].sort(
@@ -266,20 +269,33 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
-        {!query && showActiveSection && (topConversations.length > 0 || hasActiveFlows) && (
+        {!query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Active" />
-            <ActiveFlowsList />
-            {topConversations.map((item) => (
-              <RecentConversationRow
-                key={item.conv.id}
-                item={item}
-                onClick={() => {
-                  setDetailMode('conversation');
-                  selectConversation(item.conv.id);
-                }}
-              />
-            ))}
+            {activeEntries.map(({ entry, rank }) =>
+              entry.kind === 'flow' ? (
+                <ActiveFlowRow
+                  key={entry.run.id}
+                  run={entry.run}
+                  isLive={rank === 2}
+                  ownerName={entry.ownerName}
+                  ownerKind={entry.ownerKind}
+                  onClick={() => {
+                    setActiveRun(entry.run.id);
+                    setDetailMode('flows');
+                  }}
+                />
+              ) : (
+                <RecentConversationRow
+                  key={entry.conv.id}
+                  item={entry}
+                  onClick={() => {
+                    setDetailMode('conversation');
+                    selectConversation(entry.conv.id);
+                  }}
+                />
+              ),
+            )}
           </>
         )}
         {query && <SidebarSectionTitle label="Search results" />}
@@ -427,38 +443,75 @@ function projectLabel(project: Project): string {
 }
 
 interface RecentConversationItem {
+  kind: 'conversation';
   conv: Conversation;
   ownerName: string;
   ownerKind: 'project' | 'workspace';
 }
 
-function collectTopConversations(
+interface ActiveFlowItem {
+  kind: 'flow';
+  run: FlowRun;
+  ownerName: string;
+  ownerKind: 'project' | 'workspace' | 'unknown';
+}
+
+type ActiveItem = RecentConversationItem | ActiveFlowItem;
+
+/// Every chat, agent and flow run eligible for the Active section, whether or
+/// not it's still active — selectActiveEntries ranks them and decides which
+/// make the cut. Hidden conversations and archived runs are left out: the user
+/// has explicitly put those away, so they shouldn't be dragged back in by the
+/// section's floor.
+function collectActiveCandidates(
   projects: Project[],
   workspaces: Workspace[],
+  flowRuns: Record<UUID, FlowRun>,
   runners: Record<UUID, { isRunning: boolean } | undefined>,
-): RecentConversationItem[] {
-  const out: RecentConversationItem[] = [];
+): ActiveCandidate<ActiveItem>[] {
   const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
+  const out: ActiveCandidate<ActiveItem>[] = [];
+
+  const pushConversation = (
+    conv: Conversation,
+    ownerName: string,
+    ownerKind: 'project' | 'workspace',
+  ) => {
+    if (conv.hidden) return;
+    const running = !!runners[conv.id]?.isRunning;
+    out.push({
+      entry: { kind: 'conversation', conv, ownerName, ownerKind },
+      rank: running ? 2 : 0,
+      active: isActiveConversation(conv, running, cutoff),
+      activityAt: conversationActivityAt(conv),
+    });
+  };
+
   for (const project of projects) {
     for (const conv of project.conversations) {
-      if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
-        out.push({ conv, ownerName: projectLabel(project), ownerKind: 'project' });
-      }
+      pushConversation(conv, projectLabel(project), 'project');
     }
   }
   for (const workspace of workspaces) {
     for (const conv of workspace.conversations ?? []) {
-      if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
-        out.push({ conv, ownerName: workspace.name, ownerKind: 'workspace' });
-      }
+      pushConversation(conv, workspace.name, 'workspace');
     }
   }
-  return out.sort((a, b) => {
-    const aRunning = runners[a.conv.id]?.isRunning ? 1 : 0;
-    const bRunning = runners[b.conv.id]?.isRunning ? 1 : 0;
-    if (aRunning !== bRunning) return bRunning - aRunning;
-    return conversationActivityAt(b.conv) - conversationActivityAt(a.conv);
-  });
+
+  for (const run of Object.values(flowRuns)) {
+    if (run.state.kind === 'archived') continue;
+    const owner = resolveFlowOwner(flowRunOwnerPath(run), projects, workspaces);
+    const live = flowRunIsLive(run, runners);
+    const ongoing = run.state.kind === 'paused' || run.state.kind === 'watching';
+    out.push({
+      entry: { kind: 'flow', run, ownerName: owner.name, ownerKind: owner.kind },
+      rank: live ? 2 : ongoing ? 1 : 0,
+      active: flowRunIsActive(run, runners, cutoff),
+      activityAt: flowRunActivityAt(run),
+    });
+  }
+
+  return out;
 }
 
 function hasProjectActivity(
