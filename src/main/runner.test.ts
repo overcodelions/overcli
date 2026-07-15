@@ -15,6 +15,7 @@ import {
   isBrokerPromptToolMissingError,
   isStaleSessionError,
   resumeSessionAfterParamChange,
+  shouldSkipIdleOnClose,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
 
@@ -37,6 +38,47 @@ describe('resumeSessionAfterParamChange', () => {
 
   it('returns undefined when neither side has a session (first turn)', () => {
     expect(resumeSessionAfterParamChange(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('shouldSkipIdleOnClose', () => {
+  // Regression: same model-swap path as above. Bumping a flow participant's
+  // model in the hijack chat makes the next send kill and respawn the proc.
+  // The dead proc's 'close' landed a second AFTER the flow runtime had
+  // started a step on that conversation, and its running:false was read as
+  // "step finished" — so "Re-run from here" failed the step off an empty
+  // buffer ("produced no <output>") and never updated the artifact, while
+  // the respawned proc was still working the step for real.
+  it('silences a superseded proc — the replacement turn owns the running state', () => {
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: false, backend: 'claude', claudeSendPending: false }),
+    ).toBe(true);
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: false, backend: 'codex', claudeSendPending: false }),
+    ).toBe(true);
+  });
+
+  it('lets the conversation’s current proc report idle', () => {
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'claude', claudeSendPending: false }),
+    ).toBe(false);
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'codex', claudeSendPending: false }),
+    ).toBe(false);
+  });
+
+  it('still silences the current proc while a fresh Claude send prepares its broker', () => {
+    // The replacement send hasn't registered a proc yet, so the closing one
+    // is technically still "current" — but a turn is already inbound.
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'claude', claudeSendPending: true }),
+    ).toBe(true);
+  });
+
+  it('does not apply the Claude-only broker window to other backends', () => {
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'codex', claudeSendPending: true }),
+    ).toBe(false);
   });
 });
 
