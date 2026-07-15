@@ -6,14 +6,13 @@
 // Click → switches detail mode to 'flows' and points the FlowRunPane at
 // this run.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { useAllRunners } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
 import { flowRunActivityAt, flowRunOwnerPath } from '@shared/flows/schema';
-import { ACTIVE_CONVERSATION_WINDOW_MS } from '../../conversationLookup';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
@@ -22,7 +21,7 @@ import { SidebarMarker } from '../SidebarMarker';
 /// participant convs is currently streaming (e.g. you're hijack-chatting
 /// after the run finished). Drives the sidebar "still alive" indicator
 /// so a `done` run that's still responding to you doesn't read as idle.
-function runIsLive(
+export function runIsLive(
   run: FlowRun,
   runners: Record<string, { isRunning: boolean } | undefined>,
 ): boolean {
@@ -30,13 +29,14 @@ function runIsLive(
   return Object.values(run.conversationIds).some((cid) => runners[cid]?.isRunning);
 }
 
-/// Whether a run belongs in the top-of-sidebar "Active" set. A run
-/// qualifies while it's live (orchestrating or a participant is
-/// streaming) or paused, AND — mirroring how recently-touched
-/// conversations linger in Active — for a grace window after its last
-/// activity. Without the recency clause a finished run dropped out of
-/// Active instantly, even seconds after completing.
-function runIsActive(
+/// Whether a run earns a slot in the top-of-sidebar "Active" set on merit. A
+/// run qualifies while it's live (orchestrating or a participant is
+/// streaming) or paused, AND — mirroring how recently-touched conversations
+/// linger in Active — for a grace window after its last activity. Without the
+/// recency clause a finished run dropped out of Active instantly, even
+/// seconds after completing. Past that window it can still be held in Active
+/// by the section's floor (see selectActiveEntries), just not on merit.
+export function runIsActive(
   run: FlowRun,
   runners: Record<string, { isRunning: boolean } | undefined>,
   cutoff: number,
@@ -100,75 +100,15 @@ export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   );
 }
 
-/// Cheap subscription used by Sidebar to decide whether to draw the
-/// Active section when there are no active conversations but a flow
-/// is still live (running/paused, or you're hijack-chatting it).
-export function useHasActiveFlows(): boolean {
-  const runs = useFlowsStore((s) => s.runs);
-  const runners = useAllRunners();
-  return useMemo(() => {
-    const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
-    return Object.values(runs).some((r) => runIsActive(r, runners, cutoff));
-  }, [runs, runners]);
-}
-
-/// Top-of-sidebar "Active" listing for flow runs. Surfaces a run when
-/// it's mid-orchestration, paused waiting for the user, or when the
-/// user is hijack-chatting and a participant conv is currently
-/// streaming. Mirrors the conversations Active section so live work is
-/// reachable from the top of the sidebar regardless of which
-/// project/workspace it lives under.
-export function ActiveFlowsList({ limit = 4 }: { limit?: number }) {
-  const runs = useFlowsStore((s) => s.runs);
-  const runners = useAllRunners();
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
-  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
-  const setDetailMode = useStore((s) => s.setDetailMode);
-
-  const active = useMemo(() => {
-    const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
-    return Object.values(runs)
-      .map((run) => ({ run, live: runIsLive(run, runners) }))
-      .filter(({ run }) => runIsActive(run, runners, cutoff))
-      .sort((a, b) => {
-        // Live > paused > recently-finished, then by recency.
-        const aRank = a.live ? 2 : a.run.state.kind === 'paused' ? 1 : 0;
-        const bRank = b.live ? 2 : b.run.state.kind === 'paused' ? 1 : 0;
-        if (aRank !== bRank) return bRank - aRank;
-        return flowRunActivityAt(b.run) - flowRunActivityAt(a.run);
-      })
-      .slice(0, limit);
-  }, [runs, runners, limit]);
-
-  if (active.length === 0) return null;
-  return (
-    <>
-      {active.map(({ run, live }) => {
-        const owner = resolveOwner(flowRunOwnerPath(run), projects, workspaces);
-        return (
-          <ActiveFlowRow
-            key={run.id}
-            run={run}
-            isLive={live}
-            ownerName={owner.name}
-            ownerKind={owner.kind}
-            onClick={() => {
-              setActiveRun(run.id);
-              setDetailMode('flows');
-            }}
-          />
-        );
-      })}
-    </>
-  );
-}
-
 /// Top-active row designed to be a visual sibling of RecentConversationRow:
 /// left marker (pulsing while live, ✓ when done, dot otherwise), title +
 /// quiet owner subtitle. No monogram, no right-side state badge — the
 /// marker carries the live/done signal so the row reads like a chat.
-function ActiveFlowRow({
+///
+/// Sidebar owns the Active section's ranking (flow runs and conversations
+/// share one ordered pool), so this component just renders the row it's told
+/// to.
+export function ActiveFlowRow({
   run,
   isLive,
   ownerName,
@@ -206,7 +146,7 @@ function ActiveFlowRow({
   );
 }
 
-function resolveOwner(
+export function resolveOwner(
   projectPath: string,
   projects: { id: string; name: string; path: string }[],
   workspaces: { id: string; name: string; rootPath: string }[],

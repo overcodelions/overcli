@@ -187,6 +187,26 @@ export function resumeSessionAfterParamChange(
   return callerSessionId || liveSessionId;
 }
 
+/// Whether a closing process may report its conversation idle (running:false).
+/// Only the conversation's CURRENT process may: a superseded one — killed to
+/// apply changed launch params, then draining asynchronously — closes while a
+/// replacement turn is already live on the same conversation, and that turn
+/// owns the running state. Letting the dead process speak for the conversation
+/// makes the flow runtime mistake its close for the new step's finish, which
+/// fails the step off an empty buffer ("produced no <output>") while the real
+/// turn is still working. `claudeSendPending` covers the same hazard one step
+/// earlier, when the replacement Claude send is still preparing its broker and
+/// hasn't registered a process yet. Explicit stop() emits its own
+/// running:false, so staying quiet here never strands the indicator.
+export function shouldSkipIdleOnClose(args: {
+  isCurrent: boolean;
+  backend: Backend;
+  claudeSendPending: boolean;
+}): boolean {
+  if (!args.isCurrent) return true;
+  return args.backend === 'claude' && args.claudeSendPending;
+}
+
 /// True when CLI stderr indicates the cached --resume id no longer exists
 /// (history wiped, project moved, etc.). Substring-matched against the
 /// messages claude/codex/gemini emit for this case. Intentionally broad —
@@ -926,18 +946,32 @@ export class RunnerManager {
         conversationId: convId,
         message: `Claude SDK error: ${err.message}`,
       });
-      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      // Only the conversation's current client may report it idle — a
+      // superseded client's late error must not stop a turn that has since
+      // started on the same conversation (see the close handler below).
+      if (this.procs.get(convId) === active) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
     });
     client.on('close', () => {
       // The SDK consumer loop exited (either close() called or query()
       // finished). Tear down the active record so the next send creates
       // a fresh client; the session id we captured earlier still lets
       // the next query() resume the conversation.
-      if (this.procs.get(convId) === active) {
+      const isCurrent = this.procs.get(convId) === active;
+      if (isCurrent) {
         this.procs.delete(convId);
         this.reviewer.dispose(convId);
       }
-      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      // Same rule as handleActiveClose: a superseded client (killProc →
+      // respawn on a model/permission change) drains asynchronously, and by
+      // the time its close lands a replacement turn may already be live on
+      // this conversation. Reporting idle would yank the running state out
+      // from under that turn — and a flow step running on this conversation
+      // would be finished off an empty buffer.
+      if (isCurrent) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
     });
     return active;
   }
@@ -2727,12 +2761,11 @@ export class RunnerManager {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
     }
-    // Skip the running:false emit only when a fresh Claude send is
-    // mid-flight on this same conversation AND the closing proc was the
-    // previous Claude turn. The flag is Claude-specific (codex/gemini
-    // don't use it), so closes from other backends always emit normally.
-    const skipRunningFalse =
-      active.backend === 'claude' && this.claudeSendPending.has(conversationId);
+    const skipRunningFalse = shouldSkipIdleOnClose({
+      isCurrent,
+      backend: active.backend,
+      claudeSendPending: this.claudeSendPending.has(conversationId),
+    });
     // Codex exec close fires the reviewer right below for code===0 — keep
     // the running indicator on (as "Rebounding…") so the sidebar doesn't
     // flicker idle between primary close and reviewer launch.
