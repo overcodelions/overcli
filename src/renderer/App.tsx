@@ -13,6 +13,7 @@ import { ExplorerPane } from './components/ExplorerPane';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { useFlowsStore } from './flowsStore';
+import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
@@ -119,6 +120,39 @@ export function App() {
     void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
       void useOrchestratorStore.getState().reload();
     });
+  }, []);
+
+  // Persist the current "where am I" view (detail mode, focused project/
+  // workspace, active flow run, active orchestration) whenever it changes, so
+  // a full renderer reload — e.g. macOS discarding the render process during a
+  // long sleep — restores the same screen on relaunch instead of dropping back
+  // to the default conversation view. selectedConversationId is persisted
+  // separately by selectConversation; this covers everything else. init()
+  // reads these back on launch.
+  useEffect(() => {
+    let last = '';
+    const persist = () => {
+      const s = useStore.getState();
+      const view = {
+        detailMode: s.detailMode,
+        focusedProjectId: s.focusedProjectId,
+        focusedWorkspaceId: s.focusedWorkspaceId,
+        activeRunId: useFlowsStore.getState().activeRunId,
+        activeOrchestrationId: useOrchestratorStore.getState().activeOrchestrationId,
+      };
+      // The main store fires on every stream delta; skip the IPC write unless
+      // the view identity actually changed.
+      const key = JSON.stringify(view);
+      if (key === last) return;
+      last = key;
+      void window.overcli.invoke('store:saveView', view);
+    };
+    const unsubs = [
+      useStore.subscribe(persist),
+      useFlowsStore.subscribe(persist),
+      useOrchestratorStore.subscribe(persist),
+    ];
+    return () => unsubs.forEach((u) => u());
   }, []);
 
   // Self-heal: if the selected conversation has been deleted (e.g. the

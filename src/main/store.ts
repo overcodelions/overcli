@@ -17,6 +17,7 @@ import {
   FlowRegistry,
   Conversation,
   SystemInitInfo,
+  PersistedView,
   UUID,
 } from '../shared/types';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
@@ -29,6 +30,10 @@ interface StoreState {
   colosseums: Colosseum[];
   settings: AppSettings;
   selectedConversationId?: UUID;
+  /// The non-conversation part of the user's current view (detail mode,
+  /// focused project/workspace, active flow run / orchestration). Restored on
+  /// launch so a renderer reload doesn't drop the user off their flow/agent.
+  view?: PersistedView;
   lastInit?: SystemInitInfo;
   /// Epoch-ms of the last time we triggered each backend CLI's self-updater
   /// on startup. Keyed by Backend. Used to throttle the headless prime to
@@ -185,6 +190,11 @@ export const Store = {
     const s = current();
     if (id) s.selectedConversationId = id;
     else delete s.selectedConversationId;
+    save();
+  },
+  saveView(view: PersistedView): void {
+    const s = current();
+    s.view = view;
     save();
   },
   setLastInit(info: SystemInitInfo): void {

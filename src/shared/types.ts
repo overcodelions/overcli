@@ -769,6 +769,21 @@ export interface AppSettings {
   updateChannel?: 'stable' | 'nightly';
 }
 
+/// The user's current "where am I" view, persisted alongside the selected
+/// conversation so a full renderer re-init — e.g. macOS discarding the render
+/// process during a long sleep, then Electron reloading the page — restores
+/// the exact flow run / orchestrator batch / project screen instead of
+/// dropping back to the default conversation view. `detailMode` is the
+/// renderer's DetailMode union, kept loose here to avoid coupling shared types
+/// to renderer code.
+export interface PersistedView {
+  detailMode?: string;
+  focusedProjectId?: UUID | null;
+  focusedWorkspaceId?: UUID | null;
+  activeRunId?: string | null;
+  activeOrchestrationId?: string | null;
+}
+
 /// Renderer → main requests. Responses come back via invoke's return value.
 export interface IPCInvokeMap {
   'store:load': () => {
@@ -778,12 +793,14 @@ export interface IPCInvokeMap {
     settings: AppSettings;
     selectedConversationId?: UUID;
     lastInit?: SystemInitInfo;
+    view?: PersistedView;
   };
   'store:saveProjects': (projects: Project[]) => void;
   'store:saveWorkspaces': (workspaces: Workspace[]) => void;
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
+  'store:saveView': (view: PersistedView) => void;
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
   'runner:send': (args: {
