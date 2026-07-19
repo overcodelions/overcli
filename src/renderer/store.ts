@@ -831,6 +831,12 @@ export const useStore = create<StoreState>((set, get) => ({
         workspaces.push(ws);
       }
     }
+    // Restore the non-conversation part of the last view (detail mode, focused
+    // project/workspace) so a renderer reload — e.g. after a long macOS sleep
+    // discards and reloads the render process — lands the user back where they
+    // were instead of resetting to the default conversation view. The sibling
+    // stores (flow run, orchestration) are restored just below.
+    const view = state.view;
     set({
       projects: state.projects,
       workspaces,
@@ -838,8 +844,19 @@ export const useStore = create<StoreState>((set, get) => ({
       settings: state.settings,
       lastInit: state.lastInit,
       selectedConversationId: state.selectedConversationId ?? null,
+      detailMode: (view?.detailMode as DetailMode) ?? 'conversation',
+      focusedProjectId: view?.focusedProjectId ?? null,
+      focusedWorkspaceId: view?.focusedWorkspaceId ?? null,
       showToolActivity: state.settings.defaultShowToolActivity ?? false,
     });
+    if (view?.activeRunId) {
+      const { useFlowsStore } = await import('./flowsStore');
+      useFlowsStore.getState().setActiveRun(view.activeRunId);
+    }
+    if (view?.activeOrchestrationId) {
+      const { useOrchestratorStore } = await import('./orchestratorStore');
+      useOrchestratorStore.getState().setActiveOrchestration(view.activeOrchestrationId);
+    }
     if (workspacesChanged) await get().saveWorkspaces();
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
