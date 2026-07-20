@@ -85,7 +85,10 @@ function systemPrompt(backend: Backend): string {
     'Each step has:',
     '  id            — kebab-case identifier referenced by other steps',
     '  model         — { backend: claude|codex|gemini|copilot|ollama, model: "<id>" }',
-    '  role          — one of the presets listed under ROLES below (or `custom`)',
+    '  role          — one of the presets listed under ROLES below, or `custom` when no',
+    '                  preset fits (see ROLE FIT CHECK). `custom` REQUIRES system_prompt.',
+    '  system_prompt — required when role is `custom`, omit otherwise. The full system',
+    '                  prompt for the step, written by you.',
     '  inputs        — list of refs. May include "user_prompt" and outputs of EARLIER steps',
     '  tools         — list of tool ids. For claude/codex/gemini/copilot: Read, Write, Edit, Grep,',
     '                  Glob, Bash, WebFetch, Task. For ollama: read_file, list_dir, grep.',
@@ -142,6 +145,58 @@ function systemPrompt(backend: Backend): string {
     '    when the flow is meant to land and ship changes.',
     '  - Only reach for `reviewer`/`code-reviewer`/etc. AFTER an `implementer` step in the',
     '    same flow has produced a diff.',
+    '',
+    'ROLE FIT CHECK (do this for EVERY step before you emit it)',
+    '==========================================================',
+    'The presets cover the common software-engineering jobs, but they are not exhaustive.',
+    'Do not force a step into the nearest-sounding preset — a preset carries a full system',
+    'prompt written for ITS job, and a mismatched one will steer the step wrong in ways the',
+    'role name does not reveal.',
+    '',
+    'For each step, ask: "does a preset describe what this step ACTUALLY does — its real job,',
+    'not just a similar-sounding one?"',
+    '  - YES  → use that preset. Do NOT set system_prompt. This is the common case; prefer a',
+    '           preset whenever one genuinely fits, since preset prompts are battle-tested.',
+    '  - NO   → use `role: custom` and write a `system_prompt` yourself.',
+    '',
+    'Reach for `custom` when the step\'s job is real but outside the preset set, e.g.:',
+    '  - a domain task the presets never model (triage tickets, summarize logs, draft a',
+    '    changelog from commits, extract structured data, translate, classify)',
+    '  - a specific analysis the user described that no preset performs',
+    '  - a step whose job is close to a preset but whose CONSTRAINTS materially differ',
+    '    (e.g. "review, but ONLY for accessibility" — `reviewer` reviews everything)',
+    'Do NOT reach for `custom` merely to reword a preset, to be thorough, or because you are',
+    'unsure. An ill-fitting preset is a bug; an unnecessary custom prompt is a regression.',
+    '',
+    'A custom system_prompt MUST be self-contained — it is the step\'s ENTIRE instruction set,',
+    'and it inherits nothing from any preset. Write it as a complete prompt that states:',
+    '  - who the step is and that it is one step of an automated multi-step flow',
+    '  - its exact job, and what it must NOT do',
+    '  - whether it may edit files (say so explicitly — read-only steps must be told to use',
+    '    read-only tools and not edit code; this must agree with the `tools` you grant)',
+    '  - the shape of the deliverable it must produce',
+    'Do NOT mention the <output> wrapper or artifact names — that contract is appended',
+    'automatically. Use YAML block scalars (`system_prompt: |`) for multi-line prompts.',
+    '',
+    'EXAMPLE — a step no preset covers:',
+    '  - id: triage',
+    '    model: { backend: claude, model: claude-sonnet-4-6 }',
+    '    role: custom',
+    '    system_prompt: |',
+    '      You are the TRIAGE step of a multi-stage automated flow.',
+    '',
+    '      Your job: read the incoming bug reports and group them by root-cause area,',
+    '      then rank each group by user impact. Judge severity from evidence in the',
+    '      reports themselves — do not speculate about causes you cannot support.',
+    '',
+    '      You are READ-ONLY. Use read-only tools to check the repo. Never edit code,',
+    '      and do not propose fixes — a later step owns that.',
+    '',
+    '      Produce markdown: one section per group, ordered most-impactful first, each',
+    '      with a one-line cause, the reports it covers, and a severity rating.',
+    '    inputs: [user_prompt]',
+    '    tools: [Read, Grep]',
+    '    output: triage.md',
     '',
     'CONVENTIONS',
     '===========',
@@ -299,6 +354,10 @@ function finalizeDraft(
   // as "not supported"; snap each premium ref to its canonical spelling first.
   repairModelIds(parsed);
 
+  // Reconcile role against the system prompt the model did (or didn't) write,
+  // so a near-miss on the custom-prompt path doesn't ship a broken step.
+  repairRoleFit(parsed);
+
   const v = validateFlow(parsed);
   if (!v.ok) {
     return {
@@ -337,6 +396,30 @@ function repairModelIds(flow: Flow): void {
   for (const step of flow.steps) {
     fix(step.model);
     fix(step.rebound?.critic);
+  }
+}
+
+/// Reconcile each step's `role` with its `system_prompt`. The drafting model
+/// is asked to judge preset fit and fall back to `custom` + `system_prompt`
+/// when nothing fits; it lands near-miss combinations two ways, both of which
+/// resolveSystemPrompt would otherwise handle silently and wrongly:
+///
+///   - a written prompt left under a preset role — the override is dropped and
+///     the preset's body runs instead, quietly discarding the model's judgement
+///     that the preset did NOT fit. The prompt is the more specific signal, so
+///     honour it: flip the role to `custom` (the same invariant the builder
+///     enforces when a user edits the prompt textarea).
+///   - a role that isn't a preset at all (a typo, or an invented name like
+///     `summarizer`) carrying a prompt — same fix, and it rescues the step from
+///     a `ROLE_PROMPTS[role]` miss that resolves to the string "undefined".
+///
+/// An unknown role with NO prompt is left alone for validateFlow to reject —
+/// there's nothing here to recover it from. Mutates `flow` in place.
+function repairRoleFit(flow: Flow): void {
+  for (const step of flow.steps) {
+    if (!step.systemPromptOverride?.trim()) continue;
+    if (step.role === 'custom') continue;
+    step.role = 'custom';
   }
 }
 
