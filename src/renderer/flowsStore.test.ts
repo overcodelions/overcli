@@ -83,6 +83,23 @@ describe('openEditor', () => {
     expect(useFlowsStore.getState().editorDraft!.id).toBe('custom');
   });
 
+  it('kind:new suffixes the id when a flow with that id already exists', () => {
+    // A blank flow always starts as `new-flow`; creating a second one must
+    // not reuse the id (the id is the on-disk filename) or it overwrites the
+    // first. Existing `new-flow` and `new-flow-2` force a `-3` suffix.
+    useFlowsStore.setState({
+      flows: [minimalFlow({ id: 'new-flow' }), minimalFlow({ id: 'new-flow-2' })],
+    });
+    useFlowsStore.getState().openEditor({ kind: 'new' });
+    expect(useFlowsStore.getState().editorDraft!.id).toBe('new-flow-3');
+  });
+
+  it('kind:new suffixes a colliding template id too', () => {
+    useFlowsStore.setState({ flows: [minimalFlow({ id: 'custom' })] });
+    useFlowsStore.getState().openEditor({ kind: 'new' }, minimalFlow({ id: 'custom' }));
+    expect(useFlowsStore.getState().editorDraft!.id).toBe('custom-2');
+  });
+
   it('kind:new clears editorSaveError', () => {
     useFlowsStore.setState({ editorSaveError: 'prior error' });
     useFlowsStore.getState().openEditor({ kind: 'new' });
