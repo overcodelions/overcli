@@ -369,6 +369,14 @@ export const ROLE_PROMPTS: Record<Exclude<FlowRolePreset, 'custom'>, string> = {
   ].join('\n'),
 };
 
+/// Whether `role` names a preset we have a prompt body for. Anything else
+/// (including `custom`) has no preset prompt to resolve.
+export function isKnownRolePreset(
+  role: string,
+): role is Exclude<FlowRolePreset, 'custom'> {
+  return Object.prototype.hasOwnProperty.call(ROLE_PROMPTS, role);
+}
+
 /// Resolve the effective system prompt for a step, given its role preset
 /// and any user override. Always appends the artifact-extraction contract.
 export function resolveSystemPrompt(args: {

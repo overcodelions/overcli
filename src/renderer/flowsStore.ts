@@ -122,6 +122,20 @@ function cloneFlow(flow: Flow): Flow {
   return JSON.parse(JSON.stringify(flow));
 }
 
+/// Ensure a brand-new flow's id doesn't collide with one already in the
+/// library. The id becomes the on-disk filename (`<id>.yaml`), so two flows
+/// sharing an id overwrite each other on save — which is exactly what a
+/// blank flow (constant id `new-flow`) did when created repeatedly. Suffix
+/// `-2`, `-3`, … until free. Only applied when opening a *new* flow; editing
+/// an existing flow keeps its id.
+function uniqueFlowId(desired: string, existing: Flow[]): string {
+  const taken = new Set(existing.map((f) => f.id));
+  if (!taken.has(desired)) return desired;
+  let n = 2;
+  while (taken.has(`${desired}-${n}`)) n += 1;
+  return `${desired}-${n}`;
+}
+
 /// Friendly auto-name for a synthesized participant. Uses the shared
 /// model catalog's `friendlyModelLabel` so the auto-name matches what
 /// users see in pickers ("Claude Sonnet 4.6", "GPT-5.4 mini",
@@ -232,6 +246,11 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   openEditor(target, blank) {
     if (target.kind === 'new') {
       const flow = blank ? cloneFlow(blank) : cloneFlow(BLANK_FLOW);
+      // Give the new flow a collision-free id so saving it creates a new
+      // file instead of overwriting an existing flow that shares the id
+      // (blank flows all start as `new-flow`; templates reuse the template
+      // id). The user can still rename it in the editor before saving.
+      flow.id = uniqueFlowId(flow.id, get().flows);
       set({ editor: target, editorDraft: flow, editorSaveError: null });
       return;
     }

@@ -146,6 +146,111 @@ describe('draftFlowFromPrompt', () => {
     }
   });
 
+  it('keeps a drafted custom step with its own system prompt', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Triage Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: triage',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: custom',
+        '    system_prompt: |',
+        '      You are the TRIAGE step of a multi-stage automated flow.',
+        '      Group the incoming reports by root cause. You are READ-ONLY.',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: triage.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'Triage bugs' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps[0].role).toBe('custom');
+      expect(result.flow.steps[0].systemPromptOverride).toContain('TRIAGE step');
+    }
+  });
+
+  it('flips a step to custom when a system prompt lands under a preset role', async () => {
+    // The prompt is the more specific signal: resolveSystemPrompt would drop
+    // it on a preset role and silently run the preset body instead.
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Narrow Review',
+        'input: user_prompt',
+        'steps:',
+        '  - id: a11y',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: reviewer',
+        '    system_prompt: Review the diff ONLY for accessibility regressions.',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: a11y.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'a11y review' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps[0].role).toBe('custom');
+      expect(result.flow.steps[0].systemPromptOverride).toContain('accessibility');
+    }
+  });
+
+  it('rescues an invented role name that carries a system prompt', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Summary Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: sum',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: summarizer',
+        '    system_prompt: Summarize the input logs into a short digest.',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: digest.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'summarize logs' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow.steps[0].role).toBe('custom');
+  });
+
+  it('rejects an unknown role with no system prompt to recover it from', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Typo Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: review',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: reviewr',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: review.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'review it' }, claudeDeps());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('Unknown role "reviewr"');
+  });
+
   it('drafts Claude through runner.oneShot on the default cli transport', async () => {
     const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('CLI Drafted') });
     const deps: DraftDeps = {
