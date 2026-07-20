@@ -6,6 +6,7 @@
 
 import { FLOW_USER_PROMPT_REF, resolveStepModel, type Flow, type FlowStep } from './schema';
 import { isSupportedPremiumModel } from '../modelCatalog';
+import { isKnownRolePreset } from './roles';
 
 export interface FlowValidationError {
   /// Dotted path to the field for editor highlight. Examples:
@@ -105,6 +106,13 @@ export function validateFlow(flow: Flow): FlowValidationResult {
       errors.push({
         path: `${base}.systemPromptOverride`,
         message: 'Custom role requires a system prompt.',
+      });
+    } else if (step.role !== 'custom' && !isKnownRolePreset(step.role)) {
+      // Without this the step resolves to no preset body and runs with the
+      // literal system prompt "undefined" — a silent failure at run time.
+      errors.push({
+        path: `${base}.role`,
+        message: `Unknown role "${step.role}". Use a preset, or "custom" with a system prompt.`,
       });
     }
     if (!step.output?.trim()) {
