@@ -133,12 +133,21 @@ export function App() {
     let last = '';
     const persist = () => {
       const s = useStore.getState();
+      const orch = useOrchestratorStore.getState();
       const view = {
         detailMode: s.detailMode,
         focusedProjectId: s.focusedProjectId,
         focusedWorkspaceId: s.focusedWorkspaceId,
         activeRunId: useFlowsStore.getState().activeRunId,
-        activeOrchestrationId: useOrchestratorStore.getState().activeOrchestrationId,
+        activeOrchestrationId: orch.activeOrchestrationId,
+        // Sticky batch-launch defaults — so "main tree" (runIn: 'cwd') and its
+        // coupled concurrency / PR-on-finish choices survive a reload instead
+        // of snapping back to the worktree default.
+        orchestrator: {
+          runIn: orch.runIn,
+          maxConcurrent: orch.maxConcurrent,
+          openPrOnFinish: orch.openPrOnFinish,
+        },
       };
       // The main store fires on every stream delta; skip the IPC write unless
       // the view identity actually changed.

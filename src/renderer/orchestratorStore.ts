@@ -90,6 +90,11 @@ interface OrchestratorActions {
   setRunIn(runIn: RunIn): void;
   setMaxConcurrent(n: number): void;
   setOpenPrOnFinish(v: boolean): void;
+  /// Rehydrate the sticky batch-launch defaults from a persisted view on
+  /// launch. Applies the same cwd↔concurrency coupling setRunIn/setMaxConcurrent
+  /// enforce, so a restored `cwd` batch still pins the cap to 1. Absent fields
+  /// keep the current value.
+  restoreDefaults(d: { runIn?: RunIn; maxConcurrent?: number; openPrOnFinish?: boolean }): void;
 
   /// Clear the producer conversation + candidate mapping to start a fresh
   /// batch. Keeps the launched orchestrations (the ledger) and the batch
@@ -201,6 +206,22 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   },
   setOpenPrOnFinish(v) {
     set({ openPrOnFinish: v });
+  },
+  restoreDefaults(d) {
+    set((s) => {
+      const runIn = d.runIn ?? s.runIn;
+      // cwd shares one working tree, so it can't overlap — pin the cap to 1,
+      // matching setRunIn/setMaxConcurrent. Otherwise clamp the saved cap.
+      const maxConcurrent =
+        runIn === 'cwd'
+          ? 1
+          : Math.max(1, Math.min(8, Math.round(d.maxConcurrent ?? s.maxConcurrent) || 1));
+      return {
+        runIn,
+        maxConcurrent,
+        openPrOnFinish: d.openPrOnFinish ?? s.openPrOnFinish,
+      };
+    });
   },
 
   resetDraft() {

@@ -853,9 +853,17 @@ export const useStore = create<StoreState>((set, get) => ({
       const { useFlowsStore } = await import('./flowsStore');
       useFlowsStore.getState().setActiveRun(view.activeRunId);
     }
-    if (view?.activeOrchestrationId) {
+    if (view?.activeOrchestrationId || view?.orchestrator) {
       const { useOrchestratorStore } = await import('./orchestratorStore');
-      useOrchestratorStore.getState().setActiveOrchestration(view.activeOrchestrationId);
+      if (view.activeOrchestrationId) {
+        useOrchestratorStore.getState().setActiveOrchestration(view.activeOrchestrationId);
+      }
+      // Rehydrate the sticky batch-launch defaults (main-tree vs worktree, its
+      // coupled cap, PR-on-finish) so a reload doesn't revert the user's choice
+      // to the worktree default.
+      if (view.orchestrator) {
+        useOrchestratorStore.getState().restoreDefaults(view.orchestrator);
+      }
     }
     if (workspacesChanged) await get().saveWorkspaces();
     await get().refreshBackendHealth();

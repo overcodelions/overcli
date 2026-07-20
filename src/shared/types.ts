@@ -782,6 +782,16 @@ export interface PersistedView {
   focusedWorkspaceId?: UUID | null;
   activeRunId?: string | null;
   activeOrchestrationId?: string | null;
+  /// Sticky orchestrator batch-launch defaults. These live only in the
+  /// renderer store, whose fresh default is `runIn: 'worktree'`; without
+  /// persisting them a renderer reload silently reverted a user's "main tree"
+  /// choice back to worktrees for the next batch. `runIn` is the flows RunIn
+  /// union, kept loose here to avoid coupling shared types across modules.
+  orchestrator?: {
+    runIn?: 'cwd' | 'worktree';
+    maxConcurrent?: number;
+    openPrOnFinish?: boolean;
+  };
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
