@@ -225,6 +225,7 @@ function registerIpc(): void {
     refreshUpdateChannel();
   });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
+  ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
