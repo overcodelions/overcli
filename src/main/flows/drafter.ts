@@ -21,7 +21,7 @@ import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
-import { canonicalizePremiumModel } from '../../shared/modelCatalog';
+import { canonicalizePremiumModel, liftMissingModel } from '../../shared/modelCatalog';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import {
   validateFlow,
@@ -380,17 +380,26 @@ function stripCodeFences(text: string): string {
 
 /// Snap every premium model ref in the flow to its canonical catalog
 /// spelling, fixing dot-vs-dash version mismatches (e.g. drafted
-/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend). Walks
-/// participants, legacy step-level models, and rebound critics. Ollama and
+/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend) and
+/// lifting any reference to a retired model (e.g. `claude-opus-4-7`) up to
+/// the next-highest in-family version we still ship. Walks participants,
+/// legacy step-level models, and rebound critics. Ollama and
 /// already-canonical refs pass through untouched. Mutates `flow` in place.
 function repairModelIds(flow: Flow): void {
+  // Canonicalize first (snaps a dotted alias onto its catalog spelling),
+  // then lift (rewrites a still-unsupported id to a newer in-family one).
+  const repair = (backend: FlowModelRef['backend'], model: string) =>
+    liftMissingModel(
+      backend as Exclude<typeof backend, 'ollama'>,
+      canonicalizePremiumModel(backend as Exclude<typeof backend, 'ollama'>, model),
+    );
   const fix = (ref: FlowModelRef | undefined) => {
     if (!ref || ref.backend === 'ollama') return;
-    ref.model = canonicalizePremiumModel(ref.backend, ref.model);
+    ref.model = repair(ref.backend, ref.model);
   };
   for (const p of flow.participants ?? []) {
     if (p.backend !== 'ollama') {
-      p.model = canonicalizePremiumModel(p.backend, p.model);
+      p.model = repair(p.backend, p.model);
     }
   }
   for (const step of flow.steps) {

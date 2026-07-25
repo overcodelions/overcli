@@ -310,7 +310,7 @@ describe('setStepModel', () => {
   });
 
   it('reuses an existing participant when the model already has one', () => {
-    // The blank flow starts with a 'primary' participant (claude-opus-4-7).
+    // The blank flow starts with a 'primary' participant (claude-opus-5).
     // Switching step 0 back to the same model should reuse that participant.
     const { participants } = useFlowsStore.getState().editorDraft!;
     const existingModel = { backend: participants[0].backend, model: participants[0].model };
