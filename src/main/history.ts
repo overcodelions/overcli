@@ -632,16 +632,10 @@ export function parseCodexHistoryLine(line: string): StreamEvent | null {
     }
     case 'function_call_output': {
       const callId = payload.call_id ?? '';
-      const outputStr = payload.output ?? '';
-      let inner = outputStr;
-      try {
-        const parsed = JSON.parse(outputStr);
-        if (typeof parsed?.output === 'string') inner = parsed.output;
-      } catch {}
       return event(
         {
           type: 'toolResult',
-          results: [{ id: callId, content: inner, isError: false }],
+          results: [{ id: callId, content: codexToolOutputText(payload.output), isError: false }],
         },
         trimmed,
         timestamp,
@@ -765,8 +759,27 @@ function codexEventSignature(ev: StreamEvent): string | null {
   }
 }
 
+/// Codex's `function_call_output.output`. Usually a string, and usually a
+/// JSON blob wrapping the real text under `output`. Since mid-2026 codex
+/// also writes it as an array of content blocks — the same shape Claude
+/// uses, hence the shared normalizer. `ToolResultBlock.content` is typed
+/// `string`, so letting a non-string through here poisons every consumer
+/// that trusts the type (the dedupe signature `.trim()`s it, which is
+/// where it surfaced).
+export function codexToolOutputText(raw: unknown): string {
+  const text = typeof raw === 'string' ? raw : claudeToolResultText(raw);
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed?.output === 'string') return parsed.output;
+  } catch {}
+  return text;
+}
+
+/// Defensive on purpose: `s` is typed `string` but every caller sources it
+/// from a transcript on disk, where the CLIs change shapes without notice.
 export function normalizeSigText(s: string): string {
-  return (s || '').trim().replace(/\s+/g, ' ').slice(0, 500);
+  const text = typeof s === 'string' ? s : claudeToolResultText(s);
+  return text.trim().replace(/\s+/g, ' ').slice(0, 500);
 }
 
 function loadGeminiHistory(
