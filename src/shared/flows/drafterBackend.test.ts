@@ -56,9 +56,9 @@ describe('pickDrafterBackend', () => {
 
 describe('drafterModelFor', () => {
   it('returns the strongest premium model per backend', () => {
-    // claude defaults to opus-4-8 (first entry); fable-5 is the frontier
-    // opt-in, not the drafter default.
-    expect(drafterModelFor('claude')).toBe('claude-opus-4-8');
+    // claude defaults to opus-5 (first entry, the newest thinking model);
+    // fable-5 is the frontier opt-in, not the drafter default.
+    expect(drafterModelFor('claude')).toBe('claude-opus-5');
     expect(drafterModelFor('codex')).toBe('gpt-5.6-sol');
     expect(drafterModelFor('gemini')).toBe('gemini-2.5-pro');
   });
@@ -67,13 +67,13 @@ describe('drafterModelFor', () => {
 describe('drafterModelHints', () => {
   it('maps a model to each speed tier for a backend', () => {
     // fable-5 is 'frontier' (not 'thinking'), so the thinking hint is the
-    // first thinking model — opus-4-8. sonnet is classified 'fast', so
+    // first thinking model — opus-5. sonnet is classified 'fast', so
     // claude has no 'standard' model — standard degrades up to the thinking
-    // pick (opus-4-8), and fast is the first fast model (sonnet-5, which
+    // pick (opus-5), and fast is the first fast model (sonnet-5, which
     // precedes sonnet-4.6 and haiku among the 'fast' models).
     expect(drafterModelHints('claude')).toEqual({
-      thinking: 'claude-opus-4-8',
-      standard: 'claude-opus-4-8',
+      thinking: 'claude-opus-5',
+      standard: 'claude-opus-5',
       fast: 'claude-sonnet-5',
     });
     // codex: sol is the first thinking model, terra the first fast model

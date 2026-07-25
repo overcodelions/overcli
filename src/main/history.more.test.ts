@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   claudeProjectSlug,
   codexContentText,
+  codexToolOutputText,
   dedupeCodexEvents,
   normalizePathKey,
   normalizeSigText,
@@ -60,6 +61,35 @@ describe('normalizeSigText', () => {
   it('caps output at 500 characters', () => {
     const input = 'a'.repeat(1000);
     expect(normalizeSigText(input).length).toBe(500);
+  });
+
+  it('does not throw when a transcript smuggles a non-string past the type', () => {
+    // @ts-expect-error — codex writes tool output as content blocks
+    expect(normalizeSigText([{ type: 'input_text', text: 'hi  there' }])).toBe('hi there');
+  });
+});
+
+describe('codexToolOutputText', () => {
+  it('passes a plain string through', () => {
+    expect(codexToolOutputText('done')).toBe('done');
+  });
+
+  it('unwraps the JSON envelope codex usually writes', () => {
+    expect(codexToolOutputText(JSON.stringify({ output: 'ls: ok', metadata: {} }))).toBe('ls: ok');
+  });
+
+  it('joins the content-block array codex started emitting mid-2026', () => {
+    const raw = [
+      { type: 'input_text', text: 'Script completed' },
+      { type: 'input_text', text: 'Wall time 16.4 seconds' },
+    ];
+    expect(codexToolOutputText(raw)).toBe('Script completed\nWall time 16.4 seconds');
+  });
+
+  it('yields a string for missing or unrecognised output', () => {
+    expect(codexToolOutputText(undefined)).toBe('');
+    expect(codexToolOutputText(null)).toBe('');
+    expect(codexToolOutputText({ unexpected: true })).toBe('');
   });
 });
 
@@ -244,6 +274,26 @@ describe('parseCodexHistoryLine', () => {
     });
     const ev = parseCodexHistoryLine(line);
     expect(ev?.kind).toEqual({ type: 'localUser', text: 'please do X' });
+  });
+
+  it('yields string content for a block-array function_call_output, and survives dedupe', () => {
+    // The shape that broke runner:loadHistory — codex writes `output` as
+    // content blocks, so `content` arrived as an array and the dedupe
+    // signature called .trim() on it.
+    const line = JSON.stringify({
+      timestamp: 1000,
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: [{ type: 'input_text', text: 'Script completed' }],
+      },
+    });
+    const ev = parseCodexHistoryLine(line)!;
+    expect(ev.kind).toEqual({
+      type: 'toolResult',
+      results: [{ id: 'call_1', content: 'Script completed', isError: false }],
+    });
+    expect(() => dedupeCodexEvents([ev])).not.toThrow();
   });
 
   it('filters out system/developer messages', () => {

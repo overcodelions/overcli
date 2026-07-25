@@ -33,7 +33,7 @@ describe('flow yaml round-trip', () => {
     expect(flow.steps).toHaveLength(5);
     expect(flow.steps[0].id).toBe('plan');
     expect(flow.steps[0].role).toBe('planner');
-    expect(flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-4-7' });
+    expect(flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5' });
     expect(flow.steps[0].rebound?.critic.model).toBe('claude-sonnet-4-6');
     expect(flow.steps[0].rebound?.maxIters).toBe(3);
   });
@@ -90,14 +90,33 @@ name: compact
 input: user_prompt
 steps:
   - id: only
-    model: claude:claude-opus-4-7
+    model: claude:claude-opus-4-8
     role: planner
     inputs: [user_prompt]
     tools: []
     output: out.md
 `;
     const flow = parseFlowYaml({ yaml, id: 'c', source: 'user', filePath: '/tmp/c' });
-    expect(flow?.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-4-7' });
+    expect(flow?.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-4-8' });
+  });
+
+  it('auto-lifts a step model that references a retired model on load', () => {
+    const yaml = `
+name: stale
+input: user_prompt
+steps:
+  - id: only
+    model: claude:claude-opus-4-7
+    role: planner
+    inputs: [user_prompt]
+    tools: []
+    output: out.md
+`;
+    const flow = parseFlowYaml({ yaml, id: 's', source: 'user', filePath: '/tmp/s' });
+    // Opus 4.7 was retired; it lifts to the next-highest in-family version.
+    expect(flow?.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-4-8' });
+    const primary = flow?.participants.find((p) => p.id === flow.steps[0].participantId);
+    expect(primary?.model).toBe('claude-opus-4-8');
   });
 
   it('returns null on unparseable yaml', () => {

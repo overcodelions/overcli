@@ -4,6 +4,7 @@ import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
 import { useThemeEffect } from './useThemeEffect';
 import { useShortcuts } from './useShortcuts';
+import { useRunningReconcile } from './useRunningReconcile';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
@@ -241,6 +242,11 @@ export function App() {
   }, [ingest, projects, startNewConversation]);
 
   useShortcuts();
+
+  // Retract per-conversation running flags main no longer stands behind —
+  // otherwise one lost `running: false` spins a conversation (and any flow
+  // run that owns it) until the window reloads.
+  useRunningReconcile();
 
   // First-run onboarding: with no projects and no usable CLI the sidebar is
   // empty (its add buttons are disabled anyway), so hide it and give the

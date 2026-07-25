@@ -135,6 +135,16 @@ export class ReviewerManager {
     this.emit = emit;
   }
 
+  /// Whether a review round is actually in flight for this conversation.
+  /// The runner's stale-state sweep asks before retracting a "Rebounding…"
+  /// indicator — an idle warm codex session (no `active` turn) doesn't
+  /// count as work in progress.
+  isRunning(conversationId: UUID): boolean {
+    if (this.inFlight.has(conversationId)) return true;
+    if (this.inFlightHttp.has(conversationId)) return true;
+    return !!this.codexSessions.get(conversationId)?.active;
+  }
+
   stop(conversationId: UUID): void {
     const p = this.inFlight.get(conversationId);
     if (p) {

@@ -11,6 +11,7 @@
 
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 
+import { liftMissingModel } from '../modelCatalog';
 import type { Backend } from '../types';
 import {
   DEFAULT_PARTICIPANT_ID,
@@ -188,6 +189,25 @@ function parseStep(raw: unknown, idx: number): FlowStep {
   };
 }
 
+/// Lift a step's legacy `model` and its rebound critic to the newest
+/// in-family catalog id when they reference a retired model. Mutates the
+/// step in place. Ollama refs and already-supported ids pass through.
+function liftStepModels(step: FlowStep): void {
+  if (step.model && step.model.backend !== 'ollama' && step.model.model) {
+    step.model = {
+      ...step.model,
+      model: liftMissingModel(step.model.backend, step.model.model),
+    };
+  }
+  const critic = step.rebound?.critic;
+  if (step.rebound && critic && critic.backend !== 'ollama' && critic.model) {
+    step.rebound = {
+      ...step.rebound,
+      critic: { ...critic, model: liftMissingModel(critic.backend, critic.model) },
+    };
+  }
+}
+
 /// Back-compat migration. If the YAML had no `participants:` block, walk
 /// the steps' legacy `model` fields and synthesize one participant per
 /// unique backend+model. Each step's `participantId` is then pointed at
@@ -272,6 +292,19 @@ export function parseFlowYaml(args: {
   const participantsRaw = Array.isArray(y.participants) ? y.participants : [];
   const parsedSteps = stepsRaw.map((s, i) => parseStep(s, i));
   const parsedParticipants = participantsRaw.map((p, i) => parseParticipant(p, i));
+  // Auto-lift references to retired models (e.g. a flow pinned to
+  // `claude-opus-4-7` after we dropped it) to the next-highest version in
+  // the same family, so old flows stay runnable. Do this before
+  // `migrateFlowParticipants` so any participants it synthesizes from
+  // legacy step-level models inherit the lifted id too.
+  for (const p of parsedParticipants) {
+    if (p.backend !== 'ollama' && p.model) {
+      p.model = liftMissingModel(p.backend, p.model);
+    }
+  }
+  for (const s of parsedSteps) {
+    liftStepModels(s);
+  }
   const { participants, steps } = migrateFlowParticipants(parsedParticipants, parsedSteps);
   return {
     id: args.id,
