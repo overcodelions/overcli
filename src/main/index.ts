@@ -51,6 +51,7 @@ import {
 } from './mcpCatalog';
 import { loginCodexMcp } from './mcpLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
+import { resolveFilePath as resolveFilePathIn } from './resolveFilePath';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -1302,92 +1303,15 @@ function resolveExistingAncestor(p: string): string {
   }
 }
 
-// Tool output (grep, glob, etc.) emits paths relative to the conversation
-// cwd — and the renderer's path-link handler strips trailing `:LINE`
-// suffixes, so by the time a click lands here we often get something like
-// `src/main/index.ts` or even just `store.ts`. Neither resolves against
-// Electron's cwd, so `fs.readFileSync` ENOENTs.
-//
-// Resolution cascade:
-//   1. absolute + exists,
-//   2. join against the caller's rootPath (conversation cwd),
-//   3. join against each registered root,
-//   4. Command-P-style basename search across registered roots, tie-broken
-//      by how many trailing path segments match the hint (so a hint of
-//      `renderer/store.ts` prefers `.../src/renderer/store.ts` over
-//      `.../some/other/store.ts`), then by shortest full path.
+/// Thin wrapper over the injected-fs resolver in `resolveFilePath.ts` —
+/// see that file for the cascade and why the caller's own root wins.
 function resolveFilePath(hint: string, rootPath?: string): string | null {
-  if (!hint) return null;
-  if (path.isAbsolute(hint) && fs.existsSync(hint)) return hint;
-
-  const tried = new Set<string>();
-  const tryCandidate = (c: string): string | null => {
-    if (tried.has(c)) return null;
-    tried.add(c);
-    return fs.existsSync(c) ? c : null;
-  };
-
-  if (rootPath) {
-    const direct = tryCandidate(path.resolve(rootPath, hint));
-    if (direct) return direct;
-  }
-  const roots = registeredRoots();
-  for (const root of roots) {
-    const direct = tryCandidate(path.resolve(root, hint));
-    if (direct) return direct;
-  }
-
-  const hintSegments = hint.split(/[\\/]/).filter(Boolean);
-  const basename = hintSegments[hintSegments.length - 1];
-  if (!basename) return null;
-
-  // An absolute hint that didn't resolve to an existing file in the direct
-  // checks above won't be found by scanning for a same-named file elsewhere —
-  // and silently redirecting an absolute path to a different file would be
-  // wrong. Skip the recursive walk (each readdir/stat is antivirus-taxed and
-  // covers up to 20k files per root) for absolute hints.
-  if (path.isAbsolute(hint)) return null;
-
-  const searchRoots: string[] = [];
-  const seenRoot = new Set<string>();
-  const pushRoot = (r: string | undefined) => {
-    if (!r || seenRoot.has(r)) return;
-    seenRoot.add(r);
-    searchRoots.push(r);
-  };
-  pushRoot(rootPath);
-  for (const r of roots) pushRoot(r);
-
-  type Match = { file: string; suffixScore: number };
-  let best: Match | null = null;
-  for (const root of searchRoots) {
-    let files: string[];
-    try {
-      files = listFilesRecursive(root);
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (path.basename(file) !== basename) continue;
-      const fileSegments = file.split(path.sep);
-      let score = 0;
-      for (let i = 0; i < hintSegments.length && i < fileSegments.length; i++) {
-        if (fileSegments[fileSegments.length - 1 - i] === hintSegments[hintSegments.length - 1 - i]) {
-          score++;
-        } else {
-          break;
-        }
-      }
-      if (
-        !best ||
-        score > best.suffixScore ||
-        (score === best.suffixScore && file.length < best.file.length)
-      ) {
-        best = { file, suffixScore: score };
-      }
-    }
-  }
-  return best?.file ?? null;
+  return resolveFilePathIn(hint, {
+    rootPath,
+    roots: registeredRoots(),
+    exists: (c) => fs.existsSync(c),
+    listFiles: listFilesRecursive,
+  });
 }
 
 function listFilesRecursive(root: string): string[] {
