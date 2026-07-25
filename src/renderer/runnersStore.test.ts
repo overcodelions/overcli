@@ -3,6 +3,7 @@ import {
   getAllRunners,
   getRunner,
   newRunnerState,
+  staleRunningIds,
   useRunnersStore,
 } from './runnersStore';
 import type { StreamEvent } from '@shared/types';
@@ -100,5 +101,46 @@ describe('store independence', () => {
     const c2Before = getRunner('c2');
     useRunnersStore.getState().patchRunner('c1', { activityLabel: 'x' });
     expect(getRunner('c2')).toBe(c2Before);
+  });
+});
+
+describe('staleRunningIds', () => {
+  // Regression: a flow run finished cleanly but its sidebar row kept
+  // spinning for the rest of the session. `runIsLive` ORs the run's
+  // participant conversations into the run's liveness, and one of them
+  // still had `isRunning: true` from a `running: false` that never
+  // arrived. Nothing reconciled that flag, so only a reload cleared it.
+  const old = { runningSince: 1_000 };
+
+  it('retracts a flag main no longer stands behind', () => {
+    const runners = { a: { isRunning: true, ...old } };
+    expect(staleRunningIds(runners, [], 100_000)).toEqual(['a']);
+  });
+
+  it('leaves conversations main still reports as running', () => {
+    const runners = { a: { isRunning: true, ...old }, b: { isRunning: true, ...old } };
+    expect(staleRunningIds(runners, ['a'], 100_000)).toEqual(['b']);
+  });
+
+  it('ignores runners that are already idle', () => {
+    const runners = { a: { isRunning: false, ...old } };
+    expect(staleRunningIds(runners, [], 100_000)).toEqual([]);
+  });
+
+  it('spares a turn that just started — main may not have registered it yet', () => {
+    // The renderer flips the flag optimistically on send; the snapshot it
+    // races against can be a moment older than that.
+    const runners = { a: { isRunning: true, runningSince: 99_000 } };
+    expect(staleRunningIds(runners, [], 100_000, 15_000)).toEqual([]);
+    expect(staleRunningIds(runners, [], 120_000, 15_000)).toEqual(['a']);
+  });
+
+  it('retracts a flag with no start stamp (set before this bookkeeping existed)', () => {
+    expect(staleRunningIds({ a: { isRunning: true } }, [], 100_000)).toEqual(['a']);
+  });
+
+  it('accepts a Set of live ids as well as an array', () => {
+    const runners = { a: { isRunning: true, ...old } };
+    expect(staleRunningIds(runners, new Set(['a']), 100_000)).toEqual([]);
   });
 });
