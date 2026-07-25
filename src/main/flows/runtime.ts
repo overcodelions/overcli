@@ -241,6 +241,22 @@ export class FlowRuntimeImpl {
   /// Default poll cadence when the caller doesn't specify one (10 min).
   private static readonly WATCH_DEFAULT_POLL_MS = 600_000;
 
+  // ---- Step watchdog ----------------------------------------------------
+  /// Last time we saw ANY event on the conversation of a run's currently
+  /// executing step, keyed by run id. A `running` state is only ever left
+  /// by an inbound event (`running: false` → `onStepFinished`), so a step
+  /// whose backend dies quietly — or never starts — would otherwise hold
+  /// the run (and its sidebar spinner) forever. Stamped when the step is
+  /// kicked off and on every event that reaches `observeEvent`.
+  private stepActivity = new Map<UUID, number>();
+  private stepWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /// How long a running step may produce nothing at all before we treat it
+  /// as dead. Generous: a step can legitimately sit inside one long tool
+  /// call (a full test suite, a big build) without emitting anything.
+  private static readonly STEP_SILENCE_TIMEOUT_MS = 30 * 60_000;
+  /// How often the watchdog wakes. Only armed while a run is executing.
+  private static readonly STEP_WATCHDOG_SWEEP_MS = 60_000;
+
   /// Max combined size of artifact inputs + system prompt we'll feed to a
   /// step's first turn before truncating. Local models choke on huge
   /// contexts; premium models can handle more but we still cap to keep
@@ -347,6 +363,7 @@ export class FlowRuntimeImpl {
       if (!runId) return;
       const run = this.runs.get(runId);
       if (!run) return;
+      this.markStepActivity(runId);
 
       // Capture the latest non-partial assistant text per participant,
       // regardless of run state. Hijack replies during a `preStep` pause
@@ -435,6 +452,10 @@ export class FlowRuntimeImpl {
       }
       return;
     }
+    if (event.type === 'running') {
+      const activeRunId = this.convIdToRun.get(event.conversationId);
+      if (activeRunId) this.markStepActivity(activeRunId);
+    }
     if (event.type === 'running' && event.isRunning === false) {
       const runId = this.convIdToRun.get(event.conversationId);
       if (!runId) return;
@@ -489,7 +510,11 @@ export class FlowRuntimeImpl {
       const currentStepId = run.state.currentStepId;
       const currentStep = run.flowSnapshot.steps.find((s) => s.id === currentStepId);
       if (!currentStep) return;
-      const currentConvId = run.conversationIds[currentStep.participantId];
+      // Keyed the same way `executeStep` minted it — a step with a blank
+      // participantId is filed under its own id, and looking it up by the
+      // blank key would never match, so the step's own `running: false`
+      // would be discarded and the run would hang on it forever.
+      const currentConvId = run.conversationIds[stepParticipantKey(currentStep)];
       if (currentConvId !== event.conversationId) return;
       this.onStepFinished(runId, currentStepId);
     }
@@ -1197,7 +1222,7 @@ export class FlowRuntimeImpl {
     }
     if (run.state.kind === 'running') {
       const step = run.flowSnapshot.steps.find((s) => s.id === (run.state as any).currentStepId);
-      const convId = step ? run.conversationIds[step.participantId] : undefined;
+      const convId = step ? run.conversationIds[stepParticipantKey(step)] : undefined;
       if (convId) {
         try {
           this.runner.stop(convId);
@@ -1254,7 +1279,7 @@ export class FlowRuntimeImpl {
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
     if (run.state.kind === 'running') {
       const step = run.flowSnapshot.steps.find(s => s.id === (run.state as any).currentStepId);
-      const convId = step ? run.conversationIds[step.participantId] : undefined;
+      const convId = step ? run.conversationIds[stepParticipantKey(step)] : undefined;
       if (convId) {
         try {
           this.runner.stop(convId);
@@ -1398,6 +1423,69 @@ export class FlowRuntimeImpl {
     this.emitRunUpdate(run);
     this.checkpoint(run);
     return { ok: true };
+  }
+
+  /// Note that the run's executing step is still alive. Any event on one
+  /// of its conversations counts — the watchdog only cares about total
+  /// silence, not about progress.
+  private markStepActivity(runId: UUID): void {
+    const run = this.runs.get(runId);
+    if (!run || run.state.kind !== 'running') return;
+    this.stepActivity.set(runId, Date.now());
+  }
+
+  /// Lazily start the step watchdog. Idempotent; `unref` so it never holds
+  /// the process open on its own.
+  private ensureStepWatchdog(): void {
+    if (this.stepWatchdogTimer) return;
+    this.stepWatchdogTimer = setInterval(
+      () => this.sweepStuckSteps(),
+      FlowRuntimeImpl.STEP_WATCHDOG_SWEEP_MS,
+    );
+    this.stepWatchdogTimer.unref?.();
+  }
+
+  /// Fail any step that has gone completely silent past the timeout. This
+  /// is the runtime's only escape from `running` that doesn't depend on the
+  /// backend saying something: a CLI that dies without a closing event, or
+  /// a send that never reaches one, used to wedge the run permanently (its
+  /// state isn't even checkpointed, so a restart couldn't recover it
+  /// either). Routing through `handleStepFailure` means the run lands in
+  /// the same recoverable failure-pause a rejected step gets — the user can
+  /// re-run the step or override forward.
+  private sweepStuckSteps(now = Date.now()): void {
+    let anyRunning = false;
+    for (const run of Array.from(this.runs.values())) {
+      if (run.state.kind !== 'running') {
+        this.stepActivity.delete(run.id);
+        continue;
+      }
+      anyRunning = true;
+      const last = this.stepActivity.get(run.id);
+      if (last == null) {
+        // First sighting (e.g. a run restored mid-flight) — start its clock
+        // here rather than declaring it stuck on the strength of no record.
+        this.stepActivity.set(run.id, now);
+        continue;
+      }
+      const stepId = run.state.currentStepId;
+      const message = stuckStepMessage({
+        stepId,
+        silentMs: now - last,
+        timeoutMs: FlowRuntimeImpl.STEP_SILENCE_TIMEOUT_MS,
+      });
+      if (!message) continue;
+      const step = run.flowSnapshot.steps.find((s) => s.id === stepId);
+      if (!step) continue;
+      log('warn', 'flows.stepWatchdog', `run=${run.id} ${message}`);
+      this.stepActivity.delete(run.id);
+      this.finishAttempt(run, stepId, { outcome: 'error', errorMessage: message });
+      this.handleStepFailure(run.id, step, message);
+    }
+    if (!anyRunning && this.stepWatchdogTimer) {
+      clearInterval(this.stepWatchdogTimer);
+      this.stepWatchdogTimer = null;
+    }
   }
 
   /// Lazily start the single sweep timer. Idempotent. Uses `unref` so the
@@ -1765,7 +1853,7 @@ export class FlowRuntimeImpl {
     // its plan when it later reviews. If the participant's id can't be
     // resolved to a real participant, fall back to a per-step conv to
     // avoid hanging the run.
-    const participantId = step.participantId || step.id;
+    const participantId = stepParticipantKey(step);
     let convId = run.conversationIds[participantId];
     if (!convId) {
       convId = randomUUID();
@@ -1788,6 +1876,10 @@ export class FlowRuntimeImpl {
       conversationId: convId,
     };
     run.attempts.push(attempt);
+    // Start the silence clock at the send, not at the first event: a send
+    // that never produces one is exactly the case the watchdog exists for.
+    this.stepActivity.set(runId, Date.now());
+    this.ensureStepWatchdog();
     this.emitRunUpdate(run);
 
     const stepModel = resolveRunStepModel(run, step);
@@ -2343,6 +2435,29 @@ export function detectArtifactKind(name: string): FlowArtifact['kind'] {
   if (lower === 'diff' || lower.endsWith('.diff') || lower.endsWith('.patch')) return 'diff';
   if (lower.endsWith('url') || lower.endsWith('_url')) return 'url';
   return 'text';
+}
+
+/// Key a step's conversation is filed under in `FlowRun.conversationIds`.
+/// Normally the participant it's assigned to — participants share one
+/// conversation across all their steps so context carries forward. A step
+/// with no resolvable participant falls back to its own id, which gives it
+/// a private conversation rather than one shared by every such step.
+/// Every reader must key the same way; see the guard in `observeEvent`.
+export function stepParticipantKey(step: Pick<FlowStep, 'id' | 'participantId'>): string {
+  return step.participantId || step.id;
+}
+
+/// The failure message for a step that has gone silent past the watchdog's
+/// timeout, or null while it's still within budget. Split out from the
+/// sweep so the boundary is testable without a live runtime.
+export function stuckStepMessage(args: {
+  stepId: string;
+  silentMs: number;
+  timeoutMs: number;
+}): string | null {
+  if (args.silentMs <= args.timeoutMs) return null;
+  const minutes = Math.round(args.silentMs / 60_000);
+  return `Step "${args.stepId}" produced no output for ${minutes} minutes — treating it as failed.`;
 }
 
 /// Role presets whose whole job is to render an APPROVE/REJECT verdict on
