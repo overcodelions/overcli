@@ -39,6 +39,7 @@ import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { flowStarKey } from '@shared/flows/schema';
 import { FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
+import { appendContextNotice } from '@shared/contextNotices';
 import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
@@ -1329,9 +1330,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const conversations = notice
           ? (w.conversations ?? []).map((c) => ({
               ...c,
-              pendingContextUpdate: c.pendingContextUpdate
-                ? `${c.pendingContextUpdate}\n\n${notice}`
-                : notice,
+              pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
             }))
           : w.conversations;
         return { ...w, projectIds, rootPath, conversations };
@@ -1366,9 +1365,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const conversations = notice
           ? (w.conversations ?? []).map((c) => ({
               ...c,
-              pendingContextUpdate: c.pendingContextUpdate
-                ? `${c.pendingContextUpdate}\n\n${notice}`
-                : notice,
+              pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
             }))
           : w.conversations;
         return { ...w, instructions: trimmed, rootPath, conversations };
@@ -1609,9 +1606,7 @@ export const useStore = create<StoreState>((set, get) => ({
                         ...c,
                         workspaceAgentMemberIds: allMemberIds,
                         coordinatorRootPath,
-                        pendingContextUpdate: c.pendingContextUpdate
-                          ? `${c.pendingContextUpdate}\n\n${notice}`
-                          : notice,
+                        pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
                       }
                     : c,
                 ),
