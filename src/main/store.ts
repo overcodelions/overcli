@@ -21,6 +21,7 @@ import {
   UUID,
 } from '../shared/types';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
+import { trimContextNotices } from '../shared/contextNotices';
 
 const DEPRECATED_CODEX_MODELS = ['gpt-5.3-codex', 'gpt-5.2'];
 
@@ -86,6 +87,14 @@ function sanitizeConversation(conv: Conversation): Conversation {
   const reviewOllamaModel = stripDeprecatedCodexModel(next.reviewOllamaModel ?? undefined);
   if (reviewOllamaModel) next.reviewOllamaModel = reviewOllamaModel;
   else delete next.reviewOllamaModel;
+
+  // Queued workspace notices supersede one another and are only cleared when
+  // the conversation next sends, so a conversation you've moved on from used
+  // to accumulate them forever. Running this on load migrates stores written
+  // by older builds; running it on save keeps new ones bounded.
+  const pendingContextUpdate = trimContextNotices(next.pendingContextUpdate);
+  if (pendingContextUpdate) next.pendingContextUpdate = pendingContextUpdate;
+  else delete next.pendingContextUpdate;
 
   return next;
 }
