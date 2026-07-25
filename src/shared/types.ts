@@ -244,6 +244,14 @@ export interface ReviewInfo {
   raw?: string;
 }
 
+/// One conversation with a turn in flight, as reported by
+/// `runner:runningSnapshot`. The authoritative answer to "is this
+/// conversation busy right now" — see the channel's doc comment.
+export interface RunningConversation {
+  conversationId: UUID;
+  activityLabel?: string;
+}
+
 /// Image attachment sent alongside a user prompt. `dataBase64` is the raw
 /// file bytes in standard base64 (no `data:` prefix). Each backend encodes
 /// this differently on the wire — claude takes base64 inline, codex wants
@@ -902,6 +910,12 @@ export interface IPCInvokeMap {
     /// resurface as a user-style bubble after restart.
     syntheticPrompts?: string[];
   }) => StreamEvent[];
+  /// Conversations main currently believes have a turn in flight. The
+  /// renderer polls this to reconcile its own per-conversation `isRunning`
+  /// flags: the indicator is edge-triggered, so a single dropped `running`
+  /// event would otherwise leave a spinner (and any flow run that reads it
+  /// via `runIsLive`) stuck busy until the window reloads.
+  'runner:runningSnapshot': () => RunningConversation[];
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
   'capabilities:scan': () => CapabilitiesReport;

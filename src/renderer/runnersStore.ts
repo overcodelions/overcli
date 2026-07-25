@@ -38,6 +38,11 @@ export interface RunnerState {
   /// full agent snapshot; see `mergeTaskProgress`.
   taskProgressByToolUse: Record<string, TaskProgressInfo>;
   isRunning: boolean;
+  /// Timestamp (ms) this runner last flipped from idle to running, set
+  /// both by the optimistic flip on send and by main's `running` event.
+  /// `staleRunningIds` uses it to leave a just-started turn alone — main
+  /// hasn't necessarily registered it by the time the next poll lands.
+  runningSince?: number | null;
   activityLabel?: string;
   errorMessage?: string;
   pendingLocalUserIds: Set<UUID>;
@@ -70,6 +75,7 @@ export function newRunnerState(): RunnerState {
     subagentEvents: {},
     taskProgressByToolUse: {},
     isRunning: false,
+    runningSince: null,
     pendingLocalUserIds: new Set(),
     currentModel: '',
     historyLoaded: false,
@@ -121,6 +127,35 @@ export const useRunnersStore = create<RunnersStoreState>((set) => ({
     set((s) => ({ runners: { ...s.runners, [id]: newRunnerState() } }));
   },
 }));
+
+/// How long a locally-flipped running flag is left alone before the
+/// reconcile is willing to retract it. Covers the window between the
+/// renderer's optimistic flip on send and main registering the turn.
+export const RUNNING_RECONCILE_GRACE_MS = 15_000;
+
+/// Conversations this store thinks are running that main doesn't. The
+/// running indicator is edge-triggered, so a `running: false` that never
+/// arrives (or arrives while the window is reloading) pins a spinner —
+/// and, via `runIsLive`, makes a finished flow run look busy — until the
+/// app restarts. Comparing against main's authoritative snapshot lets it
+/// self-heal instead.
+export function staleRunningIds(
+  runners: Record<UUID, { isRunning: boolean; runningSince?: number | null }>,
+  runningIds: Iterable<UUID>,
+  now: number,
+  graceMs = RUNNING_RECONCILE_GRACE_MS,
+): UUID[] {
+  const live = runningIds instanceof Set ? runningIds : new Set(runningIds);
+  const stale: UUID[] = [];
+  for (const [id, runner] of Object.entries(runners)) {
+    if (!runner.isRunning) continue;
+    if (live.has(id)) continue;
+    // A turn that started moments ago may not be in main's map yet.
+    if (runner.runningSince != null && now - runner.runningSince < graceMs) continue;
+    stale.push(id);
+  }
+  return stale;
+}
 
 // ---- Selector hooks ---------------------------------------------------
 

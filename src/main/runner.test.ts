@@ -11,11 +11,13 @@ import {
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
 import {
+  AGENT_WORKING_LABEL,
   askUserQuestionHasData,
   isBrokerPromptToolMissingError,
   isStaleSessionError,
   resumeSessionAfterParamChange,
   shouldSkipIdleOnClose,
+  staleRunningReason,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
 
@@ -472,5 +474,78 @@ describe('collapsePartialAssistants', () => {
     expect(out).toHaveLength(2);
     expect(out[0]).toBe(input[1]); // B's only partial
     expect(out[1]).toBe(input[2]); // A's latest partial
+  });
+});
+
+describe('staleRunningReason', () => {
+  // Regression: the running indicator is edge-triggered, and two paths
+  // turn it on without a guaranteed off — the reviewer await ("Rebounding…")
+  // and the wait for a detached background agent ("Agent working…"). A
+  // finished flow run kept a sidebar spinner for 13 hours because one of
+  // its conversations was pinned this way.
+  const base = { since: 0, lastEventAt: 0, hasTransport: true, turnInFlight: true };
+
+  it('leaves a working turn alone even when it has been quiet a while', () => {
+    // A single long tool call (test suite, build) emits nothing for
+    // minutes — silence alone must never retract the indicator.
+    expect(staleRunningReason({ ...base, label: 'Running tools…', now: 20 * 60_000 })).toBeNull();
+  });
+
+  it('leaves a transport that never reports turn boundaries alone', () => {
+    // ollama / gemini ACP don't track it; unknown must read as "working".
+    expect(
+      staleRunningReason({ ...base, turnInFlight: undefined, now: 20 * 60_000 }),
+    ).toBeNull();
+  });
+
+  it('waits out a reviewer that is genuinely running', () => {
+    expect(
+      staleRunningReason({
+        ...base,
+        turnInFlight: false,
+        reviewerRunning: true,
+        label: 'Rebounding…',
+        now: 20 * 60_000,
+      }),
+    ).toBeNull();
+  });
+
+  it('retracts a hand-off left holding the indicator after the turn ended', () => {
+    // e.g. "Rebounding…" whose reviewer is already gone — nothing outside
+    // this process will ever speak for the conversation again.
+    expect(
+      staleRunningReason({ ...base, turnInFlight: false, label: 'Rebounding…', now: 20 * 60_000 }),
+    ).toMatch(/turn already ended/);
+  });
+
+  it('retracts a conversation with nothing left to speak for it', () => {
+    expect(staleRunningReason({ ...base, hasTransport: false, now: 5 * 60_000 })).toMatch(
+      /no live transport/,
+    );
+  });
+
+  it('gives a just-started send time to register its transport', () => {
+    expect(staleRunningReason({ ...base, hasTransport: false, now: 5_000 })).toBeNull();
+  });
+
+  it('bounds the wait on a background agent that never reports completion', () => {
+    const parked = { ...base, turnInFlight: false, label: AGENT_WORKING_LABEL };
+    expect(staleRunningReason({ ...parked, now: 60_000 })).toBeNull();
+    expect(staleRunningReason({ ...parked, now: 10 * 60_000 })).toMatch(/background agent/);
+  });
+
+  it('measures silence from the last event, not the turn start', () => {
+    // Progress ticks keep pushing the deadline out; only a genuinely
+    // silent wait gets cut loose.
+    expect(
+      staleRunningReason({
+        since: 0,
+        lastEventAt: 9 * 60_000,
+        hasTransport: true,
+        turnInFlight: false,
+        label: AGENT_WORKING_LABEL,
+        now: 10 * 60_000,
+      }),
+    ).toBeNull();
   });
 });

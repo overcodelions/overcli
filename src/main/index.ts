@@ -246,6 +246,7 @@ function registerIpc(): void {
   ipcMain.handle('runner:respondUserInput', (_e, { conversationId, requestId, answers }) =>
     runner!.respondUserInput(conversationId, requestId, answers),
   );
+  ipcMain.handle('runner:runningSnapshot', () => runner?.runningSnapshot() ?? []);
   ipcMain.handle('runner:loadHistory', (_e, args) => loadHistory(args));
   ipcMain.handle('runner:probeHealth', (_e, backend: Backend) => {
     const settings = Store.load().settings;
