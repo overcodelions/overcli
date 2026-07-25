@@ -56,7 +56,7 @@ steps:
     output: diff
 
   - id: review
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-opus-5 }
     role: reviewer
     inputs: [plan.md, diff]
     tools: [Read, Grep]
@@ -97,7 +97,7 @@ steps:
     output: diff.md
 
   - id: review
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-opus-5 }
     role: reviewer
     inputs: [user_prompt, diff.md]
     tools: [Read, Grep, Glob]
@@ -149,7 +149,7 @@ steps:
     output: diff
 
   - id: verify
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-opus-5 }
     role: reviewer
     inputs: [plan.md, diff]
     tools: [Read, Grep, Glob]
@@ -203,7 +203,7 @@ description: |
 input: user_prompt
 steps:
   - id: research
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-opus-5 }
     role: researcher
     inputs: [user_prompt]
     tools: [Read, Grep, Glob, WebFetch]
@@ -233,7 +233,7 @@ description: |
 input: user_prompt
 steps:
   - id: research
-    model: { backend: claude, model: claude-opus-4-7 }
+    model: { backend: claude, model: claude-opus-5 }
     role: researcher
     inputs: [user_prompt]
     tools: [Read, Grep, Glob, WebFetch]

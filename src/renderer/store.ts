@@ -39,6 +39,7 @@ import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { flowStarKey } from '@shared/flows/schema';
 import { FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
+import { appendContextNotice } from '@shared/contextNotices';
 import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
@@ -1329,9 +1330,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const conversations = notice
           ? (w.conversations ?? []).map((c) => ({
               ...c,
-              pendingContextUpdate: c.pendingContextUpdate
-                ? `${c.pendingContextUpdate}\n\n${notice}`
-                : notice,
+              pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
             }))
           : w.conversations;
         return { ...w, projectIds, rootPath, conversations };
@@ -1366,9 +1365,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const conversations = notice
           ? (w.conversations ?? []).map((c) => ({
               ...c,
-              pendingContextUpdate: c.pendingContextUpdate
-                ? `${c.pendingContextUpdate}\n\n${notice}`
-                : notice,
+              pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
             }))
           : w.conversations;
         return { ...w, instructions: trimmed, rootPath, conversations };
@@ -1609,9 +1606,7 @@ export const useStore = create<StoreState>((set, get) => ({
                         ...c,
                         workspaceAgentMemberIds: allMemberIds,
                         coordinatorRootPath,
-                        pendingContextUpdate: c.pendingContextUpdate
-                          ? `${c.pendingContextUpdate}\n\n${notice}`
-                          : notice,
+                        pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
                       }
                     : c,
                 ),
@@ -2328,6 +2323,7 @@ export const useStore = create<StoreState>((set, get) => ({
         pendingLocalUserIds: nextPending,
         errorMessage: undefined,
         isRunning: true,
+        runningSince: runner.isRunning ? runner.runningSince ?? Date.now() : Date.now(),
         activityLabel: runner.activityLabel ?? 'Thinking…',
         completedAt: null,
       };
@@ -2989,11 +2985,18 @@ export const useStore = create<StoreState>((set, get) => ({
       const justCompleted = wasRunning && !event.isRunning;
       const justStarted = !wasRunning && event.isRunning;
       const completedAt = justCompleted ? Date.now() : justStarted ? null : undefined;
-      useRunnersStore.getState().patchRunner(event.conversationId, {
+      useRunnersStore.getState().patchRunner(event.conversationId, (runner) => ({
         isRunning: event.isRunning,
+        // Stamped on the idle→running edge only, so a long turn's activity
+        // label churn doesn't keep pushing the reconcile grace window out.
+        runningSince: !event.isRunning
+          ? null
+          : justStarted
+            ? Date.now()
+            : runner.runningSince ?? Date.now(),
         activityLabel: event.activityLabel,
         ...(completedAt !== undefined ? { completedAt } : {}),
-      });
+      }));
       if (justCompleted && get().selectedConversationId === event.conversationId) {
         scheduleClearCompletion(event.conversationId, completedAt as number);
       }

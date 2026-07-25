@@ -22,6 +22,8 @@ import {
   MainToRendererEvent,
   AppSettings,
   Attachment,
+  ReviewInfo,
+  RunningConversation,
   UserInputAnswer,
 } from '../shared/types';
 import {
@@ -96,6 +98,87 @@ type Emit = (event: MainToRendererEvent) => void;
 /// Result of a `RunnerManager.oneShot` call: the assistant's full text on
 /// success, or a surfaced error string.
 export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
+
+/// Activity label used when a turn has ended but a detached background
+/// agent is still working. Shared between the emit site and the stale-state
+/// sweep, which treats it as a bounded (not indefinite) wait.
+export const AGENT_WORKING_LABEL = 'Agent working…';
+
+/// How long a reviewer ("rebound") turn may run before we cancel it. The
+/// running indicator is pinned on ("Rebounding…") for the whole await, so
+/// a reviewer that never resolves would leave the conversation — and any
+/// flow run that owns it — spinning forever.
+const REVIEWER_TIMEOUT_MS = 10 * 60_000;
+
+/// Grace period before the sweep is willing to believe a conversation
+/// marked running has no transport. Several send paths emit the optimistic
+/// "Thinking…" strip before the subprocess/session is registered.
+const NO_TRANSPORT_GRACE_MS = 60_000;
+
+/// How long an `Agent working…` wait may go without any event before we
+/// conclude the background agent's `completed` notification is never
+/// coming and release the indicator.
+const BACKGROUND_TASK_IDLE_MS = 5 * 60_000;
+
+/// Cadence of the stale-running sweep. Only armed while at least one
+/// conversation is marked running.
+const RECONCILE_INTERVAL_MS = 30_000;
+
+/// Why a conversation's running state can no longer be cleared by an
+/// incoming event, or null if it's a legitimately busy turn. Deliberately
+/// conservative: a long tool call (a test suite, a big build) is silent for
+/// minutes at a time, so silence alone is never enough — we also need to
+/// know that nothing is left to produce the closing event.
+export function staleRunningReason(args: {
+  /// Activity label we last published for the conversation.
+  label?: string;
+  /// When the conversation flipped from idle to running.
+  since: number;
+  /// Last event of any kind seen for the conversation.
+  lastEventAt: number;
+  /// Whether any transport (subprocess, ollama/gemini session, in-flight
+  /// broker prep, or a live reviewer round) could still speak for it.
+  hasTransport: boolean;
+  /// Whether the backend still owes output for this turn. Undefined for
+  /// transports that don't track it (ollama, gemini ACP) — treated as
+  /// "still working", i.e. never stale on this rule alone.
+  turnInFlight?: boolean;
+  /// Whether a reviewer round is actually running right now.
+  reviewerRunning?: boolean;
+  now: number;
+}): string | null {
+  if (!args.hasTransport) {
+    // Grace period: several send paths flip the indicator on before the
+    // subprocess/session lands in its map.
+    if (args.now - args.since < NO_TRANSPORT_GRACE_MS) return null;
+    return 'no live transport for this conversation';
+  }
+  const silentMs = args.now - args.lastEventAt;
+  if (silentMs <= BACKGROUND_TASK_IDLE_MS) return null;
+  if (args.reviewerRunning) return null;
+  // The backend closed out the turn (`result` landed) and no reviewer is
+  // running, so nothing outside this process is going to speak again. What
+  // remains is our own bookkeeping — a wait on a detached agent's
+  // `completed` notification, or a hand-off that lost its release — and it
+  // has been quiet long enough to call it.
+  if (args.turnInFlight === false) {
+    const what = args.label === AGENT_WORKING_LABEL ? 'background agent' : `"${args.label ?? ''}"`;
+    return `turn already ended; ${what} silent for ${Math.round(silentMs / 1000)}s`;
+  }
+  return null;
+}
+
+/// What the runner last told the renderer about a conversation's activity,
+/// plus the timing needed to spot a state that can no longer be cleared by
+/// an incoming event. See `reconcileRunning`.
+interface RunningRecord {
+  label?: string;
+  /// When the conversation first flipped to running (not updated by
+  /// subsequent label changes within the same busy stretch).
+  since: number;
+  /// Last event of any kind we saw for this conversation.
+  lastEventAt: number;
+}
 
 /// True once an AskUserQuestion tool_use's inputJSON actually carries a
 /// non-empty `questions` array. A streaming snapshot or a consolidated
@@ -388,6 +471,12 @@ interface ActiveProcess {
   /// exit handler reads this so failure messages surface the CLI's real
   /// complaint instead of "Run the CLI manually for details."
   recentStderr: string;
+  /// Whether the backend still owes us output for the current turn. Set at
+  /// each send, cleared when its `result` event lands. Once it's false the
+  /// only thing keeping the running indicator on is our own bookkeeping
+  /// (a rebound await, a background-agent wait), so the stale-state sweep
+  /// can safely retract an indicator that's been silent since.
+  turnInFlight?: boolean;
 }
 
 interface GeminiAcpSession {
@@ -528,6 +617,15 @@ export class RunnerManager {
     }
   >();
 
+  /// What we last told the renderer about each busy conversation. The
+  /// running indicator is edge-triggered (`running: true` … `running:
+  /// false`), so any path that turns it on and then fails to turn it off
+  /// pins a spinner for the rest of the session. This map is the single
+  /// record of those edges; `reconcileRunning` sweeps it for states that
+  /// no incoming event can ever clear.
+  private runningConvs = new Map<UUID, RunningRecord>();
+  private reconcileTimer: NodeJS.Timeout | null = null;
+
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
     // Tee every emitted event through the one-shot tap before it reaches
     // the renderer. For a tracked one-shot conversation the tap consumes
@@ -536,11 +634,139 @@ export class RunnerManager {
     // state or fire completion notifications. A no-op for normal convs.
     this.emit = (event) => {
       if (this.tapOneShot(event)) return;
+      this.trackRunning(event);
       emit(event);
     };
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
     this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
+  }
+
+  /// Conversations main currently believes are busy. The renderer
+  /// reconciles its own per-conversation flags against this so a `running`
+  /// event lost in transit (or a spinner left over from a state main has
+  /// since abandoned) self-heals instead of spinning until the next reload.
+  runningSnapshot(): RunningConversation[] {
+    this.reconcileRunning();
+    return Array.from(this.runningConvs.entries()).map(([conversationId, rec]) => ({
+      conversationId,
+      activityLabel: rec.label,
+    }));
+  }
+
+  /// Fold an outgoing event into `runningConvs`. Every event carrying a
+  /// conversation id counts as liveness for that conversation — the sweep
+  /// uses the gap since the last one to tell a working turn from a wait
+  /// that will never end.
+  private trackRunning(event: MainToRendererEvent): void {
+    const convId = 'conversationId' in event ? (event.conversationId as UUID) : null;
+    if (!convId) return;
+    const now = Date.now();
+    if (event.type === 'running') {
+      if (!event.isRunning) {
+        this.runningConvs.delete(convId);
+        if (this.runningConvs.size === 0) this.stopReconcileTimer();
+        return;
+      }
+      const prev = this.runningConvs.get(convId);
+      this.runningConvs.set(convId, {
+        label: event.activityLabel,
+        since: prev?.since ?? now,
+        lastEventAt: now,
+      });
+      this.ensureReconcileTimer();
+      return;
+    }
+    const rec = this.runningConvs.get(convId);
+    if (rec) rec.lastEventAt = now;
+  }
+
+  private ensureReconcileTimer(): void {
+    if (this.reconcileTimer) return;
+    this.reconcileTimer = setInterval(() => this.reconcileRunning(), RECONCILE_INTERVAL_MS);
+    this.reconcileTimer.unref?.();
+  }
+
+  private stopReconcileTimer(): void {
+    if (!this.reconcileTimer) return;
+    clearInterval(this.reconcileTimer);
+    this.reconcileTimer = null;
+  }
+
+  /// Retract running states that can no longer be cleared by an incoming
+  /// event: the conversation has no transport left to speak through, or
+  /// it's parked waiting on a background agent whose completion signal
+  /// never arrived. Emitting `running: false` here goes through the normal
+  /// emit path, so the renderer, the flow runtime, and this map all settle
+  /// together.
+  reconcileRunning(now = Date.now()): void {
+    for (const [convId, rec] of Array.from(this.runningConvs)) {
+      const reason = this.staleRunningReason(convId, rec, now);
+      if (!reason) continue;
+      log(
+        'warn',
+        'runner.reconcileRunning',
+        `clearing stale running state for conv=${convId} (${reason})`,
+      );
+      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+    }
+    if (this.runningConvs.size === 0) this.stopReconcileTimer();
+  }
+
+  private staleRunningReason(convId: UUID, rec: RunningRecord, now: number): string | null {
+    const proc = this.procs.get(convId);
+    const reviewerRunning = this.reviewer.isRunning(convId);
+    return staleRunningReason({
+      ...rec,
+      now,
+      hasTransport:
+        !!proc ||
+        this.ollamaSessions.has(convId) ||
+        this.geminiAcpSessions.has(convId) ||
+        this.claudeSendPending.has(convId) ||
+        reviewerRunning,
+      turnInFlight: proc?.turnInFlight,
+      reviewerRunning,
+    });
+  }
+
+  /// `reviewer.run` with a hard ceiling. Every caller pins the running
+  /// indicator on ("Rebounding…") for the duration and only releases it in
+  /// its `finally`, so an await that never settles is indistinguishable
+  /// from a conversation that never stops working. On timeout we cancel
+  /// the reviewer — which also settles the underlying promise — and hand
+  /// back an errored result, which every caller already treats as "no
+  /// usable feedback, stop here".
+  private async runReviewer(
+    args: Parameters<ReviewerManager['run']>[0],
+  ): Promise<ReviewInfo> {
+    const startedAt = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const expiry = new Promise<ReviewInfo>((resolve) => {
+      timer = setTimeout(() => {
+        log(
+          'warn',
+          'runner.reviewerTimeout',
+          `reviewer (${args.reviewBackend}) for conv=${args.conversationId} exceeded ` +
+            `${Math.round(REVIEWER_TIMEOUT_MS / 1000)}s — cancelling`,
+        );
+        this.reviewer.stop(args.conversationId);
+        resolve({
+          backend: args.reviewBackend,
+          text: '',
+          isRunning: false,
+          error: 'Reviewer timed out.',
+          startedAt,
+          round: 0,
+          mode: args.reviewMode ?? 'review',
+        });
+      }, REVIEWER_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([this.reviewer.run(args), expiry]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /// Run a single headless turn against any backend and resolve with the
@@ -858,6 +1084,7 @@ export class RunnerManager {
       active.currentAssistantText = '';
       active.currentToolActivity = [];
       active.pendingBackgroundTasks.clear();
+      active.turnInFlight = true;
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
       active.reviewModel = args.reviewModel ?? null;
@@ -1379,6 +1606,7 @@ export class RunnerManager {
       active.currentAssistantText = '';
       active.currentToolActivity = [];
       active.pendingBackgroundTasks.clear();
+      active.turnInFlight = true;
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
       active.reviewModel = args.reviewModel ?? null;
@@ -1794,7 +2022,7 @@ export class RunnerManager {
       return;
     }
 
-    const result = await this.reviewer.run({
+    const result = await this.runReviewer({
       conversationId: convId,
       reviewBackend,
       reviewMode: params.reviewMode,
@@ -2413,7 +2641,7 @@ export class RunnerManager {
       return;
     }
 
-    const result = await this.reviewer.run({
+    const result = await this.runReviewer({
       conversationId: convId,
       reviewBackend: session.reviewBackend,
       reviewMode: session.reviewMode,
@@ -2651,6 +2879,7 @@ export class RunnerManager {
           active.pendingCodexApprovals.set(e.kind.info.callId, () => {});
         } else if (e.kind.type === 'result') {
           turnEnded = true;
+          active.turnInFlight = false;
         } else if (e.kind.type === 'assistant') {
           if (e.kind.info.text && e.kind.info.text.length > active.currentAssistantText.length) {
             active.currentAssistantText = e.kind.info.text;
@@ -2709,7 +2938,7 @@ export class RunnerManager {
           type: 'running',
           conversationId: convId,
           isRunning: true,
-          activityLabel: 'Agent working…',
+          activityLabel: AGENT_WORKING_LABEL,
         });
       } else if (turnEnded) {
         if (active.reviewBackend) {
@@ -3345,7 +3574,7 @@ export class RunnerManager {
       return;
     }
 
-    const result = await this.reviewer.run({
+    const result = await this.runReviewer({
       conversationId: convId,
       reviewBackend: active.reviewBackend,
       reviewMode: active.reviewMode,
@@ -3448,6 +3677,7 @@ export class RunnerManager {
       active.currentAssistantText = '';
       active.currentToolActivity = [];
       active.pendingBackgroundTasks.clear();
+      active.turnInFlight = true;
       this.emit({
         type: 'running',
         conversationId: convId,

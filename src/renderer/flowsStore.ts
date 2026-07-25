@@ -98,9 +98,9 @@ const BLANK_FLOW: Flow = {
   participants: [
     {
       id: 'primary',
-      name: 'Claude Opus 4.7',
+      name: 'Claude Opus 5',
       backend: 'claude',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-5',
       kind: 'primary',
     },
   ],

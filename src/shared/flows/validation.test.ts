@@ -177,7 +177,7 @@ describe('validateFlow', () => {
   it('rejects rebound with maxIters of 0', () => {
     const flow = makeFlow();
     flow.steps[0].rebound = {
-      critic: { backend: 'claude', model: 'claude-opus-4-7' },
+      critic: { backend: 'claude', model: 'claude-opus-4-8' },
       mode: 'review',
       maxIters: 0,
     };
