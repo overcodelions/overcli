@@ -74,6 +74,16 @@ function gitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/// Git's ref rules permit a branch literally named `--output=/path`, and a
+/// clone/fetch carries such a ref over verbatim from a hostile remote. Every
+/// consumer below interpolates the base branch into a `git diff <base>` argv,
+/// where git would parse it as an option — `--output=` alone is an
+/// arbitrary-file-truncate primitive. Refuse to hand a leading-dash ref to
+/// callers at the two points where refs enter from the repo.
+function isSafeRefName(name: string): boolean {
+  return name.length > 0 && !name.startsWith('-');
+}
+
 /// Best-guess "base branch" for new agents. Prefers the currently
 /// checked-out local branch (so agents inherit the user's WIP branch),
 /// falls back to origin/HEAD → main → master. Mirrors the Swift
@@ -82,7 +92,7 @@ export function detectBaseBranch(projectPath: string): string {
   const current = runGit(['branch', '--show-current'], projectPath);
   if (current.exitCode === 0) {
     const trimmed = current.stdout.trim();
-    if (trimmed) return trimmed;
+    if (isSafeRefName(trimmed)) return trimmed;
   }
   const head = runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], projectPath);
   if (head.exitCode === 0) {
@@ -100,7 +110,7 @@ export function listBaseBranches(projectPath: string): string[] {
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     branches.push(trimmed);
   };
@@ -140,7 +150,7 @@ function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): s
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);
   };
@@ -249,7 +259,7 @@ async function resolveBaseBranchStartPointAsync(
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);
   };
@@ -1009,7 +1019,7 @@ export async function worktreeStatus(args: {
   // `git diff --numstat <base>` (working-tree-vs-base) rolls committed +
   // uncommitted divergence into a single pass, so every file the agent
   // has touched shows up exactly once — no double-counting.
-  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch, '--'], args.worktreePath);
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
@@ -1116,7 +1126,7 @@ export async function worktreeDiff(args: {
   cwd: string;
   baseBranch: string;
 }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', args.baseBranch], args.cwd);
+  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', args.baseBranch, '--'], args.cwd);
   // A failed tracked diff (bad ref, not a repo) is fatal — surface it as-is
   // rather than returning a partial untracked-only diff that hides the error.
   if (tracked.exitCode !== 0) return tracked;
@@ -1321,7 +1331,7 @@ export async function worktreeChanges(args: {
   const deletionsByPath = new Map<string, number>();
   let insertions = 0;
   let deletions = 0;
-  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch, '--'], args.worktreePath);
   if (numstat.exitCode === 0) {
     for (const line of numstat.stdout.split('\n')) {
       if (!line.trim()) continue;
@@ -1346,7 +1356,7 @@ export async function worktreeChanges(args: {
   // by the final path so a modified file lines up with its numstat row.
   const statusByPath = new Map<string, string>();
   const nameStatus = await runGitAsync(
-    ['diff', '--name-status', args.baseBranch],
+    ['diff', '--name-status', args.baseBranch, '--'],
     args.worktreePath,
   );
   if (nameStatus.exitCode === 0) {
@@ -1366,7 +1376,7 @@ export async function worktreeChanges(args: {
   // A file can be in both — committed once, then edited again.
   const committedPaths = new Set<string>();
   const nameStatusHead = await runGitAsync(
-    ['diff', '--name-status', args.baseBranch, 'HEAD'],
+    ['diff', '--name-status', args.baseBranch, 'HEAD', '--'],
     args.worktreePath,
   );
   if (nameStatusHead.exitCode === 0) {
