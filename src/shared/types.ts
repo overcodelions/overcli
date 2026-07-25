@@ -569,11 +569,15 @@ export interface MarketplaceSkill {
 /// `mcpConfig.ts` knows how to read and write.
 export type McpCli = Extract<Backend, 'claude' | 'codex' | 'gemini'>;
 
-/// One credential a catalog MCP server needs. Collected in overcli at
-/// install time and written verbatim into the server's `env` block in
-/// each target CLI's config (where the CLIs already read MCP env from).
+/// One value a catalog MCP server needs. Collected in overcli at install
+/// time and written into the server's `env` block in each target CLI's
+/// config (where the CLIs already read MCP env from) — unless the entry's
+/// template references the key as `${KEY}` in its `args`, in which case it
+/// is substituted there instead. Some servers read the two from different
+/// places and only honour the command line.
 export interface McpSecretField {
-  /// Env var name, e.g. "BRAVE_API_KEY".
+  /// Env var name, e.g. "BRAVE_API_KEY"; or the `${KEY}` an entry's args
+  /// interpolate, e.g. "AWS_REGION".
   key: string;
   label: string;
   /// Short hint, e.g. where to generate the token.
@@ -584,6 +588,10 @@ export interface McpSecretField {
   /// rendered as plain text rather than a masked secret — e.g. a profile
   /// name that isn't actually a credential.
   optional?: boolean;
+  /// Prefilled at install and used when an optional field is left blank.
+  /// Only ever a sane public default (a region, an endpoint) — never a
+  /// credential.
+  defaultValue?: string;
 }
 
 /// A curated MCP server the user can one-click install into any of their
@@ -606,6 +614,12 @@ export interface McpCatalogItem {
   docsUrl?: string;
   /// Per-target installed status, set by the main process at list time.
   installed: Partial<Record<McpCli, boolean>>;
+  /// Per-target "installed, but the config predates the current template"
+  /// — the vendor retired or re-shaped the server. Implies `installed`.
+  /// Reinstalling overwrites the entry in place.
+  legacy: Partial<Record<McpCli, boolean>>;
+  /// Why the installed config is stale, shown next to Reinstall.
+  legacyNote?: string;
 }
 
 export interface OllamaModelInfo {
