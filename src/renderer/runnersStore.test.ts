@@ -250,32 +250,44 @@ describe('foldContextUsage', () => {
     };
   }
 
-  it('counts what the model had in its window, not what it produced', () => {
+  it('counts one request, not the whole turn — the 832% bug', () => {
+    // A 38-tool-call turn re-reads the same ~200k cached prefix on every
+    // request, so the result line totals ~7.9M cache_read. That is a real
+    // billing number and a nonsense occupancy number; only the per-request
+    // assistant usage may set tokens.
     const out = foldContextUsage(
       {},
       [
+        assistantEvent({
+          inputTokens: 110,
+          outputTokens: 43_615,
+          cacheReadInputTokens: 205_370,
+          cacheCreationInputTokens: 3626,
+        }),
         resultEvent({
           'claude-opus-5[1m]': {
-            inputTokens: 2,
-            outputTokens: 4000,
-            cacheReadInputTokens: 15_273,
-            cacheCreationInputTokens: 6669,
+            inputTokens: 110,
+            outputTokens: 43_615,
+            cacheReadInputTokens: 7_902_003,
+            cacheCreationInputTokens: 400_000,
             contextWindow: 1_000_000,
           },
         }),
       ],
       'claude-opus-5',
     );
-    // input + cache_read + cache_creation; output is excluded.
-    expect(out).toEqual({ tokens: 21_944, window: 1_000_000 });
+    // input + cache_read + cache_creation of the last REQUEST; output excluded.
+    expect(out).toEqual({ tokens: 209_106, window: 1_000_000 });
+    expect(out.tokens!).toBeLessThan(out.window!);
   });
 
-  it('prefers the conversation model over a subagent that ran in the same turn', () => {
+  it('takes the window from the conversation model, not a subagent that ran in the same turn', () => {
     const out = foldContextUsage(
       {},
       [
+        assistantEvent({ inputTokens: 400 }),
         resultEvent({
-          'claude-haiku-4-5': { inputTokens: 900_000, cacheReadInputTokens: 0 },
+          'claude-haiku-4-5': { inputTokens: 900_000, contextWindow: 200_000 },
           'claude-opus-5[1m]': { inputTokens: 400, contextWindow: 1_000_000 },
         }),
       ],
@@ -284,13 +296,13 @@ describe('foldContextUsage', () => {
     expect(out).toEqual({ tokens: 400, window: 1_000_000 });
   });
 
-  it('falls back to the largest entry when no key matches the model', () => {
+  it('falls back to the widest window when no key matches the model', () => {
     const out = foldContextUsage(
       {},
-      [resultEvent({ 'some-model': { inputTokens: 10 }, other: { inputTokens: 700 } })],
+      [resultEvent({ 'some-model': { contextWindow: 200_000 }, other: { contextWindow: 1_000_000 } })],
       'claude-opus-5',
     );
-    expect(out.tokens).toBe(700);
+    expect(out.window).toBe(1_000_000);
   });
 
   it('tracks occupancy mid-turn off consolidated assistant lines', () => {
@@ -303,13 +315,23 @@ describe('foldContextUsage', () => {
     expect(foldContextUsage(prev, [assistantEvent()], 'claude-opus-5')).toBe(prev);
   });
 
-  it('keeps a known window when a later turn reports usage without one', () => {
+  it('keeps a known window when a later result omits one', () => {
     const out = foldContextUsage(
       { tokens: 100, window: 1_000_000 },
-      [resultEvent({ 'claude-opus-5': { inputTokens: 700 } })],
+      [assistantEvent({ inputTokens: 700 }), resultEvent({ 'claude-opus-5': { inputTokens: 700 } })],
       'claude-opus-5',
     );
     expect(out).toEqual({ tokens: 700, window: 1_000_000 });
+  });
+
+  it('never lets a result line move the token count on its own', () => {
+    const prev = { tokens: 1000, window: 1_000_000 };
+    const out = foldContextUsage(
+      prev,
+      [resultEvent({ 'claude-opus-5[1m]': { cacheReadInputTokens: 8_300_000, contextWindow: 1_000_000 } })],
+      'claude-opus-5',
+    );
+    expect(out).toBe(prev);
   });
 
   it('returns the same object when nothing moved, so selectors do not churn', () => {
@@ -319,7 +341,7 @@ describe('foldContextUsage', () => {
   });
 
   it('reports occupancy with no window when the backend never sends one', () => {
-    const out = foldContextUsage({}, [resultEvent({ ollama: { inputTokens: 300 } })], 'llama3');
+    const out = foldContextUsage({}, [assistantEvent({ inputTokens: 300 })], 'llama3');
     expect(out).toEqual({ tokens: 300, window: undefined });
   });
 });

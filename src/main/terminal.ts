@@ -72,6 +72,39 @@ export function runInTerminal(command: string): TerminalLaunchResult {
 // typed command ends up sitting in the buffer unexecuted. Opening at a
 // path is reliable, and the follow-up `do script` runs after the shell
 // is idle.
+// Opens a terminal window sitting in `cwd` with nothing typed into it —
+// the "open this folder in Terminal" gesture from the file tree. No command
+// means no AppleScript `do script`, so there's nothing to escape and no
+// shell-init race to wait out; the path is a dedicated argv entry either
+// way. A leading dash is refused rather than passed on: `open` would read
+// it as a flag (the option-injection class of bug f731162 fixed for refs).
+export function openTerminalIn(cwd: string): TerminalLaunchResult {
+  if (!cwd || /[\n\r]/.test(cwd) || cwd.startsWith('-')) {
+    return { ok: false, error: 'That folder path is unsafe to hand to a terminal.' };
+  }
+  try {
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/d', '/c', 'start', '', 'powershell.exe', '-NoProfile', '-NoExit'], {
+        cwd,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      }).unref();
+      return { ok: true };
+    }
+    if (process.platform !== 'darwin') {
+      return {
+        ok: false,
+        error: `Opening a terminal window isn't wired up for ${process.platform} yet. cd '${cwd}'`,
+      };
+    }
+    spawn('open', ['-a', 'Terminal', cwd], { detached: true, stdio: 'ignore' }).unref();
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message ?? String(err) };
+  }
+}
+
 export function openTerminalAt(cwd: string, command: string): TerminalLaunchResult {
   // `cwd` is passed to `open` as a dedicated argv entry (not shell-
   // interpolated), so quotes/backslashes are safe. Only reject blank or

@@ -246,6 +246,38 @@ html, body {
   -webkit-app-region: no-drag;
 }
 
+/* Jumped-to line range in the file editor. The persistent tint and the left
+   accent bar live in CodeMirrorEditor's theme; the arrival flash lives here
+   because it needs @keyframes, which CM's theme helper doesn't take.
+
+   Two identical classes, alternated per application: a CSS animation only
+   replays when the class list changes, so re-jumping to the same line needs
+   a different class name to flash again. The animation fades from a strong
+   wash down to the resting tint, so nothing has to be un-set afterwards. */
+@keyframes overcli-range-arrive {
+  0% {
+    background-color: rgba(124, 139, 255, 0.62);
+  }
+  35% {
+    background-color: rgba(124, 139, 255, 0.62);
+  }
+  100% {
+    background-color: rgba(124, 139, 255, 0.22);
+  }
+}
+.cm-overcli-range-flash-a,
+.cm-overcli-range-flash-b {
+  animation: overcli-range-arrive 1.1s ease-out 1;
+}
+/* Respect the OS "reduce motion" setting: the tint and bar still mark the
+   line, they just appear without the fade. */
+@media (prefers-reduced-motion: reduce) {
+  .cm-overcli-range-flash-a,
+  .cm-overcli-range-flash-b {
+    animation: none;
+  }
+}
+
 /* Opt-out for chip/pill rows where a reserved scrollbar gutter would offset
    vertical alignment — content still scrolls via trackpad. */
 .no-scrollbar {

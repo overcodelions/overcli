@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -8,6 +9,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { useStore } from '../store';
+import type { FileTab } from '../uiSlice';
 import { useFlowsStore } from '../flowsStore';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
@@ -19,6 +21,8 @@ import {
   isBinaryPreviewKind,
   isUnsupportedBinaryFile,
 } from '../filePreview';
+import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
+import { fileName, tabLabels } from '../tabLabels';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
@@ -38,7 +42,21 @@ type FileInfoState = FileInfoResult & { requestedPath: string };
 type SymbolNavState =
   | { status: 'loading'; symbol: string }
   | { status: 'error'; symbol: string; error: string }
-  | { status: 'choose'; symbol: string; candidates: SymbolCandidate[] };
+  | {
+      status: 'choose';
+      symbol: string;
+      /// The clicked line, carried so a later "Refine" can re-send the same
+      /// context the first lookup used.
+      line: number;
+      candidates: SymbolCandidate[];
+      /// The grep tier produced this list and a model could narrow it down.
+      /// Offered as a button rather than done automatically: grep answers in
+      /// milliseconds, the model tier costs seconds, and most of the time the
+      /// right candidate is already visible.
+      refinable?: boolean;
+      /// A refine pass is running for the list currently on screen.
+      refining?: boolean;
+    };
 type LargeTextPreview = {
   content: string;
   truncated: boolean;
@@ -46,7 +64,14 @@ type LargeTextPreview = {
   previewBytes: number;
 };
 
-export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string | null } = {}) {
+/// Memoized for the same reason FileTree is: both of its parents
+/// (ConversationPane, ExplorerPane) re-render on every pointermove while a
+/// divider is dragged, and none of that changes what the editor shows. Its
+/// own store subscriptions still re-render it when the file, tab, mode or
+/// buffer actually changes.
+export const FileEditorPane = memo(function FileEditorPane({
+  rootPathOverride,
+}: { rootPathOverride?: string | null } = {}) {
   const convId = useStore((s) => s.selectedConversationId);
   const convRoot = useConversationRoot(convId);
   const rootPath = rootPathOverride ?? convRoot;
@@ -112,7 +137,13 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const [largeTextPreview, setLargeTextPreview] = useState<LargeTextPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  // Unsaved-edit tracking is split: the text lives in ../fileBuffers (a
+  // plain module Map, so keystrokes never touch the store) and the flag
+  // lives in the store, keyed by path, so a tab switch preserves both and
+  // the tab strip can show a dot on files that aren't in view.
+  const markFileDirty = useStore((s) => s.markFileDirty);
+  const clearFileDirty = useStore((s) => s.clearFileDirty);
+  const dirty = useStore((s) => (path ? !!s.dirtyFiles[path] : false));
   const [copiedPath, setCopiedPath] = useState(false);
   const [reverting, setReverting] = useState(false);
   // True when the diff is a brand-new untracked file — it has no HEAD
@@ -137,6 +168,26 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     (unsupportedBinary && !!error);
 
   const openFile = useStore((s) => s.openFile);
+  const tabs = useStore((s) => s.tabs);
+  const retargetTab = useStore((s) => s.retargetTab);
+  const selectTab = useStore((s) => s.selectTab);
+  const selectAdjacentTab = useStore((s) => s.selectAdjacentTab);
+  const closeTab = useStore((s) => s.closeTab);
+  const dirtyFiles = useStore((s) => s.dirtyFiles);
+  /// Closing a tab throws its unsaved buffer away, so ask first. Matches
+  /// the ExplorerPane compare-view prompt.
+  const requestCloseTab = useCallback(
+    (target: string) => {
+      if (
+        useStore.getState().dirtyFiles[target] &&
+        !window.confirm(`Discard unsaved changes to ${fileName(target)}?`)
+      ) {
+        return;
+      }
+      closeTab(target);
+    },
+    [closeTab],
+  );
 
   const [symbolNav, setSymbolNav] = useState<SymbolNavState | null>(null);
   // Monotonic token so a slow lookup can't land after the user has clicked
@@ -177,7 +228,48 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         jumpToCandidate(result.candidates[0]);
         return;
       }
-      setSymbolNav({ status: 'choose', symbol, candidates: result.candidates });
+      setSymbolNav({
+        status: 'choose',
+        symbol,
+        line,
+        candidates: result.candidates,
+        refinable: result.refinable,
+      });
+    },
+    [path, rootPath, jumpToCandidate],
+  );
+  /// Ask a fast model to pick between grep's candidates. Same seq guard as
+  /// the initial lookup: a refine that lands after the user has clicked
+  /// elsewhere is dropped rather than replacing the newer state.
+  const refineSymbolNav = useCallback(
+    async (symbol: string, line: number) => {
+      if (!path || !rootPath) return;
+      const seq = symbolNavSeq.current;
+      setSymbolNav((cur) =>
+        cur?.status === 'choose' ? { ...cur, refining: true } : cur,
+      );
+      const result = await window.overcli.invoke('symbols:refineDefinition', {
+        cwd: rootPath,
+        filePath: path,
+        symbol,
+        line,
+      });
+      if (seq !== symbolNavSeq.current) return;
+      if (!result.ok) {
+        // Keep the grep candidates on screen — they're still the best thing
+        // we have — and just say the refine didn't land.
+        setSymbolNav((cur) =>
+          cur?.status === 'choose'
+            ? { ...cur, refining: false, refinable: false }
+            : { status: 'error', symbol, error: result.error },
+        );
+        return;
+      }
+      if (result.candidates.length === 1) {
+        jumpToCandidate(result.candidates[0]);
+        return;
+      }
+      setSymbolNav({ status: 'choose', symbol, line, candidates: result.candidates });
     },
     [path, rootPath, jumpToCandidate],
   );
@@ -194,7 +286,6 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     if (unsupportedBinary) {
       setLoading(false);
       setError('This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.');
-      setDirty(false);
       setArtifactPreview(null);
       setLargeTextPreview(null);
       setContent('');
@@ -204,10 +295,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     }
     setLoading(true);
     setError(null);
-    setDirty(false);
     setArtifactPreview(null);
     setLargeTextPreview(null);
     setFileInfo(null);
+    // Unsaved edits beat disk. This effect also runs when the user comes
+    // back to a tab (or reopens a file they closed with edits pending), and
+    // re-reading from disk there would silently throw their work away.
+    // Read imperatively so `dirtyFiles` isn't a dependency — it changes on
+    // the first keystroke, which must not re-trigger the load.
+    const buffered = useStore.getState().dirtyFiles[path] ? readBuffer(path) : undefined;
     const isWorkspaceMemberPath =
       !!workspaceMembers &&
       workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
@@ -224,11 +320,19 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         return;
       }
       if (!isWorkspaceMemberPath && info.resolvedPath && info.resolvedPath !== path) {
-        openFile(info.resolvedPath, highlight ?? undefined, mode);
+        // Same file, better path. Retarget rather than re-open: a second
+        // openFile would leave two tabs on one file, and it would also
+        // yank the editor back to the inline slot mid-load when a subagent
+        // opened the file into the side pane.
+        retargetTab(path, info.resolvedPath);
         return;
       }
       if (info.tooLarge || info.unsupportedBinary) {
         setError(info.error ?? 'File is not safe to open.');
+        return;
+      }
+      if (buffered != null) {
+        setContent(buffered);
         return;
       }
       if (binaryPreview) {
@@ -268,7 +372,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     return () => {
       cancelled = true;
     };
-  }, [binaryPreview, highlight, mode, openFile, path, rootPath, unsupportedBinary, workspaceMembers, refreshToken]);
+  }, [binaryPreview, highlight, mode, retargetTab, path, rootPath, unsupportedBinary, workspaceMembers, refreshToken]);
 
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
@@ -361,9 +465,11 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const save = useCallback(async () => {
     if (!path || !dirty) return;
     const res = await window.overcli.invoke('fs:writeFile', { path, content });
-    if (res.ok) setDirty(false);
-    else setError(res.error);
-  }, [path, dirty, content]);
+    if (res.ok) {
+      clearFileDirty(path);
+      dropBuffer(path);
+    } else setError(res.error);
+  }, [path, dirty, content, clearFileDirty]);
 
   // Discard all uncommitted changes to the current file, back to HEAD.
   // Only offered on HEAD-based diffs (see `canRevert`) where "revert" is
@@ -389,12 +495,29 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         setError(res.error);
         return;
       }
-      setDirty(false);
+      if (path) {
+        clearFileDirty(path);
+        dropBuffer(path);
+      }
       setRefreshToken((t) => t + 1);
     } finally {
       setReverting(false);
     }
-  }, [diffTarget, reverting, missingFile]);
+  }, [diffTarget, reverting, missingFile, path, clearFileDirty]);
+
+  /// Every edit in either editor. Stashes the text where a tab switch can
+  /// find it again and flags the path dirty — the flag only on the first
+  /// keystroke, since a store write per character would notify every
+  /// subscriber in the app for nothing.
+  const onEdit = useCallback(
+    (v: string) => {
+      setContent(v);
+      if (!path) return;
+      for (const evicted of stashBuffer(path, v)) clearFileDirty(evicted);
+      if (!dirty) markFileDirty(path);
+    },
+    [path, dirty, markFileDirty, clearFileDirty],
+  );
 
   // Keyboard: Cmd/Ctrl+S or Cmd/Ctrl+Enter saves; Cmd/Ctrl+Shift+D
   // toggles between Diff and File modes (Preview is button-only).
@@ -417,11 +540,25 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
         e.preventDefault();
         if (missingFile) return; // nothing to toggle to — the file is gone
         setMode(mode === 'diff' ? 'edit' : 'diff');
+        return;
+      }
+      // Tab navigation. ⌥⌘←/→ cycles (⌃Tab is CodeMirror's indent-with-tab
+      // territory and ⌘W belongs to the window), ⌘1-9 jumps by position.
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        selectAdjacentTab(e.key === 'ArrowRight' ? 1 : -1);
+        return;
+      }
+      if (!e.shiftKey && !e.altKey && e.key >= '1' && e.key <= '9') {
+        const target = tabs[Number(e.key) - 1];
+        if (!target) return;
+        e.preventDefault();
+        selectTab(target.path);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [path, mode, save, setMode, missingFile]);
+  }, [path, mode, save, setMode, missingFile, tabs, selectTab, selectAdjacentTab]);
 
   // The folder icon (conversation header) and the project/workspace
   // Explore buttons now route through ExplorerPane, which owns its
@@ -450,6 +587,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   return (
     <div className="flex flex-col h-full">
       <div className="flex flex-col flex-1 min-h-0">
+        {tabs.length > 1 && (
+          <FileTabStrip
+            tabs={tabs}
+            activePath={path}
+            dirtyFiles={dirtyFiles}
+            onSelect={selectTab}
+            onClose={requestCloseTab}
+          />
+        )}
         <div className="flex items-center justify-between px-3 py-2 border-b border-card">
           <div className="min-w-0 flex items-center gap-2">
             <div
@@ -576,6 +722,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             )}
             <button
               onClick={closeFile}
+              title={tabs.length > 1 ? 'Close the editor (all tabs)' : 'Close the editor'}
               className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
             >
               ✕
@@ -587,6 +734,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             <SymbolNavOverlay
               state={symbolNav}
               onPick={jumpToCandidate}
+              onRefine={(symbol, line) => void refineSymbolNav(symbol, line)}
               onDismiss={() => {
                 symbolNavSeq.current++;
                 setSymbolNav(null);
@@ -637,10 +785,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
           ) : USE_CODEMIRROR_EDITOR ? (
             <CodeMirrorEditor
               content={content}
-              onChange={(v) => {
-                setContent(v);
-                setDirty(true);
-              }}
+              onChange={onEdit}
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
               onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
@@ -648,16 +793,87 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
           ) : (
             <Editor
               content={content}
-              onChange={(v) => {
-                setContent(v);
-                setDirty(true);
-              }}
+              onChange={onEdit}
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
             />
           )}
         </div>
       </div>
+    </div>
+  );
+});
+
+/// Tab strip above the editor header. Rendered only with more than one
+/// file open, so a single-file view looks exactly as it did before tabs
+/// existed and the narrow editor pane doesn't lose a row to a strip of one.
+///
+/// The header below still shows the full path of the active file, so tabs
+/// stay short: name only, with one directory level when names collide.
+function FileTabStrip({
+  tabs,
+  activePath,
+  dirtyFiles,
+  onSelect,
+  onClose,
+}: {
+  tabs: FileTab[];
+  activePath: string | null;
+  dirtyFiles: Record<string, true>;
+  onSelect: (path: string) => void;
+  onClose: (path: string) => void;
+}) {
+  const labels = useMemo(() => tabLabels(tabs.map((t) => t.path)), [tabs]);
+  return (
+    <div className="flex items-stretch overflow-x-auto no-scrollbar border-b border-card bg-surface-muted/40">
+      {tabs.map((tab, i) => {
+        const active = tab.path === activePath;
+        const dirty = !!dirtyFiles[tab.path];
+        return (
+          <div
+            key={tab.path}
+            role="tab"
+            aria-selected={active}
+            title={`${tab.path}${i < 9 ? `  (⌘${i + 1})` : ''}`}
+            onMouseDown={(e) => {
+              // Middle-click closes, matching every other tabbed editor.
+              if (e.button === 1) {
+                e.preventDefault();
+                onClose(tab.path);
+                return;
+              }
+              if (e.button === 0 && !active) onSelect(tab.path);
+            }}
+            className={
+              'group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 shrink-0 max-w-[200px] cursor-default border-r border-card text-xs ' +
+              (active
+                ? 'bg-surface text-ink border-b-2 border-b-accent'
+                : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+            }
+          >
+            <span className="truncate">{labels[i]}</span>
+            {dirty && (
+              <span
+                title="Unsaved changes"
+                className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent"
+              />
+            )}
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onClose(tab.path);
+              }}
+              title="Close tab"
+              className={
+                'shrink-0 w-4 h-4 leading-none rounded text-ink-faint hover:text-ink hover:bg-card-strong ' +
+                (active ? '' : 'opacity-0 group-hover:opacity-100')
+              }
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -671,10 +887,12 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
 function SymbolNavOverlay({
   state,
   onPick,
+  onRefine,
   onDismiss,
 }: {
   state: SymbolNavState;
   onPick: (candidate: SymbolCandidate) => void;
+  onRefine: (symbol: string, line: number) => void;
   onDismiss: () => void;
 }) {
   return (
@@ -699,8 +917,20 @@ function SymbolNavOverlay({
         )}
         {state.status === 'choose' && (
           <>
-            <div className="px-3 pt-2 text-[11px] uppercase tracking-wider text-ink-faint">
-              {state.candidates.length} candidates
+            <div className="flex items-baseline gap-2 px-3 pt-2">
+              <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+                {state.candidates.length} candidates
+              </span>
+              {state.refinable && (
+                <button
+                  onClick={() => onRefine(state.symbol, state.line)}
+                  disabled={state.refining}
+                  title="Ask a fast model to pick the definition (takes a few seconds)"
+                  className="ml-auto text-[11px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong disabled:opacity-50"
+                >
+                  {state.refining ? 'Refining…' : 'Refine'}
+                </button>
+              )}
             </div>
             <div className="max-h-64 overflow-auto py-1">
               {state.candidates.map((candidate) => (

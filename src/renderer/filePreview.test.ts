@@ -33,8 +33,16 @@ describe('file preview detection', () => {
     expect(isUnsupportedBinaryFile('/repo/README.md')).toBe(false);
   });
 
-  it('opens previewable files in preview mode unless a line highlight is requested', () => {
-    expect(defaultFileViewMode('/repo/Button.tsx', false)).toBe('preview');
+  it('opens every file in the editor, previewable or not', () => {
+    expect(defaultFileViewMode('/repo/Button.tsx', false)).toBe('edit');
+    expect(defaultFileViewMode('/repo/README.md', false)).toBe('edit');
     expect(defaultFileViewMode('/repo/Button.tsx', true)).toBe('edit');
+  });
+
+  it('still honours an explicitly requested mode', () => {
+    expect(defaultFileViewMode('/repo/README.md', false, 'preview')).toBe('preview');
+    expect(defaultFileViewMode('/repo/main.ts', false, 'diff')).toBe('diff');
+    // …but not a preview of something that has no preview.
+    expect(defaultFileViewMode('/repo/main.ts', false, 'preview')).toBe('edit');
   });
 });

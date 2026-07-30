@@ -11,6 +11,7 @@ import {
   parseGrepMatches,
   parseModelCandidates,
   siblingExtensions,
+  readLineAt,
   verifyCandidate,
 } from './symbolLookup';
 
@@ -155,8 +156,8 @@ describe('verifyCandidate', () => {
   fs.writeFileSync(file, ['package a;', '', 'public void doThing() {', '}', ''].join('\n'));
   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-  it('accepts a line that actually mentions the symbol', () => {
-    const got = verifyCandidate(root, { path: 'Service.java', line: 3 }, 'doThing', 'grep');
+  it('accepts a line that actually mentions the symbol', async () => {
+    const got = await verifyCandidate(root, { path: 'Service.java', line: 3 }, 'doThing', 'grep');
     expect(got).toMatchObject({
       path: 'Service.java',
       absolutePath: file,
@@ -166,32 +167,95 @@ describe('verifyCandidate', () => {
     });
   });
 
-  it('rejects a line that does not mention the symbol', () => {
+  it('rejects a line that does not mention the symbol', async () => {
     // This is the check that makes the cheap model tier safe: a plausible
     // but wrong path:line is caught here instead of jumping the user
     // somewhere arbitrary.
-    expect(verifyCandidate(root, { path: 'Service.java', line: 1 }, 'doThing', 'model')).toBeNull();
+    await expect(
+      verifyCandidate(root, { path: 'Service.java', line: 1 }, 'doThing', 'model'),
+    ).resolves.toBeNull();
   });
 
-  it('requires a whole-word match', () => {
+  it('requires a whole-word match', async () => {
     // `doThing` must not validate against a hit on `doThingElse`.
     const other = path.join(root, 'Other.java');
     fs.writeFileSync(other, 'void doThingElse() {}\n');
-    expect(verifyCandidate(root, { path: 'Other.java', line: 1 }, 'doThing', 'model')).toBeNull();
+    await expect(
+      verifyCandidate(root, { path: 'Other.java', line: 1 }, 'doThing', 'model'),
+    ).resolves.toBeNull();
   });
 
-  it('rejects lines past end of file', () => {
-    expect(verifyCandidate(root, { path: 'Service.java', line: 999 }, 'doThing', 'grep')).toBeNull();
+  it('rejects lines past end of file', async () => {
+    await expect(
+      verifyCandidate(root, { path: 'Service.java', line: 999 }, 'doThing', 'grep'),
+    ).resolves.toBeNull();
   });
 
-  it('rejects paths that escape the project root', () => {
-    expect(
+  it('rejects paths that escape the project root', async () => {
+    await expect(
       verifyCandidate(root, { path: '../../etc/passwd', line: 1 }, 'root', 'model'),
-    ).toBeNull();
+    ).resolves.toBeNull();
   });
 
-  it('rejects a missing file', () => {
-    expect(verifyCandidate(root, { path: 'Nope.java', line: 1 }, 'doThing', 'grep')).toBeNull();
+  it('rejects a missing file', async () => {
+    await expect(
+      verifyCandidate(root, { path: 'Nope.java', line: 1 }, 'doThing', 'grep'),
+    ).resolves.toBeNull();
+  });
+});
+
+// The bounded line reader behind verifyCandidate. It replaced a
+// readFileSync-plus-split of files up to 8MB, per candidate, on the
+// main-process thread — so what matters is that it still returns exactly
+// the same line, including at the awkward boundaries.
+describe('readLineAt', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-readline-'));
+  afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  function write(name: string, content: string): string {
+    const p = path.join(root, name);
+    fs.writeFileSync(p, content);
+    return p;
+  }
+
+  it('reads the first, middle and last line', async () => {
+    const p = write('three.txt', 'one\ntwo\nthree\n');
+    expect(await readLineAt(p, 1)).toBe('one');
+    expect(await readLineAt(p, 2)).toBe('two');
+    expect(await readLineAt(p, 3)).toBe('three');
+  });
+
+  it('reads a final line with no trailing newline', async () => {
+    const p = write('nonl.txt', 'alpha\nomega');
+    expect(await readLineAt(p, 2)).toBe('omega');
+  });
+
+  it('handles CRLF files without keeping the carriage return', async () => {
+    const p = write('crlf.txt', 'one\r\ntwo\r\n');
+    expect(await readLineAt(p, 2)).toBe('two');
+  });
+
+  it('reads a line that straddles the internal chunk boundary', async () => {
+    // The reader walks 64KB chunks, so a line crossing that boundary is
+    // the case a naive implementation gets wrong.
+    const filler = 'x'.repeat(70_000);
+    const p = write('big.txt', `${filler}\nneedle here\n`);
+    expect(await readLineAt(p, 2)).toBe('needle here');
+  });
+
+  it('returns null past end of file, for line 0, and for a directory', async () => {
+    const p = write('short.txt', 'only\n');
+    expect(await readLineAt(p, 5)).toBeNull();
+    expect(await readLineAt(p, 0)).toBeNull();
+    expect(await readLineAt(root, 1)).toBeNull();
+    expect(await readLineAt(path.join(root, 'missing.txt'), 1)).toBeNull();
+  });
+
+  it('gives up rather than scanning past the byte cap', async () => {
+    const p = write('capped.txt', `${'a\n'.repeat(50_000)}target\n`);
+    expect(await readLineAt(p, 50_001, 1_000)).toBeNull();
+    // Same file, generous cap: the line is found.
+    expect(await readLineAt(p, 50_001)).toBe('target');
   });
 });
 

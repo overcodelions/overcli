@@ -17,6 +17,7 @@ import {
   FlowRegistry,
   Conversation,
   SystemInitInfo,
+  PersistedFileTabs,
   PersistedView,
   UUID,
 } from '../shared/types';
@@ -35,6 +36,10 @@ interface StoreState {
   /// focused project/workspace, active flow run / orchestration). Restored on
   /// launch so a renderer reload doesn't drop the user off their flow/agent.
   view?: PersistedView;
+  /// Open editor tabs per scope (conversation / flow run / explorer root),
+  /// so returning to a conversation reopens the files you had there. See
+  /// the renderer's uiSlice + fileScope.ts.
+  fileTabs?: PersistedFileTabs;
   lastInit?: SystemInitInfo;
   /// Epoch-ms of the last time we triggered each backend CLI's self-updater
   /// on startup. Keyed by Backend. Used to throttle the headless prime to
@@ -124,6 +129,44 @@ function sanitizeSettings(settings: AppSettings): AppSettings {
   return { ...settings, backendDefaultModels };
 }
 
+/// Persisted tab caps. The renderer enforces its own (MAX_TABS_PER_SCOPE
+/// in uiSlice.ts); these are the defensive bounds on what reaches disk, so
+/// a renderer bug or a long-lived install can't grow overcli.json without
+/// limit. Scopes are dropped oldest-first, matching the LRU key order the
+/// renderer maintains.
+const MAX_FILE_TAB_SCOPES = 60;
+const MAX_FILE_TABS_PER_SCOPE = 12;
+
+export function sanitizeFileTabs(raw: unknown): PersistedFileTabs | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const out: PersistedFileTabs = {};
+  const entries = Object.entries(raw as Record<string, unknown>);
+  // Keep the newest scopes when over the cap: key order is LRU-ascending.
+  for (const [scope, value] of entries.slice(-MAX_FILE_TAB_SCOPES)) {
+    if (!scope || !value || typeof value !== 'object') continue;
+    const { paths, activePath } = value as { paths?: unknown; activePath?: unknown };
+    if (!Array.isArray(paths)) continue;
+    const clean: string[] = [];
+    for (const p of paths) {
+      if (typeof p !== 'string' || !p) continue;
+      if (clean.includes(p)) continue;
+      clean.push(p);
+      if (clean.length >= MAX_FILE_TABS_PER_SCOPE) break;
+    }
+    if (!clean.length) continue;
+    const active = typeof activePath === 'string' && clean.includes(activePath) ? activePath : clean[0];
+    out[scope] = { paths: clean, activePath: active };
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function conversationIds(s: StoreState): Set<string> {
+  const ids = new Set<string>();
+  for (const p of s.projects) for (const c of p.conversations ?? []) ids.add(c.id);
+  for (const w of s.workspaces) for (const c of w.conversations ?? []) ids.add(c.id);
+  return ids;
+}
+
 export function loadState(): StoreState {
   const p = storePath();
   if (!fs.existsSync(p)) return emptyState();
@@ -139,6 +182,7 @@ export function loadState(): StoreState {
     };
     merged.projects = sanitizeProjects(merged.projects);
     merged.workspaces = sanitizeWorkspaces(merged.workspaces);
+    merged.fileTabs = sanitizeFileTabs(merged.fileTabs);
     const regs: FlowRegistry[] = merged.settings.flowRegistries ?? [];
     if (!regs.some((r) => r.id === 'official')) {
       merged.settings.flowRegistries = [
@@ -307,6 +351,52 @@ export const Store = {
   saveView(view: PersistedView): void {
     const s = current();
     s.view = view;
+    save();
+  },
+  saveFileTabs(tabs: PersistedFileTabs): void {
+    const s = current();
+    s.fileTabs = sanitizeFileTabs(tabs);
+    save();
+  },
+  /// Drop restored tabs that can no longer be opened: scopes for deleted
+  /// conversations, and files that have since left the disk (an agent's
+  /// scratch file, a branch switch). Without this, a returning user gets a
+  /// strip of tabs that each render a "this file was deleted" panel.
+  ///
+  /// Async on purpose — it runs once, off the critical path of the first
+  /// paint, and the main thread is the one brokering every agent's stream.
+  /// Relative paths are left alone: they're workspace-member paths
+  /// (`<member>/…`) that only resolve against a root the renderer holds.
+  async pruneFileTabs(): Promise<void> {
+    const s = current();
+    if (!s.fileTabs) return;
+    const known = conversationIds(s);
+    const next: PersistedFileTabs = {};
+    let changed = false;
+    for (const [scope, entry] of Object.entries(s.fileTabs)) {
+      if (scope.startsWith('conv:') && !known.has(scope.slice('conv:'.length))) {
+        changed = true;
+        continue;
+      }
+      const checked = await Promise.all(
+        entry.paths.map(async (p) => {
+          if (!path.isAbsolute(p)) return p;
+          try {
+            await fs.promises.access(p);
+            return p;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      const paths = checked.filter((p): p is string => p !== null);
+      if (paths.length !== entry.paths.length) changed = true;
+      if (!paths.length) continue;
+      const active = entry.activePath && paths.includes(entry.activePath) ? entry.activePath : paths[0];
+      next[scope] = { paths, activePath: active };
+    }
+    if (!changed) return;
+    s.fileTabs = Object.keys(next).length ? next : undefined;
     save();
   },
   setLastInit(info: SystemInitInfo): void {

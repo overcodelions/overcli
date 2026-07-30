@@ -184,3 +184,109 @@ describe('patchConversation', () => {
     expect(Store.patchConversation('nope' as never, { name: 'x' } as never)).toBe(false);
   });
 });
+
+// Open editor tabs are persisted per scope so returning to a conversation
+// reopens the files you had there. Two things have to hold: what reaches
+// disk stays bounded (this file is rewritten on every mutation), and what
+// comes back is openable — a strip of tabs that all render "this file was
+// deleted" is worse than no restore at all.
+describe('file tabs', () => {
+  it('persists tabs per scope', async () => {
+    const { Store, flushStoreSync } = await loadStore();
+    Store.saveFileTabs({
+      'conv:c1': { paths: ['/tmp/a.ts', '/tmp/b.ts'], activePath: '/tmp/b.ts' },
+    });
+    flushStoreSync();
+    expect(readPersisted().fileTabs).toEqual({
+      'conv:c1': { paths: ['/tmp/a.ts', '/tmp/b.ts'], activePath: '/tmp/b.ts' },
+    });
+  });
+
+  it('caps paths per scope and drops duplicates', async () => {
+    const { Store, flushStoreSync } = await loadStore();
+    const paths = Array.from({ length: 40 }, (_, i) => `/tmp/f${i}.ts`);
+    Store.saveFileTabs({ 'conv:c1': { paths: [...paths, '/tmp/f0.ts'] } });
+    flushStoreSync();
+    const saved = (readPersisted().fileTabs as Record<string, { paths: string[] }>)['conv:c1'];
+    expect(saved.paths).toHaveLength(12);
+    expect(new Set(saved.paths).size).toBe(12);
+  });
+
+  it('caps how many scopes reach disk, keeping the most recent', async () => {
+    const { Store, flushStoreSync } = await loadStore();
+    const tabs: Record<string, { paths: string[] }> = {};
+    for (let i = 0; i < 200; i += 1) tabs[`conv:c${i}`] = { paths: [`/tmp/f${i}.ts`] };
+    Store.saveFileTabs(tabs);
+    flushStoreSync();
+    const saved = readPersisted().fileTabs as Record<string, unknown>;
+    expect(Object.keys(saved)).toHaveLength(60);
+    expect(saved['conv:c199']).toBeDefined();
+    expect(saved['conv:c0']).toBeUndefined();
+  });
+
+  it('repairs an activePath that is not in the list', async () => {
+    const { Store, flushStoreSync } = await loadStore();
+    Store.saveFileTabs({ 'conv:c1': { paths: ['/tmp/a.ts'], activePath: '/tmp/gone.ts' } });
+    flushStoreSync();
+    const saved = (readPersisted().fileTabs as Record<string, { activePath: string }>)['conv:c1'];
+    expect(saved.activePath).toBe('/tmp/a.ts');
+  });
+
+  it('ignores malformed entries rather than persisting them', async () => {
+    const { Store, flushStoreSync } = await loadStore();
+    Store.saveFileTabs({
+      'conv:c1': { paths: ['' as never, 42 as never] },
+      'conv:c2': { paths: 'nope' as never },
+      'conv:c3': { paths: ['/tmp/ok.ts'] },
+    });
+    flushStoreSync();
+    expect(Object.keys(readPersisted().fileTabs as object)).toEqual(['conv:c3']);
+  });
+
+  it('prunes files that have left disk and scopes for deleted conversations', async () => {
+    const { Store, flushStoreSync } = await loadStore();
+    const alive = path.join(userDataDir, 'alive.ts');
+    fs.writeFileSync(alive, 'x');
+    Store.saveProjects([project('p1', [{ id: 'c1', name: 'one' }])] as never);
+    Store.saveFileTabs({
+      'conv:c1': { paths: [alive, path.join(userDataDir, 'gone.ts')], activePath: path.join(userDataDir, 'gone.ts') },
+      'conv:deleted': { paths: [alive] },
+      'explorer:/tmp/repo': { paths: [alive] },
+    });
+
+    await Store.pruneFileTabs();
+    flushStoreSync();
+
+    const saved = readPersisted().fileTabs as Record<string, { paths: string[]; activePath: string }>;
+    expect(Object.keys(saved).sort()).toEqual(['conv:c1', 'explorer:/tmp/repo']);
+    expect(saved['conv:c1'].paths).toEqual([alive]);
+    // The active file was the one that vanished; fall back to a live tab.
+    expect(saved['conv:c1'].activePath).toBe(alive);
+  });
+
+  it('leaves relative workspace-member paths alone when pruning', async () => {
+    // `<member>/src/foo.ts` only resolves against a root the renderer
+    // holds, so main can't stat it — dropping it would silently lose every
+    // workspace-conversation tab.
+    const { Store, flushStoreSync } = await loadStore();
+    Store.saveProjects([project('p1', [{ id: 'c1', name: 'one' }])] as never);
+    Store.saveFileTabs({ 'conv:c1': { paths: ['member/src/foo.ts'] } });
+
+    await Store.pruneFileTabs();
+    flushStoreSync();
+
+    const saved = readPersisted().fileTabs as Record<string, { paths: string[] }>;
+    expect(saved['conv:c1'].paths).toEqual(['member/src/foo.ts']);
+  });
+
+  it('drops unopenable tabs on load through the same sanitizer', async () => {
+    const { Store, flushStoreSync, loadState } = await loadStore();
+    Store.saveFileTabs({ 'conv:c1': { paths: ['/tmp/a.ts'] } });
+    flushStoreSync();
+    // Hand-edit the file the way an older build (or a bug) might have.
+    const raw = readPersisted();
+    raw.fileTabs = { 'conv:c1': { paths: [] }, 'conv:c2': null };
+    fs.writeFileSync(storeFile(), JSON.stringify(raw));
+    expect(loadState().fileTabs).toBeUndefined();
+  });
+});

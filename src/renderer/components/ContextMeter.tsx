@@ -42,7 +42,7 @@ export function ContextMeter({ conversationId }: { conversationId: string | unde
       title={
         window
           ? `${tokens.toLocaleString()} of ${window.toLocaleString()} context tokens in use as of the last request. ` +
-            `Send /compact to summarize the conversation and reclaim room.`
+            `Use "compact" to summarize the conversation and reclaim room.`
           : `${tokens.toLocaleString()} context tokens in use as of the last request.`
       }
     >

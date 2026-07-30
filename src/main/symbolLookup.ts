@@ -7,8 +7,19 @@
 //      method names in a codebase are unique enough that one
 //      declaration-shaped line matches. No model is spawned at all.
 //   2. A one-shot CLI query on the cheapest fast model (Haiku on claude).
-//      Only reached when grep is ambiguous (several candidates) or empty
-//      (inherited/generated/generic-heavy definitions).
+//      Reached automatically only when grep found NOTHING
+//      (inherited/generated/generic-heavy definitions). When grep found
+//      several candidates we hand those back immediately and let the user
+//      ask for the model via `refine()` — a picker on screen in 20ms beats
+//      a better-ordered picker several seconds later, and it keeps a click
+//      from spending model time nobody asked for.
+//
+// Everything on this path is async and bounded. The first version ran
+// ripgrep through spawnSync and read whole candidate files with
+// readFileSync, on the main-process thread — the same thread that brokers
+// every streaming IPC message from every running agent, so one Cmd-click
+// stalled every conversation in the app for as long as the search took.
+// That's the bug f731162 fixed for detectGpu; the rules are the same here.
 //
 // Both tiers hand back *candidates*, and every candidate is verified
 // against the file on disk before it leaves this module: the path must
@@ -23,7 +34,7 @@
 // written to any transcript. Clicking a symbol must not perturb the
 // agent's context.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -48,7 +59,16 @@ const MAX_MODEL_CANDIDATES = 5;
 /// Short enough that an edit to the definition site isn't stale for long,
 /// long enough that walking a call chain doesn't re-pay for each hop.
 const CACHE_TTL_MS = 120_000;
+/// Failures are cached too, but briefly. A miss is often circumstantial
+/// (file not saved yet, rg missing) so it has to expire fast — but not
+/// caching it at all meant every repeat click on an unresolvable symbol
+/// re-paid the whole ladder, up to two model spawns, for the same answer.
+const CACHE_TTL_MISS_MS = 20_000;
 const CACHE_MAX_ENTRIES = 500;
+/// Ceiling on the bytes we'll scan to reach a candidate's line. Well past
+/// any real source file, and it caps the work a bogus `path:line` from the
+/// model tier can cause.
+const VERIFY_MAX_BYTES = 2_000_000;
 
 /// Sibling extensions to restrict the grep to. A Java method is defined in
 /// a `.java` file; searching the whole tree just adds noise from vendored
@@ -170,33 +190,75 @@ export function parseModelCandidates(text: string): Array<{ path: string; line: 
   return out;
 }
 
+/// Read one 1-based line out of a file without materializing the whole
+/// thing. The old version read up to 8MB into a string and split it on
+/// every newline just to look at one line — per candidate, and up to
+/// thirteen candidates per lookup. This walks chunks until it reaches the
+/// line it wants and stops, so cost tracks the line's *offset* rather than
+/// the file's size. Returns null past EOF or past VERIFY_MAX_BYTES.
+export async function readLineAt(
+  filePath: string,
+  line: number,
+  maxBytes = VERIFY_MAX_BYTES,
+): Promise<string | null> {
+  if (!Number.isInteger(line) || line < 1) return null;
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(filePath, 'r');
+    const stat = await handle.stat();
+    if (!stat.isFile()) return null;
+    const buf = Buffer.allocUnsafe(64 * 1024);
+    // `carry` holds the tail of the previous chunk — a line can straddle a
+    // chunk boundary, so we only consume up to the last newline we saw.
+    let carry = '';
+    let current = 1;
+    let read = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buf, 0, buf.length, null);
+      if (bytesRead === 0) {
+        // EOF. A final line with no trailing newline still counts.
+        return current === line ? carry : null;
+      }
+      read += bytesRead;
+      if (read > maxBytes) return null;
+      carry += buf.toString('utf-8', 0, bytesRead);
+      let start = 0;
+      for (;;) {
+        const nl = carry.indexOf('\n', start);
+        if (nl === -1) break;
+        if (current === line) return carry.slice(start, nl).replace(/\r$/, '');
+        current += 1;
+        start = nl + 1;
+      }
+      carry = carry.slice(start);
+      // A single "line" longer than the cap is not source we can verify.
+      if (carry.length > maxBytes) return null;
+    }
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
 /// Confirm a candidate points at something real before we let the UI jump
 /// to it: inside the project root, line in range, and the line actually
 /// mentions the symbol. Returns the candidate with its source line as a
 /// snippet, or null.
-export function verifyCandidate(
+export async function verifyCandidate(
   cwd: string,
   candidate: { path: string; line: number },
   symbol: string,
   source: SymbolCandidate['source'],
-): SymbolCandidate | null {
+): Promise<SymbolCandidate | null> {
   const resolved = path.resolve(cwd, candidate.path);
   // Traversal / symlink escape guard — the model supplies this path, so
   // it is untrusted input even though the model is ours.
   const root = cwd.endsWith(path.sep) ? cwd : cwd + path.sep;
   if (resolved !== cwd && !resolved.startsWith(root)) return null;
 
-  let text: string;
-  try {
-    const stat = fs.statSync(resolved);
-    if (!stat.isFile() || stat.size > 8_000_000) return null;
-    text = fs.readFileSync(resolved, 'utf-8');
-  } catch {
-    return null;
-  }
-  const lines = text.split('\n');
-  if (candidate.line > lines.length) return null;
-  const lineText = lines[candidate.line - 1] ?? '';
+  const lineText = await readLineAt(resolved, candidate.line);
+  if (lineText == null) return null;
   // Word-boundary check, not substring: `getUser` must not validate a hit
   // on `getUserName`.
   if (!new RegExp(String.raw`\b${symbol}\b`).test(lineText)) return null;
@@ -208,6 +270,19 @@ export function verifyCandidate(
     snippet: lineText.trim().slice(0, 200),
     source,
   };
+}
+
+/// Verify a batch of candidates concurrently, keeping input order.
+async function verifyAll(
+  cwd: string,
+  candidates: Array<{ path: string; line: number }>,
+  symbol: string,
+  source: SymbolCandidate['source'],
+): Promise<SymbolCandidate[]> {
+  const checked = await Promise.all(
+    candidates.map((c) => verifyCandidate(cwd, c, symbol, source)),
+  );
+  return dedupe(checked.filter((c): c is SymbolCandidate => c !== null));
 }
 
 /// Cheapest-fast-model-first ladder for the lookup tier.
@@ -303,6 +378,10 @@ export interface SymbolLookupArgs {
 
 export class SymbolLookupManager {
   private cache = new Map<string, CacheEntry>();
+  /// `refine()` answers the same (cwd, ext, symbol) key with a different
+  /// (model-derived) result, so it gets its own map rather than a key
+  /// prefix — one lookup's answer must never be served from the other's.
+  private refineCache = new Map<string, CacheEntry>();
   /// Dedupes concurrent identical lookups — a double Cmd-click shouldn't
   /// spawn two processes.
   private pending = new Map<string, Promise<SymbolLookupResult>>();
@@ -324,9 +403,26 @@ export class SymbolLookupManager {
     this.inFlight.clear();
     this.pending.clear();
     this.cache.clear();
+    this.refineCache.clear();
   }
 
   async find(args: SymbolLookupArgs): Promise<SymbolLookupResult> {
+    return this.run(args, 'find', (cwd, symbol) => this.runLookup(cwd, args, symbol));
+  }
+
+  /// The user asked for a model opinion on an ambiguous grep answer. Skips
+  /// the grep tier entirely and caches under its own key, so refining once
+  /// doesn't make every later click on that symbol pay for a model.
+  async refine(args: SymbolLookupArgs): Promise<SymbolLookupResult> {
+    return this.run(args, 'refine', (cwd, symbol) => this.runModelTier(cwd, args, symbol));
+  }
+
+  /// Shared validation, caching and in-flight dedupe for both entry points.
+  private async run(
+    args: SymbolLookupArgs,
+    kind: 'find' | 'refine',
+    work: (cwd: string, symbol: string) => Promise<SymbolLookupResult>,
+  ): Promise<SymbolLookupResult> {
     const symbol = (args.symbol ?? '').trim();
     if (!isSafeSymbol(symbol)) {
       return { ok: false, error: 'Not a symbol Overcli can look up.' };
@@ -337,33 +433,40 @@ export class SymbolLookupManager {
     }
 
     const key = `${cwd} ${path.extname(args.filePath).toLowerCase()} ${symbol}`;
-    const hit = this.cache.get(key);
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+    const cache = kind === 'find' ? this.cache : this.refineCache;
+    const hit = cache.get(key);
+    // Failures expire far sooner than answers: a miss is often
+    // circumstantial (file not saved yet, rg missing), but not caching it
+    // at all meant every repeat click on an unresolvable symbol re-ran the
+    // whole ladder — up to two model spawns — for the same answer.
+    if (hit && Date.now() - hit.at < (hit.result.ok ? CACHE_TTL_MS : CACHE_TTL_MISS_MS)) {
       return hit.result.ok ? { ...hit.result, via: 'cache' } : hit.result;
     }
-    const inflight = this.pending.get(key);
+    const pendingKey = `${kind}:${key}`;
+    const inflight = this.pending.get(pendingKey);
     if (inflight) return inflight;
 
-    const run = this.runLookup(cwd, args, symbol)
+    const run = work(cwd, symbol)
       .then((result) => {
-        // Only cache useful answers. A miss is often "the index was warm
-        // for the wrong reason" (file not saved yet, rg missing) and is
-        // worth retrying on the next click.
-        if (result.ok && result.candidates.length > 0) this.remember(key, result);
+        if (!result.ok || result.candidates.length > 0) this.remember(cache, key, result);
         return result;
       })
-      .finally(() => this.pending.delete(key));
-    this.pending.set(key, run);
+      .finally(() => this.pending.delete(pendingKey));
+    this.pending.set(pendingKey, run);
     return run;
   }
 
-  private remember(key: string, result: SymbolLookupResult): void {
-    if (this.cache.size >= CACHE_MAX_ENTRIES) {
+  private remember(
+    cache: Map<string, CacheEntry>,
+    key: string,
+    result: SymbolLookupResult,
+  ): void {
+    if (cache.size >= CACHE_MAX_ENTRIES) {
       // Cheap eviction: drop the oldest insertion. Map preserves order.
-      const oldest = this.cache.keys().next();
-      if (!oldest.done) this.cache.delete(oldest.value);
+      const oldest = cache.keys().next();
+      if (!oldest.done) cache.delete(oldest.value);
     }
-    this.cache.set(key, { result, at: Date.now() });
+    cache.set(key, { result, at: Date.now() });
   }
 
   private async runLookup(
@@ -371,51 +474,73 @@ export class SymbolLookupManager {
     args: SymbolLookupArgs,
     symbol: string,
   ): Promise<SymbolLookupResult> {
-    const grepped = this.grepTier(cwd, args.filePath, symbol);
+    const grepped = await this.grepTier(cwd, args.filePath, symbol);
 
     // Exactly one verified declaration — done, for free.
     if (grepped.length === 1) {
       return { ok: true, candidates: grepped, via: 'grep' };
     }
 
-    const { backend, binary } = this.deps.backendFor();
-    if (!binary) {
-      // No CLI to ask. Hand back whatever grep found rather than nothing;
-      // an ambiguous picker still beats no navigation.
-      if (grepped.length > 0) return { ok: true, candidates: grepped, via: 'grep' };
-      return { ok: false, error: `No ${backend} CLI found to resolve "${symbol}".` };
+    // Several candidates: answer NOW. This used to spend a model call (two,
+    // on a bad day, at 25s apiece) to rank a list it already had, and then
+    // fall back to that very list when the model's answer didn't verify —
+    // so the common ambiguous case paid seconds of latency for a picker we
+    // could show in ~20ms. `refinable` lets the picker offer the model as an
+    // explicit action instead.
+    if (grepped.length > 1) {
+      return { ok: true, candidates: grepped, via: 'grep', refinable: this.canRefine() };
     }
 
+    // Grep found nothing at all — inherited, generated, or generic-heavy
+    // definitions. Here the model tier is the only thing that can answer,
+    // so it runs without being asked.
+    return this.runModelTier(cwd, args, symbol);
+  }
+
+  /// Whether a model tier is available to refine with. Cheap: a resolved
+  /// binary and at least one fast model on the ladder.
+  private canRefine(): boolean {
+    const { backend, binary } = this.deps.backendFor();
+    return !!binary && lookupModelLadder(backend).length > 0;
+  }
+
+  /// Tier 2 on its own. Reached automatically when grep came up empty, and
+  /// on demand from `refine()`.
+  private async runModelTier(
+    cwd: string,
+    args: SymbolLookupArgs,
+    symbol: string,
+  ): Promise<SymbolLookupResult> {
+    const { backend, binary } = this.deps.backendFor();
+    if (!binary) {
+      return { ok: false, error: `No ${backend} CLI found to resolve "${symbol}".` };
+    }
     const ladder = lookupModelLadder(backend);
     if (ladder.length === 0) {
-      if (grepped.length > 0) return { ok: true, candidates: grepped, via: 'grep' };
       return { ok: false, error: `No fast model available on the ${backend} backend.` };
     }
 
     // Escalate at most one rung. The cheap model is right most of the
     // time; if its answer doesn't verify, one retry on a stronger model is
-    // worth the latency, but a full climb is not — grep candidates are a
-    // better fallback than a third spawn.
+    // worth the latency, but a full climb is not.
     for (const model of ladder.slice(0, 2)) {
       const text = await this.askModel({ cwd, args, symbol, backend, binary, model });
       if (text == null) continue;
-      const verified = dedupe(
-        parseModelCandidates(text)
-          .map((c) => verifyCandidate(cwd, c, symbol, 'model'))
-          .filter((c): c is SymbolCandidate => c !== null),
-      );
+      const verified = await verifyAll(cwd, parseModelCandidates(text), symbol, 'model');
       if (verified.length > 0) {
         return { ok: true, candidates: verified, via: 'model', model };
       }
     }
-
-    if (grepped.length > 0) return { ok: true, candidates: grepped, via: 'grep' };
     return { ok: false, error: `Could not find a definition for "${symbol}".` };
   }
 
   /// Tier 1. Returns verified candidates, capped. An empty array means
   /// either no match or no ripgrep — both fall through to the model.
-  private grepTier(cwd: string, filePath: string, symbol: string): SymbolCandidate[] {
+  private async grepTier(
+    cwd: string,
+    filePath: string,
+    symbol: string,
+  ): Promise<SymbolCandidate[]> {
     const patterns = declarationPatterns(filePath, symbol);
     const rgArgs = ['--no-heading', '-n', '-s', '--max-count', '4'];
     for (const ext of siblingExtensions(filePath)) {
@@ -428,23 +553,55 @@ export class SymbolLookupManager {
     // read as a flag.
     rgArgs.push('--', cwd);
 
-    const res = spawnSync('rg', rgArgs, {
-      encoding: 'utf-8',
-      timeout: GREP_TIMEOUT_MS,
-      // No shell: patterns contain regex metacharacters by design.
-      shell: false,
-    });
+    const res = await this.runRipgrep(rgArgs);
     // rg missing (ENOENT) or timed out — skip the tier silently.
-    if (res.error || typeof res.status !== 'number') return [];
+    if (!res) return [];
     // status 1 is "no matches", which is a normal outcome.
     if (res.status !== 0 && res.status !== 1) return [];
 
-    const verified = dedupe(
-      parseGrepMatches(res.stdout ?? '', cwd)
-        .map((c) => verifyCandidate(cwd, c, symbol, 'grep'))
-        .filter((c): c is SymbolCandidate => c !== null),
-    );
+    const verified = await verifyAll(cwd, parseGrepMatches(res.stdout, cwd), symbol, 'grep');
     return verified.length > MAX_GREP_CANDIDATES ? [] : verified;
+  }
+
+  /// Run ripgrep off-thread. This was `spawnSync` — up to GREP_TIMEOUT_MS of
+  /// the main-process thread blocked per Cmd-click, which also blocks every
+  /// agent's streaming IPC. Returns null when rg is absent or timed out.
+  private runRipgrep(rgArgs: string[]): Promise<{ status: number; stdout: string } | null> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (value: { status: number; stdout: string } | null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        this.inFlight.delete(proc);
+        resolve(value);
+      };
+      // No shell: patterns contain regex metacharacters by design.
+      const proc = spawn('rg', rgArgs, { shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+      this.inFlight.add(proc);
+      const timer = setTimeout(() => {
+        try {
+          proc.kill('SIGTERM');
+        } catch {}
+        done(null);
+      }, GREP_TIMEOUT_MS);
+
+      let stdout = '';
+      proc.stdout.setEncoding('utf-8');
+      proc.stdout.on('data', (chunk: string) => {
+        stdout += chunk;
+        // We only ever read the first MAX_GREP_CANDIDATES matches; a symbol
+        // that matches thousands of lines shouldn't buffer all of them.
+        if (stdout.length > 256_000) {
+          try {
+            proc.kill('SIGTERM');
+          } catch {}
+        }
+      });
+      proc.stderr.resume();
+      proc.on('error', () => done(null));
+      proc.on('close', (code) => done({ status: code ?? 1, stdout }));
+    });
   }
 
   /// Tier 2. Spawns the CLI, feeds the prompt on stdin, returns the reply

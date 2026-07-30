@@ -29,7 +29,7 @@ import type {
 } from '../../shared/flows/orchestration';
 import { isOrchestrationComplete, parseCandidates } from '../../shared/flows/orchestration';
 import { pickDrafterBackend, drafterModelFor } from '../../shared/flows/drafterBackend';
-import { probeBackendHealth } from '../health';
+import { healthyBackends } from '../health';
 import type { RunnerManager } from '../runner';
 import {
   deleteOrchestration,
@@ -168,10 +168,12 @@ export class OrchestratorImpl {
     if (!message) return { ok: false, error: 'Message is empty.' };
 
     const settings = this.getSettings();
+    // Resolved up front — probing runs a CLI, so it's async (see health.ts)
+    // and can't happen inside a sync predicate.
+    const healthy = await healthyBackends(settings.backendPaths);
     const backend = pickDrafterBackend({
       preferred: settings.preferredBackend,
-      isHealthy: (b: Backend) =>
-        probeBackendHealth(b, settings.backendPaths[b]).kind === 'ready',
+      isHealthy: (b: Backend) => healthy.has(b),
       isEnabled: (b: Backend) => settings.disabledBackends[b] !== true,
     });
     if (!backend) {
