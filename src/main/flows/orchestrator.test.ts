@@ -7,9 +7,12 @@ vi.mock('./orchestrationsStore', () => ({
   loadAllOrchestrations: vi.fn(() => []),
   deleteOrchestration: vi.fn(),
 }));
-// Health probe reaches into backend binaries — stub it ready so propose()'s
-// backend pick is deterministic (not exercised here, but keeps imports cheap).
-vi.mock('../health', () => ({ probeBackendHealth: () => ({ kind: 'ready' }) }));
+// Health probing executes backend binaries — stub it so propose()'s backend
+// pick is deterministic (not exercised here, but keeps imports cheap).
+vi.mock('../health', () => ({
+  probeBackendHealth: async () => ({ kind: 'ready' }),
+  healthyBackends: async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama']),
+}));
 
 import { OrchestratorImpl, type FlowLauncher } from './orchestrator';
 import type { FlowRun } from '../../shared/flows/schema';

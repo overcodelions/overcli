@@ -14,7 +14,12 @@ import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
 import { SymbolLookupManager } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
-import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
+import {
+  probeBackendHealth,
+  invalidateHealthCache,
+  listInstalledReviewers,
+  resolveBackendPath,
+} from './health';
 import { primeBackendUpdates } from './backendUpdater';
 import {
   runGit,
@@ -92,7 +97,7 @@ import {
   rebindCoordinatorRootToProjects,
   removeCoordinatorSymlinkRoot,
 } from './workspace';
-import { openTerminalAt, runInTerminal } from './terminal';
+import { openTerminalAt, openTerminalIn, runInTerminal } from './terminal';
 import {
   ArtifactPreviewResult,
   Backend,
@@ -242,7 +247,13 @@ function registerIpc(): void {
     },
   });
 
-  ipcMain.handle('store:load', () => Store.load());
+  ipcMain.handle('store:load', async () => {
+    const state = Store.load();
+    // Restored editor tabs are checked against disk once, here, so the
+    // renderer never hydrates a strip of tabs for files that are gone.
+    await Store.pruneFileTabs();
+    return state;
+  });
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
   ipcMain.handle('store:patchConversation', (_e, { id, patch }) =>
@@ -255,6 +266,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
+  ipcMain.handle('store:saveFileTabs', (_e, tabs) => Store.saveFileTabs(tabs));
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
@@ -282,6 +294,11 @@ function registerIpc(): void {
     return probeBackendHealth(backend, settings.backendPaths[backend]);
   });
   ipcMain.handle('runner:listInstalledReviewers', () => listInstalledReviewers());
+  // Drop the probe cache so the next refresh re-executes the CLIs. The
+  // sign-in banner polls through this while the user finishes an OAuth
+  // round-trip in Terminal, where a cached "unauthenticated" would leave the
+  // badge stale for up to the TTL.
+  ipcMain.handle('health:invalidate', () => invalidateHealthCache());
   ipcMain.handle('capabilities:scan', () => scanCapabilities());
   ipcMain.handle('skills:listMarketplace', () => listMarketplaceSkills());
   ipcMain.handle('skills:installMarketplace', (_e, { skillId, targets }) =>
@@ -422,24 +439,36 @@ function registerIpc(): void {
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
   });
-  ipcMain.handle('symbols:findDefinition', async (_e, args) => {
+  /// Shared guard for both symbol entry points: the file and the project
+  /// root both have to be inside something the user registered.
+  const resolveSymbolArgs = (
+    args: { cwd?: string; filePath?: string; symbol?: string; line?: number } | undefined,
+  ):
+    | { ok: true; cwd: string; filePath: string; symbol: string; line: number }
+    | { ok: false; error: string } => {
     const filePath = resolveFilePath(args?.filePath ?? '');
     if (!filePath || !isReadablePath(filePath)) {
-      return { ok: false as const, error: 'File is outside any registered project.' };
+      return { ok: false, error: 'File is outside any registered project.' };
     }
     const cwd = args?.cwd ?? '';
     if (!cwd || !isPathUnderRegisteredRoot(cwd)) {
-      return { ok: false as const, error: 'Project root is not registered.' };
+      return { ok: false, error: 'Project root is not registered.' };
     }
     if (!symbolLookup) {
-      return { ok: false as const, error: 'Symbol lookup is not available.' };
+      return { ok: false, error: 'Symbol lookup is not available.' };
     }
-    return symbolLookup.find({
-      cwd,
-      filePath,
-      symbol: args?.symbol ?? '',
-      line: args?.line ?? 1,
-    });
+    return { ok: true, cwd, filePath, symbol: args?.symbol ?? '', line: args?.line ?? 1 };
+  };
+
+  ipcMain.handle('symbols:findDefinition', async (_e, args) => {
+    const checked = resolveSymbolArgs(args);
+    if (!checked.ok) return { ok: false as const, error: checked.error };
+    return symbolLookup!.find(checked);
+  });
+  ipcMain.handle('symbols:refineDefinition', async (_e, args) => {
+    const checked = resolveSymbolArgs(args);
+    if (!checked.ok) return { ok: false as const, error: checked.error };
+    return symbolLookup!.refine(checked);
   });
   ipcMain.handle(
     'flows:openArtifact',
@@ -645,6 +674,23 @@ function registerIpc(): void {
       return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`);
     },
   );
+
+  ipcMain.handle('terminal:openFolder', async (_e, { path: target }: { path: string }) => {
+    // Same containment rule as popping a conversation out: only folders
+    // inside a project, workspace or worktree the user has registered.
+    if (!isPathUnderRegisteredRoot(target)) {
+      return { ok: false, error: 'That folder is not inside a registered project root.' };
+    }
+    try {
+      const stat = await fs.promises.stat(target);
+      if (!stat.isDirectory()) {
+        return { ok: false, error: 'That path is not a folder.' };
+      }
+    } catch {
+      return { ok: false, error: 'That folder no longer exists.' };
+    }
+    return openTerminalIn(target);
+  });
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());

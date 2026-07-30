@@ -34,7 +34,7 @@ import {
   drafterModelFor,
   drafterModelHints,
 } from '../../shared/flows/drafterBackend';
-import { probeBackendHealth } from '../health';
+import { healthyBackends } from '../health';
 import type { OneShotResult, RunnerManager } from '../runner';
 
 export interface DraftDeps {
@@ -231,10 +231,13 @@ export async function draftFlowFromPrompt(
   const desc = args.description.trim();
   if (!desc) return { ok: false, error: 'Description is empty.' };
 
+  // Health is resolved up front rather than probed inside the predicate:
+  // probing executes a CLI, so it's async now (it used to block the main
+  // thread) and `pickDrafterBackend` can't await mid-predicate.
+  const healthy = await healthyBackends(deps.settings.backendPaths);
   const backend = pickDrafterBackend({
     preferred: deps.settings.preferredBackend,
-    isHealthy: (b) =>
-      probeBackendHealth(b, deps.settings.backendPaths[b]).kind === 'ready',
+    isHealthy: (b) => healthy.has(b),
     isEnabled: (b) => deps.settings.disabledBackends[b] !== true,
   });
   if (!backend) {

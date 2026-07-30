@@ -24,6 +24,7 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
@@ -1621,7 +1622,10 @@ function HijackComposer({
   const modelOverride = useFlowsStore((s) => s.runs[run.id]?.modelOverrides?.[participant.id]);
   const effectiveModel = modelOverride ?? participant.model;
 
-  const handleSend = (prompt: string, attachments: Attachment[]) => {
+  /// Send a turn on the participant's session. `clearComposer` is false for
+  /// button-driven turns (compact) — those must not wipe a draft the user
+  /// is in the middle of writing.
+  const sendTurn = (prompt: string, attachments: Attachment[], clearComposer: boolean) => {
     // Mint a conv id if this participant hasn't been used yet so the
     // first hijack message actually starts a session.
     const id = convId ?? cryptoRandomUuid();
@@ -1653,9 +1657,13 @@ function HijackComposer({
       permissionMode: 'bypassPermissions',
       attachments,
     });
+    if (!clearComposer) return;
     setDraft(draftKey, '');
     clearAttachments(draftKey);
   };
+
+  const handleSend = (prompt: string, attachments: Attachment[]) =>
+    sendTurn(prompt, attachments, true);
 
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
@@ -1683,6 +1691,15 @@ function HijackComposer({
       <FlowStatsFooter
         convId={convId}
         fallbackModel={`${participant.backend}:${effectiveModel}`}
+        // Compaction rides the same resumed session the flow's next step
+        // will pick up (see `handleSend`), so freeing context here frees it
+        // for the run — not just for this side chat.
+        onCompact={
+          participant.backend === 'claude' && convId
+            ? () => sendTurn('/compact', [], false)
+            : undefined
+        }
+        isRunning={isRunning}
       />
     </div>
   );
@@ -1807,9 +1824,14 @@ function HijackModelPicker({
 function FlowStatsFooter({
   convId,
   fallbackModel,
+  onCompact,
+  isRunning,
 }: {
   convId: string | undefined;
   fallbackModel: string;
+  /// Undefined for non-Claude participants, which have no slash commands.
+  onCompact?: () => void;
+  isRunning?: boolean;
 }) {
   // Subscribe to the runner here, not in the parent HijackComposer.
   // Streamed events update the runner on every chunk; keeping that
@@ -1832,6 +1854,13 @@ function FlowStatsFooter({
       {/* Participants keep ONE conversation across every step they run,
           so this is the number that quietly climbs over a long flow. */}
       <ContextMeter conversationId={convId} />
+      {onCompact && (
+        <CompactButton
+          onCompact={onCompact}
+          disabled={isRunning}
+          disabledReason="Available once this step finishes"
+        />
+      )}
       {model && <span>· {model}</span>}
       {sessionId && <span className="truncate">· {sessionId.slice(0, 8)}</span>}
     </div>

@@ -116,9 +116,9 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 | 06 | **Tool cards** | File edits render as diffs. Bash lives in a terminal block. Reads, writes, todos each get their own card — so you can actually see what the agent did. |
 | 07 | **Permission & approval** | Claude permission prompts and Codex approval cards (exec + apply_patch) are proper UI elements, not modal interruptions. |
 | 08 | **History from disk** | Reads prior transcripts straight out of `~/.claude/projects`, `~/.codex/sessions`, and `~/.gemini/tmp`. Nothing re-invented. |
-| 09 | **File editor** | Syntax highlighting, line-range highlighting, HTML & Markdown preview tabs. No context-switch to VS Code. |
+| 09 | **File editor** | Tabs, per-file view modes, syntax highlighting, line-range highlighting, HTML & Markdown preview. <kbd>⌘</kbd>-click a symbol to jump to its definition. Open files are remembered per conversation, flow run and explorer root — leave and come back and they're still there. No context-switch to VS Code. |
 | 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Copy an MCP server from one CLI to the others in a click. Rescan on demand. |
-| 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher. |
+| 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher, <kbd>⌘1</kbd>–<kbd>⌘9</kbd> and <kbd>⌥⌘←/→</kbd> for editor tabs. |
 | 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
 | 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
 | 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. |
