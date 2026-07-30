@@ -829,6 +829,11 @@ export interface IPCInvokeMap {
   };
   'store:saveProjects': (projects: Project[]) => void;
   'store:saveWorkspaces': (workspaces: Workspace[]) => void;
+  /// Patch a single conversation's metadata without shipping (and
+  /// re-sanitizing) the entire projects/workspaces tree. Resolves false if
+  /// the conversation isn't on disk yet, so the caller can fall back to a
+  /// full save.
+  'store:patchConversation': (args: { id: UUID; patch: Partial<Conversation> }) => boolean;
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;

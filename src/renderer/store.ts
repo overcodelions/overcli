@@ -1045,10 +1045,14 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async saveProjects() {
-    await window.overcli.invoke('store:saveProjects', get().projects);
+    await coalescedSave('projects', () =>
+      window.overcli.invoke('store:saveProjects', get().projects),
+    );
   },
   async saveWorkspaces() {
-    await window.overcli.invoke('store:saveWorkspaces', get().workspaces);
+    await coalescedSave('workspaces', () =>
+      window.overcli.invoke('store:saveWorkspaces', get().workspaces),
+    );
   },
   async saveColosseums() {
     await window.overcli.invoke('store:saveColosseums', get().colosseums);
@@ -3004,11 +3008,21 @@ export const useStore = create<StoreState>((set, get) => ({
         // Bump lastActiveAt so the sidebar's "Active" 10-min window
         // restarts at finish time, not at the original prompt — long
         // runs were dropping off the list the instant they finished.
-        mutateConversation(set, get, event.conversationId, (c) => ({
-          ...c,
-          lastActiveAt: Date.now(),
-        }));
-        void saveConversationState(get);
+        const lastActiveAt = Date.now();
+        mutateConversation(set, get, event.conversationId, (c) => ({ ...c, lastActiveAt }));
+        // Targeted write — this is the hottest save in the app and it only
+        // moves one scalar. The bulk path would clone every conversation in
+        // the store across IPC to do it. Fall back to the full save only if
+        // main doesn't know this conversation yet.
+        void window.overcli
+          .invoke('store:patchConversation', {
+            id: event.conversationId,
+            patch: { lastActiveAt },
+          })
+          .then((ok) => {
+            if (!ok) return saveConversationState(get);
+          })
+          .catch(() => saveConversationState(get));
         // Main-side guard skips the bounce if the window is focused or
         // we already nudged in the last 10s, so this is safe to fire on
         // every completion regardless of view state.
@@ -3183,27 +3197,99 @@ function buildWorkspaceDocsPrompt(args: { topic: string; projectNames: string[] 
 /// `sessionId`, `turnCount`, model, and settings for workspace
 /// conversations on reload (symptom: empty chat pane after clicking a
 /// workspace conversation you'd been working in).
+/// Renderer-side coalescing window for the two bulk saves.
+///
+/// `store:saveProjects` structured-clones every project and every
+/// conversation across the IPC boundary — hundreds of KB, serialized on the
+/// renderer's own thread before main ever sees it. There are ~55 call sites
+/// and several can fire per completed turn, so bursts of them stalled the UI
+/// on the clone alone. Each key keeps at most one scheduled write; callers
+/// arriving inside the window await that same write. The payload is read at
+/// fire time rather than call time, so a coalesced write still carries the
+/// newest state — collapsing N writes into one loses nothing.
+const SAVE_COALESCE_MS = 250;
+
+const pendingSaves = new Map<string, { promise: Promise<void>; fire: () => void }>();
+
+function coalescedSave(key: string, run: () => Promise<unknown>): Promise<void> {
+  const existing = pendingSaves.get(key);
+  if (existing) return existing.promise;
+  let timer: ReturnType<typeof setTimeout>;
+  let fired = false;
+  let fire = () => {};
+  const promise = new Promise<void>((resolve) => {
+    const go = () => {
+      if (fired) return;
+      fired = true;
+      clearTimeout(timer);
+      pendingSaves.delete(key);
+      void Promise.resolve(run())
+        .catch(() => undefined)
+        .then(() => resolve());
+    };
+    fire = go;
+    timer = setTimeout(go, SAVE_COALESCE_MS);
+  });
+  pendingSaves.set(key, { promise, fire });
+  return promise;
+}
+
+/// Fire every scheduled save immediately. Used on window teardown so a
+/// reload inside the coalescing window can't strand the last mutation.
+export function flushPendingSaves(): void {
+  for (const entry of Array.from(pendingSaves.values())) entry.fire();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', flushPendingSaves);
+}
+
 async function saveConversationState(get: () => StoreState): Promise<void> {
   await get().saveProjects();
   await get().saveWorkspaces();
 }
 
+/// Apply a mutator to one conversation, rebuilding only the project or
+/// workspace that actually owns it.
+///
+/// The previous version mapped every project AND every workspace on every
+/// call, so touching a single `lastActiveAt` minted a fresh object for all
+/// 40-odd projects and invalidated every sidebar subscriber. Conversation
+/// ids are unique across the tree, so stopping at the first match is
+/// equivalent — and it leaves untouched groups referentially stable, which
+/// is what keeps the sidebar from re-rendering wholesale on every completed
+/// turn.
 function mutateConversation(
   set: (fn: (s: StoreState) => Partial<StoreState>) => void,
   _get: () => StoreState,
   id: UUID,
   mutator: (c: Conversation) => Conversation,
 ): void {
-  set((s) => ({
-    projects: s.projects.map((p) => ({
-      ...p,
-      conversations: p.conversations.map((c) => (c.id === id ? mutator(c) : c)),
-    })),
-    workspaces: s.workspaces.map((w) => ({
-      ...w,
-      conversations: (w.conversations ?? []).map((c) => (c.id === id ? mutator(c) : c)),
-    })),
-  }));
+  set((s) => {
+    let found = false;
+    const projects = s.projects.map((p) => {
+      if (found) return p;
+      const idx = p.conversations.findIndex((c) => c.id === id);
+      if (idx === -1) return p;
+      found = true;
+      const conversations = p.conversations.slice();
+      conversations[idx] = mutator(conversations[idx]);
+      return { ...p, conversations };
+    });
+    if (found) return { projects };
+
+    const workspaces = s.workspaces.map((w) => {
+      if (found) return w;
+      const list = w.conversations ?? [];
+      const idx = list.findIndex((c) => c.id === id);
+      if (idx === -1) return w;
+      found = true;
+      const conversations = list.slice();
+      conversations[idx] = mutator(conversations[idx]);
+      return { ...w, conversations };
+    });
+    return found ? { workspaces } : {};
+  });
 }
 
 /// Incoming stream events either append to the tail OR replace an existing

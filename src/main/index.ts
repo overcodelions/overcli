@@ -4,13 +4,13 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
-import { app, BrowserWindow, dialog, ipcMain, shell, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Store } from './store';
+import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
@@ -220,6 +220,9 @@ function registerIpc(): void {
   ipcMain.handle('store:load', () => Store.load());
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
+  ipcMain.handle('store:patchConversation', (_e, { id, patch }) =>
+    Store.patchConversation(id, patch),
+  );
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     Store.saveSettings(settings);
@@ -1477,8 +1480,26 @@ if (process.platform === 'darwin' && process.arch !== 'arm64') {
   app.commandLine.appendSwitch('disable-features', 'SkiaGraphite');
 }
 
+/// In dev the renderer is served over HTTP by Vite, and HMR appends a fresh
+/// `?t=<timestamp>` cache-buster to every module on every edit. Chromium
+/// treats each of those as a brand-new, permanently-cacheable URL, so the
+/// HTTP cache (and the V8 code cache keyed off it) grows without bound —
+/// months of dev had accumulated ~32k entries and 1.6GB of userData. Prod
+/// loads from `file://` and never enters this cache, so this is dev-only.
+async function clearDevHttpCache(): Promise<void> {
+  if (!isDev) return;
+  try {
+    await session.defaultSession.clearCodeCaches({ urls: [] });
+    await session.defaultSession.clearCache();
+    log('info', 'main.devCache', 'Cleared dev HTTP + code caches');
+  } catch (err) {
+    log('warn', 'main.devCache', 'Failed to clear dev caches', err);
+  }
+}
+
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  void clearDevHttpCache();
   // In dev the dock shows Electron's default icon because we're running the
   // Electron binary directly (no .app bundle). Override it so dev matches prod.
   if (isDev && process.platform === 'darwin' && app.dock) {
@@ -1526,6 +1547,10 @@ let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
   ollamaServer.stop();
+  // Store writes are debounced now (see store.save). Take the freshest
+  // snapshot synchronously so a quit inside the debounce window can't drop
+  // the last mutation.
+  flushStoreSync();
   // Run writes are async now (see runsStore.saveRun). Defer the first quit
   // long enough to flush any in-flight checkpoint to disk, then quit for real.
   // Writes are sub-10ms, so the delay is imperceptible.
