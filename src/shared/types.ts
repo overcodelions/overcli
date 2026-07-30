@@ -789,6 +789,11 @@ export interface AppSettings {
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
+  /// Where a flow launched from the start page or the Flows library runs
+  /// by default: 'cwd' works directly in the project/workspace tree,
+  /// 'worktree' mints a fresh worktree off the base branch. The launcher's
+  /// toggle still overrides it per run — this only picks its initial side.
+  defaultFlowRunIn?: 'cwd' | 'worktree';
   flowRegistries?: FlowRegistry[];
   installedRegistryFlows?: InstalledRegistryFlow[];
   /// Which auto-update feed the app follows. 'stable' tracks tagged
@@ -1801,6 +1806,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeTransport: 'cli',
   claudeMcpDebug: false,
   starredFlows: [],
+  defaultFlowRunIn: 'cwd',
   flowRegistries: [
     { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
   ],

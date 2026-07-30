@@ -679,7 +679,12 @@ function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void })
 
   /// `target` is `project:<path>` | `workspace:<rootPath>` | ''.
   const [target, setTarget] = useState('');
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>('cwd');
+  // Which side the run-in toggle starts on comes from Settings → Flows, so
+  // a worktree-first user doesn't re-flip it on every launch. The toggle
+  // still wins for this run; flipping the setting re-seeds the launcher.
+  const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'cwd');
+  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
+  useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
   // Empty → BaseBranchSelect auto-detects the repo's default branch.
   const [baseBranch, setBaseBranch] = useState('');
   const [error, setError] = useState<string | null>(null);
