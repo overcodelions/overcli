@@ -1014,6 +1014,18 @@ export interface IPCInvokeMap {
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Resolve a clicked symbol to its definition site(s). Runs entirely off
+  /// the conversation — ripgrep first, then a one-shot fast-model query if
+  /// that's ambiguous. See src/main/symbolLookup.ts.
+  'symbols:findDefinition': (args: {
+    /// Project root to search within.
+    cwd: string;
+    /// Absolute path of the file the symbol was clicked in.
+    filePath: string;
+    symbol: string;
+    /// 1-based line of the click, for disambiguating context.
+    line: number;
+  }) => SymbolLookupResult;
   /// Write a flow artifact's body to a temp file and open it with the OS
   /// default app. Flow artifacts live only in memory (no on-disk path), so
   /// this materializes one on demand. `kind` picks the file extension.
@@ -1457,6 +1469,37 @@ export interface FileTreeEntry {
   path: string;
   sizeBytes: number;
 }
+
+/// One possible definition site for a clicked symbol. Every candidate the
+/// renderer receives has already been checked against disk in
+/// `symbolLookup.verifyCandidate` — the path resolves inside the project
+/// root, the line exists, and the line mentions the symbol.
+export interface SymbolCandidate {
+  /// Project-relative, for display.
+  path: string;
+  /// Absolute, for `openFile`.
+  absolutePath: string;
+  /// 1-based.
+  line: number;
+  /// The matched source line, trimmed — lets the picker show what it found
+  /// without a second read.
+  snippet: string;
+  /// Which tier produced it: `grep` is the free ripgrep pre-filter,
+  /// `model` a fast-model query.
+  source: 'grep' | 'model';
+}
+
+export type SymbolLookupResult =
+  | {
+      ok: true;
+      /// Most likely first. A single candidate means jump straight there;
+      /// several means show a picker.
+      candidates: SymbolCandidate[];
+      via: 'grep' | 'model' | 'cache';
+      /// Set when `via` is `model` — which rung of the ladder answered.
+      model?: string;
+    }
+  | { ok: false; error: string };
 
 export type ProjectPreviewHintsResult =
   | {

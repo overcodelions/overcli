@@ -12,6 +12,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
+import { SymbolLookupManager } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
 import { primeBackendUpdates } from './backendUpdater';
@@ -123,6 +124,7 @@ let runner: RunnerManager | null = null;
 // already load flows and build them without a crash on Run.
 let flowRuntime: FlowRuntime | null = null;
 let orchestrator: OrchestratorImpl | null = null;
+let symbolLookup: SymbolLookupManager | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -216,6 +218,29 @@ function registerIpc(): void {
     () => Store.load().settings,
   );
   flowRuntime.setRunObserver((run) => orchestrator?.onRunUpdate(run));
+  // Symbol lookup resolves its backend per call rather than capturing one:
+  // the user can change the preferred backend in Settings mid-session, and
+  // a lookup is short-lived enough that there's nothing to migrate.
+  symbolLookup = new SymbolLookupManager({
+    backendFor: () => {
+      const settings = Store.load().settings;
+      // Only these three take a stdin prompt and a `-m/--model` override
+      // (see buildLookupArgs). Copilot wants its prompt in argv; ollama
+      // isn't a subprocess at all.
+      const supported: Backend[] = ['claude', 'codex', 'gemini'];
+      const preferred = settings.preferredBackend;
+      const order =
+        preferred && supported.includes(preferred)
+          ? [preferred, ...supported.filter((b) => b !== preferred)]
+          : supported;
+      for (const backend of order) {
+        if (settings.disabledBackends?.[backend]) continue;
+        const binary = resolveBackendPath(backend, settings.backendPaths[backend]);
+        if (binary) return { backend, binary };
+      }
+      return { backend: preferred ?? 'claude', binary: null };
+    },
+  });
 
   ipcMain.handle('store:load', () => Store.load());
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
@@ -396,6 +421,25 @@ function registerIpc(): void {
     }
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
+  });
+  ipcMain.handle('symbols:findDefinition', async (_e, args) => {
+    const filePath = resolveFilePath(args?.filePath ?? '');
+    if (!filePath || !isReadablePath(filePath)) {
+      return { ok: false as const, error: 'File is outside any registered project.' };
+    }
+    const cwd = args?.cwd ?? '';
+    if (!cwd || !isPathUnderRegisteredRoot(cwd)) {
+      return { ok: false as const, error: 'Project root is not registered.' };
+    }
+    if (!symbolLookup) {
+      return { ok: false as const, error: 'Symbol lookup is not available.' };
+    }
+    return symbolLookup.find({
+      cwd,
+      filePath,
+      symbol: args?.symbol ?? '',
+      line: args?.line ?? 1,
+    });
   });
   ipcMain.handle(
     'flows:openArtifact',
@@ -1546,6 +1590,7 @@ app.on('window-all-closed', () => {
 let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  symbolLookup?.dispose();
   ollamaServer.stop();
   // Store writes are debounced now (see store.save). Take the freshest
   // snapshot synchronously so a quit inside the debounce window can't drop
