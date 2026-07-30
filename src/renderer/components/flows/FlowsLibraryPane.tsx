@@ -7,7 +7,14 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
-import { flowRunOwnerPath, resolveStepModel, flowStarKey, type Flow } from '@shared/flows/schema';
+import {
+  flowProjectPath,
+  flowRunOwnerPath,
+  flowRunTitle as runTitle,
+  resolveStepModel,
+  flowStarKey,
+  type Flow,
+} from '@shared/flows/schema';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
@@ -348,16 +355,6 @@ function RunningDot() {
   );
 }
 
-/// Title for a run row: first non-empty line of the user prompt so runs
-/// of the same flow are distinguishable; falls back to the flow name.
-function runTitle(run: FlowRun): string {
-  const firstLine = run.userPrompt
-    ?.split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  return firstLine || run.flowSnapshot.name;
-}
-
 function pathBasenameSafe(p: string): string {
   if (!p) return '';
   const segs = p.split(/[\\/]/).filter(Boolean);
@@ -419,7 +416,18 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] }) {
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
+  const renameFlow = useFlowsStore((s) => s.renameFlow);
   const [running, setRunning] = useState(false);
+  // Non-null while the row's title is an editable input. Renaming happens
+  // in place so the common "I picked a bad name" fix doesn't require a
+  // trip through the full editor.
+  const [renameValue, setRenameValue] = useState<string | null>(null);
+  // Was the rename input open when the current click started? Clicking the
+  // card to dismiss the input blurs it (which commits and closes it) before
+  // the click lands, so by the time onClick runs `renameValue` is already
+  // null and the card would open the editor. Sampling at mousedown records
+  // the state the user actually clicked in.
+  const renamingAtMouseDown = useRef(false);
   const starred = useStore(
     (s) => (s.settings.starredFlows ?? []).includes(flowStarKey(flow)),
   );
@@ -433,13 +441,10 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   }
 
   async function handleDelete() {
-    const projectPath = flow.source === 'project'
-      ? flow.filePath.replace(/\/\.overcli\/flows\/.+$/, '')
-      : undefined;
     const result = await window.overcli.invoke('flows:delete', {
       flowId: flow.id,
       source: flow.source,
-      projectPath,
+      projectPath: flowProjectPath(flow),
     });
     if (result.ok) {
       await reload(projectPaths);
@@ -448,11 +453,27 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
     }
   }
 
+  async function commitRename() {
+    const next = renameValue ?? '';
+    setRenameValue(null);
+    const result = await renameFlow(flow, next, projectPaths);
+    if (!result.ok && result.error) alert(result.error);
+  }
+
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={() => openEditor({ kind: 'editing', flowId: flow.id })}
+      onMouseDownCapture={() => {
+        renamingAtMouseDown.current = renameValue !== null;
+      }}
+      onClick={() => {
+        // Mid-rename the card is a form, not a link — clicking around the
+        // input shouldn't yank the user into the editor.
+        if (renameValue === null && !renamingAtMouseDown.current) {
+          openEditor({ kind: 'editing', flowId: flow.id });
+        }
+      }}
       onKeyDown={(e) => {
         // Only the card itself opens the editor on Enter/Space — a keypress
         // while an inner button (Run / ⋯) is focused must not also edit.
@@ -468,13 +489,37 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <div className="text-base font-semibold truncate transition-colors group-hover:text-accent">
-              {flow.name}
-            </div>
-            <SourceBadge source={flow.source} />
-            <span className="text-[11px] font-medium text-accent opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-              ✎ Edit
-            </span>
+            {renameValue !== null ? (
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onBlur={() => void commitRename()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void commitRename();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setRenameValue(null);
+                  }
+                }}
+                aria-label="Flow name"
+                className="flex-1 min-w-0 bg-transparent border border-accent rounded px-1.5 py-0.5 text-base font-semibold outline-none"
+              />
+            ) : (
+              <>
+                <div className="text-base font-semibold truncate transition-colors group-hover:text-accent">
+                  {flow.name}
+                </div>
+                <SourceBadge source={flow.source} />
+                <span className="text-[11px] font-medium text-accent opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                  ✎ Edit
+                </span>
+              </>
+            )}
           </div>
           {flow.description && (
             <div className="text-sm text-ink-muted line-clamp-2 mb-2">{flow.description}</div>
@@ -518,6 +563,7 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
           </button>
           <RowActionsMenu
             onEdit={() => openEditor({ kind: 'editing', flowId: flow.id })}
+            onRename={() => setRenameValue(flow.name)}
             onDelete={handleDelete}
           />
         </div>
@@ -526,14 +572,16 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   );
 }
 
-/// Overflow menu for a flow row — holds the secondary Edit/Delete actions
-/// so they don't each claim a permanent button. Delete confirms inline
-/// inside the menu rather than firing a modal.
+/// Overflow menu for a flow row — holds the secondary Edit/Rename/Delete
+/// actions so they don't each claim a permanent button. Delete confirms
+/// inline inside the menu rather than firing a modal.
 function RowActionsMenu({
   onEdit,
+  onRename,
   onDelete,
 }: {
   onEdit: () => void;
+  onRename: () => void;
   onDelete: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -572,6 +620,15 @@ function RowActionsMenu({
             className="w-full text-left text-xs px-3 py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink"
           >
             Edit
+          </button>
+          <button
+            onClick={() => {
+              setOpen(false);
+              onRename();
+            }}
+            className="w-full text-left text-xs px-3 py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink"
+          >
+            Rename
           </button>
           {!confirming ? (
             <button

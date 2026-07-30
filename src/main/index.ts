@@ -735,6 +735,9 @@ function registerIpc(): void {
       ? flowRuntime.setModelOverride(runId, participantId, model)
       : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:renameRun', (_e, args) =>
+    flowRuntime ? flowRuntime.renameRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
   ipcMain.handle('flows:enterWatch', (_e, args) =>
     flowRuntime ? flowRuntime.enterWatch(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );

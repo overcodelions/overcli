@@ -1331,6 +1331,14 @@ export interface IPCInvokeMap {
     participantId: string;
     model: string | null;
   }) => { ok: true } | { ok: false; error: string };
+  /// Give a run its own display title (sidebar + library rows). Works at
+  /// any point in a run's life — including mid-flight, which is when a
+  /// user most wants to label what's in the list. Pass an empty string to
+  /// clear it and fall back to the prompt-derived title.
+  'flows:renameRun': (args: {
+    runId: UUID;
+    title: string;
+  }) => { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.

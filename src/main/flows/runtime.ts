@@ -52,6 +52,7 @@ import type {
 } from '../../shared/flows/schema';
 import {
   FLOW_USER_PROMPT_REF,
+  MAX_RUN_TITLE_LENGTH,
   resolveStepModel,
   resolveRunStepModel,
   effectiveParticipantModel,
@@ -1828,6 +1829,22 @@ export class FlowRuntimeImpl {
       next[participantId] = trimmed;
     }
     run.modelOverrides = Object.keys(next).length > 0 ? next : undefined;
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
+  /// Give a run its own display title. Purely cosmetic — nothing in the
+  /// runtime reads it — so it's safe at any point in a run's life,
+  /// including mid-step. An empty/blank title clears the override and the
+  /// UI falls back to the prompt-derived name.
+  renameRun(args: { runId: UUID; title: string }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    const trimmed = args.title.trim().slice(0, MAX_RUN_TITLE_LENGTH);
+    const next = trimmed || undefined;
+    if (run.title === next) return { ok: true };
+    run.title = next;
     this.checkpoint(run);
     this.emitRunUpdate(run);
     return { ok: true };

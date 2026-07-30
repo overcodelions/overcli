@@ -411,6 +411,31 @@ export interface FlowRun {
   /// candidate's title). Display only — lets a run surfaced on its own
   /// (sidebar, run pane) show which ask spawned it.
   orchestrationItemTitle?: string;
+  /// User-supplied name for THIS run, set from the sidebar / library row.
+  /// Overrides the prompt-derived title everywhere a run is listed (see
+  /// `flowRunTitle`). Absent until the user renames the run — a run is
+  /// identified by what was asked of it until they say otherwise.
+  title?: string;
+}
+
+/// Maximum length of a user-supplied run title. Titles are display-only
+/// and live in the sidebar's narrow column, so anything longer is the
+/// user pasting a wall of text rather than naming something.
+export const MAX_RUN_TITLE_LENGTH = 200;
+
+/// Display title for a run, in priority order: the name the user gave it,
+/// then the first non-empty line of the prompt (so runs of the same flow
+/// are distinguishable at a glance), then the flow's own name. Shared so
+/// the sidebar, the library list, and search all agree on what a run is
+/// called.
+export function flowRunTitle(run: FlowRun): string {
+  const explicit = run.title?.trim();
+  if (explicit) return explicit;
+  const firstLine = run.userPrompt
+    ?.split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return firstLine || run.flowSnapshot.name;
 }
 
 /// The project/workspace a run logically belongs to — i.e. where the user
@@ -516,4 +541,18 @@ export function resolveStepParticipant(
 /// user and project layers (`storage.ts:81-89` — project wins).
 export function flowStarKey(flow: Pick<Flow, 'source' | 'id'>): string {
   return `${flow.source}:${flow.id}`;
+}
+
+/// The project directory a project-layer flow belongs to, recovered from
+/// its on-disk path (`<projectPath>/.overcli/flows/<id>.yaml`). The
+/// storage-layer IPCs (`flows:save` / `flows:delete`) need it to resolve
+/// the file, and a Flow only carries the full path. Undefined for
+/// user-layer flows (which don't need one) and for a project flow whose
+/// path doesn't match the expected shape.
+export function flowProjectPath(
+  flow: Pick<Flow, 'source' | 'filePath'>,
+): string | undefined {
+  if (flow.source !== 'project') return undefined;
+  const m = /^(.*)\/\.overcli\/flows\/[^/]+$/.exec(flow.filePath);
+  return m ? m[1] : undefined;
 }
