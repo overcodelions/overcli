@@ -77,7 +77,9 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
         <span className="diff-remove-ink">-{totals.deletions}</span>
       </button>
       {expanded && (
-        <div className="border-t border-card">
+        // Runs that touch dozens of files would otherwise push the composer
+        // off-screen, so the list scrolls once it outgrows ~14 rows.
+        <div className="border-t border-card max-h-[45vh] overflow-y-auto">
           {files.map((f) => {
             const deleted = isDeletedStatus(f.status);
             return (

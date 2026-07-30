@@ -11,7 +11,7 @@ import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
-import type { ArtifactPreviewResult, FileInfoResult } from '@shared/types';
+import type { ArtifactPreviewResult, FileInfoResult, SymbolCandidate } from '@shared/types';
 import hljs from 'highlight.js';
 import {
   canPreviewFile,
@@ -32,6 +32,13 @@ import { CodeMirrorEditor } from './CodeMirrorEditor';
 const USE_CODEMIRROR_EDITOR = true;
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
+/// Cmd-click go-to-definition state. `loading` shows a inline chip (a
+/// model-tier lookup takes a second or two); `choose` shows the candidate
+/// picker when the lookup came back ambiguous.
+type SymbolNavState =
+  | { status: 'loading'; symbol: string }
+  | { status: 'error'; symbol: string; error: string }
+  | { status: 'choose'; symbol: string; candidates: SymbolCandidate[] };
 type LargeTextPreview = {
   content: string;
   truncated: boolean;
@@ -130,6 +137,57 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     (unsupportedBinary && !!error);
 
   const openFile = useStore((s) => s.openFile);
+
+  const [symbolNav, setSymbolNav] = useState<SymbolNavState | null>(null);
+  // Monotonic token so a slow lookup can't land after the user has clicked
+  // a different symbol (or closed the file) and clobber the newer state.
+  const symbolNavSeq = useRef(0);
+  const jumpToCandidate = useCallback(
+    (candidate: SymbolCandidate) => {
+      setSymbolNav(null);
+      openFile(candidate.absolutePath, {
+        startLine: candidate.line,
+        endLine: candidate.line,
+        requestId: crypto.randomUUID(),
+      });
+    },
+    [openFile],
+  );
+  const handleSymbolNavigate = useCallback(
+    async ({ symbol, line }: { symbol: string; line: number }) => {
+      if (!path || !rootPath) return;
+      const seq = ++symbolNavSeq.current;
+      setSymbolNav({ status: 'loading', symbol });
+      // NOTE: the lookup reads the file from disk, so with unsaved edits in
+      // the buffer the line we pass as context can be off by however much
+      // the user has typed. The symbol itself is still right, which is what
+      // actually drives the search.
+      const result = await window.overcli.invoke('symbols:findDefinition', {
+        cwd: rootPath,
+        filePath: path,
+        symbol,
+        line,
+      });
+      if (seq !== symbolNavSeq.current) return;
+      if (!result.ok) {
+        setSymbolNav({ status: 'error', symbol, error: result.error });
+        return;
+      }
+      if (result.candidates.length === 1) {
+        jumpToCandidate(result.candidates[0]);
+        return;
+      }
+      setSymbolNav({ status: 'choose', symbol, candidates: result.candidates });
+    },
+    [path, rootPath, jumpToCandidate],
+  );
+  // Drop any open picker when the file changes — its candidates were
+  // resolved against the file we just navigated away from.
+  useEffect(() => {
+    symbolNavSeq.current++;
+    setSymbolNav(null);
+  }, [path]);
+
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
@@ -524,7 +582,17 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             </button>
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div className="relative flex-1 min-h-0 overflow-auto">
+          {symbolNav && (
+            <SymbolNavOverlay
+              state={symbolNav}
+              onPick={jumpToCandidate}
+              onDismiss={() => {
+                symbolNavSeq.current++;
+                setSymbolNav(null);
+              }}
+            />
+          )}
           {loading ? (
             <div className="p-4 text-xs text-ink-faint">Loading…</div>
           ) : blockedFile ? (
@@ -575,6 +643,7 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               }}
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
+              onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
             />
           ) : (
             <Editor
@@ -588,6 +657,70 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/// Floating status/picker for a Cmd-click go-to-definition lookup.
+///
+/// Rendered as the scroller's first child inside a zero-height `sticky`
+/// wrapper, so it stays pinned to the top-right of the *visible* editor
+/// area instead of scrolling away with the document — and contributes no
+/// layout height, so the code underneath doesn't shift when it appears.
+function SymbolNavOverlay({
+  state,
+  onPick,
+  onDismiss,
+}: {
+  state: SymbolNavState;
+  onPick: (candidate: SymbolCandidate) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="sticky top-0 z-20 h-0">
+      <div className="absolute right-3 top-3 w-80 rounded-lg border border-card-strong bg-surface shadow-lg">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-card">
+          <span className="font-mono text-xs text-ink truncate">{state.symbol}</span>
+          <span className="ml-auto shrink-0">
+            <button
+              onClick={onDismiss}
+              className="text-xs px-1.5 rounded text-ink-faint hover:text-ink hover:bg-card-strong"
+            >
+              ✕
+            </button>
+          </span>
+        </div>
+        {state.status === 'loading' && (
+          <div className="px-3 py-2 text-xs text-ink-faint">Finding definition…</div>
+        )}
+        {state.status === 'error' && (
+          <div className="px-3 py-2 text-xs text-ink-muted">{state.error}</div>
+        )}
+        {state.status === 'choose' && (
+          <>
+            <div className="px-3 pt-2 text-[11px] uppercase tracking-wider text-ink-faint">
+              {state.candidates.length} candidates
+            </div>
+            <div className="max-h-64 overflow-auto py-1">
+              {state.candidates.map((candidate) => (
+                <button
+                  key={`${candidate.absolutePath}:${candidate.line}`}
+                  onClick={() => onPick(candidate)}
+                  className="block w-full text-left px-3 py-1.5 hover:bg-card-strong"
+                >
+                  <div className="text-xs text-ink truncate">
+                    {candidate.path}
+                    <span className="text-ink-faint">:{candidate.line}</span>
+                  </div>
+                  <div className="font-mono text-[11px] text-ink-muted truncate">
+                    {candidate.snippet}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

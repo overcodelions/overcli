@@ -50,12 +50,12 @@ describe('worktreeChanges', () => {
     routeGit({
       'rev-parse --is-inside-work-tree': 'true\n',
       'branch --show-current': 'feature/x\n',
-      'diff --numstat base-sha':
+      'diff --numstat base-sha --':
         '26\t1\tsrc/app/api-explorer.component.html\n54\t0\tsrc/app/api-explorer.component.spec.ts\n',
-      'diff --name-status base-sha':
+      'diff --name-status base-sha --':
         'M\tsrc/app/api-explorer.component.html\nA\tsrc/app/api-explorer.component.spec.ts\n',
       // base..HEAD: only the .html is committed on the branch.
-      'diff --name-status base-sha HEAD': 'M\tsrc/app/api-explorer.component.html\n',
+      'diff --name-status base-sha HEAD --': 'M\tsrc/app/api-explorer.component.html\n',
       // working tree vs HEAD: only the .spec.ts is still uncommitted.
       'status --porcelain=v1 --untracked-files=all': 'A  src/app/api-explorer.component.spec.ts\n',
       'ls-files --others --exclude-standard': '',
@@ -88,9 +88,9 @@ describe('worktreeChanges', () => {
     routeGit({
       'rev-parse --is-inside-work-tree': 'true\n',
       'branch --show-current': 'feature/x\n',
-      'diff --numstat base-sha': '10\t2\tsrc/app/thing.ts\n',
-      'diff --name-status base-sha': 'M\tsrc/app/thing.ts\n',
-      'diff --name-status base-sha HEAD': 'M\tsrc/app/thing.ts\n',
+      'diff --numstat base-sha --': '10\t2\tsrc/app/thing.ts\n',
+      'diff --name-status base-sha --': 'M\tsrc/app/thing.ts\n',
+      'diff --name-status base-sha HEAD --': 'M\tsrc/app/thing.ts\n',
       'status --porcelain=v1 --untracked-files=all': ' M src/app/thing.ts\n',
       'ls-files --others --exclude-standard': '',
     });
@@ -126,8 +126,8 @@ describe('workspaceCommitStatus base-relative routing', () => {
     routeGit({
       'rev-parse --is-inside-work-tree': 'true\n',
       'branch --show-current': 'feature/x\n',
-      'diff --numstat base-sha': '3\t0\tsrc/a.ts\n2\t1\tsrc/b.ts\n',
-      'diff --name-status base-sha': 'A\tsrc/a.ts\nM\tsrc/b.ts\n',
+      'diff --numstat base-sha --': '3\t0\tsrc/a.ts\n2\t1\tsrc/b.ts\n',
+      'diff --name-status base-sha --': 'A\tsrc/a.ts\nM\tsrc/b.ts\n',
       'ls-files --others --exclude-standard': '',
     });
 
@@ -138,7 +138,7 @@ describe('workspaceCommitStatus base-relative routing', () => {
     // A base-relative member routes through worktreeChanges (`diff --numstat
     // <base>`), so a committed file still shows — the whole point of the fix.
     const calls = mockExecFile.mock.calls.map((c) => (c[1] as string[]).join(' '));
-    expect(calls).toContain('diff --numstat base-sha');
+    expect(calls).toContain('diff --numstat base-sha --');
     expect(calls).not.toContain('diff HEAD --numstat');
     expect(res.changes.map((c) => c.path)).toEqual(['unifyr-r/src/a.ts', 'unifyr-r/src/b.ts']);
     expect(res.insertions).toBe(5);

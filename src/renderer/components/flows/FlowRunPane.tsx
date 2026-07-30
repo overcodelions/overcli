@@ -24,12 +24,14 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
+  flowRunTitle,
   resolveRunStepModel,
   type FlowArtifact,
   type FlowParticipant,
@@ -132,22 +134,28 @@ export function FlowRunPane({ runId }: { runId: string }) {
           than a separate banner reads cleaner than the colored strip
           and stops the page from having two competing "anchors". */}
       <div className="pl-2 pr-3 pt-4 pb-2 border-b border-card">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="flex items-center gap-1.5 text-xs text-ink-faint">
-            <button
-              onClick={() => setActiveRun(null)}
-              className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
-            >
-              Flows
-            </button>
-            <span className="text-ink-faint">/</span>
+        {/* Two wrapping groups — identity on the left, actions on the right.
+            Both wrap rather than compress: in a narrow window the actions
+            drop to their own line and the title truncates with an ellipsis,
+            instead of the title being squeezed into a one-word-per-line
+            column by the button cluster. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1 basis-64">
+            <div className="flex items-center gap-1.5 text-xs text-ink-faint flex-shrink-0">
+              <button
+                onClick={() => setActiveRun(null)}
+                className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+              >
+                Flows
+              </button>
+              <span className="text-ink-faint">/</span>
+            </div>
+            <RunTitle run={run} />
+            <RunStateBadge state={run.state} />
+            <RunTokenSummary run={run} />
+            <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
           </div>
-          <div className="text-xl font-semibold">{run.flowSnapshot.name}</div>
-          <RunStateBadge state={run.state} />
-          <RunTokenSummary run={run} />
-          <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
-          <div className="flex-1 min-w-0" />
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
             {activeParticipant && (
               <HijackModelPicker
                 runId={run.id}
@@ -158,7 +166,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               <button
                 onClick={() => setFilesOpen((v) => !v)}
                 className={
-                  'text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  'text-xs px-3 py-1 rounded-md border transition-colors whitespace-nowrap ' +
                   (filesOpen
                     ? 'border-accent/50 bg-accent/10 text-accent'
                     : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
@@ -171,7 +179,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
             {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
               <button
                 onClick={() => openSheet({ type: 'flowRunReview', runId })}
-                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25"
+                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 whitespace-nowrap"
                 title="Review the worktree diff and merge / push / open a PR — pull the work back into your local repo"
               >
                 Review &amp; merge
@@ -218,7 +226,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               ) : (
                 <button
                   onClick={() => setConfirmingRerun(true)}
-                  className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-amber-500/50"
+                  className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-amber-500/50 whitespace-nowrap"
                   title={`Rewind and re-run from "${activeStep.id}" — re-does this step and every later step using the current (possibly edited) upstream artifacts`}
                 >
                   ↻ Re-run from here
@@ -229,7 +237,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 onClick={() => {
                   void window.overcli.invoke('flows:abortRun', { runId });
                 }}
-                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30"
+                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30 whitespace-nowrap"
               >
                 Abort
               </button>
@@ -246,7 +254,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               <button
                 onClick={() => setWatchSetupOpen((v) => !v)}
                 className={
-                  'inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  'inline-flex items-center gap-1.5 whitespace-nowrap text-xs px-3 py-1 rounded-md border transition-colors ' +
                   (watchSetupOpen
                     ? 'border-accent/50 bg-accent/10 text-accent'
                     : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
@@ -287,7 +295,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
             ) : (
               <button
                 onClick={() => setConfirmingDelete(true)}
-                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong"
+                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong whitespace-nowrap"
                 title="Delete this run permanently"
               >
                 Delete
@@ -1349,7 +1357,7 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
   return (
     <button
       onClick={onOpen}
-      className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
+      className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
       title="Click to view the diff"
     >
       <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>
@@ -1821,6 +1829,9 @@ function FlowStatsFooter({
       <span>
         {turns} turn{turns === 1 ? '' : 's'}
       </span>
+      {/* Participants keep ONE conversation across every step they run,
+          so this is the number that quietly climbs over a long flow. */}
+      <ContextMeter conversationId={convId} />
       {model && <span>· {model}</span>}
       {sessionId && <span className="truncate">· {sessionId.slice(0, 8)}</span>}
     </div>
@@ -2217,6 +2228,61 @@ function PauseBanner({ run }: { run: FlowRun }) {
   );
 }
 
+/// The run's headline. Shows the name the user gave this run when there
+/// is one (with the flow it came from demoted to a quiet subtitle chip),
+/// otherwise the flow name as before. Double-click edits it in place —
+/// the same gesture as the sidebar rows, and the reason a run in flight
+/// can be labelled without leaving the pane.
+function RunTitle({ run }: { run: FlowRun }) {
+  const renameRun = useFlowsStore((s) => s.renameRun);
+  const [renameValue, setRenameValue] = useState<string | null>(null);
+
+  if (renameValue !== null) {
+    const commit = () => {
+      const next = renameValue;
+      setRenameValue(null);
+      void renameRun(run.id, next);
+    };
+    return (
+      <input
+        autoFocus
+        value={renameValue}
+        onChange={(e) => setRenameValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setRenameValue(null);
+          }
+        }}
+        placeholder={flowRunTitle(run)}
+        aria-label="Run name"
+        className="min-w-0 flex-1 rounded border border-accent bg-transparent px-1.5 py-0.5 text-xl font-semibold text-ink outline-none"
+      />
+    );
+  }
+
+  return (
+    <>
+      <div
+        onDoubleClick={() => setRenameValue(run.title ?? '')}
+        title={`${flowRunTitle(run)} — double-click to rename this run`}
+        className="text-xl font-semibold truncate min-w-0"
+      >
+        {run.title?.trim() || run.flowSnapshot.name}
+      </div>
+      {run.title?.trim() && (
+        <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
+          {run.flowSnapshot.name}
+        </span>
+      )}
+    </>
+  );
+}
+
 function RunStateBadge({ state }: { state: { kind: string } }) {
   const label = state.kind;
   const cls =
@@ -2232,7 +2298,9 @@ function RunStateBadge({ state }: { state: { kind: string } }) {
               ? 'bg-card-strong text-ink-muted'
               : 'bg-red-500/20 text-red-700 dark:text-red-300';
   return (
-    <span className={`text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}>
+    <span
+      className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}
+    >
       {label}
     </span>
   );
@@ -2301,7 +2369,7 @@ function RunTokenSummary({ run }: { run: FlowRun }) {
   if (visible.length === 0) return null;
   return (
     <span
-      className="ml-2 inline-flex items-center gap-2 text-[11px] font-medium"
+      className="inline-flex flex-shrink-0 items-center gap-2 whitespace-nowrap text-[11px] font-medium"
       title={
         'Tokens by model tier (input + output):\n' +
         visible

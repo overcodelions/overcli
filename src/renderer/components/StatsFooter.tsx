@@ -1,6 +1,7 @@
 import { useStore } from '../store';
 import { useRunner } from '../runnersStore';
 import { useConversation } from '../hooks';
+import { ContextMeter } from './ContextMeter';
 import { UUID } from '@shared/types';
 
 export function StatsFooter({ conversationId }: { conversationId: UUID }) {
@@ -14,6 +15,7 @@ export function StatsFooter({ conversationId }: { conversationId: UUID }) {
     <div className="flex items-center gap-2 text-[10px] text-ink-faint px-2">
       <span>{turns} turn{turns === 1 ? '' : 's'}</span>
       {showCost && <span>· ${cost}</span>}
+      <ContextMeter conversationId={conversationId} />
       {runner?.currentModel && <span>· {runner.currentModel}</span>}
       {conv.sessionId && <span className="truncate">· {conv.sessionId.slice(0, 8)}</span>}
     </div>
