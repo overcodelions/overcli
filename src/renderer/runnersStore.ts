@@ -16,6 +16,7 @@
 // need many fields should use `useRunner(id)` and shallow-compare on
 // the result rather than calling each selector independently.
 
+import { useMemo } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
 import type { StreamEvent, TaskProgressInfo, UUID } from '@shared/types';
@@ -271,11 +272,90 @@ export function useRunnerCodexFlags(id: UUID | null | undefined) {
   );
 }
 
-/// Subscribe to the full runners map. Heavy — use sparingly. Sheets
-/// that need to walk every runner (BulkConversationActionsSheet,
-/// QuickSwitcher's "running" filter) are the legitimate consumers.
+/// Subscribe to the full runners map. Heavy — use sparingly.
+///
+/// The map's identity changes on every ingested event, so a component
+/// subscribing here re-renders at the full streaming rate (~60Hz while any
+/// agent is working) no matter how little of the map it reads. That is fine
+/// for sheets, which are mounted only while open and walk every runner
+/// anyway (BulkConversationActionsSheet, QuickSwitcher's "running" filter).
+/// It is NOT fine for always-mounted chrome like the sidebar — use
+/// `useRunningMap` there instead.
 export function useAllRunners(): Record<UUID, RunnerState> {
   return useRunnersStore((s) => s.runners);
+}
+
+/// Activity labels for running conversations, keyed by id.
+///
+/// Values are deliberately plain strings: `useShallow` then compares them by
+/// value, so the projection is referentially stable across the flood of
+/// event-only updates and only differs when a conversation actually starts,
+/// stops, or changes its label.
+export function runningLabelsOf(
+  runners: Record<UUID, Pick<RunnerState, 'isRunning' | 'activityLabel'>>,
+): Record<UUID, string> {
+  const out: Record<UUID, string> = {};
+  for (const [id, r] of Object.entries(runners)) {
+    if (r.isRunning) out[id] = r.activityLabel ?? '';
+  }
+  return out;
+}
+
+/// Unacknowledged-completion timestamps, keyed by id. Same value-compare
+/// property as `runningLabelsOf`.
+export function completedAtOf(
+  runners: Record<UUID, Pick<RunnerState, 'completedAt'>>,
+): Record<UUID, number> {
+  const out: Record<UUID, number> = {};
+  for (const [id, r] of Object.entries(runners)) {
+    if (r.completedAt != null) out[id] = r.completedAt;
+  }
+  return out;
+}
+
+function useRunningLabels(): Record<UUID, string> {
+  return useRunnersStore(useShallow((s) => runningLabelsOf(s.runners)));
+}
+
+function useCompletedAtMap(): Record<UUID, number> {
+  return useRunnersStore(useShallow((s) => completedAtOf(s.runners)));
+}
+
+/// The slice of runner state the sidebar and other always-mounted chrome
+/// actually read, shaped so it drops straight into the existing
+/// `runners[id]?.isRunning` call sites.
+///
+/// This exists because those components used `useAllRunners()`, which
+/// re-renders on every streamed delta. With a real project list that meant
+/// the entire sidebar tree — plus its unmemoized per-group filters over
+/// every conversation — re-running ~60 times a second for the whole
+/// duration of every turn. Here the underlying selectors are value-compared,
+/// so the result is referentially stable between actual transitions.
+export interface RunningSummary {
+  isRunning: boolean;
+  activityLabel?: string;
+  completedAt?: number;
+}
+
+const EMPTY_RUNNING_MAP: Record<UUID, RunningSummary> = {};
+
+export function useRunningMap(): Record<UUID, RunningSummary | undefined> {
+  const labels = useRunningLabels();
+  const completed = useCompletedAtMap();
+  return useMemo(() => {
+    const ids = new Set([...Object.keys(labels), ...Object.keys(completed)]);
+    if (ids.size === 0) return EMPTY_RUNNING_MAP;
+    const out: Record<UUID, RunningSummary> = {};
+    for (const id of ids) {
+      const label = labels[id];
+      out[id] = {
+        isRunning: label !== undefined,
+        activityLabel: label ? label : undefined,
+        completedAt: completed[id],
+      };
+    }
+    return out;
+  }, [labels, completed]);
 }
 
 /// Imperative read for code outside of React (store methods, IPC

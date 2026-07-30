@@ -2,7 +2,7 @@ import { CSSProperties, ReactNode, useCallback, useEffect, useMemo, useRef, useS
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import {
-  useAllRunners,
+  getRunner,
   useRunnerCodexFlags,
   useRunnerCurrentModel,
   useRunnerIsRunning,
@@ -831,7 +831,6 @@ function useForkActions(conversationId: UUID): {
       setDraft: s.setDraft,
     })),
   );
-  const runners = useAllRunners();
   if (!conv) {
     return { items: [], forkTo: async () => {}, ready: false };
   }
@@ -841,17 +840,21 @@ function useForkActions(conversationId: UUID): {
     : workspaces.find((w) => (w.conversations ?? []).some((c) => c.id === conversationId));
   const currentBackend = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
-  const sourceEvents = runners[conversationId]?.events ?? [];
-  const lastUserPrompt = (() => {
-    for (let i = sourceEvents.length - 1; i >= 0; i--) {
-      const e = sourceEvents[i];
-      if (e.kind.type === 'localUser') return e.kind.text;
-    }
-    return '';
-  })();
-
   const forkTo = async (targetBackend: Backend) => {
     if (!ownerProject && !ownerWorkspace) return;
+    // Read the transcript imperatively at fork time rather than subscribing.
+    // It's only needed inside this handler, and subscribing to the runners
+    // map here re-rendered the header on every streamed delta of every
+    // conversation in the app.
+    const sourceEvents = getRunner(conversationId)?.events ?? [];
+    let lastUserPrompt = '';
+    for (let i = sourceEvents.length - 1; i >= 0; i--) {
+      const e = sourceEvents[i];
+      if (e.kind.type === 'localUser') {
+        lastUserPrompt = e.kind.text;
+        break;
+      }
+    }
     const { preamble, turnCount } = buildForkPreamble(sourceEvents, lastUserPrompt);
     const forked = ownerProject
       ? await newConversation(ownerProject.id)

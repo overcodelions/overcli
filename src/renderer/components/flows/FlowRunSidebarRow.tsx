@@ -10,7 +10,7 @@ import { useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
-import { useAllRunners } from '../../runnersStore';
+import { useRunningMap } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
 import { flowRunActivityAt, flowRunOwnerPath } from '@shared/flows/schema';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
@@ -78,7 +78,7 @@ export function flowRunMatchesQuery(run: FlowRun, query: string): boolean {
 export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   const runs = useFlowsStore((s) => s.runs);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   const matches = Object.values(runs)
     .filter((r) => flowRunOwnerPath(r) === path && flowRunMatchesQuery(r, query))
     .sort((a, b) => b.createdAt - a.createdAt);

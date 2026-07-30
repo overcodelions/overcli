@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getAllRunners,
   getRunner,
+  completedAtOf,
   newRunnerState,
+  runningLabelsOf,
   staleRunningIds,
   useRunnersStore,
 } from './runnersStore';
@@ -142,5 +144,66 @@ describe('staleRunningIds', () => {
   it('accepts a Set of live ids as well as an array', () => {
     const runners = { a: { isRunning: true, ...old } };
     expect(staleRunningIds(runners, new Set(['a']), 100_000)).toEqual([]);
+  });
+});
+
+// The sidebar and other always-mounted chrome used to subscribe to the whole
+// runners map, whose identity changes on every ingested event — so they
+// re-rendered at the full streaming rate (~60Hz for the entire duration of
+// every turn), each time re-running unmemoized filters over every
+// conversation in the app. That was a primary cause of the UI freezing with
+// a long conversation and several agents running.
+//
+// `useRunningMap` fixes it by projecting only the fields that chrome reads,
+// as scalars, so `useShallow` can compare them by value. These tests pin the
+// property that makes it work: the projection must NOT change identity-wise
+// when only events move.
+describe('running projections', () => {
+  const base = () => ({
+    ...newRunnerState(),
+    isRunning: true,
+    activityLabel: 'Thinking…',
+    events: [] as StreamEvent[],
+  });
+
+  const shallowEqual = (a: Record<string, unknown>, b: Record<string, unknown>) => {
+    const ka = Object.keys(a);
+    const kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => a[k] === b[k]);
+  };
+
+  it('is unchanged when only events move — the streaming hot path', () => {
+    const streamed = { ...base(), events: [{ id: 'e1' } as unknown as StreamEvent] };
+    const before = runningLabelsOf({ a: base() });
+    const after = runningLabelsOf({ a: streamed });
+    expect(shallowEqual(before, after)).toBe(true);
+  });
+
+  it('changes when a conversation starts or stops running', () => {
+    const idle = runningLabelsOf({ a: { ...base(), isRunning: false } });
+    const busy = runningLabelsOf({ a: base() });
+    expect(shallowEqual(idle, busy)).toBe(false);
+    expect(Object.keys(idle)).toEqual([]);
+    expect(Object.keys(busy)).toEqual(['a']);
+  });
+
+  it('changes when the activity label changes', () => {
+    const before = runningLabelsOf({ a: base() });
+    const after = runningLabelsOf({ a: { ...base(), activityLabel: 'Editing…' } });
+    expect(shallowEqual(before, after)).toBe(false);
+  });
+
+  it('omits idle conversations entirely, so `runners[id]?.isRunning` stays falsy', () => {
+    expect(runningLabelsOf({ a: { ...base(), isRunning: false } })).toEqual({});
+  });
+
+  it('tracks completedAt separately, and only for conversations that have one', () => {
+    expect(completedAtOf({ a: { completedAt: null }, b: { completedAt: 42 } })).toEqual({ b: 42 });
+  });
+
+  it('keeps completedAt stable across event-only churn', () => {
+    const before = completedAtOf({ a: { completedAt: 42 } });
+    const after = completedAtOf({ a: { completedAt: 42 } });
+    expect(shallowEqual(before, after)).toBe(true);
   });
 });
