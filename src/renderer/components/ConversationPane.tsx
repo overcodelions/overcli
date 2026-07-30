@@ -113,7 +113,7 @@ export function ConversationPane() {
         {showAuthBanner && convBackend && (
           <BackendAuthBanner
             backend={convBackend}
-            onRefresh={() => void refreshBackendHealth()}
+            onRefresh={() => void refreshBackendHealth(true)}
           />
         )}
         <ChatView conversationId={convId} />

@@ -78,6 +78,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     resetConversation,
     openSheet,
     toggleToolActivity,
+    send,
   } = useStore(
     useShallow((s) => ({
       backendHealth: s.backendHealth,
@@ -106,6 +107,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       resetConversation: s.resetConversation,
       openSheet: s.openSheet,
       toggleToolActivity: s.toggleToolActivity,
+      send: s.send,
     })),
   );
   const runnerIsRunning = useRunnerIsRunning(conversationId);
@@ -464,6 +466,11 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 
         <MoreMenu
           onReset={() => setConfirmingReset(true)}
+          // Claude-only: the other backends have no slash commands and
+          // would take "/compact" as a literal prompt.
+          onCompact={
+            backend === 'claude' ? () => void send(conversationId, '/compact') : undefined
+          }
           onArchive={() =>
             openSheet({ type: 'archiveConversation', convId: conversationId })
           }
@@ -1912,11 +1919,14 @@ function SlidersIcon() {
 
 function MoreMenu({
   onReset,
+  onCompact,
   onArchive,
   onRevealInFinder,
   worktreeAvailable,
 }: {
   onReset: () => void;
+  /// Undefined for backends without slash commands.
+  onCompact?: () => void;
   onArchive: () => void;
   onRevealInFinder: () => void;
   worktreeAvailable: boolean;
@@ -1945,6 +1955,15 @@ function MoreMenu({
               onReset();
             }}
           />
+          {onCompact && (
+            <MenuRow
+              label="Compact conversation"
+              onClick={() => {
+                setOpen(false);
+                onCompact();
+              }}
+            />
+          )}
           {worktreeAvailable && (
             <MenuRow
               label="Reveal worktree in Finder"

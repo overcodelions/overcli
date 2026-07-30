@@ -247,19 +247,14 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   },
 
   setActiveRun(id) {
-    const changed = get().activeRunId !== id;
-    set({ activeRunId: id });
     // Switching runs re-roots the side-file editor (App.tsx passes the
     // active run's projectPath as the root override) at the new run's
-    // worktree. A file left open from the previous run would otherwise be
-    // re-resolved against the wrong worktree — wrong file, or a load
-    // error. Close it on every switch. Lazy import to avoid a circular
-    // ref between store.ts and flowsStore.
-    if (changed) {
-      void import('./store').then(({ useStore }) => {
-        useStore.getState().closeFile();
-      });
-    }
+    // worktree, so a file left open from the previous run would be
+    // re-resolved against the wrong one. This used to close the editor
+    // outright; each run is now its own editor tab scope, so `useFileScope`
+    // swaps in the incoming run's own files instead — no stale path, and
+    // coming back to a run brings its files back with it.
+    set({ activeRunId: id });
   },
 
   openEditor(target, blank) {

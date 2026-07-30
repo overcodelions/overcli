@@ -828,6 +828,13 @@ export interface PersistedView {
   };
 }
 
+/// Open file-editor tabs, keyed by scope — `conv:<id>`, `flow:<runId>` or
+/// `explorer:<rootPath>` (see the renderer's fileScope.ts). Only the paths
+/// and which one was in front are persisted: view mode and any jumped-to
+/// line range are per-session, and unsaved buffers deliberately never
+/// reach disk.
+export type PersistedFileTabs = Record<string, { paths: string[]; activePath?: string | null }>;
+
 /// Renderer → main requests. Responses come back via invoke's return value.
 export interface IPCInvokeMap {
   'store:load': () => {
@@ -838,6 +845,7 @@ export interface IPCInvokeMap {
     selectedConversationId?: UUID;
     lastInit?: SystemInitInfo;
     view?: PersistedView;
+    fileTabs?: PersistedFileTabs;
   };
   'store:saveProjects': (projects: Project[]) => void;
   'store:saveWorkspaces': (workspaces: Workspace[]) => void;
@@ -850,6 +858,7 @@ export interface IPCInvokeMap {
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
   'store:saveView': (view: PersistedView) => void;
+  'store:saveFileTabs': (tabs: PersistedFileTabs) => void;
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
   'runner:send': (args: {
@@ -949,6 +958,9 @@ export interface IPCInvokeMap {
   'runner:runningSnapshot': () => RunningConversation[];
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
+  /// Drop main's backend-health probe cache, so the next `runner:probeHealth`
+  /// re-executes the CLIs instead of answering from the last 15s.
+  'health:invalidate': () => void;
   'capabilities:scan': () => CapabilitiesReport;
   'skills:listMarketplace': () => MarketplaceSkill[];
   'skills:installMarketplace': (args: {
@@ -1029,6 +1041,16 @@ export interface IPCInvokeMap {
     filePath: string;
     symbol: string;
     /// 1-based line of the click, for disambiguating context.
+    line: number;
+  }) => SymbolLookupResult;
+  /// Second pass for an ambiguous grep answer: skips the grep tier and asks
+  /// a fast model to pick the definition. Only reached when the user clicks
+  /// "Refine" in the candidate picker, so a lookup never spends model time
+  /// unasked.
+  'symbols:refineDefinition': (args: {
+    cwd: string;
+    filePath: string;
+    symbol: string;
     line: number;
   }) => SymbolLookupResult;
   /// Write a flow artifact's body to a temp file and open it with the OS
@@ -1218,6 +1240,9 @@ export interface IPCInvokeMap {
     /// default, silently dropping the model the conversation was running on.
     model?: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Open a terminal window sitting in a folder, nothing typed. Used by the
+  /// file tree's per-folder terminal button.
+  'terminal:openFolder': (args: { path: string }) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
@@ -1511,6 +1536,12 @@ export type SymbolLookupResult =
       via: 'grep' | 'model' | 'cache';
       /// Set when `via` is `model` — which rung of the ladder answered.
       model?: string;
+      /// The grep tier answered but couldn't pick a winner, so a model
+      /// could still narrow it down. The picker turns this into a "Refine"
+      /// action (`symbols:refineDefinition`) rather than spending a model
+      /// call the user didn't ask for — grep answers in ~20ms and the model
+      /// tier costs seconds.
+      refinable?: boolean;
     }
   | { ok: false; error: string };
 
