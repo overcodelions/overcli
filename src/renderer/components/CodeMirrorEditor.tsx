@@ -273,6 +273,16 @@ const overcliTheme = EditorView.theme(
       backgroundColor: 'rgba(124, 139, 255, 0.22)',
       boxShadow: 'inset 3px 0 0 var(--c-accent)',
     },
+    // The word under the pointer while Cmd/Ctrl is held. Underline plus a
+    // pointer cursor is the universal "this is a link" cue, and it's how
+    // the go-to-definition gesture announces itself — there's no other
+    // signal that Cmd-click does anything at all.
+    '.cm-overcli-symbol-link': {
+      textDecoration: 'underline',
+      textDecorationColor: 'var(--c-accent)',
+      textUnderlineOffset: '2px',
+      cursor: 'pointer',
+    },
     // Search / replace panel. CM6's default panel is unstyled — plain
     // browser inputs and OS-bevel buttons that stick out against the
     // rest of the app. Restyle to match the `.field` + small-button
@@ -384,6 +394,43 @@ function buildRangeDecorations(
   return builder.finish();
 }
 
+/// Hovered-symbol underline. Carries the word range under the pointer
+/// while the go-to-definition modifier is held, or null.
+const setHoverSymbol = StateEffect.define<{ from: number; to: number } | null>();
+
+/// Identifier shape the lookup will actually accept. Mirrors SYMBOL_RE in
+/// main/symbolLookup.ts, which is the authority — main re-checks and
+/// rejects anything else. Kept here (a copy of one regex, rather than a
+/// shared module) so the renderer never imports main-process code; the
+/// worst a drift can do is underline a word that then can't be resolved.
+/// `wordAt` happily returns numeric literals and the like, and underlining
+/// `2500` promises a jump that would come back as an error overlay.
+const LOOKUP_SYMBOL_RE = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
+
+/// Cmd/Ctrl-hover underline for the go-to-definition gesture.
+///
+/// Nothing in the UI said the gesture existed — you had to already know.
+/// Rather than spend chrome on a hint, this teaches it the way every IDE
+/// does: hold the modifier and whatever your pointer is over turns into a
+/// link. It also doubles as a target check, since it shows exactly which
+/// word a click would resolve.
+const hoverSymbolField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setHoverSymbol)) continue;
+      next = e.value
+        ? Decoration.set([
+            Decoration.mark({ class: 'cm-overcli-symbol-link' }).range(e.value.from, e.value.to),
+          ])
+        : Decoration.none;
+    }
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 /// Alternates the flash class on every applied range. A CSS animation only
 /// restarts when the class list actually changes, so jumping to the *same*
 /// line twice (click the same `file:42` link again) would otherwise flash
@@ -456,6 +503,34 @@ export function CodeMirrorEditor({
   // discard undo history, scroll position, and the caret.
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // ---- Cmd/Ctrl-hover link affordance -------------------------------
+    // State for the handlers below, scoped to this view. `hovered` is
+    // tracked so we only dispatch when the underlined word actually
+    // changes — a mousemove fires per pixel, and a transaction per pixel
+    // would be absurd.
+    let hovered: { from: number; to: number } | null = null;
+    let lastPointer: { x: number; y: number } | null = null;
+
+    const setHover = (view: EditorView, next: { from: number; to: number } | null) => {
+      if (hovered?.from === next?.from && hovered?.to === next?.to) return;
+      hovered = next;
+      view.dispatch({ effects: setHoverSymbol.of(next) });
+    };
+    const clearHover = (view: EditorView) => setHover(view, null);
+    const applyHover = (view: EditorView, modifierHeld: boolean) => {
+      // Only offer the link where the gesture actually does something:
+      // no navigate callback (the compare view, say) means no underline.
+      if (!modifierHeld || !onSymbolNavigateRef.current || !lastPointer) {
+        clearHover(view);
+        return;
+      }
+      const pos = view.posAtCoords(lastPointer);
+      const word = pos == null ? null : view.state.wordAt(pos);
+      const resolvable =
+        !!word && LOOKUP_SYMBOL_RE.test(view.state.sliceDoc(word.from, word.to));
+      setHover(view, resolvable && word ? { from: word.from, to: word.to } : null);
+    };
     const state = EditorState.create({
       doc: content,
       extensions: [
@@ -488,6 +563,7 @@ export function CodeMirrorEditor({
         // so CM's own selection handling never runs — a Cmd-click that
         // moved the caret and *then* jumped would leave the user's cursor
         // somewhere surprising if the lookup failed.
+        hoverSymbolField,
         EditorView.domEventHandlers({
           mousedown(event, view) {
             const navigate = onSymbolNavigateRef.current;
@@ -500,10 +576,25 @@ export function CodeMirrorEditor({
             const word = view.state.wordAt(pos);
             if (!word) return false;
             const symbol = view.state.sliceDoc(word.from, word.to);
-            if (!symbol) return false;
+            // Same guard as the hover underline: don't spend a lookup (and
+            // an error overlay) on a numeric literal or punctuation.
+            if (!symbol || !LOOKUP_SYMBOL_RE.test(symbol)) return false;
             event.preventDefault();
+            clearHover(view);
             navigate({ symbol, line: view.state.doc.lineAt(word.from).number });
             return true;
+          },
+          mousemove(event, view) {
+            // Remembered even without the modifier, so pressing Cmd while
+            // the pointer sits still can underline the word it's already on.
+            lastPointer = { x: event.clientX, y: event.clientY };
+            applyHover(view, event.metaKey || event.ctrlKey);
+            return false;
+          },
+          mouseleave(_event, view) {
+            lastPointer = null;
+            clearHover(view);
+            return false;
           },
         }),
         // Seed the field with whatever the parent passed on mount so
@@ -521,7 +612,26 @@ export function CodeMirrorEditor({
     });
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
+
+    // On the window, not the editor: the modifier is usually pressed with
+    // the pointer already resting over a word and the editor unfocused, so
+    // editor-scoped key handlers would never see it. Releasing has to
+    // clear the underline too, or a link is left hanging under the cursor.
+    const onModifierKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Meta' && e.key !== 'Control') return;
+      applyHover(view, e.type === 'keydown');
+    };
+    // A modifier release that happens while the window is in the
+    // background (Cmd-Tab away) never reaches us, so clear on blur.
+    const onWindowBlur = () => clearHover(view);
+    window.addEventListener('keydown', onModifierKey);
+    window.addEventListener('keyup', onModifierKey);
+    window.addEventListener('blur', onWindowBlur);
+
     return () => {
+      window.removeEventListener('keydown', onModifierKey);
+      window.removeEventListener('keyup', onModifierKey);
+      window.removeEventListener('blur', onWindowBlur);
       view.destroy();
       viewRef.current = null;
     };

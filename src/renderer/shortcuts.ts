@@ -175,6 +175,14 @@ export const SHORTCUTS: ShortcutDef[] = [
     run: () => {},
   },
   {
+    id: 'editor.goToDefinition',
+    keys: [{ key: 'Click', mod: true }],
+    label: 'Go to definition of the symbol under the cursor',
+    group: 'Editor',
+    displayOnly: true,
+    run: () => {},
+  },
+  {
     id: 'editor.nextTab',
     keys: [{ key: 'ArrowRight', mod: true, alt: true }],
     label: 'Next / previous file tab (⌥⌘←)',
