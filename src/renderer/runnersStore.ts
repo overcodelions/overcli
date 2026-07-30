@@ -249,16 +249,24 @@ export interface ContextOccupancy {
 /// Fold a batch of main-agent events into the running context estimate.
 ///
 /// "Occupancy" is `input + cache_read + cache_creation` from the most
-/// recent request — i.e. what the model actually had in its window when
-/// it last spoke. That's the number worth acting on: it's the floor for
-/// what the NEXT request will resend. It deliberately excludes output
-/// tokens, so the estimate lags by one response (a few hundred to a few
-/// thousand tokens); the next turn's input folds them in anyway.
+/// recent API REQUEST — i.e. what the model actually had in its window
+/// when it last spoke. Only per-message `usage` blocks qualify: those come
+/// straight off one API response, so they measure one window.
+///
+/// The result line's `modelUsage` does NOT qualify, and using it was the
+/// bug behind "ctx 832% · 8.3M/1.0M". A single turn makes one request per
+/// tool call, and the result totals them — a 38-request turn re-reads the
+/// same ~200k cached prefix 38 times and reports ~7.9M cache_read. That's
+/// a correct billing number and a nonsense occupancy number. We take only
+/// `contextWindow` from it, as the meter's denominator.
 ///
 /// We can't ask the CLI directly on this transport — `getContextUsage()`
 /// is an SDK control request and Overcli's default path is
-/// `claude -p --input-format stream-json`. Per-turn usage is the same
+/// `claude -p --input-format stream-json`. Per-request usage is the same
 /// data the CLI's own meter is built on, so the estimate tracks it.
+///
+/// Excludes output tokens, so the estimate lags by one response (a few
+/// hundred to a few thousand tokens); the next request folds them in.
 ///
 /// Events carrying a `parentToolUseId` are skipped: a Task subagent runs
 /// its own window and its usage would otherwise stomp the parent's
@@ -279,11 +287,7 @@ export function foldContextUsage(
       const u = e.kind.info.usage;
       if (u) tokens = occupancyOf(u);
     } else if (e.kind.type === 'result') {
-      const u = pickModelUsage(e.kind.info.modelUsage, currentModel);
-      if (u) {
-        tokens = occupancyOf(u);
-        if (u.contextWindow) window = u.contextWindow;
-      }
+      window = pickContextWindow(e.kind.info.modelUsage, currentModel) ?? window;
     }
   }
   if (tokens === prev.tokens && window === prev.window) return prev;
@@ -299,34 +303,29 @@ function occupancyOf(u: ModelUsage): number {
   );
 }
 
-/// A result line's `modelUsage` is keyed by model and can hold several
-/// entries — the main model plus whatever subagents ran (a Task on Haiku,
-/// a reviewer on Sonnet). Prefer the entry for the conversation's own
-/// model, matching the CLI's `claude-opus-5[1m]`-style suffixed keys
-/// against the bare id from system:init. Fall back to the largest entry
-/// so an unrecognized key still yields a number rather than nothing.
-function pickModelUsage(
+/// The meter's denominator. A result line's `modelUsage` is keyed by model
+/// and can hold several entries — the main model plus whatever subagents
+/// ran (a Task on Haiku, a reviewer on Sonnet) — so we want the window of
+/// the conversation's OWN model. Match the CLI's `claude-opus-5[1m]`-style
+/// suffixed keys against the bare id from system:init; failing that, take
+/// the largest window present, since a subagent is the smaller-window
+/// participant in every combination we actually ship.
+function pickContextWindow(
   byModel: Record<string, ModelUsage>,
   currentModel: string,
-): ModelUsage | null {
+): number | undefined {
   const entries = Object.entries(byModel);
-  if (entries.length === 0) return null;
   if (currentModel) {
     const exact = entries.find(
       ([model]) => model === currentModel || model.startsWith(`${currentModel}[`),
     );
-    if (exact) return exact[1];
+    if (exact?.[1].contextWindow) return exact[1].contextWindow;
   }
-  let best: ModelUsage | null = null;
-  let bestTotal = -1;
+  let widest: number | undefined;
   for (const [, u] of entries) {
-    const total = occupancyOf(u);
-    if (total > bestTotal) {
-      bestTotal = total;
-      best = u;
-    }
+    if (u.contextWindow && (widest == null || u.contextWindow > widest)) widest = u.contextWindow;
   }
-  return bestTotal > 0 ? best : null;
+  return widest;
 }
 
 /// Context occupancy for one conversation, plus the fraction of the
