@@ -66,7 +66,7 @@ export function SettingsSheet() {
           {section === 'models' && <ModelsPane local={local} patch={patch} />}
           {section === 'local' && <OllamaPane local={local} patch={patch} />}
           {section === 'agents' && <AgentsPane local={local} patch={patch} />}
-          {section === 'flows' && <FlowsRegistriesPane />}
+          {section === 'flows' && <FlowsPane local={local} patch={patch} />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
       </div>
@@ -602,6 +602,22 @@ function HealthBadge({ kind, message }: { kind: string; message?: string }) {
     >
       {kind}
     </span>
+  );
+}
+
+function FlowsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  return (
+    <div className="space-y-5">
+      <Group title="Run behavior">
+        <Toggle
+          label="Run flows in a worktree by default"
+          help="Starts the launcher's run-in toggle on “worktree”, so a flow forks a fresh worktree off the base branch instead of working in the project's main tree. You can still flip it per run."
+          value={(local.defaultFlowRunIn ?? 'cwd') === 'worktree'}
+          onChange={(v) => patch({ defaultFlowRunIn: v ? 'worktree' : 'cwd' })}
+        />
+      </Group>
+      <FlowsRegistriesPane />
+    </div>
   );
 }
 

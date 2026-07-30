@@ -86,6 +86,13 @@ export interface ModelUsage {
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
+  /// Size of this model's context window, as reported by the CLI's
+  /// per-model `modelUsage` block on the result line (e.g. 1_000_000 for
+  /// `claude-opus-5[1m]`). Only the result path carries it — per-message
+  /// usage blocks come straight from the API and don't include it. It is
+  /// the denominator for the footer's context meter; absent means we show
+  /// occupancy in raw tokens instead of a percentage.
+  contextWindow?: number;
 }
 
 export interface ResultInfo {
@@ -782,6 +789,11 @@ export interface AppSettings {
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
+  /// Where a flow launched from the start page or the Flows library runs
+  /// by default: 'cwd' works directly in the project/workspace tree,
+  /// 'worktree' mints a fresh worktree off the base branch. The launcher's
+  /// toggle still overrides it per run — this only picks its initial side.
+  defaultFlowRunIn?: 'cwd' | 'worktree';
   flowRegistries?: FlowRegistry[];
   installedRegistryFlows?: InstalledRegistryFlow[];
   /// Which auto-update feed the app follows. 'stable' tracks tagged
@@ -829,6 +841,11 @@ export interface IPCInvokeMap {
   };
   'store:saveProjects': (projects: Project[]) => void;
   'store:saveWorkspaces': (workspaces: Workspace[]) => void;
+  /// Patch a single conversation's metadata without shipping (and
+  /// re-sanitizing) the entire projects/workspaces tree. Resolves false if
+  /// the conversation isn't on disk yet, so the caller can fall back to a
+  /// full save.
+  'store:patchConversation': (args: { id: UUID; patch: Partial<Conversation> }) => boolean;
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
@@ -1002,6 +1019,18 @@ export interface IPCInvokeMap {
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Resolve a clicked symbol to its definition site(s). Runs entirely off
+  /// the conversation — ripgrep first, then a one-shot fast-model query if
+  /// that's ambiguous. See src/main/symbolLookup.ts.
+  'symbols:findDefinition': (args: {
+    /// Project root to search within.
+    cwd: string;
+    /// Absolute path of the file the symbol was clicked in.
+    filePath: string;
+    symbol: string;
+    /// 1-based line of the click, for disambiguating context.
+    line: number;
+  }) => SymbolLookupResult;
   /// Write a flow artifact's body to a temp file and open it with the OS
   /// default app. Flow artifacts live only in memory (no on-disk path), so
   /// this materializes one on demand. `kind` picks the file extension.
@@ -1307,6 +1336,14 @@ export interface IPCInvokeMap {
     participantId: string;
     model: string | null;
   }) => { ok: true } | { ok: false; error: string };
+  /// Give a run its own display title (sidebar + library rows). Works at
+  /// any point in a run's life — including mid-flight, which is when a
+  /// user most wants to label what's in the list. Pass an empty string to
+  /// clear it and fall back to the prompt-derived title.
+  'flows:renameRun': (args: {
+    runId: UUID;
+    title: string;
+  }) => { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
@@ -1445,6 +1482,37 @@ export interface FileTreeEntry {
   path: string;
   sizeBytes: number;
 }
+
+/// One possible definition site for a clicked symbol. Every candidate the
+/// renderer receives has already been checked against disk in
+/// `symbolLookup.verifyCandidate` — the path resolves inside the project
+/// root, the line exists, and the line mentions the symbol.
+export interface SymbolCandidate {
+  /// Project-relative, for display.
+  path: string;
+  /// Absolute, for `openFile`.
+  absolutePath: string;
+  /// 1-based.
+  line: number;
+  /// The matched source line, trimmed — lets the picker show what it found
+  /// without a second read.
+  snippet: string;
+  /// Which tier produced it: `grep` is the free ripgrep pre-filter,
+  /// `model` a fast-model query.
+  source: 'grep' | 'model';
+}
+
+export type SymbolLookupResult =
+  | {
+      ok: true;
+      /// Most likely first. A single candidate means jump straight there;
+      /// several means show a picker.
+      candidates: SymbolCandidate[];
+      via: 'grep' | 'model' | 'cache';
+      /// Set when `via` is `model` — which rung of the ladder answered.
+      model?: string;
+    }
+  | { ok: false; error: string };
 
 export type ProjectPreviewHintsResult =
   | {
@@ -1738,6 +1806,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeTransport: 'cli',
   claudeMcpDebug: false,
   starredFlows: [],
+  defaultFlowRunIn: 'cwd',
   flowRegistries: [
     { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
   ],

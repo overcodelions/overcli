@@ -204,8 +204,19 @@ export function detectHardware(): HardwareReport {
   };
 }
 
+/// `system_profiler` costs 200-800ms and runs on the MAIN process, which
+/// blocks every window — and `ollama:hardware` is polled every 4s by the
+/// Local pane for as long as the server isn't running. The GPU can't change
+/// while the app is open, so probe once per launch and reuse the answer.
+let gpuCache: { value: string | undefined } | null = null;
+
 function detectGpu(): string | undefined {
   if (process.platform !== 'darwin') return undefined;
+  if (!gpuCache) gpuCache = { value: probeGpu() };
+  return gpuCache.value;
+}
+
+function probeGpu(): string | undefined {
   const res = spawnSync('system_profiler', ['SPDisplaysDataType', '-json'], {
     encoding: 'utf-8',
     timeout: 4000,

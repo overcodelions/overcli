@@ -409,11 +409,16 @@ export function CodeMirrorEditor({
   onChange,
   highlightRange,
   language,
+  onSymbolNavigate,
 }: {
   content: string;
   onChange: (v: string) => void;
   highlightRange: HighlightRange;
   language: string | null;
+  /// Cmd-click (Ctrl-click off macOS) on an identifier. The host resolves
+  /// it to a definition site and opens it; this component only reports
+  /// which word was clicked and on what line.
+  onSymbolNavigate?: (args: { symbol: string; line: number }) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -423,6 +428,11 @@ export function CodeMirrorEditor({
   // re-render that hands us a new function identity.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Same ref trick for the navigate callback — the DOM handler is baked
+  // into the mount-once extension list, so it has to read through a ref to
+  // see the current closure.
+  const onSymbolNavigateRef = useRef(onSymbolNavigate);
+  onSymbolNavigateRef.current = onSymbolNavigate;
 
   // Mount once. Subsequent prop changes are handled by the focused
   // effects below; rebuilding the EditorView on every keystroke would
@@ -457,6 +467,28 @@ export function CodeMirrorEditor({
           indentWithTab,
         ]),
         languageCompartment.current.of(languageExtension(language)),
+        // Go-to-definition gesture. We handle mousedown rather than click
+        // so CM's own selection handling never runs — a Cmd-click that
+        // moved the caret and *then* jumped would leave the user's cursor
+        // somewhere surprising if the lookup failed.
+        EditorView.domEventHandlers({
+          mousedown(event, view) {
+            const navigate = onSymbolNavigateRef.current;
+            if (!navigate) return false;
+            // Cmd on macOS, Ctrl elsewhere — the IDE gesture either way.
+            const withModifier = event.metaKey || event.ctrlKey;
+            if (!withModifier || event.button !== 0) return false;
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (pos == null) return false;
+            const word = view.state.wordAt(pos);
+            if (!word) return false;
+            const symbol = view.state.sliceDoc(word.from, word.to);
+            if (!symbol) return false;
+            event.preventDefault();
+            navigate({ symbol, line: view.state.doc.lineAt(word.from).number });
+            return true;
+          },
+        }),
         // Seed the field with whatever the parent passed on mount so
         // the initial render already has the highlight in place — no
         // visible "flash, then jump" when opening a file with a range.

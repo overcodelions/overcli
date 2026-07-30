@@ -7,6 +7,8 @@
 import { create } from 'zustand';
 
 import type { Flow, FlowModelRef, FlowParticipant, FlowRun, FlowStep } from '@shared/flows/schema';
+import { flowProjectPath, flowStarKey, MAX_RUN_TITLE_LENGTH } from '@shared/flows/schema';
+import type { UUID } from '@shared/types';
 import { friendlyModelLabel as friendlyModelLabelImported, isSupportedPremiumModel } from '@shared/modelCatalog';
 
 /// Pointer to the flow currently open in the editor. `'new'` is the
@@ -75,6 +77,17 @@ interface FlowsActions {
   /// synthesize one keyed by backend+model.
   setStepModel(index: number, model: FlowModelRef): void;
   saveDraft(target: 'user' | 'project', projectPath?: string): Promise<{ ok: boolean; error?: string }>;
+  /// Rename a flow from the library list — display name only. The id (and
+  /// therefore the file on disk, the star key, and every recorded run's
+  /// `flowId`) is left alone, so a rename never orphans anything. Changing
+  /// the id is the editor's job; see `saveDraft`. `projectPaths` is the
+  /// full set the library is showing, so the post-rename reload doesn't
+  /// drop other projects' flows.
+  renameFlow(
+    flow: Flow,
+    name: string,
+    projectPaths: string[],
+  ): Promise<{ ok: boolean; error?: string }>;
   dismissJustSaved(): void;
   /// Set (or clear) the per-participant model override for a run. Pass
   /// `null` to revert to the participant's declared model. Persists on the
@@ -83,6 +96,12 @@ interface FlowsActions {
   /// it survives a restart. Optimistically patches the in-memory run so
   /// the UI reflects the change before the main-process round-trip lands.
   setParticipantModelOverride(runId: string, participantId: string, model: string | null): Promise<void>;
+  /// Rename a run (display title only — see `flowRunTitle`). Allowed at
+  /// any point, including while the run is mid-step: nothing in the
+  /// runtime reads the title. Pass an empty string to drop back to the
+  /// prompt-derived title. Optimistic, then reconciled by the main
+  /// process's `flowRunUpdate`.
+  renameRun(runId: string, title: string): Promise<void>;
   browseRegistries(force?: boolean): Promise<void>;
   installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string }>;
   previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
@@ -396,6 +415,15 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   async saveDraft(target, projectPath) {
     const draft = get().editorDraft;
     if (!draft) return { ok: false, error: 'No draft to save.' };
+    const editor = get().editor;
+    // The flow as it was before this edit, when we're editing an existing
+    // one. Needed below to finish an id rename: `flows:save` writes
+    // `<new-id>.yaml` but knows nothing about the file the flow used to
+    // live in.
+    const original =
+      editor.kind === 'editing'
+        ? get().flows.find((f) => f.id === editor.flowId)
+        : undefined;
     const result = await window.overcli.invoke('flows:save', {
       flow: draft,
       target,
@@ -404,6 +432,34 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     if (!result.ok) {
       set({ editorSaveError: result.error });
       return { ok: false, error: result.error };
+    }
+    // Renaming the id renames the file: the new one is written above, so
+    // remove the old one or the library shows the flow twice. Deliberately
+    // scoped to a same-layer id change — saving into the *other* layer is a
+    // copy (the user picked a different target), not a rename, so it must
+    // not delete anything.
+    if (original && original.id !== draft.id && original.source === target) {
+      await window.overcli.invoke('flows:delete', {
+        flowId: original.id,
+        source: original.source,
+        projectPath: flowProjectPath(original) ?? projectPath,
+      });
+      // Stars are keyed by `source:id`, so carry the old key over rather
+      // than silently unstarring the flow the user just renamed. Lazy
+      // import — store.ts imports this module, so a static one would cycle.
+      // Star bookkeeping is cosmetic; never let it fail the save.
+      void import('./store')
+        .then(async ({ useStore }) => {
+          const state = useStore.getState();
+          const starred = state.settings.starredFlows ?? [];
+          const oldKey = flowStarKey(original);
+          if (!starred.includes(oldKey)) return;
+          const newKey = flowStarKey({ source: target, id: draft.id });
+          const next = starred.filter((k) => k !== oldKey);
+          if (!next.includes(newKey)) next.push(newKey);
+          await state.saveSettings({ ...state.settings, starredFlows: next });
+        })
+        .catch(() => {});
     }
     // Reload the library so the saved flow appears, then return to the
     // library view with a transient "Saved" banner so the user gets a
@@ -416,6 +472,24 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       editorSaveError: null,
       justSaved: { name: draft.name, at: Date.now() },
     });
+    return { ok: true };
+  },
+
+  async renameFlow(flow, name, projectPaths) {
+    const trimmed = name.trim();
+    if (!trimmed) return { ok: false, error: 'Flow name cannot be empty.' };
+    if (trimmed === flow.name) return { ok: true };
+    const projectPath = flowProjectPath(flow);
+    if (flow.source === 'project' && !projectPath) {
+      return { ok: false, error: `Could not resolve the project for "${flow.filePath}".` };
+    }
+    const result = await window.overcli.invoke('flows:save', {
+      flow: { ...flow, name: trimmed },
+      target: flow.source,
+      projectPath,
+    });
+    if (!result.ok) return { ok: false, error: result.error };
+    await get().reload(projectPaths);
     return { ok: true };
   },
 
@@ -442,6 +516,18 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       return { runs: { ...s.runs, [runId]: { ...run, modelOverrides } } };
     });
     await window.overcli.invoke('flows:setModelOverride', { runId, participantId, model });
+  },
+
+  async renameRun(runId, title) {
+    const trimmed = title.trim().slice(0, MAX_RUN_TITLE_LENGTH);
+    // Optimistic so the row settles instantly; the main process echoes an
+    // authoritative flowRunUpdate that reconciles.
+    set((s) => {
+      const run = s.runs[runId];
+      if (!run) return {};
+      return { runs: { ...s.runs, [runId]: { ...run, title: trimmed || undefined } } };
+    });
+    await window.overcli.invoke('flows:renameRun', { runId: runId as UUID, title: trimmed });
   },
 
   async browseRegistries(force) {

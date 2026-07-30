@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
-import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
+import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { flowRunActivityAt, flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
@@ -48,7 +48,7 @@ export function Sidebar() {
   const openExplorer = useStore((s) => s.openExplorer);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const [search, setSearch] = useState('');
@@ -670,33 +670,47 @@ function ProjectGroup({
 }) {
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   // `true`/`false` once probed, `undefined` while still unknown. Agents
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
   const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
-  const visible = project.conversations.filter(
-    (c) => !isAgentConversation(c) && !c.hidden,
+  // Memoized because this group is re-rendered by every unrelated store
+  // change, and a mature project list carries hundreds of conversations —
+  // walking them four times per render was showing up in profiles.
+  const { visible, agents } = useMemo(() => {
+    const vis: Conversation[] = [];
+    const ags: Conversation[] = [];
+    for (const c of project.conversations) {
+      if (c.hidden) continue;
+      if (!isAgentConversation(c)) vis.push(c);
+      else if (!c.colosseumId && !c.workspaceAgentCoordinatorId) ags.push(c);
+    }
+    return { visible: vis, agents: ags };
+  }, [project.conversations]);
+  const archivableCount = useMemo(
+    () =>
+      project.conversations.filter(
+        (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
+      ).length,
+    [project.conversations, selectedId, runners],
   );
-  const agents = project.conversations.filter(
-    (c) =>
-      isAgentConversation(c) &&
-      !c.hidden &&
-      !c.colosseumId &&
-      !c.workspaceAgentCoordinatorId,
-  );
-  const archivableCount = project.conversations.filter(
-    (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
-  ).length;
   const flowRuns = useFlowsStore((s) => s.runs);
-  const deletableFlowCount = Object.values(flowRuns).filter(
-    (r) =>
-      flowRunOwnerPath(r) === project.path &&
-      r.state.kind !== 'running' &&
-      r.state.kind !== 'paused' &&
-      !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
-  ).length;
-  const workspaceRefs = workspaces.filter((w) => w.projectIds.includes(project.id));
+  const deletableFlowCount = useMemo(
+    () =>
+      Object.values(flowRuns).filter(
+        (r) =>
+          flowRunOwnerPath(r) === project.path &&
+          r.state.kind !== 'running' &&
+          r.state.kind !== 'paused' &&
+          !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
+      ).length,
+    [flowRuns, project.path, runners],
+  );
+  const workspaceRefs = useMemo(
+    () => workspaces.filter((w) => w.projectIds.includes(project.id)),
+    [workspaces, project.id],
+  );
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const removeDetails = useMemo(() => {
@@ -866,7 +880,7 @@ function ColosseumSidebarGroup({
   const openSheet = useStore((s) => s.openSheet);
   const cancelColosseum = useStore((s) => s.cancelColosseum);
   const removeColosseum = useStore((s) => s.removeColosseum);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   const [expanded, setExpanded] = useState(true);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
@@ -1126,22 +1140,37 @@ function WorkspaceGroup({
   onExplore?: () => void;
   searchQuery?: string;
 }) {
-  const convs = (workspace.conversations ?? []).filter((c) => !c.hidden);
-  const plain = convs.filter((c) => !isAgentConversation(c));
-  const agents = convs.filter(isAgentConversation);
   const openSheet = useStore((s) => s.openSheet);
-  const runners = useAllRunners();
-  const archivableCount = (workspace.conversations ?? []).filter(
-    (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
-  ).length;
+  const runners = useRunningMap();
+  // See the matching note in ProjectGroup — memoized so an unrelated store
+  // change doesn't re-walk the whole conversation list.
+  const { convs, plain, agents } = useMemo(() => {
+    const all = (workspace.conversations ?? []).filter((c) => !c.hidden);
+    return {
+      convs: all,
+      plain: all.filter((c) => !isAgentConversation(c)),
+      agents: all.filter(isAgentConversation),
+    };
+  }, [workspace.conversations]);
+  const archivableCount = useMemo(
+    () =>
+      (workspace.conversations ?? []).filter(
+        (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
+      ).length,
+    [workspace.conversations, selectedId, runners],
+  );
   const flowRuns = useFlowsStore((s) => s.runs);
-  const deletableFlowCount = Object.values(flowRuns).filter(
-    (r) =>
-      flowRunOwnerPath(r) === workspace.rootPath &&
-      r.state.kind !== 'running' &&
-      r.state.kind !== 'paused' &&
-      !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
-  ).length;
+  const deletableFlowCount = useMemo(
+    () =>
+      Object.values(flowRuns).filter(
+        (r) =>
+          flowRunOwnerPath(r) === workspace.rootPath &&
+          r.state.kind !== 'running' &&
+          r.state.kind !== 'paused' &&
+          !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
+      ).length,
+    [flowRuns, workspace.rootPath, runners],
+  );
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const removeDetails = useMemo(
