@@ -418,6 +418,12 @@ function parseClaudeLineInto(
           outputTokens: usage?.outputTokens ?? 0,
           cacheReadInputTokens: usage?.cacheReadInputTokens ?? 0,
           cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? 0,
+          // Denominator for the context meter. Only present on the CLI's
+          // first-party entries; omitted rather than defaulted so the
+          // renderer can tell "1M window" from "window unknown".
+          ...(typeof usage?.contextWindow === 'number' && usage.contextWindow > 0
+            ? { contextWindow: usage.contextWindow }
+            : {}),
         };
       }
       return eventFromKind(

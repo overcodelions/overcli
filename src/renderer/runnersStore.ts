@@ -19,7 +19,7 @@
 import { useMemo } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
-import type { StreamEvent, TaskProgressInfo, UUID } from '@shared/types';
+import type { ModelUsage, StreamEvent, TaskProgressInfo, UUID } from '@shared/types';
 
 /// Per-conversation runtime state. Keyed off conversation id.
 export interface RunnerState {
@@ -50,6 +50,12 @@ export interface RunnerState {
   /// Current model as reported by system:init events. May diverge from
   /// conv.currentModel if the user switched mid-session.
   currentModel: string;
+  /// Context-window occupancy as of the most recent request, and the
+  /// window it's measured against. Both folded from per-turn usage by
+  /// `foldContextUsage` — see there for what counts as "occupancy".
+  /// Undefined until the conversation's first turn reports usage.
+  contextTokens?: number;
+  contextWindow?: number;
   /// History load state — prevents double-loading and drives the
   /// loading indicator in ChatView.
   historyLoaded: boolean;
@@ -232,6 +238,114 @@ function mergeAgentsByIndex(
   const byIndex = new Map(prev.map((a) => [a.index, a]));
   for (const a of next) byIndex.set(a.index, a);
   return [...byIndex.values()].sort((a, b) => a.index - b.index);
+}
+
+/// Context-window occupancy, as folded off the event stream.
+export interface ContextOccupancy {
+  tokens?: number;
+  window?: number;
+}
+
+/// Fold a batch of main-agent events into the running context estimate.
+///
+/// "Occupancy" is `input + cache_read + cache_creation` from the most
+/// recent request — i.e. what the model actually had in its window when
+/// it last spoke. That's the number worth acting on: it's the floor for
+/// what the NEXT request will resend. It deliberately excludes output
+/// tokens, so the estimate lags by one response (a few hundred to a few
+/// thousand tokens); the next turn's input folds them in anyway.
+///
+/// We can't ask the CLI directly on this transport — `getContextUsage()`
+/// is an SDK control request and Overcli's default path is
+/// `claude -p --input-format stream-json`. Per-turn usage is the same
+/// data the CLI's own meter is built on, so the estimate tracks it.
+///
+/// Events carrying a `parentToolUseId` are skipped: a Task subagent runs
+/// its own window and its usage would otherwise stomp the parent's
+/// number. (The live path has already split those out; the history path
+/// hands us one merged array, so the guard lives here.)
+export function foldContextUsage(
+  prev: ContextOccupancy,
+  events: StreamEvent[],
+  currentModel: string,
+): ContextOccupancy {
+  let tokens = prev.tokens;
+  let window = prev.window;
+  for (const e of events) {
+    if (e.parentToolUseId) continue;
+    if (e.kind.type === 'assistant') {
+      // Streaming snapshots carry no usage; only the consolidated
+      // assistant line does.
+      const u = e.kind.info.usage;
+      if (u) tokens = occupancyOf(u);
+    } else if (e.kind.type === 'result') {
+      const u = pickModelUsage(e.kind.info.modelUsage, currentModel);
+      if (u) {
+        tokens = occupancyOf(u);
+        if (u.contextWindow) window = u.contextWindow;
+      }
+    }
+  }
+  if (tokens === prev.tokens && window === prev.window) return prev;
+  return { tokens, window };
+}
+
+/// Sum the fields that make up window occupancy. Coerces missing fields
+/// to 0: five backends build these objects and not all of them populate
+/// every field, so a hole here would otherwise poison the total as NaN.
+function occupancyOf(u: ModelUsage): number {
+  return (
+    (u.inputTokens ?? 0) + (u.cacheReadInputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0)
+  );
+}
+
+/// A result line's `modelUsage` is keyed by model and can hold several
+/// entries — the main model plus whatever subagents ran (a Task on Haiku,
+/// a reviewer on Sonnet). Prefer the entry for the conversation's own
+/// model, matching the CLI's `claude-opus-5[1m]`-style suffixed keys
+/// against the bare id from system:init. Fall back to the largest entry
+/// so an unrecognized key still yields a number rather than nothing.
+function pickModelUsage(
+  byModel: Record<string, ModelUsage>,
+  currentModel: string,
+): ModelUsage | null {
+  const entries = Object.entries(byModel);
+  if (entries.length === 0) return null;
+  if (currentModel) {
+    const exact = entries.find(
+      ([model]) => model === currentModel || model.startsWith(`${currentModel}[`),
+    );
+    if (exact) return exact[1];
+  }
+  let best: ModelUsage | null = null;
+  let bestTotal = -1;
+  for (const [, u] of entries) {
+    const total = occupancyOf(u);
+    if (total > bestTotal) {
+      bestTotal = total;
+      best = u;
+    }
+  }
+  return bestTotal > 0 ? best : null;
+}
+
+/// Context occupancy for one conversation, plus the fraction of the
+/// window it fills (undefined when the window isn't known yet).
+export function useContextOccupancy(
+  id: UUID | null | undefined,
+): ContextOccupancy & { fraction?: number } {
+  return useRunnersStore(
+    useShallow((s) => {
+      const r = id ? s.runners[id] : undefined;
+      const tokens = r?.contextTokens;
+      const window = r?.contextWindow;
+      return {
+        tokens,
+        window,
+        fraction: tokens != null && window ? tokens / window : undefined,
+      };
+    }),
+  );
 }
 
 /// Parent tool-use ids of every subagent that has emitted at least one

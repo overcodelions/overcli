@@ -3,12 +3,13 @@ import {
   getAllRunners,
   getRunner,
   completedAtOf,
+  foldContextUsage,
   newRunnerState,
   runningLabelsOf,
   staleRunningIds,
   useRunnersStore,
 } from './runnersStore';
-import type { StreamEvent } from '@shared/types';
+import type { ModelUsage, StreamEvent } from '@shared/types';
 
 afterEach(() => {
   // Reset store between tests so module-level state doesn't bleed.
@@ -205,5 +206,149 @@ describe('running projections', () => {
     const before = completedAtOf({ a: { completedAt: 42 } });
     const after = completedAtOf({ a: { completedAt: 42 } });
     expect(shallowEqual(before, after)).toBe(true);
+  });
+});
+
+describe('foldContextUsage', () => {
+  function resultEvent(
+    modelUsage: Record<string, Partial<ModelUsage>>,
+  ): StreamEvent {
+    return {
+      id: 'r',
+      timestamp: 0,
+      raw: '',
+      revision: 0,
+      kind: {
+        type: 'result',
+        info: {
+          subtype: 'success',
+          isError: false,
+          durationMs: 0,
+          totalCostUSD: 0,
+          modelUsage: modelUsage as Record<string, ModelUsage>,
+        },
+      },
+    };
+  }
+
+  function assistantEvent(usage?: Partial<ModelUsage>): StreamEvent {
+    return {
+      id: 'a',
+      timestamp: 0,
+      raw: '',
+      revision: 0,
+      kind: {
+        type: 'assistant',
+        info: {
+          model: 'claude-opus-5',
+          text: 'hi',
+          toolUses: [],
+          thinking: [],
+          ...(usage ? { usage: usage as ModelUsage } : {}),
+        },
+      },
+    };
+  }
+
+  it('counts what the model had in its window, not what it produced', () => {
+    const out = foldContextUsage(
+      {},
+      [
+        resultEvent({
+          'claude-opus-5[1m]': {
+            inputTokens: 2,
+            outputTokens: 4000,
+            cacheReadInputTokens: 15_273,
+            cacheCreationInputTokens: 6669,
+            contextWindow: 1_000_000,
+          },
+        }),
+      ],
+      'claude-opus-5',
+    );
+    // input + cache_read + cache_creation; output is excluded.
+    expect(out).toEqual({ tokens: 21_944, window: 1_000_000 });
+  });
+
+  it('prefers the conversation model over a subagent that ran in the same turn', () => {
+    const out = foldContextUsage(
+      {},
+      [
+        resultEvent({
+          'claude-haiku-4-5': { inputTokens: 900_000, cacheReadInputTokens: 0 },
+          'claude-opus-5[1m]': { inputTokens: 400, contextWindow: 1_000_000 },
+        }),
+      ],
+      'claude-opus-5',
+    );
+    expect(out).toEqual({ tokens: 400, window: 1_000_000 });
+  });
+
+  it('falls back to the largest entry when no key matches the model', () => {
+    const out = foldContextUsage(
+      {},
+      [resultEvent({ 'some-model': { inputTokens: 10 }, other: { inputTokens: 700 } })],
+      'claude-opus-5',
+    );
+    expect(out.tokens).toBe(700);
+  });
+
+  it('tracks occupancy mid-turn off consolidated assistant lines', () => {
+    const out = foldContextUsage({}, [assistantEvent({ inputTokens: 120, cacheReadInputTokens: 80 })], '');
+    expect(out.tokens).toBe(200);
+  });
+
+  it('ignores streaming snapshots, which carry no usage', () => {
+    const prev = { tokens: 500, window: 1_000_000 };
+    expect(foldContextUsage(prev, [assistantEvent()], 'claude-opus-5')).toBe(prev);
+  });
+
+  it('keeps a known window when a later turn reports usage without one', () => {
+    const out = foldContextUsage(
+      { tokens: 100, window: 1_000_000 },
+      [resultEvent({ 'claude-opus-5': { inputTokens: 700 } })],
+      'claude-opus-5',
+    );
+    expect(out).toEqual({ tokens: 700, window: 1_000_000 });
+  });
+
+  it('returns the same object when nothing moved, so selectors do not churn', () => {
+    const prev = { tokens: 42, window: 1000 };
+    expect(foldContextUsage(prev, [evt('noise')], 'claude-opus-5')).toBe(prev);
+    expect(foldContextUsage(prev, [], 'claude-opus-5')).toBe(prev);
+  });
+
+  it('reports occupancy with no window when the backend never sends one', () => {
+    const out = foldContextUsage({}, [resultEvent({ ollama: { inputTokens: 300 } })], 'llama3');
+    expect(out).toEqual({ tokens: 300, window: undefined });
+  });
+});
+
+describe('foldContextUsage — subagent isolation', () => {
+  it('ignores subagent events, which run their own window', () => {
+    const sub: StreamEvent = {
+      id: 's',
+      timestamp: 0,
+      raw: '',
+      revision: 0,
+      parentToolUseId: 'toolu_parent',
+      kind: {
+        type: 'assistant',
+        info: {
+          model: 'claude-haiku-4-5',
+          text: 'sub',
+          toolUses: [],
+          thinking: [],
+          usage: {
+            inputTokens: 900_000,
+            outputTokens: 0,
+            cacheReadInputTokens: 0,
+            cacheCreationInputTokens: 0,
+          },
+        },
+      },
+    };
+    const prev = { tokens: 1200, window: 1_000_000 };
+    expect(foldContextUsage(prev, [sub], 'claude-opus-5')).toBe(prev);
   });
 });

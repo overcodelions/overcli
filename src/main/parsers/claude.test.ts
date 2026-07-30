@@ -352,6 +352,29 @@ describe('parseClaudeLine', () => {
     });
   });
 
+  it('carries contextWindow through as the context meter denominator', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      modelUsage: {
+        'claude-opus-5[1m]': {
+          inputTokens: 2,
+          outputTokens: 4,
+          cacheReadInputTokens: 15_273,
+          cacheCreationInputTokens: 6669,
+          contextWindow: 1_000_000,
+        },
+        // A backend that doesn't report one must not get a bogus default.
+        'gemini-2': { inputTokens: 5, contextWindow: 0 },
+      },
+    });
+    const kind = kindOf(line);
+    if (kind?.type !== 'result') throw new Error('expected result');
+    expect(kind.info.modelUsage['claude-opus-5[1m]'].contextWindow).toBe(1_000_000);
+    expect(kind.info.modelUsage['gemini-2'].contextWindow).toBeUndefined();
+  });
+
   it('maps rate_limit_event', () => {
     const line = JSON.stringify({
       type: 'rate_limit_event',

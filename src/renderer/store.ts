@@ -49,7 +49,13 @@ import {
   isActiveConversation,
 } from './conversationLookup';
 import { createUiSlice, uiSliceInitialState } from './uiSlice';
-import { useRunnersStore, getRunner, getAllRunners, mergeTaskProgress } from './runnersStore';
+import {
+  useRunnersStore,
+  getRunner,
+  getAllRunners,
+  mergeTaskProgress,
+  foldContextUsage,
+} from './runnersStore';
 import { useFlowsStore } from './flowsStore';
 import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
 import { isSupportedPremiumModel, premiumModelsForBackend } from '@shared/modelCatalog';
@@ -2674,11 +2680,24 @@ export const useStore = create<StoreState>((set, get) => ({
         merged.push(e);
       }
       merged.sort((a, b) => a.timestamp - b.timestamp);
+      // Seed the context meter off the replayed transcript. Reopening a
+      // long-running conversation is exactly when "how full is this?"
+      // matters, and waiting for the next live turn to answer would be too
+      // late. Replayed usage has no contextWindow (the session JSONL
+      // doesn't record one), so this shows raw occupancy until the next
+      // real result line supplies the denominator.
+      const context = foldContextUsage(
+        { tokens: existingRunner.contextTokens, window: existingRunner.contextWindow },
+        merged,
+        existingRunner.currentModel,
+      );
       return {
         events: merged,
         historyLoading: false,
         historyLoaded: true,
         historyLoadStartedAt: null,
+        contextTokens: context.tokens,
+        contextWindow: context.window,
       };
     });
   },
@@ -2973,12 +2992,23 @@ export const useStore = create<StoreState>((set, get) => ({
             currentModel = e.kind.info.model;
           }
         }
+        // Context meter. Folded off `mainIncoming` (not `event.events`) so
+        // a subagent's own window can't be mistaken for this
+        // conversation's, and after `currentModel` is resolved so a batch
+        // that carries both init and result picks the right usage entry.
+        const context = foldContextUsage(
+          { tokens: runner.contextTokens, window: runner.contextWindow },
+          mainIncoming,
+          currentModel,
+        );
         return {
           events: nextEvents,
           subagentEvents: nextSubagentEvents,
           taskProgressByToolUse: nextTaskProgress,
           pendingLocalUserIds: pending,
           currentModel,
+          contextTokens: context.tokens,
+          contextWindow: context.window,
         };
       });
       if (initForGlobal) set({ lastInit: initForGlobal });

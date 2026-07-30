@@ -86,6 +86,13 @@ export interface ModelUsage {
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
+  /// Size of this model's context window, as reported by the CLI's
+  /// per-model `modelUsage` block on the result line (e.g. 1_000_000 for
+  /// `claude-opus-5[1m]`). Only the result path carries it — per-message
+  /// usage blocks come straight from the API and don't include it. It is
+  /// the denominator for the footer's context meter; absent means we show
+  /// occupancy in raw tokens instead of a percentage.
+  contextWindow?: number;
 }
 
 export interface ResultInfo {

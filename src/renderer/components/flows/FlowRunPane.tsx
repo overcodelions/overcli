@@ -24,6 +24,7 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
@@ -1821,6 +1822,9 @@ function FlowStatsFooter({
       <span>
         {turns} turn{turns === 1 ? '' : 's'}
       </span>
+      {/* Participants keep ONE conversation across every step they run,
+          so this is the number that quietly climbs over a long flow. */}
+      <ContextMeter conversationId={convId} />
       {model && <span>· {model}</span>}
       {sessionId && <span className="truncate">· {sessionId.slice(0, 8)}</span>}
     </div>
