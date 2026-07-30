@@ -68,6 +68,66 @@ describe('parseClaudeLine', () => {
     expect(kindOf(line)).toEqual({ type: 'systemNotice', text: 'Conversation compacted' });
   });
 
+  it('reports how much room a compaction bought, and how it was triggered', () => {
+    const manual = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', pre_tokens: 19077, post_tokens: 3460 },
+    });
+    expect(kindOf(manual)).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation compacted · 19k → 3.5k tokens',
+    });
+
+    const auto = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', pre_tokens: 967_000, post_tokens: 120_400 },
+    });
+    expect(kindOf(auto)).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation auto-compacted · 967k → 120k tokens',
+    });
+  });
+
+  it('surfaces the compaction stall and, crucially, a failed compaction', () => {
+    const started = JSON.stringify({ type: 'system', subtype: 'status', status: 'compacting' });
+    expect(kindOf(started)).toEqual({
+      type: 'systemNotice',
+      text: 'Compacting conversation…',
+    });
+
+    const failed = JSON.stringify({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'Not enough messages to compact.',
+    });
+    expect(kindOf(failed)).toEqual({
+      type: 'systemNotice',
+      text: 'Compaction failed — Not enough messages to compact.',
+    });
+  });
+
+  it('keeps the rest of the status stream out of the transcript', () => {
+    // 'requesting' fires on every turn, and the success case is already
+    // reported by the compact_boundary that follows it.
+    expect(
+      kindOf(JSON.stringify({ type: 'system', subtype: 'status', status: 'requesting' })),
+    ).toBeUndefined();
+    expect(
+      kindOf(
+        JSON.stringify({
+          type: 'system',
+          subtype: 'status',
+          status: null,
+          compact_result: 'success',
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
   it('parses a Workflow task_started into a taskProgress event', () => {
     const line = JSON.stringify({
       type: 'system',

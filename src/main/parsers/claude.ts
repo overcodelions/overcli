@@ -104,6 +104,30 @@ export function modelFallbackText(json: any): string {
   return `Model fallback — ${from} refused this message${why}. Ran on ${to} instead.`;
 }
 
+/// One-line summary of a compaction that just landed. The token counts
+/// are the whole point — "Conversation compacted" alone left the user
+/// guessing whether it actually bought them any room.
+export function compactBoundaryText(json: any): string {
+  const meta = json?.compact_metadata ?? {};
+  const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : null;
+  const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : null;
+  // Only claim "auto" when the CLI actually said so — an unlabeled
+  // boundary gets the neutral wording rather than a guess.
+  const how = meta.trigger === 'auto' ? 'Conversation auto-compacted' : 'Conversation compacted';
+  if (pre == null) return how;
+  const shrink = post == null ? compactTokens(pre) : `${compactTokens(pre)} → ${compactTokens(post)}`;
+  return `${how} · ${shrink} tokens`;
+}
+
+/// 19077 → "19.1k". Footer-scale formatting; the exact count is never
+/// what the user is asking when they read this.
+function compactTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
 /// Distill a `task_started` / `task_progress` / `task_notification`
 /// system line into a TaskProgressInfo. Returns null when the line has no
 /// tool_use_id to bucket against (nothing the renderer can attach it to).
@@ -245,9 +269,31 @@ function parseClaudeLineInto(
       }
       if (json.subtype === 'compact_boundary') {
         return eventFromKind(
-          { type: 'systemNotice', text: 'Conversation compacted' },
+          { type: 'systemNotice', text: compactBoundaryText(json) },
           trimmed,
         );
+      }
+      // Compaction progress. `status` is otherwise noise ('requesting' on
+      // every turn), but the compaction slice of it is the only signal we
+      // get for two states the user needs to see: the ~20s stall while a
+      // large transcript is summarized, and a compaction that FAILED —
+      // which the CLI reports here and nowhere else. Dropping it meant a
+      // manual /compact could silently do nothing.
+      if (json.subtype === 'status') {
+        if (json.status === 'compacting') {
+          return eventFromKind({ type: 'systemNotice', text: 'Compacting conversation…' }, trimmed);
+        }
+        if (json.compact_result === 'failed') {
+          const why = typeof json.compact_error === 'string' ? json.compact_error.trim() : '';
+          return eventFromKind(
+            { type: 'systemNotice', text: why ? `Compaction failed — ${why}` : 'Compaction failed' },
+            trimmed,
+          );
+        }
+        // `compact_result: 'success'` is deliberately dropped — the
+        // compact_boundary that follows reports the same thing with token
+        // counts attached.
+        return null;
       }
       // The API refused the turn on the selected model and the CLI silently
       // retried on another one. We pass --model explicitly, so without this the
@@ -275,7 +321,7 @@ function parseClaudeLineInto(
         const info = taskProgressInfo(json);
         return info ? eventFromKind({ type: 'taskProgress', info }, trimmed) : null;
       }
-      // stop_hook_summary, turn_duration, thinking_summary, status,
+      // stop_hook_summary, turn_duration, thinking_summary,
       // task_updated, hook_started/hook_response, etc — noise.
       return null;
     }
