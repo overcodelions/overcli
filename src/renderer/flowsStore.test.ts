@@ -430,3 +430,177 @@ describe('dismissJustSaved', () => {
     expect(useFlowsStore.getState().justSaved).toBeNull();
   });
 });
+
+// ─── renameFlow ──────────────────────────────────────────────────────────────
+
+describe('renameFlow', () => {
+  beforeEach(() => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'flows:save') return { ok: true, filePath: '/tmp/test.yaml' };
+      if (channel === 'flows:list') return [];
+      return undefined;
+    });
+  });
+
+  it('saves the flow under the new name, keeping its id and layer', async () => {
+    const flow = minimalFlow();
+    const result = await useFlowsStore.getState().renameFlow(flow, 'Renamed', []);
+    expect(result.ok).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:save', {
+      flow: { ...flow, name: 'Renamed' },
+      target: 'user',
+      projectPath: undefined,
+    });
+  });
+
+  it('trims the new name', async () => {
+    await useFlowsStore.getState().renameFlow(minimalFlow(), '  Padded  ', []);
+    const [, args] = mockInvoke.mock.calls.find(([c]) => c === 'flows:save')!;
+    expect((args as { flow: Flow }).flow.name).toBe('Padded');
+  });
+
+  it('derives the projectPath for a project-layer flow', async () => {
+    const flow = minimalFlow({
+      source: 'project',
+      filePath: '/repos/app/.overcli/flows/test-flow.yaml',
+    });
+    await useFlowsStore.getState().renameFlow(flow, 'Renamed', []);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:save', {
+      flow: { ...flow, name: 'Renamed' },
+      target: 'project',
+      projectPath: '/repos/app',
+    });
+  });
+
+  it('rejects a blank name without touching disk', async () => {
+    const result = await useFlowsStore.getState().renameFlow(minimalFlow(), '   ', []);
+    expect(result.ok).toBe(false);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the name is unchanged', async () => {
+    const flow = minimalFlow();
+    const result = await useFlowsStore.getState().renameFlow(flow, flow.name, []);
+    expect(result.ok).toBe(true);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a save failure and skips the reload', async () => {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:save' ? { ok: false, error: 'disk full' } : undefined,
+    );
+    const result = await useFlowsStore.getState().renameFlow(minimalFlow(), 'Renamed', []);
+    expect(result).toEqual({ ok: false, error: 'disk full' });
+    expect(mockInvoke).not.toHaveBeenCalledWith('flows:list', expect.anything());
+  });
+
+  it('reloads with every project path so other projects keep their flows', async () => {
+    await useFlowsStore.getState().renameFlow(minimalFlow(), 'Renamed', ['/a', '/b']);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:list', { projectPaths: ['/a', '/b'] });
+  });
+});
+
+// ─── saveDraft ───────────────────────────────────────────────────────────────
+
+describe('saveDraft', () => {
+  beforeEach(() => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'flows:save') return { ok: true, filePath: '/tmp/test.yaml' };
+      if (channel === 'flows:delete') return { ok: true };
+      if (channel === 'flows:list') return [];
+      return undefined;
+    });
+  });
+
+  function deleteCalls() {
+    return mockInvoke.mock.calls.filter(([c]) => c === 'flows:delete');
+  }
+
+  it('removes the old file when the id changed in the same layer', async () => {
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ id: 'renamed-flow' });
+    await useFlowsStore.getState().saveDraft('user');
+    expect(deleteCalls()).toEqual([
+      ['flows:delete', { flowId: 'test-flow', source: 'user', projectPath: undefined }],
+    ]);
+  });
+
+  it('leaves the original alone when only the display name changed', async () => {
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ name: 'Renamed' });
+    await useFlowsStore.getState().saveDraft('user');
+    expect(deleteCalls()).toEqual([]);
+  });
+
+  it('leaves the original alone when saving a copy into the other layer', async () => {
+    // Different layer = the user deliberately targeted the other layer.
+    // That's a copy, not a rename — deleting the source would be data loss.
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ id: 'renamed-flow' });
+    await useFlowsStore.getState().saveDraft('project', '/repos/app');
+    expect(deleteCalls()).toEqual([]);
+  });
+
+  it('never deletes when creating a new flow', async () => {
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'new' });
+    await useFlowsStore.getState().saveDraft('user');
+    expect(deleteCalls()).toEqual([]);
+  });
+
+  it('does not delete when the save itself failed', async () => {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:save' ? { ok: false, error: 'nope' } : { ok: true },
+    );
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ id: 'renamed-flow' });
+    const result = await useFlowsStore.getState().saveDraft('user');
+    expect(result.ok).toBe(false);
+    expect(deleteCalls()).toEqual([]);
+  });
+});
+
+// ─── renameRun ───────────────────────────────────────────────────────────────
+
+describe('renameRun', () => {
+  beforeEach(() => {
+    mockInvoke.mockResolvedValue({ ok: true });
+    useFlowsStore.getState().applyRunUpdate(minimalRun('r1'));
+  });
+
+  it('patches the run optimistically and tells the main process', async () => {
+    await useFlowsStore.getState().renameRun('r1', 'Login work');
+    expect(useFlowsStore.getState().runs['r1'].title).toBe('Login work');
+    expect(mockInvoke).toHaveBeenCalledWith('flows:renameRun', {
+      runId: 'r1',
+      title: 'Login work',
+    });
+  });
+
+  it('trims the title', async () => {
+    await useFlowsStore.getState().renameRun('r1', '  Login work  ');
+    expect(useFlowsStore.getState().runs['r1'].title).toBe('Login work');
+  });
+
+  it('clears the title when handed a blank string', async () => {
+    await useFlowsStore.getState().renameRun('r1', 'Login work');
+    await useFlowsStore.getState().renameRun('r1', '   ');
+    expect(useFlowsStore.getState().runs['r1'].title).toBeUndefined();
+    expect(mockInvoke).toHaveBeenLastCalledWith('flows:renameRun', { runId: 'r1', title: '' });
+  });
+
+  it('caps an absurdly long title', async () => {
+    await useFlowsStore.getState().renameRun('r1', 'x'.repeat(500));
+    expect(useFlowsStore.getState().runs['r1'].title).toHaveLength(200);
+  });
+
+  it('still calls through for an unknown run so the main process can answer', async () => {
+    await useFlowsStore.getState().renameRun('ghost', 'Nope');
+    expect(useFlowsStore.getState().runs['ghost']).toBeUndefined();
+    expect(mockInvoke).toHaveBeenCalledWith('flows:renameRun', { runId: 'ghost', title: 'Nope' });
+  });
+});

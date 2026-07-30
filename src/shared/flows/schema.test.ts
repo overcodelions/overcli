@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  flowProjectPath,
+  flowRunTitle,
   resolveStepModel,
   resolveStepParticipant,
   FLOW_USER_PROMPT_REF,
   DEFAULT_PARTICIPANT_ID,
 } from './schema';
-import type { Flow, FlowParticipant, FlowStep } from './schema';
+import type { Flow, FlowParticipant, FlowRun, FlowStep } from './schema';
 
 function makeParticipant(overrides: Partial<FlowParticipant> = {}): FlowParticipant {
   return {
@@ -119,5 +121,63 @@ describe('resolveStepParticipant', () => {
     const step = makeStep({ participantId: 'nonexistent' });
     const flow = makeFlow([p], [step]);
     expect(resolveStepParticipant(flow, step)).toBeUndefined();
+  });
+});
+
+// ─── flowRunTitle ────────────────────────────────────────────────────────────
+
+function makeRun(overrides: Partial<FlowRun> = {}): FlowRun {
+  const flow = makeFlow([makeParticipant()], [makeStep()]);
+  return {
+    id: 'run-1' as FlowRun['id'],
+    flowId: flow.id,
+    flowSnapshot: flow,
+    projectPath: '/repos/app',
+    userPrompt: 'fix the login bug',
+    conversationIds: {},
+    artifacts: {},
+    state: { kind: 'running', currentStepId: 'plan' },
+    createdAt: 0,
+    attempts: [],
+    ...overrides,
+  };
+}
+
+describe('flowRunTitle', () => {
+  it('prefers the user-supplied title', () => {
+    expect(flowRunTitle(makeRun({ title: 'Login work' }))).toBe('Login work');
+  });
+
+  it('falls back to the first non-empty prompt line', () => {
+    const run = makeRun({ userPrompt: '\n\n  fix the login bug  \nand the logout one' });
+    expect(flowRunTitle(run)).toBe('fix the login bug');
+  });
+
+  it('ignores a blank title', () => {
+    expect(flowRunTitle(makeRun({ title: '   ' }))).toBe('fix the login bug');
+  });
+
+  it('falls back to the flow name when the prompt is empty', () => {
+    expect(flowRunTitle(makeRun({ userPrompt: '   \n  ' }))).toBe('Test Flow');
+  });
+});
+
+// ─── flowProjectPath ─────────────────────────────────────────────────────────
+
+describe('flowProjectPath', () => {
+  it('recovers the project dir from a project flow path', () => {
+    expect(
+      flowProjectPath({ source: 'project', filePath: '/repos/app/.overcli/flows/ship.yaml' }),
+    ).toBe('/repos/app');
+  });
+
+  it('returns undefined for a user flow', () => {
+    expect(
+      flowProjectPath({ source: 'user', filePath: '/Users/me/Library/overcli/flows/ship.yaml' }),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when a project flow path has an unexpected shape', () => {
+    expect(flowProjectPath({ source: 'project', filePath: '/repos/app/ship.yaml' })).toBeUndefined();
   });
 });

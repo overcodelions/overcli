@@ -237,6 +237,13 @@ export function migrateClaudeSessionCwd(args: {
   projectPath: string;
   sessionId: string;
 }): { moved: boolean } {
+  // The id is joined straight into both sides of a `renameSync`, including
+  // the bare-directory sidecar below — `../../Documents` would move the
+  // user's folder into the slug dir. Real ids are UUIDs; mirror the
+  // `terminal:popConversation` guard and refuse anything else.
+  if (!/^[A-Za-z0-9._-]+$/.test(args.sessionId) || args.sessionId.includes('..')) {
+    return { moved: false };
+  }
   const root = path.join(os.homedir(), '.claude', 'projects');
   const fromDir = path.join(root, claudeProjectSlug(args.worktreePath));
   const toDir = path.join(root, claudeProjectSlug(args.projectPath));

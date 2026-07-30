@@ -632,7 +632,12 @@ function WelcomeFlowsRow({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>('cwd');
+  // Which side the run-in toggle starts on comes from Settings → Flows, so
+  // a worktree-first user doesn't re-flip it on every launch. The toggle
+  // still wins for this run; flipping the setting re-seeds the launcher.
+  const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'cwd');
+  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
+  useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
   // baseBranch starts empty — the BaseBranchSelect below populates it
   // from the repo's actual branches (and `detectBaseBranch` picks a
   // sensible default like the repo's `origin/HEAD` or whichever of

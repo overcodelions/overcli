@@ -16,9 +16,10 @@
 // need many fields should use `useRunner(id)` and shallow-compare on
 // the result rather than calling each selector independently.
 
+import { useMemo } from 'react';
 import { create } from 'zustand';
 import { useShallow } from 'zustand/react/shallow';
-import type { StreamEvent, TaskProgressInfo, UUID } from '@shared/types';
+import type { ModelUsage, StreamEvent, TaskProgressInfo, UUID } from '@shared/types';
 
 /// Per-conversation runtime state. Keyed off conversation id.
 export interface RunnerState {
@@ -49,6 +50,12 @@ export interface RunnerState {
   /// Current model as reported by system:init events. May diverge from
   /// conv.currentModel if the user switched mid-session.
   currentModel: string;
+  /// Context-window occupancy as of the most recent request, and the
+  /// window it's measured against. Both folded from per-turn usage by
+  /// `foldContextUsage` — see there for what counts as "occupancy".
+  /// Undefined until the conversation's first turn reports usage.
+  contextTokens?: number;
+  contextWindow?: number;
   /// History load state — prevents double-loading and drives the
   /// loading indicator in ChatView.
   historyLoaded: boolean;
@@ -233,6 +240,114 @@ function mergeAgentsByIndex(
   return [...byIndex.values()].sort((a, b) => a.index - b.index);
 }
 
+/// Context-window occupancy, as folded off the event stream.
+export interface ContextOccupancy {
+  tokens?: number;
+  window?: number;
+}
+
+/// Fold a batch of main-agent events into the running context estimate.
+///
+/// "Occupancy" is `input + cache_read + cache_creation` from the most
+/// recent request — i.e. what the model actually had in its window when
+/// it last spoke. That's the number worth acting on: it's the floor for
+/// what the NEXT request will resend. It deliberately excludes output
+/// tokens, so the estimate lags by one response (a few hundred to a few
+/// thousand tokens); the next turn's input folds them in anyway.
+///
+/// We can't ask the CLI directly on this transport — `getContextUsage()`
+/// is an SDK control request and Overcli's default path is
+/// `claude -p --input-format stream-json`. Per-turn usage is the same
+/// data the CLI's own meter is built on, so the estimate tracks it.
+///
+/// Events carrying a `parentToolUseId` are skipped: a Task subagent runs
+/// its own window and its usage would otherwise stomp the parent's
+/// number. (The live path has already split those out; the history path
+/// hands us one merged array, so the guard lives here.)
+export function foldContextUsage(
+  prev: ContextOccupancy,
+  events: StreamEvent[],
+  currentModel: string,
+): ContextOccupancy {
+  let tokens = prev.tokens;
+  let window = prev.window;
+  for (const e of events) {
+    if (e.parentToolUseId) continue;
+    if (e.kind.type === 'assistant') {
+      // Streaming snapshots carry no usage; only the consolidated
+      // assistant line does.
+      const u = e.kind.info.usage;
+      if (u) tokens = occupancyOf(u);
+    } else if (e.kind.type === 'result') {
+      const u = pickModelUsage(e.kind.info.modelUsage, currentModel);
+      if (u) {
+        tokens = occupancyOf(u);
+        if (u.contextWindow) window = u.contextWindow;
+      }
+    }
+  }
+  if (tokens === prev.tokens && window === prev.window) return prev;
+  return { tokens, window };
+}
+
+/// Sum the fields that make up window occupancy. Coerces missing fields
+/// to 0: five backends build these objects and not all of them populate
+/// every field, so a hole here would otherwise poison the total as NaN.
+function occupancyOf(u: ModelUsage): number {
+  return (
+    (u.inputTokens ?? 0) + (u.cacheReadInputTokens ?? 0) + (u.cacheCreationInputTokens ?? 0)
+  );
+}
+
+/// A result line's `modelUsage` is keyed by model and can hold several
+/// entries — the main model plus whatever subagents ran (a Task on Haiku,
+/// a reviewer on Sonnet). Prefer the entry for the conversation's own
+/// model, matching the CLI's `claude-opus-5[1m]`-style suffixed keys
+/// against the bare id from system:init. Fall back to the largest entry
+/// so an unrecognized key still yields a number rather than nothing.
+function pickModelUsage(
+  byModel: Record<string, ModelUsage>,
+  currentModel: string,
+): ModelUsage | null {
+  const entries = Object.entries(byModel);
+  if (entries.length === 0) return null;
+  if (currentModel) {
+    const exact = entries.find(
+      ([model]) => model === currentModel || model.startsWith(`${currentModel}[`),
+    );
+    if (exact) return exact[1];
+  }
+  let best: ModelUsage | null = null;
+  let bestTotal = -1;
+  for (const [, u] of entries) {
+    const total = occupancyOf(u);
+    if (total > bestTotal) {
+      bestTotal = total;
+      best = u;
+    }
+  }
+  return bestTotal > 0 ? best : null;
+}
+
+/// Context occupancy for one conversation, plus the fraction of the
+/// window it fills (undefined when the window isn't known yet).
+export function useContextOccupancy(
+  id: UUID | null | undefined,
+): ContextOccupancy & { fraction?: number } {
+  return useRunnersStore(
+    useShallow((s) => {
+      const r = id ? s.runners[id] : undefined;
+      const tokens = r?.contextTokens;
+      const window = r?.contextWindow;
+      return {
+        tokens,
+        window,
+        fraction: tokens != null && window ? tokens / window : undefined,
+      };
+    }),
+  );
+}
+
 /// Parent tool-use ids of every subagent that has emitted at least one
 /// event in this conversation. Used by SubagentDrawer to render tabs.
 export function useSubagentKeys(id: UUID | null | undefined): string[] {
@@ -271,11 +386,90 @@ export function useRunnerCodexFlags(id: UUID | null | undefined) {
   );
 }
 
-/// Subscribe to the full runners map. Heavy — use sparingly. Sheets
-/// that need to walk every runner (BulkConversationActionsSheet,
-/// QuickSwitcher's "running" filter) are the legitimate consumers.
+/// Subscribe to the full runners map. Heavy — use sparingly.
+///
+/// The map's identity changes on every ingested event, so a component
+/// subscribing here re-renders at the full streaming rate (~60Hz while any
+/// agent is working) no matter how little of the map it reads. That is fine
+/// for sheets, which are mounted only while open and walk every runner
+/// anyway (BulkConversationActionsSheet, QuickSwitcher's "running" filter).
+/// It is NOT fine for always-mounted chrome like the sidebar — use
+/// `useRunningMap` there instead.
 export function useAllRunners(): Record<UUID, RunnerState> {
   return useRunnersStore((s) => s.runners);
+}
+
+/// Activity labels for running conversations, keyed by id.
+///
+/// Values are deliberately plain strings: `useShallow` then compares them by
+/// value, so the projection is referentially stable across the flood of
+/// event-only updates and only differs when a conversation actually starts,
+/// stops, or changes its label.
+export function runningLabelsOf(
+  runners: Record<UUID, Pick<RunnerState, 'isRunning' | 'activityLabel'>>,
+): Record<UUID, string> {
+  const out: Record<UUID, string> = {};
+  for (const [id, r] of Object.entries(runners)) {
+    if (r.isRunning) out[id] = r.activityLabel ?? '';
+  }
+  return out;
+}
+
+/// Unacknowledged-completion timestamps, keyed by id. Same value-compare
+/// property as `runningLabelsOf`.
+export function completedAtOf(
+  runners: Record<UUID, Pick<RunnerState, 'completedAt'>>,
+): Record<UUID, number> {
+  const out: Record<UUID, number> = {};
+  for (const [id, r] of Object.entries(runners)) {
+    if (r.completedAt != null) out[id] = r.completedAt;
+  }
+  return out;
+}
+
+function useRunningLabels(): Record<UUID, string> {
+  return useRunnersStore(useShallow((s) => runningLabelsOf(s.runners)));
+}
+
+function useCompletedAtMap(): Record<UUID, number> {
+  return useRunnersStore(useShallow((s) => completedAtOf(s.runners)));
+}
+
+/// The slice of runner state the sidebar and other always-mounted chrome
+/// actually read, shaped so it drops straight into the existing
+/// `runners[id]?.isRunning` call sites.
+///
+/// This exists because those components used `useAllRunners()`, which
+/// re-renders on every streamed delta. With a real project list that meant
+/// the entire sidebar tree — plus its unmemoized per-group filters over
+/// every conversation — re-running ~60 times a second for the whole
+/// duration of every turn. Here the underlying selectors are value-compared,
+/// so the result is referentially stable between actual transitions.
+export interface RunningSummary {
+  isRunning: boolean;
+  activityLabel?: string;
+  completedAt?: number;
+}
+
+const EMPTY_RUNNING_MAP: Record<UUID, RunningSummary> = {};
+
+export function useRunningMap(): Record<UUID, RunningSummary | undefined> {
+  const labels = useRunningLabels();
+  const completed = useCompletedAtMap();
+  return useMemo(() => {
+    const ids = new Set([...Object.keys(labels), ...Object.keys(completed)]);
+    if (ids.size === 0) return EMPTY_RUNNING_MAP;
+    const out: Record<UUID, RunningSummary> = {};
+    for (const id of ids) {
+      const label = labels[id];
+      out[id] = {
+        isRunning: label !== undefined,
+        activityLabel: label ? label : undefined,
+        completedAt: completed[id],
+      };
+    }
+    return out;
+  }, [labels, completed]);
 }
 
 /// Imperative read for code outside of React (store methods, IPC

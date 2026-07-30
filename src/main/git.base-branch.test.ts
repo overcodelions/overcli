@@ -84,3 +84,32 @@ describe('listBaseBranches', () => {
     ]);
   });
 });
+
+// Git's ref rules allow a branch literally named `--output=/path`, which a
+// clone carries over from a hostile remote. If such a name reaches the
+// `git diff <base>` argv it is parsed as an option, and `--output=` alone
+// truncates an arbitrary file. Neither entry point may hand one back.
+describe('option-injecting ref names', () => {
+  it('detectBaseBranch falls back rather than returning a leading-dash branch', () => {
+    mockSpawnSync.mockImplementation((_bin, args) => {
+      const cmd = args.join(' ');
+      if (cmd === 'branch --show-current') return ok('--output=/tmp/pwned\n');
+      if (cmd === 'rev-parse --verify main') return ok('sha\n');
+      return fail();
+    });
+
+    expect(detectBaseBranch('/repo')).toBe('main');
+  });
+
+  it('listBaseBranches drops leading-dash refs', () => {
+    mockSpawnSync.mockImplementation((_bin, args) => {
+      const cmd = args.join(' ');
+      if (cmd === 'for-each-ref --sort=-committerdate --format=%(refname:short) refs/heads') {
+        return ok('main\n--output=/tmp/pwned\n-u\n');
+      }
+      return fail();
+    });
+
+    expect(listBaseBranches('/repo')).toEqual(['main']);
+  });
+});

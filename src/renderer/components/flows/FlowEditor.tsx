@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { serializeFlow } from '@shared/flows/yaml';
+import { flowProjectPath } from '@shared/flows/schema';
 import { validateFlow } from '@shared/flows/validation';
 import { FlowStepCard } from './FlowStepCard';
 import { FlowPipelineDiagram } from './FlowPipelineDiagram';
@@ -31,8 +32,16 @@ export function FlowEditor() {
   const addStep = useFlowsStore((s) => s.addStep);
   const saveError = useFlowsStore((s) => s.editorSaveError);
 
-  const [target, setTarget] = useState<'user' | 'project'>('user');
-  const [selectedProject, setSelectedProject] = useState<string>(projects[0]?.path ?? '');
+  // Editing an existing flow defaults to saving back to the layer it came
+  // from. Defaulting to 'user' meant Save on a project flow quietly forked a
+  // user copy — and made an id rename leave the original file behind under
+  // its old name instead of moving it.
+  const [target, setTarget] = useState<'user' | 'project'>(
+    editor.kind === 'editing' ? draft?.source ?? 'user' : 'user',
+  );
+  const [selectedProject, setSelectedProject] = useState<string>(
+    (draft ? flowProjectPath(draft) : undefined) ?? projects[0]?.path ?? '',
+  );
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState('');
   const [saving, setSaving] = useState(false);
@@ -199,7 +208,9 @@ export function FlowEditor() {
                 onChange={(e) => updateDraft({ id: e.target.value })}
                 className="bg-card-strong rounded px-2 py-1 text-xs font-mono min-w-[180px] focus:outline-none"
               />
-              <span className="text-[10px] text-ink-faint">filename on disk</span>
+              <span className="text-[10px] text-ink-faint">
+                filename on disk — changing it renames the file
+              </span>
             </div>
           </div>
 

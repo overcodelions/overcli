@@ -4,14 +4,15 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
-import { app, BrowserWindow, dialog, ipcMain, shell, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Store } from './store';
+import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
+import { SymbolLookupManager } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
 import { primeBackendUpdates } from './backendUpdater';
@@ -123,6 +124,7 @@ let runner: RunnerManager | null = null;
 // already load flows and build them without a crash on Run.
 let flowRuntime: FlowRuntime | null = null;
 let orchestrator: OrchestratorImpl | null = null;
+let symbolLookup: SymbolLookupManager | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -216,10 +218,36 @@ function registerIpc(): void {
     () => Store.load().settings,
   );
   flowRuntime.setRunObserver((run) => orchestrator?.onRunUpdate(run));
+  // Symbol lookup resolves its backend per call rather than capturing one:
+  // the user can change the preferred backend in Settings mid-session, and
+  // a lookup is short-lived enough that there's nothing to migrate.
+  symbolLookup = new SymbolLookupManager({
+    backendFor: () => {
+      const settings = Store.load().settings;
+      // Only these three take a stdin prompt and a `-m/--model` override
+      // (see buildLookupArgs). Copilot wants its prompt in argv; ollama
+      // isn't a subprocess at all.
+      const supported: Backend[] = ['claude', 'codex', 'gemini'];
+      const preferred = settings.preferredBackend;
+      const order =
+        preferred && supported.includes(preferred)
+          ? [preferred, ...supported.filter((b) => b !== preferred)]
+          : supported;
+      for (const backend of order) {
+        if (settings.disabledBackends?.[backend]) continue;
+        const binary = resolveBackendPath(backend, settings.backendPaths[backend]);
+        if (binary) return { backend, binary };
+      }
+      return { backend: preferred ?? 'claude', binary: null };
+    },
+  });
 
   ipcMain.handle('store:load', () => Store.load());
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
+  ipcMain.handle('store:patchConversation', (_e, { id, patch }) =>
+    Store.patchConversation(id, patch),
+  );
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     Store.saveSettings(settings);
@@ -393,6 +421,25 @@ function registerIpc(): void {
     }
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
+  });
+  ipcMain.handle('symbols:findDefinition', async (_e, args) => {
+    const filePath = resolveFilePath(args?.filePath ?? '');
+    if (!filePath || !isReadablePath(filePath)) {
+      return { ok: false as const, error: 'File is outside any registered project.' };
+    }
+    const cwd = args?.cwd ?? '';
+    if (!cwd || !isPathUnderRegisteredRoot(cwd)) {
+      return { ok: false as const, error: 'Project root is not registered.' };
+    }
+    if (!symbolLookup) {
+      return { ok: false as const, error: 'Symbol lookup is not available.' };
+    }
+    return symbolLookup.find({
+      cwd,
+      filePath,
+      symbol: args?.symbol ?? '',
+      line: args?.line ?? 1,
+    });
   });
   ipcMain.handle(
     'flows:openArtifact',
@@ -687,6 +734,9 @@ function registerIpc(): void {
     flowRuntime
       ? flowRuntime.setModelOverride(runId, participantId, model)
       : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:renameRun', (_e, args) =>
+    flowRuntime ? flowRuntime.renameRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:enterWatch', (_e, args) =>
     flowRuntime ? flowRuntime.enterWatch(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
@@ -1477,8 +1527,26 @@ if (process.platform === 'darwin' && process.arch !== 'arm64') {
   app.commandLine.appendSwitch('disable-features', 'SkiaGraphite');
 }
 
+/// In dev the renderer is served over HTTP by Vite, and HMR appends a fresh
+/// `?t=<timestamp>` cache-buster to every module on every edit. Chromium
+/// treats each of those as a brand-new, permanently-cacheable URL, so the
+/// HTTP cache (and the V8 code cache keyed off it) grows without bound —
+/// months of dev had accumulated ~32k entries and 1.6GB of userData. Prod
+/// loads from `file://` and never enters this cache, so this is dev-only.
+async function clearDevHttpCache(): Promise<void> {
+  if (!isDev) return;
+  try {
+    await session.defaultSession.clearCodeCaches({ urls: [] });
+    await session.defaultSession.clearCache();
+    log('info', 'main.devCache', 'Cleared dev HTTP + code caches');
+  } catch (err) {
+    log('warn', 'main.devCache', 'Failed to clear dev caches', err);
+  }
+}
+
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  void clearDevHttpCache();
   // In dev the dock shows Electron's default icon because we're running the
   // Electron binary directly (no .app bundle). Override it so dev matches prod.
   if (isDev && process.platform === 'darwin' && app.dock) {
@@ -1525,7 +1593,12 @@ app.on('window-all-closed', () => {
 let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  symbolLookup?.dispose();
   ollamaServer.stop();
+  // Store writes are debounced now (see store.save). Take the freshest
+  // snapshot synchronously so a quit inside the debounce window can't drop
+  // the last mutation.
+  flushStoreSync();
   // Run writes are async now (see runsStore.saveRun). Defer the first quit
   // long enough to flush any in-flight checkpoint to disk, then quit for real.
   // Writes are sub-10ms, so the delay is imperceptible.
