@@ -21,6 +21,7 @@ import {
   DEFAULT_SETTINGS,
   MarketplaceSkill,
   McpCatalogItem,
+  PersistedFileTabs,
   Project,
   SkillTarget,
   StreamEvent,
@@ -37,7 +38,7 @@ import {
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { flowStarKey } from '@shared/flows/schema';
-import { FileViewMode } from './filePreview';
+import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
@@ -48,7 +49,13 @@ import {
   findOwnerProject,
   isActiveConversation,
 } from './conversationLookup';
-import { createUiSlice, uiSliceInitialState } from './uiSlice';
+import {
+  createUiSlice,
+  uiSliceInitialState,
+  MAX_TABS_PER_SCOPE,
+  type FileTab,
+  type ScopeTabs,
+} from './uiSlice';
 import {
   useRunnersStore,
   getRunner,
@@ -141,6 +148,11 @@ interface StoreState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
+  /// Open editor tabs for the scope on screen, and the saved tabs for
+  /// every other scope. See uiSlice + ./fileScope.ts.
+  tabs: FileTab[];
+  fileScopeKey: string | null;
+  fileTabsByScope: Record<string, ScopeTabs>;
   /// Root directory for the standalone file explorer view. Set by
   /// `openExplorer`; consumed by ExplorerPane when detailMode is
   /// 'explorer'. Unlike conversation-scoped file browsing, this is
@@ -161,6 +173,9 @@ interface StoreState {
   subagentDrawerConversationId: string | null;
   /// Per-conversation list of dismissed subagent tabs. See uiSlice.
   dismissedSubagents: Record<string, string[]>;
+  /// Paths with unsaved editor edits. See uiSlice; the text itself lives
+  /// in ./fileBuffers.ts.
+  dirtyFiles: Record<string, true>;
   /// Where the file editor renders. See uiSlice for the contract.
   fileEditorSide: 'inline' | 'side';
   pendingFinderQuery: string;
@@ -218,7 +233,14 @@ interface StoreState {
   openSheet(sheet: ActiveSheet | null): void;
   openFile(path: string, highlight?: OpenFileHighlight, mode?: FileViewMode): void;
   setOpenFileMode(mode: FileViewMode): void;
+  selectTab(path: string): void;
+  selectAdjacentTab(delta: number): void;
+  retargetTab(from: string, to: string): void;
+  closeTab(path: string): void;
   closeFile(): void;
+  switchFileScope(key: string | null): void;
+  markFileDirty(path: string): void;
+  clearFileDirty(path: string): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
   openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
@@ -391,7 +413,7 @@ interface StoreState {
   prefetchFlowRunHistories(): Promise<void>;
 
   // Health
-  refreshBackendHealth(): Promise<void>;
+  refreshBackendHealth(force?: boolean): Promise<void>;
   refreshInstalledReviewers(): Promise<void>;
   refreshCapabilities(): Promise<void>;
   refreshMarketplaceSkills(): Promise<void>;
@@ -789,7 +811,7 @@ export const useStore = create<StoreState>((set, get) => ({
   lastSelectedAt: {},
   gitStatusByConv: {},
   projectIsGitRepo: {},
-  ...createUiSlice<StoreState>(set),
+  ...createUiSlice<StoreState>(set, get),
 
   async init() {
     const state = await window.overcli.invoke('store:load');
@@ -855,6 +877,10 @@ export const useStore = create<StoreState>((set, get) => ({
       focusedProjectId: view?.focusedProjectId ?? null,
       focusedWorkspaceId: view?.focusedWorkspaceId ?? null,
       showToolActivity: state.settings.defaultShowToolActivity ?? false,
+      // Editor tabs come back per scope. `useFileScope` hydrates the live
+      // `tabs` for whichever scope this view resolves to, right after the
+      // fields above land.
+      fileTabsByScope: hydrateFileTabs(state.fileTabs),
     });
     if (view?.activeRunId) {
       const { useFlowsStore } = await import('./flowsStore');
@@ -913,9 +939,10 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: id ? 'conversation' : s.detailMode,
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
+      // The editor isn't cleared here any more: `useFileScope` sees the new
+      // conversation and swaps in that conversation's own tabs (see
+      // ./fileScope.ts), so the files you had open come back when you
+      // return instead of being dropped on every switch.
       lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
       projects: bumpProject
         ? s.projects.map((p) =>
@@ -943,9 +970,6 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: projectId,
       focusedWorkspaceId: null,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -957,9 +981,6 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: null,
       focusedWorkspaceId: workspaceId,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -987,13 +1008,11 @@ export const useStore = create<StoreState>((set, get) => ({
     //     made Explore a no-op there (it set the root but never swapped the
     //     visible pane).
     const state = get();
+    // Both branches leave the editor alone: the explorer root is its own
+    // tab scope, so `useFileScope` parks the conversation's tabs and
+    // restores whatever was open in this explorer root last time.
     if (state.detailMode === 'conversation' && state.selectedConversationId) {
-      set({
-        explorerRootPath: rootPath,
-        openFilePath: null,
-        openFileHighlight: null,
-        openFileMode: 'edit',
-      });
+      set({ explorerRootPath: rootPath });
       return;
     }
     set({
@@ -1002,9 +1021,6 @@ export const useStore = create<StoreState>((set, get) => ({
       selectedConversationId: null,
       focusedProjectId: null,
       focusedWorkspaceId: null,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
     });
     window.overcli.invoke('store:saveSelection', null);
   },
@@ -1064,8 +1080,16 @@ export const useStore = create<StoreState>((set, get) => ({
     await window.overcli.invoke('store:saveColosseums', get().colosseums);
   },
   async saveSettings(next) {
+    const prev = get().settings;
     set({ settings: next });
     await window.overcli.invoke('store:saveSettings', next);
+    // Only re-probe when something that can change a backend's health
+    // actually moved. Health probing executes every installed CLI, and this
+    // action is how the app persists things like pane widths, theme and
+    // toggles — so dragging a divider used to end in a round of CLI spawns
+    // (and the reviewer list re-probing all of them again). That's the
+    // stutter you'd see on pointer-up.
+    if (!backendSettingsChanged(prev, next)) return;
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
   },
@@ -2759,7 +2783,13 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
-  async refreshBackendHealth() {
+  /// `force` drops main's probe cache first. Used by the sign-in banner,
+  /// which polls while the user completes an OAuth round-trip in Terminal
+  /// and needs the badge to flip the moment it lands — everywhere else a
+  /// cached answer (main caps it at 15s) is what you want, since probing
+  /// means executing every backend's CLI.
+  async refreshBackendHealth(force?: boolean) {
+    if (force) await window.overcli.invoke('health:invalidate');
     const out: Record<string, BackendHealth> = {};
     await Promise.all(
       ALL_BACKENDS.map(async (backend) => {
@@ -3272,6 +3302,99 @@ export function flushPendingSaves(): void {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', flushPendingSaves);
+}
+
+/// Whether a settings change can plausibly change a backend's health badge:
+/// a different binary path, or a backend enabled/disabled. Everything else
+/// (widths, theme, model defaults, toggles) leaves the CLIs exactly as they
+/// were, so re-probing them is pure stall.
+export function backendSettingsChanged(prev: AppSettings, next: AppSettings): boolean {
+  if (prev === next) return false;
+  const keys = new Set([
+    ...Object.keys(prev.backendPaths ?? {}),
+    ...Object.keys(next.backendPaths ?? {}),
+  ]);
+  for (const k of keys) {
+    if ((prev.backendPaths as Record<string, unknown>)?.[k] !==
+        (next.backendPaths as Record<string, unknown>)?.[k]) {
+      return true;
+    }
+  }
+  const flags = new Set([
+    ...Object.keys(prev.disabledBackends ?? {}),
+    ...Object.keys(next.disabledBackends ?? {}),
+  ]);
+  for (const k of flags) {
+    if ((prev.disabledBackends as Record<string, unknown>)?.[k] !==
+        (next.disabledBackends as Record<string, unknown>)?.[k]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Turn saved tabs from disk back into live tab objects. View mode and
+/// highlight are deliberately not persisted: a restored tab opens in its
+/// natural default (preview for a README, edit for code) with no line jump,
+/// because a line number captured days ago usually points somewhere else by
+/// now.
+export function hydrateFileTabs(
+  persisted: PersistedFileTabs | undefined,
+): Record<string, ScopeTabs> {
+  if (!persisted) return {};
+  const out: Record<string, ScopeTabs> = {};
+  for (const [scope, entry] of Object.entries(persisted)) {
+    const tabs: FileTab[] = entry.paths.slice(0, MAX_TABS_PER_SCOPE).map((p) => ({
+      path: p,
+      mode: defaultFileViewMode(p, false),
+      highlight: null,
+    }));
+    if (!tabs.length) continue;
+    const activePath = entry.activePath && tabs.some((t) => t.path === entry.activePath)
+      ? entry.activePath
+      : tabs[0].path;
+    out[scope] = { tabs, activePath };
+  }
+  return out;
+}
+
+/// Project the tab state down to what's worth persisting. The scope on
+/// screen lives in `tabs`/`openFilePath` rather than in `fileTabsByScope`
+/// (it's only flushed there on a scope switch), so it's merged in here —
+/// otherwise quitting without changing views would save a stale list.
+export function serializeFileTabs(s: StoreState): PersistedFileTabs {
+  const out: PersistedFileTabs = {};
+  for (const [scope, entry] of Object.entries(s.fileTabsByScope)) {
+    if (!entry.tabs.length) continue;
+    out[scope] = { paths: entry.tabs.map((t) => t.path), activePath: entry.activePath };
+  }
+  if (s.fileScopeKey) {
+    if (s.tabs.length) {
+      out[s.fileScopeKey] = { paths: s.tabs.map((t) => t.path), activePath: s.openFilePath };
+    } else {
+      delete out[s.fileScopeKey];
+    }
+  }
+  return out;
+}
+
+// Persist open tabs whenever they change. A subscription rather than a call
+// in each action: opening, closing, reordering and switching scopes all end
+// up here, and the 250ms coalescing window collapses the burst you get from
+// an agent touching several files at once into one write.
+if (typeof window !== 'undefined') {
+  useStore.subscribe((s, prev) => {
+    if (
+      s.tabs === prev.tabs &&
+      s.openFilePath === prev.openFilePath &&
+      s.fileTabsByScope === prev.fileTabsByScope
+    ) {
+      return;
+    }
+    void coalescedSave('fileTabs', () =>
+      window.overcli.invoke('store:saveFileTabs', serializeFileTabs(useStore.getState())),
+    );
+  });
 }
 
 async function saveConversationState(get: () => StoreState): Promise<void> {

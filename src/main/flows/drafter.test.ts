@@ -10,10 +10,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: mockQuery,
 }));
 
-// Drafter resolves a backend via probeBackendHealth — stub it so tests are
-// hermetic and always land on Claude (the SDK path the suite mocks).
+// Drafter resolves which backends are healthy before picking one — stub it so
+// tests are hermetic and always land on Claude (the SDK path the suite mocks).
 vi.mock('../health', () => ({
-  probeBackendHealth: vi.fn(() => ({ kind: 'ready' })),
+  probeBackendHealth: vi.fn(async () => ({ kind: 'ready' })),
+  healthyBackends: vi.fn(async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama'])),
 }));
 
 import { draftFlowFromPrompt, type DraftDeps } from './drafter';
@@ -293,9 +294,8 @@ describe('draftFlowFromPrompt', () => {
   });
 
   it('surfaces an error when no backend is signed in', async () => {
-    const { probeBackendHealth } = await import('../health');
-    vi.mocked(probeBackendHealth).mockReturnValueOnce({ kind: 'missing' } as never);
-    vi.mocked(probeBackendHealth).mockReturnValue({ kind: 'unauthenticated' } as never);
+    const { healthyBackends } = await import('../health');
+    vi.mocked(healthyBackends).mockResolvedValueOnce(new Set() as never);
 
     const result = await draftFlowFromPrompt({ description: 'anything' }, {
       settings: {

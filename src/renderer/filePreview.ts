@@ -85,12 +85,18 @@ export function isUnsupportedBinaryFile(filePath: string | null | undefined): bo
   return UNSUPPORTED_BINARY_EXTENSIONS.has(ext);
 }
 
+/// Opening a file lands on File (the editor), always. Previewable types
+/// used to default to Preview, which meant a README or a .tsx opened as a
+/// rendered page when what you nearly always want is the source — and with
+/// tabs it meant a strip of files each opening in a different mode. Preview
+/// stays one click away in the header, and callers that genuinely mean it
+/// (or mean Diff) still ask for the mode explicitly.
 export function defaultFileViewMode(
   filePath: string,
-  hasHighlight: boolean,
+  _hasHighlight: boolean,
   requestedMode?: FileViewMode,
 ): FileViewMode {
   if (requestedMode === 'preview' && !canPreviewFile(filePath)) return 'edit';
   if (requestedMode) return requestedMode;
-  return !hasHighlight && canPreviewFile(filePath) ? 'preview' : 'edit';
+  return 'edit';
 }

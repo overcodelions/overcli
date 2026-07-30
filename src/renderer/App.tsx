@@ -5,6 +5,7 @@ import { findConversation } from './conversationLookup';
 import { useThemeEffect } from './useThemeEffect';
 import { useShortcuts } from './useShortcuts';
 import { useRunningReconcile } from './useRunningReconcile';
+import { useFileScope } from './fileScope';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
@@ -32,6 +33,9 @@ const SIDE_FILE_MAX = 1000;
 const SIDE_FILE_DEFAULT = 640;
 
 export function App() {
+  // Keeps the file editor's open tabs pointed at the right scope
+  // (conversation / flow run / explorer root). See ./fileScope.ts.
+  useFileScope();
   const init = useStore((s) => s.init);
   const ingest = useStore((s) => s.ingestMainEvent);
   const sidebarVisible = useStore((s) => s.sidebarVisible);

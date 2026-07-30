@@ -262,8 +262,16 @@ const overcliTheme = EditorView.theme(
     // CM6's range-highlight class is what we toggle via Decoration.line
     // for the `highlightRange` prop — keep the tint in line with the
     // accent so jumped-to ranges read the same as elsewhere in the app.
+    //
+    // The tint alone (it was 0.12 alpha) was easy to miss on a dense
+    // screen: you jump to line 412 of a 900-line file and have to hunt for
+    // where you landed. So there are three cues now — a stronger wash, a
+    // solid accent bar down the left edge of every highlighted line, and a
+    // one-shot flash on arrival (see `.cm-overcli-range-flash-*` in
+    // styles.css, which also owns the keyframes).
     '.cm-overcli-range': {
-      backgroundColor: 'rgba(124, 139, 255, 0.12)',
+      backgroundColor: 'rgba(124, 139, 255, 0.22)',
+      boxShadow: 'inset 3px 0 0 var(--c-accent)',
     },
     // Search / replace panel. CM6's default panel is unstyled — plain
     // browser inputs and OS-bevel buttons that stick out against the
@@ -361,18 +369,26 @@ const overcliTheme = EditorView.theme(
 function buildRangeDecorations(
   range: HighlightRange,
   doc: { lines: number; line: (n: number) => { from: number } },
+  flash?: 'a' | 'b',
 ): DecorationSet {
   if (!range) return Decoration.none;
   const builder = new RangeSetBuilder<Decoration>();
   const lo = Math.max(1, range[0]);
   const hi = Math.min(range[1], doc.lines);
   if (hi < lo) return Decoration.none;
+  const cls = flash ? `cm-overcli-range cm-overcli-range-flash-${flash}` : 'cm-overcli-range';
   for (let ln = lo; ln <= hi; ln++) {
     const line = doc.line(ln);
-    builder.add(line.from, line.from, Decoration.line({ class: 'cm-overcli-range' }));
+    builder.add(line.from, line.from, Decoration.line({ class: cls }));
   }
   return builder.finish();
 }
+
+/// Alternates the flash class on every applied range. A CSS animation only
+/// restarts when the class list actually changes, so jumping to the *same*
+/// line twice (click the same `file:42` link again) would otherwise flash
+/// once and then sit silent on every later click.
+let flashParity = 0;
 
 /// StateEffect carries new highlight-range values into the editor;
 /// the StateField below holds the live DecorationSet. Modeling the
@@ -396,7 +412,8 @@ const highlightRangeField = StateField.define<DecorationSet>({
     // changes (e.g. user opens a file via a chat path with :42-50).
     for (const e of tr.effects) {
       if (e.is(setHighlightRange)) {
-        next = buildRangeDecorations(e.value, tr.state.doc);
+        flashParity ^= 1;
+        next = buildRangeDecorations(e.value, tr.state.doc, flashParity ? 'a' : 'b');
       }
     }
     return next;
@@ -492,7 +509,11 @@ export function CodeMirrorEditor({
         // Seed the field with whatever the parent passed on mount so
         // the initial render already has the highlight in place — no
         // visible "flash, then jump" when opening a file with a range.
-        highlightRangeField.init((s) => buildRangeDecorations(highlightRange, s.doc)),
+        // Flashes on mount too: opening a file straight onto a range is
+        // exactly when you most need to be told where you landed.
+        highlightRangeField.init((s) =>
+          buildRangeDecorations(highlightRange, s.doc, (flashParity ^= 1) ? 'a' : 'b'),
+        ),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) onChangeRef.current(u.state.doc.toString());
         }),

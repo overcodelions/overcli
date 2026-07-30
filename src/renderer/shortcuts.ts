@@ -175,6 +175,22 @@ export const SHORTCUTS: ShortcutDef[] = [
     run: () => {},
   },
   {
+    id: 'editor.nextTab',
+    keys: [{ key: 'ArrowRight', mod: true, alt: true }],
+    label: 'Next / previous file tab (⌥⌘←)',
+    group: 'Editor',
+    displayOnly: true,
+    run: () => {},
+  },
+  {
+    id: 'editor.selectTab',
+    keys: [{ key: '1', mod: true }],
+    label: 'Jump to file tab 1-9',
+    group: 'Editor',
+    displayOnly: true,
+    run: () => {},
+  },
+  {
     id: 'commit.submit',
     keys: [{ key: 'Enter', mod: true }],
     label: 'Commit (in commit dropdown)',
