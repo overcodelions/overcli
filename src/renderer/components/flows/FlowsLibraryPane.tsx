@@ -101,9 +101,12 @@ export function FlowsLibraryPane() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-7">
         <div className="text-2xl font-semibold">Flows</div>
-        <div className="flex items-center gap-1 ml-1">
+        {/* Sits well clear of the title: the glow + NEW pip make the Schedules
+            segment visually heavy, and butted against a 2xl heading the two
+            read as one crowded lump instead of a title and a control. */}
+        <div className="flex items-center gap-1.5 ml-5">
           <SegmentTab
             label="Library"
             active={segment === 'flows'}
@@ -532,7 +535,7 @@ function SegmentTab({
     <button
       onClick={onClick}
       className={
-        'relative px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 ' +
+        'relative px-3.5 py-1.5 rounded-md text-xs font-medium flex items-center gap-2 ' +
         (active ? 'bg-white/10 text-ink' : 'text-ink-faint hover:text-ink hover:bg-white/5') +
         (discover ? ' nav-segment-discover text-ink' : '')
       }
@@ -545,7 +548,7 @@ function SegmentTab({
         </span>
       ) : (
         discover && (
-          <span className="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-accent text-white">
+          <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent text-white leading-none">
             new
           </span>
         )
