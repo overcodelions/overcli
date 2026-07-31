@@ -539,12 +539,72 @@ describe('SchedulerEngine editing', () => {
     expect(h.started).toHaveLength(1);
   });
 
-  it('runNow fires out of band without disturbing the cadence', async () => {
+  it('runNow fires immediately and says so in the history', async () => {
     const h = makeHarness({ seed: [seedSchedule()] });
     h.engine.start();
     await h.engine.runNow('sched-1');
     expect(h.started).toHaveLength(1);
     expect(h.engine.get('sched-1')!.history[0].note).toMatch(/run now/i);
+  });
+
+  it('runNow leaves the cadence alone', async () => {
+    // The point of Run now is checking a schedule does what you think before
+    // trusting it unattended. If it shunted the next firing out by a full
+    // interval, testing an hourly schedule at 8:59 would silently cost you
+    // the 9am run you were trying to verify.
+    const h = makeHarness({
+      seed: [
+        seedSchedule({
+          trigger: { kind: 'interval', everyMinutes: 60 },
+          createdAt: local(2026, 3, 2, 8, 0),
+        }),
+      ],
+    });
+    h.engine.start();
+    const before = h.engine.nextFireAt('sched-1');
+    expect(before).toBe(local(2026, 3, 2, 9, 0));
+
+    // Halfway through the interval — the clock has to move, or stamping
+    // lastFiredAt lands on the same anchor and hides the bug.
+    h.setNow(local(2026, 3, 2, 8, 30));
+    await h.engine.runNow('sched-1');
+
+    expect(h.engine.nextFireAt('sched-1')).toBe(before);
+  });
+
+  it('runNow does not swallow a firing that overlap:queue deferred', async () => {
+    const h = makeHarness({
+      seed: [
+        seedSchedule({
+          trigger: { kind: 'interval', everyMinutes: 60 },
+          createdAt: local(2026, 3, 2, 8, 0),
+          onOverlap: 'queue',
+        }),
+      ],
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1)); // run 1 launches, still going
+    await h.advanceTo(local(2026, 3, 2, 10, 1)); // 10:00 slot defers
+    expect(h.engine.get('sched-1')!.pendingSince).toBeDefined();
+
+    // Finish the run, then hit Run now before the deferred firing gets its
+    // turn. The manual run must not eat the one the schedule still owes.
+    h.finishRun(h.started[0].runId);
+    await h.flush();
+    expect(h.started).toHaveLength(2); // the deferred firing
+  });
+
+  it('runNow refuses to double-launch while its own launch is still resolving', async () => {
+    const h = makeHarness({ seed: [seedSchedule()] });
+    h.engine.start();
+    // Don't await the first — fire two at once, as an impatient double-click
+    // on the button would.
+    const a = h.engine.runNow('sched-1');
+    const b = h.engine.runNow('sched-1');
+    const [ra, rb] = await Promise.all([a, b]);
+
+    expect(h.started).toHaveLength(1);
+    expect([ra.ok, rb.ok].filter(Boolean)).toHaveLength(1);
   });
 
   it('runNow refuses while a run from the same schedule is going', async () => {

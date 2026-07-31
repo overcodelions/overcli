@@ -88,6 +88,11 @@ export class SchedulerEngine {
   /// worktree checkout), and a rearm inside that window could otherwise run a
   /// second tick against the same not-yet-updated schedule and launch twice.
   private ticking = false;
+  /// Schedules with a launch in flight. `activeRunId` can't do this job: it
+  /// isn't set until startRun resolves, and a worktree checkout leaves seconds
+  /// in which the schedule looks idle to anything that asks. A double-click on
+  /// Run now, or a tick landing mid-launch, would each start a second run.
+  private firing = new Set<UUID>();
 
   private readonly now: () => number;
   private readonly timers: NonNullable<SchedulerDeps['timers']>;
@@ -205,6 +210,7 @@ export class SchedulerEngine {
   async runNow(id: UUID): Promise<{ ok: true } | { ok: false; error: string }> {
     const s = this.schedules.get(id);
     if (!s) return { ok: false, error: 'Schedule not found.' };
+    if (this.firing.has(id)) return { ok: false, error: 'Already starting.' };
     if (this.isBusy(s)) return { ok: false, error: 'A run from this schedule is still going.' };
     await this.fire(s, { manual: true });
     this.arm();
@@ -244,6 +250,11 @@ export class SchedulerEngine {
       // we await a launch), so iterate a copy.
       for (const s of [...this.schedules.values()]) {
         if (!this.schedules.has(s.id)) continue;
+        // Mid-launch (a Run now, or a previous fire still awaiting its
+        // worktree). Skip outright rather than evaluating — evaluating would
+        // see it as busy and write a spurious "previous run was still going"
+        // into the history for a run that hasn't even started.
+        if (this.firing.has(s.id)) continue;
         const busy = this.isBusy(s);
         const decision = evaluateSchedule(s, now, { busy });
         if (decision.action === 'wait') continue;
@@ -281,6 +292,19 @@ export class SchedulerEngine {
   }
 
   private async fire(s: Schedule, opts: { late?: boolean; manual?: boolean }): Promise<void> {
+    if (this.firing.has(s.id)) return;
+    this.firing.add(s.id);
+    try {
+      await this.fireInner(s, opts);
+    } finally {
+      this.firing.delete(s.id);
+    }
+  }
+
+  private async fireInner(
+    s: Schedule,
+    opts: { late?: boolean; manual?: boolean },
+  ): Promise<void> {
     const now = this.now();
     // Replace: the in-flight run is stale by definition — the user asked for
     // the freshest answer this cadence can give, not the one already running.
@@ -294,12 +318,20 @@ export class SchedulerEngine {
       s.activeRunId = undefined;
     }
 
-    // Stamp BEFORE awaiting the launch. `lastFiredAt` is what collapses N
-    // missed occurrences into one firing, and startRun can take seconds
-    // (worktree checkout) — long enough for another tick to see the old value
-    // and fire a duplicate.
-    s.lastFiredAt = now;
-    s.pendingSince = undefined;
+    // A manual run is a test drive, not an occurrence. Advancing the cadence
+    // for one would mean checking an hourly schedule at 8:59 silently costs
+    // you the 9am run you were checking on — so `lastFiredAt` and the
+    // deferred-firing flag are left exactly as they were, and only the
+    // in-flight guard below stops a concurrent tick from doubling up.
+    //
+    // For a real occurrence, stamp BEFORE awaiting the launch: `lastFiredAt`
+    // is what collapses N missed occurrences into one firing, and startRun can
+    // take seconds (worktree checkout) — long enough for another tick to read
+    // the old value.
+    if (!opts.manual) {
+      s.lastFiredAt = now;
+      s.pendingSince = undefined;
+    }
     this.persistAndEmit(s);
 
     const lateNote = opts.manual ? 'Run now.' : opts.late ? 'Catch-up run.' : undefined;
