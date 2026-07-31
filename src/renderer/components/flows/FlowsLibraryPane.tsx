@@ -23,6 +23,7 @@ import { BrowseLibraryModal } from './BrowseLibraryModal';
 import { FlowMonogram } from './FlowMonogram';
 import { RunPanel } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
+import { SchedulesPane } from './SchedulesPane';
 import type { FlowRun } from '@shared/flows/schema';
 import type { Attachment } from '@shared/types';
 
@@ -39,6 +40,10 @@ export function FlowsLibraryPane() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  // Schedules are a segment here rather than a top-level tab: a schedule is a
+  // trigger on a flow, not a separate kind of work, and a fourth tab would
+  // have made a third place to launch a run from.
+  const [segment, setSegment] = useState<'flows' | 'schedules'>('flows');
 
   // Auto-dismiss the "Saved" banner after 3 seconds.
   useEffect(() => {
@@ -76,32 +81,47 @@ export function FlowsLibraryPane() {
     <div className="flex-1 overflow-y-auto p-6">
       <div className="flex items-center gap-3 mb-6">
         <div className="text-2xl font-semibold">Flows</div>
-        <div className="text-xs text-ink-faint">Multi-model pipelines</div>
-        <button
-          onClick={() => setAboutOpen(true)}
-          className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
-          title="What is a flow?"
-        >
-          About
-        </button>
-        <button
-          onClick={() => void reload(projectPaths)}
-          className="text-xs text-ink-faint hover:text-ink hover:bg-white/5 px-2 py-1 rounded"
-        >
-          ↻ Refresh
-        </button>
-        <button
-          onClick={() => setPickerOpen(true)}
-          className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90"
-        >
-          + New flow
-        </button>
-        <button
-          onClick={() => setBrowseOpen(true)}
-          className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
-        >
-          Browse library
-        </button>
+        <div className="flex items-center gap-1 ml-1">
+          <SegmentTab
+            label="Library"
+            active={segment === 'flows'}
+            onClick={() => setSegment('flows')}
+          />
+          <SegmentTab
+            label="Schedules"
+            active={segment === 'schedules'}
+            onClick={() => setSegment('schedules')}
+          />
+        </div>
+        {segment === 'flows' && (
+          <>
+            <button
+              onClick={() => setAboutOpen(true)}
+              className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
+              title="What is a flow?"
+            >
+              About
+            </button>
+            <button
+              onClick={() => void reload(projectPaths)}
+              className="text-xs text-ink-faint hover:text-ink hover:bg-white/5 px-2 py-1 rounded"
+            >
+              ↻ Refresh
+            </button>
+            <button
+              onClick={() => setPickerOpen(true)}
+              className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90"
+            >
+              + New flow
+            </button>
+            <button
+              onClick={() => setBrowseOpen(true)}
+              className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
+            >
+              Browse library
+            </button>
+          </>
+        )}
       </div>
 
       {justSaved && (
@@ -115,20 +135,30 @@ export function FlowsLibraryPane() {
         </div>
       )}
 
-      <RunsOverview />
-
-      {!loaded ? (
-        <div className="text-sm text-ink-muted">Loading flows…</div>
-      ) : flows.length === 0 ? (
-        <EmptyState onCreate={() => setPickerOpen(true)} />
+      {segment === 'schedules' ? (
+        <SchedulesPane />
       ) : (
         <>
-          <SectionHeading title="Your flows" count={flows.length} />
-          <div className="space-y-3">
-            {flows.map((flow) => (
-              <FlowRow key={`${flow.source}:${flow.id}`} flow={flow} projectPaths={projectPaths} />
-            ))}
-          </div>
+          <RunsOverview />
+
+          {!loaded ? (
+            <div className="text-sm text-ink-muted">Loading flows…</div>
+          ) : flows.length === 0 ? (
+            <EmptyState onCreate={() => setPickerOpen(true)} />
+          ) : (
+            <>
+              <SectionHeading title="Your flows" count={flows.length} />
+              <div className="space-y-3">
+                {flows.map((flow) => (
+                  <FlowRow
+                    key={`${flow.source}:${flow.id}`}
+                    flow={flow}
+                    projectPaths={projectPaths}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -282,6 +312,15 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
       <FlowMonogram name={run.flowSnapshot.name} size="sm" />
       <div className="flex-1 min-w-0 flex items-baseline gap-2">
         <span className="text-sm font-semibold truncate" title={run.userPrompt}>{runTitle(run)}</span>
+        {/* A run nobody remembers starting is alarming; say who did. */}
+        {run.scheduleName && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-700 dark:text-violet-300 whitespace-nowrap"
+            title={`Launched by the "${run.scheduleName}" schedule`}
+          >
+            ⏱ {run.scheduleName}
+          </span>
+        )}
         <span className="text-[11px] text-ink-faint truncate">
           {run.flowSnapshot.name}
           <span className="mx-1">·</span>
@@ -359,6 +398,28 @@ function pathBasenameSafe(p: string): string {
   if (!p) return '';
   const segs = p.split(/[\\/]/).filter(Boolean);
   return segs[segs.length - 1] ?? p;
+}
+
+function SegmentTab({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'px-2.5 py-1 rounded-md text-xs font-medium ' +
+        (active ? 'bg-white/10 text-ink' : 'text-ink-faint hover:text-ink hover:bg-white/5')
+      }
+    >
+      {label}
+    </button>
+  );
 }
 
 function SectionHeading({

@@ -105,6 +105,13 @@ export interface FlowRuntimeStartArgs {
   /// The orchestration item's human title (the candidate's title), stored
   /// on the run for display when it's surfaced on its own.
   orchestrationItemTitle?: string;
+  /// Set when a Schedule fired this run. Routes the run's terminal state back
+  /// to the scheduler (which clears the overlap guard and notifies).
+  scheduleId?: UUID;
+  /// The schedule's name at launch time, stored on the run so a scheduled run
+  /// found in the sidebar can say who started it — nobody was watching when
+  /// it did.
+  scheduleName?: string;
 }
 
 export interface FlowRuntimeResumeArgs {
@@ -748,6 +755,8 @@ export class FlowRuntimeImpl {
       workspaceWorktrees,
       parentOrchestrationId: args.parentOrchestrationId,
       orchestrationItemTitle: args.orchestrationItemTitle,
+      scheduleId: args.scheduleId,
+      scheduleName: args.scheduleName,
     };
     this.runs.set(runId, run);
     if (args.attachments && args.attachments.length > 0) {

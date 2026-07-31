@@ -3213,6 +3213,14 @@ export const useStore = create<StoreState>((set, get) => ({
       void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
         useOrchestratorStore.getState().applyProducerProgress(event.text, event.tools);
       });
+    } else if (event.type === 'scheduleUpdate') {
+      void import('./schedulesStore').then(({ useSchedulesStore }) => {
+        useSchedulesStore.getState().applyUpdate(event.schedule, event.nextFireAt);
+      });
+    } else if (event.type === 'scheduleDeleted') {
+      void import('./schedulesStore').then(({ useSchedulesStore }) => {
+        useSchedulesStore.getState().removeLocal(event.id);
+      });
     }
   },
 }));

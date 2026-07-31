@@ -42,6 +42,13 @@ export interface Candidate {
 }
 
 export type OrchestrationItemStatus =
+  /// Produced by a scheduled producer turn and PARKED — not queued, not
+  /// launched, waiting for a human to approve the batch. Distinct from
+  /// `queued` precisely so it survives a restart: `queued` means "we already
+  /// committed to launching this", which is why the loader settles those on
+  /// boot, whereas a proposal has committed to nothing and costs nothing to
+  /// keep. See `approveBatch` in main/flows/orchestrator.
+  | 'proposed'
   /// Waiting for a concurrency slot — not yet launched.
   | 'queued'
   /// A child flow run is in flight (see `runId`).
@@ -110,6 +117,15 @@ export interface Orchestration {
   producer?: {
     prompt: string;
     reply: string;
+  };
+  /// Set when a schedule produced this batch rather than the user asking for
+  /// it directly. Such a batch arrives with every item `proposed` and does
+  /// nothing until approved — see shared/flows/schedule.ts for why a schedule
+  /// is never allowed to dispatch on its own.
+  origin?: {
+    kind: 'schedule';
+    scheduleId: UUID;
+    scheduleName: string;
   };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).
@@ -208,10 +224,18 @@ function extractCandidatesBlock(reply: string): string | null {
 }
 
 /// True once every item is in a terminal status — used to stamp
-/// `completedAt` and to show the batch as finished.
+/// `completedAt` and to show the batch as finished. A `proposed` item is not
+/// terminal (it hasn't started), so a parked batch never reads as complete.
 export function isOrchestrationComplete(o: Orchestration): boolean {
   return o.items.every(
     (it) =>
       it.status === 'done' || it.status === 'failed' || it.status === 'cancelled',
   );
+}
+
+/// True while a batch is waiting on a human. Parked batches are the whole
+/// point of a scheduled orchestration, so the UI needs a cheap predicate to
+/// surface them ahead of finished ledgers.
+export function isOrchestrationAwaitingApproval(o: Orchestration): boolean {
+  return o.items.some((it) => it.status === 'proposed');
 }

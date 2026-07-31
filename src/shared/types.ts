@@ -4,6 +4,7 @@
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
+import type { Schedule } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
 
 export type UUID = string;
@@ -1458,6 +1459,33 @@ export interface IPCInvokeMap {
   /// Permanently delete a batch record (does not touch the child runs'
   /// own history). Idempotent.
   'orchestrator:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Release a batch a schedule parked. Items named in `approve` are queued
+  /// (with an optional flow remap); any other `proposed` item is cancelled.
+  /// Omit `approve` to accept the whole batch as proposed.
+  'orchestrator:approveBatch': (args: {
+    id: UUID;
+    approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+  }) => { ok: true; queued: number } | { ok: false; error: string };
+
+  // ---- Schedules --------------------------------------------------------
+  /// Every schedule, newest first, each with its computed next fire time.
+  /// `nextFireAt` is null for a disabled schedule.
+  'schedules:list': () => Array<{ schedule: Schedule; nextFireAt: number | null }>;
+  /// Create (no `id`) or replace (with `id`). Validates with the same
+  /// `validateSchedule` the editor uses, so Save can never fail for a reason
+  /// the form didn't already show.
+  'schedules:save': (args: {
+    schedule: Omit<Schedule, 'id' | 'createdAt' | 'history'> & { id?: UUID };
+  }) => { ok: true; schedule: Schedule } | { ok: false; error: string };
+  'schedules:setEnabled': (args: { id: UUID; enabled: boolean }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// Delete the trigger. Any run it already started is left alone — it's real
+  /// work in a real worktree.
+  'schedules:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Fire once, right now, without touching the cadence. The way to check a
+  /// schedule does what you think before trusting it to run unattended.
+  'schedules:runNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
 }
 
 export type ArtifactPreviewResult =
@@ -1804,6 +1832,21 @@ export type MainToRendererEvent =
   | {
       /// An orchestration record was deleted from main.
       type: 'orchestrationDeleted';
+      id: UUID;
+    }
+  | {
+      /// A schedule changed — saved, toggled, fired, or its run finished.
+      /// Whole-record like `orchestrationUpdate`: a schedule is tiny and the
+      /// consistency is worth more than the diffing. `nextFireAt` rides along
+      /// because it's derived in main from the trigger and the last firing,
+      /// and recomputing it in the renderer would let the two disagree.
+      type: 'scheduleUpdate';
+      schedule: Schedule;
+      nextFireAt: number | null;
+    }
+  | {
+      /// A schedule was deleted from main.
+      type: 'scheduleDeleted';
       id: UUID;
     }
   | {
