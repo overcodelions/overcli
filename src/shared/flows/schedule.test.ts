@@ -6,6 +6,7 @@ import {
   evaluateSchedule,
   nextOccurrenceAfter,
   parseTimeOfDay,
+  untilLabel,
   validateSchedule,
   type Schedule,
   type ScheduleTrigger,
@@ -196,6 +197,23 @@ describe('describeTrigger', () => {
   it('renders midnight and noon without a zero hour', () => {
     expect(describeTrigger({ kind: 'daily', time: '00:00' })).toBe('Every day at 12am');
     expect(describeTrigger({ kind: 'daily', time: '12:00' })).toBe('Every day at 12pm');
+  });
+});
+
+describe('untilLabel', () => {
+  const now = local(2026, 3, 2, 9, 0);
+
+  it('counts down in the coarsest useful unit', () => {
+    expect(untilLabel(now + 45 * 60_000, now)).toBe('in 45m');
+    expect(untilLabel(now + 3 * 3_600_000, now)).toBe('in 3h');
+    expect(untilLabel(now + 2 * 86_400_000, now)).toBe('in 2d');
+  });
+
+  it('has a word for the moments either side of firing', () => {
+    expect(untilLabel(now + 20_000, now)).toBe('in under a minute');
+    expect(untilLabel(now, now)).toBe('due now');
+    // Past due reads as due, never as a negative countdown.
+    expect(untilLabel(now - 60_000, now)).toBe('due now');
   });
 });
 

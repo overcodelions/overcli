@@ -25,7 +25,7 @@ import { RunPanel } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
 import { SchedulesPane } from './SchedulesPane';
 import { useSchedulesStore } from '../../schedulesStore';
-import { describeTrigger } from '@shared/flows/schedule';
+import { describeTrigger, untilLabel } from '@shared/flows/schedule';
 import type { FlowRun } from '@shared/flows/schema';
 import type { Attachment } from '@shared/types';
 
@@ -274,16 +274,6 @@ function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-/// "in 3h" rather than a clock time — the useful question about a pending
-/// firing is how far away it is.
-function untilLabel(at: number): string {
-  const diff = at - Date.now();
-  if (diff <= 0) return 'due now';
-  if (diff < 60_000) return 'in under a minute';
-  if (diff < 3_600_000) return `in ${Math.round(diff / 60_000)}m`;
-  if (diff < 86_400_000) return `in ${Math.round(diff / 3_600_000)}h`;
-  return `in ${Math.round(diff / 86_400_000)}d`;
-}
 
 /// Active + recent runs surfaced at the top of the library. Renders as
 /// rows (not grid cards) so timestamps + project + actions fit cleanly

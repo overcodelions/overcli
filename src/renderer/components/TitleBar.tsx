@@ -1,10 +1,11 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
+import { untilLabel } from '@shared/flows/schedule';
 
 /// Custom title bar region. `hiddenInset` window style shows the traffic
 /// lights overlaid on our content; pad the left enough to clear them and
@@ -19,7 +20,23 @@ export function TitleBar() {
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
   const schedules = useSchedulesStore((s) => s.schedules);
+  const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+
+  // The idle state shows a countdown, which is a lie the moment it's painted
+  // unless something re-renders it. One 30s tick, and only while a schedule is
+  // actually armed — the indicator isn't on screen otherwise, so neither is
+  // the timer.
+  const anyArmed = useMemo(
+    () => Object.values(schedules).some((s) => s.enabled),
+    [schedules],
+  );
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    if (!anyArmed) return;
+    const t = setInterval(() => setTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, [anyArmed]);
 
   // What the schedule indicator has to say, in priority order. Nothing armed
   // → nothing rendered: a permanently-lit chrome item for a feature you don't
@@ -47,12 +64,21 @@ export function TitleBar() {
         title: 'A schedule is running right now',
       };
     }
+    // Armed but idle. Show the countdown rather than the bare word: "in 3h"
+    // proves the thing is alive and answers the only question you'd have
+    // asked next, where "Scheduled" on its own is just a label.
+    const soonest = armed
+      .map((s) => nextFireAt[s.id])
+      .filter((at): at is number => typeof at === 'number')
+      .sort((a, b) => a - b)[0];
+    const counted = `${armed.length} ${armed.length === 1 ? 'schedule' : 'schedules'} armed`;
     return {
       tone: 'armed' as const,
-      label: 'Scheduled',
-      title: `${armed.length} ${armed.length === 1 ? 'schedule' : 'schedules'} armed`,
+      label: soonest ? `Next ${untilLabel(soonest)}` : 'Scheduled',
+      title: soonest ? `${counted} · next at ${new Date(soonest).toLocaleString()}` : counted,
     };
-  }, [schedules, orchestrations]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [schedules, nextFireAt, orchestrations, tick]);
 
   function openSchedules(): void {
     setActiveRun(null);
@@ -161,12 +187,16 @@ function ScheduleIndicator({
   status: { tone: 'waiting' | 'running' | 'armed'; label: string; title: string };
   onClick: () => void;
 }) {
+  // Three-way visual language, so the states are told apart by shape as well
+  // as hue: filled = something is happening, hollow ring = armed and waiting.
+  // A filled grey dot was the first version and it read as "off", which is
+  // the opposite of what an armed schedule means.
   const dot =
     status.tone === 'waiting'
       ? 'bg-violet-500 dark:bg-violet-400'
       : status.tone === 'running'
         ? 'bg-sky-500 dark:bg-sky-400 animate-pulse'
-        : 'bg-ink-faint/60';
+        : 'border border-accent/70';
   const text =
     status.tone === 'waiting'
       ? 'text-violet-700 dark:text-violet-300'

@@ -291,6 +291,20 @@ function formatTimeOfDay(time: string): string {
   return minutes === 0 ? `${h12}${suffix}` : `${h12}:${String(minutes).padStart(2, '0')}${suffix}`;
 }
 
+/// "in 3h" for a pending firing. The useful question about a schedule that
+/// hasn't fired yet is how far away it is, not what o'clock it lands at — and
+/// a countdown is what proves an idle schedule is actually alive rather than
+/// forgotten. Shared so the title bar, the library strip and the schedules
+/// list all phrase it identically.
+export function untilLabel(at: number, now: number = Date.now()): string {
+  const diff = at - now;
+  if (diff <= 0) return 'due now';
+  if (diff < 60_000) return 'in under a minute';
+  if (diff < 3_600_000) return `in ${Math.round(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `in ${Math.round(diff / 3_600_000)}h`;
+  return `in ${Math.round(diff / 86_400_000)}d`;
+}
+
 /// Short label for what a firing does, used in the list row and history.
 export function describeTarget(target: ScheduleTarget): string {
   return target.kind === 'flow'

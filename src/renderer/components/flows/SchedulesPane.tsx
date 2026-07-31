@@ -19,6 +19,7 @@ import {
 import {
   WEEKDAY_SET,
   describeTrigger,
+  untilLabel,
   validateSchedule,
   type Schedule,
   type ScheduleRunRecord,
@@ -692,16 +693,6 @@ function Segment({
   );
 }
 
-/// "in 3h" rather than a timestamp — the useful question about a schedule is
-/// how far away the next firing is, not what o'clock it lands at.
-function untilLabel(at: number): string {
-  const diff = at - Date.now();
-  if (diff <= 0) return 'due now';
-  if (diff < 60_000) return 'in under a minute';
-  if (diff < 3_600_000) return `in ${Math.round(diff / 60_000)}m`;
-  if (diff < 86_400_000) return `in ${Math.round(diff / 3_600_000)}h`;
-  return `in ${Math.round(diff / 86_400_000)}d`;
-}
 
 function relativeTime(ts: number): string {
   const diff = Date.now() - ts;
