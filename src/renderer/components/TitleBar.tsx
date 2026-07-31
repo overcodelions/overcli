@@ -50,23 +50,27 @@ export function TitleBar() {
     const waiting = Object.values(orchestrations).filter(
       isOrchestrationAwaitingApproval,
     ).length;
+    // Every state leads with the same word and varies only the tail. The chip
+    // has no context around it — a title bar isn't a list with a header — so
+    // the noun has to be in the label itself, and repeating it means the user
+    // learns what this thing is once rather than re-reading it each time.
     if (waiting > 0) {
       return {
         tone: 'waiting' as const,
-        label: waiting === 1 ? 'Needs approval' : `${waiting} need approval`,
+        label: waiting === 1 ? 'Scheduled · needs approval' : `Scheduled · ${waiting} to approve`,
         title: 'A scheduled batch is waiting for you to approve it',
       };
     }
     if (running > 0) {
       return {
         tone: 'running' as const,
-        label: running === 1 ? 'Scheduled run' : `${running} scheduled runs`,
+        label: running === 1 ? 'Scheduled · running' : `Scheduled · ${running} running`,
         title: 'A schedule is running right now',
       };
     }
-    // Armed but idle. Show the countdown rather than the bare word: "in 3h"
-    // proves the thing is alive and answers the only question you'd have
-    // asked next, where "Scheduled" on its own is just a label.
+    // Armed but idle. The countdown is what proves the thing is alive rather
+    // than forgotten, but it only means anything with the noun in front of it
+    // — "in 3h" on its own is a time with no subject.
     const soonest = armed
       .map((s) => nextFireAt[s.id])
       .filter((at): at is number => typeof at === 'number')
@@ -74,7 +78,7 @@ export function TitleBar() {
     const counted = `${armed.length} ${armed.length === 1 ? 'schedule' : 'schedules'} armed`;
     return {
       tone: 'armed' as const,
-      label: soonest ? `Next ${untilLabel(soonest)}` : 'Scheduled',
+      label: soonest ? `Scheduled · ${untilLabel(soonest)}` : 'Scheduled',
       title: soonest ? `${counted} · next at ${new Date(soonest).toLocaleString()}` : counted,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -187,16 +191,19 @@ function ScheduleIndicator({
   status: { tone: 'waiting' | 'running' | 'armed'; label: string; title: string };
   onClick: () => void;
 }) {
-  // Three-way visual language, so the states are told apart by shape as well
-  // as hue: filled = something is happening, hollow ring = armed and waiting.
-  // A filled grey dot was the first version and it read as "off", which is
-  // the opposite of what an armed schedule means.
+  // Green for armed — the universal "powered on and ready" signal, and far
+  // more legible at 6px than the hollow ring it replaces. It's solid where
+  // `running` pulses, which is what keeps the two apart: green sitting still
+  // means ready, blue breathing means working.
   const dot =
     status.tone === 'waiting'
       ? 'bg-violet-500 dark:bg-violet-400'
       : status.tone === 'running'
         ? 'bg-sky-500 dark:bg-sky-400 animate-pulse'
-        : 'border border-accent/70';
+        : 'bg-emerald-500 dark:bg-emerald-400';
+  // The label stays muted in the idle state on purpose. A green dot is enough
+  // to say "armed"; colouring the text too would make a resting schedule
+  // compete with the states that actually want you to look.
   const text =
     status.tone === 'waiting'
       ? 'text-violet-700 dark:text-violet-300'
