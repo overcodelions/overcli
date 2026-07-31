@@ -44,27 +44,28 @@ export function FlowsLibraryPane() {
   const [aboutOpen, setAboutOpen] = useState(false);
   // Schedules are a segment here rather than a top-level tab: a schedule is a
   // trigger on a flow, not a separate kind of work, and a fourth tab would
-  // have made a third place to launch a run from.
-  const [segment, setSegment] = useState<'flows' | 'schedules'>('flows');
+  // have made a third place to launch a run from. The segment lives in the
+  // store so the title bar can deep-link into it from any tab.
+  const segment = useFlowsStore((s) => s.librarySegment);
+  const setSegment = useFlowsStore((s) => s.setLibrarySegment);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
-  const reloadSchedules = useSchedulesStore((s) => s.reload);
   const schedules = useSchedulesStore((s) => s.schedules);
-  // Loaded here rather than inside SchedulesPane so the segment's live badge
-  // is right before the user has ever opened it — a badge that only appears
-  // once you're already looking at the thing is no help finding it.
-  useEffect(() => {
-    void reloadSchedules();
-  }, []);
   const schedulesRunning = useMemo(
     () => Object.values(schedules).filter((s) => s.activeRunId).length,
     [schedules],
   );
 
+  // Arriving on Schedules retires the discovery glow, however the user got
+  // here — the segment button, the library strip, or the title bar.
+  useEffect(() => {
+    if (segment === 'schedules' && !settings.seenSchedules) {
+      void saveSettings({ ...settings, seenSchedules: true });
+    }
+  }, [segment, settings.seenSchedules]);
+
   function showSchedules(): void {
     setSegment('schedules');
-    // Opening it once is the whole condition for retiring the glow.
-    if (!settings.seenSchedules) void saveSettings({ ...settings, seenSchedules: true });
   }
 
   // Auto-dismiss the "Saved" banner after 3 seconds.

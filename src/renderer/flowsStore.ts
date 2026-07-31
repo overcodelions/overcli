@@ -24,6 +24,10 @@ interface FlowsState {
   runs: Record<string, FlowRun>;
   /// Which run is currently shown in the active run pane.
   activeRunId: string | null;
+  /// Which segment of the Flows library is showing. Lives here rather than as
+  /// local state in the pane so the title bar's schedule indicator can deep-
+  /// link straight into Schedules from any tab.
+  librarySegment: 'flows' | 'schedules';
   /// Editor target — drives FlowEditor render.
   editor: EditorTarget;
   /// Working copy of the flow being edited. Lifted out of the library so
@@ -64,6 +68,7 @@ interface FlowsActions {
     progress: { completed: number; total: number; message: string } | null,
   ): void;
   setActiveRun(id: string | null): void;
+  setLibrarySegment(segment: 'flows' | 'schedules'): void;
   openEditor(target: EditorTarget, blank?: Flow): void;
   closeEditor(): void;
   updateDraft(patch: Partial<Flow>): void;
@@ -197,6 +202,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   flows: [],
   runs: {},
   activeRunId: null,
+  librarySegment: 'flows',
   editor: { kind: 'idle' },
   editorDraft: null,
   editorSaveError: null,
@@ -255,6 +261,10 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     // swaps in the incoming run's own files instead — no stale path, and
     // coming back to a run brings its files back with it.
     set({ activeRunId: id });
+  },
+
+  setLibrarySegment(segment) {
+    set({ librarySegment: segment });
   },
 
   openEditor(target, blank) {
