@@ -24,6 +24,8 @@ import { FlowMonogram } from './FlowMonogram';
 import { RunPanel } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
 import { SchedulesPane } from './SchedulesPane';
+import { useSchedulesStore } from '../../schedulesStore';
+import { describeTrigger } from '@shared/flows/schedule';
 import type { FlowRun } from '@shared/flows/schema';
 import type { Attachment } from '@shared/types';
 
@@ -44,6 +46,26 @@ export function FlowsLibraryPane() {
   // trigger on a flow, not a separate kind of work, and a fourth tab would
   // have made a third place to launch a run from.
   const [segment, setSegment] = useState<'flows' | 'schedules'>('flows');
+  const settings = useStore((s) => s.settings);
+  const saveSettings = useStore((s) => s.saveSettings);
+  const reloadSchedules = useSchedulesStore((s) => s.reload);
+  const schedules = useSchedulesStore((s) => s.schedules);
+  // Loaded here rather than inside SchedulesPane so the segment's live badge
+  // is right before the user has ever opened it — a badge that only appears
+  // once you're already looking at the thing is no help finding it.
+  useEffect(() => {
+    void reloadSchedules();
+  }, []);
+  const schedulesRunning = useMemo(
+    () => Object.values(schedules).filter((s) => s.activeRunId).length,
+    [schedules],
+  );
+
+  function showSchedules(): void {
+    setSegment('schedules');
+    // Opening it once is the whole condition for retiring the glow.
+    if (!settings.seenSchedules) void saveSettings({ ...settings, seenSchedules: true });
+  }
 
   // Auto-dismiss the "Saved" banner after 3 seconds.
   useEffect(() => {
@@ -90,7 +112,9 @@ export function FlowsLibraryPane() {
           <SegmentTab
             label="Schedules"
             active={segment === 'schedules'}
-            onClick={() => setSegment('schedules')}
+            onClick={showSchedules}
+            discover={!settings.seenSchedules && segment !== 'schedules'}
+            badge={schedulesRunning}
           />
         </div>
         {segment === 'flows' && (
@@ -139,6 +163,7 @@ export function FlowsLibraryPane() {
         <SchedulesPane />
       ) : (
         <>
+          <ScheduleStrip onOpen={showSchedules} />
           <RunsOverview />
 
           {!loaded ? (
@@ -167,6 +192,93 @@ export function FlowsLibraryPane() {
       {aboutOpen && <FlowsAboutModal onClose={() => setAboutOpen(false)} />}
     </div>
   );
+}
+
+/// One line about schedules, sitting in the default view so the feature is
+/// findable without clicking anything.
+///
+/// Escalates rather than nags. With schedules armed it's a status line (what
+/// fires next, or what's running now). With none and the segment never opened,
+/// it's a one-time invitation. With none and the segment already seen, it
+/// renders nothing at all — the user has looked and decided, and a permanent
+/// prompt to use a feature is just clutter.
+function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
+  const schedules = useSchedulesStore((s) => s.schedules);
+  const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
+  const seen = useStore((s) => s.settings.seenSchedules);
+
+  const rows = useMemo(() => Object.values(schedules), [schedules]);
+  const running = rows.filter((s) => s.activeRunId);
+  // Soonest enabled schedule. `nextFireAt` comes from main so this never
+  // second-guesses the engine's own arithmetic.
+  const next = useMemo(() => {
+    let best: { name: string; at: number; trigger: string } | null = null;
+    for (const s of rows) {
+      const at = nextFireAt[s.id];
+      if (!s.enabled || !at) continue;
+      if (!best || at < best.at) {
+        best = { name: s.name, at, trigger: describeTrigger(s.trigger) };
+      }
+    }
+    return best;
+  }, [rows, nextFireAt]);
+
+  if (rows.length === 0) {
+    if (seen) return null;
+    return (
+      <button
+        onClick={onOpen}
+        className="w-full mb-5 flex items-center gap-2.5 text-left rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-2.5 hover:bg-accent/10 transition-colors"
+      >
+        <span className="text-base leading-none">⏱</span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-[13px] text-ink">Run flows on a schedule</span>
+          <span className="block text-[11px] text-ink-muted">
+            Launch a flow on a timer — or have the orchestrator triage overnight and leave a
+            batch waiting for your approval.
+          </span>
+        </span>
+        <span className="text-[11px] text-accent whitespace-nowrap">Set one up →</span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={onOpen}
+      className="w-full mb-5 flex items-center gap-2 text-left rounded-md border border-card px-3 py-1.5 hover:bg-card/40 transition-colors"
+    >
+      <span className="text-ink-faint text-[11px]">⏱</span>
+      {running.length > 0 ? (
+        <span className="text-[11px] text-sky-700 dark:text-sky-300 flex items-center">
+          <RunningDot />
+          {running.length === 1
+            ? `${running[0].name} is running now`
+            : `${running.length} schedules running now`}
+        </span>
+      ) : next ? (
+        <span className="text-[11px] text-ink-muted truncate" title={next.trigger}>
+          Next: <span className="text-ink">{next.name}</span> {untilLabel(next.at)}
+        </span>
+      ) : (
+        <span className="text-[11px] text-ink-faint">
+          {rows.length} {rows.length === 1 ? 'schedule' : 'schedules'} · all paused
+        </span>
+      )}
+      <span className="ml-auto text-[11px] text-ink-faint">Schedules →</span>
+    </button>
+  );
+}
+
+/// "in 3h" rather than a clock time — the useful question about a pending
+/// firing is how far away it is.
+function untilLabel(at: number): string {
+  const diff = at - Date.now();
+  if (diff <= 0) return 'due now';
+  if (diff < 60_000) return 'in under a minute';
+  if (diff < 3_600_000) return `in ${Math.round(diff / 60_000)}m`;
+  if (diff < 86_400_000) return `in ${Math.round(diff / 3_600_000)}h`;
+  return `in ${Math.round(diff / 86_400_000)}d`;
 }
 
 /// Active + recent runs surfaced at the top of the library. Renders as
@@ -404,20 +516,40 @@ function SegmentTab({
   label,
   active,
   onClick,
+  discover,
+  badge,
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
+  /// Draw the one-time discovery glow. Retires the moment the user opens it.
+  discover?: boolean;
+  /// Live count — schedules currently running. Earned attention, so unlike
+  /// the glow this one stays for as long as it's true.
+  badge?: number;
 }) {
   return (
     <button
       onClick={onClick}
       className={
-        'px-2.5 py-1 rounded-md text-xs font-medium ' +
-        (active ? 'bg-white/10 text-ink' : 'text-ink-faint hover:text-ink hover:bg-white/5')
+        'relative px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 ' +
+        (active ? 'bg-white/10 text-ink' : 'text-ink-faint hover:text-ink hover:bg-white/5') +
+        (discover ? ' nav-segment-discover text-ink' : '')
       }
     >
       {label}
+      {badge ? (
+        <span className="flex items-center gap-1 text-[10px] text-sky-700 dark:text-sky-300">
+          <RunningDot />
+          {badge}
+        </span>
+      ) : (
+        discover && (
+          <span className="text-[9px] uppercase tracking-wider px-1 py-px rounded bg-accent text-white">
+            new
+          </span>
+        )
+      )}
     </button>
   );
 }

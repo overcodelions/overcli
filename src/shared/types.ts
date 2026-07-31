@@ -775,6 +775,11 @@ export interface AppSettings {
   explorerTreeWidth: number;
   /// Sidebar shortcut strip for running/recent conversations.
   showActiveSidebarSection?: boolean;
+  /// Set once the user has opened Flows → Schedules. Until then the segment
+  /// carries a discovery glow. Persisted rather than per-session so the hint
+  /// doesn't come back every launch — a highlight that never retires is one
+  /// the eye learns to skip.
+  seenSchedules?: boolean;
   /// When true, the sidebar footer shows a "Debug" button that opens the
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
