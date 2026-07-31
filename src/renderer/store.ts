@@ -2487,6 +2487,7 @@ export const useStore = create<StoreState>((set, get) => ({
     mutateConversation(set, get, conversationId, (c) => ({
       ...c,
       lastActiveAt: Date.now(),
+      lastPromptAt: Date.now(),
       turnCount: c.turnCount + 1,
       name:
         c.name === 'New conversation' && prompt.trim().length > 0

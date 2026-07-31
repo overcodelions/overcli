@@ -331,6 +331,10 @@ export interface Conversation {
   sessionId?: string;
   createdAt: number;
   lastActiveAt?: number;
+  /// Last time the *user* sent a turn here. `lastActiveAt` also moves when
+  /// an agent finishes on its own, so it can't order a list by "what I was
+  /// last working on" — this can.
+  lastPromptAt?: number;
   totalCostUSD: number;
   turnCount: number;
   currentModel: string;

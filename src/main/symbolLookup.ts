@@ -103,52 +103,312 @@ export function siblingExtensions(filePath: string): string[] {
   return EXT_FAMILIES.find((fam) => fam.includes(ext)) ?? [];
 }
 
-/// Declaration-shaped regexes for `symbol`, tuned per language family.
-/// These are deliberately biased toward false negatives: a miss falls
-/// through to the model tier, whereas a loose pattern that matches every
-/// call site makes the grep tier useless (every lookup would look
-/// "ambiguous" and pay for a model round trip).
+export type LanguageFamily = 'python' | 'ruby' | 'elixir' | 'go' | 'js' | 'brace';
+
+/// Which pattern set to use for a file. Families are grouped by *syntax*,
+/// not by ecosystem: Java, C#, Kotlin, Swift, Scala, Dart, PHP and C/C++
+/// all declare methods the same shape (modifiers, return type, name,
+/// params) so they share one set.
+export function languageFamily(filePath: string): LanguageFamily {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.py':
+    case '.pyi':
+      return 'python';
+    case '.rb':
+    case '.rake':
+      return 'ruby';
+    case '.ex':
+    case '.exs':
+      return 'elixir';
+    case '.go':
+      return 'go';
+    case '.ts':
+    case '.tsx':
+    case '.mts':
+    case '.cts':
+    case '.js':
+    case '.jsx':
+    case '.mjs':
+    case '.cjs':
+      return 'js';
+    default:
+      return 'brace';
+  }
+}
+
+/// Declaration-shaped regexes for `symbol`, in **ripgrep's** dialect.
+///
+/// These are deliberately broader than the truth. ripgrep uses Rust's
+/// regex crate, which has no lookaround, so a single pattern cannot say
+/// "a declaration but not `return foo(x);`". Rather than tighten these
+/// until they miss real declarations (the old pattern set required a
+/// body-opening `{` on the same line, so every Java interface method and
+/// every wrapped signature fell through to the model tier), we let rg cast
+/// a wide net and reject the false positives in `looksLikeDeclaration`,
+/// which runs in JS where full regex is available.
+///
+/// Bounded quantifiers throughout: these same patterns get re-run under
+/// `rg -U` for wrapped signatures, where an unbounded `[^;{]*` could span
+/// a whole file.
 export function declarationPatterns(filePath: string, symbol: string): string[] {
-  const ext = path.extname(filePath).toLowerCase();
   // `symbol` is identifier-shaped (isSafeSymbol), so it needs no escaping.
   const s = symbol;
+  /// Modifiers / return types preceding a name: `public static
+  /// Map<String, Foo> `, `@Override private `, `virtual const char *`.
+  ///
+  /// The leading `[\w@]` is load-bearing: it requires at least one real
+  /// token before the name, so an indented bare call statement —
+  /// `    Compute(f);` — can't satisfy the no-body pattern with nothing but
+  /// whitespace. A declaration always names a type or a modifier first.
+  const lead = String.raw`\s*[\w@][\w\s@<>\[\],.$*&:?]{0,200}`;
+  /// Whatever sits between `)` and the body: `throws IOException`,
+  /// `: Promise<void>`, `const noexcept`, Go's bare `error`.
+  const tail = String.raw`[\w\s<>\[\],.$*&:?()]{0,160}`;
 
-  if (ext === '.py' || ext === '.pyi') {
-    return [String.raw`^\s*(async\s+)?def\s+${s}\b`, String.raw`^\s*class\s+${s}\b`];
+  switch (languageFamily(filePath)) {
+    case 'python':
+      return [
+        String.raw`^\s*(async\s+)?def\s+${s}\b`,
+        String.raw`^\s*class\s+${s}\b`,
+        // Module-level binding: `FOO = ...`, `foo: Final = ...`. Anchored
+        // at column 0 so locals inside functions don't flood the results.
+        String.raw`^${s}\s*(:[^=\n]{0,80})?=`,
+      ];
+
+    case 'ruby':
+      return [
+        String.raw`^\s*def\s+(self\.)?${s}\b`,
+        String.raw`^\s*(class|module)\s+${s}\b`,
+        // `attr_reader :foo` and friends generate real methods.
+        String.raw`^\s*attr_(reader|writer|accessor)\s+.{0,80}:${s}\b`,
+      ];
+
+    case 'elixir':
+      return [
+        String.raw`^\s*def(p|macro|macrop)?\s+${s}\b`,
+        String.raw`^\s*defmodule\s+.{0,80}${s}\b`,
+      ];
+
+    case 'go':
+      // Go declares only at top level, so anchoring kills call sites for
+      // free — no JS-side filtering needed for these.
+      return [
+        String.raw`^func\s+${s}\s*[(\[]`,
+        // Method with a receiver: `func (s *Svc) doThing(b Bar) error {`.
+        // The old brace pattern missed every one of these, because a bare
+        // Go return type has no `:` before it.
+        String.raw`^func\s*\([^)\n]{0,80}\)\s*${s}\s*[(\[]`,
+        String.raw`^\s*type\s+${s}\b`,
+        String.raw`^\s*(var|const)\s+${s}\b`,
+      ];
+
+    case 'js':
+      return [
+        String.raw`\b(function|class|interface|enum|namespace)\s+${s}\b`,
+        String.raw`\btype\s+${s}\s*[=<]`,
+        // `const foo = ...` covers arrows, function expressions and plain
+        // values. Broad on purpose — in TS/JS the binding *is* usually the
+        // definition, and looksLikeDeclaration drops `= foo(` call results.
+        String.raw`\b(const|let|var)\s+${s}\s*[:=]`,
+        // Class / object method, with or without a body on the same line:
+        //   async doThing(req: Req): Promise<void> {
+        //   get value() {
+        String.raw`^\s*(export\s+|default\s+|async\s+|static\s+|readonly\s+|abstract\s+|private\s+|protected\s+|public\s+|get\s+|set\s+|\*\s*){0,4}${s}\s*(<[^>\n]{0,80}>)?\s*\([^;{\n]{0,200}\)\s*(:${tail})?\s*[{;]`,
+        // Object-literal member: `foo: async function (`, `foo: (a) => {`.
+        String.raw`\b${s}\s*:\s*(async\s+)?(function\b|\()`,
+        // Assigned to a property rather than a binding:
+        // `module.exports.render = function (props) {`,
+        // `Foo.prototype.render = (props) => {`.
+        String.raw`\b${s}\s*=\s*(async\s+)?(function\b|\(|<)`,
+        // Wrapped signature — the name is the last thing on its line.
+        String.raw`^\s*(export\s+|async\s+|static\s+|const\s+|function\s+){0,3}${s}\s*\(\s*$`,
+      ];
+
+    case 'brace':
+    default:
+      return [
+        // Keyword-introduced: `fn foo`, `func foo`, `sub foo`, `def foo`.
+        String.raw`\b(fn|func|function|sub|def)\s+${s}\s*[(<]`,
+        // Type declarations.
+        String.raw`\b(class|interface|struct|enum|trait|record|protocol|object|typealias|namespace|type)\s+${s}\b`,
+        // Method with a body opening on the same line. `tail` is now a
+        // general token run rather than requiring `:` — that's what lets
+        // `throws IOException`, `const noexcept`, and bare return types
+        // through.
+        String.raw`\b${s}\s*\([^;{\n]{0,200}\)\s*(${tail})?[{]`,
+        // Method with NO body: interface methods, abstract methods, C/C++
+        // prototypes. Requires a lead-in on the same line so a bare
+        // `foo(x);` call statement can't match on its own — and
+        // looksLikeDeclaration rejects `return foo(x);` afterwards.
+        String.raw`^${lead}\s${s}\s*\([^;{\n]{0,200}\)\s*(${tail})?;`,
+        // Wrapped signature opener: `public Foo doThing(` then params on
+        // the following lines. ripgrep is line-oriented, so without this
+        // (plus the -U pass in grepTier) every wrapped Java/Kotlin/C#
+        // declaration is invisible to tier 1.
+        String.raw`^${lead}\s${s}\s*\(\s*$`,
+        // Field / property with an initializer, and C#-style expression
+        // bodies: `private final Foo bar =`, `public Foo Bar => ...`.
+        String.raw`^${lead}\s${s}\s*(=[^=]|=>)`,
+      ];
   }
-  if (ext === '.rb' || ext === '.rake') {
-    return [String.raw`^\s*def\s+(self\.)?${s}\b`, String.raw`^\s*(class|module)\s+${s}\b`];
+}
+
+/// Nearest enclosing git root for a file, or null. Checks for `.git` as an
+/// *entry* rather than a directory on purpose: a linked worktree's `.git`
+/// is a file containing a gitdir pointer, and worktrees are exactly the
+/// case this exists to handle.
+export function gitRootFor(
+  filePath: string,
+  exists: (p: string) => boolean = (p) => fs.existsSync(p),
+): string | null {
+  let dir = path.dirname(path.resolve(filePath));
+  // Bounded so a pathological path can't spin.
+  for (let i = 0; i < 64; i++) {
+    if (exists(path.join(dir, '.git'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
   }
-  if (ext === '.ex' || ext === '.exs') {
-    return [String.raw`^\s*def(p|macro)?\s+${s}\b`, String.raw`^\s*defmodule\s+.*${s}\b`];
+  return null;
+}
+
+/// Which tree to actually search for a definition.
+///
+/// The caller's `cwd` is the *conversation's* root, and in a flow run that
+/// is routinely not the tree the open file lives in: flow worktree runs
+/// mint a worktree outside the project, and workspace/coordinator roots are
+/// directories of symlinks rather than real source. Searching the passed
+/// root there finds nothing (ripgrep doesn't follow symlinks by default)
+/// and, worse, `verifyCandidate` rejects every hit for resolving outside
+/// the root — the lookup comes back empty with no indication why.
+///
+/// So: resolve both sides through their real paths, keep the caller's root
+/// when the file genuinely lives under it, and otherwise fall back to the
+/// file's own git root. That covers plain projects, symlinked projects,
+/// workspace symlink roots, and minted worktrees with one rule.
+export function resolveSearchRoot(
+  filePath: string,
+  requestedCwd: string,
+  realpath: (p: string) => string = realpathOrSelf,
+): string {
+  const realFile = realpath(path.resolve(filePath));
+  if (requestedCwd) {
+    const realCwd = realpath(path.resolve(requestedCwd));
+    const rel = path.relative(realCwd, realFile);
+    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) return realCwd;
+  }
+  return gitRootFor(realFile) ?? path.dirname(realFile);
+}
+
+function realpathOrSelf(p: string): string {
+  try {
+    return fs.realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+/// Shapes that can never be a definition, however much they look like one
+/// to a line-oriented regex.
+///
+/// This is the precision half of the grep tier. ripgrep's engine has no
+/// lookaround, so `declarationPatterns` cannot distinguish
+/// `public Foo doThing(Bar b);` (an interface method) from
+/// `return doThing(b);` (a call) — both are "tokens, name, parens,
+/// semicolon". Here we have full JS regex, including lookbehind, so the
+/// rejects are expressible.
+export function looksLikeDeclaration(text: string, symbol: string, filePath: string): boolean {
+  const line = text.trim();
+  if (!line) return false;
+  const s = symbol;
+
+  // Comment-only lines. Doc comments mention `foo()` constantly.
+  if (/^(\/\/|\/\*|\*|#|--|;;)/.test(line)) return false;
+
+  // An introducer keyword directly before the name settles it: this is a
+  // declaration, and none of the call-site rejects below apply. Without
+  // this early accept, Ruby's `def self.call(x)` gets thrown out by the
+  // receiver-call rule for the `.call(` it contains.
+  if (
+    new RegExp(
+      String.raw`^(export\s+|default\s+|public\s+|private\s+|protected\s+|internal\s+|static\s+|final\s+|abstract\s+|async\s+|pub\s+|open\s+|override\s+|suspend\s+){0,4}(def|defp|defmacro|function|fn|func|sub|class|module|interface|struct|enum|trait|protocol|record|object|namespace|typealias|type)\s+(self\.)?${s}\b`,
+    ).test(line)
+  ) {
+    return true;
   }
 
-  // Brace-family default: Java, TS/JS, Go, Rust, C/C++, C#, Kotlin,
-  // Swift, PHP, Scala, Dart.
-  return [
-    // Keyword-introduced definitions: function/def/fn/func/sub.
-    String.raw`\b(function|fn|func|sub)\s+${s}\s*[(<]`,
-    // Type declarations.
-    String.raw`\b(class|interface|struct|enum|trait|record|protocol|type|typealias)\s+${s}\b`,
-    // A signature whose body opens on the same line. This is what catches
-    // Java/C#/Kotlin/Swift methods, which have no introducer keyword:
-    //   public static Foo doThing(Bar b) throws X {
-    // Requiring a body-opening token after the parameter list is what
-    // keeps `doThing(b);` call sites out.
-    String.raw`\b${s}\s*\([^;]*\)\s*(const\s*)?(:\s*[\w<>\[\],.?\s]+)?(throws\s+[\w.,\s]+)?(\{|=>|->)`,
-    // JS/TS assigned function or arrow: `const foo = (a) => {`,
-    // `foo: async function (`.
-    String.raw`\b${s}\s*[:=]\s*(async\s+)?(function\b|\(|<)`,
-  ];
+  // Imports and re-exports name the symbol but aren't where it's defined —
+  // jumping here would strand the user one hop short. `export function foo`
+  // and `export const foo` are declarations and must survive, so only
+  // brace-form re-exports are rejected.
+  if (/^(import|from|using|#include|require)\b/.test(line)) return false;
+  if (/^export\s*[{*]/.test(line)) return false;
+
+  // The rejects below all describe what sits *before* the name, so they
+  // must only see the first occurrence of it. A one-line body that calls
+  // itself — `func (s *Svc) doThing(b Bar) error { return s.doThing(b) }`,
+  // or a recursive arrow — otherwise gets thrown out by its own body: the
+  // declaration is real, but `.doThing(` appears later on the same line.
+  // The synthesized `(` keeps the call-shaped patterns matchable after the
+  // truncation.
+  // The `(` is re-attached only when the real line has one there. Adding it
+  // unconditionally would invent a call shape for names that aren't called
+  // at all — `module.exports.render = function (props)` would read as
+  // `.render(`, and Ruby's `attr_reader :call` as `:call(`.
+  const firstUse = new RegExp(String.raw`\b${s}\b`).exec(line);
+  const head = firstUse
+    ? line.slice(0, firstUse.index + s.length) +
+      (/^\s*\(/.test(line.slice(firstUse.index + s.length)) ? '(' : '')
+    : line;
+
+  // A statement keyword immediately before the name means it's being
+  // called, not declared: `return doThing(b);`, `throw newError(x);`.
+  // NB: `void` is deliberately absent. It's a JS operator but a return type
+  // in Java, C, C++ and C#, where `void doThing(Bar b);` is the single most
+  // common declaration shape there is.
+  if (
+    new RegExp(String.raw`(?<![\w$.])(return|throw|new|await|yield|typeof|delete|case|in|of|and|or|not)\s+${s}\s*\(`).test(
+      head,
+    )
+  ) {
+    return false;
+  }
+
+  // A call on a receiver: `svc.doThing(b)`, `this.doThing()`. Note this
+  // does not reject `Foo.prototype.doThing = function` — there the name is
+  // followed by ` =`, not `(`.
+  if (new RegExp(String.raw`[.?]\s*${s}\s*\(`).test(head)) return false;
+
+  // Assigning the *result* of a call: `const x = doThing(b)`. Distinct
+  // from `const doThing = (b) => ...`, where the name precedes the `=`.
+  // The `(?<!:)` guard keeps C++ scope resolution out of it — in
+  // `void Renderer::Compute(...)` the second colon is not an assignment.
+  if (new RegExp(String.raw`(?<!:)[=:]\s*(await\s+)?${s}\s*\(`).test(head)) return false;
+
+  // Python and Ruby declare with an unambiguous keyword, so anything that
+  // reached here without one is a false positive from the broad
+  // module-level-binding pattern.
+  const family = languageFamily(filePath);
+  if (family === 'python' && /\(/.test(line) && !/^\s*(async\s+)?(def|class)\b/.test(line)) {
+    return false;
+  }
+
+  return true;
 }
 
 /// Parse `path:line:text` lines from `rg --no-heading -n`. Absolute paths
 /// are relativized against `cwd` so candidates are stable to display.
+///
+/// The matched text comes back too — `looksLikeDeclaration` needs it, and
+/// re-reading the line from disk to get it would cost a file read per
+/// match. Under `rg -U` a match spans lines; only the first carries the
+/// `path:line:` prefix, and that's the line we want (a wrapped signature
+/// starts at its first line), so continuation lines simply don't parse.
 export function parseGrepMatches(
   stdout: string,
   cwd: string,
-): Array<{ path: string; line: number }> {
-  const out: Array<{ path: string; line: number }> = [];
+): Array<{ path: string; line: number; text: string }> {
+  const out: Array<{ path: string; line: number; text: string }> = [];
   for (const raw of stdout.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
@@ -160,7 +420,7 @@ export function parseGrepMatches(
     if (!Number.isInteger(lineNo) || lineNo < 1) continue;
     const rel = path.isAbsolute(file) ? path.relative(cwd, file) : file;
     if (!rel || rel.startsWith('..')) continue;
-    out.push({ path: rel, line: lineNo });
+    out.push({ path: rel, line: lineNo, text: line.slice(m[0].length) });
   }
   return out;
 }
@@ -432,7 +692,7 @@ export class SymbolLookupManager {
       return { ok: false, error: 'No project root for this file.' };
     }
 
-    const key = `${cwd} ${path.extname(args.filePath).toLowerCase()} ${symbol}`;
+    const key = `${cwd}\u0000${path.extname(args.filePath).toLowerCase()}\u0000${symbol}`;
     const cache = kind === 'find' ? this.cache : this.refineCache;
     const hit = cache.get(key);
     // Failures expire far sooner than answers: a miss is often
@@ -541,8 +801,28 @@ export class SymbolLookupManager {
     filePath: string,
     symbol: string,
   ): Promise<SymbolCandidate[]> {
+    const single = await this.grepPass(cwd, filePath, symbol, false);
+    if (single.length > 0) return single;
+    // Nothing on the line-oriented pass. Before handing the question to a
+    // model, retry in multiline mode: a signature whose parameters wrap
+    // across lines is invisible to line-oriented matching, and that shape
+    // is everywhere in Java, Kotlin and TS. Only on the empty path, so the
+    // common case never pays for the slower scan.
+    return this.grepPass(cwd, filePath, symbol, true);
+  }
+
+  private async grepPass(
+    cwd: string,
+    filePath: string,
+    symbol: string,
+    multiline: boolean,
+  ): Promise<SymbolCandidate[]> {
     const patterns = declarationPatterns(filePath, symbol);
     const rgArgs = ['--no-heading', '-n', '-s', '--max-count', '4'];
+    // In multiline mode `[^;{]` matches newlines too, so the same patterns
+    // span a wrapped signature. Every quantifier in them is bounded, which
+    // is what keeps that from running away across a whole file.
+    if (multiline) rgArgs.push('-U');
     for (const ext of siblingExtensions(filePath)) {
       rgArgs.push('--glob', `*${ext}`);
     }
@@ -559,7 +839,13 @@ export class SymbolLookupManager {
     // status 1 is "no matches", which is a normal outcome.
     if (res.status !== 0 && res.status !== 1) return [];
 
-    const verified = await verifyAll(cwd, parseGrepMatches(res.stdout, cwd), symbol, 'grep');
+    // Precision pass. The rg patterns are deliberately loose (no lookaround
+    // in Rust's regex engine); this is where call sites, imports and
+    // comments that matched them get dropped.
+    const matches = parseGrepMatches(res.stdout, cwd).filter((m) =>
+      looksLikeDeclaration(m.text, symbol, filePath),
+    );
+    const verified = await verifyAll(cwd, matches, symbol, 'grep');
     return verified.length > MAX_GREP_CANDIDATES ? [] : verified;
   }
 

@@ -12,7 +12,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
-import { SymbolLookupManager } from './symbolLookup';
+import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import {
   probeBackendHealth,
@@ -450,7 +450,13 @@ function registerIpc(): void {
     if (!filePath || !isReadablePath(filePath)) {
       return { ok: false, error: 'File is outside any registered project.' };
     }
-    const cwd = args?.cwd ?? '';
+    // The renderer sends the *conversation's* root. In a flow run that is
+    // routinely not the tree the open file lives in — worktree runs mint a
+    // worktree outside the project, and workspace/coordinator roots are
+    // directories of symlinks. Searching the root as sent finds nothing
+    // there, so resolve to the tree the file actually belongs to and
+    // validate that, since it's the one we read.
+    const cwd = resolveSearchRoot(filePath, args?.cwd ?? '');
     if (!cwd || !isPathUnderRegisteredRoot(cwd)) {
       return { ok: false, error: 'Project root is not registered.' };
     }

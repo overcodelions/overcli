@@ -8,6 +8,7 @@ import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
   conversationActivityAt,
+  conversationPromptAt,
   isActiveConversation,
 } from '../conversationLookup';
 import { type ActiveCandidate, selectActiveEntries } from '../activeSection';
@@ -272,12 +273,12 @@ export function Sidebar() {
         {!query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Active" />
-            {activeEntries.map(({ entry, rank }) =>
+            {activeEntries.map(({ entry }) =>
               entry.kind === 'flow' ? (
                 <ActiveFlowRow
                   key={entry.run.id}
                   run={entry.run}
-                  isLive={rank === 2}
+                  isLive={entry.isLive}
                   ownerName={entry.ownerName}
                   ownerKind={entry.ownerKind}
                   onClick={() => {
@@ -454,6 +455,9 @@ interface ActiveFlowItem {
   run: FlowRun;
   ownerName: string;
   ownerKind: 'project' | 'workspace' | 'unknown';
+  /// Drives the row's live indicator only. Liveness deliberately has no say
+  /// in where the row sits — see selectActiveEntries.
+  isLive: boolean;
 }
 
 type ActiveItem = RecentConversationItem | ActiveFlowItem;
@@ -481,9 +485,8 @@ function collectActiveCandidates(
     const running = !!runners[conv.id]?.isRunning;
     out.push({
       entry: { kind: 'conversation', conv, ownerName, ownerKind },
-      rank: running ? 2 : 0,
       active: isActiveConversation(conv, running, cutoff),
-      activityAt: conversationActivityAt(conv),
+      promptedAt: conversationPromptAt(conv),
     });
   };
 
@@ -501,17 +504,28 @@ function collectActiveCandidates(
   for (const run of Object.values(flowRuns)) {
     if (run.state.kind === 'archived') continue;
     const owner = resolveFlowOwner(flowRunOwnerPath(run), projects, workspaces);
-    const live = flowRunIsLive(run, runners);
-    const ongoing = run.state.kind === 'paused' || run.state.kind === 'watching';
     out.push({
-      entry: { kind: 'flow', run, ownerName: owner.name, ownerKind: owner.kind },
-      rank: live ? 2 : ongoing ? 1 : 0,
+      entry: {
+        kind: 'flow',
+        run,
+        ownerName: owner.name,
+        ownerKind: owner.kind,
+        isLive: flowRunIsLive(run, runners),
+      },
       active: flowRunIsActive(run, runners, cutoff),
-      activityAt: flowRunActivityAt(run),
+      promptedAt: flowRunPromptedAt(run),
     });
   }
 
   return out;
+}
+
+/// When the user last drove this run: launching it, or clicking Continue on
+/// a paused step. Deliberately NOT flowRunActivityAt — attempts are pushed by
+/// the runtime for every step it takes, so keying off those would let a flow
+/// walking itself through ten steps outrank a chat the user just typed in.
+function flowRunPromptedAt(run: FlowRun): number {
+  return Math.max(run.createdAt ?? 0, run.pendingContinue?.startedAt ?? 0);
 }
 
 function hasProjectActivity(
