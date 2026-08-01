@@ -16,6 +16,7 @@ export function TitleBar() {
   const setDetailMode = useStore((s) => s.setDetailMode);
   const openSheet = useStore((s) => s.openSheet);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const whatsNewUnseen = useStore((s) => s.whatsNewUnseen);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
@@ -148,16 +149,23 @@ export function TitleBar() {
         <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
       </div>
       <div className="w-px h-4 bg-card-border mx-2" />
+      {/* Unread release notes ride the About button rather than earning their
+          own control: it's already the "tell me about this app" affordance,
+          and the dot is the whole point — a permanent extra icon in the title
+          bar costs more than the news is worth once it's been read. */}
       <button
-        onClick={() => openSheet({ type: 'about' })}
-        className="no-drag p-1 mr-1 text-ink-muted hover:text-ink rounded hover:bg-card-strong"
-        title="About overcli"
+        onClick={() => openSheet({ type: whatsNewUnseen ? 'whatsNew' : 'about' })}
+        className="no-drag relative p-1 mr-1 text-ink-muted hover:text-ink rounded hover:bg-card-strong"
+        title={whatsNewUnseen ? "What's new in overcli" : 'About overcli'}
       >
         <svg width="16" height="16" viewBox="0 0 20 20" fill="none" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="10" cy="10" r="7" stroke="currentColor" strokeWidth="1.4" />
           <path d="M10 8v5" stroke="currentColor" strokeWidth="1.4" />
           <circle cx="10" cy="5.5" r="0.9" fill="currentColor" />
         </svg>
+        {whatsNewUnseen && (
+          <span className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_5px_currentColor] text-accent" />
+        )}
       </button>
       <button
         onClick={() => openSheet({ type: 'settings' })}

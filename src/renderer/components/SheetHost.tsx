@@ -12,6 +12,7 @@ import { ColosseumCompareSheet } from './sheets/ColosseumCompareSheet';
 import { FileFinderSheet } from './sheets/FileFinderSheet';
 import { QuickSwitcherSheet } from './sheets/QuickSwitcherSheet';
 import { ShortcutsHelpSheet } from './sheets/ShortcutsHelpSheet';
+import { WhatsNewSheet } from './sheets/WhatsNewSheet';
 import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { ProjectDiffSheet } from './sheets/ProjectDiffSheet';
 import { WorkspaceDiffSheet } from './sheets/WorkspaceDiffSheet';
@@ -97,6 +98,7 @@ export function SheetHost() {
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet />}
         {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}
+        {sheet.type === 'whatsNew' && <WhatsNewSheet />}
       </div>
     </div>
   );
