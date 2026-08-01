@@ -51,6 +51,7 @@
     "files": [
       "dist/**/*",
       "package.json",
+      "CHANGELOG.md",
       "!**/*.map",
       "!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**"
     ],

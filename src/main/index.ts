@@ -87,6 +87,7 @@ import {
 import { deleteOllamaSession } from './ollamaStore';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
+import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
@@ -320,6 +321,9 @@ function registerIpc(): void {
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
   ipcMain.handle('store:saveFileTabs', (_e, tabs) => Store.saveFileTabs(tabs));
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
+  ipcMain.handle('app:whatsNew', () => getWhatsNew());
+  ipcMain.handle('app:markWhatsNewSeen', () => markWhatsNewSeen());
+  ipcMain.handle('app:version', () => app.getVersion());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
@@ -1708,6 +1712,9 @@ app.whenReady().then(() => {
   });
   registerIpc();
   buildMenu();
+  // Before the window exists, so the renderer's first `app:whatsNew` call
+  // already sees a baseline and a fresh install isn't handed four changelogs.
+  seedWhatsNewBaseline();
   createWindow();
 
   // Nudge self-updating CLIs (claude, codex) in the background, hidden, so
