@@ -51,10 +51,27 @@ function isDeletedStatus(status: string): boolean {
 /// the header commit badge — see `refreshGitStatus`); flow worktree runs
 /// feed it fork-point-relative counts (`git:worktreeChanges`) so it matches
 /// the review sheet's diff.
-export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
+export function ChangesBar({
+  files,
+  baseRef,
+}: {
+  files: FileChangeSummary[];
+  /// Ref the counts were measured against, e.g. `origin/master`. When it's
+  /// set we render an explicit empty state instead of hiding: a run whose
+  /// work has landed upstream legitimately has zero files, and silently
+  /// showing nothing reads as a broken probe.
+  baseRef?: string | null;
+}) {
   const openFile = useStore((s) => s.openFile);
   const [expanded, setExpanded] = useState(false);
-  if (files.length === 0) return null;
+  if (files.length === 0) {
+    if (!baseRef) return null;
+    return (
+      <div className="rounded-xl border border-card bg-card px-3 py-2 text-xs text-ink-faint">
+        No changes vs <code className="text-ink">{baseRef}</code> — nothing left to merge.
+      </div>
+    );
+  }
   const totals = files.reduce(
     (acc, f) => {
       acc.additions += Number(f.additions) || 0;
@@ -75,6 +92,7 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
         </span>
         <span className="diff-add-ink">+{totals.additions}</span>
         <span className="diff-remove-ink">-{totals.deletions}</span>
+        {baseRef && <span className="ml-auto text-ink-faint">vs {baseRef}</span>}
       </button>
       {expanded && (
         // Runs that touch dozens of files would otherwise push the composer

@@ -20,6 +20,7 @@ import { Markdown } from '../Markdown';
 import { ResizableDivider } from '../ResizableDivider';
 import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
+import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 
 /// A launch target the batch can run against: a single project or a whole
@@ -73,7 +74,15 @@ export function OrchestratorPane() {
   }, [flows]);
 
   const batches = useMemo(
-    () => Object.values(s.orchestrations).sort((a, b) => b.createdAt - a.createdAt),
+    () =>
+      Object.values(s.orchestrations).sort(
+        // A parked batch is the one thing here that's blocked on the user, so
+        // it sorts above everything regardless of age — a proposal from this
+        // morning shouldn't sit below a batch that finished an hour ago.
+        (a, b) =>
+          Number(isOrchestrationAwaitingApproval(b)) -
+            Number(isOrchestrationAwaitingApproval(a)) || b.createdAt - a.createdAt,
+      ),
     [s.orchestrations],
   );
 
@@ -922,9 +931,62 @@ function BatchLedger({
     (i) => i.status === 'failed' || i.status === 'cancelled',
   ).length;
   const active = !batch.completedAt;
+  const awaiting = isOrchestrationAwaitingApproval(batch);
+
+  // Which parked items the user has kept. Local, not persisted: it's a
+  // decision in progress, and it's resolved the moment they hit Approve.
+  const [declined, setDeclined] = useState<Set<string>>(() => new Set());
+  const [approving, setApproving] = useState(false);
+  const proposed = batch.items.filter((i) => i.status === 'proposed');
+  const keeping = proposed.filter((i) => !declined.has(i.candidate.id));
+
+  async function approve(): Promise<void> {
+    if (approving) return;
+    setApproving(true);
+    try {
+      await window.overcli.invoke('orchestrator:approveBatch', {
+        id: batch.id,
+        approve: keeping.map((i) => ({ candidateId: i.candidate.id })),
+      });
+    } finally {
+      setApproving(false);
+    }
+  }
 
   return (
     <div>
+      {awaiting && (
+        <div className="mb-2 rounded-lg border border-violet-400/40 bg-violet-500/10 px-3 py-2.5">
+          <div className="text-[13px] text-ink">
+            <span className="font-semibold">{proposed.length}</span>{' '}
+            {proposed.length === 1 ? 'ask' : 'asks'} proposed
+            {batch.origin?.kind === 'schedule' && (
+              <span className="text-ink-muted"> by {batch.origin.scheduleName}</span>
+            )}
+            . Nothing has run yet.
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={() => void approve()}
+              disabled={approving || keeping.length === 0}
+              className="text-[11px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {approving
+                ? 'Launching…'
+                : `Launch ${keeping.length} of ${proposed.length}`}
+            </button>
+            <button
+              onClick={() => void window.overcli.invoke('orchestrator:abort', { id: batch.id })}
+              className="text-[11px] px-2.5 py-1 rounded-md border border-card-strong text-ink-muted hover:bg-white/5"
+            >
+              Discard all
+            </button>
+            <span className="text-[11px] text-ink-faint ml-auto">
+              Untick anything you don&apos;t want.
+            </span>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2 mb-1.5">
         <div className="text-[11px] uppercase tracking-wide text-ink-faint font-bold">
           {batch.title} · {done}/{batch.items.length} done
@@ -941,7 +1003,7 @@ function BatchLedger({
             ↻ Retry {retryable} failed
           </button>
         )}
-        {active ? (
+        {awaiting ? null : active ? (
           <button className="text-[11px] text-ink-faint hover:text-red-400" onClick={() => abort(batch.id)}>
             Abort batch
           </button>
@@ -953,7 +1015,24 @@ function BatchLedger({
       </div>
       <div className="space-y-1.5">
         {batch.items.map((it, i) => (
-          <LedgerRow key={i} item={it} flowById={flowById} orchestrationId={batch.id} />
+          <LedgerRow
+            key={i}
+            item={it}
+            flowById={flowById}
+            orchestrationId={batch.id}
+            kept={it.status === 'proposed' ? !declined.has(it.candidate.id) : undefined}
+            onToggleKeep={
+              it.status === 'proposed'
+                ? () =>
+                    setDeclined((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(it.candidate.id)) next.delete(it.candidate.id);
+                      else next.add(it.candidate.id);
+                      return next;
+                    })
+                : undefined
+            }
+          />
         ))}
       </div>
     </div>
@@ -968,6 +1047,8 @@ function statusRail(status: OrchestrationItem['status']): string {
       return 'var(--c-running-pulse, #16a34a)';
     case 'paused':
       return '#f0a83d';
+    case 'proposed':
+      return '#a78bfa';
     case 'done':
       return 'var(--c-accent)';
     case 'failed':
@@ -981,10 +1062,15 @@ function LedgerRow({
   item,
   flowById,
   orchestrationId,
+  kept,
+  onToggleKeep,
 }: {
   item: OrchestrationItem;
   flowById: Map<string, Flow>;
   orchestrationId: string;
+  /// Set only for a `proposed` item: whether it's still in the approval set.
+  kept?: boolean;
+  onToggleKeep?: () => void;
 }) {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const setDetailMode = useStore((s) => s.setDetailMode);
@@ -1005,7 +1091,10 @@ function LedgerRow({
 
   return (
     <div
-      className="relative grid items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors"
+      className={
+        'relative grid items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors ' +
+        (kept === false ? 'opacity-45' : '')
+      }
       style={{ gridTemplateColumns: '1fr 112px 96px' }}
     >
       <span
@@ -1015,14 +1104,25 @@ function LedgerRow({
         }
         style={{ background: statusRail(item.status) }}
       />
-      <button
-        className="text-left font-medium text-[13px] text-ink truncate hover:text-accent disabled:hover:text-ink"
-        onClick={openRun}
-        disabled={!item.runId}
-        title={item.candidate.prompt}
-      >
-        {item.candidate.title}
-      </button>
+      <div className="flex items-center gap-2 min-w-0">
+        {onToggleKeep && (
+          <input
+            type="checkbox"
+            checked={kept ?? true}
+            onChange={onToggleKeep}
+            title="Include this ask when you launch the batch"
+            className="flex-none"
+          />
+        )}
+        <button
+          className="text-left font-medium text-[13px] text-ink truncate hover:text-accent disabled:hover:text-ink"
+          onClick={openRun}
+          disabled={!item.runId}
+          title={item.candidate.prompt}
+        >
+          {item.candidate.title}
+        </button>
+      </div>
       <span
         className="text-xs text-ink-muted flex items-center gap-1.5 truncate"
         title={item.branchName ? `branch ${item.branchName}` : undefined}
@@ -1062,6 +1162,7 @@ function StatusLabel({ item }: { item: OrchestrationItem }) {
   const map: Record<string, { text: string; cls: string }> = {
     running: { text: 'running…', cls: 'text-green-400' },
     paused: { text: 'paused', cls: 'text-amber-400' },
+    proposed: { text: 'proposed', cls: 'text-violet-400' },
     queued: { text: 'queued', cls: 'text-ink-muted' },
     done: { text: 'done', cls: 'text-accent' },
     failed: { text: 'failed', cls: 'text-red-400' },

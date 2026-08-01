@@ -873,6 +873,14 @@ export const useStore = create<StoreState>((set, get) => ({
       settings: state.settings,
       lastInit: state.lastInit,
       selectedConversationId: state.selectedConversationId ?? null,
+      // Reopening the app is touching what you had open. Without this the
+      // restored conversation carries no selection stamp, so the sidebar's
+      // Active section ranks it by whenever you last typed in it and the
+      // thing on screen isn't at the top. (The restored flow run gets the
+      // same treatment via setActiveRun, just below.)
+      lastSelectedAt: state.selectedConversationId
+        ? { [state.selectedConversationId]: Date.now() }
+        : {},
       detailMode: (view?.detailMode as DetailMode) ?? 'conversation',
       focusedProjectId: view?.focusedProjectId ?? null,
       focusedWorkspaceId: view?.focusedWorkspaceId ?? null,
@@ -2460,6 +2468,22 @@ export const useStore = create<StoreState>((set, get) => ({
       }));
     }
 
+    // Stamped BEFORE the send goes out, not after it comes back. Hitting
+    // enter is the user's turn — the sidebar should reorder on that, not on
+    // however long the backend takes to accept the request (and not never,
+    // if the invoke rejects).
+    const promptedAt = Date.now();
+    mutateConversation(set, get, conversationId, (c) => ({
+      ...c,
+      lastActiveAt: promptedAt,
+      lastPromptAt: promptedAt,
+      turnCount: c.turnCount + 1,
+      name:
+        c.name === 'New conversation' && prompt.trim().length > 0
+          ? prompt.trim().slice(0, 48)
+          : c.name,
+    }));
+
     await window.overcli.invoke('runner:send', {
       conversationId,
       prompt: outgoingPrompt,
@@ -2484,15 +2508,6 @@ export const useStore = create<StoreState>((set, get) => ({
       claudeTransport: backend === 'claude' ? get().settings.claudeTransport ?? 'cli' : undefined,
     });
 
-    mutateConversation(set, get, conversationId, (c) => ({
-      ...c,
-      lastActiveAt: Date.now(),
-      turnCount: c.turnCount + 1,
-      name:
-        c.name === 'New conversation' && prompt.trim().length > 0
-          ? prompt.trim().slice(0, 48)
-          : c.name,
-    }));
     await saveConversationState(get);
   },
 
@@ -3211,6 +3226,14 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (event.type === 'orchestrationProducerProgress') {
       void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
         useOrchestratorStore.getState().applyProducerProgress(event.text, event.tools);
+      });
+    } else if (event.type === 'scheduleUpdate') {
+      void import('./schedulesStore').then(({ useSchedulesStore }) => {
+        useSchedulesStore.getState().applyUpdate(event.schedule, event.nextFireAt);
+      });
+    } else if (event.type === 'scheduleDeleted') {
+      void import('./schedulesStore').then(({ useSchedulesStore }) => {
+        useSchedulesStore.getState().removeLocal(event.id);
       });
     }
   },

@@ -23,6 +23,11 @@ import { BrowseLibraryModal } from './BrowseLibraryModal';
 import { FlowMonogram } from './FlowMonogram';
 import { RunPanel } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
+import { SchedulesPane } from './SchedulesPane';
+import { useSchedulesStore } from '../../schedulesStore';
+import { describeTrigger, untilLabel } from '@shared/flows/schedule';
+import { useOrchestratorStore } from '../../orchestratorStore';
+import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { FlowRun } from '@shared/flows/schema';
 import type { Attachment } from '@shared/types';
 
@@ -39,6 +44,38 @@ export function FlowsLibraryPane() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  // Schedules are a segment here rather than a top-level tab: a schedule is a
+  // trigger on a flow, not a separate kind of work, and a fourth tab would
+  // have made a third place to launch a run from. The segment lives in the
+  // store so the title bar can deep-link into it from any tab.
+  const segment = useFlowsStore((s) => s.librarySegment);
+  const setSegment = useFlowsStore((s) => s.setLibrarySegment);
+  const settings = useStore((s) => s.settings);
+  const saveSettings = useStore((s) => s.saveSettings);
+  const schedules = useSchedulesStore((s) => s.schedules);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  // A parked proposal outranks a running run on the tab: one is blocked on the
+  // user, the other is just working and will notify when it's done.
+  const scheduleBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
+    const waiting = Object.values(orchestrations).filter(
+      (o) => o.origin?.kind === 'schedule' && isOrchestrationAwaitingApproval(o),
+    ).length;
+    if (waiting > 0) return { count: waiting, tone: 'waiting' };
+    const running = Object.values(schedules).filter((s) => s.activeRunId).length;
+    return running > 0 ? { count: running, tone: 'running' } : undefined;
+  }, [schedules, orchestrations]);
+
+  // Arriving on Schedules retires the discovery glow, however the user got
+  // here — the segment button, the library strip, or the title bar.
+  useEffect(() => {
+    if (segment === 'schedules' && !settings.seenSchedules) {
+      void saveSettings({ ...settings, seenSchedules: true });
+    }
+  }, [segment, settings.seenSchedules]);
+
+  function showSchedules(): void {
+    setSegment('schedules');
+  }
 
   // Auto-dismiss the "Saved" banner after 3 seconds.
   useEffect(() => {
@@ -74,34 +111,59 @@ export function FlowsLibraryPane() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-7">
         <div className="text-2xl font-semibold">Flows</div>
-        <div className="text-xs text-ink-faint">Multi-model pipelines</div>
-        <button
-          onClick={() => setAboutOpen(true)}
-          className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
-          title="What is a flow?"
-        >
-          About
-        </button>
-        <button
-          onClick={() => void reload(projectPaths)}
-          className="text-xs text-ink-faint hover:text-ink hover:bg-white/5 px-2 py-1 rounded"
-        >
-          ↻ Refresh
-        </button>
-        <button
-          onClick={() => setPickerOpen(true)}
-          className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90"
-        >
-          + New flow
-        </button>
-        <button
-          onClick={() => setBrowseOpen(true)}
-          className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
-        >
-          Browse library
-        </button>
+        {/* A real segmented control, not two bare words. The track is what
+            makes the inactive half legible as an option: without an enclosing
+            surface, "Schedules" was just grey text next to a heading and read
+            as a subtitle rather than something you could click. The filled
+            pill then says which one you're on.
+
+            Sits well clear of the title, too — butted against a 2xl heading
+            the two read as one crowded lump instead of a title and a control. */}
+        <div className="flex items-center gap-0.5 ml-5 p-0.5 rounded-lg bg-card border border-card-strong">
+          <SegmentTab
+            label="Library"
+            active={segment === 'flows'}
+            onClick={() => setSegment('flows')}
+          />
+          <SegmentTab
+            label="Schedules"
+            active={segment === 'schedules'}
+            onClick={showSchedules}
+            discover={!settings.seenSchedules && segment !== 'schedules'}
+            badge={scheduleBadge}
+          />
+        </div>
+        {segment === 'flows' && (
+          <>
+            <button
+              onClick={() => setAboutOpen(true)}
+              className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
+              title="What is a flow?"
+            >
+              About
+            </button>
+            <button
+              onClick={() => void reload(projectPaths)}
+              className="text-xs text-ink-faint hover:text-ink hover:bg-white/5 px-2 py-1 rounded"
+            >
+              ↻ Refresh
+            </button>
+            <button
+              onClick={() => setPickerOpen(true)}
+              className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90"
+            >
+              + New flow
+            </button>
+            <button
+              onClick={() => setBrowseOpen(true)}
+              className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
+            >
+              Browse library
+            </button>
+          </>
+        )}
       </div>
 
       {justSaved && (
@@ -115,20 +177,31 @@ export function FlowsLibraryPane() {
         </div>
       )}
 
-      <RunsOverview />
-
-      {!loaded ? (
-        <div className="text-sm text-ink-muted">Loading flows…</div>
-      ) : flows.length === 0 ? (
-        <EmptyState onCreate={() => setPickerOpen(true)} />
+      {segment === 'schedules' ? (
+        <SchedulesPane />
       ) : (
         <>
-          <SectionHeading title="Your flows" count={flows.length} />
-          <div className="space-y-3">
-            {flows.map((flow) => (
-              <FlowRow key={`${flow.source}:${flow.id}`} flow={flow} projectPaths={projectPaths} />
-            ))}
-          </div>
+          <ScheduleStrip onOpen={showSchedules} />
+          <RunsOverview />
+
+          {!loaded ? (
+            <div className="text-sm text-ink-muted">Loading flows…</div>
+          ) : flows.length === 0 ? (
+            <EmptyState onCreate={() => setPickerOpen(true)} />
+          ) : (
+            <>
+              <SectionHeading title="Your flows" count={flows.length} />
+              <div className="space-y-3">
+                {flows.map((flow) => (
+                  <FlowRow
+                    key={`${flow.source}:${flow.id}`}
+                    flow={flow}
+                    projectPaths={projectPaths}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
 
@@ -138,6 +211,83 @@ export function FlowsLibraryPane() {
     </div>
   );
 }
+
+/// One line about schedules, sitting in the default view so the feature is
+/// findable without clicking anything.
+///
+/// Escalates rather than nags. With schedules armed it's a status line (what
+/// fires next, or what's running now). With none and the segment never opened,
+/// it's a one-time invitation. With none and the segment already seen, it
+/// renders nothing at all — the user has looked and decided, and a permanent
+/// prompt to use a feature is just clutter.
+function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
+  const schedules = useSchedulesStore((s) => s.schedules);
+  const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
+  const seen = useStore((s) => s.settings.seenSchedules);
+
+  const rows = useMemo(() => Object.values(schedules), [schedules]);
+  const running = rows.filter((s) => s.activeRunId);
+  // Soonest enabled schedule. `nextFireAt` comes from main so this never
+  // second-guesses the engine's own arithmetic.
+  const next = useMemo(() => {
+    let best: { name: string; at: number; trigger: string } | null = null;
+    for (const s of rows) {
+      const at = nextFireAt[s.id];
+      if (!s.enabled || !at) continue;
+      if (!best || at < best.at) {
+        best = { name: s.name, at, trigger: describeTrigger(s.trigger) };
+      }
+    }
+    return best;
+  }, [rows, nextFireAt]);
+
+  if (rows.length === 0) {
+    if (seen) return null;
+    return (
+      <button
+        onClick={onOpen}
+        className="w-full mb-5 flex items-center gap-2.5 text-left rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-2.5 hover:bg-accent/10 transition-colors"
+      >
+        <span className="text-base leading-none">⏱</span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-[13px] text-ink">Run flows on a schedule</span>
+          <span className="block text-[11px] text-ink-muted">
+            Launch a flow on a timer — or have the orchestrator triage overnight and leave a
+            batch waiting for your approval.
+          </span>
+        </span>
+        <span className="text-[11px] text-accent whitespace-nowrap">Set one up →</span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={onOpen}
+      className="w-full mb-5 flex items-center gap-2 text-left rounded-md border border-card px-3 py-1.5 hover:bg-card/40 transition-colors"
+    >
+      <span className="text-ink-faint text-[11px]">⏱</span>
+      {running.length > 0 ? (
+        <span className="text-[11px] text-sky-700 dark:text-sky-300 flex items-center">
+          <RunningDot />
+          {running.length === 1
+            ? `${running[0].name} is running now`
+            : `${running.length} schedules running now`}
+        </span>
+      ) : next ? (
+        <span className="text-[11px] text-ink-muted truncate" title={next.trigger}>
+          Next: <span className="text-ink">{next.name}</span> {untilLabel(next.at)}
+        </span>
+      ) : (
+        <span className="text-[11px] text-ink-faint">
+          {rows.length} {rows.length === 1 ? 'schedule' : 'schedules'} · all paused
+        </span>
+      )}
+      <span className="ml-auto text-[11px] text-ink-faint">Schedules →</span>
+    </button>
+  );
+}
+
 
 /// Active + recent runs surfaced at the top of the library. Renders as
 /// rows (not grid cards) so timestamps + project + actions fit cleanly
@@ -282,6 +432,15 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
       <FlowMonogram name={run.flowSnapshot.name} size="sm" />
       <div className="flex-1 min-w-0 flex items-baseline gap-2">
         <span className="text-sm font-semibold truncate" title={run.userPrompt}>{runTitle(run)}</span>
+        {/* A run nobody remembers starting is alarming; say who did. */}
+        {run.scheduleName && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-700 dark:text-violet-300 whitespace-nowrap"
+            title={`Launched by the "${run.scheduleName}" schedule`}
+          >
+            ⏱ {run.scheduleName}
+          </span>
+        )}
         <span className="text-[11px] text-ink-faint truncate">
           {run.flowSnapshot.name}
           <span className="mx-1">·</span>
@@ -359,6 +518,65 @@ function pathBasenameSafe(p: string): string {
   if (!p) return '';
   const segs = p.split(/[\\/]/).filter(Boolean);
   return segs[segs.length - 1] ?? p;
+}
+
+function SegmentTab({
+  label,
+  active,
+  onClick,
+  discover,
+  badge,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  /// Draw the one-time discovery glow. Retires the moment the user opens it.
+  discover?: boolean;
+  /// Live count. Earned attention, so unlike the glow it stays for as long as
+  /// it's true. `waiting` outranks `running` at the call site: one is blocked
+  /// on the user, the other is just working.
+  badge?: { count: number; tone: 'waiting' | 'running' };
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'relative px-3.5 py-1.5 rounded-md text-xs font-medium flex items-center gap-2 transition-colors ' +
+        // The inactive half is `ink-muted`, not `ink-faint`: faint is the tone
+        // this codebase uses for disabled and for metadata, and a tab you can
+        // click shouldn't wear it.
+        // `surface-elevated`, not `card-strong`: card-strong is 4% white in
+        // dark and the track behind it is 2%, so the pill would barely lift
+        // off it. A segmented control only works if the track reads recessed
+        // and the selection reads raised.
+        (active
+          ? 'bg-surface-elevated text-ink shadow-sm'
+          : 'text-ink-muted hover:text-ink hover:bg-white/5') +
+        (discover ? ' nav-segment-discover text-ink' : '')
+      }
+    >
+      {label}
+      {badge ? (
+        badge.tone === 'waiting' ? (
+          <span className="flex items-center gap-1 text-[10px] text-violet-700 dark:text-violet-300">
+            <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />
+            {badge.count}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-[10px] text-sky-700 dark:text-sky-300">
+            <RunningDot />
+            {badge.count}
+          </span>
+        )
+      ) : (
+        discover && (
+          <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent text-white leading-none">
+            new
+          </span>
+        )
+      )}
+    </button>
+  );
 }
 
 function SectionHeading({

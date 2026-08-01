@@ -8,6 +8,7 @@ import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
   conversationActivityAt,
+  conversationPromptAt,
   isActiveConversation,
 } from '../conversationLookup';
 import { type ActiveCandidate, selectActiveEntries } from '../activeSection';
@@ -51,6 +52,10 @@ export function Sidebar() {
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const lastSelectedAt = useStore((s) => s.lastSelectedAt);
+  const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
+  const activeRunId = useFlowsStore((s) => s.activeRunId);
+  const openedRunId = detailMode === 'flows' ? activeRunId : null;
   const [search, setSearch] = useState('');
   const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
   const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
@@ -154,8 +159,25 @@ export function Sidebar() {
   }, [projectsById, query, workspaces, flowMatchPaths]);
 
   const activeEntries = useMemo(
-    () => selectActiveEntries(collectActiveCandidates(projects, workspaces, flowRuns, runners)),
-    [flowRuns, projects, runners, workspaces],
+    () =>
+      selectActiveEntries(
+        collectActiveCandidates(projects, workspaces, flowRuns, runners, {
+          openedConversationId: selectedId,
+          lastSelectedAt,
+          openedRunId,
+          lastOpenedAtByRun,
+        }),
+      ),
+    [
+      flowRuns,
+      projects,
+      runners,
+      workspaces,
+      selectedId,
+      lastSelectedAt,
+      openedRunId,
+      lastOpenedAtByRun,
+    ],
   );
   const sortedProjects = useMemo(
     () =>
@@ -272,12 +294,12 @@ export function Sidebar() {
         {!query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Active" />
-            {activeEntries.map(({ entry, rank }) =>
+            {activeEntries.map(({ entry }) =>
               entry.kind === 'flow' ? (
                 <ActiveFlowRow
                   key={entry.run.id}
                   run={entry.run}
-                  isLive={rank === 2}
+                  isLive={entry.isLive}
                   ownerName={entry.ownerName}
                   ownerKind={entry.ownerKind}
                   onClick={() => {
@@ -454,22 +476,38 @@ interface ActiveFlowItem {
   run: FlowRun;
   ownerName: string;
   ownerKind: 'project' | 'workspace' | 'unknown';
+  /// Drives the row's live indicator only. Liveness deliberately has no say
+  /// in where the row sits — see selectActiveEntries.
+  isLive: boolean;
 }
 
 type ActiveItem = RecentConversationItem | ActiveFlowItem;
+
+/// What the user is currently looking at, and when they last looked at
+/// everything else. Opening something is a user action just like typing in
+/// it, and it's the one the Active section most needs: while a long turn
+/// runs you aren't typing, but that chat is still what you're working on.
+interface ActiveSelection {
+  openedConversationId: UUID | null;
+  lastSelectedAt: Record<UUID, number>;
+  openedRunId: string | null;
+  lastOpenedAtByRun: Record<string, number>;
+}
 
 /// Every chat, agent and flow run eligible for the Active section, whether or
 /// not it's still active — selectActiveEntries ranks them and decides which
 /// make the cut. Hidden conversations and archived runs are left out: the user
 /// has explicitly put those away, so they shouldn't be dragged back in by the
 /// section's floor.
-function collectActiveCandidates(
+export function collectActiveCandidates(
   projects: Project[],
   workspaces: Workspace[],
   flowRuns: Record<UUID, FlowRun>,
   runners: Record<UUID, { isRunning: boolean } | undefined>,
+  selection: ActiveSelection,
+  now: number = Date.now(),
 ): ActiveCandidate<ActiveItem>[] {
-  const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
+  const cutoff = now - ACTIVE_CONVERSATION_WINDOW_MS;
   const out: ActiveCandidate<ActiveItem>[] = [];
 
   const pushConversation = (
@@ -479,11 +517,16 @@ function collectActiveCandidates(
   ) => {
     if (conv.hidden) return;
     const running = !!runners[conv.id]?.isRunning;
+    const opened = conv.id === selection.openedConversationId;
     out.push({
       entry: { kind: 'conversation', conv, ownerName, ownerKind },
-      rank: running ? 2 : 0,
-      active: isActiveConversation(conv, running, cutoff),
-      activityAt: conversationActivityAt(conv),
+      // The chat on screen always gets a slot. Without this a busy set of
+      // backends could fill the cap and evict the one you're reading.
+      active: opened || isActiveConversation(conv, running, cutoff),
+      promptedAt: Math.max(
+        conversationPromptAt(conv),
+        selection.lastSelectedAt[conv.id] ?? 0,
+      ),
     });
   };
 
@@ -501,17 +544,31 @@ function collectActiveCandidates(
   for (const run of Object.values(flowRuns)) {
     if (run.state.kind === 'archived') continue;
     const owner = resolveFlowOwner(flowRunOwnerPath(run), projects, workspaces);
-    const live = flowRunIsLive(run, runners);
-    const ongoing = run.state.kind === 'paused' || run.state.kind === 'watching';
     out.push({
-      entry: { kind: 'flow', run, ownerName: owner.name, ownerKind: owner.kind },
-      rank: live ? 2 : ongoing ? 1 : 0,
-      active: flowRunIsActive(run, runners, cutoff),
-      activityAt: flowRunActivityAt(run),
+      entry: {
+        kind: 'flow',
+        run,
+        ownerName: owner.name,
+        ownerKind: owner.kind,
+        isLive: flowRunIsLive(run, runners),
+      },
+      active: run.id === selection.openedRunId || flowRunIsActive(run, runners, cutoff),
+      promptedAt: Math.max(
+        flowRunPromptedAt(run),
+        selection.lastOpenedAtByRun[run.id] ?? 0,
+      ),
     });
   }
 
   return out;
+}
+
+/// When the user last drove this run: launching it, or clicking Continue on
+/// a paused step. Deliberately NOT flowRunActivityAt — attempts are pushed by
+/// the runtime for every step it takes, so keying off those would let a flow
+/// walking itself through ten steps outrank a chat the user just typed in.
+function flowRunPromptedAt(run: FlowRun): number {
+  return Math.max(run.createdAt ?? 0, run.pendingContinue?.startedAt ?? 0);
 }
 
 function hasProjectActivity(

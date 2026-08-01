@@ -411,6 +411,12 @@ export interface FlowRun {
   /// candidate's title). Display only — lets a run surfaced on its own
   /// (sidebar, run pane) show which ask spawned it.
   orchestrationItemTitle?: string;
+  /// Set when a Schedule fired this run rather than the user launching it.
+  /// The scheduler uses it to route the run's terminal state home; the UI
+  /// uses `scheduleName` to say so out loud, because a run the user has no
+  /// memory of starting is otherwise alarming.
+  scheduleId?: UUID;
+  scheduleName?: string;
   /// User-supplied name for THIS run, set from the sidebar / library row.
   /// Overrides the prompt-derived title everywhere a run is listed (see
   /// `flowRunTitle`). Absent until the user renames the run — a run is

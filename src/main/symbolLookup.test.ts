@@ -6,10 +6,13 @@ import { afterAll, describe, expect, it } from 'vitest';
 import {
   buildLookupArgs,
   declarationPatterns,
+  gitRootFor,
   isSafeSymbol,
+  looksLikeDeclaration,
   lookupModelLadder,
   parseGrepMatches,
   parseModelCandidates,
+  resolveSearchRoot,
   siblingExtensions,
   readLineAt,
   verifyCandidate,
@@ -35,49 +38,151 @@ describe('isSafeSymbol', () => {
   });
 });
 
-describe('declarationPatterns', () => {
-  /// The whole value of the grep tier is that it matches *declarations* and
-  /// not call sites — a pattern loose enough to hit both makes every lookup
-  /// look ambiguous and pay for a model round trip.
-  function matchesAny(patterns: string[], line: string): boolean {
-    return patterns.some((p) => new RegExp(p).test(line));
+describe('tier 1 declaration matching', () => {
+  /// Mirrors what the grep tier actually does: ripgrep matches one of the
+  /// (deliberately loose) patterns, then `looksLikeDeclaration` rejects the
+  /// false positives rg's engine can't express — it has no lookaround.
+  /// Testing the halves separately would let a regression hide in the seam.
+  function isDefinition(file: string, symbol: string, line: string): boolean {
+    const matched = declarationPatterns(file, symbol).some((p) => new RegExp(p).test(line));
+    return matched && looksLikeDeclaration(line, symbol, file);
   }
 
-  it('matches a Java method declaration but not its call sites', () => {
-    const p = declarationPatterns('Service.java', 'doThing');
-    expect(matchesAny(p, '  public static Foo doThing(Bar b) {')).toBe(true);
-    expect(matchesAny(p, '  private Foo doThing(Bar b) throws IOException {')).toBe(true);
-    expect(matchesAny(p, '    svc.doThing(b);')).toBe(false);
-    expect(matchesAny(p, '    return doThing(b) + 1;')).toBe(false);
+  /// Each case is [source line, is it a definition of `symbol`?]. Written
+  /// as tables because the failure that started this — Java interface
+  /// methods never matching — was a *shape* nobody had listed, not a bug in
+  /// any single pattern.
+  function check(file: string, symbol: string, cases: Array<[string, boolean]>) {
+    for (const [line, expected] of cases) {
+      expect(isDefinition(file, symbol, line), `${file} ${symbol} :: ${line}`).toBe(expected);
+    }
+  }
+
+  it('Java: methods with and without bodies', () => {
+    check('Service.java', 'doThing', [
+      ['  public static Foo doThing(Bar b) {', true],
+      ['  private Foo doThing(Bar b) throws IOException {', true],
+      // The regression that started this: an interface / abstract method
+      // has no body, so requiring `{` on the line missed every one.
+      ['  void doThing(Bar b);', true],
+      ['  public abstract Foo doThing(Bar b) throws IOException;', true],
+      ['  Map<String, List<Foo>> doThing(Bar b);', true],
+      // Wrapped signature — the opener is all rg sees on this line.
+      ['  public Foo doThing(', true],
+      // Call sites must stay out, including the ones that end in `;` and
+      // therefore look exactly like an interface method to a regex.
+      ['    svc.doThing(b);', false],
+      ['    return doThing(b) + 1;', false],
+      ['    return doThing(b);', false],
+      ['    this.doThing(b);', false],
+      ['   * Calls doThing(b) when ready.', false],
+      ['import static com.foo.Bar.doThing;', false],
+    ]);
   });
 
-  it('matches Java type declarations', () => {
-    const p = declarationPatterns('Service.java', 'FooService');
-    expect(matchesAny(p, 'public interface FooService extends Base {')).toBe(true);
-    expect(matchesAny(p, 'final class FooService {')).toBe(true);
-    expect(matchesAny(p, '  FooService svc = new FooService();')).toBe(false);
+  it('Java: type declarations', () => {
+    check('Service.java', 'FooService', [
+      ['public interface FooService extends Base {', true],
+      ['final class FooService {', true],
+      ['public record FooService(String a) {', true],
+      ['  FooService svc = new FooService();', false],
+      ['import com.foo.FooService;', false],
+    ]);
   });
 
-  it('matches TS functions, arrows and methods', () => {
-    const p = declarationPatterns('a.ts', 'handle');
-    expect(matchesAny(p, 'export function handle(req: Req) {')).toBe(true);
-    expect(matchesAny(p, 'const handle = async (req) => {')).toBe(true);
-    expect(matchesAny(p, '  handle(req: Req): void {')).toBe(true);
-    expect(matchesAny(p, '  await handle(req);')).toBe(false);
+  it('TypeScript: functions, arrows, class members', () => {
+    check('a.ts', 'handle', [
+      ['export function handle(req: Req) {', true],
+      ['const handle = async (req) => {', true],
+      ['  handle(req: Req): void {', true],
+      ['  async handle(req: Req): Promise<void> {', true],
+      ['  private static handle(req: Req) {', true],
+      ['  handle(', true],
+      ['  handle: async function (req) {', true],
+      ['    await handle(req);', false],
+      ['    return handle(req);', false],
+      ['    const r = handle(req);', false],
+      ['    this.handle(req);', false],
+      ["export { handle } from './handle';", false],
+      ["import { handle } from './handle';", false],
+    ]);
   });
 
-  it('uses indentation-anchored patterns for Python', () => {
-    const p = declarationPatterns('a.py', 'run');
-    expect(matchesAny(p, '    def run(self, x):')).toBe(true);
-    expect(matchesAny(p, 'async def run():')).toBe(true);
-    expect(matchesAny(p, '    self.run(x)')).toBe(false);
+  it('TypeScript: types and interfaces', () => {
+    check('a.ts', 'Options', [
+      ['export interface Options {', true],
+      ['type Options = {', true],
+      ['export type Options<T> = Partial<T>;', true],
+      ['  const o: Options = {};', false],
+    ]);
   });
 
-  it('handles Ruby singleton methods', () => {
-    const p = declarationPatterns('a.rb', 'call');
-    expect(matchesAny(p, '  def self.call(x)')).toBe(true);
-    expect(matchesAny(p, '  def call(x)')).toBe(true);
-    expect(matchesAny(p, '  obj.call(x)')).toBe(false);
+  it('JavaScript: CommonJS and prototype shapes', () => {
+    check('a.js', 'render', [
+      ['function render(props) {', true],
+      ['const render = (props) => {', true],
+      ['  render(props) {', true],
+      ['module.exports.render = function (props) {', true],
+      ['    return render(props);', false],
+      ['    el.render(props);', false],
+    ]);
+  });
+
+  it('Python: defs, classes, module-level bindings', () => {
+    check('a.py', 'run', [
+      ['    def run(self, x):', true],
+      ['async def run():', true],
+      ['    self.run(x)', false],
+      ['    return run(x)', false],
+      ['    result = run(x)', false],
+      ['# run() is called by the scheduler', false],
+    ]);
+    check('a.py', 'Runner', [
+      ['class Runner:', true],
+      ['    r = Runner()', false],
+    ]);
+    check('a.py', 'DEFAULTS', [
+      ['DEFAULTS = {', true],
+      ['    x = DEFAULTS["a"]', false],
+    ]);
+  });
+
+  it('Go: receivers, which the old brace patterns missed entirely', () => {
+    check('svc.go', 'doThing', [
+      // A bare Go return type has no `:` before it, so the old pattern
+      // required punctuation Go never writes.
+      ['func (s *Svc) doThing(b Bar) error {', true],
+      ['func doThing(b Bar) (Foo, error) {', true],
+      ['func (s Svc) doThing() {', true],
+      ['	return s.doThing(b)', false],
+      ['	doThing(b)', false],
+    ]);
+    check('svc.go', 'Svc', [
+      ['type Svc struct {', true],
+      ['	s := Svc{}', false],
+    ]);
+  });
+
+  it('Ruby: singleton methods and attr_accessor', () => {
+    check('a.rb', 'call', [
+      ['  def self.call(x)', true],
+      ['  def call(x)', true],
+      ['  attr_reader :call', true],
+      ['  obj.call(x)', false],
+    ]);
+  });
+
+  it('Rust and C++ keep working through the brace family', () => {
+    check('a.rs', 'parse', [
+      ['pub fn parse(input: &str) -> Result<Ast> {', true],
+      ['    let x = parse(input)?;', false],
+    ]);
+    check('a.cpp', 'Compute', [
+      // Out-of-line definition and header prototype.
+      ['void Renderer::Compute(const Frame& f) {', true],
+      ['  virtual void Compute(const Frame& f) const;', true],
+      ['    Compute(f);', false],
+    ]);
   });
 });
 
@@ -103,8 +208,8 @@ describe('parseGrepMatches', () => {
       'src/B.java:99:  void go() {',
     ].join('\n');
     expect(parseGrepMatches(out, cwd)).toEqual([
-      { path: path.join('src', 'A.java'), line: 12 },
-      { path: 'src/B.java', line: 99 },
+      { path: path.join('src', 'A.java'), line: 12, text: '  public void go() {' },
+      { path: 'src/B.java', line: 99, text: '  void go() {' },
     ]);
   });
 
@@ -256,6 +361,74 @@ describe('readLineAt', () => {
     expect(await readLineAt(p, 50_001, 1_000)).toBeNull();
     // Same file, generous cap: the line is found.
     expect(await readLineAt(p, 50_001)).toBe('target');
+  });
+});
+
+describe('resolveSearchRoot', () => {
+  // Mirrors the shapes overcli actually produces: a real project, a linked
+  // worktree (`.git` is a FILE, not a directory), and a workspace root
+  // that's a directory of symlinks pointing at both.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-roots-'));
+  const project = path.join(tmp, 'project');
+  const worktree = path.join(tmp, 'worktrees', 'agent-1');
+  const wsRoot = path.join(tmp, 'workspace');
+  fs.mkdirSync(path.join(project, 'src'), { recursive: true });
+  fs.mkdirSync(path.join(project, '.git'), { recursive: true });
+  fs.writeFileSync(path.join(project, 'src', 'A.java'), 'class A {}\n');
+  fs.mkdirSync(path.join(worktree, 'src'), { recursive: true });
+  // A linked worktree's .git is a file containing a gitdir pointer.
+  fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${project}/.git/worktrees/agent-1\n`);
+  fs.writeFileSync(path.join(worktree, 'src', 'A.java'), 'class A {}\n');
+  fs.mkdirSync(wsRoot, { recursive: true });
+  fs.symlinkSync(project, path.join(wsRoot, 'project'));
+  fs.symlinkSync(worktree, path.join(wsRoot, 'agent-1'));
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+
+  const real = (p: string) => fs.realpathSync.native(p);
+
+  it('keeps the caller root when the file really lives under it', () => {
+    expect(resolveSearchRoot(path.join(project, 'src', 'A.java'), project)).toBe(real(project));
+  });
+
+  it('falls back to the worktree when the caller root is a different tree', () => {
+    // The flow case: conversation root is the project, but the file being
+    // viewed is the agent's copy in a minted worktree. Searching `project`
+    // would scan the wrong tree and then reject every hit for resolving
+    // outside it — the lookup returns nothing, with no clue why.
+    expect(resolveSearchRoot(path.join(worktree, 'src', 'A.java'), project)).toBe(real(worktree));
+  });
+
+  it('resolves through a workspace symlink root to the real tree', () => {
+    // ripgrep does not follow symlinks by default, so searching wsRoot
+    // itself scans a directory of links and matches nothing.
+    expect(resolveSearchRoot(path.join(wsRoot, 'agent-1', 'src', 'A.java'), wsRoot)).toBe(
+      real(worktree),
+    );
+    expect(resolveSearchRoot(path.join(wsRoot, 'project', 'src', 'A.java'), wsRoot)).toBe(
+      real(project),
+    );
+  });
+
+  it('finds the git root when no usable caller root is supplied', () => {
+    expect(resolveSearchRoot(path.join(project, 'src', 'A.java'), '')).toBe(real(project));
+  });
+
+  it('falls back to the file directory outside any repo', () => {
+    const loose = path.join(tmp, 'loose');
+    fs.mkdirSync(loose, { recursive: true });
+    fs.writeFileSync(path.join(loose, 'x.ts'), 'export const x = 1;\n');
+    expect(resolveSearchRoot(path.join(loose, 'x.ts'), '')).toBe(real(loose));
+  });
+});
+
+describe('gitRootFor', () => {
+  it('accepts .git as a file, which is how linked worktrees mark their root', () => {
+    const seen = new Set(['/repo/wt/.git']);
+    expect(gitRootFor('/repo/wt/src/A.java', (p) => seen.has(p))).toBe(path.resolve('/repo/wt'));
+  });
+
+  it('returns null when nothing above the file is a repo', () => {
+    expect(gitRootFor('/nowhere/a/b.ts', () => false)).toBeNull();
   });
 });
 

@@ -4,6 +4,7 @@
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
+import type { Schedule } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
 
 export type UUID = string;
@@ -331,6 +332,10 @@ export interface Conversation {
   sessionId?: string;
   createdAt: number;
   lastActiveAt?: number;
+  /// Last time the *user* sent a turn here. `lastActiveAt` also moves when
+  /// an agent finishes on its own, so it can't order a list by "what I was
+  /// last working on" — this can.
+  lastPromptAt?: number;
   totalCostUSD: number;
   turnCount: number;
   currentModel: string;
@@ -770,6 +775,11 @@ export interface AppSettings {
   explorerTreeWidth: number;
   /// Sidebar shortcut strip for running/recent conversations.
   showActiveSidebarSection?: boolean;
+  /// Set once the user has opened Flows → Schedules. Until then the segment
+  /// carries a discovery glow. Persisted rather than per-session so the hint
+  /// doesn't come back every launch — a highlight that never retires is one
+  /// the eye learns to skip.
+  seenSchedules?: boolean;
   /// When true, the sidebar footer shows a "Debug" button that opens the
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
@@ -1159,8 +1169,13 @@ export interface IPCInvokeMap {
     worktreePath: string;
     branchName: string;
     baseBranch: string;
+    baselineCommit?: string | null;
   }) => WorktreeStatus;
-  'git:worktreeDiff': (args: { cwd: string; baseBranch: string }) => {
+  'git:worktreeDiff': (args: {
+    cwd: string;
+    baseBranch: string;
+    baselineCommit?: string | null;
+  }) => {
     stdout: string;
     stderr: string;
     exitCode: number;
@@ -1183,23 +1198,45 @@ export interface IPCInvokeMap {
   /// Base-relative twin of `git:commitStatus` for flow worktrees: counts
   /// committed + uncommitted changes vs the run's fork point so the chat
   /// ChangesBar matches the review sheet's diff.
-  'git:worktreeChanges': (args: { worktreePath: string; baseBranch: string }) => {
-    isRepo: boolean;
-    currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
-    insertions: number;
-    deletions: number;
-  };
-  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
-  'git:workspaceCommitStatus': (args: {
-    projects: Array<{ name: string; path: string; baseBranch?: string }>;
+  'git:worktreeChanges': (args: {
+    worktreePath: string;
+    baseBranch: string;
+    baselineCommit?: string | null;
   }) => {
     isRepo: boolean;
     currentBranch: string;
     changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
     insertions: number;
     deletions: number;
+    /// Ref the counts were measured against, for labelling the bar. Null
+    /// when we fell back to the run's frozen fork point.
+    baseRef: string | null;
   };
+  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
+  'git:workspaceCommitStatus': (args: {
+    projects: Array<{
+      name: string;
+      path: string;
+      baseBranch?: string;
+      baselineCommit?: string | null;
+    }>;
+  }) => {
+    isRepo: boolean;
+    currentBranch: string;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
+    insertions: number;
+    deletions: number;
+    /// Set only when every member agreed on the same base ref.
+    baseRef: string | null;
+  };
+  /// Resolve the commit a base-relative diff should start from, live. The
+  /// renderer needs this for per-file diffs, which run through `git:run`
+  /// rather than one of the aggregate probes.
+  'git:resolveDiffBase': (args: {
+    cwd: string;
+    preferredBranch?: string | null;
+    fallbackCommit?: string | null;
+  }) => { commit: string; ref: string | null };
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
     | { ok: false; error: string };
@@ -1454,6 +1491,33 @@ export interface IPCInvokeMap {
   /// Permanently delete a batch record (does not touch the child runs'
   /// own history). Idempotent.
   'orchestrator:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Release a batch a schedule parked. Items named in `approve` are queued
+  /// (with an optional flow remap); any other `proposed` item is cancelled.
+  /// Omit `approve` to accept the whole batch as proposed.
+  'orchestrator:approveBatch': (args: {
+    id: UUID;
+    approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+  }) => { ok: true; queued: number } | { ok: false; error: string };
+
+  // ---- Schedules --------------------------------------------------------
+  /// Every schedule, newest first, each with its computed next fire time.
+  /// `nextFireAt` is null for a disabled schedule.
+  'schedules:list': () => Array<{ schedule: Schedule; nextFireAt: number | null }>;
+  /// Create (no `id`) or replace (with `id`). Validates with the same
+  /// `validateSchedule` the editor uses, so Save can never fail for a reason
+  /// the form didn't already show.
+  'schedules:save': (args: {
+    schedule: Omit<Schedule, 'id' | 'createdAt' | 'history'> & { id?: UUID };
+  }) => { ok: true; schedule: Schedule } | { ok: false; error: string };
+  'schedules:setEnabled': (args: { id: UUID; enabled: boolean }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// Delete the trigger. Any run it already started is left alone — it's real
+  /// work in a real worktree.
+  'schedules:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Fire once, right now, without touching the cadence. The way to check a
+  /// schedule does what you think before trusting it to run unattended.
+  'schedules:runNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
 }
 
 export type ArtifactPreviewResult =
@@ -1800,6 +1864,21 @@ export type MainToRendererEvent =
   | {
       /// An orchestration record was deleted from main.
       type: 'orchestrationDeleted';
+      id: UUID;
+    }
+  | {
+      /// A schedule changed — saved, toggled, fired, or its run finished.
+      /// Whole-record like `orchestrationUpdate`: a schedule is tiny and the
+      /// consistency is worth more than the diffing. `nextFireAt` rides along
+      /// because it's derived in main from the trigger and the last firing,
+      /// and recomputing it in the renderer would let the two disagree.
+      type: 'scheduleUpdate';
+      schedule: Schedule;
+      nextFireAt: number | null;
+    }
+  | {
+      /// A schedule was deleted from main.
+      type: 'scheduleDeleted';
       id: UUID;
     }
   | {

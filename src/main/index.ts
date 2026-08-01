@@ -4,7 +4,17 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
-import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  session,
+  shell,
+  Menu,
+  nativeTheme,
+  Notification,
+} from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +22,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
-import { SymbolLookupManager } from './symbolLookup';
+import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import {
   probeBackendHealth,
@@ -41,6 +51,7 @@ import {
   rescueMainTree,
   commitStatus,
   worktreeChanges,
+  resolveDiffBase,
   currentBranch,
   restoreFileToHead,
   workspaceCommitStatus,
@@ -80,6 +91,7 @@ import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/st
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
+import { SchedulerEngine } from './flows/scheduler';
 import { flushRuns } from './flows/runsStore';
 import {
   listRecentPrompts,
@@ -129,6 +141,7 @@ let runner: RunnerManager | null = null;
 // already load flows and build them without a crash on Run.
 let flowRuntime: FlowRuntime | null = null;
 let orchestrator: OrchestratorImpl | null = null;
+let scheduler: SchedulerEngine | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 
 function createWindow(): void {
@@ -194,6 +207,28 @@ function emitToRenderer(event: MainToRendererEvent): void {
   }
 }
 
+/// Native OS notification. The only way a scheduled run reaches the user when
+/// the window is behind everything else or they've walked away — which is the
+/// normal case for scheduled work, not the exception. Best-effort: a Linux box
+/// with no notification daemon just gets nothing, which must not take the
+/// scheduler down with it.
+function showDesktopNotification(args: { title: string; body: string }): void {
+  try {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title: args.title, body: args.body });
+    n.on('click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    n.show();
+  } catch (err) {
+    log('warn', 'schedules', `Notification failed: ${String(err)}`);
+  }
+}
+
 function registerIpc(): void {
   // The flow runtime needs to tap every stream event the runner emits so
   // it can detect step completion + accumulate assistant text for artifact
@@ -222,7 +257,24 @@ function registerIpc(): void {
     () => Store.load().projects,
     () => Store.load().settings,
   );
-  flowRuntime.setRunObserver((run) => orchestrator?.onRunUpdate(run));
+  // The scheduler is the other thing that launches runs nobody is watching.
+  // It borrows the orchestrator for `orchestrate` targets, which is why it's
+  // built after it.
+  scheduler = new SchedulerEngine({
+    launcher: flowRuntime,
+    parker: orchestrator,
+    isGitRepo: (projectPath) => currentBranch(projectPath).isRepo,
+    emit: flowAwareEmit,
+    notify: showDesktopNotification,
+  });
+  // One observer slot on the runtime, two consumers. The orchestrator pumps
+  // its queue on a terminal child run; the scheduler clears its overlap guard
+  // and notifies. Each ignores runs it didn't launch, so the fan-out is free.
+  flowRuntime.setRunObserver((run) => {
+    orchestrator?.onRunUpdate(run);
+    scheduler?.onRunUpdate(run);
+  });
+  scheduler.start();
   // Symbol lookup resolves its backend per call rather than capturing one:
   // the user can change the preferred backend in Settings mid-session, and
   // a lookup is short-lived enough that there's nothing to migrate.
@@ -450,7 +502,13 @@ function registerIpc(): void {
     if (!filePath || !isReadablePath(filePath)) {
       return { ok: false, error: 'File is outside any registered project.' };
     }
-    const cwd = args?.cwd ?? '';
+    // The renderer sends the *conversation's* root. In a flow run that is
+    // routinely not the tree the open file lives in — worktree runs mint a
+    // worktree outside the project, and workspace/coordinator roots are
+    // directories of symlinks. Searching the root as sent finds nothing
+    // there, so resolve to the tree the file actually belongs to and
+    // validate that, since it's the one we read.
+    const cwd = resolveSearchRoot(filePath, args?.cwd ?? '');
     if (!cwd || !isPathUnderRegisteredRoot(cwd)) {
       return { ok: false, error: 'Project root is not registered.' };
     }
@@ -547,6 +605,7 @@ function registerIpc(): void {
   ipcMain.handle('git:rescueMainTree', (_e, args) => rescueMainTree(args));
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
   ipcMain.handle('git:worktreeChanges', (_e, args) => worktreeChanges(args));
+  ipcMain.handle('git:resolveDiffBase', (_e, args) => resolveDiffBase(args));
   ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranch(cwd));
   ipcMain.handle('git:restoreFile', (_e, { cwd, path }) => {
     // Destructive git write — re-validate the cwd here rather than trusting
@@ -829,6 +888,11 @@ function registerIpc(): void {
       ? orchestrator.retry(args)
       : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
+  ipcMain.handle('orchestrator:approveBatch', (_e, args) =>
+    orchestrator
+      ? orchestrator.approveBatch(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
   ipcMain.handle('orchestrator:delete', (_e, args) =>
     orchestrator
       ? orchestrator.delete(args)
@@ -839,6 +903,35 @@ function registerIpc(): void {
   ipcMain.handle('orchestrator:recentPrompts', () => listRecentPrompts());
   ipcMain.handle('orchestrator:recordRecentPrompt', (_e, { text }) => recordRecentPrompt(text));
   ipcMain.handle('orchestrator:deleteRecentPrompt', (_e, { text }) => deleteRecentPrompt(text));
+
+  ipcMain.handle('schedules:list', () =>
+    scheduler
+      ? scheduler.list().map((schedule) => ({
+          schedule,
+          nextFireAt: scheduler!.nextFireAt(schedule.id),
+        }))
+      : [],
+  );
+  ipcMain.handle('schedules:save', (_e, { schedule }) =>
+    scheduler
+      ? scheduler.save(schedule)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+  ipcMain.handle('schedules:setEnabled', (_e, { id, enabled }) =>
+    scheduler
+      ? scheduler.setEnabled(id, enabled)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+  ipcMain.handle('schedules:delete', (_e, { id }) =>
+    scheduler
+      ? scheduler.remove(id)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+  ipcMain.handle('schedules:runNow', (_e, { id }) =>
+    scheduler
+      ? scheduler.runNow(id)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting
@@ -1640,6 +1733,9 @@ let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
   symbolLookup?.dispose();
+  // Drop the pending timer so a quit can't fire a schedule into a runtime
+  // that's already tearing its subprocesses down.
+  scheduler?.dispose();
   ollamaServer.stop();
   // Store writes are debounced now (see store.save). Take the freshest
   // snapshot synchronously so a quit inside the debounce window can't drop
