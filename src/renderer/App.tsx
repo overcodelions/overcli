@@ -125,6 +125,13 @@ export function App() {
     void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
       void useOrchestratorStore.getState().reload();
     });
+    // Schedules hydrate at startup rather than with the Flows pane, because
+    // the title bar's indicator has to be right from the first paint — the
+    // whole point of it is telling you something is running before you've
+    // thought to go looking.
+    void import('./schedulesStore').then(({ useSchedulesStore }) => {
+      void useSchedulesStore.getState().reload();
+    });
   }, []);
 
   // Persist the current "where am I" view (detail mode, focused project/

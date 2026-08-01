@@ -8,7 +8,7 @@ import os from 'node:os';
 import { Backend, StreamEvent, StreamEventKind, ToolUseBlock } from '../shared/types';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadOllamaSession } from './ollamaStore';
-import { claudeToolResultText, modelFallbackText } from './parsers/claude';
+import { claudeToolResultText, compactBoundaryText, modelFallbackText } from './parsers/claude';
 import { makeCopilotParserState, parseCopilotLine } from './parsers/copilot';
 import { logSilent } from './diagnostics';
 
@@ -345,6 +345,21 @@ export function parseClaudeHistoryLine(line: string): StreamEvent[] {
       tag(event({ type: 'systemNotice', text: modelFallbackText(json) }, trimmed, timestamp), parentToolUseId),
     ];
   }
+  // Same for a compaction — live it's the one marker explaining why the
+  // transcript above the line is a summary and why the run stalled, and
+  // without this reopening the conversation dropped it entirely.
+  if (type === 'system' && json.subtype === 'compact_boundary') {
+    return [
+      tag(event({ type: 'systemNotice', text: compactBoundaryText(json) }, trimmed, timestamp), parentToolUseId),
+    ];
+  }
+  // The summary a compaction produced. The CLI writes it as an ordinary
+  // user message with a string body, so the localUser branch below would
+  // replay it as a wall of text the user appears to have typed — 25k
+  // characters of it in the run that surfaced this. The boundary notice
+  // just above already marks the spot, and the live stream never shows
+  // this, so replay drops it to match.
+  if (type === 'user' && json.isCompactSummary === true) return [];
   if (type === 'user' && typeof json.message?.content === 'string') {
     const content = json.message.content;
     if (json.isMeta === true) {

@@ -159,6 +159,35 @@ describe('parseClaudeHistoryLine', () => {
     });
   });
 
+  it('replays a compact_boundary, reading the transcript camelCase metadata', () => {
+    // Live this is the only marker explaining why the transcript above the
+    // line is a summary; replay used to drop it on the floor.
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      timestamp: 1000,
+      compactMetadata: { trigger: 'auto', preTokens: 1_275_004, durationMs: 157_716 },
+    });
+    const [ev] = parseClaudeHistoryLine(line);
+    expect(ev.kind).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation auto-compacted · took 2m 38s',
+    });
+  });
+
+  it('drops the compaction summary instead of replaying it as the user talking', () => {
+    // The CLI writes it as an ordinary string-bodied user message, so the
+    // localUser branch would attribute 25k characters of summary to the user.
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: 1000,
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      message: { role: 'user', content: 'This session is being continued from a previous…' },
+    });
+    expect(parseClaudeHistoryLine(line)).toEqual([]);
+  });
+
   it('routes a task-notification user message to taskNotification, not localUser', () => {
     // The harness injects these with no isMeta/isSidechain flag, so they are
     // otherwise indistinguishable from a message the user typed.

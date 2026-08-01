@@ -49,6 +49,9 @@ export interface FlowLauncher {
     baseBranch?: string;
     parentOrchestrationId?: UUID;
     orchestrationItemTitle?: string;
+    scheduleId?: UUID;
+    scheduleName?: string;
+    title?: string;
   }): Promise<{ ok: true; runId: UUID } | { ok: false; error: string }>;
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
   getRun(runId: UUID): FlowRun | null;
@@ -274,6 +277,110 @@ export class OrchestratorImpl {
     return { ok: true, orchestrationId: orchestration.id };
   }
 
+  // ---- PARK (scheduled proposals) ---------------------------------------
+
+  /// Run the producer turn and record what it found as a batch that has NOT
+  /// launched anything — every item lands `proposed`.
+  ///
+  /// This is the only entry point a schedule gets. `startBatch` dispatches
+  /// immediately, which is fine when a human just clicked Launch and is
+  /// looking at the candidate list; it is not fine at 8am with nobody there,
+  /// because the producer decides how many items exist and a bad pull would
+  /// fork a dozen worktrees unsupervised. Parking keeps the expensive half of
+  /// the decision with the user while still doing the slow half (the
+  /// investigation) on their behalf.
+  async parkProposal(args: {
+    scheduleId: UUID;
+    scheduleName: string;
+    projectPath: string;
+    prompt: string;
+    flowId: string;
+    runIn: RunIn;
+    baseBranch?: string;
+    maxConcurrent: number;
+    /// Title for the batch, already carrying its `[SR-n]` sequence so two
+    /// mornings' worth of the same schedule are tellable apart in the ledger.
+    title?: string;
+  }): Promise<
+    { ok: true; orchestrationId: UUID; count: number } | { ok: false; error: string }
+  > {
+    const projectPath = args.projectPath?.trim();
+    if (!projectPath) return { ok: false, error: 'Schedule has no project.' };
+
+    const produced = await this.propose({ message: args.prompt, projectPath });
+    if (!produced.ok) return { ok: false, error: produced.error };
+
+    const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
+    const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
+    const orchestration: Orchestration = {
+      id: randomUUID(),
+      title: args.title?.trim() || args.scheduleName,
+      projectPath,
+      runIn,
+      baseBranch,
+      maxConcurrent:
+        runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1)),
+      producer: { prompt: args.prompt, reply: produced.reply },
+      origin: { kind: 'schedule', scheduleId: args.scheduleId, scheduleName: args.scheduleName },
+      createdAt: Date.now(),
+      items: produced.candidates.map<OrchestrationItem>((candidate) => ({
+        candidate,
+        // The producer may name a flow per candidate; the schedule's flow is
+        // the fallback, since there was nobody around to pick one.
+        flowId: candidate.suggestedFlowId?.trim() || args.flowId,
+        baseBranch: runIn === 'cwd' ? undefined : baseBranch,
+        status: 'proposed',
+      })),
+    };
+    this.batches.set(orchestration.id, orchestration);
+    this.persistAndEmit(orchestration);
+    // Deliberately no `pump` — that's what approval is for.
+    return { ok: true, orchestrationId: orchestration.id, count: orchestration.items.length };
+  }
+
+  /// Release a parked batch. Items named in `approve` are queued (with an
+  /// optional flow remap); every other `proposed` item is cancelled, because
+  /// the user reviewed the list and left them out on purpose. Omit `approve`
+  /// to take the whole batch as proposed.
+  async approveBatch(args: {
+    id: UUID;
+    approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+  }): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
+    const o = this.batches.get(args.id);
+    if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
+    const proposed = o.items.filter((i) => i.status === 'proposed');
+    if (proposed.length === 0) return { ok: false, error: 'Nothing is waiting for approval.' };
+
+    type Pick = { candidateId?: string; flowId?: string; baseBranch?: string };
+    const picks: Map<string, Pick> | null = args.approve
+      ? new Map(args.approve.map((a) => [a.candidateId, a as Pick]))
+      : null;
+    let queued = 0;
+    for (const item of proposed) {
+      // No `approve` list at all means "take it as proposed" — every item gets
+      // an empty override rather than being read as unpicked.
+      const pick: Pick | undefined = picks ? picks.get(item.candidate.id) : {};
+      if (!pick) {
+        item.status = 'cancelled';
+        item.note = 'Not approved.';
+        item.finishedAt = Date.now();
+        continue;
+      }
+      if (pick.flowId?.trim()) item.flowId = pick.flowId.trim();
+      if (o.runIn !== 'cwd' && pick.baseBranch?.trim()) item.baseBranch = pick.baseBranch.trim();
+      item.status = 'queued';
+      queued++;
+    }
+    this.persistAndEmit(o);
+    if (queued === 0) {
+      // Everything was declined — the batch is settled, not launched.
+      this.maybeComplete(o);
+      return { ok: true, queued: 0 };
+    }
+    await this.pump(o.id);
+    return { ok: true, queued };
+  }
+
   /// Fill open concurrency slots with queued items. Each launch mints a
   /// child FlowRun — in its own worktree, or in the project's working tree
   /// for a `runIn: 'cwd'` batch (which is capped at one slot, so those items
@@ -405,10 +512,16 @@ export class OrchestratorImpl {
     // mid-abort. Draining the queue up front means there's nothing left for
     // that pump to start.
     for (const item of o.items) {
-      // `queued` never launched; a `paused` item with no run (shouldn't
-      // happen, but be defensive) has nothing to kill — settle both straight
-      // to cancelled so they can't hold the batch open.
-      if (item.status === 'queued' || (item.status === 'paused' && !item.runId)) {
+      // `queued` never launched, and neither did `proposed` (aborting a
+      // parked batch is how the user says "not this morning's list"); a
+      // `paused` item with no run (shouldn't happen, but be defensive) has
+      // nothing to kill — settle all three straight to cancelled so they
+      // can't hold the batch open.
+      if (
+        item.status === 'queued' ||
+        item.status === 'proposed' ||
+        (item.status === 'paused' && !item.runId)
+      ) {
         item.status = 'cancelled';
         item.finishedAt = Date.now();
       }
