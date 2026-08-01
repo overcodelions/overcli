@@ -6,6 +6,7 @@ import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/sc
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
 import type { Schedule } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
+import type { ChangelogRelease } from './changelog';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -811,6 +812,12 @@ export interface AppSettings {
   /// prerelease. The in-app updater is the single source of truth — whatever
   /// build you installed, this setting decides what it upgrades to.
   updateChannel?: 'stable' | 'nightly';
+  /// Newest version whose release notes the user has been shown. Drives the
+  /// "What's new" panel — see src/main/whatsNew.ts. Absent means the baseline
+  /// hasn't been seeded yet (a fresh install, or an install that predates the
+  /// feature); main stamps it on first launch so nothing is shown for a
+  /// version the user was already running.
+  lastSeenVersion?: string;
 }
 
 /// The user's current "where am I" view, persisted alongside the selected
@@ -845,6 +852,23 @@ export interface PersistedView {
 /// reach disk.
 export type PersistedFileTabs = Record<string, { paths: string[]; activePath?: string | null }>;
 
+/// What the "What's new" panel renders, assembled in src/main/whatsNew.ts
+/// from the CHANGELOG.md that ships in the app bundle.
+export interface WhatsNewReport {
+  /// The running build's version, i.e. `app.getVersion()`.
+  currentVersion: string;
+  /// Releases the user hasn't seen, newest first, capped — see `olderCount`.
+  releases: ChangelogRelease[];
+  /// Unseen releases dropped by the cap. Surfaced in the UI rather than
+  /// silently truncated, so a long-absent user knows there's more.
+  olderCount: number;
+  /// Whether to surface this unprompted — auto-open on launch plus the dot
+  /// on the title bar's About button. False for a freshly seeded install
+  /// (nothing is "new" on your first launch) and on the nightly channel,
+  /// where a panel every launch would just train the dismissal reflex.
+  unseen: boolean;
+}
+
 /// Renderer → main requests. Responses come back via invoke's return value.
 export interface IPCInvokeMap {
   'store:load': () => {
@@ -871,6 +895,17 @@ export interface IPCInvokeMap {
   'store:saveFileTabs': (tabs: PersistedFileTabs) => void;
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
+  /// Release notes the user hasn't seen yet, parsed from the bundled
+  /// CHANGELOG.md. Cheap enough to call on every launch — the file is read
+  /// and parsed once per process.
+  'app:whatsNew': () => WhatsNewReport;
+  /// Stamp `lastSeenVersion` at the running version, clearing the unseen
+  /// flag. Called when the What's New sheet is opened.
+  'app:markWhatsNewSeen': () => void;
+  /// The running build's version. Nightly builds stamp package.json at CI
+  /// time, so this is the only honest source — a constant in the renderer
+  /// goes stale the moment it isn't hand-edited alongside a release.
+  'app:version': () => string;
   'runner:send': (args: {
     conversationId: UUID;
     prompt: string;

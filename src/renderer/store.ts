@@ -99,7 +99,8 @@ export type ActiveSheet =
   | { type: 'bulkConversationActions' }
   | { type: 'fileFinder'; rootPath: string }
   | { type: 'quickSwitcher' }
-  | { type: 'shortcutsHelp' };
+  | { type: 'shortcutsHelp' }
+  | { type: 'whatsNew' };
 
 export type DetailMode =
   | 'conversation'
@@ -176,6 +177,8 @@ interface StoreState {
   /// Paths with unsaved editor edits. See uiSlice; the text itself lives
   /// in ./fileBuffers.ts.
   dirtyFiles: Record<string, true>;
+  /// Whether release notes are waiting to be read. See uiSlice.
+  whatsNewUnseen: boolean;
   /// Where the file editor renders. See uiSlice for the contract.
   fileEditorSide: 'inline' | 'side';
   pendingFinderQuery: string;
@@ -243,6 +246,7 @@ interface StoreState {
   clearFileDirty(path: string): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
+  setWhatsNewUnseen(unseen: boolean): void;
   openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
   closeSubagentDrawer(): void;
   dismissSubagent(conversationId: UUID, parentToolUseId: string): void;

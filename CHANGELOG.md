@@ -4,6 +4,9 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **"What's new" after an update.** Updates installed silently on quit, so the app could change under you overnight with nothing to say what landed. Release notes now open once on the first launch after an update — not when the update downloads, since installation is deferred to quit and at that moment you're still running the old build. The notes come from this changelog, bundled into the app, rather than the GitHub release body, which is generated from PR titles. Someone who skips two versions gets both, newest first, capped at four with the remainder counted rather than silently dropped. A fresh install is stamped as current and shown nothing — nothing is "new" on your first launch — and the nightly channel is excluded, where a panel every launch would only teach you to dismiss it. Reachable any time from About, which now also reports the real running version instead of a hardcoded `0.1.0`.
+
 ## [0.12.0] - 2026-07-30
 
 ### Added

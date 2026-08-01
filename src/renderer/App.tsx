@@ -134,6 +134,21 @@ export function App() {
     });
   }, []);
 
+  // Surface release notes on the first launch after an update. The install is
+  // deferred to quit (see updater.ts), so UpdateToast fires while the user is
+  // still on the old build — this is the first moment they actually have the
+  // features being described. Anything already on screen wins: an auto-opened
+  // panel that stomps a restored sheet is worse than one the user opens from
+  // About a minute later.
+  useEffect(() => {
+    void window.overcli.invoke('app:whatsNew').then((report) => {
+      if (!report.unseen) return;
+      const { activeSheet, openSheet, setWhatsNewUnseen } = useStore.getState();
+      setWhatsNewUnseen(true);
+      if (!activeSheet) openSheet({ type: 'whatsNew' });
+    });
+  }, []);
+
   // Persist the current "where am I" view (detail mode, focused project/
   // workspace, active flow run, active orchestration) whenever it changes, so
   // a full renderer reload — e.g. macOS discarding the render process during a
