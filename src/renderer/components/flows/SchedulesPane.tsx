@@ -570,82 +570,185 @@ function ScheduleEditor() {
 
 /// Cadence picker. Presets rather than a cron box: the two shapes below cover
 /// what people actually ask a coding agent for, and neither has to be taught.
+///
+/// Both shapes take a day set. The interval also takes an active window, so
+/// "every hour, weekdays, 8am–5pm" is expressible — a repeating check that
+/// shouldn't run overnight or at the weekend is the normal case, not an
+/// exotic one, and without the window you'd get 24 runs a day to get 9.
 function TriggerField() {
   const draft = useSchedulesStore((s) => s.draft)!;
   const patch = useSchedulesStore((s) => s.patchDraft);
   const trigger = draft.trigger;
+  const windowed = trigger.kind === 'interval' && !!trigger.window;
 
-  const days = trigger.kind === 'daily' ? (trigger.days ?? []) : [];
-  const toggleDay = (d: number) => {
-    if (trigger.kind !== 'daily') return;
-    const next = days.includes(d) ? days.filter((x) => x !== d) : [...days, d];
-    patch({ trigger: { ...trigger, days: next } });
-  };
+  const setDays = (days: number[]) => patch({ trigger: { ...trigger, days } });
 
   return (
     <Field label="When" hint={describeTrigger(trigger)}>
-      <div className="flex gap-1.5 mb-2">
+      <div className="flex gap-1.5 mb-3">
         <Segment
           active={trigger.kind === 'daily'}
-          onClick={() => patch({ trigger: { kind: 'daily', time: '09:00', days: WEEKDAY_SET } })}
+          onClick={() =>
+            patch({ trigger: { kind: 'daily', time: '09:00', days: trigger.days ?? WEEKDAY_SET } })
+          }
         >
           At a time of day
         </Segment>
         <Segment
           active={trigger.kind === 'interval'}
-          onClick={() => patch({ trigger: { kind: 'interval', everyMinutes: 240 } })}
+          onClick={() =>
+            patch({ trigger: { kind: 'interval', everyMinutes: 240, days: trigger.days } })
+          }
         >
           On an interval
         </Segment>
       </div>
 
-      {trigger.kind === 'daily' ? (
-        <div className="flex items-center gap-3 flex-wrap">
+      <div className="space-y-3">
+        {trigger.kind === 'daily' ? (
           <input
             type="time"
             value={trigger.time}
             onChange={(e) => patch({ trigger: { ...trigger, time: e.target.value } })}
             className="bg-card border border-card-strong rounded px-2 py-1 text-sm text-ink"
           />
-          <div className="flex gap-1">
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label, d) => {
-              // An empty set means every day — show that as all-on rather than
-              // all-off, so the control matches the "Every day" hint above it.
-              const on = days.length === 0 || days.includes(d);
-              return (
-                <button
-                  key={label}
-                  onClick={() => toggleDay(d)}
-                  className={
-                    'w-9 py-1 rounded text-[11px] ' +
-                    (on ? 'bg-accent text-white' : 'border border-card-strong text-ink-faint')
-                  }
-                >
-                  {label[0]}
-                </button>
-              );
-            })}
+        ) : (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-ink-muted">Every</span>
+            <select
+              value={trigger.everyMinutes}
+              onChange={(e) =>
+                patch({ trigger: { ...trigger, everyMinutes: Number(e.target.value) } })
+              }
+              className="bg-card border border-card-strong rounded px-2 py-1 text-sm text-ink"
+            >
+              {[15, 30, 60, 120, 240, 480, 720, 1440].map((m) => (
+                <option key={m} value={m}>
+                  {m < 60 ? `${m} minutes` : m === 60 ? 'hour' : `${m / 60} hours`}
+                </option>
+              ))}
+            </select>
           </div>
-        </div>
-      ) : (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-ink-muted">Every</span>
-          <select
-            value={trigger.everyMinutes}
-            onChange={(e) =>
-              patch({ trigger: { kind: 'interval', everyMinutes: Number(e.target.value) } })
-            }
-            className="bg-card border border-card-strong rounded px-2 py-1 text-sm text-ink"
-          >
-            {[15, 30, 60, 120, 240, 480, 720, 1440].map((m) => (
-              <option key={m} value={m}>
-                {m < 60 ? `${m} minutes` : m === 60 ? 'hour' : `${m / 60} hours`}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
+        )}
+
+        <DayPicker days={trigger.days} onChange={setDays} />
+
+        {trigger.kind === 'interval' && (
+          <div>
+            <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+              <input
+                type="checkbox"
+                checked={windowed}
+                onChange={(e) =>
+                  patch({
+                    trigger: {
+                      ...trigger,
+                      // Default to a working day — the reason anyone reaches
+                      // for this in the first place.
+                      window: e.target.checked ? { start: '08:00', end: '17:00' } : undefined,
+                    },
+                  })
+                }
+              />
+              Only between certain hours
+            </label>
+            {trigger.window && (
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  type="time"
+                  value={trigger.window.start}
+                  onChange={(e) =>
+                    patch({
+                      trigger: {
+                        ...trigger,
+                        window: { start: e.target.value, end: trigger.window!.end },
+                      },
+                    })
+                  }
+                  className="bg-card border border-card-strong rounded px-2 py-1 text-sm text-ink"
+                />
+                <span className="text-xs text-ink-faint">to</span>
+                <input
+                  type="time"
+                  value={trigger.window.end}
+                  onChange={(e) =>
+                    patch({
+                      trigger: {
+                        ...trigger,
+                        window: { start: trigger.window!.start, end: e.target.value },
+                      },
+                    })
+                  }
+                  className="bg-card border border-card-strong rounded px-2 py-1 text-sm text-ink"
+                />
+                <span className="text-[11px] text-ink-faint">
+                  {isWrappedWindow(trigger.window)
+                    ? 'overnight — runs through midnight'
+                    : 'inclusive of both ends'}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </Field>
+  );
+}
+
+/// End time before start time means the window crosses midnight. Worth saying
+/// out loud rather than letting it look like a mistake the user made.
+function isWrappedWindow(window: { start: string; end: string }): boolean {
+  return window.start > window.end;
+}
+
+function DayPicker({
+  days,
+  onChange,
+}: {
+  days?: number[];
+  onChange: (days: number[]) => void;
+}) {
+  const list = days ?? [];
+  // An empty set means every day, so render that as all-on rather than
+  // all-off — the control has to agree with the "Every day" hint above it.
+  const everyDay = list.length === 0;
+  const toggle = (d: number) => {
+    const base = everyDay ? [0, 1, 2, 3, 4, 5, 6] : list;
+    onChange(base.includes(d) ? base.filter((x) => x !== d) : [...base, d]);
+  };
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <div className="flex gap-1">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((label, d) => {
+          const on = everyDay || list.includes(d);
+          return (
+            <button
+              key={label}
+              onClick={() => toggle(d)}
+              title={label}
+              className={
+                'w-9 py-1 rounded text-[11px] ' +
+                (on ? 'bg-accent text-white' : 'border border-card-strong text-ink-faint')
+              }
+            >
+              {label[0]}
+            </button>
+          );
+        })}
+      </div>
+      <button
+        onClick={() => onChange(WEEKDAY_SET)}
+        className="text-[11px] text-ink-faint hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+      >
+        Weekdays
+      </button>
+      <button
+        onClick={() => onChange([])}
+        className="text-[11px] text-ink-faint hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+      >
+        Every day
+      </button>
+    </div>
   );
 }
 

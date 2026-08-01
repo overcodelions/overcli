@@ -1169,8 +1169,13 @@ export interface IPCInvokeMap {
     worktreePath: string;
     branchName: string;
     baseBranch: string;
+    baselineCommit?: string | null;
   }) => WorktreeStatus;
-  'git:worktreeDiff': (args: { cwd: string; baseBranch: string }) => {
+  'git:worktreeDiff': (args: {
+    cwd: string;
+    baseBranch: string;
+    baselineCommit?: string | null;
+  }) => {
     stdout: string;
     stderr: string;
     exitCode: number;
@@ -1193,23 +1198,45 @@ export interface IPCInvokeMap {
   /// Base-relative twin of `git:commitStatus` for flow worktrees: counts
   /// committed + uncommitted changes vs the run's fork point so the chat
   /// ChangesBar matches the review sheet's diff.
-  'git:worktreeChanges': (args: { worktreePath: string; baseBranch: string }) => {
-    isRepo: boolean;
-    currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
-    insertions: number;
-    deletions: number;
-  };
-  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
-  'git:workspaceCommitStatus': (args: {
-    projects: Array<{ name: string; path: string; baseBranch?: string }>;
+  'git:worktreeChanges': (args: {
+    worktreePath: string;
+    baseBranch: string;
+    baselineCommit?: string | null;
   }) => {
     isRepo: boolean;
     currentBranch: string;
     changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
     insertions: number;
     deletions: number;
+    /// Ref the counts were measured against, for labelling the bar. Null
+    /// when we fell back to the run's frozen fork point.
+    baseRef: string | null;
   };
+  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
+  'git:workspaceCommitStatus': (args: {
+    projects: Array<{
+      name: string;
+      path: string;
+      baseBranch?: string;
+      baselineCommit?: string | null;
+    }>;
+  }) => {
+    isRepo: boolean;
+    currentBranch: string;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
+    insertions: number;
+    deletions: number;
+    /// Set only when every member agreed on the same base ref.
+    baseRef: string | null;
+  };
+  /// Resolve the commit a base-relative diff should start from, live. The
+  /// renderer needs this for per-file diffs, which run through `git:run`
+  /// rather than one of the aggregate probes.
+  'git:resolveDiffBase': (args: {
+    cwd: string;
+    preferredBranch?: string | null;
+    fallbackCommit?: string | null;
+  }) => { commit: string; ref: string | null };
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
     | { ok: false; error: string };

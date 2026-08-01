@@ -191,7 +191,11 @@ describe('describeTrigger', () => {
     );
     expect(describeTrigger({ kind: 'daily', time: '17:30' })).toBe('Every day at 5:30pm');
     expect(describeTrigger({ kind: 'daily', time: '08:00', days: [0, 6] })).toBe(
-      'Sun, Sat at 8am',
+      'Weekends at 8am',
+    );
+    // Anything that isn't a named set falls back to listing the days.
+    expect(describeTrigger({ kind: 'daily', time: '08:00', days: [1, 3, 5] })).toBe(
+      'Mon, Wed, Fri at 8am',
     );
   });
 
@@ -261,5 +265,183 @@ describe('scheduledRunTitle', () => {
 
   it('is still a usable title when the prompt is empty', () => {
     expect(scheduledRunTitle(3, '   ')).toBe('[SR-3]');
+  });
+});
+
+describe('interval triggers with days and an active window', () => {
+  // "Every hour, Mon–Fri, 8am–5pm" — the shape this exists for.
+  const workHours: ScheduleTrigger = {
+    kind: 'interval',
+    everyMinutes: 60,
+    days: [1, 2, 3, 4, 5],
+    window: { start: '08:00', end: '17:00' },
+  };
+
+  it('steps normally inside the window', () => {
+    // 2026-03-02 is a Monday.
+    expect(nextOccurrenceAfter(workHours, local(2026, 3, 2, 9, 0))).toBe(
+      local(2026, 3, 2, 10, 0),
+    );
+  });
+
+  it('fires at the closing edge, inclusive', () => {
+    expect(nextOccurrenceAfter(workHours, local(2026, 3, 2, 16, 0))).toBe(
+      local(2026, 3, 2, 17, 0),
+    );
+  });
+
+  it('jumps to tomorrow morning instead of stepping through the evening', () => {
+    expect(nextOccurrenceAfter(workHours, local(2026, 3, 2, 17, 0))).toBe(
+      local(2026, 3, 3, 8, 0),
+    );
+  });
+
+  it('waits for opening time rather than firing before the window', () => {
+    expect(nextOccurrenceAfter(workHours, local(2026, 3, 2, 3, 0))).toBe(
+      local(2026, 3, 2, 8, 0),
+    );
+  });
+
+  it('skips the weekend', () => {
+    // Friday 2026-03-06 at 17:00 → Monday 2026-03-09 at 08:00.
+    expect(nextOccurrenceAfter(workHours, local(2026, 3, 6, 17, 0))).toBe(
+      local(2026, 3, 9, 8, 0),
+    );
+  });
+
+  it('re-phases to the window start each day', () => {
+    // Armed at 8:37: today runs on the half hour, tomorrow starts at 8 sharp
+    // rather than inheriting the odd offset forever.
+    const at837 = nextOccurrenceAfter(workHours, local(2026, 3, 2, 8, 37));
+    expect(at837).toBe(local(2026, 3, 2, 9, 37));
+    expect(nextOccurrenceAfter(workHours, local(2026, 3, 2, 16, 37))).toBe(
+      local(2026, 3, 3, 8, 0),
+    );
+  });
+
+  it('honours a day set with no window', () => {
+    const t: ScheduleTrigger = { kind: 'interval', everyMinutes: 60, days: [1] };
+    // Monday 23:30 + 1h = Tuesday 00:30, which isn't Monday — next Monday 00:00.
+    expect(nextOccurrenceAfter(t, local(2026, 3, 2, 23, 30))).toBe(local(2026, 3, 9, 0, 0));
+  });
+
+  it('honours a window with no day restriction', () => {
+    const t: ScheduleTrigger = {
+      kind: 'interval',
+      everyMinutes: 120,
+      window: { start: '09:00', end: '15:00' },
+    };
+    // Saturday counts when no days are named.
+    expect(nextOccurrenceAfter(t, local(2026, 3, 7, 15, 0))).toBe(local(2026, 3, 8, 9, 0));
+  });
+
+  it('handles a window that wraps midnight', () => {
+    // Every 2h, 22:00–02:00. Both halves are live.
+    const overnight: ScheduleTrigger = {
+      kind: 'interval',
+      everyMinutes: 120,
+      window: { start: '22:00', end: '02:00' },
+    };
+    expect(nextOccurrenceAfter(overnight, local(2026, 3, 2, 22, 0))).toBe(
+      local(2026, 3, 3, 0, 0),
+    );
+    // 02:00 is the close; the next tick would be 04:00, so wait for 22:00.
+    expect(nextOccurrenceAfter(overnight, local(2026, 3, 3, 2, 0))).toBe(
+      local(2026, 3, 3, 22, 0),
+    );
+  });
+
+  it('attributes a wrapped window to the day it opened on', () => {
+    // Friday-only, 22:00–02:00: Saturday 01:00 belongs to Friday's window,
+    // Saturday 23:00 does not belong to anything.
+    const fridayNight: ScheduleTrigger = {
+      kind: 'interval',
+      everyMinutes: 60,
+      days: [5],
+      window: { start: '22:00', end: '02:00' },
+    };
+    // Fri 2026-03-06 23:00 → Sat 00:00, still inside Friday's window.
+    expect(nextOccurrenceAfter(fridayNight, local(2026, 3, 6, 23, 0))).toBe(
+      local(2026, 3, 7, 0, 0),
+    );
+    // Sat 02:00 is the close → next opening is Friday the 13th at 22:00.
+    expect(nextOccurrenceAfter(fridayNight, local(2026, 3, 7, 2, 0))).toBe(
+      local(2026, 3, 13, 22, 0),
+    );
+  });
+
+  it('treats an unparseable window as no window rather than never firing', () => {
+    const t = {
+      kind: 'interval',
+      everyMinutes: 60,
+      window: { start: 'lunchtime', end: '17:00' },
+    } as ScheduleTrigger;
+    expect(nextOccurrenceAfter(t, local(2026, 3, 2, 9, 0))).toBe(local(2026, 3, 2, 10, 0));
+  });
+});
+
+describe('describeTrigger for windowed intervals', () => {
+  it('reads as a sentence with either qualifier, both, or neither', () => {
+    expect(describeTrigger({ kind: 'interval', everyMinutes: 60 })).toBe('Every hour');
+    expect(
+      describeTrigger({ kind: 'interval', everyMinutes: 60, days: [1, 2, 3, 4, 5] }),
+    ).toBe('Every hour, weekdays');
+    expect(
+      describeTrigger({
+        kind: 'interval',
+        everyMinutes: 60,
+        window: { start: '08:00', end: '17:00' },
+      }),
+    ).toBe('Every hour, 8am–5pm');
+    expect(
+      describeTrigger({
+        kind: 'interval',
+        everyMinutes: 60,
+        days: [1, 2, 3, 4, 5],
+        window: { start: '08:00', end: '17:00' },
+      }),
+    ).toBe('Every hour, weekdays 8am–5pm');
+    expect(describeTrigger({ kind: 'interval', everyMinutes: 30, days: [0, 6] })).toBe(
+      'Every 30 minutes, weekends',
+    );
+  });
+});
+
+describe('validateSchedule for windowed intervals', () => {
+  const withTrigger = (trigger: ScheduleTrigger) => validateSchedule(makeSchedule({ trigger }));
+
+  it('accepts a well-formed working-hours interval', () => {
+    expect(
+      withTrigger({
+        kind: 'interval',
+        everyMinutes: 60,
+        days: [1, 2, 3, 4, 5],
+        window: { start: '08:00', end: '17:00' },
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects an interval that cannot fit inside its own window', () => {
+    expect(
+      withTrigger({
+        kind: 'interval',
+        everyMinutes: 240,
+        window: { start: '09:00', end: '10:00' },
+      }),
+    ).toMatch(/only fire once a day/i);
+  });
+
+  it('rejects an empty day set and a malformed or zero-length window', () => {
+    expect(withTrigger({ kind: 'interval', everyMinutes: 60, days: [] })).toMatch(/at least one day/i);
+    expect(
+      withTrigger({ kind: 'interval', everyMinutes: 60, window: { start: '8', end: '17:00' } }),
+    ).toMatch(/08:00/);
+    expect(
+      withTrigger({
+        kind: 'interval',
+        everyMinutes: 60,
+        window: { start: '09:00', end: '09:00' },
+      }),
+    ).toMatch(/differ/i);
   });
 });

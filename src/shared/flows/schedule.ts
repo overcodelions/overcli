@@ -26,8 +26,23 @@ import type { RunIn } from './orchestration';
 /// what people actually ask for, and both render back to plain English.
 export type ScheduleTrigger =
   /// Fire every `everyMinutes` minutes, measured from the last fire (or from
-  /// when the schedule was armed, if it has never fired).
-  | { kind: 'interval'; everyMinutes: number }
+  /// when the schedule was armed, if it has never fired) — but only inside the
+  /// active window, if one is set. "Every hour, weekdays, 8am–5pm" is the
+  /// shape this exists for: a repeating check that shouldn't run overnight or
+  /// at the weekend.
+  | {
+      kind: 'interval';
+      everyMinutes: number;
+      /// Weekdays it may fire on, `0` = Sunday … `6` = Saturday. Empty or
+      /// absent means every day.
+      days?: number[];
+      /// Hours of the day it may fire between, local `"HH:MM"`, both ends
+      /// inclusive — an 8:00–17:00 hourly schedule fires at 17:00. Absent
+      /// means all day. A `start` after `end` wraps midnight (22:00–02:00),
+      /// and the day set then applies to the evening half: "Fri 22:00–02:00"
+      /// includes Saturday 01:00.
+      window?: { start: string; end: string };
+    }
   /// Fire at a wall-clock time of day, on the given weekdays.
   | {
       kind: 'daily';
@@ -158,10 +173,7 @@ export function scheduleAnchor(s: Schedule): number {
 /// exist, and JS normalizes it forward — 02:30 fires at 03:30. That's the
 /// least surprising of the available wrong answers.)
 export function nextOccurrenceAfter(trigger: ScheduleTrigger, afterMs: number): number {
-  if (trigger.kind === 'interval') {
-    const everyMs = Math.max(1, Math.floor(trigger.everyMinutes)) * 60_000;
-    return afterMs + everyMs;
-  }
+  if (trigger.kind === 'interval') return nextIntervalOccurrence(trigger, afterMs);
   const parsed = parseTimeOfDay(trigger.time);
   const { hours, minutes } = parsed ?? { hours: 9, minutes: 0 };
   const days = allowedDays(trigger.days);
@@ -187,6 +199,97 @@ export function nextOccurrenceAfter(trigger: ScheduleTrigger, afterMs: number): 
   // Unreachable for any non-empty day set, but never return something in the
   // past — a caller would treat it as due and fire in a loop.
   return afterMs + 24 * 60 * 60_000;
+}
+
+/// Next interval tick that lands inside the active window.
+///
+/// Step first, then check: if the stepped candidate falls outside the window
+/// (evening, weekend), jump to the next time the window opens rather than
+/// stepping through the closed hours one interval at a time. That also
+/// re-phases each day to the window's start — an 8am–5pm hourly schedule armed
+/// at 8:37 fires on the half hour today and from 8:00 sharp tomorrow, which is
+/// what "every hour, 8 to 5" means to a person.
+function nextIntervalOccurrence(
+  trigger: Extract<ScheduleTrigger, { kind: 'interval' }>,
+  afterMs: number,
+): number {
+  const stepMs = Math.max(1, Math.floor(trigger.everyMinutes)) * 60_000;
+  const candidate = afterMs + stepMs;
+  const days = allowedDays(trigger.days);
+  const window = parseWindow(trigger.window);
+  // Unrestricted: the common case, and no date arithmetic needed for it.
+  if (!window && days.size === 7) return candidate;
+  if (isWithinActiveWindow(candidate, days, window)) return candidate;
+  return nextWindowOpening(candidate, days, window);
+}
+
+interface ParsedWindow {
+  startMinutes: number;
+  endMinutes: number;
+}
+
+function parseWindow(window: { start: string; end: string } | undefined): ParsedWindow | null {
+  if (!window) return null;
+  const start = parseTimeOfDay(window.start);
+  const end = parseTimeOfDay(window.end);
+  // An unparseable window is treated as no window rather than as a window that
+  // never opens — a typo shouldn't silently stop a schedule forever.
+  if (!start || !end) return null;
+  return {
+    startMinutes: start.hours * 60 + start.minutes,
+    endMinutes: end.hours * 60 + end.minutes,
+  };
+}
+
+/// Is `at` a moment the schedule is allowed to fire?
+export function isWithinActiveWindow(
+  at: number,
+  days: Set<number>,
+  window: ParsedWindow | null,
+): boolean {
+  const d = new Date(at);
+  const minutes = d.getHours() * 60 + d.getMinutes();
+  if (!window) return days.has(d.getDay());
+  if (window.startMinutes <= window.endMinutes) {
+    return (
+      days.has(d.getDay()) &&
+      minutes >= window.startMinutes &&
+      minutes <= window.endMinutes
+    );
+  }
+  // Wraps midnight. The window belongs to the day it OPENED on, so the small
+  // hours are governed by yesterday's entry in the day set — "Fri 22:00–02:00"
+  // has to include Saturday 01:00, and must not include Saturday 23:00.
+  if (minutes >= window.startMinutes) return days.has(d.getDay());
+  if (minutes <= window.endMinutes) return days.has((d.getDay() + 6) % 7);
+  return false;
+}
+
+/// Earliest moment at or after `from` that the window opens on an allowed day.
+function nextWindowOpening(
+  from: number,
+  days: Set<number>,
+  window: ParsedWindow | null,
+): number {
+  const startMinutes = window?.startMinutes ?? 0;
+  const base = new Date(from);
+  for (let offset = 0; offset <= 8; offset++) {
+    const cand = new Date(
+      base.getFullYear(),
+      base.getMonth(),
+      base.getDate() + offset,
+      Math.floor(startMinutes / 60),
+      startMinutes % 60,
+      0,
+      0,
+    );
+    // `<` not `<=`: `from` is already past the caller's `afterMs`, so an
+    // opening landing exactly on it is a legitimate next occurrence.
+    if (cand.getTime() < from) continue;
+    if (!days.has(cand.getDay())) continue;
+    return cand.getTime();
+  }
+  return from + 24 * 60 * 60_000;
 }
 
 /// What the engine should do with a schedule right now. Pure, so the awkward
@@ -249,18 +352,40 @@ export function evaluateSchedule(
 export function describeTrigger(trigger: ScheduleTrigger): string {
   if (trigger.kind === 'interval') {
     const mins = Math.max(1, Math.floor(trigger.everyMinutes));
-    if (mins % 60 === 0) {
-      const hours = mins / 60;
-      return hours === 1 ? 'Every hour' : `Every ${hours} hours`;
-    }
-    return mins === 1 ? 'Every minute' : `Every ${mins} minutes`;
+    const every =
+      mins % 60 === 0
+        ? mins / 60 === 1
+          ? 'Every hour'
+          : `Every ${mins / 60} hours`
+        : mins === 1
+          ? 'Every minute'
+          : `Every ${mins} minutes`;
+    // "Every hour, weekdays 8am–5pm". Both qualifiers are optional and the
+    // sentence has to read cleanly with either, both, or neither.
+    const dayPart = describeDays(trigger.days);
+    const windowPart = trigger.window
+      ? `${formatTimeOfDay(trigger.window.start)}–${formatTimeOfDay(trigger.window.end)}`
+      : '';
+    const qualifier = [dayPart, windowPart].filter(Boolean).join(' ');
+    return qualifier ? `${every}, ${qualifier}` : every;
   }
   const time = formatTimeOfDay(trigger.time);
-  const days = trigger.days ?? [];
-  if (days.length === 0 || days.length === 7) return `Every day at ${time}`;
-  if (isWeekdaySet(days)) return `Weekdays at ${time}`;
-  const names = [...days].sort((a, b) => a - b).map((d) => DAY_NAMES[d] ?? '?');
-  return `${names.join(', ')} at ${time}`;
+  const dayPart = describeDays(trigger.days);
+  return dayPart ? `${capitalize(dayPart)} at ${time}` : `Every day at ${time}`;
+}
+
+/// `'weekdays'` / `'Mon, Wed, Fri'` / `''` for "every day". Lower case so it
+/// reads inside a sentence; callers capitalize when it leads one.
+function describeDays(days: number[] | undefined): string {
+  const list = days ?? [];
+  if (list.length === 0 || list.length === 7) return '';
+  if (isWeekdaySet(list)) return 'weekdays';
+  if (isWeekendSet(list)) return 'weekends';
+  return [...list].sort((a, b) => a - b).map((d) => DAY_NAMES[d] ?? '?').join(', ');
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -270,6 +395,11 @@ export const WEEKDAY_SET = [1, 2, 3, 4, 5];
 function isWeekdaySet(days: number[]): boolean {
   const set = new Set(days);
   return set.size === 5 && WEEKDAY_SET.every((d) => set.has(d));
+}
+
+function isWeekendSet(days: number[]): boolean {
+  const set = new Set(days);
+  return set.size === 2 && set.has(0) && set.has(6);
 }
 
 function allowedDays(days: number[] | undefined): Set<number> {
@@ -359,6 +489,29 @@ export function validateSchedule(s: Partial<Schedule>): string | null {
     if (!Number.isFinite(trigger.everyMinutes) || trigger.everyMinutes < 1) {
       return 'Interval must be at least one minute.';
     }
+    if (trigger.days && trigger.days.length === 0) {
+      return 'Pick at least one day, or leave every day selected.';
+    }
+    if (trigger.window) {
+      if (!parseTimeOfDay(trigger.window.start) || !parseTimeOfDay(trigger.window.end)) {
+        return 'Active hours must look like 08:00 and 17:00.';
+      }
+      if (trigger.window.start === trigger.window.end) {
+        return 'Active hours need a start and end that differ.';
+      }
+      // The step has to fit inside the window, or the schedule opens, fires
+      // once at the start, steps past the close, and waits for tomorrow — a
+      // "every 4 hours, 9–10am" schedule that silently means "daily at 9".
+      const parsed = parseWindow(trigger.window);
+      if (parsed && parsed.startMinutes < parsed.endMinutes) {
+        const span = parsed.endMinutes - parsed.startMinutes;
+        if (trigger.everyMinutes > span) {
+          return `That interval is longer than the ${span}-minute window, so it would only fire once a day.`;
+        }
+      }
+    }
+  } else if (trigger.days && trigger.days.length === 0) {
+    return 'Pick at least one day, or leave every day selected.';
   } else if (!parseTimeOfDay(trigger.time)) {
     return 'Time must look like 09:30.';
   }

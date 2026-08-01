@@ -50,6 +50,9 @@ describe('worktreeChanges', () => {
     routeGit({
       'rev-parse --is-inside-work-tree': 'true\n',
       'branch --show-current': 'feature/x\n',
+      // `worktreeChanges` resolves the live divergence point first; pin it
+      // to the fixture's base so these assertions stay about commitState.
+      'merge-base base-sha HEAD': 'base-sha\n',
       'diff --numstat base-sha --':
         '26\t1\tsrc/app/api-explorer.component.html\n54\t0\tsrc/app/api-explorer.component.spec.ts\n',
       'diff --name-status base-sha --':
@@ -88,6 +91,9 @@ describe('worktreeChanges', () => {
     routeGit({
       'rev-parse --is-inside-work-tree': 'true\n',
       'branch --show-current': 'feature/x\n',
+      // `worktreeChanges` resolves the live divergence point first; pin it
+      // to the fixture's base so these assertions stay about commitState.
+      'merge-base base-sha HEAD': 'base-sha\n',
       'diff --numstat base-sha --': '10\t2\tsrc/app/thing.ts\n',
       'diff --name-status base-sha --': 'M\tsrc/app/thing.ts\n',
       'diff --name-status base-sha HEAD --': 'M\tsrc/app/thing.ts\n',
@@ -111,6 +117,7 @@ describe('worktreeChanges', () => {
       changes: [],
       insertions: 0,
       deletions: 0,
+      baseRef: null,
     });
   });
 
@@ -126,6 +133,9 @@ describe('workspaceCommitStatus base-relative routing', () => {
     routeGit({
       'rev-parse --is-inside-work-tree': 'true\n',
       'branch --show-current': 'feature/x\n',
+      // `worktreeChanges` resolves the live divergence point first; pin it
+      // to the fixture's base so these assertions stay about commitState.
+      'merge-base base-sha HEAD': 'base-sha\n',
       'diff --numstat base-sha --': '3\t0\tsrc/a.ts\n2\t1\tsrc/b.ts\n',
       'diff --name-status base-sha --': 'A\tsrc/a.ts\nM\tsrc/b.ts\n',
       'ls-files --others --exclude-standard': '',
@@ -143,6 +153,64 @@ describe('workspaceCommitStatus base-relative routing', () => {
     expect(res.changes.map((c) => c.path)).toEqual(['unifyr-r/src/a.ts', 'unifyr-r/src/b.ts']);
     expect(res.insertions).toBe(5);
     expect(res.deletions).toBe(1);
+  });
+
+  it('reports the base ref when every member agrees on it', async () => {
+    routeGit({
+      'rev-parse --is-inside-work-tree': 'true\n',
+      'branch --show-current': 'feature/x\n',
+      'symbolic-ref --short refs/remotes/origin/HEAD': 'origin/master\n',
+      'merge-base origin/master HEAD': 'live-base\n',
+      'rev-parse --verify --quiet fork^{commit}': 'fork\n',
+      // Live base is newer than the fork point, so it wins.
+      'merge-base --is-ancestor live-base fork': '',
+      'diff --numstat live-base --': '3\t0\tsrc/a.ts\n',
+      'diff --name-status live-base --': 'A\tsrc/a.ts\n',
+      'ls-files --others --exclude-standard': '',
+    });
+    // `--is-ancestor` must report "not an ancestor" (exit 1) for the live
+    // base to be kept; the default router returns exit 0, so override it.
+    const inner = mockExecFile.getMockImplementation()!;
+    mockExecFile.mockImplementation((bin: string, args: string[], opts: unknown, cb: unknown) => {
+      if (args.join(' ') === 'merge-base --is-ancestor live-base fork') {
+        (cb as (e: unknown, o: string, s: string) => void)(
+          Object.assign(new Error('exit 1'), { code: 1 }),
+          '',
+          '',
+        );
+        return;
+      }
+      (inner as (...a: unknown[]) => void)(bin, args, opts, cb);
+    });
+
+    const res = await workspaceCommitStatus([
+      { name: 'a', path: '/wt/a', baseBranch: '', baselineCommit: 'fork' },
+      { name: 'b', path: '/wt/b', baseBranch: '', baselineCommit: 'fork' },
+    ]);
+    expect(res.baseRef).toBe('origin/master');
+    expect(res.changes.map((c) => c.path)).toEqual(['a/src/a.ts', 'b/src/a.ts']);
+  });
+
+  it('reports no base ref when members disagree', async () => {
+    // One member resolves against a live branch, the other has nothing to
+    // resolve and stays HEAD-relative. Labelling the aggregate with the
+    // first member's base would misdescribe the second.
+    routeGit({
+      'rev-parse --is-inside-work-tree': 'true\n',
+      'branch --show-current': 'feature/x\n',
+      'merge-base base-sha HEAD': 'base-sha\n',
+      'diff --numstat base-sha --': '1\t0\tsrc/a.ts\n',
+      'diff --name-status base-sha --': 'A\tsrc/a.ts\n',
+      'status --porcelain=v1 --untracked-files=all': ' M src/c.ts\n',
+      'diff HEAD --numstat': '4\t2\tsrc/c.ts\n',
+      'ls-files --others --exclude-standard': '',
+    });
+
+    const res = await workspaceCommitStatus([
+      { name: 'a', path: '/wt/a', baseBranch: 'base-sha' },
+      { name: 'b', path: '/main/b' },
+    ]);
+    expect(res.baseRef).toBeNull();
   });
 
   it('falls back to HEAD-relative for a member without a baseBranch', async () => {

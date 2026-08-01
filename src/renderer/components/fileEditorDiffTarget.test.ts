@@ -10,13 +10,15 @@ const MEMBERS = [
     name: 'zift-ecm-admin',
     path: '/Users/x/.overcli/worktrees/zift-ecm-admin/RED-6644',
     projectPath: '/Users/x/git-services/zift-ecm-admin',
-    baseBranch: 'abc123',
+    baseBranch: 'master',
+    baselineCommit: 'abc123',
   },
   {
     name: 'gitrepo',
     path: '/Users/x/.overcli/worktrees/gitrepo/RED-6644',
     projectPath: '/Users/x/gitrepo',
-    baseBranch: 'def456',
+    baseBranch: 'master',
+    baselineCommit: 'def456',
   },
 ];
 
@@ -25,7 +27,8 @@ describe('resolveDiffTarget', () => {
     expect(resolveDiffTarget('gitrepo/src/Main.java', ROOT, MEMBERS, null)).toEqual({
       cwd: '/Users/x/.overcli/worktrees/gitrepo/RED-6644',
       path: 'src/Main.java',
-      baseBranch: 'def456',
+      baseBranch: 'master',
+      baselineCommit: 'def456',
     });
   });
 
@@ -38,7 +41,8 @@ describe('resolveDiffTarget', () => {
     ).toEqual({
       cwd: '/Users/x/.overcli/worktrees/zift-ecm-admin/RED-6644',
       path: 'ecm-adminui/src/app/a.service.ts',
-      baseBranch: 'abc123',
+      baseBranch: 'master',
+      baselineCommit: 'abc123',
     });
   });
 
@@ -46,7 +50,8 @@ describe('resolveDiffTarget', () => {
     expect(resolveDiffTarget(`${ROOT}/gitrepo`, ROOT, MEMBERS, null)).toEqual({
       cwd: '/Users/x/.overcli/worktrees/gitrepo/RED-6644',
       path: '.',
-      baseBranch: 'def456',
+      baseBranch: 'master',
+      baselineCommit: 'def456',
     });
   });
 
@@ -67,6 +72,7 @@ describe('resolveDiffTarget', () => {
       cwd: '/repo',
       path: 'src/a.ts',
       baseBranch: 'main',
+      baselineCommit: null,
     });
   });
 
