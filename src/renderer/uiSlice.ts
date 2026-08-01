@@ -100,6 +100,11 @@ export interface UiSliceState {
   /// Cleared per-conversation when the runner resets (full history
   /// reload) or when the user re-opens a dismissed id explicitly.
   dismissedSubagents: Record<string, string[]>;
+  /// Whether release notes are waiting to be read — main decides (see
+  /// whatsNew.ts), App seeds it on launch, and the title bar's About
+  /// button wears a dot while it's true. Cleared when the What's New
+  /// sheet is opened.
+  whatsNewUnseen: boolean;
 }
 
 export interface UiSliceActions {
@@ -136,6 +141,7 @@ export interface UiSliceActions {
   switchFileScope(key: string | null): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
+  setWhatsNewUnseen(unseen: boolean): void;
   markFileDirty(path: string): void;
   clearFileDirty(path: string): void;
   openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
@@ -166,6 +172,7 @@ export const uiSliceInitialState: UiSliceState = {
   subagentDrawerConversationId: null,
   dirtyFiles: {},
   dismissedSubagents: {},
+  whatsNewUnseen: false,
 };
 
 /// The subset of state the tab helpers below read. Declared structurally
@@ -394,6 +401,11 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
     },
     toggleToolActivity() {
       set(((s) => ({ showToolActivity: !s.showToolActivity })) as (s: T) => Partial<T>);
+    },
+    setWhatsNewUnseen(unseen) {
+      set(((s) => (s.whatsNewUnseen === unseen ? {} : { whatsNewUnseen: unseen })) as (
+        s: T,
+      ) => Partial<T>);
     },
     markFileDirty(path) {
       set(((s) => (s.dirtyFiles[path] ? {} : { dirtyFiles: { ...s.dirtyFiles, [path]: true } })) as (
