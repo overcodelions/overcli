@@ -25,6 +25,9 @@ import {
   type ScheduleRunRecord,
 } from '@shared/flows/schedule';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
+import { useOrchestratorStore } from '../../orchestratorStore';
+import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
+import type { Orchestration } from '@shared/flows/orchestration';
 
 export function SchedulesPane() {
   const projects = useStore((s) => s.projects);
@@ -154,9 +157,26 @@ function ScheduleRow({
 
   const running = !!schedule.activeRunId;
   const last = schedule.history[0];
+  // Batches this schedule proposed that nobody has approved yet. A parked
+  // proposal is the one outcome a schedule produces that's blocked on a human,
+  // so it has to be visible from the surface the user came to — making them
+  // remember to check Orchestrator would waste the overnight work.
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  const awaiting = useMemo(
+    () =>
+      Object.values(orchestrations).filter(
+        (o) => o.origin?.scheduleId === schedule.id && isOrchestrationAwaitingApproval(o),
+      ),
+    [orchestrations, schedule.id],
+  );
 
   return (
-    <div className="border border-card-strong rounded-lg px-3 py-2.5">
+    <div
+      className={
+        'rounded-lg px-3 py-2.5 border ' +
+        (awaiting.length > 0 ? 'border-violet-400/50 bg-violet-500/5' : 'border-card-strong')
+      }
+    >
       <div className="flex items-center gap-2.5">
         <button
           onClick={() => void setEnabled(schedule.id, !schedule.enabled)}
@@ -256,6 +276,10 @@ function ScheduleRow({
         )}
       </div>
 
+      {awaiting.map((o) => (
+        <PendingProposal key={o.id} orchestration={o} />
+      ))}
+
       {last && (
         <button
           onClick={() => setShowHistory((v) => !v)}
@@ -274,6 +298,99 @@ function ScheduleRow({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/// A batch this schedule proposed overnight, shown inline on its row.
+///
+/// The asks themselves are listed rather than just counted: "5 proposed" tells
+/// you there's a decision to make but nothing about whether it's a good one,
+/// and the whole promise of a scheduled proposal is that you can judge it in a
+/// glance. Per-item approval still lives in Orchestrator — that UI already
+/// exists and a second copy would drift — so the deep-link is the way in when
+/// the list isn't unanimous.
+function PendingProposal({ orchestration }: { orchestration: Orchestration }) {
+  const setDetailMode = useStore((s) => s.setDetailMode);
+  const setActiveOrchestration = useOrchestratorStore((s) => s.setActiveOrchestration);
+  const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const proposed = orchestration.items.filter((i) => i.status === 'proposed');
+  const SHOWN = 3;
+  const visible = expanded ? proposed : proposed.slice(0, SHOWN);
+  const hidden = proposed.length - visible.length;
+
+  function review(): void {
+    setActiveOrchestration(orchestration.id);
+    setDetailMode('orchestrator');
+  }
+
+  async function launchAll(): Promise<void> {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await window.overcli.invoke('orchestrator:approveBatch', { id: orchestration.id });
+      review();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2.5 rounded-md border border-violet-400/40 bg-violet-500/10 px-3 py-2">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-violet-700 dark:text-violet-300">
+          Waiting for you
+        </span>
+        <span className="text-[11px] text-ink-muted">
+          {proposed.length} {proposed.length === 1 ? 'ask' : 'asks'} proposed
+          {orchestration.createdAt ? ` · ${relativeTime(orchestration.createdAt)}` : ''}
+        </span>
+      </div>
+
+      <ul className="mt-1.5 space-y-0.5">
+        {visible.map((item) => (
+          <li
+            key={item.candidate.id}
+            className="text-[12px] text-ink truncate"
+            title={item.candidate.prompt}
+          >
+            <span className="text-ink-faint mr-1.5">·</span>
+            {item.candidate.title}
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="mt-0.5 text-[11px] text-ink-faint hover:text-ink"
+        >
+          and {hidden} more…
+        </button>
+      )}
+
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={review}
+          className="text-[11px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90"
+        >
+          Review &amp; pick →
+        </button>
+        <button
+          onClick={() => void launchAll()}
+          disabled={busy}
+          className="text-[11px] px-2.5 py-1 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
+        >
+          {busy ? 'Launching…' : `Launch all ${proposed.length}`}
+        </button>
+        <button
+          onClick={() => void window.overcli.invoke('orchestrator:abort', { id: orchestration.id })}
+          className="text-[11px] px-2 py-1 rounded text-ink-faint hover:text-red-400"
+        >
+          Discard
+        </button>
+      </div>
     </div>
   );
 }
