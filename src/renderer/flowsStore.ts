@@ -24,6 +24,11 @@ interface FlowsState {
   runs: Record<string, FlowRun>;
   /// Which run is currently shown in the active run pane.
   activeRunId: string | null;
+  /// runId → when the user last opened it. The sidebar's Active section
+  /// orders rows by what the user last touched, and opening a run counts;
+  /// the run's own progress does not. In-memory only — it's a this-session
+  /// notion of "what I'm working on", and a restart starts that over.
+  lastOpenedAtByRun: Record<string, number>;
   /// Which segment of the Flows library is showing. Lives here rather than as
   /// local state in the pane so the title bar's schedule indicator can deep-
   /// link straight into Schedules from any tab.
@@ -202,6 +207,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   flows: [],
   runs: {},
   activeRunId: null,
+  lastOpenedAtByRun: {},
   librarySegment: 'flows',
   editor: { kind: 'idle' },
   editorDraft: null,
@@ -260,7 +266,12 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     // outright; each run is now its own editor tab scope, so `useFileScope`
     // swaps in the incoming run's own files instead — no stale path, and
     // coming back to a run brings its files back with it.
-    set({ activeRunId: id });
+    set((s) => ({
+      activeRunId: id,
+      lastOpenedAtByRun: id
+        ? { ...s.lastOpenedAtByRun, [id]: Date.now() }
+        : s.lastOpenedAtByRun,
+    }));
   },
 
   setLibrarySegment(segment) {

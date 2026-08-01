@@ -6,6 +6,7 @@ import {
   evaluateSchedule,
   nextOccurrenceAfter,
   parseTimeOfDay,
+  scheduledRunTitle,
   untilLabel,
   validateSchedule,
   type Schedule,
@@ -244,5 +245,21 @@ describe('validateSchedule', () => {
       .toMatch(/at least one minute/i);
     expect(validateSchedule(makeSchedule({ trigger: { kind: 'daily', time: '9am' } })))
       .toMatch(/09:30/);
+  });
+});
+
+describe('scheduledRunTitle', () => {
+  it('prefixes the prompt’s first line with the sequence', () => {
+    expect(scheduledRunTitle(12, 'Update the changelog\nand tag it')).toBe(
+      '[SR-12] Update the changelog',
+    );
+  });
+
+  it('skips leading blank lines rather than tagging an empty string', () => {
+    expect(scheduledRunTitle(1, '\n\n  Pull the numbers  ')).toBe('[SR-1] Pull the numbers');
+  });
+
+  it('is still a usable title when the prompt is empty', () => {
+    expect(scheduledRunTitle(3, '   ')).toBe('[SR-3]');
   });
 });

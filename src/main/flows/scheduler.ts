@@ -24,6 +24,7 @@ import {
   evaluateSchedule,
   nextOccurrenceAfter,
   scheduleAnchor,
+  scheduledRunTitle,
   validateSchedule,
   type Schedule,
   type ScheduleRunRecord,
@@ -50,6 +51,8 @@ export interface ProposalParker {
     runIn: 'cwd' | 'worktree';
     baseBranch?: string;
     maxConcurrent: number;
+    /// Title for the parked batch, already carrying its `[SR-n]` sequence.
+    title: string;
   }): Promise<
     { ok: true; orchestrationId: UUID; count: number } | { ok: false; error: string }
   >;
@@ -163,6 +166,10 @@ export class SchedulerEngine {
       id: existing?.id ?? input.id ?? randomUUID(),
       createdAt: existing?.createdAt ?? now,
       history: existing?.history ?? [],
+      // Pinned after the spread, like `history`: the sequence must survive an
+      // edit, or renaming a schedule would restart its numbering and put a
+      // second SR-1 in the run list.
+      runCount: existing?.runCount,
       anchorAt: triggerChanged || reEnabled ? now : existing?.anchorAt,
       // A cadence change invalidates a firing that was deferred under the old
       // one; a stale `pendingSince` would fire immediately after the edit.
@@ -332,6 +339,11 @@ export class SchedulerEngine {
       s.lastFiredAt = now;
       s.pendingSince = undefined;
     }
+    // Manual runs DO take a sequence number even though they don't advance the
+    // cadence. They produce a real run that lands in the same list as the
+    // scheduled ones, so it needs a distinct name just as much.
+    const sequence = (s.runCount ?? 0) + 1;
+    s.runCount = sequence;
     this.persistAndEmit(s);
 
     const lateNote = opts.manual ? 'Run now.' : opts.late ? 'Catch-up run.' : undefined;
@@ -347,6 +359,9 @@ export class SchedulerEngine {
         runIn,
         baseBranch: runIn === 'worktree' ? s.target.baseBranch : undefined,
         maxConcurrent: s.target.maxConcurrent,
+        // Same problem as runs: every morning's batch would otherwise be
+        // called "Morning triage" and the ledger couldn't tell them apart.
+        title: `[SR-${sequence}] ${s.name}`,
       });
       if (!res.ok) {
         this.record(s, { at: this.now(), outcome: 'failed', note: res.error });
@@ -379,6 +394,7 @@ export class SchedulerEngine {
       baseBranch: runIn === 'worktree' ? s.target.baseBranch : undefined,
       scheduleId: s.id,
       scheduleName: s.name,
+      title: scheduledRunTitle(sequence, s.target.prompt),
     });
     if (!res.ok) {
       this.record(s, { at: this.now(), outcome: 'failed', note: res.error });

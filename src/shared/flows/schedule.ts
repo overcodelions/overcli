@@ -125,6 +125,12 @@ export interface Schedule {
   pendingSince?: number;
   /// The run currently in flight from this schedule, if any.
   activeRunId?: UUID;
+  /// How many times this schedule has fired, ever. Only ever increments —
+  /// it's the sequence number stamped into each run's title, so reusing one
+  /// would put two identically-named runs in the list, which is the exact
+  /// problem it exists to solve. Independent of `history`, which is capped and
+  /// forgets its tail.
+  runCount?: number;
   /// Newest first, capped at SCHEDULE_HISTORY_LIMIT.
   history: ScheduleRunRecord[];
 }
@@ -303,6 +309,28 @@ export function untilLabel(at: number, now: number = Date.now()): string {
   if (diff < 3_600_000) return `in ${Math.round(diff / 60_000)}m`;
   if (diff < 86_400_000) return `in ${Math.round(diff / 3_600_000)}h`;
   return `in ${Math.round(diff / 86_400_000)}d`;
+}
+
+/// Title for a run (or parked batch) a schedule produced.
+///
+/// A scheduled prompt is fixed by definition, and `flowRunTitle` falls back to
+/// the prompt's first line — so without this every morning's run is titled
+/// identically and the library becomes a wall of the same sentence. The
+/// `[SR-n]` prefix makes each occurrence nameable: "SR-12 went wrong", not
+/// "the changelog one from, I think, Tuesday?".
+///
+/// `n` counts firings of THIS schedule, not runs globally. Two schedules will
+/// both have an SR-1, which is the deliberate trade: an ordinal is only worth
+/// reading if it means something, and "the 12th morning triage" is a fact
+/// about the schedule. Runs already carry `scheduleName` for the badge that
+/// tells the two apart.
+export function scheduledRunTitle(sequence: number, prompt: string): string {
+  const tag = `[SR-${sequence}]`;
+  const firstLine = (prompt ?? '')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return firstLine ? `${tag} ${firstLine}` : tag;
 }
 
 /// Short label for what a firing does, used in the list row and history.

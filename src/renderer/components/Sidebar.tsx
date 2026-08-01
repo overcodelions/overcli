@@ -52,6 +52,10 @@ export function Sidebar() {
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const lastSelectedAt = useStore((s) => s.lastSelectedAt);
+  const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
+  const activeRunId = useFlowsStore((s) => s.activeRunId);
+  const openedRunId = detailMode === 'flows' ? activeRunId : null;
   const [search, setSearch] = useState('');
   const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
   const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
@@ -155,8 +159,25 @@ export function Sidebar() {
   }, [projectsById, query, workspaces, flowMatchPaths]);
 
   const activeEntries = useMemo(
-    () => selectActiveEntries(collectActiveCandidates(projects, workspaces, flowRuns, runners)),
-    [flowRuns, projects, runners, workspaces],
+    () =>
+      selectActiveEntries(
+        collectActiveCandidates(projects, workspaces, flowRuns, runners, {
+          openedConversationId: selectedId,
+          lastSelectedAt,
+          openedRunId,
+          lastOpenedAtByRun,
+        }),
+      ),
+    [
+      flowRuns,
+      projects,
+      runners,
+      workspaces,
+      selectedId,
+      lastSelectedAt,
+      openedRunId,
+      lastOpenedAtByRun,
+    ],
   );
   const sortedProjects = useMemo(
     () =>
@@ -462,18 +483,31 @@ interface ActiveFlowItem {
 
 type ActiveItem = RecentConversationItem | ActiveFlowItem;
 
+/// What the user is currently looking at, and when they last looked at
+/// everything else. Opening something is a user action just like typing in
+/// it, and it's the one the Active section most needs: while a long turn
+/// runs you aren't typing, but that chat is still what you're working on.
+interface ActiveSelection {
+  openedConversationId: UUID | null;
+  lastSelectedAt: Record<UUID, number>;
+  openedRunId: string | null;
+  lastOpenedAtByRun: Record<string, number>;
+}
+
 /// Every chat, agent and flow run eligible for the Active section, whether or
 /// not it's still active — selectActiveEntries ranks them and decides which
 /// make the cut. Hidden conversations and archived runs are left out: the user
 /// has explicitly put those away, so they shouldn't be dragged back in by the
 /// section's floor.
-function collectActiveCandidates(
+export function collectActiveCandidates(
   projects: Project[],
   workspaces: Workspace[],
   flowRuns: Record<UUID, FlowRun>,
   runners: Record<UUID, { isRunning: boolean } | undefined>,
+  selection: ActiveSelection,
+  now: number = Date.now(),
 ): ActiveCandidate<ActiveItem>[] {
-  const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
+  const cutoff = now - ACTIVE_CONVERSATION_WINDOW_MS;
   const out: ActiveCandidate<ActiveItem>[] = [];
 
   const pushConversation = (
@@ -483,10 +517,16 @@ function collectActiveCandidates(
   ) => {
     if (conv.hidden) return;
     const running = !!runners[conv.id]?.isRunning;
+    const opened = conv.id === selection.openedConversationId;
     out.push({
       entry: { kind: 'conversation', conv, ownerName, ownerKind },
-      active: isActiveConversation(conv, running, cutoff),
-      promptedAt: conversationPromptAt(conv),
+      // The chat on screen always gets a slot. Without this a busy set of
+      // backends could fill the cap and evict the one you're reading.
+      active: opened || isActiveConversation(conv, running, cutoff),
+      promptedAt: Math.max(
+        conversationPromptAt(conv),
+        selection.lastSelectedAt[conv.id] ?? 0,
+      ),
     });
   };
 
@@ -512,8 +552,11 @@ function collectActiveCandidates(
         ownerKind: owner.kind,
         isLive: flowRunIsLive(run, runners),
       },
-      active: flowRunIsActive(run, runners, cutoff),
-      promptedAt: flowRunPromptedAt(run),
+      active: run.id === selection.openedRunId || flowRunIsActive(run, runners, cutoff),
+      promptedAt: Math.max(
+        flowRunPromptedAt(run),
+        selection.lastOpenedAtByRun[run.id] ?? 0,
+      ),
     });
   }
 

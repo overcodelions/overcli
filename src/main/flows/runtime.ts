@@ -112,6 +112,10 @@ export interface FlowRuntimeStartArgs {
   /// found in the sidebar can say who started it — nobody was watching when
   /// it did.
   scheduleName?: string;
+  /// Explicit run title, set at launch instead of derived from the prompt.
+  /// Only the scheduler uses it: a scheduled prompt never changes, so the
+  /// prompt-derived title would be identical for every occurrence.
+  title?: string;
 }
 
 export interface FlowRuntimeResumeArgs {
@@ -757,6 +761,7 @@ export class FlowRuntimeImpl {
       orchestrationItemTitle: args.orchestrationItemTitle,
       scheduleId: args.scheduleId,
       scheduleName: args.scheduleName,
+      title: args.title,
     };
     this.runs.set(runId, run);
     if (args.attachments && args.attachments.length > 0) {

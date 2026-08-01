@@ -1296,7 +1296,7 @@ function detectLanguage(path: string): string | null {
 /// what `git diff` wants. `baseBranch` is the ref the caller should
 /// diff against — each workspace member carries its own base, so we
 /// attach it when we match a member prefix.
-function resolveDiffTarget(
+export function resolveDiffTarget(
   path: string | null,
   rootPath: string | null,
   members: Array<{
@@ -1321,10 +1321,16 @@ function resolveDiffTarget(
       // Tool output often emits absolute paths; reverse-map them onto
       // the owning member so the diff runs in the real repo (and against
       // the member's base branch) instead of the workspace symlink root.
-      // Match against both the worktree path and the original project
-      // path — agents sometimes emit the upstream-repo path even when
-      // they edit through a worktree.
-      const candidates = [m.path, m.projectPath ?? null].filter(
+      // Three forms have to be matched:
+      //   - `<root>/<member>/…` — the path AS THE USER SEES IT, threaded
+      //     through the workspace/coordinator symlink. This is what the
+      //     ChangesBar hands us when a row is clicked, and without it we
+      //     fell through to the `rootPath` branch below and ran git in
+      //     the symlink dir (not a repo) — `Could not access 'HEAD'`.
+      //   - the member's worktree path.
+      //   - the original project path — agents sometimes emit the
+      //     upstream-repo path even when they edit through a worktree.
+      const candidates = [`${rootPath}/${m.name}`, m.path, m.projectPath ?? null].filter(
         (p): p is string => !!p,
       );
       for (const root of candidates) {

@@ -31,8 +31,9 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
     scheduleId?: string;
     runIn?: string;
     baseBranch?: string;
+    title?: string;
   }> = [];
-  const parked: Array<{ scheduleId: string; prompt: string; runIn?: string }> = [];
+  const parked: Array<{ scheduleId: string; prompt: string; runIn?: string; title?: string }> = [];
   const notifications: Array<{ title: string; body: string }> = [];
   const emitted: any[] = [];
   const saved: Schedule[] = [];
@@ -62,6 +63,7 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
         scheduleId: args.scheduleId,
         runIn: args.runIn,
         baseBranch: args.baseBranch,
+        title: args.title,
       });
       return { ok: true, runId };
     },
@@ -75,7 +77,12 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
 
   const parker: ProposalParker = {
     async parkProposal(args) {
-      parked.push({ scheduleId: args.scheduleId, prompt: args.prompt, runIn: args.runIn });
+      parked.push({
+        scheduleId: args.scheduleId,
+        prompt: args.prompt,
+        runIn: args.runIn,
+        title: args.title,
+      });
       return parkResult;
     },
   };
@@ -613,5 +620,68 @@ describe('SchedulerEngine editing', () => {
     await h.engine.runNow('sched-1');
     const res = await h.engine.runNow('sched-1');
     expect(res).toMatchObject({ ok: false });
+  });
+});
+
+describe('SchedulerEngine run naming', () => {
+  it('numbers each firing so two mornings are tellable apart', async () => {
+    const h = makeHarness({ seed: [seedSchedule()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+    h.finishRun(h.started[0].runId);
+    await h.advanceTo(local(2026, 3, 3, 9, 1));
+
+    expect(h.started.map((s) => s.title)).toEqual([
+      '[SR-1] do the thing',
+      '[SR-2] do the thing',
+    ]);
+  });
+
+  it('numbers manual runs too, without advancing the cadence', async () => {
+    const h = makeHarness({ seed: [seedSchedule()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+    h.finishRun(h.started[0].runId);
+    await h.engine.runNow('sched-1');
+
+    expect(h.started[1].title).toBe('[SR-2] do the thing');
+    // Tomorrow's real firing is SR-3, and still lands on tomorrow.
+    h.finishRun(h.started[1].runId);
+    await h.advanceTo(local(2026, 3, 3, 9, 1));
+    expect(h.started[2].title).toBe('[SR-3] do the thing');
+  });
+
+  it('keeps numbering across an edit to the schedule', async () => {
+    const h = makeHarness({ seed: [seedSchedule()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+    h.finishRun(h.started[0].runId);
+
+    // Rename it — the draft the renderer sends carries no runCount.
+    const existing = h.engine.get('sched-1')!;
+    h.engine.save({ ...existing, name: 'Renamed', runCount: undefined });
+
+    await h.advanceTo(local(2026, 3, 3, 9, 1));
+    // Not a second SR-1.
+    expect(h.started[1].title).toBe('[SR-2] do the thing');
+  });
+
+  it('numbers parked batches with the schedule name', async () => {
+    const h = makeHarness({
+      seed: [
+        seedSchedule({
+          target: {
+            kind: 'orchestrate',
+            prompt: 'triage the queue',
+            flowId: 'small-fix',
+            runIn: 'worktree',
+            maxConcurrent: 2,
+          },
+        }),
+      ],
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+    expect(h.parked[0].title).toBe('[SR-1] Morning triage');
   });
 });

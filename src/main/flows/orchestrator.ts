@@ -51,6 +51,7 @@ export interface FlowLauncher {
     orchestrationItemTitle?: string;
     scheduleId?: UUID;
     scheduleName?: string;
+    title?: string;
   }): Promise<{ ok: true; runId: UUID } | { ok: false; error: string }>;
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
   getRun(runId: UUID): FlowRun | null;
@@ -297,6 +298,9 @@ export class OrchestratorImpl {
     runIn: RunIn;
     baseBranch?: string;
     maxConcurrent: number;
+    /// Title for the batch, already carrying its `[SR-n]` sequence so two
+    /// mornings' worth of the same schedule are tellable apart in the ledger.
+    title?: string;
   }): Promise<
     { ok: true; orchestrationId: UUID; count: number } | { ok: false; error: string }
   > {
@@ -310,7 +314,7 @@ export class OrchestratorImpl {
     const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
     const orchestration: Orchestration = {
       id: randomUUID(),
-      title: args.scheduleName,
+      title: args.title?.trim() || args.scheduleName,
       projectPath,
       runIn,
       baseBranch,

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTIVE_SECTION_CAP,
   ACTIVE_SECTION_FLOOR,
+  ACTIVE_USER_TOUCH_WINDOW_MS,
   type ActiveCandidate,
   selectActiveEntries,
 } from './activeSection';
@@ -83,6 +84,37 @@ describe('selectActiveEntries', () => {
     );
     expect(names(picked)).toContain('just-typed');
     expect(names(picked)[0]).toBe('just-typed');
+  });
+
+  it('keeps something you just left, even with the section full of active work', () => {
+    // The reported bug: five things going at once meant zero backfill slots,
+    // so the run you'd just switched away from disappeared on the spot.
+    const now = 10 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const picked = selectActiveEntries(
+      [
+        candidate('just-left', { active: false, promptedAt: now - 1000 }),
+        ...Array.from({ length: 5 }, (_, i) =>
+          candidate(`busy-${i}`, { active: true, promptedAt: now - 60 * 60_000 - i }),
+        ),
+      ],
+      { now },
+    );
+    expect(names(picked)[0]).toBe('just-left');
+    expect(picked).toHaveLength(6);
+  });
+
+  it('lets go once the touch window has passed and nothing is active', () => {
+    const now = 10 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const picked = selectActiveEntries(
+      [
+        candidate('stale', { promptedAt: now - ACTIVE_USER_TOUCH_WINDOW_MS - 1 }),
+        ...Array.from({ length: 5 }, (_, i) =>
+          candidate(`busy-${i}`, { active: true, promptedAt: now - 1000 - i }),
+        ),
+      ],
+      { now },
+    );
+    expect(names(picked)).not.toContain('stale');
   });
 
   it('caps the section so a burst of work cannot fill the sidebar', () => {
