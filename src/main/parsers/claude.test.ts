@@ -68,25 +68,65 @@ describe('parseClaudeLine', () => {
     expect(kindOf(line)).toEqual({ type: 'systemNotice', text: 'Conversation compacted' });
   });
 
-  it('reports how much room a compaction bought, and how it was triggered', () => {
+  it('reports how a compaction was triggered and how long it stalled the run', () => {
     const manual = JSON.stringify({
       type: 'system',
       subtype: 'compact_boundary',
-      compact_metadata: { trigger: 'manual', pre_tokens: 19077, post_tokens: 3460 },
+      compact_metadata: { trigger: 'manual', duration_ms: 12_400 },
     });
     expect(kindOf(manual)).toEqual({
       type: 'systemNotice',
-      text: 'Conversation compacted · 19k → 3.5k tokens',
+      text: 'Conversation compacted · took 12s',
     });
 
     const auto = JSON.stringify({
       type: 'system',
       subtype: 'compact_boundary',
-      compact_metadata: { trigger: 'auto', pre_tokens: 967_000, post_tokens: 120_400 },
+      compact_metadata: { trigger: 'auto', duration_ms: 157_716 },
     });
     expect(kindOf(auto)).toEqual({
       type: 'systemNotice',
-      text: 'Conversation auto-compacted · 967k → 120k tokens',
+      text: 'Conversation auto-compacted · took 2m 38s',
+    });
+
+    // A sub-second compaction stalled nothing worth reporting.
+    const quick = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', duration_ms: 300 },
+    });
+    expect(kindOf(quick)).toEqual({ type: 'systemNotice', text: 'Conversation auto-compacted' });
+  });
+
+  it('never quotes the CLI token counts, which are not window occupancy', () => {
+    // Real metadata from a 1M-window run: pre_tokens exceeds the window,
+    // and pre - post is exactly cumulative_dropped_tokens (a lifetime
+    // counter), so rendering them as a before/after invented a 532k saving
+    // for a compaction that bought nothing.
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: {
+        trigger: 'auto',
+        pre_tokens: 1_275_004,
+        post_tokens: 743_189,
+        cumulative_dropped_tokens: 531_815,
+      },
+    });
+    const text = (kindOf(line) as { text: string }).text;
+    expect(text).toBe('Conversation auto-compacted');
+    expect(text).not.toMatch(/\d/);
+  });
+
+  it('reads the camelCase metadata the JSONL transcript uses on replay', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { trigger: 'auto', durationMs: 157_716 },
+    });
+    expect(kindOf(line)).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation auto-compacted · took 2m 38s',
     });
   });
 

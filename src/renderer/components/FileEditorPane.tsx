@@ -109,8 +109,12 @@ export const FileEditorPane = memo(function FileEditorPane({
       name: w.name,
       path: w.worktreePath,
       projectPath: w.projectPath,
-      baseBranch:
-        flowRun.baselineCommitsByMember?.[w.name]?.commit ?? flowRun.baseBranch ?? null,
+      // Branch and fork point stay in separate slots — main resolves the
+      // live divergence point from the branch and uses the fork point only
+      // as a floor. Collapsing them made every upstream commit the branch
+      // had taken in show up as this run's work.
+      baseBranch: flowRun.baseBranch ?? null,
+      baselineCommit: flowRun.baselineCommitsByMember?.[w.name]?.commit ?? null,
     }));
   }, [flowRun]);
   const workspaceMembers = useMemo(
@@ -121,10 +125,9 @@ export const FileEditorPane = memo(function FileEditorPane({
   // against the captured fork commit (else the base branch) so a flow
   // that hasn't committed still shows its work instead of an empty/HEAD
   // diff.
-  const flowSingleBase =
-    flowRun && !flowRun.workspaceWorktrees?.length
-      ? flowRun.baselineCommit ?? flowRun.baseBranch ?? null
-      : null;
+  const flowSingle = flowRun && !flowRun.workspaceWorktrees?.length ? flowRun : null;
+  const flowSingleBase = flowSingle?.baseBranch ?? null;
+  const flowSingleBaseline = flowSingle?.baselineCommit ?? null;
   const path = useStore((s) => s.openFilePath);
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
@@ -378,8 +381,15 @@ export const FileEditorPane = memo(function FileEditorPane({
   // not a git repo, so paths in the ChangesBar come in as
   // "<member>/…path". Peel that prefix to run git in the real project.
   const diffTarget = useMemo(
-    () => resolveDiffTarget(path, rootPath, workspaceMembers, conv?.baseBranch ?? flowSingleBase ?? null),
-    [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase],
+    () =>
+      resolveDiffTarget(
+        path,
+        rootPath,
+        workspaceMembers,
+        conv?.baseBranch ?? flowSingleBase ?? null,
+        flowSingleBaseline,
+      ),
+    [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase, flowSingleBaseline],
   );
   useEffect(() => {
     // A missing file has no readable content, so we fetch its diff whatever
@@ -415,7 +425,20 @@ export const FileEditorPane = memo(function FileEditorPane({
       // the agent's base branch, diff against it to roll committed and
       // uncommitted changes into one view. Falls back to HEAD for
       // non-agent file views (explorer, project root).
-      const baseRef = diffTarget.baseBranch ?? 'HEAD';
+      //
+      // Resolve through main so this file's diff is measured from the same
+      // live divergence point the ChangesBar and review sheet use — against
+      // a frozen fork point, a file that upstream also touched renders
+      // other people's commits as if the run had made them.
+      let baseRef = 'HEAD';
+      if (diffTarget.baseBranch || diffTarget.baselineCommit) {
+        const resolved = await window.overcli.invoke('git:resolveDiffBase', {
+          cwd: diffTarget.cwd,
+          preferredBranch: diffTarget.baseBranch,
+          fallbackCommit: diffTarget.baselineCommit,
+        });
+        baseRef = resolved.commit;
+      }
       const tracked = await window.overcli.invoke('git:run', {
         args: ['diff', baseRef, '--', diffTarget.path],
         cwd: diffTarget.cwd,
@@ -1296,7 +1319,7 @@ function detectLanguage(path: string): string | null {
 /// what `git diff` wants. `baseBranch` is the ref the caller should
 /// diff against — each workspace member carries its own base, so we
 /// attach it when we match a member prefix.
-function resolveDiffTarget(
+export function resolveDiffTarget(
   path: string | null,
   rootPath: string | null,
   members: Array<{
@@ -1304,9 +1327,16 @@ function resolveDiffTarget(
     path: string;
     projectPath?: string | null;
     baseBranch?: string | null;
+    baselineCommit?: string | null;
   }> | null,
   convBaseBranch: string | null,
-): { cwd: string; path: string; baseBranch: string | null } | null {
+  convBaselineCommit?: string | null,
+): {
+  cwd: string;
+  path: string;
+  baseBranch: string | null;
+  baselineCommit: string | null;
+} | null {
   if (!path || !rootPath) return null;
   if (members && members.length > 0) {
     for (const m of members) {
@@ -1316,15 +1346,22 @@ function resolveDiffTarget(
           cwd: m.path,
           path: path.slice(namePrefix.length),
           baseBranch: m.baseBranch ?? null,
+          baselineCommit: m.baselineCommit ?? null,
         };
       }
       // Tool output often emits absolute paths; reverse-map them onto
       // the owning member so the diff runs in the real repo (and against
       // the member's base branch) instead of the workspace symlink root.
-      // Match against both the worktree path and the original project
-      // path — agents sometimes emit the upstream-repo path even when
-      // they edit through a worktree.
-      const candidates = [m.path, m.projectPath ?? null].filter(
+      // Three forms have to be matched:
+      //   - `<root>/<member>/…` — the path AS THE USER SEES IT, threaded
+      //     through the workspace/coordinator symlink. This is what the
+      //     ChangesBar hands us when a row is clicked, and without it we
+      //     fell through to the `rootPath` branch below and ran git in
+      //     the symlink dir (not a repo) — `Could not access 'HEAD'`.
+      //   - the member's worktree path.
+      //   - the original project path — agents sometimes emit the
+      //     upstream-repo path even when they edit through a worktree.
+      const candidates = [`${rootPath}/${m.name}`, m.path, m.projectPath ?? null].filter(
         (p): p is string => !!p,
       );
       for (const root of candidates) {
@@ -1333,6 +1370,7 @@ function resolveDiffTarget(
             cwd: m.path,
             path: path === root ? '.' : path.slice(root.length + 1),
             baseBranch: m.baseBranch ?? null,
+            baselineCommit: m.baselineCommit ?? null,
           };
         }
       }
@@ -1347,7 +1385,12 @@ function resolveDiffTarget(
       : path.startsWith(`${rootPath}/`)
         ? path.slice(rootPath.length + 1)
         : path;
-  return { cwd: rootPath, path: rel, baseBranch: convBaseBranch };
+  return {
+    cwd: rootPath,
+    path: rel,
+    baseBranch: convBaseBranch,
+    baselineCommit: convBaselineCommit ?? null,
+  };
 }
 
 function resolveWorkspaceMembers(
@@ -1378,6 +1421,7 @@ function resolveWorkspaceMembers(
   path: string;
   projectPath?: string | null;
   baseBranch?: string | null;
+  baselineCommit?: string | null;
 }> | null {
   for (const w of workspaces) {
     const c = convId ? (w.conversations ?? []).find((x) => x.id === convId) : null;

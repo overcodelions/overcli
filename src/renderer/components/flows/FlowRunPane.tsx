@@ -1525,6 +1525,10 @@ function HijackComposer({
   // probe deps only fire when the count actually changes.
   const isRunning = useRunnerIsRunning(convId ?? '');
   const [changes, setChanges] = useState<FileChangeSummary[]>([]);
+  // Ref the counts were measured against. Now that the bar can honestly
+  // read zero, it has to say what it compared against — otherwise an empty
+  // bar is indistinguishable from a probe that failed.
+  const [baseRef, setBaseRef] = useState<string | null>(null);
 
   // A flow's cwd can be one of three things — a project path, a fresh
   // worktree, or a workspace's symlink root that fans out to multiple
@@ -1543,14 +1547,16 @@ function HijackComposer({
   const workspaces = useStore((s) => s.workspaces);
   const workspaceProjects = useMemo(() => {
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
-      // Thread each member's captured fork point through so the aggregate
-      // counts committed + uncommitted changes (base-relative), matching
-      // the per-member review diff. Members that predate baseline capture
-      // fall back to HEAD-relative in the aggregate.
+      // Branch name and captured fork point travel in separate slots: main
+      // resolves the live divergence point from the branch and keeps the
+      // fork point only as a floor. Collapsing them (as this used to) makes
+      // every upstream commit the branch has taken in look like the run's
+      // own work.
       return run.workspaceWorktrees.map((w) => ({
         name: w.name,
         path: w.worktreePath,
-        baseBranch: run.baselineCommitsByMember?.[w.name]?.commit,
+        baseBranch: run.baseBranch ?? '',
+        baselineCommit: run.baselineCommitsByMember?.[w.name]?.commit ?? null,
       }));
     }
     const ws = workspaces.find((w) => w.rootPath === run.projectPath);
@@ -1560,7 +1566,14 @@ function HijackComposer({
       .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
       .map((p) => ({ name: p.name, path: p.path }));
     return workspaceSymlinkNames(projs);
-  }, [workspaces, projects, run.projectPath, run.workspaceWorktrees, run.baselineCommitsByMember]);
+  }, [
+    workspaces,
+    projects,
+    run.projectPath,
+    run.workspaceWorktrees,
+    run.baselineCommitsByMember,
+    run.baseBranch,
+  ]);
 
   // Re-probe the working tree whenever a step attempt finishes or the
   // runner flips running/idle. Mirrors how ConversationPane keeps its
@@ -1575,16 +1588,18 @@ function HijackComposer({
   // point (committed + uncommitted) so the bar matches the review sheet —
   // `git:commitStatus` is HEAD-relative and loses files the moment a step
   // commits. Workspace and in-place runs keep the HEAD-relative probe.
-  const worktreeBase = run.worktreePath ? (run.baselineCommit ?? run.baseBranch ?? '') : '';
+  const worktreeBase = run.worktreePath ? (run.baseBranch ?? '') : '';
+  const worktreeBaseline = run.worktreePath ? (run.baselineCommit ?? null) : null;
   const worktreePath = run.worktreePath ?? '';
   useEffect(() => {
     let cancelled = false;
     const probe = workspaceProjects
       ? window.overcli.invoke('git:workspaceCommitStatus', { projects: workspaceProjects })
-      : worktreePath && worktreeBase
+      : worktreePath && (worktreeBase || worktreeBaseline)
         ? window.overcli.invoke('git:worktreeChanges', {
             worktreePath,
             baseBranch: worktreeBase,
+            baselineCommit: worktreeBaseline,
           })
         : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
     void probe
@@ -1592,17 +1607,32 @@ function HijackComposer({
         if (cancelled) return;
         if (!res.isRepo) {
           setChanges([]);
+          setBaseRef(null);
           return;
         }
         setChanges(res.changes ?? []);
+        // `git:commitStatus` (the in-place/non-worktree probe) has no base
+        // ref to report — its counts are HEAD-relative.
+        setBaseRef('baseRef' in res ? ((res.baseRef as string | null) ?? null) : null);
       })
       .catch(() => {
-        if (!cancelled) setChanges([]);
+        if (!cancelled) {
+          setChanges([]);
+          setBaseRef(null);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [run.projectPath, workspaceProjects, worktreePath, worktreeBase, attemptCount, isRunning]);
+  }, [
+    run.projectPath,
+    workspaceProjects,
+    worktreePath,
+    worktreeBase,
+    worktreeBaseline,
+    attemptCount,
+    isRunning,
+  ]);
 
   // Pull the draft setters so we can clear the composer immediately
   // after a send. The shared `store.send` action does this for the
@@ -1676,7 +1706,7 @@ function HijackComposer({
           directly (not via ConversationPane), so without this the live
           Thinking/Working/Reading… cue never shows while a step runs. */}
       {convId && <RunningIndicator conversationId={convId} />}
-      <ChangesBar files={changes} />
+      <ChangesBar files={changes} baseRef={baseRef} />
       <Composer
         draftKey={draftKey}
         historyConvId={convId}

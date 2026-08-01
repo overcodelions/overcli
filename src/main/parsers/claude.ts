@@ -104,28 +104,42 @@ export function modelFallbackText(json: any): string {
   return `Model fallback — ${from} refused this message${why}. Ran on ${to} instead.`;
 }
 
-/// One-line summary of a compaction that just landed. The token counts
-/// are the whole point — "Conversation compacted" alone left the user
-/// guessing whether it actually bought them any room.
+/// One-line summary of a compaction that just landed.
+///
+/// Deliberately carries NO token counts. `pre_tokens` / `post_tokens` are
+/// not window occupancy: `pre_tokens` routinely exceeds the model's window
+/// (1,275,004 against a 1M window in the run that prompted this), so no
+/// such request was ever sent, and `pre - post` comes out exactly equal to
+/// `cumulative_dropped_tokens` — a session-lifetime counter. Rendered as a
+/// before/after they credited one compaction with freeing half a million
+/// tokens when it had bought almost nothing, directly contradicting the
+/// ContextMeter sitting underneath. The meter reads real per-request usage
+/// and is the number to trust; it picks up the true drop on the next turn.
+///
+/// The duration stays. A compaction can stall the run for minutes (158s in
+/// that same case) and this notice is the only thing that accounts for it.
+///
+/// Both key spellings are accepted: the stream-json stdout is snake_case,
+/// the JSONL transcript history replays is camelCase.
 export function compactBoundaryText(json: any): string {
-  const meta = json?.compact_metadata ?? {};
-  const pre = typeof meta.pre_tokens === 'number' ? meta.pre_tokens : null;
-  const post = typeof meta.post_tokens === 'number' ? meta.post_tokens : null;
+  const meta = json?.compact_metadata ?? json?.compactMetadata ?? {};
   // Only claim "auto" when the CLI actually said so — an unlabeled
   // boundary gets the neutral wording rather than a guess.
   const how = meta.trigger === 'auto' ? 'Conversation auto-compacted' : 'Conversation compacted';
-  if (pre == null) return how;
-  const shrink = post == null ? compactTokens(pre) : `${compactTokens(pre)} → ${compactTokens(post)}`;
-  return `${how} · ${shrink} tokens`;
+  const ms =
+    typeof meta.duration_ms === 'number'
+      ? meta.duration_ms
+      : typeof meta.durationMs === 'number'
+        ? meta.durationMs
+        : null;
+  // Sub-second compactions didn't stall anything worth reporting.
+  return ms != null && ms >= 1000 ? `${how} · took ${compactDuration(ms)}` : how;
 }
 
-/// 19077 → "19.1k". Footer-scale formatting; the exact count is never
-/// what the user is asking when they read this.
-function compactTokens(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
-  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
-  return `${(n / 1_000_000).toFixed(1)}M`;
+/// 157716 → "2m 38s". Only ever describes a stall the user sat through.
+function compactDuration(ms: number): string {
+  const secs = Math.round(ms / 1000);
+  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
 
 /// Distill a `task_started` / `task_progress` / `task_notification`

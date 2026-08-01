@@ -19,6 +19,13 @@ export function conversationActivityAt(conv: Conversation): number {
   return conv.lastActiveAt ?? conv.createdAt ?? 0;
 }
 
+/// When the user last typed here. Falls back to general activity for
+/// conversations that predate `lastPromptAt`, which keeps their relative
+/// order roughly right instead of dumping them all at the bottom.
+export function conversationPromptAt(conv: Conversation): number {
+  return conv.lastPromptAt ?? conversationActivityAt(conv);
+}
+
 export function isActiveConversation(
   conv: Conversation,
   isRunning: boolean,
