@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-02
+
 ### Fixed
 - **Every open file is reachable once the tabs outrun the pane.** The strip scrolled horizontally with its scrollbar hidden, so past about eight files the rest were simply gone — no affordance said they existed, and the keyboard routes that could reach them (<kbd>⌘1</kbd>–<kbd>⌘9</kbd>, <kbd>⌥⌘←/→</kbd>) changed the selection without moving the strip, leaving you on a tab you couldn't see. The active tab now scrolls itself into view whenever it changes, including when the file is opened from the explorer rather than the strip. A pinned count button on the right opens the full list — file name, dimmed directory, the <kbd>⌘N</kbd> hint for the first nine, the unsaved dot and a close button per row — so the tabs that scrolled away stay one click from the front, and the count doubles as the answer to "how many files do I have open in here" ([#130](https://github.com/overcodelions/overcli/pull/130)).
 
@@ -284,7 +286,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/overcodelions/overcli/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/overcodelions/overcli/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/overcodelions/overcli/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/overcodelions/overcli/compare/v0.10.0...v0.11.0
