@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { fileName, tabLabels } from './tabLabels';
+import { dirName, fileName, tabLabels } from './tabLabels';
 
 describe('fileName', () => {
   it('takes the last segment of posix and windows paths', () => {
     expect(fileName('/repo/src/main/index.ts')).toBe('index.ts');
     expect(fileName('C:\\repo\\src\\index.ts')).toBe('index.ts');
     expect(fileName('README.md')).toBe('README.md');
+  });
+});
+
+describe('dirName', () => {
+  it('drops the file name and normalises separators', () => {
+    expect(dirName('/repo/src/main/index.ts')).toBe('repo/src/main');
+    expect(dirName('C:\\repo\\src\\index.ts')).toBe('C:/repo/src');
+  });
+
+  it('is empty for a bare file name', () => {
+    expect(dirName('README.md')).toBe('');
   });
 });
 
