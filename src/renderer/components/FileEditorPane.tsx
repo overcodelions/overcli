@@ -22,7 +22,7 @@ import {
   isUnsupportedBinaryFile,
 } from '../filePreview';
 import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
-import { fileName, tabLabels } from '../tabLabels';
+import { dirName, fileName, tabLabels } from '../tabLabels';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
@@ -833,6 +833,11 @@ export const FileEditorPane = memo(function FileEditorPane({
 ///
 /// The header below still shows the full path of the active file, so tabs
 /// stay short: name only, with one directory level when names collide.
+///
+/// Once the tabs outrun the pane the strip scrolls, and a scrolled-away tab
+/// is unreachable by mouse (the scrollbar is hidden). Two things keep every
+/// file in reach: the active tab is scrolled back into view whenever it
+/// changes, and the count button on the right opens the full list.
 function FileTabStrip({
   tabs,
   activePath,
@@ -847,56 +852,135 @@ function FileTabStrip({
   onClose: (path: string) => void;
 }) {
   const labels = useMemo(() => tabLabels(tabs.map((t) => t.path)), [tabs]);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // ⌘1-9, ⌥⌘←/→ and clicks in the file tree all move the selection without
+  // touching the strip's scroll offset, which would otherwise leave the tab
+  // you just selected off screen.
+  useEffect(() => {
+    stripRef.current
+      ?.querySelector<HTMLElement>('[data-active-tab="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activePath, tabs.length]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+
   return (
-    <div className="flex items-stretch overflow-x-auto no-scrollbar border-b border-card bg-surface-muted/40">
-      {tabs.map((tab, i) => {
-        const active = tab.path === activePath;
-        const dirty = !!dirtyFiles[tab.path];
-        return (
-          <div
-            key={tab.path}
-            role="tab"
-            aria-selected={active}
-            title={`${tab.path}${i < 9 ? `  (⌘${i + 1})` : ''}`}
-            onMouseDown={(e) => {
-              // Middle-click closes, matching every other tabbed editor.
-              if (e.button === 1) {
-                e.preventDefault();
-                onClose(tab.path);
-                return;
-              }
-              if (e.button === 0 && !active) onSelect(tab.path);
-            }}
-            className={
-              'group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 shrink-0 max-w-[200px] cursor-default border-r border-card text-xs ' +
-              (active
-                ? 'bg-surface text-ink border-b-2 border-b-accent'
-                : 'text-ink-muted hover:bg-card-strong hover:text-ink')
-            }
-          >
-            <span className="truncate">{labels[i]}</span>
-            {dirty && (
-              <span
-                title="Unsaved changes"
-                className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent"
-              />
-            )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(tab.path);
+    <div className="flex items-stretch border-b border-card bg-surface-muted/40">
+      <div ref={stripRef} className="flex items-stretch flex-1 min-w-0 overflow-x-auto no-scrollbar">
+        {tabs.map((tab, i) => {
+          const active = tab.path === activePath;
+          const dirty = !!dirtyFiles[tab.path];
+          return (
+            <div
+              key={tab.path}
+              role="tab"
+              aria-selected={active}
+              data-active-tab={active ? 'true' : undefined}
+              title={`${tab.path}${i < 9 ? `  (⌘${i + 1})` : ''}`}
+              onMouseDown={(e) => {
+                // Middle-click closes, matching every other tabbed editor.
+                if (e.button === 1) {
+                  e.preventDefault();
+                  onClose(tab.path);
+                  return;
+                }
+                if (e.button === 0 && !active) onSelect(tab.path);
               }}
-              title="Close tab"
               className={
-                'shrink-0 w-4 h-4 leading-none rounded text-ink-faint hover:text-ink hover:bg-card-strong ' +
-                (active ? '' : 'opacity-0 group-hover:opacity-100')
+                'group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 shrink-0 max-w-[200px] cursor-default border-r border-card text-xs ' +
+                (active
+                  ? 'bg-surface text-ink border-b-2 border-b-accent'
+                  : 'text-ink-muted hover:bg-card-strong hover:text-ink')
               }
             >
-              ✕
-            </button>
+              <span className="truncate">{labels[i]}</span>
+              {dirty && (
+                <span
+                  title="Unsaved changes"
+                  className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent"
+                />
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(tab.path);
+                }}
+                title="Close tab"
+                className={
+                  'shrink-0 w-4 h-4 leading-none rounded text-ink-faint hover:text-ink hover:bg-card-strong ' +
+                  (active ? '' : 'opacity-0 group-hover:opacity-100')
+                }
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div ref={menuRef} className="relative shrink-0 flex items-stretch border-l border-card">
+        <button
+          onClick={() => setMenuOpen((o) => !o)}
+          title={`${tabs.length} open files`}
+          className="flex items-center gap-1 px-2 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+        >
+          <span>{tabs.length}</span>
+          <span className="text-[9px] opacity-70">▾</span>
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 top-full mt-1 min-w-[260px] max-w-[460px] max-h-[60vh] overflow-y-auto bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 text-xs">
+            {tabs.map((tab, i) => {
+              const active = tab.path === activePath;
+              return (
+                <div
+                  key={tab.path}
+                  className={
+                    'group flex items-center gap-2 px-2.5 py-1.5 cursor-default ' +
+                    (active ? 'bg-card-strong text-ink' : 'text-ink-muted hover:bg-card-strong')
+                  }
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    onSelect(tab.path);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <span className="flex-1 min-w-0 truncate" title={tab.path}>
+                    <span className="text-ink">{fileName(tab.path)}</span>
+                    <span className="text-ink-faint"> {dirName(tab.path)}</span>
+                  </span>
+                  {i < 9 && <span className="shrink-0 text-ink-faint">⌘{i + 1}</span>}
+                  {!!dirtyFiles[tab.path] && (
+                    <span
+                      title="Unsaved changes"
+                      className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent"
+                    />
+                  )}
+                  <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose(tab.path);
+                    }}
+                    title="Close tab"
+                    className="shrink-0 w-4 h-4 leading-none rounded text-ink-faint hover:text-ink hover:bg-card opacity-0 group-hover:opacity-100"
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
           </div>
-        );
-      })}
+        )}
+      </div>
     </div>
   );
 }
