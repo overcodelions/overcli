@@ -5,6 +5,13 @@ export function fileName(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
+/// Everything but the file name, for the overflow menu's dim second half.
+/// Empty for a bare name, so the row renders as just the file.
+export function dirName(p: string): string {
+  const parts = p.split(/[/\\]/).filter(Boolean);
+  return parts.slice(0, -1).join('/');
+}
+
 function parentName(p: string): string | null {
   const parts = p.split(/[/\\]/).filter(Boolean);
   return parts.length >= 2 ? parts[parts.length - 2] : null;
