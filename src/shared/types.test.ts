@@ -32,6 +32,7 @@ describe('DEFAULT_SETTINGS', () => {
       ],
       installedRegistryFlows: [],
       updateChannel: 'stable',
+      idleSessionTimeoutMinutes: 30,
     });
   });
 

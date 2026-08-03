@@ -16,6 +16,7 @@ import {
   isBrokerPromptToolMissingError,
   isStaleSessionError,
   resumeSessionAfterParamChange,
+  shouldReapIdle,
   shouldSkipIdleOnClose,
   staleRunningReason,
 } from './runner';
@@ -547,5 +548,63 @@ describe('staleRunningReason', () => {
         now: 10 * 60_000,
       }),
     ).toBeNull();
+  });
+});
+
+describe('shouldReapIdle', () => {
+  // Regression: `claude -p --input-format stream-json` stays resident with
+  // all its MCP servers loaded for as long as stdin is open. A user with a
+  // few dozen conversations they'd each sent one message to was holding
+  // ~22 GB in sessions that had been finished for hours.
+  const base = {
+    turnInFlight: false,
+    hasPendingPrompts: false,
+    canResume: true,
+    lastActivityAt: 0,
+    timeoutMinutes: 30,
+  };
+
+  it('reaps a session whose turn ended and has been silent past the timeout', () => {
+    expect(shouldReapIdle({ ...base, now: 31 * 60_000 })).toBe(true);
+  });
+
+  it('leaves a session alone until the timeout elapses', () => {
+    expect(shouldReapIdle({ ...base, now: 29 * 60_000 })).toBe(false);
+  });
+
+  it('reaps exactly at the timeout boundary', () => {
+    expect(shouldReapIdle({ ...base, now: 30 * 60_000 })).toBe(true);
+  });
+
+  it('never reaps a turn that is still running, however long it has been quiet', () => {
+    // A long tool call — a full test suite, a big build — is silent for
+    // minutes at a time and must not be mistaken for a parked session.
+    expect(shouldReapIdle({ ...base, turnInFlight: true, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('never reaps a transport that does not report turn state', () => {
+    expect(shouldReapIdle({ ...base, turnInFlight: undefined, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('never reaps while a prompt is waiting on the user', () => {
+    // Killing the process here strands the permission dialog and loses
+    // the turn behind it — the user stepped away, they didn't finish.
+    expect(shouldReapIdle({ ...base, hasPendingPrompts: true, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('never reaps a session with nothing to resume from', () => {
+    // Without a sessionId the respawn starts a fresh, context-free thread —
+    // reclaiming memory by silently discarding the conversation.
+    expect(shouldReapIdle({ ...base, canResume: false, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('is disabled by a zero (or negative) timeout', () => {
+    expect(shouldReapIdle({ ...base, timeoutMinutes: 0, now: 10 * 60 * 60_000 })).toBe(false);
+    expect(shouldReapIdle({ ...base, timeoutMinutes: -5, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('measures silence from the last activity, not from spawn', () => {
+    expect(shouldReapIdle({ ...base, lastActivityAt: 60 * 60_000, now: 61 * 60_000 })).toBe(false);
+    expect(shouldReapIdle({ ...base, lastActivityAt: 60 * 60_000, now: 95 * 60_000 })).toBe(true);
   });
 });
