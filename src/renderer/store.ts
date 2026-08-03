@@ -517,6 +517,26 @@ function scheduleClearCompletion(conversationId: UUID, completedAt: number): voi
   }, COMPLETION_FLASH_MS);
 }
 
+/// Hand a conversation's backend runtime back to main because the
+/// conversation is being deleted or archived.
+///
+/// A finished turn leaves the CLI resident — `claude -p --input-format
+/// stream-json` holds its process, and every MCP server it started, until
+/// stdin closes. That session shows `isRunning: false`, so none of the
+/// existing "stop it first" paths touch it, and dropping the row here used
+/// to leave it running with nothing left to reference it. Best-effort: a
+/// failure to release must not block the user's delete.
+///
+/// `onlyIfIdle` is for archive, which the UI advertises as safe to do while
+/// a turn is running — main declines rather than cutting it short.
+async function releaseRuntime(id: UUID, onlyIfIdle = false): Promise<void> {
+  try {
+    await window.overcli.invoke('runner:release', { conversationId: id, onlyIfIdle });
+  } catch (err) {
+    logToMain('warn', 'renderer.releaseRuntime', `Failed to release runtime for ${id}: ${String(err)}`);
+  }
+}
+
 function findConversation(state: StoreState, id: UUID): Conversation | null {
   return findConversationFromIndex(lookupSource(state), id);
 }
@@ -1808,6 +1828,9 @@ export const useStore = create<StoreState>((set, get) => ({
     // Snapshot before we drop the row so we can clean up sidecar state
     // that lives outside overcli.json (currently just Ollama transcripts).
     const conv = findConversation(get(), id);
+    // Release the backend runtime first — once the row is gone there's
+    // nothing left in the UI that could reach the process.
+    await releaseRuntime(id);
     set((s) => ({
       projects: s.projects.map((p) => ({
         ...p,
@@ -2127,6 +2150,10 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async setConversationHidden(id, hidden) {
     mutateConversation(set, get, id, (c) => ({ ...c, hidden }));
+    // Archiving is the user saying "I'm done with this for now" — the
+    // strongest signal we get that its session can be released. The
+    // sessionId is persisted, so unarchiving and sending resumes the thread.
+    if (hidden) await releaseRuntime(id, true);
     await saveConversationState(get);
   },
 
@@ -2158,6 +2185,10 @@ export const useStore = create<StoreState>((set, get) => ({
           : p,
       ),
     }));
+    // Bulk archive is where the parked-session count actually comes down:
+    // it's the one action that touches every conversation the user has
+    // stopped caring about in a single pass.
+    await Promise.all(ids.map((id) => releaseRuntime(id, true)));
     await get().saveProjects();
     return ids.length;
   },
@@ -2190,6 +2221,7 @@ export const useStore = create<StoreState>((set, get) => ({
           : w,
       ),
     }));
+    await Promise.all(ids.map((id) => releaseRuntime(id, true)));
     await get().saveWorkspaces();
     return ids.length;
   },

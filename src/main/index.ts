@@ -337,6 +337,9 @@ function registerIpc(): void {
   ipcMain.handle('runner:newConversation', (_e, { conversationId }) =>
     runner!.newConversation(conversationId),
   );
+  ipcMain.handle('runner:release', (_e, { conversationId, onlyIfIdle }) =>
+    runner!.release(conversationId, { onlyIfIdle }),
+  );
   ipcMain.handle(
     'runner:respondPermission',
     (_e, { conversationId, requestId, approved, addDir, scope, toolName }) =>

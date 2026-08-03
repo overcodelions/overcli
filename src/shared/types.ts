@@ -820,6 +820,14 @@ export interface AppSettings {
   /// prerelease. The in-app updater is the single source of truth — whatever
   /// build you installed, this setting decides what it upgrades to.
   updateChannel?: 'stable' | 'nightly';
+  /// How long a conversation's backend process may sit idle — turn finished,
+  /// nothing pending — before overcli tears it down. `claude -p --input-format
+  /// stream-json` (and codex app-server) stay resident with every configured
+  /// MCP server loaded for as long as stdin is open, so a session the user
+  /// walked away from an hour ago still costs its full footprint. The next
+  /// send respawns and `--resume`s the stored sessionId, so reaping is
+  /// invisible apart from a slightly slower first turn. 0 disables it.
+  idleSessionTimeoutMinutes?: number;
   /// Newest version whose release notes the user has been shown. Drives the
   /// "What's new" panel — see src/main/whatsNew.ts. Absent means the baseline
   /// hasn't been seeded yet (a fresh install, or an install that predates the
@@ -961,6 +969,14 @@ export interface IPCInvokeMap {
   }) => { ok: true } | { ok: false; error: string };
   'runner:stop': (args: { conversationId: UUID }) => void;
   'runner:newConversation': (args: { conversationId: UUID }) => void;
+  /// Tear down every runtime holding a conversation — subprocess, ollama
+  /// session, gemini ACP client, warm reviewer — because the conversation
+  /// itself is going away (delete) or being parked (archive). Distinct from
+  /// `runner:stop`, which the UI only reaches for a *running* turn: a
+  /// finished-but-resident session is invisible to the running indicator and
+  /// would otherwise leak until quit. `onlyIfIdle` declines to cut a turn
+  /// short — archive passes it, delete does not.
+  'runner:release': (args: { conversationId: UUID; onlyIfIdle?: boolean }) => void;
   'runner:respondPermission': (args: {
     conversationId: UUID;
     requestId: string;
@@ -2034,4 +2050,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   ],
   installedRegistryFlows: [],
   updateChannel: 'stable',
+  idleSessionTimeoutMinutes: 30,
 };
