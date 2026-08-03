@@ -66,9 +66,10 @@ const order = (projects: Project[], runs: FlowRun[], runners: any, selection: an
   ).map((c) => (c.entry.kind === 'flow' ? c.entry.run.id : c.entry.conv.id));
 
 describe('collectActiveCandidates', () => {
-  it('puts the long run you are sitting in at the top, not at its launch time', () => {
-    // The exact case that made this look broken: a run launched 90 minutes
-    // ago that you have open right now, against chats typed since.
+  it('does not move a row when you open it', () => {
+    // The reported bug: clicking a row in the Active section sent it to the
+    // top, so the list reshuffled under the pointer. Opening earns the row a
+    // slot; it must not change where that slot is.
     const projects = [
       project('a', [
         conv('typed-30m-ago', { lastPromptAt: NOW - 30 * MIN, lastActiveAt: NOW - 30 * MIN }),
@@ -76,19 +77,22 @@ describe('collectActiveCandidates', () => {
       ]),
     ];
     const openRun = run('open-run');
+    const before = order(projects, [openRun], {}, {});
 
-    expect(order(projects, [openRun], {}, {})[0]).toBe('typed-5m-ago');
+    const afterClick = order(projects, [openRun], {}, {
+      openedRunId: 'open-run',
+      lastOpenedAtByRun: { 'open-run': NOW },
+    });
+    expect(afterClick).toEqual(before);
 
-    // Now open the run. It's what you're working on, so it leads.
-    expect(
-      order(projects, [openRun], {}, {
-        openedRunId: 'open-run',
-        lastOpenedAtByRun: { 'open-run': NOW },
-      })[0],
-    ).toBe('open-run');
+    const afterChatClick = order(projects, [openRun], {}, {
+      openedConversationId: 'typed-30m-ago' as UUID,
+      lastSelectedAt: { 'typed-30m-ago': NOW } as Record<UUID, number>,
+    });
+    expect(afterChatClick).toEqual(before);
   });
 
-  it('keeps the chat you are reading on top while its agent works', () => {
+  it('keeps the chat you are reading in the section while its agent works', () => {
     const projects = [
       project('a', [
         conv('watching', { lastPromptAt: NOW - 20 * MIN, lastActiveAt: NOW - MIN }),
@@ -99,7 +103,11 @@ describe('collectActiveCandidates', () => {
       openedConversationId: 'watching' as UUID,
       lastSelectedAt: { watching: NOW - 30_000 } as Record<UUID, number>,
     };
-    expect(order(projects, [], { watching: { isRunning: true } }, selection)[0]).toBe('watching');
+    // Ordered by the user's own turns, so the later-typed chat still leads.
+    expect(order(projects, [], { watching: { isRunning: true } }, selection)).toEqual([
+      'typed-later',
+      'watching',
+    ]);
   });
 
   it('never drops the open chat, however many backends are busy', () => {
@@ -112,8 +120,10 @@ describe('collectActiveCandidates', () => {
       openedConversationId: 'open' as UUID,
       lastSelectedAt: { open: NOW } as Record<UUID, number>,
     });
+    // Kept despite the cap being full of busy chats — but at its own place in
+    // the order (last typed in two hours ago), not hoisted to the top.
     expect(rows).toContain('open');
-    expect(rows[0]).toBe('open');
+    expect(rows[rows.length - 1]).toBe('open');
   });
 
   it('keeps a finished run you were just in after you switch to another', () => {
@@ -133,14 +143,14 @@ describe('collectActiveCandidates', () => {
       openedRunId: 'red-6644',
       lastOpenedAtByRun: { 'red-6644': NOW - 30_000 },
     });
-    expect(whileOpen[0]).toBe('red-6644');
+    expect(whileOpen).toContain('red-6644');
 
     // Switched away — no longer open, still not "active". It must stay.
     const afterLeaving = order([project('a', busyChats)], [done], {}, {
       openedRunId: 'other-run',
       lastOpenedAtByRun: { 'red-6644': NOW - 30_000 },
     });
-    expect(afterLeaving[0]).toBe('red-6644');
+    expect(afterLeaving).toEqual(whileOpen);
   });
 
   it('ignores backend progress: a run advancing steps does not move its row', () => {
