@@ -352,6 +352,17 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
               label="Check out (workspace)…"
               title="Workspace agents check out every project at once from the coordinator's review sheet, so the workspace doesn't end up half in agents and half in local branches."
             />
+          ) : conv.adoptedWorktree ? (
+            /* Checking out locally does `git worktree remove --force` —
+               on a borrowed worktree that would pull the tree out from
+               under the flow run that owns it. The run's own Review &
+               merge sheet is the sanctioned way home. */
+            <ActionButton
+              onClick={() => {}}
+              disabled
+              label="Check out locally"
+              title="This worktree belongs to a flow run — check it out from that run's Review & merge instead, so the run isn't left without its tree."
+            />
           ) : (
             <ActionButton
               onClick={() => void runCheckoutLocally()}

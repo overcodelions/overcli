@@ -5,10 +5,10 @@
 // for a while after the user last touched it (ACTIVE_USER_TOUCH_WINDOW_MS).
 // Below both, a floor keeps the section from ever being empty.
 //
-// Recency here means what the USER did — typing in something, or opening it —
-// never what the CLI did. A backend churning through steps or finishing a long
-// run keeps its row visible (that's what `active` is for) but must not reorder
-// the section or push out something the user touched more recently.
+// Recency here means what the USER did — never what the CLI did. A backend
+// churning through steps or finishing a long run keeps its row visible (that's
+// what `active` is for) but must not reorder the section or push out something
+// the user touched more recently.
 //
 // The touch window matters as much as the ordering: a slot you earned by
 // working on something has to outlast walking away from it, or the section
@@ -23,8 +23,15 @@ export interface ActiveCandidate<T> {
   active: boolean;
   /// When the user last drove this item themselves — sent a turn, launched
   /// a run, clicked Continue. Never stamped by backend progress or
-  /// completion. Both the backfill and the on-screen order key off this.
+  /// completion, and never by merely opening something. The on-screen order,
+  /// and only the order, keys off this.
   promptedAt: number;
+  /// When the user last had this on screen. Opening something is a user
+  /// action, so it holds the row's slot and protects it from eviction — but
+  /// it deliberately has no say in where the row sits, because a row that
+  /// moves the instant you click it slides out from under the pointer.
+  /// Defaults to `promptedAt`.
+  touchedAt?: number;
 }
 
 /// The most recent items always stay in Active, however long they've been
@@ -47,20 +54,20 @@ export const ACTIVE_SECTION_CAP = 7;
 /// touched, plus anything still going".
 export const ACTIVE_USER_TOUCH_WINDOW_MS = 60 * 60 * 1000;
 
-/// Picks the rows to render, then orders every one of them by how recently
-/// the user touched it.
+/// Picks the rows to render, then orders every one of them by the user's own
+/// turns.
 ///
 /// A row qualifies two ways: it's still going (`active`), or the user touched
 /// it inside `touchWindow`. Either earns a slot — leaving something doesn't
 /// take its slot away, which is what made runs vanish the moment you switched
 /// tabs. Below that, the floor backfills so the section is never empty.
 ///
-/// Membership and order are deliberately separate. Liveness earns a slot, so
-/// a long run stays visible while it works; but once a row is on screen it
-/// sits where the user last left it. Ordering the visible rows by liveness
-/// would make the list jump every time a backend starts, advances a step or
-/// finishes — and when the section is over `cap`, letting liveness break the
-/// tie would evict the chat the user just typed in to keep a busy run.
+/// Membership and order are deliberately separate, and they read different
+/// clocks. Membership (and, at the cap, eviction) goes by `touchedAt`, so
+/// liveness and opening both keep a row on screen. Order goes by `promptedAt`
+/// alone, so nothing moves a row except the user typing in it: not a backend
+/// starting, advancing a step or finishing, and not clicking the row — a list
+/// that reshuffles under the pointer is worse than one that's slightly stale.
 export function selectActiveEntries<T>(
   candidates: ActiveCandidate<T>[],
   {
@@ -71,13 +78,12 @@ export function selectActiveEntries<T>(
   } = {},
 ): ActiveCandidate<T>[] {
   const touchCutoff = now - touchWindow;
-  const qualifies = (c: ActiveCandidate<T>) => c.active || c.promptedAt >= touchCutoff;
-  const byUserRecency = (a: ActiveCandidate<T>, b: ActiveCandidate<T>) =>
-    b.promptedAt - a.promptedAt;
+  const touchedAt = (c: ActiveCandidate<T>) => c.touchedAt ?? c.promptedAt;
+  const qualifies = (c: ActiveCandidate<T>) => c.active || touchedAt(c) >= touchCutoff;
   const ranked = [...candidates].sort(
-    (a, b) => Number(qualifies(b)) - Number(qualifies(a)) || byUserRecency(a, b),
+    (a, b) => Number(qualifies(b)) - Number(qualifies(a)) || touchedAt(b) - touchedAt(a),
   );
   const earned = ranked.filter(qualifies).length;
   const take = Math.min(Math.max(earned, floor), Math.max(cap, floor));
-  return ranked.slice(0, take).sort(byUserRecency);
+  return ranked.slice(0, take).sort((a, b) => b.promptedAt - a.promptedAt);
 }

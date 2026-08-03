@@ -69,6 +69,13 @@ import {
 import { loginCodexMcp } from './mcpLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import { resolveFilePath as resolveFilePathIn } from './resolveFilePath';
+import { readHtmlPreviewAssets } from './htmlPreviewAssets';
+import { buildReactPreviewBundle } from './reactPreviewBundle';
+import {
+  handlePreviewProtocol,
+  publishPreviewDocument,
+  registerPreviewScheme,
+} from './previewProtocol';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -551,6 +558,33 @@ function registerIpc(): void {
         return { ok: false, error: err?.message ?? 'Could not open artifact' };
       }
     },
+  );
+  ipcMain.handle(
+    'preview:htmlAssets',
+    (_e, args: { path: string; rootPath?: string; refs: string[] }) =>
+      readHtmlPreviewAssets(
+        {
+          path: resolveFilePath(args?.path ?? '', args?.rootPath) ?? '',
+          rootPath: args?.rootPath,
+          refs: args?.refs ?? [],
+        },
+        isReadablePath,
+      ),
+  );
+  ipcMain.handle(
+    'preview:reactBundle',
+    (_e, args: { path: string; rootPath?: string; contents?: string }) =>
+      buildReactPreviewBundle(
+        {
+          path: resolveFilePath(args?.path ?? '', args?.rootPath) ?? '',
+          rootPath: args?.rootPath,
+          contents: args?.contents,
+        },
+        { isReadable: isReadablePath },
+      ),
+  );
+  ipcMain.handle('preview:publishDocument', (_e, args: { html: string }) =>
+    publishPreviewDocument(args?.html ?? ''),
   );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
@@ -1687,8 +1721,13 @@ async function clearDevHttpCache(): Promise<void> {
   }
 }
 
+// Scheme privileges are only accepted before the app is ready, so this
+// cannot move into whenReady below.
+registerPreviewScheme();
+
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  handlePreviewProtocol();
   void clearDevHttpCache();
   // In dev the dock shows Electron's default icon because we're running the
   // Electron binary directly (no .app bundle). Override it so dev matches prod.
