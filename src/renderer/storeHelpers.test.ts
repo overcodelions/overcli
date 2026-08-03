@@ -3,7 +3,13 @@
 
 import { describe, expect, it } from 'vitest';
 import type { AppSettings, Conversation } from '@shared/types';
-import { backendSettingsChanged, hydrateFileTabs, ownsWorktree, serializeFileTabs } from './store';
+import {
+  backendSettingsChanged,
+  hydrateFileTabs,
+  isLiveWorkspaceAgent,
+  ownsWorktree,
+  serializeFileTabs,
+} from './store';
 
 function settings(over: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -125,5 +131,33 @@ describe('file tab persistence', () => {
       openFilePath: null,
     } as never);
     expect(out['conv:live']).toBeUndefined();
+  });
+});
+
+// The Edit-workspace sheet offers to push newly added projects into the
+// workspace's agents. It counted every coordinator the workspace had ever
+// held, so an archived backlog showed up as "Apply to 23 agents" against a
+// sidebar listing none — and applying would have cut worktrees for all 23.
+describe('isLiveWorkspaceAgent', () => {
+  const coordinator = (over: Partial<Conversation> = {}): Conversation =>
+    ({ id: 'c1', name: 'agent', workspaceAgentMemberIds: ['m1'], ...over }) as Conversation;
+
+  it('counts a coordinator with members', () => {
+    expect(isLiveWorkspaceAgent(coordinator())).toBe(true);
+  });
+
+  it('skips archived coordinators', () => {
+    expect(isLiveWorkspaceAgent(coordinator({ hidden: true }))).toBe(false);
+  });
+
+  it('skips coordinators whose worktrees were dissolved back into the repos', () => {
+    expect(isLiveWorkspaceAgent(coordinator({ continuedLocally: true }))).toBe(false);
+  });
+
+  it('skips plain conversations and members', () => {
+    expect(isLiveWorkspaceAgent(coordinator({ workspaceAgentMemberIds: [] }))).toBe(false);
+    expect(
+      isLiveWorkspaceAgent({ id: 'm1', name: 'member', worktreePath: '/wt' } as Conversation),
+    ).toBe(false);
   });
 });
