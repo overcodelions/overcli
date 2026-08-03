@@ -536,6 +536,22 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           value={local.autoDowngrade}
           onChange={(v) => patch({ autoDowngrade: v })}
         />
+        <Row
+          label="Release idle sessions after"
+          help="A conversation's CLI stays resident between turns — with every MCP server it started — so a stack of sessions you're no longer using can hold gigabytes. Once a session has been idle this long, overcli shuts it down; your next message respawns it and resumes the same thread. Raise it if you bounce between many conversations; Never keeps every session alive until quit."
+        >
+          <select
+            value={String(local.idleSessionTimeoutMinutes ?? 30)}
+            onChange={(e) => patch({ idleSessionTimeoutMinutes: Number(e.target.value) })}
+            className="field px-2 py-1 text-xs"
+          >
+            <option value="10">10 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="180">3 hours</option>
+            <option value="0">Never</option>
+          </select>
+        </Row>
       </Group>
       <Group title="Updates" description="Which build channel this app auto-updates from.">
         <Row label="Channel" help="Stable tracks tagged releases. Nightly tracks the rolling nightly prerelease — newer, less tested, and not notarized, so macOS Gatekeeper warns on a fresh nightly download. Switching takes effect immediately.">
