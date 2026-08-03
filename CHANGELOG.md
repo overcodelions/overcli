@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-08-03
+
 ### Fixed
 - **Conversations you're done with stop holding a CLI open.** `claude -p --input-format stream-json` stays resident for as long as its stdin is open, and it brings every configured MCP server with it, so a session costs its full footprint from the first message until the app quits. Nothing reclaimed that: archiving or deleting a conversation dropped the row and left the process behind, and a finished turn reports `isRunning: false`, so it was invisible to the running indicator and to every "stop it first" path in the UI. A measured session is about 1 GB across roughly fifteen processes — the CLI itself is under half of it, and the rest is the MCP servers it started, which sit two levels down (`claude` → `npm exec @modelcontextprotocol/server-x` → the server proper). Thirty of those parked is tens of gigabytes, and one machine was carrying a session whose conversation had already been deleted. Archive and delete now release the runtime, and a sweep retires any session idle past a timeout (Settings → Advanced → *Release idle sessions after*, 30 minutes by default, or Never). The sessionId is persisted, so the next message respawns and `--resume`s the same thread — the only cost is a slower first turn. The sweep declines in every case where teardown wouldn't be free: a turn still in flight, a permission prompt waiting on you, or a session with no sessionId to resume from, where reaping would be history loss wearing memory savings as a disguise. Archiving keeps its promise to be safe mid-turn and skips a busy session rather than cutting it short.
 
@@ -289,7 +291,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.2...HEAD
+[0.13.2]: https://github.com/overcodelions/overcli/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/overcodelions/overcli/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/overcodelions/overcli/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/overcodelions/overcli/compare/v0.11.0...v0.12.0
