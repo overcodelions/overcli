@@ -542,6 +542,15 @@ function isAgentConversation(conv: Conversation): boolean {
   return !!conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
 }
 
+/// Workspace-agent coordinators still worth acting on. Archived (`hidden`)
+/// agents are gone from the sidebar, and `continuedLocally` ones have had
+/// their worktrees dissolved back into the main repos — minting new members
+/// into either is work the user never asked for and can't see.
+export function isLiveWorkspaceAgent(conv: Conversation): boolean {
+  if (conv.hidden || conv.continuedLocally) return false;
+  return (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+}
+
 /// Whether deleting `conv` should also `git worktree remove` its tree.
 /// True for agents that minted their own worktree; false for one that
 /// merely borrowed a flow run's — the run still owns that tree and needs
@@ -1609,9 +1618,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const state = get();
     const ws = state.workspaces.find((w) => w.id === args.workspaceId);
     if (!ws) return { appliedAgents: 0, failures: [] };
-    const coordinators = (ws.conversations ?? []).filter(
-      (c) => (c.workspaceAgentMemberIds?.length ?? 0) > 0,
-    );
+    const coordinators = (ws.conversations ?? []).filter(isLiveWorkspaceAgent);
     if (coordinators.length === 0) return { appliedAgents: 0, failures: [] };
     const projectsById = new Map(state.projects.map((p) => [p.id, p]));
     const addedProjects = args.projectIds
