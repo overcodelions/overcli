@@ -272,6 +272,19 @@ interface StoreState {
   pickProject(): Promise<void>;
   newConversation(projectId: UUID): Promise<Conversation>;
   newConversationInWorkspace(workspaceId: UUID): Promise<Conversation | null>;
+  /// Open a fresh conversation inside an EXISTING worktree owned by
+  /// something else — today a flow run's, so you can keep working in
+  /// that tree with a clean context. `projectPath` is the repo the
+  /// worktree was forked from (`FlowRun.sourceProjectPath`); the
+  /// conversation is filed under that project. Returns null when no
+  /// project matches that path. See `Conversation.adoptedWorktree`.
+  newConversationInWorktree(args: {
+    projectPath: string;
+    worktreePath: string;
+    branchName?: string;
+    baseBranch?: string;
+    name: string;
+  }): Promise<Conversation | null>;
   newWorkspace(name: string, projectIds: UUID[], instructions?: string): Promise<Workspace | null>;
   updateWorkspaceProjects(workspaceId: UUID, projectIds: UUID[]): Promise<boolean>;
   updateWorkspaceInstructions(workspaceId: UUID, instructions: string): Promise<boolean>;
@@ -527,6 +540,16 @@ function lookupSource(state: StoreState): {
 
 function isAgentConversation(conv: Conversation): boolean {
   return !!conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+}
+
+/// Whether deleting `conv` should also `git worktree remove` its tree.
+/// True for agents that minted their own worktree; false for one that
+/// merely borrowed a flow run's — the run still owns that tree and needs
+/// it for Review & merge, so deleting the chat drops only the row.
+export function ownsWorktree(
+  conv: Conversation,
+): conv is Conversation & { worktreePath: string } {
+  return !!conv.worktreePath && !conv.adoptedWorktree;
 }
 
 /// Ask the main process which Ollama models are actually pulled locally
@@ -1314,6 +1337,40 @@ export const useStore = create<StoreState>((set, get) => ({
     return conv;
   },
 
+  async newConversationInWorktree(args) {
+    // The worktree already exists and belongs to someone else (a flow
+    // run) — we only build the conversation row that points at it, so
+    // `cwd = conv.worktreePath` (see refreshGitStatus / the runner turn
+    // args) lands every turn in that tree. `adoptedWorktree` is what
+    // keeps `removeAgent` from deleting it later.
+    const project = get().projects.find((p) => p.path === args.projectPath);
+    if (!project) return null;
+    const conv: Conversation = {
+      id: uuid(),
+      name: args.name,
+      createdAt: Date.now(),
+      totalCostUSD: 0,
+      turnCount: 0,
+      currentModel: '',
+      permissionMode: get().settings.defaultPermissionMode,
+      primaryBackend: defaultBackend(get().settings),
+      worktreePath: args.worktreePath,
+      branchName: args.branchName,
+      baseBranch: args.baseBranch,
+      adoptedWorktree: true,
+    };
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === project.id
+          ? { ...p, conversations: [...p.conversations, conv], lastOpenedAt: Date.now() }
+          : p,
+      ),
+    }));
+    await get().saveProjects();
+    get().selectConversation(conv.id);
+    return conv;
+  },
+
   async newWorkspace(name, projectIds, instructions) {
     if (!name.trim() || projectIds.length === 0) return null;
     const id = uuid();
@@ -1806,7 +1863,10 @@ export const useStore = create<StoreState>((set, get) => ({
     // Single-project agent: git worktree remove + drop the conversation.
     // Review agents live on a detached HEAD with no branch, so we pass
     // an empty branchName and let git skip the branch-delete step.
-    if (conv.worktreePath && ownerProjectPath) {
+    // Adopted worktrees are the exception (see `ownsWorktree`): the tree
+    // belongs to a flow run, which still needs it for Review & merge, so
+    // we drop only the conversation row and leave tree and branch alone.
+    if (ownsWorktree(conv) && ownerProjectPath) {
       const res = await window.overcli.invoke('git:removeWorktree', {
         projectPath: ownerProjectPath,
         worktreePath: conv.worktreePath,

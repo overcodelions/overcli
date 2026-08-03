@@ -10,9 +10,13 @@ import {
 
 function candidate(
   name: string,
-  { active = false, promptedAt = 0 }: Partial<Omit<ActiveCandidate<string>, 'entry'>> = {},
+  {
+    active = false,
+    promptedAt = 0,
+    touchedAt,
+  }: Partial<Omit<ActiveCandidate<string>, 'entry'>> = {},
 ): ActiveCandidate<string> {
-  return { entry: name, active, promptedAt };
+  return { entry: name, active, promptedAt, touchedAt };
 }
 
 const names = (entries: ActiveCandidate<string>[]) => entries.map((e) => e.entry);
@@ -115,6 +119,45 @@ describe('selectActiveEntries', () => {
       { now },
     );
     expect(names(picked)).not.toContain('stale');
+  });
+
+  it('holds a row still when the user merely opens it', () => {
+    const now = 10 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const rows = (openedTouch: number | undefined) => [
+      candidate('typed-last', { promptedAt: now - 1000 }),
+      candidate('opened', { active: true, promptedAt: now - 60 * 60_000, touchedAt: openedTouch }),
+      candidate('typed-middle', { promptedAt: now - 30_000 }),
+    ];
+    expect(names(selectActiveEntries(rows(undefined), { now }))).toEqual([
+      'typed-last',
+      'typed-middle',
+      'opened',
+    ]);
+    // Clicking it stamps touchedAt. Same order — the row doesn't move.
+    expect(names(selectActiveEntries(rows(now), { now }))).toEqual([
+      'typed-last',
+      'typed-middle',
+      'opened',
+    ]);
+  });
+
+  it('lets a fresh touch save a row from eviction without hoisting it', () => {
+    const now = 10 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const stale = { promptedAt: now - 60 * 60_000 };
+    const busy = Array.from({ length: 3 }, (_, i) =>
+      candidate(`busy-${i}`, { active: true, promptedAt: now - 1000 - i }),
+    );
+    // Without the touch the cap keeps the three busy rows and drops it.
+    expect(names(selectActiveEntries([candidate('just-opened', stale), ...busy], {
+      now,
+      floor: 1,
+      cap: 3,
+    }))).not.toContain('just-opened');
+    // With it, the row survives — at the bottom, where its own turns put it.
+    expect(names(selectActiveEntries(
+      [candidate('just-opened', { ...stale, touchedAt: now }), ...busy],
+      { now, floor: 1, cap: 3 },
+    ))).toEqual(['busy-0', 'busy-1', 'just-opened']);
   });
 
   it('caps the section so a burst of work cannot fill the sidebar', () => {

@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { ArtifactPreviewResult, ProjectPreviewHintsResult } from '@shared/types';
+import type {
+  ArtifactPreviewResult,
+  HtmlPreviewAsset,
+  ProjectPreviewHintsResult,
+  ReactPreviewBundleResult,
+} from '@shared/types';
 import { detectFilePreviewKind } from '../filePreview';
+import { collectHtmlAssetRefs, inlineHtmlAssets } from '../htmlPreview';
+import { buildReactPreviewDocument, type PreviewBackground } from '../reactPreview';
 import { renderMarkdownHtml } from './Markdown';
 
 export function FilePreview({
@@ -27,11 +34,40 @@ export function FilePreview({
   }, []);
 
   const kind = detectFilePreviewKind(path);
+  // The preview iframe is sandboxed onto an opaque origin, which may not
+  // load `file://` subresources — so a sibling stylesheet never arrived and
+  // the page rendered unstyled. Main reads the local refs for us and we
+  // fold them into the document below.
+  const [assets, setAssets] = useState<Record<string, HtmlPreviewAsset>>({});
+  const refsKey = useMemo(
+    () => (kind === 'html' ? collectHtmlAssetRefs(content).join('\n') : ''),
+    [content, kind],
+  );
+
+  useEffect(() => {
+    if (!refsKey) {
+      setAssets({});
+      return;
+    }
+    let cancelled = false;
+    window.overcli
+      .invoke('preview:htmlAssets', { path, rootPath, refs: refsKey.split('\n') })
+      .then((res) => {
+        if (!cancelled) setAssets(res.ok ? res.assets : {});
+      })
+      .catch(() => {
+        if (!cancelled) setAssets({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, refsKey, rootPath]);
+
   const srcDoc = useMemo(() => {
-    if (kind === 'html') return buildHtmlDocument(path, content);
+    if (kind === 'html') return buildHtmlDocument(path, inlineHtmlAssets(content, assets));
     if (kind === 'markdown') return buildMarkdownDocument(path, content, dark);
     return '';
-  }, [content, dark, kind, path]);
+  }, [assets, content, dark, kind, path]);
 
   if (!kind) {
     return <div className="p-4 text-xs text-ink-faint">Preview is not available for this file.</div>;
@@ -229,7 +265,217 @@ function JsonPreview({ content }: { content: string }) {
   );
 }
 
+/// A .tsx preview renders the component for real: main compiles it with
+/// esbuild and we run the bundle in a scripts-enabled — but not
+/// same-origin — iframe. The old static analysis is still one click away
+/// under Details, since it says things a render cannot (export surface,
+/// which project script to launch).
 function ReactPreview({ path, content, rootPath }: { path: string; content: string; rootPath?: string }) {
+  const [tab, setTab] = useState<'render' | 'details'>('render');
+  const [background, setBackground] = useState<PreviewBackground>(() =>
+    document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+  );
+  const [bundle, setBundle] = useState<ReactPreviewBundleResult | null>(null);
+  const [bundling, setBundling] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
+  // Compiling on every keystroke would spawn an esbuild run per character;
+  // a pause of half a second is roughly when you stop and look anyway.
+  const debouncedContent = useDebounced(content, 500);
+
+  useEffect(() => {
+    let cancelled = false;
+    setBundling(true);
+    window.overcli
+      .invoke('preview:reactBundle', { path, rootPath, contents: debouncedContent })
+      .then((res) => {
+        if (cancelled) return;
+        setBundle(res);
+        setBundling(false);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setBundle({ ok: false, error: err instanceof Error ? err.message : String(err) });
+        setBundling(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedContent, path, reloadToken, rootPath]);
+
+  // The document is served from main over `overcli-preview://` rather than
+  // handed to the iframe as srcDoc: a srcDoc frame inherits the app's
+  // `script-src 'self'`, which refuses the compiled bundle outright.
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!bundle?.ok) {
+      setFrameUrl(null);
+      return;
+    }
+    let cancelled = false;
+    const html = buildReactPreviewDocument(bundle, background);
+    window.overcli
+      .invoke('preview:publishDocument', { html })
+      .then((res) => {
+        if (cancelled) return;
+        setFrameUrl(res.ok ? res.url : null);
+        setPublishError(res.ok ? null : res.error);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setFrameUrl(null);
+        setPublishError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [background, bundle]);
+
+  return (
+    <div className="h-full min-h-0 flex flex-col bg-surface">
+      <div className="px-3 py-2 border-b border-card flex items-center justify-between gap-3 text-xs">
+        <div className="flex items-center gap-2 min-w-0">
+          <TabButton active={tab === 'render'} onClick={() => setTab('render')}>
+            Render
+          </TabButton>
+          <TabButton active={tab === 'details'} onClick={() => setTab('details')}>
+            Details
+          </TabButton>
+          <span className="truncate text-ink-faint">{bundleStatusLabel(bundle, bundling)}</span>
+        </div>
+        {tab === 'render' && (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => setBackground((b) => (b === 'dark' ? 'light' : 'dark'))}
+              className="px-2 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+              title="Toggle the preview background (and the `dark` class, for dark: variants)"
+            >
+              {background === 'dark' ? 'Dark' : 'Light'}
+            </button>
+            <button
+              onClick={() => setReloadToken((t) => t + 1)}
+              className="px-2 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+            >
+              Reload
+            </button>
+          </div>
+        )}
+      </div>
+      {tab === 'details' ? (
+        <ReactPreviewDetails path={path} content={content} rootPath={rootPath} />
+      ) : bundle && !bundle.ok ? (
+        <ReactBundleError result={bundle} />
+      ) : publishError ? (
+        <div className="p-4 text-xs text-red-300">{publishError}</div>
+      ) : bundle?.ok && frameUrl ? (
+        <>
+          <iframe
+            title={`${path} preview`}
+            sandbox="allow-scripts"
+            src={frameUrl}
+            className="block w-full flex-1 min-h-0 border-0 bg-transparent"
+          />
+          {bundle.tailwind.status === 'unavailable' && (
+            <div className="px-3 py-1.5 text-[11px] text-ink-faint border-t border-card">
+              {bundle.tailwind.message}
+            </div>
+          )}
+          {bundle.tailwind.status === 'failed' && (
+            <div className="px-3 py-1.5 text-[11px] text-red-300 border-t border-card truncate">
+              Tailwind failed: {bundle.tailwind.message}
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="p-4 text-xs text-ink-faint">Compiling component…</div>
+      )}
+    </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`px-2 py-1 rounded border ${
+        active
+          ? 'border-card-strong bg-card-strong text-ink'
+          : 'border-transparent text-ink-muted hover:text-ink'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function bundleStatusLabel(bundle: ReactPreviewBundleResult | null, bundling: boolean): string {
+  if (bundling) return bundle ? 'Recompiling…' : '';
+  if (!bundle?.ok) return '';
+  const parts = [bundle.reactSource === 'project' ? "project's React" : "Overcli's React"];
+  if (bundle.tailwind.status === 'compiled') parts.push(`Tailwind v${bundle.tailwind.version}`);
+  if (bundle.warnings.length) parts.push(`${bundle.warnings.length} warning(s)`);
+  return parts.join(' · ');
+}
+
+function ReactBundleError({
+  result,
+}: {
+  result: Extract<ReactPreviewBundleResult, { ok: false }>;
+}) {
+  return (
+    <div className="h-full overflow-auto p-4">
+      <div className="max-w-3xl border border-card-strong bg-surface rounded-lg p-4">
+        <div className="text-xs font-medium text-ink">{result.error}</div>
+        {result.hint === 'react-missing' && (
+          <div className="mt-2 text-xs text-ink-muted leading-relaxed">
+            Run <code className="text-ink">npm install react react-dom</code> in the project, or open
+            the file from a project that already has them.
+          </div>
+        )}
+        {result.hint === 'esbuild-missing' && (
+          <div className="mt-2 text-xs text-ink-muted leading-relaxed">
+            Components are compiled with esbuild. This build of Overcli cannot reach it, so only the
+            Details view is available.
+          </div>
+        )}
+        {!!result.details?.length && (
+          <pre className="mt-3 m-0 p-3 rounded bg-surface-muted text-[11px] leading-relaxed text-ink-muted whitespace-pre-wrap">
+            {result.details.join('\n')}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/// Debounced mirror of a value. Used to keep the preview following the
+/// editor buffer without recompiling mid-keystroke.
+function useDebounced<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [delayMs, value]);
+  return debounced;
+}
+
+function ReactPreviewDetails({
+  path,
+  content,
+  rootPath,
+}: {
+  path: string;
+  content: string;
+  rootPath?: string;
+}) {
   const info = useMemo(() => analyzeReactSource(content), [content]);
   const [hints, setHints] = useState<ProjectPreviewHintsResult | null>(null);
   const [launchError, setLaunchError] = useState<string | null>(null);

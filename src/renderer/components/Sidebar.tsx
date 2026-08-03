@@ -484,9 +484,10 @@ interface ActiveFlowItem {
 type ActiveItem = RecentConversationItem | ActiveFlowItem;
 
 /// What the user is currently looking at, and when they last looked at
-/// everything else. Opening something is a user action just like typing in
-/// it, and it's the one the Active section most needs: while a long turn
-/// runs you aren't typing, but that chat is still what you're working on.
+/// everything else. This is what holds a row's slot while a long turn runs —
+/// you aren't typing, but that chat is still what you're working on. It only
+/// feeds `touchedAt`, never `promptedAt`: opening something keeps it on
+/// screen, it doesn't move it (see selectActiveEntries).
 interface ActiveSelection {
   openedConversationId: UUID | null;
   lastSelectedAt: Record<UUID, number>;
@@ -523,7 +524,8 @@ export function collectActiveCandidates(
       // The chat on screen always gets a slot. Without this a busy set of
       // backends could fill the cap and evict the one you're reading.
       active: opened || isActiveConversation(conv, running, cutoff),
-      promptedAt: Math.max(
+      promptedAt: conversationPromptAt(conv),
+      touchedAt: Math.max(
         conversationPromptAt(conv),
         selection.lastSelectedAt[conv.id] ?? 0,
       ),
@@ -553,7 +555,8 @@ export function collectActiveCandidates(
         isLive: flowRunIsLive(run, runners),
       },
       active: run.id === selection.openedRunId || flowRunIsActive(run, runners, cutoff),
-      promptedAt: Math.max(
+      promptedAt: flowRunPromptedAt(run),
+      touchedAt: Math.max(
         flowRunPromptedAt(run),
         selection.lastOpenedAtByRun[run.id] ?? 0,
       ),

@@ -54,6 +54,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
+  const newConversationInWorktree = useStore((s) => s.newConversationInWorktree);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -127,6 +128,25 @@ export function FlowRunPane({ runId }: { runId: string }) {
     ? run.conversationIds[activeParticipant.id]
     : undefined;
 
+  // Attach a brand-new conversation to this run's worktree and jump to
+  // it. `selectConversation` flips detailMode back to 'conversation', so
+  // the run stays the active one and Flows returns here.
+  const newChatHere = async () => {
+    if (!run.worktreePath || !run.sourceProjectPath) return;
+    const conv = await newConversationInWorktree({
+      projectPath: run.sourceProjectPath,
+      worktreePath: run.worktreePath,
+      branchName: run.branchName,
+      baseBranch: run.baseBranch,
+      name: flowRunTitle(run).slice(0, 60),
+    });
+    if (!conv) {
+      window.alert(
+        `Couldn't find the project this run forked from (${run.sourceProjectPath}). Add it as a project to open a chat in its worktree.`,
+      );
+    }
+  };
+
   return (
     <div className="flex-1 flex min-h-0 overflow-hidden">
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -175,6 +195,20 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 title="Browse the files in this run's worktree"
               >
                 Files
+              </button>
+            )}
+            {/* Keep working in this run's worktree from a fresh chat —
+                the escape hatch for when the run's own context is spent
+                but the tree still has work left in it. Single-project
+                worktree runs only: a workspace run has one worktree per
+                member, with no single cwd to hand a conversation. */}
+            {run.worktreePath && run.sourceProjectPath && (
+              <button
+                onClick={newChatHere}
+                className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50 whitespace-nowrap"
+                title="Start a new conversation in this run's worktree — same files and branch, clean context"
+              >
+                New chat here
               </button>
             )}
             {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
