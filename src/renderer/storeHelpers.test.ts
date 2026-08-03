@@ -2,8 +2,8 @@
 // editor-tab persistence projection.
 
 import { describe, expect, it } from 'vitest';
-import type { AppSettings } from '@shared/types';
-import { backendSettingsChanged, hydrateFileTabs, serializeFileTabs } from './store';
+import type { AppSettings, Conversation } from '@shared/types';
+import { backendSettingsChanged, hydrateFileTabs, ownsWorktree, serializeFileTabs } from './store';
 
 function settings(over: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -40,6 +40,28 @@ describe('backendSettingsChanged', () => {
     const bare = {} as AppSettings;
     expect(backendSettingsChanged(bare, settings())).toBe(false);
     expect(backendSettingsChanged(settings(), bare)).toBe(false);
+  });
+});
+
+// Deleting an agent runs `git worktree remove` + branch delete. A chat
+// opened into a flow run's worktree ("New chat here") points at a tree it
+// doesn't own — deleting it must leave the run's tree and branch intact,
+// or the run loses the work it's holding for Review & merge.
+describe('ownsWorktree', () => {
+  const conv = (over: Partial<Conversation>) => ({ id: 'c1', ...over }) as Conversation;
+
+  it('is true for an agent that minted its own worktree', () => {
+    expect(ownsWorktree(conv({ worktreePath: '/wt/a', branchName: 'feature/a' }))).toBe(true);
+  });
+
+  it('is false for a chat borrowing a flow run worktree', () => {
+    expect(
+      ownsWorktree(conv({ worktreePath: '/wt/a', branchName: 'feature/a', adoptedWorktree: true })),
+    ).toBe(false);
+  });
+
+  it('is false for a plain conversation with no worktree', () => {
+    expect(ownsWorktree(conv({}))).toBe(false);
   });
 });
 

@@ -348,6 +348,14 @@ export interface Conversation {
   worktreePath?: string;
   branchName?: string;
   baseBranch?: string;
+  /// The conversation is BORROWING a worktree someone else owns — today
+  /// only a flow run's (`FlowRun.worktreePath`), attached via "New chat
+  /// here" on the run pane so a fresh context can keep working in the
+  /// same tree. It still looks and behaves like an agent conversation
+  /// (`isAgentConversation` keys off `worktreePath`), but deleting it
+  /// must NOT `git worktree remove` — the run still owns that tree and
+  /// its Review & merge path depends on it. See `removeAgent`.
+  adoptedWorktree?: boolean;
   orphaned?: boolean;
   hidden?: boolean;
   reviewBackend?: string | null;
