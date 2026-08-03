@@ -61,6 +61,7 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
 
   const isAgent = !!conv?.worktreePath;
   const isCoordinator = (conv?.workspaceAgentMemberIds?.length ?? 0) > 0;
+  const adopted = !!conv?.adoptedWorktree;
 
   useEffect(() => {
     if (!conv) return;
@@ -131,7 +132,10 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
     }
     return 0;
   })();
-  const hasDanger = hasUncommitted || unmergedCommits > 0;
+  // A borrowed worktree survives the delete (see `removeAgent`), so the
+  // usual "your uncommitted work is about to be destroyed" warnings don't
+  // apply — nothing on disk is touched, and the flow run still owns it.
+  const hasDanger = !adopted && (hasUncommitted || unmergedCommits > 0);
 
   const doRename = async (nextName: string) => {
     if (nextName === conv.name || !nextName.trim()) return;
@@ -186,12 +190,16 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
         <div className="text-lg font-semibold">
           {isCoordinator
             ? 'Workspace agent'
+            : adopted
+            ? 'Conversation in a flow worktree'
             : isAgent
             ? 'Agent conversation'
             : 'Conversation'}
         </div>
         <div className="text-xs text-ink-faint">
-          {isAgent || isCoordinator
+          {adopted
+            ? 'Archive hides it from the sidebar. Delete drops the conversation only — the worktree and branch belong to the flow run and stay put.'
+            : isAgent || isCoordinator
             ? 'Archive hides it from the sidebar (keeps the worktree and branch). Delete removes the git worktree and branch.'
             : 'Archive hides it from the sidebar. Delete drops the conversation from disk. Neither touches your project files.'}
         </div>
@@ -267,9 +275,10 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
           conv={conv}
           isAgent={isAgent}
           isCoordinator={isCoordinator}
+          adopted={adopted}
           hasDanger={hasDanger}
-          hasUncommitted={hasUncommitted}
-          unmergedCommits={unmergedCommits}
+          hasUncommitted={!adopted && hasUncommitted}
+          unmergedCommits={adopted ? 0 : unmergedCommits}
           working={working}
           onCancel={() => setMode('overview')}
           onConfirm={() => void doDelete()}
@@ -417,6 +426,7 @@ function DeleteConfirm({
   conv,
   isAgent,
   isCoordinator,
+  adopted,
   hasDanger,
   hasUncommitted,
   unmergedCommits,
@@ -427,6 +437,7 @@ function DeleteConfirm({
   conv: Conversation;
   isAgent: boolean;
   isCoordinator: boolean;
+  adopted: boolean;
   hasDanger: boolean;
   hasUncommitted: boolean;
   unmergedCommits: number;
@@ -443,7 +454,7 @@ function DeleteConfirm({
 
   const headline = isCoordinator
     ? `Delete "${conv.name}" and all member worktrees?`
-    : isAgent
+    : isAgent && !adopted
     ? `Delete agent "${conv.name}"?`
     : `Delete "${conv.name}"?`;
 
@@ -457,7 +468,13 @@ function DeleteConfirm({
       }
     >
       <div className="text-sm font-medium">{headline}</div>
-      {(isAgent || isCoordinator) && (
+      {adopted && (
+        <div className="text-xs text-ink-muted">
+          Drops the conversation. The worktree and branch stay — they belong
+          to the flow run.
+        </div>
+      )}
+      {!adopted && (isAgent || isCoordinator) && (
         <div className="text-xs text-ink-muted">
           Removes the git worktree{isCoordinator ? 's' : ''} and deletes the
           branch{isCoordinator ? 'es' : ''}.

@@ -348,6 +348,14 @@ export interface Conversation {
   worktreePath?: string;
   branchName?: string;
   baseBranch?: string;
+  /// The conversation is BORROWING a worktree someone else owns — today
+  /// only a flow run's (`FlowRun.worktreePath`), attached via "New chat
+  /// here" on the run pane so a fresh context can keep working in the
+  /// same tree. It still looks and behaves like an agent conversation
+  /// (`isAgentConversation` keys off `worktreePath`), but deleting it
+  /// must NOT `git worktree remove` — the run still owns that tree and
+  /// its Review & merge path depends on it. See `removeAgent`.
+  adoptedWorktree?: boolean;
   orphaned?: boolean;
   hidden?: boolean;
   reviewBackend?: string | null;
@@ -1106,6 +1114,29 @@ export interface IPCInvokeMap {
     kind: 'markdown' | 'diff' | 'text' | 'url';
     body: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Read the local files an HTML preview references (stylesheets, images,
+  /// fonts) so the renderer can inline them. The preview iframe is
+  /// sandboxed onto an opaque origin and cannot fetch `file://` itself.
+  'preview:htmlAssets': (args: {
+    path: string;
+    rootPath?: string;
+    refs: string[];
+  }) => HtmlPreviewAssetsResult;
+  /// Compile a .tsx/.jsx component into a self-contained script the
+  /// preview iframe can run. `contents` carries the editor's unsaved
+  /// buffer so the preview tracks what you are looking at.
+  'preview:reactBundle': (args: {
+    path: string;
+    rootPath?: string;
+    contents?: string;
+  }) => ReactPreviewBundleResult;
+  /// Hand a finished preview document to the main process and get back an
+  /// `overcli-preview://` URL for it. The renderer's own CSP forbids the
+  /// inline script a compiled component needs, and a srcDoc frame inherits
+  /// that CSP — a document served over its own scheme does not.
+  'preview:publishDocument': (args: { html: string }) =>
+    | { ok: true; url: string }
+    | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
   'preview:runProjectCommand': (args: {
     cwd: string;
@@ -1554,6 +1585,52 @@ export interface IPCInvokeMap {
   /// schedule does what you think before trusting it to run unattended.
   'schedules:runNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
 }
+
+/// One local subresource of an HTML preview. Stylesheets come back as
+/// text (they get inlined into a `<style>` tag, with their own imports and
+/// `url()` refs already folded in); everything else comes back as a data
+/// URL that can be dropped straight into the attribute it came from.
+export type HtmlPreviewAsset =
+  | { ok: true; kind: 'css'; text: string }
+  | { ok: true; kind: 'data'; dataUrl: string }
+  | { ok: false; error: string };
+
+export type HtmlPreviewAssetsResult =
+  /// Keyed by the ref exactly as it appeared in the document.
+  | { ok: true; assets: Record<string, HtmlPreviewAsset> }
+  | { ok: false; error: string };
+
+/// What happened to the Tailwind pass for a React preview. `not-used` is
+/// a file with no className at all; `unavailable` is a project without
+/// Tailwind installed — both are normal, and neither is an error.
+export interface ReactPreviewTailwind {
+  status: 'compiled' | 'not-used' | 'unavailable' | 'failed' | 'skipped';
+  version?: number;
+  message?: string;
+}
+
+export type ReactPreviewBundleResult =
+  | {
+      ok: true;
+      /// A self-contained IIFE: React, the component, and its imports.
+      js: string;
+      /// CSS the component imported directly, already bundled.
+      css: string;
+      tailwindCss?: string;
+      tailwind: ReactPreviewTailwind;
+      /// The element the bundle mounts into; the shell must provide it.
+      rootElementId: string;
+      /// Whether the component was compiled against the project's React or
+      /// Overcli's own copy — worth surfacing, since they can differ.
+      reactSource: 'project' | 'overcli';
+      warnings: string[];
+    }
+  | {
+      ok: false;
+      error: string;
+      details?: string[];
+      hint?: 'esbuild-missing' | 'react-missing' | 'build-failed';
+    };
 
 export type ArtifactPreviewResult =
   | {
