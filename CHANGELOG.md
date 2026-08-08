@@ -4,6 +4,12 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.13.4] - 2026-08-08
+
+### Fixed
+- **The file explorer keeps up with the agents writing into it.** The tree listed its root once per mount, so a file an agent dropped into the project simply wasn't there until you closed the pane and reopened it — the one view whose whole job is telling you what exists was the last to know. A recursive watcher per root lets the renderer relist itself as the tree changes underneath. The walk behind it is now two functions rather than one: a sync form for callers already on a blocking path, and an async one for the tree, which relists on every agent write and would otherwise stall the main process to do it ([#136](https://github.com/overcodelions/overcli/pull/136)).
+- **Worktrees that outlived their work have an exit ramp.** Worktrees are deliberately long-lived — a conversation keeps its tree so you can reopen the chat and carry on — but nothing ever removed one when the work was genuinely finished, and two paths orphaned them outright: `pruneOldRuns` evicts a run's metadata without touching the worktrees that run recorded, and a failed removal left the tree on disk with nothing pointing at it. A sweep now finds the trees nothing references any more and offers them up. It surfaces as two Settings panes rather than one, and the split is the point: **Storage** reclaims disk and is scoped to orphans, while **Conversations** deletes history. They look similar enough to merge — both are cleanup, both key off worktrees — but the trade runs opposite. The conversations are typically kilobytes each, so folding them into a disk pane would have meant offering to destroy hundreds of chats in exchange for no measurable space ([#136](https://github.com/overcodelions/overcli/pull/136)).
+
 ## [0.13.3] - 2026-08-08
 
 ### Fixed
@@ -296,7 +302,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.3...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.4...HEAD
+[0.13.4]: https://github.com/overcodelions/overcli/compare/v0.13.3...v0.13.4
 [0.13.3]: https://github.com/overcodelions/overcli/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/overcodelions/overcli/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/overcodelions/overcli/compare/v0.13.0...v0.13.1
