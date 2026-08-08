@@ -4,6 +4,11 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.13.3] - 2026-08-08
+
+### Fixed
+- **A flow step's rebound critic gets the number of rounds you asked for.** `max_iters` is a step's round budget for its critic, but the runtime never handed it over — it passed the critic's backend, mode, model and persona and stopped there, so the budget fell back to the interactive default of three. A step asking for one round got three, and a step asking for five also got three. It now goes through as the cap the runner already enforces on a critic's ping-pong. The setting was also documented as a general cap when it isn't one: `review` mode fixes its own count — round one always, round two only when the step actually changed code, never a third — so a step that writes markdown rather than code can't get past the first round whatever the budget says. That made a design or research step configured for `review` look like it would iterate when it structurally couldn't; the answer is `collab`, which is where the budget applies. Documented rather than changed, since the two-round rule is deliberate — it exists so a reviewer can confirm a fix landed without opening an unbounded loop ([#135](https://github.com/overcodelions/overcli/pull/135)).
+
 ## [0.13.2] - 2026-08-03
 
 ### Fixed
@@ -291,7 +296,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.2...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.13.3...HEAD
+[0.13.3]: https://github.com/overcodelions/overcli/compare/v0.13.2...v0.13.3
 [0.13.2]: https://github.com/overcodelions/overcli/compare/v0.13.1...v0.13.2
 [0.13.1]: https://github.com/overcodelions/overcli/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/overcodelions/overcli/compare/v0.12.0...v0.13.0
