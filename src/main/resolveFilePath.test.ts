@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveFilePath } from './resolveFilePath';
+import { resolveFilePath, resolveWriteTarget } from './resolveFilePath';
 
 // A workspace conversation whose root symlinks several member projects,
 // plus two unrelated registered projects — one of which happens to have a
@@ -85,6 +85,55 @@ describe('resolveFilePath', () => {
     expect(resolveFilePath('nope.rs', deps(WORKSPACE))).toBeNull();
   });
 
+  it('never walks a root outside the caller\'s scope', () => {
+    // The pinwheel: a hint that matches nothing used to walk every
+    // registered root — hundreds of stale conversation worktrees — before
+    // returning null. With a scope, only the scoped trees are listed.
+    const walked: string[] = [];
+    const result = resolveFilePath('deleted-notes.md', {
+      rootPath: WORKSPACE,
+      roots: ROOTS,
+      scopeRoots: [WORKSPACE],
+      exists: () => false,
+      listFiles: (root: string) => {
+        walked.push(root);
+        return TREE[root] ?? [];
+      },
+    });
+    expect(result).toBeNull();
+    expect(walked).toEqual([WORKSPACE]);
+  });
+
+  it('stops at the first whole-hint match instead of walking the rest of the scope', () => {
+    const walked: string[] = [];
+    const result = resolveFilePath('scanners/base.py', {
+      rootPath: AI_ANALYSIS,
+      roots: ROOTS,
+      scopeRoots: [AWS_COST_REDUX, WORKSPACE],
+      exists: () => false,
+      listFiles: (root: string) => {
+        walked.push(root);
+        return TREE[root] ?? [];
+      },
+    });
+    expect(result).toBe(`${AWS_COST_REDUX}/scanners/base.py`);
+    expect(walked).not.toContain(WORKSPACE);
+  });
+
+  it('still reaches a scoped sibling root when the caller root has no match', () => {
+    // Scoping narrows the search to the worktree plus the project it was
+    // forked from — the fallback within that scope must still work.
+    expect(
+      resolveFilePath('scanners/base.py', {
+        rootPath: AI_ANALYSIS,
+        roots: ROOTS,
+        scopeRoots: [AI_ANALYSIS, AWS_COST_REDUX],
+        exists: () => false,
+        listFiles: (root: string) => TREE[root] ?? [],
+      }),
+    ).toBe(`${AWS_COST_REDUX}/scanners/base.py`);
+  });
+
   it('skips a root whose listing throws instead of failing the lookup', () => {
     expect(
       resolveFilePath('main.py', {
@@ -97,5 +146,40 @@ describe('resolveFilePath', () => {
         },
       }),
     ).toBe(`${WORKSPACE}/bedrock-agentcore/main.py`);
+  });
+});
+
+// A flow worktree run: the conversation's cwd is a coordinator dir whose
+// `<member>` entries symlink to that member's MINTED WORKTREE, not the
+// project's main checkout.
+const COORDINATOR = '/Users/x/Library/Application Support/overcli/coordinators/run-1';
+
+describe('resolveWriteTarget', () => {
+  it('anchors a member-prefixed path on the coordinator root', () => {
+    // The regression: the editor sent this hint unresolved, so
+    // `writeFileSync` resolved it against the main process cwd and ENOENTed.
+    expect(resolveWriteTarget('zift-lambda-runner/lambda-runner/gradle.properties', COORDINATOR)).toBe(
+      `${COORDINATOR}/zift-lambda-runner/lambda-runner/gradle.properties`,
+    );
+  });
+
+  it('never falls back to a same-named file in another root', () => {
+    // The read cascade would happily answer `${AWS_COST_REDUX}/main.py`
+    // here. A write must not: that is a different project's file.
+    expect(resolveWriteTarget('main.py', undefined)).toBeNull();
+  });
+
+  it('passes an absolute path through untouched', () => {
+    expect(resolveWriteTarget(`${AI_ANALYSIS}/src/store.ts`, COORDINATOR)).toBe(
+      `${AI_ANALYSIS}/src/store.ts`,
+    );
+  });
+
+  it('anchors a path that is not on disk, so saving restores a deleted file', () => {
+    expect(resolveWriteTarget('src/gone.ts', AI_ANALYSIS)).toBe(`${AI_ANALYSIS}/src/gone.ts`);
+  });
+
+  it('rejects an empty hint', () => {
+    expect(resolveWriteTarget('', AI_ANALYSIS)).toBeNull();
   });
 });

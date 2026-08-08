@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { fileIconColor, folderIconColor, isTestFileName } from '../fileIcons';
 import type { FileTreeEntry } from '@shared/types';
@@ -36,6 +36,9 @@ export const FileTree = memo(function FileTree({
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState('');
   const [showBlocked, setShowBlocked] = useState(false);
+  /// A relist running underneath the current listing — either the watcher
+  /// firing or the refresh button. Only dims the button; the tree stays put.
+  const [refreshing, setRefreshing] = useState(false);
   /// Last failure from a row action (open in Terminal). Shown in the footer
   /// and cleared on the next successful one — these fail rarely and never
   /// fatally, so a banner would be too loud.
@@ -43,27 +46,67 @@ export const FileTree = memo(function FileTree({
   const openFile = useStore((s) => s.openFile);
   const openFilePath = useStore((s) => s.openFilePath);
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    window.overcli
-      .invoke('fs:listFileEntries', rootPath)
-      .then((list) => {
-        if (!cancelled) {
-          setEntries(list);
+  /// Relist the root. `initial` shows the indexing placeholder and unfolds
+  /// the top level; `refresh` keeps the current listing (and the user's open
+  /// folders, filter and selection) on screen until the new one lands, so a
+  /// background relist isn't visible beyond the row that appeared.
+  const seqRef = useRef(0);
+  const load = useCallback(
+    async (mode: 'initial' | 'refresh') => {
+      const seq = ++seqRef.current;
+      if (mode === 'initial') setLoading(true);
+      else setRefreshing(true);
+      try {
+        const list = await window.overcli.invoke('fs:listFileEntries', rootPath);
+        if (seq !== seqRef.current) return;
+        setEntries(list);
+        // Auto-expand the top-level so the user sees immediate
+        // structure without clicking to unfold the root.
+        if (mode === 'initial') setExpanded(new Set(['']));
+      } catch {
+        // Keep the last good listing rather than blanking the tree.
+      } finally {
+        if (seq === seqRef.current) {
           setLoading(false);
-          // Auto-expand the top-level so the user sees immediate
-          // structure without clicking to unfold the root.
-          setExpanded(new Set(['']));
+          setRefreshing(false);
         }
-      })
-      .catch(() => {
-        if (!cancelled) setLoading(false);
-      });
+      }
+    },
+    [rootPath],
+  );
+
+  useEffect(() => {
+    void load('initial');
+  }, [load]);
+
+  // Watch the root so files an agent drops in show up on their own — the
+  // tree used to list once per mount, which meant closing and reopening the
+  // pane to see them. Main debounces and filters the events (see
+  // fileTreeWatch.ts), so every one that arrives is worth a relist.
+  useEffect(() => {
+    let watchedKey: string | null = null;
+    let disposed = false;
+    void window.overcli.invoke('fs:watchTree', rootPath).then((res) => {
+      if (!res.ok) return; // no recursive watch here — manual refresh only
+      // The effect can be torn down before this resolves; release the
+      // reference we just took rather than leaking a watcher.
+      if (disposed) {
+        void window.overcli.invoke('fs:unwatchTree', rootPath);
+        return;
+      }
+      watchedKey = res.key;
+    });
+    const unsub = window.overcli.onMainEvent((e) => {
+      if (e.type === 'fileTreeChanged' && watchedKey && e.root === watchedKey) {
+        void load('refresh');
+      }
+    });
     return () => {
-      cancelled = true;
+      disposed = true;
+      unsub();
+      if (watchedKey) void window.overcli.invoke('fs:unwatchTree', rootPath);
     };
-  }, [rootPath]);
+  }, [rootPath, load]);
 
   const blockedCount = useMemo(() => entries.filter(isBlockedEntry).length, [entries]);
   const visibleEntries = useMemo(
@@ -98,6 +141,22 @@ export const FileTree = memo(function FileTree({
         <div className="text-xs text-ink-muted truncate flex-1">
           {shortenPath(rootPath)}
         </div>
+        {/* Backstop for the watcher: platforms that refuse a recursive
+            watch, and anything it filtered out that the user still wants
+            picked up. */}
+        <button
+          type="button"
+          onClick={() => void load('refresh')}
+          disabled={refreshing}
+          title="Refresh file list"
+          aria-label="Refresh file list"
+          className={
+            'flex h-5 w-5 shrink-0 items-center justify-center rounded text-ink-faint hover:text-ink hover:bg-card ' +
+            (refreshing ? 'opacity-40' : '')
+          }
+        >
+          ⟳
+        </button>
         <button
           type="button"
           onClick={async () => {

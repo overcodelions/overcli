@@ -998,6 +998,15 @@ export const useStore = create<StoreState>((set, get) => ({
         )
       : false;
     const bumpProject = !!id && !!owningProject && !projectAlreadyActive;
+    // Opening a conversation counts as touching it. Without this,
+    // `lastActiveAt` only ever moved when a turn streamed, so a conversation
+    // you read regularly but never sent to still looked abandoned — and
+    // Settings → Conversations would offer it for deletion dated by its
+    // *creation*. Throttled to an hour: staleness is measured in days, so
+    // finer granularity would only buy extra writes on every click.
+    const touched = id ? findConversation(before, id) : null;
+    const bumpActive =
+      !!touched && Date.now() - (touched.lastActiveAt ?? 0) > 60 * 60 * 1000;
     set((s) => ({
       selectedConversationId: id,
       detailMode: id ? 'conversation' : s.detailMode,
@@ -1014,9 +1023,12 @@ export const useStore = create<StoreState>((set, get) => ({
           )
         : s.projects,
     }));
+    if (bumpActive && id) {
+      mutateConversation(set, get, id, (c) => ({ ...c, lastActiveAt: Date.now() }));
+    }
     window.overcli.invoke('store:saveSelection', id);
-    if (bumpProject) {
-      void get().saveProjects();
+    if (bumpProject || bumpActive) {
+      void saveConversationState(get);
     }
     if (id) {
       void get().loadHistoryIfNeeded(id);
@@ -1874,13 +1886,22 @@ export const useStore = create<StoreState>((set, get) => ({
               worktreePath: m.worktreePath,
               branchName: m.branchName,
             });
-            if (!res.ok && res.error) errors.push(`${p.name}: ${res.error}`);
             if (res.warning) warnings.push(`${p.name}: ${res.warning}`);
+            if (!res.ok) {
+              // Keep the member row so the tree stays reachable (see the
+              // single-agent branch below). It outlives its coordinator and
+              // shows up as a normal project conversation, flagged orphaned.
+              errors.push(`${p.name}: ${res.error ?? 'worktree removal failed'}`);
+              mutateConversation(set, get, memberId, (c) => ({ ...c, orphaned: true }));
+              await releaseRuntime(memberId);
+              break;
+            }
           }
           await get().removeConversation(memberId);
           break;
         }
       }
+      await saveConversationState(get);
       await window.overcli.invoke('workspace:removeCoordinatorSymlinkRoot', id);
       await get().removeConversation(id);
       return {
@@ -1902,8 +1923,23 @@ export const useStore = create<StoreState>((set, get) => ({
         worktreePath: conv.worktreePath,
         branchName: conv.branchName ?? '',
       });
-      if (!res.ok && res.error) errors.push(res.error);
       if (res.warning) warnings.push(res.warning);
+      // Removal failed — a locked worktree, a file the OS won't release, a
+      // submodule git refuses to blow away. Dropping the row here would
+      // strand the tree: nothing else in the app records that path, so no
+      // code path could ever reach it again (that leak is why Settings →
+      // Storage exists). Keep the conversation instead and flag it so the
+      // user can see what happened and retry.
+      if (!res.ok) {
+        mutateConversation(set, get, id, (c) => ({ ...c, orphaned: true }));
+        await releaseRuntime(id);
+        await saveConversationState(get);
+        return {
+          ok: false,
+          error: res.error ?? 'worktree removal failed',
+          warning: warnings.join('\n') || undefined,
+        };
+      }
     }
     await get().removeConversation(id);
     if (conv.colosseumId) {

@@ -165,7 +165,15 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
       if (isAgent || isCoordinator) {
         const res = await removeAgent(conv.id);
         if (!res.ok && res.error) {
-          setError(`Removed with warnings: ${res.error}`);
+          // The worktree survived, so the conversation was deliberately kept
+          // rather than deleted — say so, otherwise the row still sitting in
+          // the sidebar looks like a bug.
+          setError(
+            `Couldn't remove the worktree: ${res.error}\n\n` +
+              'The conversation was kept so the worktree stays reachable. ' +
+              'Close anything holding files open in it and try again, or use ' +
+              'Settings → Storage to clean up.',
+          );
           setWorking(false);
           return;
         }
@@ -229,6 +237,13 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
           isCoordinator={isCoordinator}
           loading={statusLoading}
         />
+      )}
+
+      {conv.orphaned && (
+        <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+          A previous delete couldn't remove this worktree, so the conversation was kept
+          rather than stranding it. Deleting again retries the removal.
+        </div>
       )}
 
       {isRunning && (
