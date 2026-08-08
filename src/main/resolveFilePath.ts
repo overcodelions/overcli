@@ -9,6 +9,13 @@ export interface ResolveFilePathDeps {
   rootPath?: string;
   /// Every project, worktree, workspace and live flow-run root.
   roots: string[];
+  /// The roots the *recursive* search is allowed to walk, nearest first —
+  /// normally just the caller's worktree plus the project or workspace it
+  /// was forked from. `roots` is an allowlist for containment checks and
+  /// grows without bound (one entry per conversation that ever forked a
+  /// worktree); walking all of it costs a readdir of every tree the user
+  /// has ever touched. Omit to search every root, as before.
+  scopeRoots?: string[];
   exists: (candidate: string) => boolean;
   /// Recursive file listing for a root, already pruned of node_modules
   /// and friends. May throw — callers treat that as "no files".
@@ -27,12 +34,16 @@ export interface ResolveFilePathDeps {
 //   3. basename search *inside* rootPath, accepting only a match that
 //      covers the whole hint (see the comment at the call site),
 //   4. join against each registered root,
-//   5. Command-P-style basename search across the remaining roots,
-//      tie-broken by how many trailing path segments match the hint (so a
-//      hint of `renderer/store.ts` prefers `.../src/renderer/store.ts`
-//      over `.../some/other/store.ts`), then by shortest full path.
+//   5. Command-P-style basename search across the remaining *in-scope*
+//      roots (see `scopeRoots`), tie-broken by how many trailing path
+//      segments match the hint (so a hint of `renderer/store.ts` prefers
+//      `.../src/renderer/store.ts` over `.../some/other/store.ts`), then
+//      by shortest full path. Stops at the first whole-hint match.
+//
+// Only steps 3 and 5 touch the disk beyond a stat, and only for a relative
+// hint that resolved nowhere — keep them scoped and short-circuited.
 export function resolveFilePath(hint: string, deps: ResolveFilePathDeps): string | null {
-  const { rootPath, roots, exists, listFiles } = deps;
+  const { rootPath, roots, scopeRoots, exists, listFiles } = deps;
   if (!hint) return null;
   if (path.isAbsolute(hint) && exists(hint)) return hint;
 
@@ -84,12 +95,40 @@ export function resolveFilePath(hint: string, deps: ResolveFilePathDeps): string
   // get to short-circuit the cascade.
   let best = ownBest;
   const seen = new Set<string>(rootPath ? [rootPath] : []);
-  for (const root of roots) {
+  for (const root of scopeRoots ?? roots) {
     if (seen.has(root)) continue;
     seen.add(root);
     best = bestBasenameMatch(root, hintSegments, listFiles, best);
+    // A match covering the whole hint is the best any later root could do
+    // (ties break toward the shorter path, and we're already walking
+    // nearest-first), so stop rather than pay a full recursive walk per
+    // remaining root to confirm it. Without this the loop always ran to
+    // completion — even on a hit — and a hint that matches nothing (a
+    // deleted file) walked every tree in scope before returning null.
+    if (best && best.suffixScore >= hintSegments.length) return best.file;
   }
   return best?.file ?? null;
+}
+
+/// Where a *write* for `hint` is allowed to land. Deliberately NOT the
+/// cascade above: reads may guess, writes may not.
+///
+/// The cascade's later steps (every registered root, then a basename
+/// search) exist to find *a* file that plausibly matches. Guessing wrong
+/// on a read shows the wrong content; guessing wrong on a write destroys
+/// the wrong file — and in a flow worktree run the most plausible wrong
+/// answer is the project's main checkout, the one tree the run exists to
+/// leave alone. Anchoring on the caller's own root keeps a `<member>/…`
+/// path threading through the coordinator symlink into that member's
+/// worktree, which is what the editor read and what the diff is against.
+///
+/// The target need not exist: saving a file an agent deleted underneath
+/// the editor recreates it at the anchored location, which is correct.
+export function resolveWriteTarget(hint: string, rootPath?: string): string | null {
+  if (!hint) return null;
+  if (path.isAbsolute(hint)) return hint;
+  if (!rootPath) return null;
+  return path.resolve(rootPath, hint);
 }
 
 interface Match {
