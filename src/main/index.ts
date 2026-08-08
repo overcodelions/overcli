@@ -58,6 +58,11 @@ import {
   commitAll,
   workspaceCommitAll,
 } from './git';
+import {
+  scanWorktrees,
+  sweepWorktrees,
+  conversationWorktreeStates,
+} from './worktreeSweep';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
@@ -68,7 +73,14 @@ import {
 } from './mcpCatalog';
 import { loginCodexMcp } from './mcpLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
-import { resolveFilePath as resolveFilePathIn } from './resolveFilePath';
+import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
+import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
+import {
+  closeAllTreeWatchers,
+  noteRelistCost,
+  unwatchTree,
+  watchTree,
+} from './fileTreeWatch';
 import { readHtmlPreviewAssets } from './htmlPreviewAssets';
 import { buildReactPreviewBundle } from './reactPreviewBundle';
 import {
@@ -474,12 +486,28 @@ function registerIpc(): void {
   ipcMain.handle('fs:readArtifactPreview', async (_e, args: { path: string; rootPath?: string }) =>
     readArtifactPreview(args?.path ?? '', args?.rootPath),
   );
-  ipcMain.handle('fs:writeFile', (_e, { path: p, content }) => {
-    if (!isPathUnderRegisteredRoot(p)) {
+  ipcMain.handle('fs:writeFile', (_e, { path: p, content, rootPath }) => {
+    // Tabs opened from a workspace/flow diff keep their member-prefixed
+    // relative path (`<member>/src/foo.ts`) so the ChangesBar and diff
+    // logic can peel the prefix — reads already run that through the
+    // resolver, and saving has to as well. Writing the hint as given made
+    // `path.resolve` fall back to the main process cwd, which ENOENTs at
+    // best and lands in an unrelated tree at worst.
+    //
+    // `resolveWriteTarget`, not the read cascade: see the note there for
+    // why a write anchors on the caller's root instead of searching.
+    const target = resolveWriteTarget(p, rootPath);
+    if (!target) {
+      return {
+        ok: false,
+        error: `Could not place "${p}" — no project root for this file.`,
+      };
+    }
+    if (!isPathUnderRegisteredRoot(target)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
     }
     try {
-      fs.writeFileSync(p, content, 'utf-8');
+      fs.writeFileSync(target, content, 'utf-8');
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err?.message ?? 'Could not write file' };
@@ -490,8 +518,24 @@ function registerIpc(): void {
     return listFilesRecursive(root);
   });
   ipcMain.handle('fs:listFileEntries', (_e, root: string) => {
-    if (!isPathUnderRegisteredRoot(root)) return [];
-    return listFileEntriesRecursive(root);
+    if (!isPathUnderRegisteredRoot(root)) return Promise.resolve([]);
+    return listFileEntriesShared(root);
+  });
+  // Live tree watching. The renderer's file tree lists its root once per
+  // mount; without this, a file the agent writes only appears after the pane
+  // is closed and reopened. The returned `key` is the resolved root the
+  // change events carry.
+  ipcMain.handle('fs:watchTree', (_e, root: string) => {
+    if (!isPathUnderRegisteredRoot(root)) return { ok: false, key: path.resolve(root) };
+    return watchTree(root, (key) => {
+      // The walk's own cache would otherwise hand the renderer the same
+      // stale listing it already has.
+      fileListCache.delete(key);
+      emitToRenderer({ type: 'fileTreeChanged', root: key });
+    });
+  });
+  ipcMain.handle('fs:unwatchTree', (_e, root: string) => {
+    unwatchTree(root);
   });
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
     if (!isReadablePath(p)) return;
@@ -617,6 +661,23 @@ function registerIpc(): void {
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
+  // The renderer supplies conversation worktrees (it owns that state); the
+  // flow runtime is asked here so a run's tree is never reported as an
+  // orphan just because the renderer doesn't track runs.
+  ipcMain.handle('git:scanWorktrees', (_e, args) => {
+    const runPaths: string[] = [];
+    for (const run of flowRuntime ? flowRuntime.listRuns() : []) {
+      if (run.worktreePath) runPaths.push(run.worktreePath);
+      for (const m of run.workspaceWorktrees ?? []) runPaths.push(m.worktreePath);
+    }
+    return scanWorktrees({ ...args, runPaths }, (p) =>
+      emitToRenderer({ type: 'worktreeScanProgress', ...p }),
+    );
+  });
+  ipcMain.handle('git:sweepWorktrees', (_e, args) => sweepWorktrees(args));
+  ipcMain.handle('git:conversationWorktreeStates', (_e, args) =>
+    conversationWorktreeStates(args),
+  );
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
     const res = checkoutAgentLocally(args);
     if (!res.ok) return res;
@@ -1475,6 +1536,11 @@ function isRendererSafeGitInvocation(args: unknown, cwd: unknown): boolean {
 // symlink planted inside a project can't point out to an unrelated file.
 function isPathUnderRegisteredRoot(target: string): boolean {
   if (!target) return false;
+  // A relative path would be resolved against the main process cwd, which
+  // in a dev build is the overcli checkout itself — a registered project.
+  // That let unresolved hints pass containment and then fail (or write)
+  // somewhere the caller never meant. Callers resolve before validating.
+  if (!path.isAbsolute(target)) return false;
   const roots = resolvedRegisteredRoots();
   if (roots.length === 0) return false;
   const resolvedTarget = resolveExistingAncestor(path.resolve(target));
@@ -1539,94 +1605,114 @@ function resolveFilePath(hint: string, rootPath?: string): string | null {
   return resolveFilePathIn(hint, {
     rootPath,
     roots: registeredRoots(),
+    scopeRoots: searchScope(rootPath),
     exists: (c) => fs.existsSync(c),
     listFiles: listFilesRecursive,
   });
 }
 
-function listFilesRecursive(root: string): string[] {
-  return listFileEntriesRecursive(root).map((entry) => entry.path);
-}
+/// The roots a recursive basename search may walk for a click that came
+/// from `rootPath`: that root itself, plus the project (or workspace, and
+/// its member projects) the conversation was forked from. Nothing else —
+/// a file mentioned in one conversation belongs to that conversation's
+/// checkout or the repo behind it, never to an unrelated project's tree.
+///
+/// This is deliberately NOT `registeredRoots()`. That set is a security
+/// allowlist and holds one entry per conversation that ever forked a
+/// worktree, so it only grows; searching it meant a full recursive walk of
+/// every tree the user had ever opened (hundreds, ~500k files) on any hint
+/// that didn't resolve — e.g. clicking the chip for a deleted file.
+///
+/// Returns undefined when the click has no root context, which leaves the
+/// resolver searching every root as it did before.
+function searchScope(rootPath?: string): string[] | undefined {
+  if (!rootPath) return undefined;
+  const canon = (p: string) => realpathRoot(p) ?? path.resolve(p);
+  const target = canon(rootPath);
+  const scope = new Set<string>([rootPath]);
+  const add = (p?: string) => {
+    if (p) scope.add(p);
+  };
+  const isTarget = (p?: string) => !!p && canon(p) === target;
 
-function listFileEntriesRecursive(root: string): Array<{ path: string; sizeBytes: number }> {
-  const skipDirs = new Set([
-    '.git',
-    'node_modules',
-    '.build',
-    'build',
-    'bin',
-    'dist',
-    '.next',
-    '.venv',
-    'venv',
-    '__pycache__',
-    '.DS_Store',
-    'DerivedData',
-    '.swiftpm',
-    // IDE + JVM build output: on large multi-project checkouts these dwarf
-    // the actual source and used to push the walk past its 20k cap, leaving
-    // the tree both slow and silently truncated.
-    'out',
-    'target',
-    '.gradle',
-    '.idea',
-    '.metadata',
-    '.settings',
-    '.angular',
-    'coverage',
-  ]);
-  const out: Array<{ path: string; sizeBytes: number }> = [];
-  const stack: string[] = [root];
-  while (stack.length) {
-    const cur = stack.pop()!;
-    let entries: fs.Dirent[];
-    try {
-      // withFileTypes lets us classify dirs from the readdir result alone,
-      // so we only pay a per-entry statSync on files (for size) instead of
-      // on every node in the tree — roughly halving syscalls on a big repo.
-      entries = fs.readdirSync(cur, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const name = entry.name;
-      if (skipDirs.has(name)) continue;
-      const full = path.join(cur, name);
-      if (entry.isDirectory()) {
-        stack.push(full);
-        continue;
-      }
-      if (entry.isSymbolicLink()) {
-        // Symlinks (e.g. workspace roots that symlink several projects)
-        // need a follow-stat to resolve their real type and size.
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(full);
-        } catch {
-          continue;
-        }
-        if (stat.isDirectory()) {
-          stack.push(full);
-        } else if (stat.isFile()) {
-          out.push({ path: full, sizeBytes: stat.size });
-          if (out.length > 20000) return out; // safety cap
-        }
-        continue;
-      }
-      if (entry.isFile()) {
-        let size = 0;
-        try {
-          size = fs.statSync(full).size;
-        } catch {
-          continue;
-        }
-        out.push({ path: full, sizeBytes: size });
-        if (out.length > 20000) return out; // safety cap
-      }
+  const state = Store.load();
+  for (const project of state.projects) {
+    if (isTarget(project.path) || (project.conversations ?? []).some((c) => isTarget(c.worktreePath))) {
+      add(project.path);
     }
   }
-  return out;
+  for (const workspace of state.workspaces) {
+    const owns =
+      isTarget(workspace.rootPath) ||
+      (workspace.conversations ?? []).some(
+        (c) => isTarget(c.worktreePath) || isTarget(c.coordinatorRootPath),
+      );
+    if (!owns) continue;
+    add(workspace.rootPath);
+    // Workspace roots front their members through symlinks, but a hint can
+    // name a member's real path — keep the member checkouts in scope too.
+    for (const id of workspace.projectIds ?? []) {
+      add(state.projects.find((p) => p.id === id)?.path);
+    }
+  }
+  if (flowRuntime) {
+    for (const run of flowRuntime.listRuns()) {
+      const owns =
+        isTarget(run.projectPath) ||
+        isTarget(run.worktreePath) ||
+        (run.workspaceWorktrees ?? []).some((w) => isTarget(w.worktreePath));
+      if (!owns) continue;
+      add(run.projectPath);
+      add(run.worktreePath);
+    }
+  }
+  return [...scope];
 }
+
+// A recursive walk costs a readdir per directory, each one antivirus-taxed,
+// so the same tree getting listed twice in a second (resolver cascade, then
+// the file finder mounting) is worth avoiding. Short TTL: long enough to
+// collapse those bursts, short enough that a file the agent just wrote shows
+// up in the finder without the user wondering why it's missing.
+const FILE_LIST_TTL_MS = 15_000;
+const fileListCache = new Map<string, { at: number; files: string[] }>();
+
+// The tree can be mounted twice over the same root (standalone explorer and
+// a conversation's right pane), and both relist on the same watcher event.
+// Sharing the in-flight walk halves that without ever serving a stale
+// listing the way a TTL cache would — the whole point of the event is that
+// what's on disk just changed.
+const inFlightEntryWalks = new Map<string, Promise<Array<{ path: string; sizeBytes: number }>>>();
+
+function listFileEntriesShared(root: string): Promise<Array<{ path: string; sizeBytes: number }>> {
+  const key = path.resolve(root);
+  const running = inFlightEntryWalks.get(key);
+  if (running) return running;
+  const startedAt = Date.now();
+  const walk = listFileEntriesAsync(root)
+    .then((entries) => {
+      // What the walk cost is what paces the watcher: a root that takes half
+      // a second to list doesn't get relisted every 1.5s.
+      noteRelistCost(root, Date.now() - startedAt);
+      return entries;
+    })
+    .finally(() => {
+      inFlightEntryWalks.delete(key);
+    });
+  inFlightEntryWalks.set(key, walk);
+  return walk;
+}
+
+function listFilesRecursive(root: string): string[] {
+  const key = path.resolve(root);
+  const hit = fileListCache.get(key);
+  const now = Date.now();
+  if (hit && now - hit.at < FILE_LIST_TTL_MS) return hit.files;
+  const files = listFileEntriesSync(root).map((entry) => entry.path);
+  fileListCache.set(key, { at: now, files });
+  return files;
+}
+
 
 function buildMenu(): void {
   const isMac = process.platform === 'darwin';
@@ -1782,6 +1868,7 @@ let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
   symbolLookup?.dispose();
+  closeAllTreeWatchers();
   // Drop the pending timer so a quit can't fire a schedule into a runtime
   // that's already tearing its subprocesses down.
   scheduler?.dispose();

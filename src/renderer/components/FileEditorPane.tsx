@@ -487,12 +487,28 @@ export const FileEditorPane = memo(function FileEditorPane({
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
-    const res = await window.overcli.invoke('fs:writeFile', { path, content });
+    // Save to the file we actually read. `path` stays member-prefixed and
+    // relative for workspace/flow tabs (see the retarget skip in the load
+    // effect), and re-resolving it at write time is a second chance to
+    // land somewhere else — the project's main checkout rather than the
+    // run's worktree. `resolvedPath` is the file whose bytes are in the
+    // editor, so writing there can't disagree with what's on screen.
+    // Falls back to the hint (main anchors it on `rootPath`) when there's
+    // no fresh info — e.g. saving a file that was deleted from disk.
+    const target =
+      fileInfo?.requestedPath === path && fileInfo.ok && fileInfo.resolvedPath
+        ? fileInfo.resolvedPath
+        : path;
+    const res = await window.overcli.invoke('fs:writeFile', {
+      path: target,
+      content,
+      rootPath: rootPath ?? undefined,
+    });
     if (res.ok) {
       clearFileDirty(path);
       dropBuffer(path);
     } else setError(res.error);
-  }, [path, dirty, content, clearFileDirty]);
+  }, [path, dirty, content, clearFileDirty, rootPath, fileInfo]);
 
   // Discard all uncommitted changes to the current file, back to HEAD.
   // Only offered on HEAD-based diffs (see `canRevert`) where "revert" is

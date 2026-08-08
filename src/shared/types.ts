@@ -530,6 +530,87 @@ export interface WorktreeStatus {
   mainTreeDirtyFiles: number;
 }
 
+/// What a swept worktree is, from least to most deletable. See
+/// `classifyWorktree` for the precedence rules.
+///   foreign     — outside `~/.overcli/worktrees`; another tool's or the
+///                 user's own. Reported for honest accounting, never offered.
+///   live        — a conversation or flow run still claims it. Left alone;
+///                 releasing one of these is Settings → Conversations' job,
+///                 because it means deleting the conversation, not disk.
+///   has-work    — unreferenced, but holds uncommitted or unmerged changes.
+///                 Offered, never pre-selected.
+///   reclaimable — nothing claims it, clean, nothing unmerged. Safe.
+export type WorktreeSweepBucket = 'foreign' | 'live' | 'has-work' | 'reclaimable';
+
+export interface WorktreeSweepEntry {
+  worktreePath: string;
+  projectPath: string;
+  projectName: string;
+  /// null for a detached HEAD (review worktrees).
+  branchName: string | null;
+  baseBranch: string;
+  bucket: WorktreeSweepBucket;
+  /// Which bit of app state still claims this tree, if any.
+  referenced: 'conversation' | 'run' | null;
+  /// Timestamp of the last commit in the worktree. An orphan has no
+  /// conversation left to date it by, so this is what the pane's age filter
+  /// runs on. Absent when the branch has no commits or the tree is gone.
+  lastCommitAt?: number;
+  dirtyFiles: number;
+  commitsAhead: number;
+  isMergedIntoBase: boolean;
+  /// Apparent disk usage from `du -sk`. 0 when unreadable or prunable.
+  sizeKb: number;
+  locked: boolean;
+  /// git says the registration is stale (directory gone). Cleared by
+  /// `git worktree prune`, not by `git worktree remove`.
+  prunable: boolean;
+}
+
+export interface WorktreeSweepResult {
+  entries: WorktreeSweepEntry[];
+  scannedAt: number;
+}
+
+/// How long a conversation can sit untouched before Settings → Conversations
+/// offers it up. Two weeks covers a normal context switch (a sprint, a
+/// holiday) without letting finished work pile up for months. Archived
+/// conversations age at half this — see `isStaleConversation`.
+export const DEFAULT_STALE_DAYS = 14;
+
+export const STALE_DAY_CHOICES = [7, 14, 30, 90] as const;
+
+/// Choices for the Storage pane's "older than" view filter. Purely a display
+/// filter, so it needs no rescan and can be swept through freely. 0 means no
+/// filter.
+export const AGE_FILTER_CHOICES = [0, 7, 30, 60, 90, 180] as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/// When a conversation was last touched. `lastActiveAt` is only written when
+/// a turn streams or the conversation is opened, so a never-run conversation
+/// falls back to when it was created.
+export function conversationActiveAt(conv: {
+  lastActiveAt?: number;
+  createdAt?: number;
+}): number {
+  return conv.lastActiveAt ?? conv.createdAt ?? 0;
+}
+
+/// Whether a conversation has gone quiet long enough to offer up. An archived
+/// one is held to half the threshold: archiving is the user explicitly saying
+/// "done with this for now", a far stronger signal than mere silence.
+export function isStaleConversation(args: {
+  lastActiveAt?: number;
+  createdAt?: number;
+  archived: boolean;
+  staleDays: number;
+  now: number;
+}): boolean {
+  const days = args.archived ? args.staleDays / 2 : args.staleDays;
+  return args.now - conversationActiveAt(args) > days * DAY_MS;
+}
+
 export interface BackendHealth {
   kind: 'ready' | 'unauthenticated' | 'missing' | 'unknown' | 'error';
   message?: string;
@@ -1095,9 +1176,20 @@ export interface IPCInvokeMap {
     | { ok: true; content: string; resolvedPath: string; truncated: boolean; totalBytes: number; previewBytes: number }
     | { ok: false; error: string };
   'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
-  'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
+  /// `path` may be a hint relative to `rootPath` (workspace/flow tabs keep
+  /// their `<member>/…` prefix); it goes through the same resolver as reads.
+  'fs:writeFile': (args: { path: string; content: string; rootPath?: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
+  /// Start watching `root` so the file tree can relist itself when an agent
+  /// (or anything else) writes into the project. Refcounted in main — every
+  /// `fs:watchTree` needs a matching `fs:unwatchTree`. `key` is the resolved
+  /// root carried by the `fileTreeChanged` events; `ok: false` means the
+  /// platform refused a recursive watch and only manual refresh will work.
+  'fs:watchTree': (root: string) => { ok: boolean; key: string };
+  'fs:unwatchTree': (root: string) => void;
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
   /// Resolve a clicked symbol to its definition site(s). Runs entirely off
@@ -1199,6 +1291,48 @@ export interface IPCInvokeMap {
     ok: boolean;
     error?: string;
     warning?: string;
+  };
+  /// Scan every project for worktrees and classify them for cleanup. The
+  /// renderer passes the worktree paths its conversations still claim; main
+  /// adds the flow runtime's. Anything git knows about but neither side
+  /// claims is an orphan. Disk only — releasing a worktree a conversation
+  /// still owns belongs to `git:conversationWorktreeStates` and the store's
+  /// `removeAgent`, since that deletes history rather than reclaiming space.
+  'git:scanWorktrees': (args: {
+    projects: Array<{ path: string; name: string }>;
+    conversationPaths: string[];
+  }) => WorktreeSweepResult;
+  /// Cheap per-conversation worktree check for Settings → Conversations: is
+  /// there uncommitted or unmerged work that deleting would destroy? No `du`
+  /// — that pane is about history, not disk, and sizing is what makes the
+  /// Storage scan slow.
+  'git:conversationWorktreeStates': (args: {
+    targets: Array<{
+      convId: UUID;
+      projectPath: string;
+      worktreePath: string;
+      branchName: string | null;
+      baseBranch: string;
+    }>;
+  }) => Array<{
+    convId: UUID;
+    exists: boolean;
+    dirtyFiles: number;
+    commitsAhead: number;
+    isMergedIntoBase: boolean;
+  }>;
+  'git:sweepWorktrees': (args: {
+    entries: Array<{
+      projectPath: string;
+      worktreePath: string;
+      branchName: string | null;
+      baseBranch?: string;
+    }>;
+  }) => {
+    removed: number;
+    freedKb: number;
+    failures: Array<{ worktreePath: string; error: string }>;
+    warnings: string[];
   };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;
@@ -1979,6 +2113,25 @@ export type MainToRendererEvent =
       completed: number;
       total: number;
       message: string;
+    }
+  | {
+      /// Progress of a Settings → Storage worktree scan. Inspecting a
+      /// candidate means a `git status` walk plus a `du` over the tree, so a
+      /// large install spends a minute or more here — the pane shows this
+      /// rather than an unmoving spinner. `total` is the number of candidates
+      /// left after live/foreign worktrees are ruled out, not every worktree
+      /// found.
+      type: 'worktreeScanProgress';
+      completed: number;
+      total: number;
+    }
+  | {
+      /// Something changed under a watched explorer root (see
+      /// `fs:watchTree`). Debounced in main and already filtered against the
+      /// tree's skip list, so a tree seeing this should just relist itself.
+      /// `root` is the resolved path returned by `fs:watchTree`.
+      type: 'fileTreeChanged';
+      root: string;
     }
   | {
       /// An orchestration (batch) changed — an item launched, a child run

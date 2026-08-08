@@ -9,8 +9,24 @@ import {
   BackendHealth,
 } from '@shared/types';
 import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
+import { Group, SheetActionButton } from './settingsChrome';
+import { StoragePane } from './StoragePane';
+import { ConversationsPane } from './ConversationsPane';
 
-type Section = 'general' | 'backends' | 'models' | 'local' | 'agents' | 'flows' | 'advanced';
+// Re-exported so the several sheets that already import it from here keep
+// working now that the definition lives in ./settingsChrome.
+export { SheetActionButton };
+
+type Section =
+  | 'general'
+  | 'backends'
+  | 'models'
+  | 'local'
+  | 'agents'
+  | 'flows'
+  | 'storage'
+  | 'conversations'
+  | 'advanced';
 
 // Hoisted out of the panes so they aren't reallocated on every keystroke
 // re-render (each render would otherwise create fresh arrays).
@@ -51,6 +67,8 @@ export function SettingsSheet() {
           <NavItem label="Local models" active={section === 'local'} onClick={() => setSection('local')} />
           <NavItem label="Agents" active={section === 'agents'} onClick={() => setSection('agents')} />
           <NavItem label="Flows" active={section === 'flows'} onClick={() => setSection('flows')} />
+          <NavItem label="Storage" active={section === 'storage'} onClick={() => setSection('storage')} />
+          <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
         <div className="flex-1 min-w-0 overflow-y-auto p-5">
@@ -67,6 +85,8 @@ export function SettingsSheet() {
           {section === 'local' && <OllamaPane local={local} patch={patch} />}
           {section === 'agents' && <AgentsPane local={local} patch={patch} />}
           {section === 'flows' && <FlowsPane local={local} patch={patch} />}
+          {section === 'storage' && <StoragePane />}
+          {section === 'conversations' && <ConversationsPane />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
       </div>
@@ -109,18 +129,6 @@ function NavItem({ label, active, onClick }: { label: string; active: boolean; o
     >
       {label}
     </button>
-  );
-}
-
-function Group({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
-  return (
-    <section className="mb-5">
-      <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">{title}</div>
-      {description && <div className="text-xs text-ink-faint mb-2">{description}</div>}
-      <div className="flex flex-col gap-2 rounded-lg bg-card border border-card p-3">
-        {children}
-      </div>
-    </section>
   );
 }
 
@@ -872,29 +880,3 @@ function FlowsRegistriesPane() {
   );
 }
 
-export function SheetActionButton({
-  label,
-  onClick,
-  primary,
-  disabled,
-}: {
-  label: string;
-  onClick: () => void;
-  primary?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={
-        'px-3 py-1 rounded text-xs border disabled:opacity-40 disabled:cursor-not-allowed ' +
-        (primary
-          ? 'bg-accent/30 border-accent/60 text-accent hover:bg-accent/40'
-          : 'border-transparent text-ink-muted hover:text-ink hover:bg-card-strong hover:border-card')
-      }
-    >
-      {label}
-    </button>
-  );
-}
