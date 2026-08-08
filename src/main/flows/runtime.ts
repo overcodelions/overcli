@@ -1940,6 +1940,13 @@ export class FlowRuntimeImpl {
       reviewMode: step.rebound?.mode ?? null,
       reviewModel: step.rebound?.critic.model ?? null,
       reviewPersona: step.rebound?.persona ?? null,
+      // `max_iters` is the step's round budget. The runner already caps
+      // collab ping-pong at `collabMaxTurns`; without passing it here the
+      // budget silently fell back to the interactive default of 3, so a
+      // step asking for 1 round got 3 and a step asking for 5 got 3.
+      // `review` mode ignores this by design — its round count is fixed
+      // (see the round gate in runner.sendClaude and friends).
+      collabMaxTurns: step.rebound?.maxIters ?? null,
       // Tool allowlist is only enforceable on the Ollama path (overcli
       // owns the dispatch). For Claude/Codex/Gemini/Copilot, the CLI's
       // permission mode is the gate — the user opts into autonomy via
