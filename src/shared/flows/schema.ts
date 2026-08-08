@@ -65,8 +65,15 @@ export const DEFAULT_PARTICIPANT_ID = 'primary' as const;
 
 /// Per-step rebound config. Maps onto the existing ReviewerManager: the
 /// `critic` model is what overcli already calls "reviewBackend/reviewModel",
-/// and `mode` mirrors the existing review/collab modes. `maxIters` caps how
-/// many rounds the critic gets before the step has to move on.
+/// and `mode` mirrors the existing review/collab modes.
+///
+/// `maxIters` caps how many rounds the critic gets before the step has to
+/// move on — but ONLY in `collab` mode, where it becomes the runner's
+/// `collabMaxTurns`. In `review` mode the round count is fixed by the
+/// runner: round 1 always, round 2 only if the step actually changed code,
+/// never a round 3. So a text-producing step (design, research) that wants
+/// real back-and-forth needs `mode: collab`; in `review` mode it gets a
+/// single verdict and `maxIters` is ignored.
 export interface FlowReboundConfig {
   critic: FlowModelRef;
   mode: 'review' | 'collab';
