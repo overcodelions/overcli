@@ -229,6 +229,20 @@ html, body {
   background: color-mix(in srgb, var(--c-accent) 22%, var(--c-card-bg-strong));
 }
 
+/* ⌘K palette. Mixed here for the same reason as the sidebar rows above:
+ * `bg-accent/15` on a CSS-var color compiles to nothing, so the selected
+ * row and the active filter chip have to name their blend explicitly.
+ * The row keeps the sidebar's inset accent rail so "selected" means the
+ * same thing in both places. */
+.palette-row-selected {
+  background: color-mix(in srgb, var(--c-accent) 16%, var(--c-card-bg-strong));
+  box-shadow: inset 2px 0 0 var(--c-accent);
+}
+.palette-chip-active {
+  background: color-mix(in srgb, var(--c-accent) 20%, var(--c-card-bg-strong));
+  border-color: color-mix(in srgb, var(--c-accent) 36%, var(--c-card-border));
+}
+
 /* Allow text selection inside anything marked selectable; default is to
  * disable selection so the UI chrome feels native. */
 .select-text,

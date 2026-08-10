@@ -112,6 +112,17 @@ interface FlowsActions {
   /// prompt-derived title. Optimistic, then reconciled by the main
   /// process's `flowRunUpdate`.
   renameRun(runId: string, title: string): Promise<void>;
+  /// Persist an AI-drafted flow straight from a launch surface, bypassing
+  /// the editor. The launch screens draft a flow and run it in one motion;
+  /// routing that through the editor tab would make the user save, navigate
+  /// back, and find the flow again just to do the thing they already asked
+  /// for. Saves to the user layer (available in every project, like the
+  /// drafted intent implies) and returns the flow AS SAVED — the id can
+  /// differ from the draft's when it collided with an existing flow.
+  saveDraftedFlow(
+    flow: Flow,
+    projectPaths: string[],
+  ): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
   browseRegistries(force?: boolean): Promise<void>;
   installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string }>;
   previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
@@ -544,6 +555,18 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       return { runs: { ...s.runs, [runId]: { ...run, title: trimmed || undefined } } };
     });
     await window.overcli.invoke('flows:renameRun', { runId: runId as UUID, title: trimmed });
+  },
+
+  async saveDraftedFlow(flow, projectPaths) {
+    // Dedupe the id against the library: the drafter derives it from the
+    // description, so drafting "review my PRs" twice would otherwise have
+    // the second save silently overwrite the first.
+    const saved: Flow = { ...flow, id: uniqueFlowId(flow.id, get().flows), source: 'user' };
+    const result = await window.overcli.invoke('flows:save', { flow: saved, target: 'user' });
+    if (!result.ok) return { ok: false as const, error: result.error };
+    const stored: Flow = { ...saved, filePath: result.filePath };
+    await get().reload(projectPaths);
+    return { ok: true as const, flow: stored };
   },
 
   async browseRegistries(force) {

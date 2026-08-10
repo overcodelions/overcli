@@ -99,6 +99,10 @@ export type ActiveSheet =
   | { type: 'bulkConversationActions' }
   | { type: 'fileFinder'; rootPath: string }
   | { type: 'quickSwitcher' }
+  /// Launch a flow from outside the Flows pane (today: the ⌘K palette).
+  /// Renders bare — the launcher panel is already a floating card, so the
+  /// sheet host must not wrap it in a second one.
+  | { type: 'flowLaunch'; flowId: string }
   | { type: 'shortcutsHelp' }
   | { type: 'whatsNew' };
 

@@ -15,6 +15,7 @@ import { liftMissingModel } from '../modelCatalog';
 import type { Backend } from '../types';
 import {
   DEFAULT_PARTICIPANT_ID,
+  normalizeFlowTag,
   type Flow,
   type FlowFailureAction,
   type FlowParticipant,
@@ -33,6 +34,7 @@ interface YamlFlow {
   default_prompt?: unknown;
   participants?: unknown;
   steps?: unknown;
+  tags?: unknown;
 }
 
 interface YamlStep {
@@ -317,9 +319,25 @@ export function parseFlowYaml(args: {
         : undefined,
     participants,
     steps,
+    tags: parseTags(y.tags),
     source: args.source,
     filePath: args.filePath,
   };
+}
+
+/// Top-level `tags:` — a plain string list. Non-strings are dropped rather
+/// than failing the parse: a bad tag shouldn't cost the user their flow.
+/// Trimmed and de-duped so `[review, review , Review]` doesn't render as
+/// three chips.
+function parseTags(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  for (const t of raw) {
+    if (typeof t !== 'string') continue;
+    const tag = normalizeFlowTag(t);
+    if (tag) seen.add(tag);
+  }
+  return seen.size > 0 ? [...seen] : undefined;
 }
 
 function serializeModel(m: { backend: Backend; model: string }) {
@@ -378,6 +396,7 @@ export function serializeFlow(flow: Flow): string {
     name: flow.name,
   };
   if (flow.description) doc.description = flow.description;
+  if (flow.tags && flow.tags.length > 0) doc.tags = flow.tags;
   doc.input = flow.input;
   if (flow.defaultPrompt && flow.defaultPrompt.trim()) {
     doc.default_prompt = flow.defaultPrompt;

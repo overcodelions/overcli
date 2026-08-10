@@ -11,6 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 
+import { Store } from '../store';
 import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import type { Flow } from '../../shared/flows/schema';
 import { SLUG_RE, validateFlow } from '../../shared/flows/validation';
@@ -126,6 +127,20 @@ export function saveFlow(args: {
 /// Delete a flow file. The caller specifies which layer to delete from
 /// (you might have a flow with the same id in both layers and only want to
 /// remove one). The `projectPath` is required when source === 'project'.
+/// Drop a deleted flow's registry bookkeeping. `installedRegistryFlows` is
+/// what the browse UI reads to say "✓ installed" and what the inline search
+/// uses to hide flows you already have — leaving an entry for a file that
+/// no longer exists makes a deleted flow both wrongly-marked and
+/// impossible to reinstall from search. Cheap no-op for non-registry flows.
+function forgetInstalledFlow(filename: string): void {
+  const settings = Store.load().settings;
+  const list = settings.installedRegistryFlows ?? [];
+  const kept = list.filter((i) => i.filename !== filename);
+  if (kept.length !== list.length) {
+    Store.saveSettings({ ...settings, installedRegistryFlows: kept });
+  }
+}
+
 export function deleteFlow(args: {
   flowId: string;
   source: 'user' | 'project';
@@ -154,6 +169,7 @@ export function deleteFlow(args: {
   }
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    forgetInstalledFlow(path.basename(filePath));
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

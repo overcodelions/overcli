@@ -16,12 +16,18 @@ import {
   type Flow,
 } from '@shared/flows/schema';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
+import {
+  flowTagCounts,
+  groupFlows,
+  installedRegistryKeys,
+  registryEntryMatchesQuery,
+} from './flowGrouping';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
 import { BrowseLibraryModal } from './BrowseLibraryModal';
 import { FlowMonogram } from './FlowMonogram';
-import { RunPanel } from './FlowLaunch';
+import { FlowRunLauncher } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
 import { SchedulesPane } from './SchedulesPane';
 import { useSchedulesStore } from '../../schedulesStore';
@@ -29,7 +35,6 @@ import { describeTrigger, untilLabel } from '@shared/flows/schedule';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { FlowRun } from '@shared/flows/schema';
-import type { Attachment } from '@shared/types';
 
 export function FlowsLibraryPane() {
   const projects = useStore((s) => s.projects);
@@ -43,6 +48,9 @@ export function FlowsLibraryPane() {
   const dismissJustSaved = useFlowsStore((s) => s.dismissJustSaved);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Seeded from the library's own filter when the user browses out of a
+  // failed local search, so they don't retype it in the modal.
+  const [browseQuery, setBrowseQuery] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
   // Schedules are a segment here rather than a top-level tab: a schedule is a
   // trigger on a flow, not a separate kind of work, and a fourth tab would
@@ -157,7 +165,7 @@ export function FlowsLibraryPane() {
               + New flow
             </button>
             <button
-              onClick={() => setBrowseOpen(true)}
+              onClick={() => { setBrowseQuery(''); setBrowseOpen(true); }}
               className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
             >
               Browse library
@@ -189,24 +197,26 @@ export function FlowsLibraryPane() {
           ) : flows.length === 0 ? (
             <EmptyState onCreate={() => setPickerOpen(true)} />
           ) : (
-            <>
-              <SectionHeading title="Your flows" count={flows.length} />
-              <div className="space-y-3">
-                {flows.map((flow) => (
-                  <FlowRow
-                    key={`${flow.source}:${flow.id}`}
-                    flow={flow}
-                    projectPaths={projectPaths}
-                  />
-                ))}
-              </div>
-            </>
+            <FlowLibraryList
+              flows={flows}
+              projectPaths={projectPaths}
+              onBrowse={(q) => { setBrowseQuery(q); setBrowseOpen(true); }}
+            />
           )}
         </>
       )}
 
       {pickerOpen && <NewFlowPicker onClose={() => setPickerOpen(false)} />}
-      {browseOpen && <BrowseLibraryModal onClose={() => setBrowseOpen(false)} />}
+      {browseOpen && (
+        <BrowseLibraryModal
+          initialQuery={browseQuery}
+          onClose={() => {
+            setBrowseOpen(false);
+            // Pick up anything installed while the modal was open.
+            void reload(projectPaths);
+          }}
+        />
+      )}
       {aboutOpen && <FlowsAboutModal onClose={() => setAboutOpen(false)} />}
     </div>
   );
@@ -579,6 +589,248 @@ function SegmentTab({
   );
 }
 
+/// The library list proper: a filter box, tag chips, then flows grouped by
+/// where they came from. Flat-and-alphabetical worked at five flows; past
+/// twenty (most of them installed from a registry) the ones you wrote
+/// yourself become the hardest to find, which is exactly backwards.
+function FlowLibraryList({
+  flows,
+  projectPaths,
+  onBrowse,
+}: {
+  flows: Flow[];
+  projectPaths: string[];
+  onBrowse: (query: string) => void;
+}) {
+  const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
+  const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
+  const registryEntries = useFlowsStore((s) => s.registryEntries);
+  const registryLoaded = useFlowsStore((s) => s.registryLoaded);
+  const browseRegistries = useFlowsStore((s) => s.browseRegistries);
+  const installFromRegistry = useFlowsStore((s) => s.installFromRegistry);
+  const reload = useFlowsStore((s) => s.reload);
+  const [query, setQuery] = useState('');
+  const [tags, setTags] = useState<Set<string>>(new Set());
+  const [installingKey, setInstallingKey] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const openEditor = useFlowsStore((s) => s.openEditor);
+
+  const tagCounts = useMemo(() => flowTagCounts(flows), [flows]);
+  const groups = useMemo(
+    () => groupFlows(flows, { starred: starredFlows, installed: installedFlows, query, tags }),
+    [flows, starredFlows, installedFlows, query, tags],
+  );
+  const matchCount = groups.reduce((n, g) => n + g.flows.length, 0);
+  const filtering = query.trim().length > 0 || tags.size > 0;
+  const searching = query.trim().length > 0;
+
+  // Fetch the registry index lazily on first search — same policy as the
+  // welcome gallery, so neither view pays for a network call nobody asked
+  // for and both read from the store's cached copy afterwards.
+  useEffect(() => {
+    if (query.trim().length >= 2 && !registryLoaded) void browseRegistries(false);
+  }, [query, registryLoaded]);
+
+  const registryMatches = useMemo(() => {
+    if (!searching) return [];
+    const have = installedRegistryKeys(flows, installedFlows);
+    return registryEntries
+      .filter((e) => !have.has(`${e.registryId}:${e.id}`))
+      .filter((e) => registryEntryMatchesQuery(e, query))
+      .slice(0, 8);
+  }, [searching, registryEntries, flows, installedFlows, query]);
+
+  /// Same third rail as the welcome gallery: search text becomes the
+  /// drafter's brief, and the draft opens in the editor for review rather
+  /// than running unseen.
+  async function draft() {
+    const description = query.trim();
+    if (!description || drafting) return;
+    setDrafting(true);
+    setInstallError(null);
+    try {
+      const result = await window.overcli.invoke('flows:draftFromPrompt', { description });
+      if (!result.ok) setInstallError(result.error);
+      else openEditor({ kind: 'new' }, result.flow);
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function install(entry: { registryId: string; id: string; version: string }) {
+    const key = `${entry.registryId}:${entry.id}`;
+    setInstallingKey(key);
+    setInstallError(null);
+    try {
+      const res = await installFromRegistry(entry);
+      if (!res.ok) setInstallError(res.error || 'Install failed.');
+      else await reload(projectPaths);
+    } finally {
+      setInstallingKey(null);
+    }
+  }
+
+  // Most-used tags first, capped — the chip row is a shortcut, not a
+  // complete index of every label anyone ever typed.
+  const chips = useMemo(
+    () => [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12),
+    [tagCounts],
+  );
+
+  return (
+    <>
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search your flows and the registry…"
+          className="field flex-1 text-sm px-3 py-1.5"
+        />
+        {filtering && (
+          <button
+            onClick={() => { setQuery(''); setTags(new Set()); }}
+            className="text-xs text-ink-faint hover:text-ink px-2 py-1"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-4">
+          {chips.map(([tag, count]) => (
+            <button
+              key={tag}
+              onClick={() => setTags((prev) => {
+                const n = new Set(prev);
+                if (n.has(tag)) n.delete(tag); else n.add(tag);
+                return n;
+              })}
+              className={
+                'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
+                (tags.has(tag)
+                  ? 'border-accent/60 bg-accent/20 text-accent'
+                  : 'border-card text-ink-faint hover:text-ink hover:border-card-strong')
+              }
+            >
+              {tag} <span className="opacity-60">{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {matchCount === 0 ? (
+        <div className="text-sm text-ink-muted py-6 text-center">
+          No flow of yours matches that.
+        </div>
+      ) : (
+        groups.map((group) => (
+          <div key={group.key} className="mb-6">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+                {group.title}
+              </span>
+              <span className="text-[11px] text-ink-faint">· {group.flows.length}</span>
+              {group.hint && (
+                <span className="text-[11px] text-ink-faint/60">{group.hint}</span>
+              )}
+            </div>
+            <div className="space-y-3">
+              {group.flows.map((flow) => (
+                <FlowRow
+                  key={`${flow.source}:${flow.id}`}
+                  flow={flow}
+                  projectPaths={projectPaths}
+                  onTagClick={(tag) => setTags((prev) => {
+                    const n = new Set(prev);
+                    if (n.has(tag)) n.delete(tag); else n.add(tag);
+                    return n;
+                  })}
+                />
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+
+      {/* Registry results for the same query, inline. Only while searching:
+          unfiltered, this would be a second full library competing with
+          the user's own. */}
+      {searching && (
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+              From the registry
+            </span>
+            {registryMatches.length > 0 && (
+              <span className="text-[11px] text-ink-faint">· {registryMatches.length}</span>
+            )}
+            <span className="text-[11px] text-ink-faint/60">not installed yet</span>
+          </div>
+          {!registryLoaded ? (
+            <div className="text-xs text-ink-faint py-2">Searching the registry…</div>
+          ) : registryMatches.length === 0 ? (
+            <div className="text-xs text-ink-faint py-2">
+              Nothing new in the registry for that.
+              {matchCount === 0 && (
+                <button
+                  onClick={() => void draft()}
+                  disabled={drafting}
+                  className="ml-2 text-accent hover:underline disabled:opacity-60"
+                >
+                  {drafting ? 'Drafting…' : `Build one for “${query.trim()}” with AI →`}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {registryMatches.map((entry) => (
+                <div
+                  key={`${entry.registryId}:${entry.id}`}
+                  className="flex items-center gap-3 rounded-lg border border-dashed border-card-strong px-3 py-2.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold truncate">{entry.name}</div>
+                    {entry.description && (
+                      <div className="text-xs text-ink-faint line-clamp-1 mt-0.5">
+                        {entry.description}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-ink-faint flex-shrink-0">
+                    {entry.registryId} · {entry.version}
+                  </span>
+                  <button
+                    onClick={() => void install(entry)}
+                    disabled={installingKey === `${entry.registryId}:${entry.id}`}
+                    className="text-xs px-2.5 py-1 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-50 flex-shrink-0"
+                  >
+                    {installingKey === `${entry.registryId}:${entry.id}` ? 'Installing…' : 'Install'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {installError && <div className="mt-2 text-xs text-red-400">{installError}</div>}
+        </div>
+      )}
+
+      {/* Always reachable from the bottom of the list — the modal is where
+          you browse by tag axis rather than by a term you already have. */}
+      <button
+        onClick={() => onBrowse(query)}
+        className="w-full rounded-lg border border-dashed border-card-strong px-3 py-2.5 text-left hover:bg-white/5 transition-colors"
+      >
+        <div className="text-[13px] text-ink">Browse the full flow registry →</div>
+        <div className="text-[11px] text-ink-faint mt-0.5">
+          Filter published flows by activity, surface, or domain.
+        </div>
+      </button>
+    </>
+  );
+}
+
 function SectionHeading({
   title,
   count,
@@ -631,7 +883,15 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] }) {
+function FlowRow({
+  flow,
+  projectPaths,
+  onTagClick,
+}: {
+  flow: Flow;
+  projectPaths: string[];
+  onTagClick?: (tag: string) => void;
+}) {
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
   const renameFlow = useFlowsStore((s) => s.renameFlow);
@@ -741,6 +1001,31 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
           </div>
           {flow.description && (
             <div className="text-sm text-ink-muted line-clamp-2 mb-2">{flow.description}</div>
+          )}
+          {flow.tags && flow.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {flow.tags.map((tag) => (
+                <span
+                  key={tag}
+                  role={onTagClick ? 'button' : undefined}
+                  onClick={
+                    onTagClick
+                      ? (e) => {
+                          e.stopPropagation();
+                          onTagClick(tag);
+                        }
+                      : undefined
+                  }
+                  title={onTagClick ? `Filter by "${tag}"` : undefined}
+                  className={
+                    'text-[10px] px-1.5 py-0.5 rounded-full border border-card text-ink-faint ' +
+                    (onTagClick ? 'cursor-pointer hover:text-ink hover:border-card-strong' : '')
+                  }
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
           )}
           <div className="flex flex-wrap items-center gap-1.5">
             {flow.steps.map((step) => {
@@ -879,154 +1164,6 @@ function RowActionsMenu({
       )}
     </div>
   );
-}
-
-/// Run launcher for a flow row. Owns the target (project/workspace)
-/// selection + worktree controls and drives the shared `RunPanel`. The
-/// target picker rides in the panel footer because — unlike the start
-/// page — the Flows library isn't scoped to a single context.
-function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void }) {
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
-  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
-  const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
-  const setLaunchProgress = useFlowsStore((s) => s.setLaunchProgress);
-  const launchProgressMap = useFlowsStore((s) => s.launchProgress);
-  const setDraft = useStore((s) => s.setDraft);
-  const clearAttachments = useStore((s) => s.clearAttachments);
-
-  /// `target` is `project:<path>` | `workspace:<rootPath>` | ''.
-  const [target, setTarget] = useState('');
-  // Which side the run-in toggle starts on comes from Settings → Flows, so
-  // a worktree-first user doesn't re-flip it on every launch. The toggle
-  // still wins for this run; flipping the setting re-seeds the launcher.
-  const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'cwd');
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
-  useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
-  // Empty → BaseBranchSelect auto-detects the repo's default branch.
-  const [baseBranch, setBaseBranch] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const targetPath = stripTargetPrefix(target);
-  const targetIsWorkspace = target.startsWith('workspace:');
-  const canUseWorktree = !!targetPath;
-  const draftKey = `__flow-launch:${flow.id}__`;
-
-  // Repos the worktree(s) are minted from. Workspace → each member's
-  // path (so the branch list is the intersection); single project → one.
-  const baseBranchRepoPaths = useMemo(() => {
-    if (targetIsWorkspace) {
-      const ws = workspaces.find((w) => w.rootPath === targetPath);
-      return ws
-        ? ws.projectIds
-            .map((pid) => projects.find((p) => p.id === pid))
-            .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
-            .map((p) => p.path)
-        : [];
-    }
-    return targetPath ? [targetPath] : [];
-  }, [target, targetPath, targetIsWorkspace, projects, workspaces]);
-
-  const targetLabel = useMemo(() => {
-    if (!targetPath) return 'Pick a target';
-    if (targetIsWorkspace) {
-      return workspaces.find((w) => w.rootPath === targetPath)?.name ?? targetPath;
-    }
-    return projects.find((p) => p.path === targetPath)?.name ?? targetPath;
-  }, [target, targetPath, targetIsWorkspace, projects, workspaces]);
-
-  async function handleRun(prompt: string, attachments: Attachment[]) {
-    const text = prompt.trim();
-    if (!targetPath || !text) {
-      setError('Pick a project or workspace, and tell the flow what to work on.');
-      return;
-    }
-    if (submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const result = await window.overcli.invoke('flows:startRun', {
-        flowId: flow.id,
-        projectPath: targetPath,
-        userPrompt: text,
-        attachments: attachments.length > 0 ? attachments : undefined,
-        runIn: canUseWorktree ? runIn : 'cwd',
-        baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      const run = await window.overcli.invoke('flows:getRun', { runId: result.runId });
-      if (run) applyRunUpdate(run);
-      setDraft(draftKey, '');
-      clearAttachments(draftKey);
-      setActiveRun(result.runId);
-    } finally {
-      setSubmitting(false);
-      setLaunchProgress(targetPath, null);
-    }
-  }
-
-  const targetControl = (
-    <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
-      <span className="text-ink-faint">in</span>
-      <select
-        value={target}
-        onChange={(e) => {
-          setTarget(e.target.value);
-          // A workspace can't run a worktree until we know its members;
-          // safe to leave runIn — canUseWorktree gates the controls.
-        }}
-        className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-[11px] text-ink max-w-[160px]"
-      >
-        <option value="">Pick a target…</option>
-        {projects.length > 0 && (
-          <optgroup label="Projects">
-            {projects.map((p) => (
-              <option key={`p:${p.id}`} value={`project:${p.path}`}>{p.name}</option>
-            ))}
-          </optgroup>
-        )}
-        {workspaces.length > 0 && (
-          <optgroup label="Workspaces">
-            {workspaces.map((w) => (
-              <option key={`w:${w.id}`} value={`workspace:${w.rootPath}`}>{w.name}</option>
-            ))}
-          </optgroup>
-        )}
-      </select>
-    </div>
-  );
-
-  return (
-    <RunPanel
-      flow={flow}
-      targetLabel={targetLabel}
-      targetControl={targetControl}
-      draftKey={draftKey}
-      rootPath={targetPath}
-      error={error}
-      submitting={submitting}
-      onCancel={onClose}
-      onRun={handleRun}
-      canUseWorktree={canUseWorktree}
-      isWorkspace={targetIsWorkspace}
-      runIn={runIn}
-      onRunIn={setRunIn}
-      baseBranch={baseBranch}
-      onBaseBranch={setBaseBranch}
-      baseBranchRepoPaths={baseBranchRepoPaths}
-      launchProgress={launchProgressMap[targetPath]}
-    />
-  );
-}
-
-function stripTargetPrefix(target: string): string {
-  if (target.startsWith('project:')) return target.slice('project:'.length);
-  if (target.startsWith('workspace:')) return target.slice('workspace:'.length);
-  return '';
 }
 
 function StepChip({ id, model }: { id: string; model: string }) {
