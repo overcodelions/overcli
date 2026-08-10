@@ -154,6 +154,11 @@ export interface Flow {
   /// synthesizes them from per-step models for old-format flows.
   participants: FlowParticipant[];
   steps: FlowStep[];
+  /// Free-form labels, round-tripped from the YAML's top-level `tags:`. The
+  /// registry index already carries these for published flows, so an
+  /// installed flow arrives pre-tagged; hand-written flows get whatever the
+  /// author typed. Used to group and filter the library.
+  tags?: string[];
   /// Resolved at load time — where this flow was read from.
   source: 'user' | 'project';
   /// Absolute path on disk. Re-saves write back to this path.
@@ -554,6 +559,15 @@ export function resolveStepParticipant(
 /// user and project layers (`storage.ts:81-89` — project wins).
 export function flowStarKey(flow: Pick<Flow, 'source' | 'id'>): string {
   return `${flow.source}:${flow.id}`;
+}
+
+/// Canonical form of a tag: trimmed and lowercased, or null if there's
+/// nothing left. Shared by the YAML parser and the editor's tag input so
+/// the editor can't produce a tag that a save-then-load would silently
+/// rewrite (type "Review", get "review" back, wonder what happened).
+export function normalizeFlowTag(raw: string): string | null {
+  const tag = raw.trim().toLowerCase();
+  return tag.length > 0 ? tag : null;
 }
 
 /// The project directory a project-layer flow belongs to, recovered from

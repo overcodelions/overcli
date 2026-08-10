@@ -21,8 +21,10 @@ import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
+import { normalizeFlowTag } from '../../shared/flows/schema';
 import { canonicalizePremiumModel, liftMissingModel } from '../../shared/modelCatalog';
 import { parseFlowYaml } from '../../shared/flows/yaml';
+import { TAG_AXES } from '../../shared/flows/tagTaxonomy';
 import {
   validateFlow,
   ARTIFACT_NAME_RE,
@@ -80,6 +82,12 @@ function systemPrompt(backend: Backend): string {
     '  name        — required, short human title',
     '  description — optional, 1–3 line summary',
     '  input       — always the literal string `user_prompt`',
+    '  tags        — optional list of 2–4 lowercase labels, used to group and filter the',
+    '                library. Pick ONLY from the vocabulary below, and only ones that',
+    '                genuinely apply — omit the key entirely rather than reaching. Drawing',
+    '                from a fixed list is what lets a hand-drafted flow sit alongside a',
+    '                published one under the same filter.',
+    ...TAG_AXES.map((axis) => `                ${axis.axis}: ${axis.tags.join(', ')}`),
     '  steps       — list of step objects',
     '',
     'Each step has:',
@@ -366,6 +374,11 @@ function finalizeDraft(
   // so a near-miss on the custom-prompt path doesn't ship a broken step.
   repairRoleFit(parsed);
 
+  // Drop invented tags. The vocabulary is the whole point — a drafted flow
+  // tagged "jira-triage" doesn't sit under the `triage` filter next to the
+  // published ones, so a free-form tag is worse than no tag.
+  repairTags(parsed);
+
   const v = validateFlow(parsed);
   if (!v.ok) {
     return {
@@ -393,6 +406,24 @@ function stripCodeFences(text: string): string {
 /// the next-highest in-family version we still ship. Walks participants,
 /// legacy step-level models, and rebound critics. Ollama and
 /// already-canonical refs pass through untouched. Mutates `flow` in place.
+/// Keep only tags from the shared taxonomy, capped at 4. Anything the model
+/// invented is dropped rather than corrected — there's no reliable mapping
+/// from "code-review" to `review`, and a wrong tag files the flow under a
+/// filter its user will never think to open. Clears the key entirely when
+/// nothing survives, so the saved YAML stays byte-identical to an untagged
+/// flow's.
+function repairTags(flow: Flow): void {
+  if (!flow.tags) return;
+  const allowed = new Set(TAG_AXES.flatMap((a) => a.tags));
+  const kept: string[] = [];
+  for (const raw of flow.tags) {
+    const tag = normalizeFlowTag(raw);
+    if (tag && allowed.has(tag) && !kept.includes(tag)) kept.push(tag);
+    if (kept.length === 4) break;
+  }
+  flow.tags = kept.length > 0 ? kept : undefined;
+}
+
 function repairModelIds(flow: Flow): void {
   // Canonicalize first (snaps a dotted alias onto its catalog spelling),
   // then lift (rewrites a still-unsupported id to a newer in-family one).
