@@ -67,13 +67,12 @@ describe('drafterModelFor', () => {
 describe('drafterModelHints', () => {
   it('maps a model to each speed tier for a backend', () => {
     // fable-5 is 'frontier' (not 'thinking'), so the thinking hint is the
-    // first thinking model — opus-5. sonnet is classified 'fast', so
-    // claude has no 'standard' model — standard degrades up to the thinking
-    // pick (opus-5), and fast is the first fast model (sonnet-5, which
-    // precedes sonnet-4.6 and haiku among the 'fast' models).
+    // first thinking model — opus-5. sonnet is classified 'fast', so claude
+    // has no 'standard' model — standard degrades DOWN to the fast pick
+    // (sonnet-5), keeping "cheaper steps" actually cheaper.
     expect(drafterModelHints('claude')).toEqual({
       thinking: 'claude-opus-5',
-      standard: 'claude-opus-5',
+      standard: 'claude-sonnet-5',
       fast: 'claude-sonnet-5',
     });
     // codex: sol is the first thinking model, terra the first fast model
@@ -86,12 +85,24 @@ describe('drafterModelHints', () => {
     });
   });
 
-  it('degrades to the nearest stronger tier when a backend lacks one', () => {
-    // Gemini has no 'standard' model — standard falls back to thinking.
+  it('degrades a missing middle tier downward, not up to the expensive one', () => {
+    // Gemini has no 'standard' model. It must fall to flash, not pro: the
+    // drafter spends this hint on critic loops and cheap steps, so picking
+    // the thinking model there inverts the intent and quietly runs the
+    // cheapest steps of every drafted flow on the priciest model.
     expect(drafterModelHints('gemini')).toEqual({
       thinking: 'gemini-2.5-pro',
-      standard: 'gemini-2.5-pro',
+      standard: 'gemini-2.5-flash',
       fast: 'gemini-2.5-flash',
     });
+  });
+
+  it('falls all the way back to the thinking pick when a backend has only one tier', () => {
+    // copilot lists gpt-5.5 (thinking) plus two fast claude ids, so it has
+    // a fast model to degrade into; the thinking-only path is the guard
+    // for a backend whose catalog is a single strong model.
+    const hints = drafterModelHints('copilot');
+    expect(hints.thinking).toBe('gpt-5.5');
+    expect(hints.standard).toBe(hints.fast);
   });
 });

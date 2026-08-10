@@ -199,10 +199,83 @@ steps:
   });
 });
 
+describe('tags', () => {
+  const withTags = (tags: string) => parseInline(`
+name: Tagged
+input: user_prompt
+tags: ${tags}
+steps:
+  - id: step_1
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: planner
+    inputs: [user_prompt]
+    tools: []
+    output: plan.md
+`);
+
+  it('reads a top-level tags list, lowercased and de-duped', () => {
+    expect(withTags('[Review, review, " prs "]')?.tags).toEqual(['review', 'prs']);
+  });
+
+  it('ignores non-string and empty entries rather than failing the parse', () => {
+    const flow = withTags('[review, 7, "", null]');
+    expect(flow).not.toBeNull();
+    expect(flow?.tags).toEqual(['review']);
+  });
+
+  it('leaves tags undefined when absent or not a list', () => {
+    expect(parseInline(`
+name: Untagged
+input: user_prompt
+steps:
+  - id: step_1
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: planner
+    inputs: [user_prompt]
+    tools: []
+    output: plan.md
+`)?.tags).toBeUndefined();
+    expect(withTags('review')?.tags).toBeUndefined();
+  });
+
+  it('leaves an untagged flow byte-identical through a load/save cycle', () => {
+    // The compatibility guarantee: opening an old flow in the editor and
+    // saving it must not introduce a `tags:` key, an empty list, or any
+    // other diff. Anything else would show up as spurious churn in the
+    // git history of a project's committed .overcli/flows.
+    const original = serializeFlow(minimalFlow());
+    const loaded = parseFlowYaml({
+      yaml: original,
+      id: 'test-flow',
+      source: 'user',
+      filePath: '/tmp/test-flow.yaml',
+    });
+    expect(loaded).not.toBeNull();
+    expect(serializeFlow(loaded!)).toBe(original);
+    expect(original).not.toContain('tags');
+  });
+
+  it('omits the key for an empty list rather than writing `tags: []`', () => {
+    expect(parse(serializeFlow(minimalFlow({ tags: [] })))).not.toHaveProperty('tags');
+  });
+
+  it('round-trips through serialize so a save does not strip them', () => {
+    const flow = minimalFlow({ tags: ['review', 'prs'] });
+    expect(parse(serializeFlow(flow)).tags).toEqual(['review', 'prs']);
+    expect(parseFlowYaml({
+      yaml: serializeFlow(flow),
+      id: 'test-flow',
+      source: 'user',
+      filePath: '/tmp/test-flow.yaml',
+    })?.tags).toEqual(['review', 'prs']);
+  });
+});
+
 describe('serializeFlow', () => {
   it('omits optional keys when their values are not set', () => {
     const obj = parse(serializeFlow(minimalFlow()));
     expect(obj).not.toHaveProperty('description');
+    expect(obj).not.toHaveProperty('tags');
     expect(obj.steps[0]).not.toHaveProperty('system_prompt');
     expect(obj.steps[0]).not.toHaveProperty('permission_mode');
     expect(obj.steps[0]).not.toHaveProperty('rebound');

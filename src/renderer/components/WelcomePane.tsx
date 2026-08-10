@@ -4,6 +4,13 @@ import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
 import { createBranchedAgent } from './sheets/NewAgentSheet';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
+import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
+import {
+  flowTagCounts,
+  groupFlows,
+  installedRegistryKeys,
+  registryEntryMatchesQuery,
+} from './flows/flowGrouping';
 import {
   Backend,
   BackendHealth,
@@ -14,11 +21,12 @@ import {
   UUID,
   Attachment,
   Workspace,
+  FlowRegistryEntry,
 } from '@shared/types';
 import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { PREMIUM_MODELS } from '@shared/modelCatalog';
 import { pathBasename } from '@shared/workspaceNames';
-import { flowStarKey } from '@shared/flows/schema';
+import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
 import {
@@ -595,8 +603,9 @@ function deriveAgentName(prompt: string): string {
 /// "Or run a flow" section beneath the welcome composer. Surfaces saved
 /// flows as proper cards (monogram + name + step preview) — clicking a
 /// card slides a run panel into the same slot so the user stays in
-/// context. Capped to the first MAX_VISIBLE entries with a link to the
-/// full Flows tab.
+/// context. Collapsed it shows the first MAX_VISIBLE entries; expanded it
+/// groups by provenance (starred / yours / this project / installed) so a
+/// pile of registry installs doesn't bury the two flows you wrote.
 const MAX_VISIBLE_FLOWS = 4;
 
 function WelcomeFlowsRow({
@@ -620,7 +629,27 @@ function WelcomeFlowsRow({
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
+  const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
+  const registryEntries = useFlowsStore((s) => s.registryEntries);
+  const registryLoaded = useFlowsStore((s) => s.registryLoaded);
+  const browseRegistries = useFlowsStore((s) => s.browseRegistries);
+  const installFromRegistry = useFlowsStore((s) => s.installFromRegistry);
   const [pickedFlowId, setPickedFlowId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  // The full modal is still there for browsing by tag axis; the inline
+  // results below cover the common case of "I know what I want, is it
+  // published?" without leaving the screen.
+  const [browseQuery, setBrowseQuery] = useState<string | null>(null);
+  const [installingKey, setInstallingKey] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
+  // An AI-drafted flow that exists only in memory until the user launches
+  // it. Occupies the same slot a picked flow would.
+  const [draftedFlow, setDraftedFlow] = useState<Flow | null>(null);
+  const saveDraftedFlow = useFlowsStore((s) => s.saveDraftedFlow);
   // The launch prompt lives in the shared draft/attachment store (keyed per
   // flow) so the Composer can drive multi-line text + image attachments,
   // exactly like the chat composer above.
@@ -673,7 +702,9 @@ function WelcomeFlowsRow({
   }, [loaded, projects.length]);
 
   const target = workspaceRootPath ?? projectPath ?? '';
-  const pickedFlow = pickedFlowId ? flows.find((f) => f.id === pickedFlowId) : null;
+  // A draft takes the same slot as a picked flow, so the launch panel,
+  // worktree toggle and Composer are all shared rather than duplicated.
+  const pickedFlow = draftedFlow ?? (pickedFlowId ? flows.find((f) => f.id === pickedFlowId) : null);
 
   const orderedFlows = useMemo(() => {
     const isStarred = (f: typeof flows[number]) =>
@@ -686,10 +717,106 @@ function WelcomeFlowsRow({
     });
   }, [flows, starredFlows]);
 
+  // Grouped view backs both the expanded list and the search results. The
+  // collapsed 4-card teaser stays flat — four cards don't need headings.
+  const groups = useMemo(
+    () => groupFlows(flows, { starred: starredFlows, installed: installedFlows, query, tags: activeTags }),
+    [flows, starredFlows, installedFlows, query, activeTags],
+  );
+  const tagCounts = useMemo(() => flowTagCounts(flows), [flows]);
+  const topTags = useMemo(
+    () => [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8),
+    [tagCounts],
+  );
+  function toggleTag(tag: string) {
+    setActiveTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }
+  const matchCount = groups.reduce((n, g) => n + g.flows.length, 0);
+  // Two different questions: `hasQuery` gates the registry lookup (a tag
+  // filter alone is "narrow what I have", not "go find me something new" —
+  // matching an empty query against the registry would dump six arbitrary
+  // published flows on screen), while `searching` gates the expanded
+  // layout, which either one should trigger.
+  const hasQuery = query.trim().length > 0;
+  const searching = hasQuery || activeTags.size > 0;
+  // Searching or expanding both mean "show me everything that matches" —
+  // the 4-card cap only applies to the resting state. Focus counts too:
+  // opening the panel the moment the user clicks into the box means the
+  // one unavoidable size change happens on a deliberate action, instead
+  // of firing under their hands on the first keystroke.
+  const grouped = searching || showAll || searchFocused;
+
+  // Registry index is fetched (and cached in the store) the first time the
+  // user searches, not on mount — a network round-trip on every welcome
+  // screen to populate results nobody asked for isn't worth it.
+  useEffect(() => {
+    if (query.trim().length >= 2 && !registryLoaded) void browseRegistries(false);
+  }, [query, registryLoaded]);
+
+  // Published flows matching the same query, minus the ones already
+  // installed (those surface in the local groups above — showing both
+  // would read as a duplicate).
+  const registryMatches = useMemo(() => {
+    if (!hasQuery) return [];
+    const have = installedRegistryKeys(flows, installedFlows);
+    return registryEntries
+      .filter((e) => !have.has(`${e.registryId}:${e.id}`))
+      .filter((e) => registryEntryMatchesQuery(e, query))
+      .slice(0, 6);
+  }, [hasQuery, registryEntries, flows, installedFlows, query]);
+
+  /// Hand the unmatched search to the flow drafter and show the result
+  /// RIGHT HERE. The search text IS the description — someone typing
+  /// "postmortem from an incident channel" into a flow search has already
+  /// written the brief, so re-asking for it in a modal is a tax.
+  ///
+  /// Deliberately does not navigate to the editor: the user asked to run
+  /// something, not to author a flow. They see the steps, then launch; the
+  /// flow is saved on the way out (`handleRun`), so it's in the library
+  /// next time without anyone having visited a builder.
+  async function handleDraft() {
+    const description = query.trim();
+    if (!description || drafting) return;
+    setDrafting(true);
+    setDraftError(null);
+    try {
+      const result = await window.overcli.invoke('flows:draftFromPrompt', { description });
+      if (!result.ok) {
+        setDraftError(result.error);
+        return;
+      }
+      setDraftedFlow(result.flow);
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function handleInstall(entry: { registryId: string; id: string; version: string }) {
+    const key = `${entry.registryId}:${entry.id}`;
+    setInstallingKey(key);
+    setInstallError(null);
+    try {
+      const res = await installFromRegistry(entry);
+      if (!res.ok) {
+        setInstallError(res.error || 'Install failed.');
+        return;
+      }
+      // The new YAML is on disk but the in-memory library predates it.
+      await reload(projects.map((p) => p.path));
+    } finally {
+      setInstallingKey(null);
+    }
+  }
+
   if (!loaded) return null;
   if (flows.length === 0) return null;
 
-  const visibleFlows = showAll ? orderedFlows : orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
+  const visibleFlows = orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
   const hiddenCount = orderedFlows.length - visibleFlows.length;
 
   async function handleRun(prompt: string, attachments: Attachment[]) {
@@ -702,8 +829,22 @@ function WelcomeFlowsRow({
     setSubmitting(true);
     setError(null);
     try {
+      // A drafted flow has never touched disk, and the runtime resolves
+      // runs by flow id — so it has to be saved before it can run. Doing
+      // it here (rather than at draft time) means abandoning a draft
+      // leaves no junk in the library.
+      let flowId = pickedFlow.id;
+      if (draftedFlow) {
+        const saved = await saveDraftedFlow(draftedFlow, projects.map((p) => p.path));
+        if (!saved.ok) {
+          setError(saved.error);
+          return;
+        }
+        flowId = saved.flow.id;
+        setDraftedFlow(null);
+      }
       const result = await window.overcli.invoke('flows:startRun', {
-        flowId: pickedFlow.id,
+        flowId,
         projectPath: target,
         userPrompt: text,
         attachments: attachments.length > 0 ? attachments : undefined,
@@ -739,21 +880,205 @@ function WelcomeFlowsRow({
           jump and the picked card's identity is preserved. */}
       {!pickedFlow ? (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            {visibleFlows.map((flow) => (
-              <FlowCard
-                key={flow.id}
-                flow={flow}
-                picked={false}
-                onClick={() => {
-                  setPickedFlowId(flow.id);
-                  setError(null);
-                }}
-              />
-            ))}
+          {/* Open, the panel breaks out of the 680px composer column to
+              ~960px so cards go three-across at the SAME card width rather
+              than three cramped ones — 680/3 leaves ~150px for text, which
+              truncates most flow names to uselessness. Centred on the
+              parent via the left-1/2 trick so the composer above keeps its
+              own width. At rest it stays in the column at two-across. */}
+          <div
+            className={
+              grouped ? 'relative left-1/2 -translate-x-1/2 w-[min(60rem,92vw)]' : ''
+            }
+          >
+          {/* The filter box only earns its space once there are enough
+              flows to lose one in. Below that the grid IS the index. */}
+          {flows.length > MAX_VISIBLE_FLOWS && (
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              placeholder="Search your flows and the registry…"
+              className="field w-full mb-2 px-3 py-1.5 text-[12px]"
+            />
+          )}
+
+          {/* Tag chips, only once the panel is open — at rest they'd be a
+              row of filters for a list short enough not to need them. */}
+          {grouped && topTags.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {topTags.map(([tag, count]) => (
+                <button
+                  key={tag}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => toggleTag(tag)}
+                  className={
+                    'text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ' +
+                    (activeTags.has(tag)
+                      ? 'border-accent/60 bg-accent/20 text-accent'
+                      : 'border-card text-ink-faint hover:text-ink hover:border-card-strong')
+                  }
+                >
+                  {tag} <span className="opacity-60">{count}</span>
+                </button>
+              ))}
+              {activeTags.size > 0 && (
+                <button
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setActiveTags(new Set())}
+                  className="text-[10px] px-1.5 py-0.5 text-ink-faint hover:text-ink"
+                >
+                  clear
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Results scroll INSIDE a fixed viewport rather than growing the
+              page. Unbounded growth pushed the composer off the top and
+              made every keystroke re-lay-out the whole welcome screen —
+              and because narrowing a search shrinks the list, the page
+              jittered in both directions as you typed. A constant height
+              (not just a max) holds everything above it still; the cost is
+              some empty space on a one-result search, which is cheaper
+              than a moving target. */}
+          <div
+            className={
+              grouped
+                ? 'h-[min(46vh,30rem)] overflow-y-auto pr-1 -mr-1 overscroll-contain'
+                : ''
+            }
+          >
+          {grouped ? (
+            <div className="space-y-4">
+              {groups.map((group) => (
+                <div key={group.key}>
+                  {/* Sticky so the heading survives its own group scrolling
+                      past — otherwise a long "Yours" list leaves you with
+                      a wall of cards and no idea which bucket you're in. */}
+                  <div className="sticky top-0 z-10 flex items-baseline gap-2 mb-1.5 px-0.5 py-1 -mx-0.5 bg-surface/90 backdrop-blur-sm">
+                    <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+                      {group.title}
+                    </span>
+                    <span className="text-[10px] text-ink-faint/70">{group.flows.length}</span>
+                    {group.hint && (
+                      <span className="text-[10px] text-ink-faint/60 truncate">{group.hint}</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {group.flows.map((flow) => (
+                      <FlowCard
+                        key={`${flow.source}:${flow.id}`}
+                        flow={flow}
+                        picked={false}
+                        onClick={() => {
+                          setPickedFlowId(flow.id);
+                          setError(null);
+                        }}
+                        onTagClick={toggleTag}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {visibleFlows.map((flow) => (
+                <FlowCard
+                  key={`${flow.source}:${flow.id}`}
+                  flow={flow}
+                  picked={false}
+                  onClick={() => {
+                    setPickedFlowId(flow.id);
+                    setError(null);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* The same query, against published flows. Shown inline rather
+              than behind the browse modal: "nothing I have does this" and
+              "here's one you can install" are the same moment. */}
+          {hasQuery && (
+            <div className="mt-4">
+              <div className="sticky top-0 z-10 flex items-baseline gap-2 mb-1.5 px-0.5 py-1 -mx-0.5 bg-surface/90 backdrop-blur-sm">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+                  From the registry
+                </span>
+                {registryMatches.length > 0 && (
+                  <span className="text-[10px] text-ink-faint/70">{registryMatches.length}</span>
+                )}
+                <span className="text-[10px] text-ink-faint/60">not installed yet</span>
+              </div>
+              {!registryLoaded ? (
+                <div className="text-[11px] text-ink-faint px-0.5 py-2">Searching the registry…</div>
+              ) : registryMatches.length === 0 ? (
+                <div className="text-[11px] text-ink-faint px-0.5 py-2">
+                  {matchCount === 0
+                    ? 'Nothing here or in the registry matches that.'
+                    : 'Nothing new in the registry for that.'}{' '}
+                  <button
+                    onClick={() => setBrowseQuery('')}
+                    className="text-ink hover:underline underline-offset-2"
+                  >
+                    Browse everything →
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {registryMatches.map((entry) => (
+                    <RegistryFlowCard
+                      key={`${entry.registryId}:${entry.id}`}
+                      entry={entry}
+                      installing={installingKey === `${entry.registryId}:${entry.id}`}
+                      onInstall={() => void handleInstall(entry)}
+                      onPreview={() => setBrowseQuery(query)}
+                    />
+                  ))}
+                </div>
+              )}
+              {installError && (
+                <div className="mt-1.5 text-[11px] text-red-400 px-0.5">{installError}</div>
+              )}
+
+              {/* Third rail, and only once the first two are exhausted:
+                  nothing you own does this and nothing published does
+                  either, so the remaining option is to make one. Lands in
+                  the editor with the drafted steps rendered — NOT straight
+                  into a run. A drafted pipeline picks its own models,
+                  permission modes, and may well include a step that
+                  writes to the repo; that deserves a look before it goes. */}
+              {registryLoaded && matchCount === 0 && registryMatches.length === 0 && (
+                <button
+                  onClick={() => void handleDraft()}
+                  disabled={drafting}
+                  className="w-full mt-2 rounded-lg border border-dashed border-accent/40 bg-accent/5 px-3 py-2.5 text-left hover:bg-accent/10 transition-colors disabled:opacity-60"
+                >
+                  <div className="text-[12px] text-ink">
+                    {drafting
+                      ? 'Drafting a flow…'
+                      : `Build a flow for “${query.trim()}” with AI →`}
+                  </div>
+                  <div className="text-[10.5px] text-ink-faint mt-0.5">
+                    {drafting
+                      ? 'Asking your CLI to design the steps.'
+                      : 'Writes the steps from your search. You see them before anything runs.'}
+                  </div>
+                </button>
+              )}
+              {draftError && (
+                <div className="mt-1.5 text-[11px] text-red-400 px-0.5">{draftError}</div>
+              )}
+            </div>
+          )}
           </div>
+          </div>
+
           <div className="flex items-center justify-center gap-3 mt-2 text-[11px] text-ink-faint">
-            {hiddenCount > 0 && (
+            {!searching && !showAll && hiddenCount > 0 && (
               <button
                 onClick={() => setShowAll(true)}
                 className="hover:text-ink underline-offset-2 hover:underline"
@@ -761,7 +1086,7 @@ function WelcomeFlowsRow({
                 Show {hiddenCount} more
               </button>
             )}
-            {hiddenCount === 0 && showAll && flows.length > MAX_VISIBLE_FLOWS && (
+            {!searching && showAll && flows.length > MAX_VISIBLE_FLOWS && (
               <button
                 onClick={() => setShowAll(false)}
                 className="hover:text-ink underline-offset-2 hover:underline"
@@ -769,6 +1094,12 @@ function WelcomeFlowsRow({
                 Show fewer
               </button>
             )}
+            <button
+              onClick={() => setBrowseQuery(query)}
+              className="hover:text-ink underline-offset-2 hover:underline"
+            >
+              Browse library
+            </button>
             <button
               onClick={() => {
                 // Always land on the flows library — never a leftover
@@ -785,27 +1116,96 @@ function WelcomeFlowsRow({
         </>
       ) : (
         <RunPanel
-          flow={pickedFlow}
-          targetLabel={targetLabel}
-          draftKey={draftKey}
-          rootPath={target}
-          error={error}
-          submitting={submitting}
-          onCancel={() => {
-            setPickedFlowId(null);
-            setError(null);
+            isDraft={!!draftedFlow}
+            flow={pickedFlow}
+            targetLabel={targetLabel}
+            draftKey={draftKey}
+            rootPath={target}
+            error={error}
+            submitting={submitting}
+            onCancel={() => {
+              setPickedFlowId(null);
+              setDraftedFlow(null);
+              setError(null);
+            }}
+            onRun={handleRun}
+            canUseWorktree={canUseWorktree}
+            isWorkspace={!!workspaceRootPath}
+            runIn={runIn}
+            onRunIn={setRunIn}
+            baseBranch={baseBranch}
+            onBaseBranch={setBaseBranch}
+            baseBranchRepoPaths={baseBranchRepoPaths}
+            launchProgress={launchProgressMap[target]}
+          />
+      )}
+
+      {browseQuery !== null && (
+        <BrowseLibraryModal
+          initialQuery={browseQuery}
+          onClose={() => {
+            setBrowseQuery(null);
+            // An install lands a new YAML in the user flows dir; without
+            // this the gallery keeps showing the pre-install list.
+            void reload(projects.map((p) => p.path));
           }}
-          onRun={handleRun}
-          canUseWorktree={canUseWorktree}
-          isWorkspace={!!workspaceRootPath}
-          runIn={runIn}
-          onRunIn={setRunIn}
-          baseBranch={baseBranch}
-          onBaseBranch={setBaseBranch}
-          baseBranchRepoPaths={baseBranchRepoPaths}
-          launchProgress={launchProgressMap[target]}
         />
       )}
+    </div>
+  );
+}
+
+/// A published flow the user doesn't have yet, sized to sit in the same
+/// grid as the local FlowCards. Deliberately NOT clickable-to-run: you
+/// can't run what isn't installed, so the primary action is Install, and
+/// the card body opens the full browser for the step-by-step preview.
+function RegistryFlowCard({
+  entry,
+  installing,
+  onInstall,
+  onPreview,
+}: {
+  entry: FlowRegistryEntry;
+  installing: boolean;
+  onInstall: () => void;
+  onPreview: () => void;
+}) {
+  return (
+    <div className="group relative text-left rounded-xl border border-dashed border-card-strong bg-card/10 px-3.5 py-3 transition-colors hover:bg-card/30">
+      <button onClick={onPreview} className="block w-full text-left">
+        <div className="text-[13px] font-semibold truncate text-ink leading-tight">
+          {entry.name}
+        </div>
+        {entry.description && (
+          <div className="text-[11px] text-ink-muted line-clamp-2 mt-1 leading-snug">
+            {entry.description}
+          </div>
+        )}
+      </button>
+      {entry.tags && entry.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {entry.tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="text-[9.5px] leading-none px-1.5 py-0.5 rounded-full border border-card text-ink-faint"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-[10px] text-ink-faint truncate flex-1">
+          {entry.registryId} · {entry.version}
+        </span>
+        <button
+          onClick={onInstall}
+          disabled={installing}
+          className="text-[10.5px] px-2 py-0.5 rounded-md border border-card-strong text-ink hover:bg-white/10 disabled:opacity-50"
+        >
+          {installing ? 'Installing…' : 'Install'}
+        </button>
+      </div>
     </div>
   );
 }
