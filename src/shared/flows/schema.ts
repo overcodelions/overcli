@@ -570,6 +570,22 @@ export function normalizeFlowTag(raw: string): string | null {
   return tag.length > 0 ? tag : null;
 }
 
+/// Where a flow came from, which is the axis users actually sort on: "the
+/// ones I wrote" vs "the ones I installed" vs "the ones that ship with this
+/// repo". Installed flows are identified by their entry in
+/// `settings.installedRegistryFlows` — matched on filename, which
+/// `registry.ts:154` mints as `installed-<registryId>-<entryId>.yaml`.
+export type FlowOrigin = 'project' | 'installed' | 'mine';
+
+export function flowOrigin(
+  flow: Pick<Flow, 'source' | 'id'>,
+  installed: ReadonlyArray<{ filename: string }> | undefined,
+): FlowOrigin {
+  if (flow.source === 'project') return 'project';
+  const file = `${flow.id}.yaml`;
+  return (installed ?? []).some((i) => i.filename === file) ? 'installed' : 'mine';
+}
+
 /// The project directory a project-layer flow belongs to, recovered from
 /// its on-disk path (`<projectPath>/.overcli/flows/<id>.yaml`). The
 /// storage-layer IPCs (`flows:save` / `flows:delete`) need it to resolve

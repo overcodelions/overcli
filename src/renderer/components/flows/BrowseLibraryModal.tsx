@@ -2,14 +2,29 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FlowRegistryEntry } from '@shared/types';
 import { resolveStepModel, type Flow, type FlowStep } from '@shared/flows/schema';
 import { useFlowsStore } from '../../flowsStore';
+import { useStore } from '../../store';
 import { TAG_AXES } from '@shared/flows/tagTaxonomy';
+import { installedRegistryKeys } from './flowGrouping';
 
-export function BrowseLibraryModal({ onClose }: { onClose: () => void }) {
+/// `initialQuery` carries a search the user already typed somewhere else
+/// (the welcome gallery's filter) so "nothing local matches → look in the
+/// registry" doesn't make them type it twice.
+export function BrowseLibraryModal({ onClose, initialQuery = '' }: { onClose: () => void; initialQuery?: string }) {
   const { registryEntries, registryLoaded, registryErrors, browseRegistries, installFromRegistry, previewRegistryFlow } = useFlowsStore();
   const [installing, setInstalling] = useState<string | null>(null);
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({});
-  const [installed, setInstalled] = useState<Set<string>>(new Set());
-  const [query, setQuery] = useState('');
+  const [justInstalled, setJustInstalled] = useState<Set<string>>(new Set());
+  const [query, setQuery] = useState(initialQuery);
+  // Installs from PREVIOUS sessions, recovered from settings. Without this
+  // the modal forgets everything on close and re-offers "Install" for flows
+  // already sitting in the user's library. Cross-checked against the loaded
+  // library so a flow whose file is gone reads as installable again.
+  const installedFromSettings = useStore((s) => s.settings.installedRegistryFlows);
+  const flows = useFlowsStore((s) => s.flows);
+  const installed = useMemo(
+    () => new Set([...justInstalled, ...installedRegistryKeys(flows, installedFromSettings)]),
+    [justInstalled, flows, installedFromSettings],
+  );
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const filteredEntries = useMemo(() => {
@@ -65,7 +80,7 @@ export function BrowseLibraryModal({ onClose }: { onClose: () => void }) {
     if (!result.ok) {
       setInstallErrors((prev) => ({ ...prev, [key]: result.error || 'Install failed' }));
     } else {
-      setInstalled((prev) => new Set([...prev, key]));
+      setJustInstalled((prev) => new Set([...prev, key]));
       setInstallErrors((prev) => {
         const { [key]: _, ...rest } = prev;
         return rest;
@@ -178,7 +193,21 @@ export function BrowseLibraryModal({ onClose }: { onClose: () => void }) {
           )}
 
           {registryLoaded && filteredEntries.length === 0 && (
-            <div className="text-center text-ink-faint py-8">No flows available</div>
+            <div className="text-center text-ink-faint py-8 text-sm">
+              {query.trim() || selectedTags.size > 0 ? (
+                <>
+                  <div>Nothing in the registry matches that.</div>
+                  <button
+                    onClick={() => { setQuery(''); setSelectedTags(new Set()); }}
+                    className="mt-2 text-xs text-accent hover:underline"
+                  >
+                    Clear search and filters
+                  </button>
+                </>
+              ) : (
+                'No flows available'
+              )}
+            </div>
           )}
 
           <div className="space-y-2">
