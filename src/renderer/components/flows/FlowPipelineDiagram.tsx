@@ -18,6 +18,7 @@
 import { useMemo } from 'react';
 
 import { resolveStepModel, type Flow, type FlowStep } from '@shared/flows/schema';
+import { compactStepModel } from './flowSpine';
 
 const TIER_COLOR: Record<string, string> = {
   premium: 'border-sky-400/60 bg-sky-500/15 text-sky-800 dark:text-sky-100',
@@ -39,21 +40,10 @@ function tierOf(flow: Flow, step: FlowStep): keyof typeof TIER_COLOR {
   return 'other';
 }
 
-function compactModel(flow: Flow, step: FlowStep): string {
-  const m = resolveStepModel(flow, step).model;
-  if (!m) return '(no model)';
-  // Strip the vendor prefix, keep version dashes as dots (4-7 → 4.7) and
-  // turn the remaining word-separating dashes into spaces (opus → opus).
-  // e.g. claude-opus-4-7 → "opus 4.7".
-  if (m.startsWith('claude-')) {
-    return m
-      .replace('claude-', '')
-      .replace(/(\d)-(\d)/g, '$1.$2')
-      .replace(/-/g, ' ');
-  }
-  if (m.includes(':')) return m.split(':')[0];
-  return m;
-}
+// Model label formatting lives in flowSpine.ts — it's a pure string
+// transform shared with the launch panel, and keeping it there is what
+// lets it be tested without a DOM.
+const compactModel = compactStepModel;
 
 interface PipelineDiagramProps {
   flow: Flow;

@@ -41,16 +41,23 @@ export function drafterModelFor(backend: Backend): string {
 
 /// One model id per speed tier for a backend, used to fill the drafter's
 /// CONVENTIONS so a generated flow's steps default to the user's preferred
-/// CLI rather than always Claude. Each tier degrades gracefully to the
-/// nearest stronger tier when a backend lacks one (e.g. Gemini has no
-/// dedicated 'standard' model).
+/// CLI rather than always Claude.
+///
+/// A missing tier degrades DOWNWARD, toward cheaper. The drafter spends
+/// `standard` on "rebound critic / cheaper steps", so when a backend has no
+/// middle model the honest substitute is its fast one — degrading upward
+/// put every critic loop in every Claude-drafted flow on Opus, which is the
+/// exact opposite of what that prompt line is asking for. Claude and Gemini
+/// both lack a 'standard' model today, so this is the common path, not an
+/// edge case. `thinking` still degrades upward (to the strongest available)
+/// because that line asks for the best reasoning model.
 export function drafterModelHints(
   backend: Backend,
 ): { thinking: string; standard: string; fast: string } {
   const models = PREMIUM_MODELS[backend as Exclude<Backend, 'ollama'>] ?? [];
   const atTier = (tier: ModelSpeed) => models.find((m) => modelSpeed(m) === tier);
   const thinking = atTier('thinking') ?? models[0] ?? '';
-  const standard = atTier('standard') ?? thinking;
+  const standard = atTier('standard') ?? atTier('fast') ?? thinking;
   const fast = atTier('fast') ?? standard;
   return { thinking, standard, fast };
 }

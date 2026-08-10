@@ -293,6 +293,75 @@ describe('draftFlowFromPrompt', () => {
     if (result.ok) expect(result.flow.name).toBe('Codex Drafted');
   });
 
+  /// Tags drafted by the model are only useful if they land in the same
+  /// vocabulary the registry publishes — otherwise a drafted flow never
+  /// shows up under the filter its user clicks.
+  describe('tags', () => {
+    function yamlWithTags(tags: string): string {
+      return [
+        '```yaml',
+        'name: Tagged Flow',
+        'input: user_prompt',
+        `tags: ${tags}`,
+        'steps:',
+        '  - id: plan',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: planner',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: plan.md',
+        '```',
+      ].join('\n');
+    }
+
+    it('keeps tags drawn from the shared taxonomy', async () => {
+      mockQuery.mockReturnValue(claudeStream(yamlWithTags('[review, tickets]')));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toEqual(['review', 'tickets']);
+    });
+
+    it('drops invented tags rather than guessing at a mapping', async () => {
+      mockQuery.mockReturnValue(claudeStream(yamlWithTags('[review, code-review, jira-triage]')));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toEqual(['review']);
+    });
+
+    it('leaves tags undefined when nothing survives, so the YAML stays clean', async () => {
+      mockQuery.mockReturnValue(claudeStream(yamlWithTags('[made-up, nonsense]')));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toBeUndefined();
+    });
+
+    it('caps the list at four so a card stays scannable', async () => {
+      mockQuery.mockReturnValue(
+        claudeStream(yamlWithTags('[review, tickets, prs, design, research, testing]')),
+      );
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toEqual(['review', 'tickets', 'prs', 'design']);
+    });
+
+    it('drafts without tags at all when the model omits the key', async () => {
+      mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toBeUndefined();
+    });
+  });
+
   it('surfaces an error when no backend is signed in', async () => {
     const { healthyBackends } = await import('../health');
     vi.mocked(healthyBackends).mockResolvedValueOnce(new Set() as never);

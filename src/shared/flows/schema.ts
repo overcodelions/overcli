@@ -154,6 +154,11 @@ export interface Flow {
   /// synthesizes them from per-step models for old-format flows.
   participants: FlowParticipant[];
   steps: FlowStep[];
+  /// Free-form labels, round-tripped from the YAML's top-level `tags:`. The
+  /// registry index already carries these for published flows, so an
+  /// installed flow arrives pre-tagged; hand-written flows get whatever the
+  /// author typed. Used to group and filter the library.
+  tags?: string[];
   /// Resolved at load time — where this flow was read from.
   source: 'user' | 'project';
   /// Absolute path on disk. Re-saves write back to this path.
@@ -554,6 +559,31 @@ export function resolveStepParticipant(
 /// user and project layers (`storage.ts:81-89` — project wins).
 export function flowStarKey(flow: Pick<Flow, 'source' | 'id'>): string {
   return `${flow.source}:${flow.id}`;
+}
+
+/// Canonical form of a tag: trimmed and lowercased, or null if there's
+/// nothing left. Shared by the YAML parser and the editor's tag input so
+/// the editor can't produce a tag that a save-then-load would silently
+/// rewrite (type "Review", get "review" back, wonder what happened).
+export function normalizeFlowTag(raw: string): string | null {
+  const tag = raw.trim().toLowerCase();
+  return tag.length > 0 ? tag : null;
+}
+
+/// Where a flow came from, which is the axis users actually sort on: "the
+/// ones I wrote" vs "the ones I installed" vs "the ones that ship with this
+/// repo". Installed flows are identified by their entry in
+/// `settings.installedRegistryFlows` — matched on filename, which
+/// `registry.ts:154` mints as `installed-<registryId>-<entryId>.yaml`.
+export type FlowOrigin = 'project' | 'installed' | 'mine';
+
+export function flowOrigin(
+  flow: Pick<Flow, 'source' | 'id'>,
+  installed: ReadonlyArray<{ filename: string }> | undefined,
+): FlowOrigin {
+  if (flow.source === 'project') return 'project';
+  const file = `${flow.id}.yaml`;
+  return (installed ?? []).some((i) => i.filename === file) ? 'installed' : 'mine';
 }
 
 /// The project directory a project-layer flow belongs to, recovered from

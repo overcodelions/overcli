@@ -564,6 +564,89 @@ describe('saveDraft', () => {
   });
 });
 
+// ─── saveDraftedFlow ─────────────────────────────────────────────────────────
+
+describe('saveDraftedFlow', () => {
+  beforeEach(() => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'flows:save') return { ok: true, filePath: '/tmp/saved.yaml' };
+      if (channel === 'flows:list') return [];
+      return undefined;
+    });
+  });
+
+  function savePayload() {
+    return mockInvoke.mock.calls.find(([c]) => c === 'flows:save')?.[1];
+  }
+
+  it('saves an AI draft to the user layer and reports the stored flow', async () => {
+    useFlowsStore.setState({ flows: [] });
+    const result = await useFlowsStore
+      .getState()
+      .saveDraftedFlow(minimalFlow({ id: 'review-my-prs' }), []);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.id).toBe('review-my-prs');
+      expect(result.flow.filePath).toBe('/tmp/saved.yaml');
+    }
+    expect(savePayload()).toMatchObject({ target: 'user' });
+  });
+
+  it('suffixes an id that collides so a second draft cannot overwrite the first', async () => {
+    // The drafter derives the id from the description, so drafting "review
+    // my PRs" twice produces the same id twice. Without the suffix the
+    // second save silently replaces a flow the user already ran.
+    useFlowsStore.setState({ flows: [minimalFlow({ id: 'review-my-prs' })] });
+    const result = await useFlowsStore
+      .getState()
+      .saveDraftedFlow(minimalFlow({ id: 'review-my-prs' }), []);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow.id).toBe('review-my-prs-2');
+    expect(savePayload()).toMatchObject({ flow: { id: 'review-my-prs-2' } });
+  });
+
+  it('keeps counting past the first collision', async () => {
+    useFlowsStore.setState({
+      flows: [minimalFlow({ id: 'audit' }), minimalFlow({ id: 'audit-2' })],
+    });
+    const result = await useFlowsStore.getState().saveDraftedFlow(minimalFlow({ id: 'audit' }), []);
+
+    if (result.ok) expect(result.flow.id).toBe('audit-3');
+  });
+
+  it('forces the user layer even if the draft claims otherwise', async () => {
+    // A drafted flow has no file, so `source` is whatever the parser
+    // defaulted to. Saving it as 'project' would try to write into a
+    // repo's .overcli/flows without a project path.
+    useFlowsStore.setState({ flows: [] });
+    await useFlowsStore
+      .getState()
+      .saveDraftedFlow(minimalFlow({ id: 'x', source: 'project' }), []);
+
+    expect(savePayload()).toMatchObject({ target: 'user', flow: { source: 'user' } });
+  });
+
+  it('surfaces a save failure without reloading the library', async () => {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:save' ? { ok: false, error: 'disk full' } : [],
+    );
+    useFlowsStore.setState({ flows: [] });
+    const result = await useFlowsStore.getState().saveDraftedFlow(minimalFlow(), []);
+
+    expect(result).toEqual({ ok: false, error: 'disk full' });
+    expect(mockInvoke.mock.calls.filter(([c]) => c === 'flows:list')).toEqual([]);
+  });
+
+  it('reloads the library so the new flow shows up without a refresh', async () => {
+    useFlowsStore.setState({ flows: [] });
+    await useFlowsStore.getState().saveDraftedFlow(minimalFlow(), ['/repos/app']);
+
+    expect(mockInvoke.mock.calls.some(([c]) => c === 'flows:list')).toBe(true);
+  });
+});
+
 // ─── renameRun ───────────────────────────────────────────────────────────────
 
 describe('renameRun', () => {
