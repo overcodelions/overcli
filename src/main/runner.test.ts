@@ -11,10 +11,14 @@ import {
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
 import {
+  AGENT_WORKING_LABEL,
   askUserQuestionHasData,
   isBrokerPromptToolMissingError,
   isStaleSessionError,
   resumeSessionAfterParamChange,
+  shouldReapIdle,
+  shouldSkipIdleOnClose,
+  staleRunningReason,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
 
@@ -37,6 +41,47 @@ describe('resumeSessionAfterParamChange', () => {
 
   it('returns undefined when neither side has a session (first turn)', () => {
     expect(resumeSessionAfterParamChange(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('shouldSkipIdleOnClose', () => {
+  // Regression: same model-swap path as above. Bumping a flow participant's
+  // model in the hijack chat makes the next send kill and respawn the proc.
+  // The dead proc's 'close' landed a second AFTER the flow runtime had
+  // started a step on that conversation, and its running:false was read as
+  // "step finished" — so "Re-run from here" failed the step off an empty
+  // buffer ("produced no <output>") and never updated the artifact, while
+  // the respawned proc was still working the step for real.
+  it('silences a superseded proc — the replacement turn owns the running state', () => {
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: false, backend: 'claude', claudeSendPending: false }),
+    ).toBe(true);
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: false, backend: 'codex', claudeSendPending: false }),
+    ).toBe(true);
+  });
+
+  it('lets the conversation’s current proc report idle', () => {
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'claude', claudeSendPending: false }),
+    ).toBe(false);
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'codex', claudeSendPending: false }),
+    ).toBe(false);
+  });
+
+  it('still silences the current proc while a fresh Claude send prepares its broker', () => {
+    // The replacement send hasn't registered a proc yet, so the closing one
+    // is technically still "current" — but a turn is already inbound.
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'claude', claudeSendPending: true }),
+    ).toBe(true);
+  });
+
+  it('does not apply the Claude-only broker window to other backends', () => {
+    expect(
+      shouldSkipIdleOnClose({ isCurrent: true, backend: 'codex', claudeSendPending: true }),
+    ).toBe(false);
   });
 });
 
@@ -430,5 +475,136 @@ describe('collapsePartialAssistants', () => {
     expect(out).toHaveLength(2);
     expect(out[0]).toBe(input[1]); // B's only partial
     expect(out[1]).toBe(input[2]); // A's latest partial
+  });
+});
+
+describe('staleRunningReason', () => {
+  // Regression: the running indicator is edge-triggered, and two paths
+  // turn it on without a guaranteed off — the reviewer await ("Rebounding…")
+  // and the wait for a detached background agent ("Agent working…"). A
+  // finished flow run kept a sidebar spinner for 13 hours because one of
+  // its conversations was pinned this way.
+  const base = { since: 0, lastEventAt: 0, hasTransport: true, turnInFlight: true };
+
+  it('leaves a working turn alone even when it has been quiet a while', () => {
+    // A single long tool call (test suite, build) emits nothing for
+    // minutes — silence alone must never retract the indicator.
+    expect(staleRunningReason({ ...base, label: 'Running tools…', now: 20 * 60_000 })).toBeNull();
+  });
+
+  it('leaves a transport that never reports turn boundaries alone', () => {
+    // ollama / gemini ACP don't track it; unknown must read as "working".
+    expect(
+      staleRunningReason({ ...base, turnInFlight: undefined, now: 20 * 60_000 }),
+    ).toBeNull();
+  });
+
+  it('waits out a reviewer that is genuinely running', () => {
+    expect(
+      staleRunningReason({
+        ...base,
+        turnInFlight: false,
+        reviewerRunning: true,
+        label: 'Rebounding…',
+        now: 20 * 60_000,
+      }),
+    ).toBeNull();
+  });
+
+  it('retracts a hand-off left holding the indicator after the turn ended', () => {
+    // e.g. "Rebounding…" whose reviewer is already gone — nothing outside
+    // this process will ever speak for the conversation again.
+    expect(
+      staleRunningReason({ ...base, turnInFlight: false, label: 'Rebounding…', now: 20 * 60_000 }),
+    ).toMatch(/turn already ended/);
+  });
+
+  it('retracts a conversation with nothing left to speak for it', () => {
+    expect(staleRunningReason({ ...base, hasTransport: false, now: 5 * 60_000 })).toMatch(
+      /no live transport/,
+    );
+  });
+
+  it('gives a just-started send time to register its transport', () => {
+    expect(staleRunningReason({ ...base, hasTransport: false, now: 5_000 })).toBeNull();
+  });
+
+  it('bounds the wait on a background agent that never reports completion', () => {
+    const parked = { ...base, turnInFlight: false, label: AGENT_WORKING_LABEL };
+    expect(staleRunningReason({ ...parked, now: 60_000 })).toBeNull();
+    expect(staleRunningReason({ ...parked, now: 10 * 60_000 })).toMatch(/background agent/);
+  });
+
+  it('measures silence from the last event, not the turn start', () => {
+    // Progress ticks keep pushing the deadline out; only a genuinely
+    // silent wait gets cut loose.
+    expect(
+      staleRunningReason({
+        since: 0,
+        lastEventAt: 9 * 60_000,
+        hasTransport: true,
+        turnInFlight: false,
+        label: AGENT_WORKING_LABEL,
+        now: 10 * 60_000,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe('shouldReapIdle', () => {
+  // Regression: `claude -p --input-format stream-json` stays resident with
+  // all its MCP servers loaded for as long as stdin is open. A user with a
+  // few dozen conversations they'd each sent one message to was holding
+  // ~22 GB in sessions that had been finished for hours.
+  const base = {
+    turnInFlight: false,
+    hasPendingPrompts: false,
+    canResume: true,
+    lastActivityAt: 0,
+    timeoutMinutes: 30,
+  };
+
+  it('reaps a session whose turn ended and has been silent past the timeout', () => {
+    expect(shouldReapIdle({ ...base, now: 31 * 60_000 })).toBe(true);
+  });
+
+  it('leaves a session alone until the timeout elapses', () => {
+    expect(shouldReapIdle({ ...base, now: 29 * 60_000 })).toBe(false);
+  });
+
+  it('reaps exactly at the timeout boundary', () => {
+    expect(shouldReapIdle({ ...base, now: 30 * 60_000 })).toBe(true);
+  });
+
+  it('never reaps a turn that is still running, however long it has been quiet', () => {
+    // A long tool call — a full test suite, a big build — is silent for
+    // minutes at a time and must not be mistaken for a parked session.
+    expect(shouldReapIdle({ ...base, turnInFlight: true, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('never reaps a transport that does not report turn state', () => {
+    expect(shouldReapIdle({ ...base, turnInFlight: undefined, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('never reaps while a prompt is waiting on the user', () => {
+    // Killing the process here strands the permission dialog and loses
+    // the turn behind it — the user stepped away, they didn't finish.
+    expect(shouldReapIdle({ ...base, hasPendingPrompts: true, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('never reaps a session with nothing to resume from', () => {
+    // Without a sessionId the respawn starts a fresh, context-free thread —
+    // reclaiming memory by silently discarding the conversation.
+    expect(shouldReapIdle({ ...base, canResume: false, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('is disabled by a zero (or negative) timeout', () => {
+    expect(shouldReapIdle({ ...base, timeoutMinutes: 0, now: 10 * 60 * 60_000 })).toBe(false);
+    expect(shouldReapIdle({ ...base, timeoutMinutes: -5, now: 10 * 60 * 60_000 })).toBe(false);
+  });
+
+  it('measures silence from the last activity, not from spawn', () => {
+    expect(shouldReapIdle({ ...base, lastActivityAt: 60 * 60_000, now: 61 * 60_000 })).toBe(false);
+    expect(shouldReapIdle({ ...base, lastActivityAt: 60 * 60_000, now: 95 * 60_000 })).toBe(true);
   });
 });

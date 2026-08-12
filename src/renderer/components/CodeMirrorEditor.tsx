@@ -262,8 +262,26 @@ const overcliTheme = EditorView.theme(
     // CM6's range-highlight class is what we toggle via Decoration.line
     // for the `highlightRange` prop — keep the tint in line with the
     // accent so jumped-to ranges read the same as elsewhere in the app.
+    //
+    // The tint alone (it was 0.12 alpha) was easy to miss on a dense
+    // screen: you jump to line 412 of a 900-line file and have to hunt for
+    // where you landed. So there are three cues now — a stronger wash, a
+    // solid accent bar down the left edge of every highlighted line, and a
+    // one-shot flash on arrival (see `.cm-overcli-range-flash-*` in
+    // styles.css, which also owns the keyframes).
     '.cm-overcli-range': {
-      backgroundColor: 'rgba(124, 139, 255, 0.12)',
+      backgroundColor: 'rgba(124, 139, 255, 0.22)',
+      boxShadow: 'inset 3px 0 0 var(--c-accent)',
+    },
+    // The word under the pointer while Cmd/Ctrl is held. Underline plus a
+    // pointer cursor is the universal "this is a link" cue, and it's how
+    // the go-to-definition gesture announces itself — there's no other
+    // signal that Cmd-click does anything at all.
+    '.cm-overcli-symbol-link': {
+      textDecoration: 'underline',
+      textDecorationColor: 'var(--c-accent)',
+      textUnderlineOffset: '2px',
+      cursor: 'pointer',
     },
     // Search / replace panel. CM6's default panel is unstyled — plain
     // browser inputs and OS-bevel buttons that stick out against the
@@ -361,18 +379,63 @@ const overcliTheme = EditorView.theme(
 function buildRangeDecorations(
   range: HighlightRange,
   doc: { lines: number; line: (n: number) => { from: number } },
+  flash?: 'a' | 'b',
 ): DecorationSet {
   if (!range) return Decoration.none;
   const builder = new RangeSetBuilder<Decoration>();
   const lo = Math.max(1, range[0]);
   const hi = Math.min(range[1], doc.lines);
   if (hi < lo) return Decoration.none;
+  const cls = flash ? `cm-overcli-range cm-overcli-range-flash-${flash}` : 'cm-overcli-range';
   for (let ln = lo; ln <= hi; ln++) {
     const line = doc.line(ln);
-    builder.add(line.from, line.from, Decoration.line({ class: 'cm-overcli-range' }));
+    builder.add(line.from, line.from, Decoration.line({ class: cls }));
   }
   return builder.finish();
 }
+
+/// Hovered-symbol underline. Carries the word range under the pointer
+/// while the go-to-definition modifier is held, or null.
+const setHoverSymbol = StateEffect.define<{ from: number; to: number } | null>();
+
+/// Identifier shape the lookup will actually accept. Mirrors SYMBOL_RE in
+/// main/symbolLookup.ts, which is the authority — main re-checks and
+/// rejects anything else. Kept here (a copy of one regex, rather than a
+/// shared module) so the renderer never imports main-process code; the
+/// worst a drift can do is underline a word that then can't be resolved.
+/// `wordAt` happily returns numeric literals and the like, and underlining
+/// `2500` promises a jump that would come back as an error overlay.
+const LOOKUP_SYMBOL_RE = /^[A-Za-z_$][A-Za-z0-9_$]{0,127}$/;
+
+/// Cmd/Ctrl-hover underline for the go-to-definition gesture.
+///
+/// Nothing in the UI said the gesture existed — you had to already know.
+/// Rather than spend chrome on a hint, this teaches it the way every IDE
+/// does: hold the modifier and whatever your pointer is over turns into a
+/// link. It also doubles as a target check, since it shows exactly which
+/// word a click would resolve.
+const hoverSymbolField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (!e.is(setHoverSymbol)) continue;
+      next = e.value
+        ? Decoration.set([
+            Decoration.mark({ class: 'cm-overcli-symbol-link' }).range(e.value.from, e.value.to),
+          ])
+        : Decoration.none;
+    }
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+/// Alternates the flash class on every applied range. A CSS animation only
+/// restarts when the class list actually changes, so jumping to the *same*
+/// line twice (click the same `file:42` link again) would otherwise flash
+/// once and then sit silent on every later click.
+let flashParity = 0;
 
 /// StateEffect carries new highlight-range values into the editor;
 /// the StateField below holds the live DecorationSet. Modeling the
@@ -396,7 +459,8 @@ const highlightRangeField = StateField.define<DecorationSet>({
     // changes (e.g. user opens a file via a chat path with :42-50).
     for (const e of tr.effects) {
       if (e.is(setHighlightRange)) {
-        next = buildRangeDecorations(e.value, tr.state.doc);
+        flashParity ^= 1;
+        next = buildRangeDecorations(e.value, tr.state.doc, flashParity ? 'a' : 'b');
       }
     }
     return next;
@@ -409,11 +473,16 @@ export function CodeMirrorEditor({
   onChange,
   highlightRange,
   language,
+  onSymbolNavigate,
 }: {
   content: string;
   onChange: (v: string) => void;
   highlightRange: HighlightRange;
   language: string | null;
+  /// Cmd-click (Ctrl-click off macOS) on an identifier. The host resolves
+  /// it to a definition site and opens it; this component only reports
+  /// which word was clicked and on what line.
+  onSymbolNavigate?: (args: { symbol: string; line: number }) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -423,12 +492,45 @@ export function CodeMirrorEditor({
   // re-render that hands us a new function identity.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Same ref trick for the navigate callback — the DOM handler is baked
+  // into the mount-once extension list, so it has to read through a ref to
+  // see the current closure.
+  const onSymbolNavigateRef = useRef(onSymbolNavigate);
+  onSymbolNavigateRef.current = onSymbolNavigate;
 
   // Mount once. Subsequent prop changes are handled by the focused
   // effects below; rebuilding the EditorView on every keystroke would
   // discard undo history, scroll position, and the caret.
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // ---- Cmd/Ctrl-hover link affordance -------------------------------
+    // State for the handlers below, scoped to this view. `hovered` is
+    // tracked so we only dispatch when the underlined word actually
+    // changes — a mousemove fires per pixel, and a transaction per pixel
+    // would be absurd.
+    let hovered: { from: number; to: number } | null = null;
+    let lastPointer: { x: number; y: number } | null = null;
+
+    const setHover = (view: EditorView, next: { from: number; to: number } | null) => {
+      if (hovered?.from === next?.from && hovered?.to === next?.to) return;
+      hovered = next;
+      view.dispatch({ effects: setHoverSymbol.of(next) });
+    };
+    const clearHover = (view: EditorView) => setHover(view, null);
+    const applyHover = (view: EditorView, modifierHeld: boolean) => {
+      // Only offer the link where the gesture actually does something:
+      // no navigate callback (the compare view, say) means no underline.
+      if (!modifierHeld || !onSymbolNavigateRef.current || !lastPointer) {
+        clearHover(view);
+        return;
+      }
+      const pos = view.posAtCoords(lastPointer);
+      const word = pos == null ? null : view.state.wordAt(pos);
+      const resolvable =
+        !!word && LOOKUP_SYMBOL_RE.test(view.state.sliceDoc(word.from, word.to));
+      setHover(view, resolvable && word ? { from: word.from, to: word.to } : null);
+    };
     const state = EditorState.create({
       doc: content,
       extensions: [
@@ -457,10 +559,52 @@ export function CodeMirrorEditor({
           indentWithTab,
         ]),
         languageCompartment.current.of(languageExtension(language)),
+        // Go-to-definition gesture. We handle mousedown rather than click
+        // so CM's own selection handling never runs — a Cmd-click that
+        // moved the caret and *then* jumped would leave the user's cursor
+        // somewhere surprising if the lookup failed.
+        hoverSymbolField,
+        EditorView.domEventHandlers({
+          mousedown(event, view) {
+            const navigate = onSymbolNavigateRef.current;
+            if (!navigate) return false;
+            // Cmd on macOS, Ctrl elsewhere — the IDE gesture either way.
+            const withModifier = event.metaKey || event.ctrlKey;
+            if (!withModifier || event.button !== 0) return false;
+            const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+            if (pos == null) return false;
+            const word = view.state.wordAt(pos);
+            if (!word) return false;
+            const symbol = view.state.sliceDoc(word.from, word.to);
+            // Same guard as the hover underline: don't spend a lookup (and
+            // an error overlay) on a numeric literal or punctuation.
+            if (!symbol || !LOOKUP_SYMBOL_RE.test(symbol)) return false;
+            event.preventDefault();
+            clearHover(view);
+            navigate({ symbol, line: view.state.doc.lineAt(word.from).number });
+            return true;
+          },
+          mousemove(event, view) {
+            // Remembered even without the modifier, so pressing Cmd while
+            // the pointer sits still can underline the word it's already on.
+            lastPointer = { x: event.clientX, y: event.clientY };
+            applyHover(view, event.metaKey || event.ctrlKey);
+            return false;
+          },
+          mouseleave(_event, view) {
+            lastPointer = null;
+            clearHover(view);
+            return false;
+          },
+        }),
         // Seed the field with whatever the parent passed on mount so
         // the initial render already has the highlight in place — no
         // visible "flash, then jump" when opening a file with a range.
-        highlightRangeField.init((s) => buildRangeDecorations(highlightRange, s.doc)),
+        // Flashes on mount too: opening a file straight onto a range is
+        // exactly when you most need to be told where you landed.
+        highlightRangeField.init((s) =>
+          buildRangeDecorations(highlightRange, s.doc, (flashParity ^= 1) ? 'a' : 'b'),
+        ),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) onChangeRef.current(u.state.doc.toString());
         }),
@@ -468,7 +612,26 @@ export function CodeMirrorEditor({
     });
     const view = new EditorView({ state, parent: containerRef.current });
     viewRef.current = view;
+
+    // On the window, not the editor: the modifier is usually pressed with
+    // the pointer already resting over a word and the editor unfocused, so
+    // editor-scoped key handlers would never see it. Releasing has to
+    // clear the underline too, or a link is left hanging under the cursor.
+    const onModifierKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Meta' && e.key !== 'Control') return;
+      applyHover(view, e.type === 'keydown');
+    };
+    // A modifier release that happens while the window is in the
+    // background (Cmd-Tab away) never reaches us, so clear on blur.
+    const onWindowBlur = () => clearHover(view);
+    window.addEventListener('keydown', onModifierKey);
+    window.addEventListener('keyup', onModifierKey);
+    window.addEventListener('blur', onWindowBlur);
+
     return () => {
+      window.removeEventListener('keydown', onModifierKey);
+      window.removeEventListener('keyup', onModifierKey);
+      window.removeEventListener('blur', onWindowBlur);
       view.destroy();
       viewRef.current = null;
     };

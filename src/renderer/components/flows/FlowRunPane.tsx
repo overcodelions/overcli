@@ -24,12 +24,15 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { CompactButton } from '../CompactButton';
+import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
+  flowRunTitle,
   resolveRunStepModel,
   type FlowArtifact,
   type FlowParticipant,
@@ -51,6 +54,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
+  const newConversationInWorktree = useStore((s) => s.newConversationInWorktree);
   const settings = useStore((s) => s.settings);
   const saveSettings = useStore((s) => s.saveSettings);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -124,6 +128,25 @@ export function FlowRunPane({ runId }: { runId: string }) {
     ? run.conversationIds[activeParticipant.id]
     : undefined;
 
+  // Attach a brand-new conversation to this run's worktree and jump to
+  // it. `selectConversation` flips detailMode back to 'conversation', so
+  // the run stays the active one and Flows returns here.
+  const newChatHere = async () => {
+    if (!run.worktreePath || !run.sourceProjectPath) return;
+    const conv = await newConversationInWorktree({
+      projectPath: run.sourceProjectPath,
+      worktreePath: run.worktreePath,
+      branchName: run.branchName,
+      baseBranch: run.baseBranch,
+      name: flowRunTitle(run).slice(0, 60),
+    });
+    if (!conv) {
+      window.alert(
+        `Couldn't find the project this run forked from (${run.sourceProjectPath}). Add it as a project to open a chat in its worktree.`,
+      );
+    }
+  };
+
   return (
     <div className="flex-1 flex min-h-0 overflow-hidden">
       <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -132,22 +155,28 @@ export function FlowRunPane({ runId }: { runId: string }) {
           than a separate banner reads cleaner than the colored strip
           and stops the page from having two competing "anchors". */}
       <div className="pl-2 pr-3 pt-4 pb-2 border-b border-card">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="flex items-center gap-1.5 text-xs text-ink-faint">
-            <button
-              onClick={() => setActiveRun(null)}
-              className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
-            >
-              Flows
-            </button>
-            <span className="text-ink-faint">/</span>
+        {/* Two wrapping groups — identity on the left, actions on the right.
+            Both wrap rather than compress: in a narrow window the actions
+            drop to their own line and the title truncates with an ellipsis,
+            instead of the title being squeezed into a one-word-per-line
+            column by the button cluster. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1 basis-64">
+            <div className="flex items-center gap-1.5 text-xs text-ink-faint flex-shrink-0">
+              <button
+                onClick={() => setActiveRun(null)}
+                className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+              >
+                Flows
+              </button>
+              <span className="text-ink-faint">/</span>
+            </div>
+            <RunTitle run={run} />
+            <RunStateBadge state={run.state} />
+            <RunTokenSummary run={run} />
+            <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
           </div>
-          <div className="text-xl font-semibold">{run.flowSnapshot.name}</div>
-          <RunStateBadge state={run.state} />
-          <RunTokenSummary run={run} />
-          <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
-          <div className="flex-1 min-w-0" />
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
             {activeParticipant && (
               <HijackModelPicker
                 runId={run.id}
@@ -158,7 +187,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               <button
                 onClick={() => setFilesOpen((v) => !v)}
                 className={
-                  'text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  'text-xs px-3 py-1 rounded-md border transition-colors whitespace-nowrap ' +
                   (filesOpen
                     ? 'border-accent/50 bg-accent/10 text-accent'
                     : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
@@ -168,10 +197,24 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 Files
               </button>
             )}
+            {/* Keep working in this run's worktree from a fresh chat —
+                the escape hatch for when the run's own context is spent
+                but the tree still has work left in it. Single-project
+                worktree runs only: a workspace run has one worktree per
+                member, with no single cwd to hand a conversation. */}
+            {run.worktreePath && run.sourceProjectPath && (
+              <button
+                onClick={newChatHere}
+                className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50 whitespace-nowrap"
+                title="Start a new conversation in this run's worktree — same files and branch, clean context"
+              >
+                New chat here
+              </button>
+            )}
             {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
               <button
                 onClick={() => openSheet({ type: 'flowRunReview', runId })}
-                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25"
+                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 whitespace-nowrap"
                 title="Review the worktree diff and merge / push / open a PR — pull the work back into your local repo"
               >
                 Review &amp; merge
@@ -218,7 +261,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               ) : (
                 <button
                   onClick={() => setConfirmingRerun(true)}
-                  className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-amber-500/50"
+                  className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-amber-500/50 whitespace-nowrap"
                   title={`Rewind and re-run from "${activeStep.id}" — re-does this step and every later step using the current (possibly edited) upstream artifacts`}
                 >
                   ↻ Re-run from here
@@ -229,7 +272,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 onClick={() => {
                   void window.overcli.invoke('flows:abortRun', { runId });
                 }}
-                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30"
+                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30 whitespace-nowrap"
               >
                 Abort
               </button>
@@ -246,7 +289,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               <button
                 onClick={() => setWatchSetupOpen((v) => !v)}
                 className={
-                  'inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  'inline-flex items-center gap-1.5 whitespace-nowrap text-xs px-3 py-1 rounded-md border transition-colors ' +
                   (watchSetupOpen
                     ? 'border-accent/50 bg-accent/10 text-accent'
                     : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
@@ -287,7 +330,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
             ) : (
               <button
                 onClick={() => setConfirmingDelete(true)}
-                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong"
+                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong whitespace-nowrap"
                 title="Delete this run permanently"
               >
                 Delete
@@ -1349,7 +1392,7 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
   return (
     <button
       onClick={onOpen}
-      className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
+      className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
       title="Click to view the diff"
     >
       <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>
@@ -1516,6 +1559,10 @@ function HijackComposer({
   // probe deps only fire when the count actually changes.
   const isRunning = useRunnerIsRunning(convId ?? '');
   const [changes, setChanges] = useState<FileChangeSummary[]>([]);
+  // Ref the counts were measured against. Now that the bar can honestly
+  // read zero, it has to say what it compared against — otherwise an empty
+  // bar is indistinguishable from a probe that failed.
+  const [baseRef, setBaseRef] = useState<string | null>(null);
 
   // A flow's cwd can be one of three things — a project path, a fresh
   // worktree, or a workspace's symlink root that fans out to multiple
@@ -1534,14 +1581,16 @@ function HijackComposer({
   const workspaces = useStore((s) => s.workspaces);
   const workspaceProjects = useMemo(() => {
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
-      // Thread each member's captured fork point through so the aggregate
-      // counts committed + uncommitted changes (base-relative), matching
-      // the per-member review diff. Members that predate baseline capture
-      // fall back to HEAD-relative in the aggregate.
+      // Branch name and captured fork point travel in separate slots: main
+      // resolves the live divergence point from the branch and keeps the
+      // fork point only as a floor. Collapsing them (as this used to) makes
+      // every upstream commit the branch has taken in look like the run's
+      // own work.
       return run.workspaceWorktrees.map((w) => ({
         name: w.name,
         path: w.worktreePath,
-        baseBranch: run.baselineCommitsByMember?.[w.name]?.commit,
+        baseBranch: run.baseBranch ?? '',
+        baselineCommit: run.baselineCommitsByMember?.[w.name]?.commit ?? null,
       }));
     }
     const ws = workspaces.find((w) => w.rootPath === run.projectPath);
@@ -1551,7 +1600,14 @@ function HijackComposer({
       .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
       .map((p) => ({ name: p.name, path: p.path }));
     return workspaceSymlinkNames(projs);
-  }, [workspaces, projects, run.projectPath, run.workspaceWorktrees, run.baselineCommitsByMember]);
+  }, [
+    workspaces,
+    projects,
+    run.projectPath,
+    run.workspaceWorktrees,
+    run.baselineCommitsByMember,
+    run.baseBranch,
+  ]);
 
   // Re-probe the working tree whenever a step attempt finishes or the
   // runner flips running/idle. Mirrors how ConversationPane keeps its
@@ -1566,16 +1622,18 @@ function HijackComposer({
   // point (committed + uncommitted) so the bar matches the review sheet —
   // `git:commitStatus` is HEAD-relative and loses files the moment a step
   // commits. Workspace and in-place runs keep the HEAD-relative probe.
-  const worktreeBase = run.worktreePath ? (run.baselineCommit ?? run.baseBranch ?? '') : '';
+  const worktreeBase = run.worktreePath ? (run.baseBranch ?? '') : '';
+  const worktreeBaseline = run.worktreePath ? (run.baselineCommit ?? null) : null;
   const worktreePath = run.worktreePath ?? '';
   useEffect(() => {
     let cancelled = false;
     const probe = workspaceProjects
       ? window.overcli.invoke('git:workspaceCommitStatus', { projects: workspaceProjects })
-      : worktreePath && worktreeBase
+      : worktreePath && (worktreeBase || worktreeBaseline)
         ? window.overcli.invoke('git:worktreeChanges', {
             worktreePath,
             baseBranch: worktreeBase,
+            baselineCommit: worktreeBaseline,
           })
         : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
     void probe
@@ -1583,17 +1641,32 @@ function HijackComposer({
         if (cancelled) return;
         if (!res.isRepo) {
           setChanges([]);
+          setBaseRef(null);
           return;
         }
         setChanges(res.changes ?? []);
+        // `git:commitStatus` (the in-place/non-worktree probe) has no base
+        // ref to report — its counts are HEAD-relative.
+        setBaseRef('baseRef' in res ? ((res.baseRef as string | null) ?? null) : null);
       })
       .catch(() => {
-        if (!cancelled) setChanges([]);
+        if (!cancelled) {
+          setChanges([]);
+          setBaseRef(null);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [run.projectPath, workspaceProjects, worktreePath, worktreeBase, attemptCount, isRunning]);
+  }, [
+    run.projectPath,
+    workspaceProjects,
+    worktreePath,
+    worktreeBase,
+    worktreeBaseline,
+    attemptCount,
+    isRunning,
+  ]);
 
   // Pull the draft setters so we can clear the composer immediately
   // after a send. The shared `store.send` action does this for the
@@ -1613,7 +1686,10 @@ function HijackComposer({
   const modelOverride = useFlowsStore((s) => s.runs[run.id]?.modelOverrides?.[participant.id]);
   const effectiveModel = modelOverride ?? participant.model;
 
-  const handleSend = (prompt: string, attachments: Attachment[]) => {
+  /// Send a turn on the participant's session. `clearComposer` is false for
+  /// button-driven turns (compact) — those must not wipe a draft the user
+  /// is in the middle of writing.
+  const sendTurn = (prompt: string, attachments: Attachment[], clearComposer: boolean) => {
     // Mint a conv id if this participant hasn't been used yet so the
     // first hijack message actually starts a session.
     const id = convId ?? cryptoRandomUuid();
@@ -1645,9 +1721,13 @@ function HijackComposer({
       permissionMode: 'bypassPermissions',
       attachments,
     });
+    if (!clearComposer) return;
     setDraft(draftKey, '');
     clearAttachments(draftKey);
   };
+
+  const handleSend = (prompt: string, attachments: Attachment[]) =>
+    sendTurn(prompt, attachments, true);
 
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
@@ -1660,7 +1740,7 @@ function HijackComposer({
           directly (not via ConversationPane), so without this the live
           Thinking/Working/Reading… cue never shows while a step runs. */}
       {convId && <RunningIndicator conversationId={convId} />}
-      <ChangesBar files={changes} />
+      <ChangesBar files={changes} baseRef={baseRef} />
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
@@ -1675,6 +1755,15 @@ function HijackComposer({
       <FlowStatsFooter
         convId={convId}
         fallbackModel={`${participant.backend}:${effectiveModel}`}
+        // Compaction rides the same resumed session the flow's next step
+        // will pick up (see `handleSend`), so freeing context here frees it
+        // for the run — not just for this side chat.
+        onCompact={
+          participant.backend === 'claude' && convId
+            ? () => sendTurn('/compact', [], false)
+            : undefined
+        }
+        isRunning={isRunning}
       />
     </div>
   );
@@ -1799,9 +1888,14 @@ function HijackModelPicker({
 function FlowStatsFooter({
   convId,
   fallbackModel,
+  onCompact,
+  isRunning,
 }: {
   convId: string | undefined;
   fallbackModel: string;
+  /// Undefined for non-Claude participants, which have no slash commands.
+  onCompact?: () => void;
+  isRunning?: boolean;
 }) {
   // Subscribe to the runner here, not in the parent HijackComposer.
   // Streamed events update the runner on every chunk; keeping that
@@ -1821,6 +1915,16 @@ function FlowStatsFooter({
       <span>
         {turns} turn{turns === 1 ? '' : 's'}
       </span>
+      {/* Participants keep ONE conversation across every step they run,
+          so this is the number that quietly climbs over a long flow. */}
+      <ContextMeter conversationId={convId} />
+      {onCompact && (
+        <CompactButton
+          onCompact={onCompact}
+          disabled={isRunning}
+          disabledReason="Available once this step finishes"
+        />
+      )}
       {model && <span>· {model}</span>}
       {sessionId && <span className="truncate">· {sessionId.slice(0, 8)}</span>}
     </div>
@@ -2217,6 +2321,61 @@ function PauseBanner({ run }: { run: FlowRun }) {
   );
 }
 
+/// The run's headline. Shows the name the user gave this run when there
+/// is one (with the flow it came from demoted to a quiet subtitle chip),
+/// otherwise the flow name as before. Double-click edits it in place —
+/// the same gesture as the sidebar rows, and the reason a run in flight
+/// can be labelled without leaving the pane.
+function RunTitle({ run }: { run: FlowRun }) {
+  const renameRun = useFlowsStore((s) => s.renameRun);
+  const [renameValue, setRenameValue] = useState<string | null>(null);
+
+  if (renameValue !== null) {
+    const commit = () => {
+      const next = renameValue;
+      setRenameValue(null);
+      void renameRun(run.id, next);
+    };
+    return (
+      <input
+        autoFocus
+        value={renameValue}
+        onChange={(e) => setRenameValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setRenameValue(null);
+          }
+        }}
+        placeholder={flowRunTitle(run)}
+        aria-label="Run name"
+        className="min-w-0 flex-1 rounded border border-accent bg-transparent px-1.5 py-0.5 text-xl font-semibold text-ink outline-none"
+      />
+    );
+  }
+
+  return (
+    <>
+      <div
+        onDoubleClick={() => setRenameValue(run.title ?? '')}
+        title={`${flowRunTitle(run)} — double-click to rename this run`}
+        className="text-xl font-semibold truncate min-w-0"
+      >
+        {run.title?.trim() || run.flowSnapshot.name}
+      </div>
+      {run.title?.trim() && (
+        <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
+          {run.flowSnapshot.name}
+        </span>
+      )}
+    </>
+  );
+}
+
 function RunStateBadge({ state }: { state: { kind: string } }) {
   const label = state.kind;
   const cls =
@@ -2232,7 +2391,9 @@ function RunStateBadge({ state }: { state: { kind: string } }) {
               ? 'bg-card-strong text-ink-muted'
               : 'bg-red-500/20 text-red-700 dark:text-red-300';
   return (
-    <span className={`text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}>
+    <span
+      className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}
+    >
       {label}
     </span>
   );
@@ -2301,7 +2462,7 @@ function RunTokenSummary({ run }: { run: FlowRun }) {
   if (visible.length === 0) return null;
   return (
     <span
-      className="ml-2 inline-flex items-center gap-2 text-[11px] font-medium"
+      className="inline-flex flex-shrink-0 items-center gap-2 whitespace-nowrap text-[11px] font-medium"
       title={
         'Tokens by model tier (input + output):\n' +
         visible

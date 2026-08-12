@@ -3,8 +3,10 @@
 // types so the JSON persistence shape stays compatible where it can.
 
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
-import type { Candidate, Orchestration, RecentPrompt } from './flows/orchestration';
+import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
+import type { Schedule } from './flows/schedule';
 import type { FlowTemplate } from './flows/templates';
+import type { ChangelogRelease } from './changelog';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -86,6 +88,13 @@ export interface ModelUsage {
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
+  /// Size of this model's context window, as reported by the CLI's
+  /// per-model `modelUsage` block on the result line (e.g. 1_000_000 for
+  /// `claude-opus-5[1m]`). Only the result path carries it — per-message
+  /// usage blocks come straight from the API and don't include it. It is
+  /// the denominator for the footer's context meter; absent means we show
+  /// occupancy in raw tokens instead of a percentage.
+  contextWindow?: number;
 }
 
 export interface ResultInfo {
@@ -244,6 +253,14 @@ export interface ReviewInfo {
   raw?: string;
 }
 
+/// One conversation with a turn in flight, as reported by
+/// `runner:runningSnapshot`. The authoritative answer to "is this
+/// conversation busy right now" — see the channel's doc comment.
+export interface RunningConversation {
+  conversationId: UUID;
+  activityLabel?: string;
+}
+
 /// Image attachment sent alongside a user prompt. `dataBase64` is the raw
 /// file bytes in standard base64 (no `data:` prefix). Each backend encodes
 /// this differently on the wire — claude takes base64 inline, codex wants
@@ -271,6 +288,10 @@ export type StreamEventKind =
   | { type: 'taskProgress'; info: TaskProgressInfo }
   | { type: 'systemNotice'; text: string }
   | { type: 'metaReminder'; text: string }
+  /// A background Task/Agent finishing. The harness injects these into the
+  /// transcript as plain `user` messages with no distinguishing flag, so
+  /// without this they render as something the user typed.
+  | { type: 'taskNotification'; summary: string; body: string }
   | { type: 'easterEgg'; text: string; from: string }
   | { type: 'stderr'; line: string }
   | { type: 'parseError'; message: string }
@@ -312,6 +333,10 @@ export interface Conversation {
   sessionId?: string;
   createdAt: number;
   lastActiveAt?: number;
+  /// Last time the *user* sent a turn here. `lastActiveAt` also moves when
+  /// an agent finishes on its own, so it can't order a list by "what I was
+  /// last working on" — this can.
+  lastPromptAt?: number;
   totalCostUSD: number;
   turnCount: number;
   currentModel: string;
@@ -323,6 +348,14 @@ export interface Conversation {
   worktreePath?: string;
   branchName?: string;
   baseBranch?: string;
+  /// The conversation is BORROWING a worktree someone else owns — today
+  /// only a flow run's (`FlowRun.worktreePath`), attached via "New chat
+  /// here" on the run pane so a fresh context can keep working in the
+  /// same tree. It still looks and behaves like an agent conversation
+  /// (`isAgentConversation` keys off `worktreePath`), but deleting it
+  /// must NOT `git worktree remove` — the run still owns that tree and
+  /// its Review & merge path depends on it. See `removeAgent`.
+  adoptedWorktree?: boolean;
   orphaned?: boolean;
   hidden?: boolean;
   reviewBackend?: string | null;
@@ -377,6 +410,7 @@ export interface Conversation {
   codexModel?: string;
   geminiModel?: string;
   ollamaModel?: string;
+  copilotModel?: string;
   codexRolloutPath?: string;
   /// Every rollout file codex has created for this conversation. codex proto
   /// has no --resume, each spawn writes a fresh file — we merge on load.
@@ -496,6 +530,87 @@ export interface WorktreeStatus {
   mainTreeDirtyFiles: number;
 }
 
+/// What a swept worktree is, from least to most deletable. See
+/// `classifyWorktree` for the precedence rules.
+///   foreign     — outside `~/.overcli/worktrees`; another tool's or the
+///                 user's own. Reported for honest accounting, never offered.
+///   live        — a conversation or flow run still claims it. Left alone;
+///                 releasing one of these is Settings → Conversations' job,
+///                 because it means deleting the conversation, not disk.
+///   has-work    — unreferenced, but holds uncommitted or unmerged changes.
+///                 Offered, never pre-selected.
+///   reclaimable — nothing claims it, clean, nothing unmerged. Safe.
+export type WorktreeSweepBucket = 'foreign' | 'live' | 'has-work' | 'reclaimable';
+
+export interface WorktreeSweepEntry {
+  worktreePath: string;
+  projectPath: string;
+  projectName: string;
+  /// null for a detached HEAD (review worktrees).
+  branchName: string | null;
+  baseBranch: string;
+  bucket: WorktreeSweepBucket;
+  /// Which bit of app state still claims this tree, if any.
+  referenced: 'conversation' | 'run' | null;
+  /// Timestamp of the last commit in the worktree. An orphan has no
+  /// conversation left to date it by, so this is what the pane's age filter
+  /// runs on. Absent when the branch has no commits or the tree is gone.
+  lastCommitAt?: number;
+  dirtyFiles: number;
+  commitsAhead: number;
+  isMergedIntoBase: boolean;
+  /// Apparent disk usage from `du -sk`. 0 when unreadable or prunable.
+  sizeKb: number;
+  locked: boolean;
+  /// git says the registration is stale (directory gone). Cleared by
+  /// `git worktree prune`, not by `git worktree remove`.
+  prunable: boolean;
+}
+
+export interface WorktreeSweepResult {
+  entries: WorktreeSweepEntry[];
+  scannedAt: number;
+}
+
+/// How long a conversation can sit untouched before Settings → Conversations
+/// offers it up. Two weeks covers a normal context switch (a sprint, a
+/// holiday) without letting finished work pile up for months. Archived
+/// conversations age at half this — see `isStaleConversation`.
+export const DEFAULT_STALE_DAYS = 14;
+
+export const STALE_DAY_CHOICES = [7, 14, 30, 90] as const;
+
+/// Choices for the Storage pane's "older than" view filter. Purely a display
+/// filter, so it needs no rescan and can be swept through freely. 0 means no
+/// filter.
+export const AGE_FILTER_CHOICES = [0, 7, 30, 60, 90, 180] as const;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/// When a conversation was last touched. `lastActiveAt` is only written when
+/// a turn streams or the conversation is opened, so a never-run conversation
+/// falls back to when it was created.
+export function conversationActiveAt(conv: {
+  lastActiveAt?: number;
+  createdAt?: number;
+}): number {
+  return conv.lastActiveAt ?? conv.createdAt ?? 0;
+}
+
+/// Whether a conversation has gone quiet long enough to offer up. An archived
+/// one is held to half the threshold: archiving is the user explicitly saying
+/// "done with this for now", a far stronger signal than mere silence.
+export function isStaleConversation(args: {
+  lastActiveAt?: number;
+  createdAt?: number;
+  archived: boolean;
+  staleDays: number;
+  now: number;
+}): boolean {
+  const days = args.archived ? args.staleDays / 2 : args.staleDays;
+  return args.now - conversationActiveAt(args) > days * DAY_MS;
+}
+
 export interface BackendHealth {
   kind: 'ready' | 'unauthenticated' | 'missing' | 'unknown' | 'error';
   message?: string;
@@ -556,11 +671,15 @@ export interface MarketplaceSkill {
 /// `mcpConfig.ts` knows how to read and write.
 export type McpCli = Extract<Backend, 'claude' | 'codex' | 'gemini'>;
 
-/// One credential a catalog MCP server needs. Collected in overcli at
-/// install time and written verbatim into the server's `env` block in
-/// each target CLI's config (where the CLIs already read MCP env from).
+/// One value a catalog MCP server needs. Collected in overcli at install
+/// time and written into the server's `env` block in each target CLI's
+/// config (where the CLIs already read MCP env from) — unless the entry's
+/// template references the key as `${KEY}` in its `args`, in which case it
+/// is substituted there instead. Some servers read the two from different
+/// places and only honour the command line.
 export interface McpSecretField {
-  /// Env var name, e.g. "BRAVE_API_KEY".
+  /// Env var name, e.g. "BRAVE_API_KEY"; or the `${KEY}` an entry's args
+  /// interpolate, e.g. "AWS_REGION".
   key: string;
   label: string;
   /// Short hint, e.g. where to generate the token.
@@ -571,6 +690,10 @@ export interface McpSecretField {
   /// rendered as plain text rather than a masked secret — e.g. a profile
   /// name that isn't actually a credential.
   optional?: boolean;
+  /// Prefilled at install and used when an optional field is left blank.
+  /// Only ever a sane public default (a region, an endpoint) — never a
+  /// credential.
+  defaultValue?: string;
 }
 
 /// A curated MCP server the user can one-click install into any of their
@@ -593,6 +716,12 @@ export interface McpCatalogItem {
   docsUrl?: string;
   /// Per-target installed status, set by the main process at list time.
   installed: Partial<Record<McpCli, boolean>>;
+  /// Per-target "installed, but the config predates the current template"
+  /// — the vendor retired or re-shaped the server. Implies `installed`.
+  /// Reinstalling overwrites the entry in place.
+  legacy: Partial<Record<McpCli, boolean>>;
+  /// Why the installed config is stale, shown next to Reinstall.
+  legacyNote?: string;
 }
 
 export interface OllamaModelInfo {
@@ -662,10 +791,22 @@ export interface OllamaServerLogLine {
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 
+/// A source of installable flows. Exactly one of `indexUrl` / `dir` is set:
+/// a registry is either remote (an index.json served over http(s)) or local
+/// (a folder of YAML files on disk).
 export interface FlowRegistry {
   id: string;          // slug
   name: string;
-  indexUrl: string;    // https URL to index.json
+  indexUrl?: string;   // http(s) URL to index.json
+  /// Absolute path to a directory of `*.yaml` flow files. Read directly —
+  /// no index.json, no sha256 to hand-maintain. overcli only reads the
+  /// folder; keeping it current (e.g. `git pull` on a repo you own) is the
+  /// user's job, which is what makes a private registry cost nothing to run.
+  dir?: string;
+}
+
+export function isLocalRegistry(r: FlowRegistry): r is FlowRegistry & { dir: string } {
+  return typeof r.dir === 'string' && r.dir.length > 0;
 }
 
 export interface FlowRegistryEntry {
@@ -677,7 +818,14 @@ export interface FlowRegistryEntry {
   author?: { name: string; url?: string };
   version: string;
   sha256: string;
-  yamlUrl: string;     // absolute URL, resolved from index entry's yaml_url
+  /// Where the YAML lives — `yamlUrl` for remote registries (absolute,
+  /// resolved from the index entry's `yaml_url`), `yamlPath` for local ones.
+  yamlUrl?: string;
+  yamlPath?: string;
+  /// Local registries only: the file's mtime. Surfaced in the browse UI
+  /// because overcli can't tell you whether the folder is behind its remote —
+  /// it never talks to git — so the honest signal is "last touched when".
+  updatedAt?: number;
 }
 
 export interface InstalledRegistryFlow {
@@ -717,6 +865,11 @@ export interface AppSettings {
   explorerTreeWidth: number;
   /// Sidebar shortcut strip for running/recent conversations.
   showActiveSidebarSection?: boolean;
+  /// Set once the user has opened Flows → Schedules. Until then the segment
+  /// carries a discovery glow. Persisted rather than per-session so the hint
+  /// doesn't come back every launch — a highlight that never retires is one
+  /// the eye learns to skip.
+  seenSchedules?: boolean;
   /// When true, the sidebar footer shows a "Debug" button that opens the
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
@@ -736,6 +889,11 @@ export interface AppSettings {
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
+  /// Where a flow launched from the start page or the Flows library runs
+  /// by default: 'cwd' works directly in the project/workspace tree,
+  /// 'worktree' mints a fresh worktree off the base branch. The launcher's
+  /// toggle still overrides it per run — this only picks its initial side.
+  defaultFlowRunIn?: 'cwd' | 'worktree';
   flowRegistries?: FlowRegistry[];
   installedRegistryFlows?: InstalledRegistryFlow[];
   /// Which auto-update feed the app follows. 'stable' tracks tagged
@@ -743,6 +901,69 @@ export interface AppSettings {
   /// prerelease. The in-app updater is the single source of truth — whatever
   /// build you installed, this setting decides what it upgrades to.
   updateChannel?: 'stable' | 'nightly';
+  /// How long a conversation's backend process may sit idle — turn finished,
+  /// nothing pending — before overcli tears it down. `claude -p --input-format
+  /// stream-json` (and codex app-server) stay resident with every configured
+  /// MCP server loaded for as long as stdin is open, so a session the user
+  /// walked away from an hour ago still costs its full footprint. The next
+  /// send respawns and `--resume`s the stored sessionId, so reaping is
+  /// invisible apart from a slightly slower first turn. 0 disables it.
+  idleSessionTimeoutMinutes?: number;
+  /// Newest version whose release notes the user has been shown. Drives the
+  /// "What's new" panel — see src/main/whatsNew.ts. Absent means the baseline
+  /// hasn't been seeded yet (a fresh install, or an install that predates the
+  /// feature); main stamps it on first launch so nothing is shown for a
+  /// version the user was already running.
+  lastSeenVersion?: string;
+}
+
+/// The user's current "where am I" view, persisted alongside the selected
+/// conversation so a full renderer re-init — e.g. macOS discarding the render
+/// process during a long sleep, then Electron reloading the page — restores
+/// the exact flow run / orchestrator batch / project screen instead of
+/// dropping back to the default conversation view. `detailMode` is the
+/// renderer's DetailMode union, kept loose here to avoid coupling shared types
+/// to renderer code.
+export interface PersistedView {
+  detailMode?: string;
+  focusedProjectId?: UUID | null;
+  focusedWorkspaceId?: UUID | null;
+  activeRunId?: string | null;
+  activeOrchestrationId?: string | null;
+  /// Sticky orchestrator batch-launch defaults. These live only in the
+  /// renderer store, whose fresh default is `runIn: 'worktree'`; without
+  /// persisting them a renderer reload silently reverted a user's "main tree"
+  /// choice back to worktrees for the next batch. `runIn` is the flows RunIn
+  /// union, kept loose here to avoid coupling shared types across modules.
+  orchestrator?: {
+    runIn?: 'cwd' | 'worktree';
+    maxConcurrent?: number;
+    openPrOnFinish?: boolean;
+  };
+}
+
+/// Open file-editor tabs, keyed by scope — `conv:<id>`, `flow:<runId>` or
+/// `explorer:<rootPath>` (see the renderer's fileScope.ts). Only the paths
+/// and which one was in front are persisted: view mode and any jumped-to
+/// line range are per-session, and unsaved buffers deliberately never
+/// reach disk.
+export type PersistedFileTabs = Record<string, { paths: string[]; activePath?: string | null }>;
+
+/// What the "What's new" panel renders, assembled in src/main/whatsNew.ts
+/// from the CHANGELOG.md that ships in the app bundle.
+export interface WhatsNewReport {
+  /// The running build's version, i.e. `app.getVersion()`.
+  currentVersion: string;
+  /// Releases the user hasn't seen, newest first, capped — see `olderCount`.
+  releases: ChangelogRelease[];
+  /// Unseen releases dropped by the cap. Surfaced in the UI rather than
+  /// silently truncated, so a long-absent user knows there's more.
+  olderCount: number;
+  /// Whether to surface this unprompted — auto-open on launch plus the dot
+  /// on the title bar's About button. False for a freshly seeded install
+  /// (nothing is "new" on your first launch) and on the nightly channel,
+  /// where a panel every launch would just train the dismissal reflex.
+  unseen: boolean;
 }
 
 /// Renderer → main requests. Responses come back via invoke's return value.
@@ -754,14 +975,34 @@ export interface IPCInvokeMap {
     settings: AppSettings;
     selectedConversationId?: UUID;
     lastInit?: SystemInitInfo;
+    view?: PersistedView;
+    fileTabs?: PersistedFileTabs;
   };
   'store:saveProjects': (projects: Project[]) => void;
   'store:saveWorkspaces': (workspaces: Workspace[]) => void;
+  /// Patch a single conversation's metadata without shipping (and
+  /// re-sanitizing) the entire projects/workspaces tree. Resolves false if
+  /// the conversation isn't on disk yet, so the caller can fall back to a
+  /// full save.
+  'store:patchConversation': (args: { id: UUID; patch: Partial<Conversation> }) => boolean;
   'store:saveColosseums': (colosseums: Colosseum[]) => void;
   'store:saveSettings': (settings: AppSettings) => void;
   'store:saveSelection': (id: UUID | null) => void;
+  'store:saveView': (view: PersistedView) => void;
+  'store:saveFileTabs': (tabs: PersistedFileTabs) => void;
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
+  /// Release notes the user hasn't seen yet, parsed from the bundled
+  /// CHANGELOG.md. Cheap enough to call on every launch — the file is read
+  /// and parsed once per process.
+  'app:whatsNew': () => WhatsNewReport;
+  /// Stamp `lastSeenVersion` at the running version, clearing the unseen
+  /// flag. Called when the What's New sheet is opened.
+  'app:markWhatsNewSeen': () => void;
+  /// The running build's version. Nightly builds stamp package.json at CI
+  /// time, so this is the only honest source — a constant in the renderer
+  /// goes stale the moment it isn't hand-edited alongside a release.
+  'app:version': () => string;
   'runner:send': (args: {
     conversationId: UUID;
     prompt: string;
@@ -809,6 +1050,14 @@ export interface IPCInvokeMap {
   }) => { ok: true } | { ok: false; error: string };
   'runner:stop': (args: { conversationId: UUID }) => void;
   'runner:newConversation': (args: { conversationId: UUID }) => void;
+  /// Tear down every runtime holding a conversation — subprocess, ollama
+  /// session, gemini ACP client, warm reviewer — because the conversation
+  /// itself is going away (delete) or being parked (archive). Distinct from
+  /// `runner:stop`, which the UI only reaches for a *running* turn: a
+  /// finished-but-resident session is invisible to the running indicator and
+  /// would otherwise leak until quit. `onlyIfIdle` declines to cut a turn
+  /// short — archive passes it, delete does not.
+  'runner:release': (args: { conversationId: UUID; onlyIfIdle?: boolean }) => void;
   'runner:respondPermission': (args: {
     conversationId: UUID;
     requestId: string;
@@ -851,8 +1100,17 @@ export interface IPCInvokeMap {
     /// resurface as a user-style bubble after restart.
     syntheticPrompts?: string[];
   }) => StreamEvent[];
+  /// Conversations main currently believes have a turn in flight. The
+  /// renderer polls this to reconcile its own per-conversation `isRunning`
+  /// flags: the indicator is edge-triggered, so a single dropped `running`
+  /// event would otherwise leave a spinner (and any flow run that reads it
+  /// via `runIsLive`) stuck busy until the window reloads.
+  'runner:runningSnapshot': () => RunningConversation[];
   'runner:probeHealth': (backend: Backend) => BackendHealth;
   'runner:listInstalledReviewers': () => Record<string, boolean>;
+  /// Drop main's backend-health probe cache, so the next `runner:probeHealth`
+  /// re-executes the CLIs instead of answering from the last 15s.
+  'health:invalidate': () => void;
   'capabilities:scan': () => CapabilitiesReport;
   'skills:listMarketplace': () => MarketplaceSkill[];
   'skills:installMarketplace': (args: {
@@ -918,11 +1176,44 @@ export interface IPCInvokeMap {
     | { ok: true; content: string; resolvedPath: string; truncated: boolean; totalBytes: number; previewBytes: number }
     | { ok: false; error: string };
   'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
-  'fs:writeFile': (args: { path: string; content: string }) => { ok: true } | { ok: false; error: string };
+  /// `path` may be a hint relative to `rootPath` (workspace/flow tabs keep
+  /// their `<member>/…` prefix); it goes through the same resolver as reads.
+  'fs:writeFile': (args: { path: string; content: string; rootPath?: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
+  /// Start watching `root` so the file tree can relist itself when an agent
+  /// (or anything else) writes into the project. Refcounted in main — every
+  /// `fs:watchTree` needs a matching `fs:unwatchTree`. `key` is the resolved
+  /// root carried by the `fileTreeChanged` events; `ok: false` means the
+  /// platform refused a recursive watch and only manual refresh will work.
+  'fs:watchTree': (root: string) => { ok: boolean; key: string };
+  'fs:unwatchTree': (root: string) => void;
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Resolve a clicked symbol to its definition site(s). Runs entirely off
+  /// the conversation — ripgrep first, then a one-shot fast-model query if
+  /// that's ambiguous. See src/main/symbolLookup.ts.
+  'symbols:findDefinition': (args: {
+    /// Project root to search within.
+    cwd: string;
+    /// Absolute path of the file the symbol was clicked in.
+    filePath: string;
+    symbol: string;
+    /// 1-based line of the click, for disambiguating context.
+    line: number;
+  }) => SymbolLookupResult;
+  /// Second pass for an ambiguous grep answer: skips the grep tier and asks
+  /// a fast model to pick the definition. Only reached when the user clicks
+  /// "Refine" in the candidate picker, so a lookup never spends model time
+  /// unasked.
+  'symbols:refineDefinition': (args: {
+    cwd: string;
+    filePath: string;
+    symbol: string;
+    line: number;
+  }) => SymbolLookupResult;
   /// Write a flow artifact's body to a temp file and open it with the OS
   /// default app. Flow artifacts live only in memory (no on-disk path), so
   /// this materializes one on demand. `kind` picks the file extension.
@@ -931,6 +1222,29 @@ export interface IPCInvokeMap {
     kind: 'markdown' | 'diff' | 'text' | 'url';
     body: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Read the local files an HTML preview references (stylesheets, images,
+  /// fonts) so the renderer can inline them. The preview iframe is
+  /// sandboxed onto an opaque origin and cannot fetch `file://` itself.
+  'preview:htmlAssets': (args: {
+    path: string;
+    rootPath?: string;
+    refs: string[];
+  }) => HtmlPreviewAssetsResult;
+  /// Compile a .tsx/.jsx component into a self-contained script the
+  /// preview iframe can run. `contents` carries the editor's unsaved
+  /// buffer so the preview tracks what you are looking at.
+  'preview:reactBundle': (args: {
+    path: string;
+    rootPath?: string;
+    contents?: string;
+  }) => ReactPreviewBundleResult;
+  /// Hand a finished preview document to the main process and get back an
+  /// `overcli-preview://` URL for it. The renderer's own CSP forbids the
+  /// inline script a compiled component needs, and a srcDoc frame inherits
+  /// that CSP — a document served over its own scheme does not.
+  'preview:publishDocument': (args: { html: string }) =>
+    | { ok: true; url: string }
+    | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
   'preview:runProjectCommand': (args: {
     cwd: string;
@@ -977,6 +1291,48 @@ export interface IPCInvokeMap {
     ok: boolean;
     error?: string;
     warning?: string;
+  };
+  /// Scan every project for worktrees and classify them for cleanup. The
+  /// renderer passes the worktree paths its conversations still claim; main
+  /// adds the flow runtime's. Anything git knows about but neither side
+  /// claims is an orphan. Disk only — releasing a worktree a conversation
+  /// still owns belongs to `git:conversationWorktreeStates` and the store's
+  /// `removeAgent`, since that deletes history rather than reclaiming space.
+  'git:scanWorktrees': (args: {
+    projects: Array<{ path: string; name: string }>;
+    conversationPaths: string[];
+  }) => WorktreeSweepResult;
+  /// Cheap per-conversation worktree check for Settings → Conversations: is
+  /// there uncommitted or unmerged work that deleting would destroy? No `du`
+  /// — that pane is about history, not disk, and sizing is what makes the
+  /// Storage scan slow.
+  'git:conversationWorktreeStates': (args: {
+    targets: Array<{
+      convId: UUID;
+      projectPath: string;
+      worktreePath: string;
+      branchName: string | null;
+      baseBranch: string;
+    }>;
+  }) => Array<{
+    convId: UUID;
+    exists: boolean;
+    dirtyFiles: number;
+    commitsAhead: number;
+    isMergedIntoBase: boolean;
+  }>;
+  'git:sweepWorktrees': (args: {
+    entries: Array<{
+      projectPath: string;
+      worktreePath: string;
+      branchName: string | null;
+      baseBranch?: string;
+    }>;
+  }) => {
+    removed: number;
+    freedKb: number;
+    failures: Array<{ worktreePath: string; error: string }>;
+    warnings: string[];
   };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;
@@ -1029,8 +1385,13 @@ export interface IPCInvokeMap {
     worktreePath: string;
     branchName: string;
     baseBranch: string;
+    baselineCommit?: string | null;
   }) => WorktreeStatus;
-  'git:worktreeDiff': (args: { cwd: string; baseBranch: string }) => {
+  'git:worktreeDiff': (args: {
+    cwd: string;
+    baseBranch: string;
+    baselineCommit?: string | null;
+  }) => {
     stdout: string;
     stderr: string;
     exitCode: number;
@@ -1053,23 +1414,45 @@ export interface IPCInvokeMap {
   /// Base-relative twin of `git:commitStatus` for flow worktrees: counts
   /// committed + uncommitted changes vs the run's fork point so the chat
   /// ChangesBar matches the review sheet's diff.
-  'git:worktreeChanges': (args: { worktreePath: string; baseBranch: string }) => {
-    isRepo: boolean;
-    currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
-    insertions: number;
-    deletions: number;
-  };
-  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
-  'git:workspaceCommitStatus': (args: {
-    projects: Array<{ name: string; path: string; baseBranch?: string }>;
+  'git:worktreeChanges': (args: {
+    worktreePath: string;
+    baseBranch: string;
+    baselineCommit?: string | null;
   }) => {
     isRepo: boolean;
     currentBranch: string;
     changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
     insertions: number;
     deletions: number;
+    /// Ref the counts were measured against, for labelling the bar. Null
+    /// when we fell back to the run's frozen fork point.
+    baseRef: string | null;
   };
+  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
+  'git:workspaceCommitStatus': (args: {
+    projects: Array<{
+      name: string;
+      path: string;
+      baseBranch?: string;
+      baselineCommit?: string | null;
+    }>;
+  }) => {
+    isRepo: boolean;
+    currentBranch: string;
+    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
+    insertions: number;
+    deletions: number;
+    /// Set only when every member agreed on the same base ref.
+    baseRef: string | null;
+  };
+  /// Resolve the commit a base-relative diff should start from, live. The
+  /// renderer needs this for per-file diffs, which run through `git:run`
+  /// rather than one of the aggregate probes.
+  'git:resolveDiffBase': (args: {
+    cwd: string;
+    preferredBranch?: string | null;
+    fallbackCommit?: string | null;
+  }) => { commit: string; ref: string | null };
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
     | { ok: false; error: string };
@@ -1106,7 +1489,13 @@ export interface IPCInvokeMap {
     cwd: string;
     backend: Backend;
     sessionId?: string;
+    /// The session's model. Without it the popped-out CLI resumes on its own
+    /// default, silently dropping the model the conversation was running on.
+    model?: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Open a terminal window sitting in a folder, nothing typed. Used by the
+  /// file tree's per-folder terminal button.
+  'terminal:openFolder': (args: { path: string }) => { ok: true } | { ok: false; error: string };
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
@@ -1225,6 +1614,14 @@ export interface IPCInvokeMap {
     participantId: string;
     model: string | null;
   }) => { ok: true } | { ok: false; error: string };
+  /// Give a run its own display title (sidebar + library rows). Works at
+  /// any point in a run's life — including mid-flight, which is when a
+  /// user most wants to label what's in the list. Pass an empty string to
+  /// clear it and fall back to the prompt-derived title.
+  'flows:renameRun': (args: {
+    runId: UUID;
+    title: string;
+  }) => { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
@@ -1267,12 +1664,17 @@ export interface IPCInvokeMap {
   }) =>
     | { ok: true; reply: string; candidates: Candidate[] }
     | { ok: false; error: string };
-  /// Launch a batch: one child flow run per item, each in its own
-  /// worktree, never more than `maxConcurrent` in flight. Returns the new
-  /// orchestration id; progress streams back via `orchestrationUpdate`.
+  /// Launch a batch: one child flow run per item, never more than
+  /// `maxConcurrent` in flight. `runIn` decides where those runs work —
+  /// `worktree` (the default) gives each item its own fresh worktree forked
+  /// from `baseBranch`; `cwd` runs them in the project's own working tree,
+  /// which forces `maxConcurrent` to 1 (one checkout can't host two agents)
+  /// and ignores `baseBranch`. Returns the new orchestration id; progress
+  /// streams back via `orchestrationUpdate`.
   'orchestrator:startBatch': (args: {
     title: string;
     projectPath: string;
+    runIn?: RunIn;
     baseBranch?: string;
     maxConcurrent: number;
     producer?: { prompt: string; reply: string };
@@ -1305,7 +1707,80 @@ export interface IPCInvokeMap {
   /// Permanently delete a batch record (does not touch the child runs'
   /// own history). Idempotent.
   'orchestrator:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Release a batch a schedule parked. Items named in `approve` are queued
+  /// (with an optional flow remap); any other `proposed` item is cancelled.
+  /// Omit `approve` to accept the whole batch as proposed.
+  'orchestrator:approveBatch': (args: {
+    id: UUID;
+    approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+  }) => { ok: true; queued: number } | { ok: false; error: string };
+
+  // ---- Schedules --------------------------------------------------------
+  /// Every schedule, newest first, each with its computed next fire time.
+  /// `nextFireAt` is null for a disabled schedule.
+  'schedules:list': () => Array<{ schedule: Schedule; nextFireAt: number | null }>;
+  /// Create (no `id`) or replace (with `id`). Validates with the same
+  /// `validateSchedule` the editor uses, so Save can never fail for a reason
+  /// the form didn't already show.
+  'schedules:save': (args: {
+    schedule: Omit<Schedule, 'id' | 'createdAt' | 'history'> & { id?: UUID };
+  }) => { ok: true; schedule: Schedule } | { ok: false; error: string };
+  'schedules:setEnabled': (args: { id: UUID; enabled: boolean }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// Delete the trigger. Any run it already started is left alone — it's real
+  /// work in a real worktree.
+  'schedules:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Fire once, right now, without touching the cadence. The way to check a
+  /// schedule does what you think before trusting it to run unattended.
+  'schedules:runNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
 }
+
+/// One local subresource of an HTML preview. Stylesheets come back as
+/// text (they get inlined into a `<style>` tag, with their own imports and
+/// `url()` refs already folded in); everything else comes back as a data
+/// URL that can be dropped straight into the attribute it came from.
+export type HtmlPreviewAsset =
+  | { ok: true; kind: 'css'; text: string }
+  | { ok: true; kind: 'data'; dataUrl: string }
+  | { ok: false; error: string };
+
+export type HtmlPreviewAssetsResult =
+  /// Keyed by the ref exactly as it appeared in the document.
+  | { ok: true; assets: Record<string, HtmlPreviewAsset> }
+  | { ok: false; error: string };
+
+/// What happened to the Tailwind pass for a React preview. `not-used` is
+/// a file with no className at all; `unavailable` is a project without
+/// Tailwind installed — both are normal, and neither is an error.
+export interface ReactPreviewTailwind {
+  status: 'compiled' | 'not-used' | 'unavailable' | 'failed' | 'skipped';
+  version?: number;
+  message?: string;
+}
+
+export type ReactPreviewBundleResult =
+  | {
+      ok: true;
+      /// A self-contained IIFE: React, the component, and its imports.
+      js: string;
+      /// CSS the component imported directly, already bundled.
+      css: string;
+      tailwindCss?: string;
+      tailwind: ReactPreviewTailwind;
+      /// The element the bundle mounts into; the shell must provide it.
+      rootElementId: string;
+      /// Whether the component was compiled against the project's React or
+      /// Overcli's own copy — worth surfacing, since they can differ.
+      reactSource: 'project' | 'overcli';
+      warnings: string[];
+    }
+  | {
+      ok: false;
+      error: string;
+      details?: string[];
+      hint?: 'esbuild-missing' | 'react-missing' | 'build-failed';
+    };
 
 export type ArtifactPreviewResult =
   | {
@@ -1349,12 +1824,52 @@ export type FileInfoResult =
       unsupportedBinary: boolean;
       error?: string;
     }
-  | { ok: false; error: string };
+  /// `missing` means the path resolved to nothing on disk — usually a file
+  /// the agent deleted. The file view treats that as "show me the deletion
+  /// diff", not as a hard error.
+  | { ok: false; error: string; missing?: boolean };
 
 export interface FileTreeEntry {
   path: string;
   sizeBytes: number;
 }
+
+/// One possible definition site for a clicked symbol. Every candidate the
+/// renderer receives has already been checked against disk in
+/// `symbolLookup.verifyCandidate` — the path resolves inside the project
+/// root, the line exists, and the line mentions the symbol.
+export interface SymbolCandidate {
+  /// Project-relative, for display.
+  path: string;
+  /// Absolute, for `openFile`.
+  absolutePath: string;
+  /// 1-based.
+  line: number;
+  /// The matched source line, trimmed — lets the picker show what it found
+  /// without a second read.
+  snippet: string;
+  /// Which tier produced it: `grep` is the free ripgrep pre-filter,
+  /// `model` a fast-model query.
+  source: 'grep' | 'model';
+}
+
+export type SymbolLookupResult =
+  | {
+      ok: true;
+      /// Most likely first. A single candidate means jump straight there;
+      /// several means show a picker.
+      candidates: SymbolCandidate[];
+      via: 'grep' | 'model' | 'cache';
+      /// Set when `via` is `model` — which rung of the ladder answered.
+      model?: string;
+      /// The grep tier answered but couldn't pick a winner, so a model
+      /// could still narrow it down. The picker turns this into a "Refine"
+      /// action (`symbols:refineDefinition`) rather than spending a model
+      /// call the user didn't ask for — grep answers in ~20ms and the model
+      /// tier costs seconds.
+      refinable?: boolean;
+    }
+  | { ok: false; error: string };
 
 export type ProjectPreviewHintsResult =
   | {
@@ -1600,6 +2115,25 @@ export type MainToRendererEvent =
       message: string;
     }
   | {
+      /// Progress of a Settings → Storage worktree scan. Inspecting a
+      /// candidate means a `git status` walk plus a `du` over the tree, so a
+      /// large install spends a minute or more here — the pane shows this
+      /// rather than an unmoving spinner. `total` is the number of candidates
+      /// left after live/foreign worktrees are ruled out, not every worktree
+      /// found.
+      type: 'worktreeScanProgress';
+      completed: number;
+      total: number;
+    }
+  | {
+      /// Something changed under a watched explorer root (see
+      /// `fs:watchTree`). Debounced in main and already filtered against the
+      /// tree's skip list, so a tree seeing this should just relist itself.
+      /// `root` is the resolved path returned by `fs:watchTree`.
+      type: 'fileTreeChanged';
+      root: string;
+    }
+  | {
       /// An orchestration (batch) changed — an item launched, a child run
       /// finished and the next pumped, or the batch completed. The
       /// renderer's orchestratorStore replaces its copy. Coarse-grained on
@@ -1611,6 +2145,21 @@ export type MainToRendererEvent =
   | {
       /// An orchestration record was deleted from main.
       type: 'orchestrationDeleted';
+      id: UUID;
+    }
+  | {
+      /// A schedule changed — saved, toggled, fired, or its run finished.
+      /// Whole-record like `orchestrationUpdate`: a schedule is tiny and the
+      /// consistency is worth more than the diffing. `nextFireAt` rides along
+      /// because it's derived in main from the trigger and the last firing,
+      /// and recomputing it in the renderer would let the two disagree.
+      type: 'scheduleUpdate';
+      schedule: Schedule;
+      nextFireAt: number | null;
+    }
+  | {
+      /// A schedule was deleted from main.
+      type: 'scheduleDeleted';
       id: UUID;
     }
   | {
@@ -1648,9 +2197,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeTransport: 'cli',
   claudeMcpDebug: false,
   starredFlows: [],
+  defaultFlowRunIn: 'cwd',
   flowRegistries: [
     { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
   ],
   installedRegistryFlows: [],
   updateChannel: 'stable',
+  idleSessionTimeoutMinutes: 30,
 };

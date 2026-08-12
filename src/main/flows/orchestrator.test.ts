@@ -7,9 +7,12 @@ vi.mock('./orchestrationsStore', () => ({
   loadAllOrchestrations: vi.fn(() => []),
   deleteOrchestration: vi.fn(),
 }));
-// Health probe reaches into backend binaries — stub it ready so propose()'s
-// backend pick is deterministic (not exercised here, but keeps imports cheap).
-vi.mock('../health', () => ({ probeBackendHealth: () => ({ kind: 'ready' }) }));
+// Health probing executes backend binaries — stub it so propose()'s backend
+// pick is deterministic (not exercised here, but keeps imports cheap).
+vi.mock('../health', () => ({
+  probeBackendHealth: async () => ({ kind: 'ready' }),
+  healthyBackends: async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama']),
+}));
 
 import { OrchestratorImpl, type FlowLauncher } from './orchestrator';
 import type { FlowRun } from '../../shared/flows/schema';
@@ -17,10 +20,20 @@ import type { FlowRun } from '../../shared/flows/schema';
 /// A fake launcher that records start calls and lets the test drive each
 /// child run to a terminal state by hand — modelling the runtime's async
 /// completion without spawning anything.
-function makeHarness() {
+///
+/// `producerReply` stands in for the producer turn's output — supply it when
+/// the test exercises propose/park, which are the only paths that reach the
+/// runner.
+function makeHarness(opts: { producerReply?: string } = {}) {
   const runs = new Map<string, FlowRun>();
   let counter = 0;
-  const started: Array<{ runId: string; prompt: string; flowId: string }> = [];
+  const started: Array<{
+    runId: string;
+    prompt: string;
+    flowId: string;
+    runIn?: string;
+    baseBranch?: string;
+  }> = [];
 
   const emitted: any[] = [];
   let observer: ((run: FlowRun) => void) | null = null;
@@ -37,7 +50,13 @@ function makeHarness() {
         parentOrchestrationId: args.parentOrchestrationId,
       } as unknown as FlowRun;
       runs.set(runId, run);
-      started.push({ runId, prompt: args.userPrompt, flowId: args.flowId });
+      started.push({
+        runId,
+        prompt: args.userPrompt,
+        flowId: args.flowId,
+        runIn: args.runIn,
+        baseBranch: args.baseBranch,
+      });
       return { ok: true, runId };
     },
     abortRun({ runId }) {
@@ -54,11 +73,14 @@ function makeHarness() {
   };
 
   const engine = new OrchestratorImpl(
-    {} as any, // runner — unused by the dispatch path
+    // runner — unused by the dispatch path, stubbed for the producer path.
+    {
+      oneShot: async () => ({ ok: true, text: opts.producerReply ?? '<candidates>[]</candidates>' }),
+    } as any,
     launcher,
     (e) => emitted.push(e),
     () => [{ id: 'p', name: 'proj', path: '/proj' } as any],
-    () => ({}) as any,
+    () => ({ backendPaths: {}, disabledBackends: {}, preferredBackend: 'claude' }) as any,
   );
   // The runtime calls the observer on every run update; wire the fake to it.
   observer = (run) => engine.onRunUpdate(run);
@@ -293,5 +315,198 @@ describe('OrchestratorImpl dispatch', () => {
     await h.finish('run-1');
     const updatesAfter = h.emitted.filter((e) => e.type === 'orchestrationUpdate').length;
     expect(updatesAfter).toBeGreaterThan(updatesBefore);
+  });
+});
+
+describe('OrchestratorImpl runIn', () => {
+  it('defaults to a worktree per item, forked from the batch base branch', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      baseBranch: 'main',
+      maxConcurrent: 2,
+      items: items(2),
+    });
+    expect(h.started.map((s) => s.runIn)).toEqual(['worktree', 'worktree']);
+    expect(h.started.map((s) => s.baseBranch)).toEqual(['main', 'main']);
+  });
+
+  it('launches cwd items in the project tree, with no base branch to fork from', async () => {
+    const h = makeHarness();
+    // A base branch is meaningless in the main tree — it must not leak through
+    // to the launch even when the caller sends one.
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      runIn: 'cwd',
+      baseBranch: 'main',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    expect(h.started[0].runIn).toBe('cwd');
+    expect(h.started[0].baseBranch).toBeUndefined();
+  });
+
+  it('serializes a cwd batch even when the caller asks for concurrency', async () => {
+    const h = makeHarness();
+    // Two agents in one working tree would edit the same files underneath each
+    // other, so the cap is overruled to 1 no matter what was requested.
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      runIn: 'cwd',
+      maxConcurrent: 4,
+      items: items(3),
+    });
+    expect(res.ok).toBe(true);
+
+    expect(h.started).toHaveLength(1);
+    await h.finish('run-1');
+    expect(h.started).toHaveLength(2);
+    await h.finish('run-2');
+    expect(h.started).toHaveLength(3);
+
+    const o = h.engine.list()[0];
+    expect(o.maxConcurrent).toBe(1);
+    expect(o.runIn).toBe('cwd');
+  });
+
+  it('keeps a retried cwd item in the project tree', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      runIn: 'cwd',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    await h.finish('run-1', 'aborted');
+
+    const o = h.engine.list()[0];
+    expect(h.engine.retry({ id: o.id }).ok).toBe(true);
+    await h.flush();
+
+    expect(h.started).toHaveLength(2);
+    expect(h.started[1].runIn).toBe('cwd');
+  });
+
+  it('treats a batch persisted before runIn existed as a worktree batch', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    // Simulate the legacy record: no `runIn` on disk at all.
+    const o = h.engine.list()[0];
+    delete (o as { runIn?: string }).runIn;
+    await h.finish('run-1', 'aborted');
+    h.engine.retry({ id: o.id });
+    await h.flush();
+
+    expect(h.started[1].runIn).toBe('worktree');
+  });
+});
+
+describe('OrchestratorImpl parked proposals', () => {
+  const REPLY = [
+    'Found three small asks.',
+    '<candidates>',
+    JSON.stringify([
+      { id: 'a', title: 'A', prompt: 'do a' },
+      { id: 'b', title: 'B', prompt: 'do b', flowId: 'docs-flow' },
+      { id: 'c', title: 'C', prompt: 'do c' },
+    ]),
+    '</candidates>',
+  ].join('\n');
+
+  const park = (h: ReturnType<typeof makeHarness>) =>
+    h.engine.parkProposal({
+      scheduleId: 'sched-1',
+      scheduleName: 'Morning triage',
+      projectPath: '/proj',
+      prompt: 'pull feedback',
+      flowId: 'default-flow',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+    });
+
+  it('parks every candidate and launches nothing', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await park(h);
+
+    expect(res).toMatchObject({ ok: true, count: 3 });
+    // The whole point: a schedule fired, and no worktree was forked.
+    expect(h.started).toHaveLength(0);
+    const o = h.engine.list()[0];
+    expect(o.items.map((i) => i.status)).toEqual(['proposed', 'proposed', 'proposed']);
+    expect(o.origin).toMatchObject({ kind: 'schedule', scheduleId: 'sched-1' });
+    expect(o.completedAt).toBeUndefined();
+  });
+
+  it('falls back to the schedule flow but honours a per-candidate suggestion', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const o = h.engine.list()[0];
+    expect(o.items.map((i) => i.flowId)).toEqual(['default-flow', 'docs-flow', 'default-flow']);
+  });
+
+  it('launches only the approved items and cancels the rest', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const o = h.engine.list()[0];
+
+    const res = await h.engine.approveBatch({
+      id: o.id,
+      approve: [{ candidateId: 'a' }, { candidateId: 'c', flowId: 'other-flow' }],
+    });
+
+    expect(res).toMatchObject({ ok: true, queued: 2 });
+    expect(h.started).toHaveLength(2);
+    expect(h.started.map((s) => s.flowId)).toEqual(['default-flow', 'other-flow']);
+    const after = h.engine.list()[0];
+    expect(after.items.find((i) => i.candidate.id === 'b')!.status).toBe('cancelled');
+  });
+
+  it('approves the whole batch when no picks are given', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const res = await h.engine.approveBatch({ id: h.engine.list()[0].id });
+    expect(res).toMatchObject({ ok: true, queued: 3 });
+    // Cap of 2 still holds — approval dispatches, it doesn't flood.
+    expect(h.started).toHaveLength(2);
+  });
+
+  it('settles the batch when every item is declined', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const res = await h.engine.approveBatch({ id: h.engine.list()[0].id, approve: [] });
+    expect(res).toMatchObject({ ok: true, queued: 0 });
+    expect(h.started).toHaveLength(0);
+    expect(h.engine.list()[0].completedAt).toBeDefined();
+  });
+
+  it('refuses to approve a batch that has nothing parked', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    const res = await h.engine.approveBatch({ id: h.engine.list()[0].id });
+    expect(res).toMatchObject({ ok: false });
+  });
+
+  it('aborting a parked batch cancels the proposals', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+    const o = h.engine.list()[0];
+    h.engine.abort({ id: o.id });
+    const after = h.engine.list()[0];
+    expect(after.items.every((i) => i.status === 'cancelled')).toBe(true);
+    expect(after.completedAt).toBeDefined();
   });
 });

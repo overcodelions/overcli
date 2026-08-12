@@ -119,6 +119,35 @@ export function fileBaseName(p: string): string {
   return idx < 0 ? p : p.slice(idx + 1);
 }
 
+/// One hit from the diff body's find bar: a half-open [start, end) range
+/// of characters inside `lines[line]`.
+export interface DiffMatch {
+  line: number;
+  start: number;
+  end: number;
+}
+
+/// Case-insensitive substring scan over already-split diff lines. Matches
+/// come back in document order so the find bar can step through them, and
+/// they're non-overlapping (searching "aa" in "aaaa" gives two hits, not
+/// three) which is what every other find UI does. Searching the raw line
+/// includes the leading +/- sigil — that's exactly what's on screen, so a
+/// query like "-import" finds removals.
+export function findDiffMatches(lines: string[], query: string): DiffMatch[] {
+  if (!query) return [];
+  const needle = query.toLowerCase();
+  const out: DiffMatch[] = [];
+  lines.forEach((raw, line) => {
+    const hay = raw.toLowerCase();
+    let idx = hay.indexOf(needle);
+    while (idx !== -1) {
+      out.push({ line, start: idx, end: idx + needle.length });
+      idx = hay.indexOf(needle, idx + needle.length);
+    }
+  });
+  return out;
+}
+
 /// Pull the project path this conversation was spawned from. For a
 /// workspace-agent member we look across every project; the member's
 /// worktree lives under that project's checkout.

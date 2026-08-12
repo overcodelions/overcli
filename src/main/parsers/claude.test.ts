@@ -68,6 +68,106 @@ describe('parseClaudeLine', () => {
     expect(kindOf(line)).toEqual({ type: 'systemNotice', text: 'Conversation compacted' });
   });
 
+  it('reports how a compaction was triggered and how long it stalled the run', () => {
+    const manual = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'manual', duration_ms: 12_400 },
+    });
+    expect(kindOf(manual)).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation compacted · took 12s',
+    });
+
+    const auto = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', duration_ms: 157_716 },
+    });
+    expect(kindOf(auto)).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation auto-compacted · took 2m 38s',
+    });
+
+    // A sub-second compaction stalled nothing worth reporting.
+    const quick = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: { trigger: 'auto', duration_ms: 300 },
+    });
+    expect(kindOf(quick)).toEqual({ type: 'systemNotice', text: 'Conversation auto-compacted' });
+  });
+
+  it('never quotes the CLI token counts, which are not window occupancy', () => {
+    // Real metadata from a 1M-window run: pre_tokens exceeds the window,
+    // and pre - post is exactly cumulative_dropped_tokens (a lifetime
+    // counter), so rendering them as a before/after invented a 532k saving
+    // for a compaction that bought nothing.
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compact_metadata: {
+        trigger: 'auto',
+        pre_tokens: 1_275_004,
+        post_tokens: 743_189,
+        cumulative_dropped_tokens: 531_815,
+      },
+    });
+    const text = (kindOf(line) as { text: string }).text;
+    expect(text).toBe('Conversation auto-compacted');
+    expect(text).not.toMatch(/\d/);
+  });
+
+  it('reads the camelCase metadata the JSONL transcript uses on replay', () => {
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      compactMetadata: { trigger: 'auto', durationMs: 157_716 },
+    });
+    expect(kindOf(line)).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation auto-compacted · took 2m 38s',
+    });
+  });
+
+  it('surfaces the compaction stall and, crucially, a failed compaction', () => {
+    const started = JSON.stringify({ type: 'system', subtype: 'status', status: 'compacting' });
+    expect(kindOf(started)).toEqual({
+      type: 'systemNotice',
+      text: 'Compacting conversation…',
+    });
+
+    const failed = JSON.stringify({
+      type: 'system',
+      subtype: 'status',
+      status: null,
+      compact_result: 'failed',
+      compact_error: 'Not enough messages to compact.',
+    });
+    expect(kindOf(failed)).toEqual({
+      type: 'systemNotice',
+      text: 'Compaction failed — Not enough messages to compact.',
+    });
+  });
+
+  it('keeps the rest of the status stream out of the transcript', () => {
+    // 'requesting' fires on every turn, and the success case is already
+    // reported by the compact_boundary that follows it.
+    expect(
+      kindOf(JSON.stringify({ type: 'system', subtype: 'status', status: 'requesting' })),
+    ).toBeUndefined();
+    expect(
+      kindOf(
+        JSON.stringify({
+          type: 'system',
+          subtype: 'status',
+          status: null,
+          compact_result: 'success',
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
   it('parses a Workflow task_started into a taskProgress event', () => {
     const line = JSON.stringify({
       type: 'system',
@@ -290,6 +390,29 @@ describe('parseClaudeLine', () => {
       cacheReadInputTokens: 0,
       cacheCreationInputTokens: 0,
     });
+  });
+
+  it('carries contextWindow through as the context meter denominator', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      modelUsage: {
+        'claude-opus-5[1m]': {
+          inputTokens: 2,
+          outputTokens: 4,
+          cacheReadInputTokens: 15_273,
+          cacheCreationInputTokens: 6669,
+          contextWindow: 1_000_000,
+        },
+        // A backend that doesn't report one must not get a bogus default.
+        'gemini-2': { inputTokens: 5, contextWindow: 0 },
+      },
+    });
+    const kind = kindOf(line);
+    if (kind?.type !== 'result') throw new Error('expected result');
+    expect(kind.info.modelUsage['claude-opus-5[1m]'].contextWindow).toBe(1_000_000);
+    expect(kind.info.modelUsage['gemini-2'].contextWindow).toBeUndefined();
   });
 
   it('maps rate_limit_event', () => {

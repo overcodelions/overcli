@@ -30,15 +30,24 @@ export function FlowMonogram({
   /// run's icon reads as "still working" at a glance — mirrors the pulsing
   /// marker in the sidebar's Active section, without flashing the tile.
   live = false,
+  /// The flow doesn't exist on disk yet. Hollows the tile out to a dashed
+  /// outline: the monogram IS the flow's identity, so an identity not yet
+  /// minted is the honest place to say "not saved" — and it costs no extra
+  /// element next to the name, where a status pill was competing with the
+  /// title for the eye.
+  draft = false,
 }: {
   name: string;
   size?: MonogramSize;
   live?: boolean;
+  draft?: boolean;
 }) {
   const letter = (name.match(/[A-Za-z]/)?.[0] ?? '•').toUpperCase();
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) | 0;
-  const tone = PALETTE[Math.abs(h) % PALETTE.length];
+  const tone = draft
+    ? 'border border-dashed border-card-strong text-ink-faint'
+    : PALETTE[Math.abs(h) % PALETTE.length];
   return (
     <div
       className={`${SIZE_CLASS[size]} ${tone} flex items-center justify-center font-semibold flex-shrink-0${live ? ' flow-monogram-live' : ''}`}

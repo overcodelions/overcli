@@ -74,6 +74,16 @@ function gitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/// Git's ref rules permit a branch literally named `--output=/path`, and a
+/// clone/fetch carries such a ref over verbatim from a hostile remote. Every
+/// consumer below interpolates the base branch into a `git diff <base>` argv,
+/// where git would parse it as an option — `--output=` alone is an
+/// arbitrary-file-truncate primitive. Refuse to hand a leading-dash ref to
+/// callers at the two points where refs enter from the repo.
+function isSafeRefName(name: string): boolean {
+  return name.length > 0 && !name.startsWith('-');
+}
+
 /// Best-guess "base branch" for new agents. Prefers the currently
 /// checked-out local branch (so agents inherit the user's WIP branch),
 /// falls back to origin/HEAD → main → master. Mirrors the Swift
@@ -82,7 +92,7 @@ export function detectBaseBranch(projectPath: string): string {
   const current = runGit(['branch', '--show-current'], projectPath);
   if (current.exitCode === 0) {
     const trimmed = current.stdout.trim();
-    if (trimmed) return trimmed;
+    if (isSafeRefName(trimmed)) return trimmed;
   }
   const head = runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], projectPath);
   if (head.exitCode === 0) {
@@ -100,7 +110,7 @@ export function listBaseBranches(projectPath: string): string[] {
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     branches.push(trimmed);
   };
@@ -140,7 +150,7 @@ function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): s
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);
   };
@@ -156,6 +166,116 @@ function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): s
     if (ref.exitCode === 0) return candidate;
   }
   return null;
+}
+
+/// The commit a "what did this branch add?" diff should start from.
+///
+/// Callers used to diff straight against the fork point captured when the
+/// worktree was minted (`baselineCommit`). That is exact on the day of the
+/// run and wrong forever after: once the branch takes upstream in — a pull,
+/// a merge, a rebase — `git diff <forkPoint>` reports every upstream commit
+/// as part of this branch's work. A run whose PR had already landed showed
+/// 199 changed files, all of them other people's merges.
+///
+/// So resolve it live: find the base branch and start from
+/// `merge-base(base, HEAD)` — the point where this branch actually diverges
+/// from what's upstream. Merging upstream INTO the branch doesn't push that
+/// point past the branch's own commits (they still aren't in base), so
+/// in-flight work survives; once the work lands in base, the diff correctly
+/// collapses to nothing.
+///
+/// Remote-tracking refs beat local ones — a local `master` nobody has
+/// fetched in a week reports stale extra files. We never fetch here; this
+/// sits behind a render path.
+///
+/// `fallbackCommit` (the old frozen baseline) is both the last resort and a
+/// floor: when the resolved merge-base is OLDER than it, keep the baseline.
+/// That covers a worktree forked from another feature branch, where
+/// `merge-base(master, HEAD)` reaches back past the parent branch's work and
+/// would drag all of it into the diff.
+export async function resolveDiffBase(args: {
+  cwd: string;
+  preferredBranch?: string | null;
+  fallbackCommit?: string | null;
+}): Promise<{ commit: string; ref: string | null }> {
+  const { cwd } = args;
+  // Normalise the baseline to a full sha up front, and drop it if the
+  // commit is gone — a rebase orphans it and a later gc reaps it, after
+  // which every diff against it fails with `bad object`.
+  let fallback: string | null = null;
+  if (cwd && args.fallbackCommit && isSafeRefName(args.fallbackCommit)) {
+    const res = await runGitAsync(
+      ['rev-parse', '--verify', '--quiet', `${args.fallbackCommit}^{commit}`],
+      cwd,
+    );
+    if (res.exitCode === 0) fallback = res.stdout.trim() || null;
+  }
+  if (!cwd) return { commit: fallback ?? 'HEAD', ref: null };
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (name: string | null | undefined) => {
+    const trimmed = (name ?? '').trim();
+    if (!trimmed || !isSafeRefName(trimmed) || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+  /// Try a branch name in its remote-tracking form first, then local.
+  /// Vet the RAW name, not just the forms we derive from it — `origin/`
+  /// prefixing would otherwise launder a hostile `--output=…` branch into
+  /// a token that passes `isSafeRefName`.
+  const pushBranch = (name: string | null | undefined) => {
+    const trimmed = (name ?? '').trim();
+    if (!trimmed || !isSafeRefName(trimmed)) return;
+    if (trimmed.startsWith('origin/')) {
+      push(trimmed);
+      push(trimmed.slice('origin/'.length));
+      return;
+    }
+    push(`origin/${trimmed}`);
+    push(trimmed);
+  };
+
+  pushBranch(args.preferredBranch);
+  // origin/HEAD names the remote's default branch. Only set by clone, and
+  // routinely missing, hence the explicit main/master sweep after it.
+  const head = await runGitAsync(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  if (head.exitCode === 0) push(head.stdout.trim());
+  pushBranch('main');
+  pushBranch('master');
+
+  for (const ref of candidates) {
+    const mb = await runGitAsync(['merge-base', ref, 'HEAD'], cwd);
+    if (mb.exitCode !== 0) continue;
+    const commit = mb.stdout.trim();
+    if (!commit) continue;
+    if (fallback && commit !== fallback) {
+      // `--is-ancestor A B` exits 0 when A is an ancestor of B, i.e. here
+      // when the merge-base is older than the frozen baseline.
+      const older = await runGitAsync(['merge-base', '--is-ancestor', commit, fallback], cwd);
+      if (older.exitCode === 0) return { commit: fallback, ref: null };
+    }
+    return { commit, ref };
+  }
+  return { commit: fallback ?? 'HEAD', ref: null };
+}
+
+/// Callers have historically passed EITHER a branch name or a frozen
+/// baseline sha through the same `baseBranch` slot. Split them into the two
+/// roles `resolveDiffBase` distinguishes — a sha handed over as a "branch"
+/// would merge-base to itself and silently reinstate the stale-baseline bug.
+/// A branch whose name happens to be all hex is misread as a sha here; it
+/// still resolves as a commit-ish, so the diff is right either way.
+function splitBaseArg(
+  base: string | null | undefined,
+  baselineCommit?: string | null,
+): { preferredBranch: string | null; fallbackCommit: string | null } {
+  const trimmed = (base ?? '').trim();
+  const isSha = /^[0-9a-f]{7,40}$/i.test(trimmed);
+  return {
+    preferredBranch: isSha ? null : trimmed || null,
+    fallbackCommit: baselineCommit ?? (isSha ? trimmed : null),
+  };
 }
 
 export function runGit(args: string[], cwd: string, extraEnv?: NodeJS.ProcessEnv): GitResult {
@@ -249,7 +369,7 @@ async function resolveBaseBranchStartPointAsync(
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);
   };
@@ -1005,11 +1125,24 @@ export async function worktreeStatus(args: {
   worktreePath: string;
   branchName: string;
   baseBranch: string;
+  baselineCommit?: string | null;
 }): Promise<WorktreeStatus> {
+  // Every number below is measured from the live divergence point, not the
+  // frozen fork point — otherwise the counts here contradict the file list
+  // in the same sheet (which comes from `worktreeDiff`). One consequence
+  // worth knowing: `isMergedIntoBase` now goes true for a worktree whose
+  // work has actually landed upstream, which disables the merge button.
+  // That's the honest answer — there is nothing left to merge.
+  const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
+  const { commit: base } = await resolveDiffBase({
+    cwd: args.worktreePath,
+    preferredBranch,
+    fallbackCommit,
+  });
   // `git diff --numstat <base>` (working-tree-vs-base) rolls committed +
   // uncommitted divergence into a single pass, so every file the agent
   // has touched shows up exactly once — no double-counting.
-  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  const numstat = await runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath);
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
@@ -1045,7 +1178,7 @@ export async function worktreeStatus(args: {
   }
 
   const ahead = await runGitAsync(
-    ['rev-list', '--count', `${args.baseBranch}..HEAD`],
+    ['rev-list', '--count', `${base}..HEAD`],
     args.worktreePath,
   );
   const commitsAhead = ahead.exitCode === 0 ? parseInt(ahead.stdout.trim(), 10) || 0 : 0;
@@ -1054,7 +1187,7 @@ export async function worktreeStatus(args: {
   const hasUncommittedChanges = status.exitCode === 0 && !!status.stdout.trim();
 
   const isAncestor = await runGitAsync(
-    ['merge-base', '--is-ancestor', 'HEAD', args.baseBranch],
+    ['merge-base', '--is-ancestor', 'HEAD', base],
     args.worktreePath,
   );
   // exit 0 = HEAD is already in base, 1 = diverged. Treat errors (2) as
@@ -1115,8 +1248,15 @@ export async function worktreeStatus(args: {
 export async function worktreeDiff(args: {
   cwd: string;
   baseBranch: string;
+  baselineCommit?: string | null;
 }): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', args.baseBranch], args.cwd);
+  const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
+  const { commit: base } = await resolveDiffBase({
+    cwd: args.cwd,
+    preferredBranch,
+    fallbackCommit,
+  });
+  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', base, '--'], args.cwd);
   // A failed tracked diff (bad ref, not a repo) is fatal — surface it as-is
   // rather than returning a partial untracked-only diff that hides the error.
   if (tracked.exitCode !== 0) return tracked;
@@ -1300,19 +1440,41 @@ export async function commitStatus(cwd: string): Promise<{
 export async function worktreeChanges(args: {
   worktreePath: string;
   baseBranch: string;
+  /// The run's frozen fork point, when the caller has one. Used only as a
+  /// floor/last resort — see `resolveDiffBase`.
+  baselineCommit?: string | null;
 }): Promise<{
   isRepo: boolean;
   currentBranch: string;
   changes: FileChange[];
   insertions: number;
   deletions: number;
+  /// The ref the diff was actually measured against (`origin/master`), or
+  /// null when we fell back to the frozen fork point. The UI labels the bar
+  /// with it — once the count can legitimately be zero, an empty bar has to
+  /// be distinguishable from a probe that failed.
+  baseRef: string | null;
 }> {
-  const empty = { isRepo: false, currentBranch: '', changes: [] as FileChange[], insertions: 0, deletions: 0 };
-  if (!args.worktreePath || !args.baseBranch) return empty;
+  const empty = {
+    isRepo: false,
+    currentBranch: '',
+    changes: [] as FileChange[],
+    insertions: 0,
+    deletions: 0,
+    baseRef: null,
+  };
+  if (!args.worktreePath || (!args.baseBranch && !args.baselineCommit)) return empty;
   const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.worktreePath);
   if (check.exitCode !== 0 || check.stdout.trim() !== 'true') return empty;
 
   const branch = await runGitAsync(['branch', '--show-current'], args.worktreePath);
+  const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
+  const resolved = await resolveDiffBase({
+    cwd: args.worktreePath,
+    preferredBranch,
+    fallbackCommit,
+  });
+  const base = resolved.commit;
 
   // `git diff --numstat <base>` rolls committed + uncommitted divergence into
   // one pass — the exact tracked-file set the review badge counts. Tab
@@ -1321,7 +1483,7 @@ export async function worktreeChanges(args: {
   const deletionsByPath = new Map<string, number>();
   let insertions = 0;
   let deletions = 0;
-  const numstat = await runGitAsync(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  const numstat = await runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath);
   if (numstat.exitCode === 0) {
     for (const line of numstat.stdout.split('\n')) {
       if (!line.trim()) continue;
@@ -1346,7 +1508,7 @@ export async function worktreeChanges(args: {
   // by the final path so a modified file lines up with its numstat row.
   const statusByPath = new Map<string, string>();
   const nameStatus = await runGitAsync(
-    ['diff', '--name-status', args.baseBranch],
+    ['diff', '--name-status', base, '--'],
     args.worktreePath,
   );
   if (nameStatus.exitCode === 0) {
@@ -1366,7 +1528,7 @@ export async function worktreeChanges(args: {
   // A file can be in both — committed once, then edited again.
   const committedPaths = new Set<string>();
   const nameStatusHead = await runGitAsync(
-    ['diff', '--name-status', args.baseBranch, 'HEAD'],
+    ['diff', '--name-status', base, 'HEAD', '--'],
     args.worktreePath,
   );
   if (nameStatusHead.exitCode === 0) {
@@ -1445,6 +1607,7 @@ export async function worktreeChanges(args: {
     changes,
     insertions,
     deletions,
+    baseRef: resolved.ref,
   };
 }
 
@@ -1453,32 +1616,50 @@ export async function worktreeChanges(args: {
 /// resolves through the workspace root via the on-disk symlinks, and so
 /// the ChangesBar shows which project a file belongs to.
 export async function workspaceCommitStatus(
-  members: Array<{ name: string; path: string; baseBranch?: string }>,
+  members: Array<{
+    name: string;
+    path: string;
+    baseBranch?: string;
+    baselineCommit?: string | null;
+  }>,
 ): Promise<{
   isRepo: boolean;
   currentBranch: string;
   changes: FileChange[];
   insertions: number;
   deletions: number;
+  /// Only set when every member resolved to the SAME ref. Members can sit
+  /// on different default branches, and labelling the aggregate with one
+  /// repo's base would be a lie — so we say nothing rather than guess.
+  baseRef: string | null;
 }> {
   let insertions = 0;
   let deletions = 0;
   const changes: FileChange[] = [];
   let anyRepo = false;
+  const baseRefs = new Set<string | null>();
   // Names come pre-assigned by the caller (workspace members use the
   // shared basename-dedup rule; coordinator members use the project
   // name), so `name` is used verbatim as the path prefix.
-  for (const { name, path: projPath, baseBranch } of members) {
+  for (const { name, path: projPath, baseBranch, baselineCommit } of members) {
     if (!name || !projPath) continue;
     // A worktree workspace run captures a per-member fork point; count
     // against it (committed + uncommitted) so the bar matches the review
     // sheet. In-place workspace runs have no baseline — fall back to the
     // HEAD-relative probe.
-    const res = baseBranch
-      ? await worktreeChanges({ worktreePath: projPath, baseBranch })
-      : await commitStatus(projPath);
+    const res =
+      baseBranch || baselineCommit
+        ? await worktreeChanges({
+            worktreePath: projPath,
+            baseBranch: baseBranch ?? '',
+            baselineCommit,
+          })
+        : // In-place workspace run: no fork point to measure from, so this
+          // stays HEAD-relative and contributes no base ref.
+          { ...(await commitStatus(projPath)), baseRef: null as string | null };
     if (!res.isRepo) continue;
     anyRepo = true;
+    baseRefs.add(res.baseRef);
     insertions += res.insertions;
     deletions += res.deletions;
     for (const c of res.changes) {
@@ -1486,7 +1667,15 @@ export async function workspaceCommitStatus(
     }
   }
   changes.sort((a, b) => a.path.localeCompare(b.path));
-  return { isRepo: anyRepo, currentBranch: '', changes, insertions, deletions };
+  const [onlyRef] = baseRefs;
+  return {
+    isRepo: anyRepo,
+    currentBranch: '',
+    changes,
+    insertions,
+    deletions,
+    baseRef: baseRefs.size === 1 ? onlyRef ?? null : null,
+  };
 }
 
 /// Count non-empty lines in a file. Used for untracked-file additions,

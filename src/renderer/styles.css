@@ -229,6 +229,20 @@ html, body {
   background: color-mix(in srgb, var(--c-accent) 22%, var(--c-card-bg-strong));
 }
 
+/* ⌘K palette. Mixed here for the same reason as the sidebar rows above:
+ * `bg-accent/15` on a CSS-var color compiles to nothing, so the selected
+ * row and the active filter chip have to name their blend explicitly.
+ * The row keeps the sidebar's inset accent rail so "selected" means the
+ * same thing in both places. */
+.palette-row-selected {
+  background: color-mix(in srgb, var(--c-accent) 16%, var(--c-card-bg-strong));
+  box-shadow: inset 2px 0 0 var(--c-accent);
+}
+.palette-chip-active {
+  background: color-mix(in srgb, var(--c-accent) 20%, var(--c-card-bg-strong));
+  border-color: color-mix(in srgb, var(--c-accent) 36%, var(--c-card-border));
+}
+
 /* Allow text selection inside anything marked selectable; default is to
  * disable selection so the UI chrome feels native. */
 .select-text,
@@ -244,6 +258,38 @@ html, body {
 }
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+/* Jumped-to line range in the file editor. The persistent tint and the left
+   accent bar live in CodeMirrorEditor's theme; the arrival flash lives here
+   because it needs @keyframes, which CM's theme helper doesn't take.
+
+   Two identical classes, alternated per application: a CSS animation only
+   replays when the class list changes, so re-jumping to the same line needs
+   a different class name to flash again. The animation fades from a strong
+   wash down to the resting tint, so nothing has to be un-set afterwards. */
+@keyframes overcli-range-arrive {
+  0% {
+    background-color: rgba(124, 139, 255, 0.62);
+  }
+  35% {
+    background-color: rgba(124, 139, 255, 0.62);
+  }
+  100% {
+    background-color: rgba(124, 139, 255, 0.22);
+  }
+}
+.cm-overcli-range-flash-a,
+.cm-overcli-range-flash-b {
+  animation: overcli-range-arrive 1.1s ease-out 1;
+}
+/* Respect the OS "reduce motion" setting: the tint and bar still mark the
+   line, they just appear without the fade. */
+@media (prefers-reduced-motion: reduce) {
+  .cm-overcli-range-flash-a,
+  .cm-overcli-range-flash-b {
+    animation: none;
+  }
 }
 
 /* Opt-out for chip/pill rows where a reserved scrollbar gutter would offset
@@ -604,3 +650,38 @@ body.konami-screen-ripple::after {
  * ReviewerStepLine (compact, dim, dot-prefixed), and the verdict
  * by AssistantBubble + a check next to the model label. No
  * row-wrapper class needed. */
+
+/* One-time discovery glow for a nav segment the user hasn't opened yet
+ * (today: Flows → Schedules). A soft accent ring that breathes, plus a
+ * static outer tint so it still reads as "look here" mid-cycle rather than
+ * disappearing at the trough.
+ *
+ * Deliberately retiring: the component drops this class the moment the
+ * segment is opened once and persists that, because a highlight that never
+ * stops is one the eye learns to skip — the opposite of what it's for. Also
+ * why it's a slow 2.4s breathe rather than a blink: it should be findable in
+ * peripheral vision without competing with a running flow's pulse. */
+.nav-segment-discover {
+  animation: nav-segment-discover-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes nav-segment-discover-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--c-accent) 45%, transparent),
+      0 0 6px 0 color-mix(in srgb, var(--c-accent) 18%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--c-accent) 85%, transparent),
+      0 0 12px 2px color-mix(in srgb, var(--c-accent) 42%, transparent);
+  }
+}
+
+/* Users with reduced-motion still get the ring, just not the breathing. */
+@media (prefers-reduced-motion: reduce) {
+  .nav-segment-discover {
+    animation: none;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-accent) 70%, transparent);
+  }
+}

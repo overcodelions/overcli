@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { createUiSlice, uiSliceInitialState, type UiSlice } from './uiSlice';
+import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  createUiSlice,
+  uiSliceInitialState,
+  MAX_TABS_PER_SCOPE,
+  type UiSlice,
+} from './uiSlice';
+import { bufferCount, clearBuffers, readBuffer, stashBuffer } from './fileBuffers';
 
 function makeStub(): { state: UiSlice; slice: ReturnType<typeof createUiSlice<UiSlice>> } {
   const state = { ...uiSliceInitialState } as UiSlice;
@@ -7,10 +13,14 @@ function makeStub(): { state: UiSlice; slice: ReturnType<typeof createUiSlice<Ui
     const patch = typeof partial === 'function' ? partial(state) : partial;
     Object.assign(state, patch);
   };
-  const slice = createUiSlice<UiSlice>(set);
+  const slice = createUiSlice<UiSlice>(set, () => state);
   Object.assign(state, slice);
   return { state, slice };
 }
+
+beforeEach(() => {
+  clearBuffers();
+});
 
 describe('uiSliceInitialState', () => {
   it('starts with the conversation pane visible and no sheet', () => {
@@ -104,5 +114,168 @@ describe('createUiSlice', () => {
     expect(state.subagentDrawerConversationId).toBe('conv_xyz');
     slice.closeSubagentDrawer();
     expect(state.subagentDrawerConversationId).toBeNull();
+  });
+});
+
+describe('file editor tabs', () => {
+  it('opens each new file as its own tab, right of the active one', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/c.ts');
+    // Go back to the first tab, then open from there: the new tab belongs
+    // next to where we were, not at the end.
+    slice.selectTab('/repo/a.ts');
+    slice.openFile('/repo/b.ts');
+    expect(state.tabs.map((t) => t.path)).toEqual(['/repo/a.ts', '/repo/b.ts', '/repo/c.ts']);
+    expect(state.openFilePath).toBe('/repo/b.ts');
+  });
+
+  it('focuses the existing tab instead of duplicating it', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/b.ts');
+    slice.openFile('/repo/a.ts', { startLine: 12, endLine: 12, requestId: 'r1' });
+    expect(state.tabs).toHaveLength(2);
+    expect(state.openFilePath).toBe('/repo/a.ts');
+    expect(state.openFileHighlight).toEqual({ startLine: 12, endLine: 12, requestId: 'r1' });
+  });
+
+  it('remembers each tab\'s view mode across a switch', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.setOpenFileMode('diff');
+    slice.openFile('/repo/b.ts');
+    expect(state.openFileMode).toBe('edit');
+    slice.selectTab('/repo/a.ts');
+    expect(state.openFileMode).toBe('diff');
+  });
+
+  it('closing the active tab falls to its right neighbour, then its left', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/b.ts');
+    slice.openFile('/repo/c.ts');
+    slice.selectTab('/repo/b.ts');
+    slice.closeTab('/repo/b.ts');
+    expect(state.openFilePath).toBe('/repo/c.ts');
+    slice.closeTab('/repo/c.ts');
+    expect(state.openFilePath).toBe('/repo/a.ts');
+    slice.closeTab('/repo/a.ts');
+    expect(state.openFilePath).toBeNull();
+    expect(state.tabs).toEqual([]);
+  });
+
+  it('closing an inactive tab leaves the active one in front', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/b.ts');
+    slice.closeTab('/repo/a.ts');
+    expect(state.openFilePath).toBe('/repo/b.ts');
+    expect(state.tabs.map((t) => t.path)).toEqual(['/repo/b.ts']);
+  });
+
+  it('closing a tab drops its unsaved buffer and dirty flag', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    stashBuffer('/repo/a.ts', 'work in progress');
+    slice.markFileDirty('/repo/a.ts');
+    slice.closeTab('/repo/a.ts');
+    expect(state.dirtyFiles['/repo/a.ts']).toBeUndefined();
+    expect(readBuffer('/repo/a.ts')).toBeUndefined();
+  });
+
+  it('closing the pane keeps dirty buffers so reopening restores the work', () => {
+    const { slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/clean.ts');
+    stashBuffer('/repo/a.ts', 'work in progress');
+    stashBuffer('/repo/clean.ts', 'saved already');
+    slice.markFileDirty('/repo/a.ts');
+    slice.closeFile();
+    expect(readBuffer('/repo/a.ts')).toBe('work in progress');
+    expect(readBuffer('/repo/clean.ts')).toBeUndefined();
+  });
+
+  it('caps tabs per scope, evicting the oldest clean one', () => {
+    const { state, slice } = makeStub();
+    for (let i = 0; i < MAX_TABS_PER_SCOPE; i += 1) slice.openFile(`/repo/f${i}.ts`);
+    expect(state.tabs).toHaveLength(MAX_TABS_PER_SCOPE);
+    slice.openFile('/repo/one-more.ts');
+    expect(state.tabs).toHaveLength(MAX_TABS_PER_SCOPE);
+    expect(state.tabs.map((t) => t.path)).not.toContain('/repo/f0.ts');
+    expect(state.tabs.map((t) => t.path)).toContain('/repo/one-more.ts');
+  });
+
+  it('never evicts a tab with unsaved changes', () => {
+    const { state, slice } = makeStub();
+    for (let i = 0; i < MAX_TABS_PER_SCOPE; i += 1) {
+      slice.openFile(`/repo/f${i}.ts`);
+      slice.markFileDirty(`/repo/f${i}.ts`);
+    }
+    slice.openFile('/repo/one-more.ts');
+    // Every candidate is dirty, so we go over the cap rather than discard
+    // someone's work.
+    expect(state.tabs).toHaveLength(MAX_TABS_PER_SCOPE + 1);
+    expect(state.tabs.map((t) => t.path)).toContain('/repo/f0.ts');
+  });
+
+  it('cycles tabs with wraparound', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/b.ts');
+    slice.selectAdjacentTab(1);
+    expect(state.openFilePath).toBe('/repo/a.ts');
+    slice.selectAdjacentTab(-1);
+    expect(state.openFilePath).toBe('/repo/b.ts');
+  });
+
+  it('keeps buffer eviction and dirty flags honest', () => {
+    // stashBuffer reports what it evicted so the caller can clear the flag;
+    // a dot with no buffer behind it would show a file as modified while
+    // the editor renders disk content.
+    const { slice } = makeStub();
+    slice.openFile('/repo/a.ts');
+    for (let i = 0; i < 40; i += 1) stashBuffer(`/repo/f${i}.ts`, 'x');
+    expect(bufferCount()).toBeLessThanOrEqual(32);
+    const evicted = stashBuffer('/repo/last.ts', 'x');
+    expect(evicted.length).toBeGreaterThan(0);
+  });
+});
+
+describe('tab scopes', () => {
+  it('parks the outgoing scope\'s tabs and restores the incoming ones', () => {
+    const { state, slice } = makeStub();
+    slice.switchFileScope('conv:1');
+    slice.openFile('/repo/a.ts');
+    slice.openFile('/repo/b.ts');
+
+    slice.switchFileScope('conv:2');
+    expect(state.tabs).toEqual([]);
+    expect(state.openFilePath).toBeNull();
+    slice.openFile('/repo/other.ts');
+
+    slice.switchFileScope('conv:1');
+    expect(state.tabs.map((t) => t.path)).toEqual(['/repo/a.ts', '/repo/b.ts']);
+    expect(state.openFilePath).toBe('/repo/b.ts');
+
+    slice.switchFileScope('conv:2');
+    expect(state.tabs.map((t) => t.path)).toEqual(['/repo/other.ts']);
+  });
+
+  it('drops a scope from the map once its last tab closes', () => {
+    const { state, slice } = makeStub();
+    slice.switchFileScope('conv:1');
+    slice.openFile('/repo/a.ts');
+    slice.closeTab('/repo/a.ts');
+    slice.switchFileScope('conv:2');
+    expect(state.fileTabsByScope['conv:1']).toBeUndefined();
+  });
+
+  it('is a no-op when the scope key has not changed', () => {
+    const { state, slice } = makeStub();
+    slice.switchFileScope('conv:1');
+    slice.openFile('/repo/a.ts');
+    slice.switchFileScope('conv:1');
+    expect(state.openFilePath).toBe('/repo/a.ts');
   });
 });

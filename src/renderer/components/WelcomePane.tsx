@@ -1,9 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { noBackendReady, useStore } from '../store';
+import { backendHealthLoaded, noBackendReady, useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
 import { createBranchedAgent } from './sheets/NewAgentSheet';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
+import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
+import {
+  flowTagCounts,
+  groupFlows,
+  installedRegistryKeys,
+  registryEntryMatchesQuery,
+} from './flows/flowGrouping';
 import {
   Backend,
   BackendHealth,
@@ -14,11 +21,12 @@ import {
   UUID,
   Attachment,
   Workspace,
+  FlowRegistryEntry,
 } from '@shared/types';
 import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { PREMIUM_MODELS } from '@shared/modelCatalog';
 import { pathBasename } from '@shared/workspaceNames';
-import { flowStarKey } from '@shared/flows/schema';
+import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
 import {
@@ -27,6 +35,7 @@ import {
   isBackendEnabled,
   modeLabel,
   permissionTone,
+  pickDefaultBackend,
 } from './conversationHeaderHelpers';
 
 const WELCOME_KEY = '__welcome__';
@@ -73,7 +82,12 @@ export function WelcomePane() {
   // the composer after the user clicks a starter prompt chip without
   // mutating store-level state.
   const [composerFocusNudge, setComposerFocusNudge] = useState(0);
-  const [backend, setBackend] = useState<Backend>(() => firstEnabledBackend(settings));
+  const [backend, setBackend] = useState<Backend>(() =>
+    pickDefaultBackend(settings, backendHealth),
+  );
+  // Once the user picks from the backend pill, that choice is theirs — the
+  // health-driven re-seed below stops second-guessing it.
+  const [backendPicked, setBackendPicked] = useState(false);
   const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(
     settings.defaultPermissionMode,
   );
@@ -128,10 +142,25 @@ export function WelcomePane() {
     if (focusedProjectId) setSelectedProjectId(focusedProjectId);
   }, [focusedProjectId]);
 
+  // Keep the pill on something that can actually run. Two triggers: the
+  // chosen backend got switched off in settings (always re-seed — a
+  // disabled backend can't be sent to), or the health probe landed after
+  // mount and the seeded default turns out not to be installed. The latter
+  // only applies while the user hasn't picked a backend themselves.
   useEffect(() => {
-    if (isBackendEnabled(settings, backend)) return;
-    setBackend(firstEnabledBackend(settings));
-  }, [settings, backend]);
+    if (!isBackendEnabled(settings, backend)) {
+      setBackend(pickDefaultBackend(settings, backendHealth));
+      setModel('');
+      return;
+    }
+    if (backendPicked) return;
+    const seeded = pickDefaultBackend(settings, backendHealth);
+    if (seeded === backend) return;
+    setBackend(seeded);
+    // The model belonged to the backend we just moved off — an empty model
+    // means "whatever this CLI defaults to", which is the right answer here.
+    setModel('');
+  }, [settings, backend, backendHealth, backendPicked]);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
@@ -344,10 +373,18 @@ export function WelcomePane() {
                 items={enabledBackends(settings).map((b) => ({
                   value: b,
                   label: backendName(b),
+                  // Say so before they pick it, not after the send fails.
+                  note:
+                    backendHealth[b]?.kind === 'unauthenticated'
+                      ? 'Installed, signed out'
+                      : backendHealth[b] && backendHealth[b].kind !== 'ready'
+                      ? 'Not installed'
+                      : undefined,
                 }))}
                 onPick={(v) => {
                   const next = v as Backend;
                   setBackend(next);
+                  setBackendPicked(true);
                   // `auto` is Claude-only; demote to default when leaving Claude
                   // so the picker label and the eventual mapped behaviour agree.
                   if (next !== 'claude' && permissionMode === 'auto') {
@@ -595,8 +632,9 @@ function deriveAgentName(prompt: string): string {
 /// "Or run a flow" section beneath the welcome composer. Surfaces saved
 /// flows as proper cards (monogram + name + step preview) — clicking a
 /// card slides a run panel into the same slot so the user stays in
-/// context. Capped to the first MAX_VISIBLE entries with a link to the
-/// full Flows tab.
+/// context. Collapsed it shows the first MAX_VISIBLE entries; expanded it
+/// groups by provenance (starred / yours / this project / installed) so a
+/// pile of registry installs doesn't bury the two flows you wrote.
 const MAX_VISIBLE_FLOWS = 4;
 
 function WelcomeFlowsRow({
@@ -620,7 +658,27 @@ function WelcomeFlowsRow({
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
+  const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
+  const registryEntries = useFlowsStore((s) => s.registryEntries);
+  const registryLoaded = useFlowsStore((s) => s.registryLoaded);
+  const browseRegistries = useFlowsStore((s) => s.browseRegistries);
+  const installFromRegistry = useFlowsStore((s) => s.installFromRegistry);
   const [pickedFlowId, setPickedFlowId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  // The full modal is still there for browsing by tag axis; the inline
+  // results below cover the common case of "I know what I want, is it
+  // published?" without leaving the screen.
+  const [browseQuery, setBrowseQuery] = useState<string | null>(null);
+  const [installingKey, setInstallingKey] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [activeTags, setActiveTags] = useState<Set<string>>(new Set());
+  // An AI-drafted flow that exists only in memory until the user launches
+  // it. Occupies the same slot a picked flow would.
+  const [draftedFlow, setDraftedFlow] = useState<Flow | null>(null);
+  const saveDraftedFlow = useFlowsStore((s) => s.saveDraftedFlow);
   // The launch prompt lives in the shared draft/attachment store (keyed per
   // flow) so the Composer can drive multi-line text + image attachments,
   // exactly like the chat composer above.
@@ -632,7 +690,12 @@ function WelcomeFlowsRow({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>('cwd');
+  // Which side the run-in toggle starts on comes from Settings → Flows, so
+  // a worktree-first user doesn't re-flip it on every launch. The toggle
+  // still wins for this run; flipping the setting re-seeds the launcher.
+  const defaultRunIn = useStore((s) => s.settings.defaultFlowRunIn ?? 'cwd');
+  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>(defaultRunIn);
+  useEffect(() => setRunIn(defaultRunIn), [defaultRunIn]);
   // baseBranch starts empty — the BaseBranchSelect below populates it
   // from the repo's actual branches (and `detectBaseBranch` picks a
   // sensible default like the repo's `origin/HEAD` or whichever of
@@ -668,7 +731,9 @@ function WelcomeFlowsRow({
   }, [loaded, projects.length]);
 
   const target = workspaceRootPath ?? projectPath ?? '';
-  const pickedFlow = pickedFlowId ? flows.find((f) => f.id === pickedFlowId) : null;
+  // A draft takes the same slot as a picked flow, so the launch panel,
+  // worktree toggle and Composer are all shared rather than duplicated.
+  const pickedFlow = draftedFlow ?? (pickedFlowId ? flows.find((f) => f.id === pickedFlowId) : null);
 
   const orderedFlows = useMemo(() => {
     const isStarred = (f: typeof flows[number]) =>
@@ -681,10 +746,106 @@ function WelcomeFlowsRow({
     });
   }, [flows, starredFlows]);
 
+  // Grouped view backs both the expanded list and the search results. The
+  // collapsed 4-card teaser stays flat — four cards don't need headings.
+  const groups = useMemo(
+    () => groupFlows(flows, { starred: starredFlows, installed: installedFlows, query, tags: activeTags }),
+    [flows, starredFlows, installedFlows, query, activeTags],
+  );
+  const tagCounts = useMemo(() => flowTagCounts(flows), [flows]);
+  const topTags = useMemo(
+    () => [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 8),
+    [tagCounts],
+  );
+  function toggleTag(tag: string) {
+    setActiveTags((prev) => {
+      const next = new Set(prev);
+      if (next.has(tag)) next.delete(tag);
+      else next.add(tag);
+      return next;
+    });
+  }
+  const matchCount = groups.reduce((n, g) => n + g.flows.length, 0);
+  // Two different questions: `hasQuery` gates the registry lookup (a tag
+  // filter alone is "narrow what I have", not "go find me something new" —
+  // matching an empty query against the registry would dump six arbitrary
+  // published flows on screen), while `searching` gates the expanded
+  // layout, which either one should trigger.
+  const hasQuery = query.trim().length > 0;
+  const searching = hasQuery || activeTags.size > 0;
+  // Searching or expanding both mean "show me everything that matches" —
+  // the 4-card cap only applies to the resting state. Focus counts too:
+  // opening the panel the moment the user clicks into the box means the
+  // one unavoidable size change happens on a deliberate action, instead
+  // of firing under their hands on the first keystroke.
+  const grouped = searching || showAll || searchFocused;
+
+  // Registry index is fetched (and cached in the store) the first time the
+  // user searches, not on mount — a network round-trip on every welcome
+  // screen to populate results nobody asked for isn't worth it.
+  useEffect(() => {
+    if (query.trim().length >= 2 && !registryLoaded) void browseRegistries(false);
+  }, [query, registryLoaded]);
+
+  // Published flows matching the same query, minus the ones already
+  // installed (those surface in the local groups above — showing both
+  // would read as a duplicate).
+  const registryMatches = useMemo(() => {
+    if (!hasQuery) return [];
+    const have = installedRegistryKeys(flows, installedFlows);
+    return registryEntries
+      .filter((e) => !have.has(`${e.registryId}:${e.id}`))
+      .filter((e) => registryEntryMatchesQuery(e, query))
+      .slice(0, 6);
+  }, [hasQuery, registryEntries, flows, installedFlows, query]);
+
+  /// Hand the unmatched search to the flow drafter and show the result
+  /// RIGHT HERE. The search text IS the description — someone typing
+  /// "postmortem from an incident channel" into a flow search has already
+  /// written the brief, so re-asking for it in a modal is a tax.
+  ///
+  /// Deliberately does not navigate to the editor: the user asked to run
+  /// something, not to author a flow. They see the steps, then launch; the
+  /// flow is saved on the way out (`handleRun`), so it's in the library
+  /// next time without anyone having visited a builder.
+  async function handleDraft() {
+    const description = query.trim();
+    if (!description || drafting) return;
+    setDrafting(true);
+    setDraftError(null);
+    try {
+      const result = await window.overcli.invoke('flows:draftFromPrompt', { description });
+      if (!result.ok) {
+        setDraftError(result.error);
+        return;
+      }
+      setDraftedFlow(result.flow);
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function handleInstall(entry: { registryId: string; id: string; version: string }) {
+    const key = `${entry.registryId}:${entry.id}`;
+    setInstallingKey(key);
+    setInstallError(null);
+    try {
+      const res = await installFromRegistry(entry);
+      if (!res.ok) {
+        setInstallError(res.error || 'Install failed.');
+        return;
+      }
+      // The new YAML is on disk but the in-memory library predates it.
+      await reload(projects.map((p) => p.path));
+    } finally {
+      setInstallingKey(null);
+    }
+  }
+
   if (!loaded) return null;
   if (flows.length === 0) return null;
 
-  const visibleFlows = showAll ? orderedFlows : orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
+  const visibleFlows = orderedFlows.slice(0, MAX_VISIBLE_FLOWS);
   const hiddenCount = orderedFlows.length - visibleFlows.length;
 
   async function handleRun(prompt: string, attachments: Attachment[]) {
@@ -697,8 +858,22 @@ function WelcomeFlowsRow({
     setSubmitting(true);
     setError(null);
     try {
+      // A drafted flow has never touched disk, and the runtime resolves
+      // runs by flow id — so it has to be saved before it can run. Doing
+      // it here (rather than at draft time) means abandoning a draft
+      // leaves no junk in the library.
+      let flowId = pickedFlow.id;
+      if (draftedFlow) {
+        const saved = await saveDraftedFlow(draftedFlow, projects.map((p) => p.path));
+        if (!saved.ok) {
+          setError(saved.error);
+          return;
+        }
+        flowId = saved.flow.id;
+        setDraftedFlow(null);
+      }
       const result = await window.overcli.invoke('flows:startRun', {
-        flowId: pickedFlow.id,
+        flowId,
         projectPath: target,
         userPrompt: text,
         attachments: attachments.length > 0 ? attachments : undefined,
@@ -734,21 +909,205 @@ function WelcomeFlowsRow({
           jump and the picked card's identity is preserved. */}
       {!pickedFlow ? (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            {visibleFlows.map((flow) => (
-              <FlowCard
-                key={flow.id}
-                flow={flow}
-                picked={false}
-                onClick={() => {
-                  setPickedFlowId(flow.id);
-                  setError(null);
-                }}
-              />
-            ))}
+          {/* Open, the panel breaks out of the 680px composer column to
+              ~960px so cards go three-across at the SAME card width rather
+              than three cramped ones — 680/3 leaves ~150px for text, which
+              truncates most flow names to uselessness. Centred on the
+              parent via the left-1/2 trick so the composer above keeps its
+              own width. At rest it stays in the column at two-across. */}
+          <div
+            className={
+              grouped ? 'relative left-1/2 -translate-x-1/2 w-[min(60rem,92vw)]' : ''
+            }
+          >
+          {/* The filter box only earns its space once there are enough
+              flows to lose one in. Below that the grid IS the index. */}
+          {flows.length > MAX_VISIBLE_FLOWS && (
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              placeholder="Search your flows and the registry…"
+              className="field w-full mb-2 px-3 py-1.5 text-[12px]"
+            />
+          )}
+
+          {/* Tag chips, only once the panel is open — at rest they'd be a
+              row of filters for a list short enough not to need them. */}
+          {grouped && topTags.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {topTags.map(([tag, count]) => (
+                <button
+                  key={tag}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => toggleTag(tag)}
+                  className={
+                    'text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ' +
+                    (activeTags.has(tag)
+                      ? 'border-accent/60 bg-accent/20 text-accent'
+                      : 'border-card text-ink-faint hover:text-ink hover:border-card-strong')
+                  }
+                >
+                  {tag} <span className="opacity-60">{count}</span>
+                </button>
+              ))}
+              {activeTags.size > 0 && (
+                <button
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => setActiveTags(new Set())}
+                  className="text-[10px] px-1.5 py-0.5 text-ink-faint hover:text-ink"
+                >
+                  clear
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Results scroll INSIDE a fixed viewport rather than growing the
+              page. Unbounded growth pushed the composer off the top and
+              made every keystroke re-lay-out the whole welcome screen —
+              and because narrowing a search shrinks the list, the page
+              jittered in both directions as you typed. A constant height
+              (not just a max) holds everything above it still; the cost is
+              some empty space on a one-result search, which is cheaper
+              than a moving target. */}
+          <div
+            className={
+              grouped
+                ? 'h-[min(46vh,30rem)] overflow-y-auto pr-1 -mr-1 overscroll-contain'
+                : ''
+            }
+          >
+          {grouped ? (
+            <div className="space-y-4">
+              {groups.map((group) => (
+                <div key={group.key}>
+                  {/* Sticky so the heading survives its own group scrolling
+                      past — otherwise a long "Yours" list leaves you with
+                      a wall of cards and no idea which bucket you're in. */}
+                  <div className="sticky top-0 z-10 flex items-baseline gap-2 mb-1.5 px-0.5 py-1 -mx-0.5 bg-surface/90 backdrop-blur-sm">
+                    <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+                      {group.title}
+                    </span>
+                    <span className="text-[10px] text-ink-faint/70">{group.flows.length}</span>
+                    {group.hint && (
+                      <span className="text-[10px] text-ink-faint/60 truncate">{group.hint}</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {group.flows.map((flow) => (
+                      <FlowCard
+                        key={`${flow.source}:${flow.id}`}
+                        flow={flow}
+                        picked={false}
+                        onClick={() => {
+                          setPickedFlowId(flow.id);
+                          setError(null);
+                        }}
+                        onTagClick={toggleTag}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              {visibleFlows.map((flow) => (
+                <FlowCard
+                  key={`${flow.source}:${flow.id}`}
+                  flow={flow}
+                  picked={false}
+                  onClick={() => {
+                    setPickedFlowId(flow.id);
+                    setError(null);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* The same query, against published flows. Shown inline rather
+              than behind the browse modal: "nothing I have does this" and
+              "here's one you can install" are the same moment. */}
+          {hasQuery && (
+            <div className="mt-4">
+              <div className="sticky top-0 z-10 flex items-baseline gap-2 mb-1.5 px-0.5 py-1 -mx-0.5 bg-surface/90 backdrop-blur-sm">
+                <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+                  From the registry
+                </span>
+                {registryMatches.length > 0 && (
+                  <span className="text-[10px] text-ink-faint/70">{registryMatches.length}</span>
+                )}
+                <span className="text-[10px] text-ink-faint/60">not installed yet</span>
+              </div>
+              {!registryLoaded ? (
+                <div className="text-[11px] text-ink-faint px-0.5 py-2">Searching the registry…</div>
+              ) : registryMatches.length === 0 ? (
+                <div className="text-[11px] text-ink-faint px-0.5 py-2">
+                  {matchCount === 0
+                    ? 'Nothing here or in the registry matches that.'
+                    : 'Nothing new in the registry for that.'}{' '}
+                  <button
+                    onClick={() => setBrowseQuery('')}
+                    className="text-ink hover:underline underline-offset-2"
+                  >
+                    Browse everything →
+                  </button>
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {registryMatches.map((entry) => (
+                    <RegistryFlowCard
+                      key={`${entry.registryId}:${entry.id}`}
+                      entry={entry}
+                      installing={installingKey === `${entry.registryId}:${entry.id}`}
+                      onInstall={() => void handleInstall(entry)}
+                      onPreview={() => setBrowseQuery(query)}
+                    />
+                  ))}
+                </div>
+              )}
+              {installError && (
+                <div className="mt-1.5 text-[11px] text-red-400 px-0.5">{installError}</div>
+              )}
+
+              {/* Third rail, and only once the first two are exhausted:
+                  nothing you own does this and nothing published does
+                  either, so the remaining option is to make one. Lands in
+                  the editor with the drafted steps rendered — NOT straight
+                  into a run. A drafted pipeline picks its own models,
+                  permission modes, and may well include a step that
+                  writes to the repo; that deserves a look before it goes. */}
+              {registryLoaded && matchCount === 0 && registryMatches.length === 0 && (
+                <button
+                  onClick={() => void handleDraft()}
+                  disabled={drafting}
+                  className="w-full mt-2 rounded-lg border border-dashed border-accent/40 bg-accent/5 px-3 py-2.5 text-left hover:bg-accent/10 transition-colors disabled:opacity-60"
+                >
+                  <div className="text-[12px] text-ink">
+                    {drafting
+                      ? 'Drafting a flow…'
+                      : `Build a flow for “${query.trim()}” with AI →`}
+                  </div>
+                  <div className="text-[10.5px] text-ink-faint mt-0.5">
+                    {drafting
+                      ? 'Asking your CLI to design the steps.'
+                      : 'Writes the steps from your search. You see them before anything runs.'}
+                  </div>
+                </button>
+              )}
+              {draftError && (
+                <div className="mt-1.5 text-[11px] text-red-400 px-0.5">{draftError}</div>
+              )}
+            </div>
+          )}
           </div>
+          </div>
+
           <div className="flex items-center justify-center gap-3 mt-2 text-[11px] text-ink-faint">
-            {hiddenCount > 0 && (
+            {!searching && !showAll && hiddenCount > 0 && (
               <button
                 onClick={() => setShowAll(true)}
                 className="hover:text-ink underline-offset-2 hover:underline"
@@ -756,7 +1115,7 @@ function WelcomeFlowsRow({
                 Show {hiddenCount} more
               </button>
             )}
-            {hiddenCount === 0 && showAll && flows.length > MAX_VISIBLE_FLOWS && (
+            {!searching && showAll && flows.length > MAX_VISIBLE_FLOWS && (
               <button
                 onClick={() => setShowAll(false)}
                 className="hover:text-ink underline-offset-2 hover:underline"
@@ -764,6 +1123,12 @@ function WelcomeFlowsRow({
                 Show fewer
               </button>
             )}
+            <button
+              onClick={() => setBrowseQuery(query)}
+              className="hover:text-ink underline-offset-2 hover:underline"
+            >
+              Browse library
+            </button>
             <button
               onClick={() => {
                 // Always land on the flows library — never a leftover
@@ -780,27 +1145,96 @@ function WelcomeFlowsRow({
         </>
       ) : (
         <RunPanel
-          flow={pickedFlow}
-          targetLabel={targetLabel}
-          draftKey={draftKey}
-          rootPath={target}
-          error={error}
-          submitting={submitting}
-          onCancel={() => {
-            setPickedFlowId(null);
-            setError(null);
+            isDraft={!!draftedFlow}
+            flow={pickedFlow}
+            targetLabel={targetLabel}
+            draftKey={draftKey}
+            rootPath={target}
+            error={error}
+            submitting={submitting}
+            onCancel={() => {
+              setPickedFlowId(null);
+              setDraftedFlow(null);
+              setError(null);
+            }}
+            onRun={handleRun}
+            canUseWorktree={canUseWorktree}
+            isWorkspace={!!workspaceRootPath}
+            runIn={runIn}
+            onRunIn={setRunIn}
+            baseBranch={baseBranch}
+            onBaseBranch={setBaseBranch}
+            baseBranchRepoPaths={baseBranchRepoPaths}
+            launchProgress={launchProgressMap[target]}
+          />
+      )}
+
+      {browseQuery !== null && (
+        <BrowseLibraryModal
+          initialQuery={browseQuery}
+          onClose={() => {
+            setBrowseQuery(null);
+            // An install lands a new YAML in the user flows dir; without
+            // this the gallery keeps showing the pre-install list.
+            void reload(projects.map((p) => p.path));
           }}
-          onRun={handleRun}
-          canUseWorktree={canUseWorktree}
-          isWorkspace={!!workspaceRootPath}
-          runIn={runIn}
-          onRunIn={setRunIn}
-          baseBranch={baseBranch}
-          onBaseBranch={setBaseBranch}
-          baseBranchRepoPaths={baseBranchRepoPaths}
-          launchProgress={launchProgressMap[target]}
         />
       )}
+    </div>
+  );
+}
+
+/// A published flow the user doesn't have yet, sized to sit in the same
+/// grid as the local FlowCards. Deliberately NOT clickable-to-run: you
+/// can't run what isn't installed, so the primary action is Install, and
+/// the card body opens the full browser for the step-by-step preview.
+function RegistryFlowCard({
+  entry,
+  installing,
+  onInstall,
+  onPreview,
+}: {
+  entry: FlowRegistryEntry;
+  installing: boolean;
+  onInstall: () => void;
+  onPreview: () => void;
+}) {
+  return (
+    <div className="group relative text-left rounded-xl border border-dashed border-card-strong bg-card/10 px-3.5 py-3 transition-colors hover:bg-card/30">
+      <button onClick={onPreview} className="block w-full text-left">
+        <div className="text-[13px] font-semibold truncate text-ink leading-tight">
+          {entry.name}
+        </div>
+        {entry.description && (
+          <div className="text-[11px] text-ink-muted line-clamp-2 mt-1 leading-snug">
+            {entry.description}
+          </div>
+        )}
+      </button>
+      {entry.tags && entry.tags.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {entry.tags.slice(0, 3).map((tag) => (
+            <span
+              key={tag}
+              className="text-[9.5px] leading-none px-1.5 py-0.5 rounded-full border border-card text-ink-faint"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-2 mt-2">
+        <span className="text-[10px] text-ink-faint truncate flex-1">
+          {entry.registryId} · {entry.version}
+        </span>
+        <button
+          onClick={onInstall}
+          disabled={installing}
+          className="text-[10.5px] px-2 py-0.5 rounded-md border border-card-strong text-ink hover:bg-white/10 disabled:opacity-50"
+        >
+          {installing ? 'Installing…' : 'Install'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -856,7 +1290,16 @@ function EmptyWelcome({
   onPick: () => void;
   backendHealth: Record<string, BackendHealth>;
 }) {
+  // Three states, not two. Until the first probe lands we know *nothing*,
+  // and rendering the happy path in the meantime meant a fresh install
+  // painted an enabled "Add your first project" button and then yanked it
+  // away a moment later when the setup card shoved everything down the
+  // page. "Checking" is its own state so the first frame is never a lie.
+  const probed = backendHealthLoaded(backendHealth);
   const blocked = noBackendReady(backendHealth);
+  const readyNames = ALL_SETUP_BACKENDS.filter(
+    (b) => backendHealth[b]?.kind === 'ready',
+  ).map((b) => backendName(b));
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -876,7 +1319,18 @@ function EmptyWelcome({
           you've signed into.
         </div>
 
-        {blocked && <CliSetupGuide backendHealth={backendHealth} />}
+        {!probed ? (
+          <div className="mt-6 flex items-center justify-center gap-2 text-[11px] text-ink-faint">
+            <Spinner />
+            Looking for installed CLIs…
+          </div>
+        ) : blocked ? (
+          <CliSetupGuide backendHealth={backendHealth} />
+        ) : (
+          <div className="mt-6 text-[11px] text-emerald-500 dark:text-emerald-400">
+            {joinNames(readyNames)} ready to go.
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
           <FeatureCard
@@ -908,15 +1362,17 @@ function EmptyWelcome({
         <div className="mt-8 flex flex-col items-center gap-2">
           <button
             onClick={onPick}
-            disabled={blocked}
-            title={blocked ? 'Install a CLI first to add a project' : undefined}
+            disabled={blocked || !probed}
+            title={blocked ? 'Set up a CLI first to add a project' : undefined}
             className="px-5 py-2.5 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent/30"
           >
             Add your first project
           </button>
           <div className="text-[11px] text-ink-faint">
-            {blocked
-              ? 'Install a CLI above to get started.'
+            {!probed
+              ? 'One moment — checking what you already have installed.'
+              : blocked
+              ? 'Set up a CLI above first — this unlocks as soon as one is ready.'
               : 'Pick a folder on disk. Git repos unlock agents; any folder works for chat.'}
           </div>
         </div>
@@ -926,30 +1382,44 @@ function EmptyWelcome({
   );
 }
 
-const CLI_SETUP: {
+interface CliSetupEntry {
   backend: Backend;
   name: string;
+  /// One line on what you get, so the choice isn't five identical npm
+  /// commands with different package names.
+  blurb: string;
   install: string;
   auth: string | null;
   docs: string;
-}[] = [
+  /// Shown above the fold as a suggested starting point. The rest sit
+  /// under "Also supported" — every CLI works, but a first-run screen
+  /// that refuses to have an opinion is a worse first run.
+  featured?: boolean;
+}
+
+const CLI_SETUP: CliSetupEntry[] = [
   {
     backend: 'claude',
     name: 'Claude',
+    blurb: 'Anthropic’s Claude Code. Broadest tool + agent support in overcli.',
     install: 'npm install -g @anthropic-ai/claude-code',
     auth: 'claude auth login',
     docs: 'https://docs.claude.com/en/docs/claude-code/setup',
+    featured: true,
   },
   {
     backend: 'codex',
     name: 'Codex',
+    blurb: 'OpenAI’s Codex CLI. Signs in with your ChatGPT account.',
     install: 'npm install -g @openai/codex',
     auth: 'codex login',
     docs: 'https://github.com/openai/codex',
+    featured: true,
   },
   {
     backend: 'gemini',
     name: 'Gemini',
+    blurb: 'Google’s Gemini CLI.',
     install: 'npm install -g @google/gemini-cli',
     auth: 'gemini auth login',
     docs: 'https://github.com/google-gemini/gemini-cli',
@@ -957,6 +1427,7 @@ const CLI_SETUP: {
   {
     backend: 'copilot',
     name: 'Copilot',
+    blurb: 'GitHub Copilot CLI, on your GitHub account.',
     install: 'npm install -g @github/copilot',
     auth: 'copilot login',
     docs: 'https://www.npmjs.com/package/@github/copilot',
@@ -964,11 +1435,21 @@ const CLI_SETUP: {
   {
     backend: 'ollama',
     name: 'Ollama',
+    blurb: 'Open models running locally. No account, no network.',
     install: 'Download from ollama.com',
     auth: null,
     docs: 'https://ollama.com/download',
   },
 ];
+
+const ALL_SETUP_BACKENDS = CLI_SETUP.map((c) => c.backend);
+
+/// "Claude", "Claude and Codex", "Claude, Codex and Ollama".
+function joinNames(names: string[]): string {
+  if (names.length === 0) return 'No CLI';
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -989,55 +1470,216 @@ function CopyButton({ value }: { value: string }) {
 }
 
 function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
-  const rows = CLI_SETUP.filter(({ backend }) => {
-    const kind = backendHealth[backend]?.kind ?? 'missing';
-    return kind !== 'ready';
-  });
-  if (rows.length === 0) return null;
+  const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
+  const openSheet = useStore((s) => s.openSheet);
+  const [recheckedAt, setRecheckedAt] = useState(0);
+
+  // Someone staring at this screen is, right now, in a terminal running one
+  // of the commands below. Poll while we're blocked so the app notices on
+  // its own — the alternative is a user who installs a CLI, comes back to a
+  // screen that still says "install a CLI", and concludes the app is broken.
+  // `force` drops main's 15s probe cache; only when the window has focus, so
+  // a backgrounded app isn't respawning CLIs forever.
+  useEffect(() => {
+    const tick = () => {
+      if (!document.hasFocus()) return;
+      void refreshBackendHealth(true);
+    };
+    const id = setInterval(tick, 4000);
+    // Coming back from the terminal is the exact moment the answer changes.
+    window.addEventListener('focus', tick);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', tick);
+    };
+  }, [refreshBackendHealth]);
+
+  const rows = CLI_SETUP.map((cli) => ({
+    ...cli,
+    health: backendHealth[cli.backend],
+    // Absent means we haven't heard about it; treat as missing rather than
+    // rendering an empty row.
+    kind: backendHealth[cli.backend]?.kind ?? 'missing',
+  }))
+    // `unknown` is only ever produced by the store for a backend the user
+    // turned off in Settings. Telling someone to npm-install something they
+    // deliberately disabled is noise.
+    .filter((r) => r.kind !== 'ready' && r.kind !== 'unknown');
+
+  if (rows.length === 0) {
+    return (
+      <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
+        <div className="text-sm font-medium text-ink">Every CLI is switched off</div>
+        <div className="mt-1 text-[12px] text-ink-muted">
+          All five backends are disabled in settings, so there's nothing for overcli to
+          drive. Re-enable one to get started.
+        </div>
+        <button
+          onClick={() => openSheet({ type: 'settings' })}
+          className="mt-3 px-3 py-1.5 rounded-md bg-accent/25 text-accent hover:bg-accent/35 text-xs font-medium"
+        >
+          Open settings
+        </button>
+      </div>
+    );
+  }
+
+  // An installed-but-signed-out CLI is one click from done, so it leads —
+  // it's a far shorter path than any install below it.
+  const signIn = rows.filter((r) => r.kind === 'unauthenticated');
+  const rest = rows.filter((r) => r.kind !== 'unauthenticated');
+  const featured = rest.filter((r) => r.featured);
+  const others = rest.filter((r) => !r.featured);
+
+  const headline =
+    signIn.length > 0
+      ? `Sign in to ${joinNames(signIn.map((r) => r.name))} to get started`
+      : 'Install a coding CLI to get started';
+  const subline =
+    signIn.length > 0
+      ? `${signIn.length === 1 ? 'It’s' : 'They’re'} already installed — one sign-in and you're in. overcli picks it up automatically.`
+      : 'overcli drives the coding CLIs you sign into — there are no API keys to paste here. Set up any one of these and this screen unlocks on its own.';
+
   return (
     <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
-      <div className="text-xs font-medium text-ink-muted mb-4">
-        You'll need at least one CLI installed to get started
+      <div className="text-sm font-medium text-ink">{headline}</div>
+      <div className="mt-1 mb-4 text-[12px] leading-relaxed text-ink-muted">{subline}</div>
+
+      <div className="flex flex-col gap-1.5">
+        {signIn.map((row) => (
+          <CliSetupRow key={row.backend} row={row} />
+        ))}
+        {featured.map((row) => (
+          <CliSetupRow key={row.backend} row={row} />
+        ))}
       </div>
-      <div className="flex flex-col gap-2">
-        {rows.map(({ backend, name, install, auth, docs }) => {
-          const health = backendHealth[backend];
-          const kind = health?.kind ?? 'missing';
-          const isAuth = kind === 'unauthenticated';
-          const command = isAuth && auth ? auth : install;
-          const canCopy = command.startsWith('npm') || isAuth;
-          return (
-            <div
-              key={backend}
-              className="flex items-center gap-3 rounded-md px-3 py-2 bg-card/60"
-            >
-              <span
-                className="text-xs font-semibold w-14 shrink-0"
-                style={{ color: backendColor(backend as Backend) }}
-              >
-                {name}
-              </span>
-              <code className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">
-                {command}
-              </code>
-              {isAuth && (
-                <span className="text-[10px] text-amber-400 shrink-0">needs login</span>
-              )}
-              {canCopy && <CopyButton value={command} />}
-              <a
-                href={docs}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-accent hover:bg-card-strong"
-                title={`${name} install & sign-in docs`}
-              >
-                Docs ↗
-              </a>
-            </div>
-          );
-        })}
+
+      {others.length > 0 && (
+        <>
+          <div className="mt-4 mb-1.5 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+            Also supported
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {others.map((row) => (
+              <CliSetupRow key={row.backend} row={row} compact />
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="mt-4 pt-3 border-t border-card flex items-center gap-2 text-[10.5px] text-ink-faint">
+        <Spinner />
+        <span className="flex-1">Watching for a CLI — no need to restart overcli.</span>
+        <button
+          onClick={() => {
+            setRecheckedAt(Date.now());
+            void refreshBackendHealth(true);
+          }}
+          className="rounded px-1.5 py-0.5 font-medium text-ink-muted hover:text-ink hover:bg-card-strong"
+        >
+          {recheckedAt ? 'Check again' : 'Check now'}
+        </button>
       </div>
     </div>
+  );
+}
+
+type CliSetupRowData = CliSetupEntry & { health?: BackendHealth; kind: BackendHealth['kind'] };
+
+function CliSetupRow({ row, compact }: { row: CliSetupRowData; compact?: boolean }) {
+  const { backend, name, blurb, install, auth, docs, kind, health } = row;
+  const isAuth = kind === 'unauthenticated';
+  const command = isAuth && auth ? auth : install;
+  // "Download from ollama.com" is prose, not something to paste in a shell.
+  const canCopy = command.startsWith('npm') || isAuth;
+  return (
+    <div className="rounded-md px-3 py-2 bg-card/60">
+      <div className="flex items-center gap-2.5">
+        <span
+          className="w-1.5 h-1.5 rounded-full shrink-0"
+          style={{
+            backgroundColor: isAuth ? '#f59e0b' : backendColor(backend),
+            opacity: isAuth ? 1 : 0.45,
+          }}
+        />
+        <span className="text-xs font-semibold shrink-0" style={{ color: backendColor(backend) }}>
+          {name}
+        </span>
+        {isAuth ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 shrink-0">
+            installed · signed out
+          </span>
+        ) : (
+          <code className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">{command}</code>
+        )}
+        {isAuth && <span className="flex-1" />}
+        {isAuth && <SignInButton backend={backend} name={name} />}
+        {canCopy && <CopyButton value={command} />}
+        <a
+          href={docs}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-accent hover:bg-card-strong"
+          title={`${name} install & sign-in docs`}
+        >
+          Docs ↗
+        </a>
+      </div>
+      {isAuth && (
+        <code className="mt-1 block text-[11px] font-mono text-ink-muted truncate">{command}</code>
+      )}
+      {!compact && !isAuth && (
+        <div className="mt-0.5 text-[10.5px] text-ink-faint">{blurb}</div>
+      )}
+      {/* An `error` kind means the binary is there but wouldn't run — a
+          version mismatch, a broken shim, a quarantined binary. The install
+          command won't fix that, so show what actually went wrong. */}
+      {kind === 'error' && health?.message && (
+        <div className="mt-1 text-[10.5px] text-red-500 dark:text-red-400 break-words">
+          Found it, but it wouldn't run: {health.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// Opens Terminal on the backend's login command (same path the in-chat
+/// auth banner uses). Beats "copy this, find a terminal, paste it".
+function SignInButton({ backend, name }: { backend: Backend; name: string }) {
+  const [launching, setLaunching] = useState(false);
+  const [launched, setLaunched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <>
+      {error && <span className="text-[10px] text-red-400 shrink-0">{error}</span>}
+      <button
+        onClick={async () => {
+          setLaunching(true);
+          setError(null);
+          try {
+            const res = await window.overcli.invoke('auth:openCliLogin', backend);
+            if (res.ok) setLaunched(true);
+            else setError(res.error);
+          } finally {
+            setLaunching(false);
+          }
+        }}
+        disabled={launching}
+        title={`Open Terminal and sign into ${name}`}
+        className="shrink-0 rounded px-2 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
+      >
+        {launching ? 'Opening…' : launched ? 'Reopen Terminal' : 'Sign in'}
+      </button>
+    </>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg className="w-3 h-3 animate-spin shrink-0" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+      <path d="M14 8a6 6 0 00-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -1146,17 +1788,6 @@ function WorkspaceGlyph() {
       />
     </svg>
   );
-}
-
-type BackendPrefs = {
-  disabledBackends?: Partial<Record<Backend, boolean>>;
-  preferredBackend?: Backend;
-};
-
-function firstEnabledBackend(settings: BackendPrefs): Backend {
-  const preferred = settings.preferredBackend;
-  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
-  return enabledBackends(settings)[0] ?? 'claude';
 }
 
 function ContextPill({

@@ -24,6 +24,7 @@ import {
   readMcpServer,
   type AddMcpResult,
   type McpServerConfig,
+  type Paths,
   type RemoveMcpResult,
 } from './mcpConfig';
 
@@ -43,6 +44,21 @@ interface CatalogEntry {
   secrets?: McpSecretField[];
   authNote?: string;
   docsUrl?: string;
+  /// Recognises an *installed* config that predates the current template —
+  /// a server the upstream vendor has since retired or re-shaped. Presence
+  /// alone can't tell us this, so entries that have moved carry a matcher
+  /// and we surface a reinstall prompt (see `legacyNote`).
+  legacy?: (config: McpServerConfig) => boolean;
+  /// Why the installed config is stale, shown next to the Reinstall button.
+  legacyNote?: string;
+}
+
+/// `args` as strings, tolerating the hand-edited configs users can leave
+/// behind (missing key, scalar instead of array, numbers in the list).
+function asArgs(config: McpServerConfig): string[] {
+  const raw = config.args;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((a) => String(a));
 }
 
 const OAUTH_NOTE =
@@ -246,17 +262,42 @@ const CATALOG: CatalogEntry[] = [
     id: 'aws',
     name: 'AWS',
     description:
-      'Run AWS CLI commands and query any AWS service via the official AWS API MCP server. Requires the `uv` toolchain (uvx) on PATH.',
+      'Query and operate any AWS service through the AWS-managed MCP endpoint. A thin local proxy signs requests with your own credentials; the tools themselves run AWS-side. Requires the `uv` toolchain (uvx) on PATH.',
     category: 'Cloud',
     transport: 'stdio',
     targets: ALL_CLIS,
-    // AWS Labs servers are Python — run with uvx, not npx. Region carries a
-    // default so the server starts; auth comes from the SDK's default
-    // credential chain, so we collect no secrets here (see authNote).
-    config: { command: 'uvx', args: ['awslabs.aws-api-mcp-server@latest'], env: { AWS_REGION: 'us-east-1' } },
+    // Replaces the retired `awslabs.aws-api-mcp-server`, which AWS put into
+    // end-of-development (see MIGRATION.md linked from docsUrl). Two things
+    // the guide is explicit about, both easy to get wrong:
+    //   - pin the proxy version; `@latest` is called out as unsupported here
+    //   - the default region rides in `--metadata`, NOT `env`. The managed
+    //     server reads its region from proxy metadata; an `AWS_REGION` env
+    //     var would only steer local credential resolution, so the old
+    //     `env: { AWS_REGION }` block silently stops meaning what it meant.
+    // `${AWS_REGION}` is substituted from the collected field at install.
+    config: {
+      command: 'uvx',
+      args: [
+        'mcp-proxy-for-aws@1.6.3',
+        'https://aws-mcp.us-east-1.api.aws/mcp',
+        '--metadata',
+        'AWS_REGION=${AWS_REGION}',
+      ],
+    },
+    legacy: (config) =>
+      asArgs(config).some((a) => a.startsWith('awslabs.aws-api-mcp-server')),
+    legacyNote:
+      'This is the retired AWS API MCP server — AWS has stopped developing it. Reinstall to switch to the managed AWS MCP endpoint.',
     authNote:
-      'No keys to paste — the server uses your machine\'s AWS credentials via the standard SDK chain (env vars, `~/.aws/credentials`/`config`, SSO, or an IAM role). Run `aws configure` or `aws sso login` first.',
+      'No keys to paste — the proxy uses your machine\'s AWS credentials via the standard SDK chain (env vars, `~/.aws/credentials`/`config`, SSO, or an IAM role). Run `aws configure` or `aws sso login` first.',
     secrets: [
+      {
+        key: 'AWS_REGION',
+        label: 'Default region',
+        help: 'The region calls target when the agent doesn\'t name one — it can still override per command with `--region`. Not a secret.',
+        optional: true,
+        defaultValue: 'us-east-1',
+      },
       {
         key: 'AWS_PROFILE',
         label: 'AWS profile (optional)',
@@ -264,7 +305,7 @@ const CATALOG: CatalogEntry[] = [
         optional: true,
       },
     ],
-    docsUrl: 'https://github.com/awslabs/mcp/tree/main/src/aws-api-mcp-server',
+    docsUrl: 'https://github.com/awslabs/mcp/blob/main/src/aws-api-mcp-server/MIGRATION.md',
   },
   {
     id: 'google-cloud-run',
@@ -311,18 +352,32 @@ const CATALOG: CatalogEntry[] = [
   },
 ];
 
-function isInstalled(cli: McpCli, id: string): boolean {
+function isInstalled(cli: McpCli, id: string, paths?: Paths): boolean {
   try {
-    return readMcpServer(cli, id) !== null;
+    return readMcpServer(cli, id, paths) !== null;
   } catch {
     return false;
   }
 }
 
-export function listMcpCatalog(): McpCatalogItem[] {
+function isLegacy(cli: McpCli, entry: CatalogEntry, paths?: Paths): boolean {
+  if (!entry.legacy) return false;
+  try {
+    const config = readMcpServer(cli, entry.id, paths);
+    return config !== null && entry.legacy(config);
+  } catch {
+    return false;
+  }
+}
+
+export function listMcpCatalog(paths?: Paths): McpCatalogItem[] {
   return CATALOG.map((entry) => {
     const installed: Partial<Record<McpCli, boolean>> = {};
-    for (const cli of entry.targets) installed[cli] = isInstalled(cli, entry.id);
+    const legacy: Partial<Record<McpCli, boolean>> = {};
+    for (const cli of entry.targets) {
+      installed[cli] = isInstalled(cli, entry.id, paths);
+      legacy[cli] = installed[cli] ? isLegacy(cli, entry, paths) : false;
+    }
     return {
       id: entry.id,
       name: entry.name,
@@ -334,37 +389,88 @@ export function listMcpCatalog(): McpCatalogItem[] {
       authNote: entry.authNote,
       docsUrl: entry.docsUrl,
       installed,
+      legacy,
+      legacyNote: entry.legacyNote,
     };
   });
 }
 
-/// Build the final config (merging collected secrets into `env`) and
-/// fan-write it to the target CLIs via `addMcpServerToTargets`.
+/// Build the final config (substituting collected values into `args`,
+/// merging the rest into `env`) and fan-write it to the target CLIs via
+/// `addMcpServerToTargets`. Reinstalling over an existing entry is how a
+/// legacy config gets replaced — the server name is the catalog id, and
+/// the writers overwrite that key rather than appending a second server
+/// (two AWS servers at once would collide on tool names).
 export function installMcpCatalogEntry(
   id: string,
   targets: unknown[],
   secrets: Record<string, string> = {},
+  paths?: Paths,
 ): AddMcpResult {
   const entry = CATALOG.find((e) => e.id === id);
   if (!entry) return { ok: false, error: `Unknown MCP server: ${id}` };
 
   const config: McpServerConfig = { ...entry.config };
 
-  // Merge collected secret values into the env block, keeping any stub
-  // env the template declared. Blank values are dropped so we don't write
-  // empty keys the user skipped.
+  // Resolve each field once: the typed value, else its default, else blank.
+  const resolved = new Map<string, string>();
+  for (const field of entry.secrets ?? []) {
+    const typed = secrets[field.key];
+    const value = typeof typed === 'string' && typed.trim() ? typed.trim() : field.defaultValue ?? '';
+    if (value) resolved.set(field.key, value);
+  }
+
+  // A field the template references as `${KEY}` in `args` belongs on the
+  // command line, not in `env` — some servers (AWS) read the two from
+  // different places and only honour the arg. Substituting marks the key
+  // consumed so it isn't also written as an env var.
+  const consumed = new Set<string>();
+  const templated = asArgs(config);
+  if (templated.length > 0) {
+    config.args = templated.map((arg) =>
+      arg.replace(/\$\{(\w+)\}/g, (whole, key: string) => {
+        if (!resolved.has(key)) return whole;
+        consumed.add(key);
+        return resolved.get(key)!;
+      }),
+    );
+    // An unfilled placeholder means an optional field was left blank with
+    // no default — pass no arg rather than a literal `${KEY}`.
+    config.args = dropUnfilledArgs(config.args as string[]);
+  }
+
+  // Merge the remaining values into the env block, keeping any stub env
+  // the template declared. Blanks are dropped so we don't write empty
+  // keys the user skipped.
   const baseEnv =
     config.env && typeof config.env === 'object' && !Array.isArray(config.env)
       ? (config.env as Record<string, string>)
       : {};
   const env: Record<string, string> = { ...baseEnv };
-  for (const field of entry.secrets ?? []) {
-    const value = secrets[field.key];
-    if (typeof value === 'string' && value.trim()) env[field.key] = value.trim();
+  for (const [key, value] of resolved) {
+    if (!consumed.has(key)) env[key] = value;
   }
   if (Object.keys(env).length > 0) config.env = env;
 
-  return addMcpServerToTargets({ name: entry.id, config, targets });
+  return paths
+    ? addMcpServerToTargets({ name: entry.id, config, targets }, paths)
+    : addMcpServerToTargets({ name: entry.id, config, targets });
+}
+
+/// Drop args still carrying an unsubstituted `${KEY}`, along with the
+/// preceding flag when the placeholder was that flag's value (`--metadata`
+/// `AWS_REGION=${AWS_REGION}` → both go). Leaving either behind would ship
+/// a literal `${...}` to the server.
+function dropUnfilledArgs(args: string[]): string[] {
+  const out: string[] = [];
+  for (const arg of args) {
+    if (/\$\{\w+\}/.test(arg)) {
+      if (out.length > 0 && out[out.length - 1].startsWith('-')) out.pop();
+      continue;
+    }
+    out.push(arg);
+  }
+  return out;
 }
 
 export function uninstallMcpCatalogEntry(id: string, targets: unknown[]): RemoveMcpResult {

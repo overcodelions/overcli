@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalizePremiumModel,
   friendlyModelLabel,
+  liftMissingModel,
   modelSpeed,
   modelTierLabel,
   PREMIUM_MODELS,
@@ -22,16 +23,67 @@ describe('PREMIUM_MODELS', () => {
       expect(models.length, `${backend} should have at least one model`).toBeGreaterThan(0);
     }
   });
+
+  it('lists claude-opus-5 first so it is the default Claude model', () => {
+    expect(PREMIUM_MODELS.claude[0]).toBe('claude-opus-5');
+  });
+
+  it('has retired claude-opus-4-7', () => {
+    expect(PREMIUM_MODELS.claude).not.toContain('claude-opus-4-7');
+  });
+});
+
+// ─── liftMissingModel ─────────────────────────────────────────────────────────
+
+describe('liftMissingModel', () => {
+  it('passes through a supported id untouched', () => {
+    expect(liftMissingModel('claude', 'claude-opus-5')).toBe('claude-opus-5');
+    expect(liftMissingModel('claude', 'claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
+  });
+
+  it('lifts a retired opus 4.7 to the next-highest opus (4.8, not 5)', () => {
+    expect(liftMissingModel('claude', 'claude-opus-4-7')).toBe('claude-opus-4-8');
+  });
+
+  it('lifts a dotted retired id too (relies on version parsing, not exact spelling)', () => {
+    expect(liftMissingModel('claude', 'claude-opus-4.7')).toBe('claude-opus-4-8');
+  });
+
+  it('lifts a below-catalog opus to the lowest available opus', () => {
+    // Opus 4.6 is retired and below everything we ship; next-highest is 4.8.
+    expect(liftMissingModel('claude', 'claude-opus-4-6')).toBe('claude-opus-4-8');
+  });
+
+  it('falls back to the highest in-family version when nothing is newer', () => {
+    // A hypothetical opus 6: nothing higher ships, so settle for the top.
+    expect(liftMissingModel('claude', 'claude-opus-6')).toBe('claude-opus-5');
+  });
+
+  it('stays within the model family (sonnet lifts to sonnet, not opus)', () => {
+    // Sonnet 4.5 is not in the catalog; lifts to Sonnet 4.6, never a sibling family.
+    expect(liftMissingModel('claude', 'claude-sonnet-4-5')).toBe('claude-sonnet-4-6');
+  });
+
+  it('leaves an unknown-family id unchanged so validation can still reject it', () => {
+    expect(liftMissingModel('claude', 'claude-3-5-haiku-20241022')).toBe(
+      'claude-3-5-haiku-20241022',
+    );
+    expect(liftMissingModel('claude', 'totally-made-up')).toBe('totally-made-up');
+  });
 });
 
 // ─── friendlyModelLabel ───────────────────────────────────────────────────────
 
 describe('friendlyModelLabel — claude', () => {
+  it('formats opus-5', () => {
+    expect(friendlyModelLabel('claude', 'claude-opus-5')).toBe('Claude Opus 5');
+  });
+
   it('formats opus-4-8', () => {
     expect(friendlyModelLabel('claude', 'claude-opus-4-8')).toBe('Claude Opus 4.8');
   });
 
-  it('formats opus-4-7', () => {
+  it('formats opus-4-7 (retired, still label-able)', () => {
     expect(friendlyModelLabel('claude', 'claude-opus-4-7')).toBe('Claude Opus 4.7');
   });
 
@@ -141,8 +193,8 @@ describe('friendlyModelLabel — ollama', () => {
 describe('modelSpeed', () => {
   it.each([
     ['claude-fable-5', 'frontier'],
+    ['claude-opus-5', 'thinking'],
     ['claude-opus-4-8', 'thinking'],
-    ['claude-opus-4-7', 'thinking'],
     ['claude-sonnet-5', 'fast'],
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],

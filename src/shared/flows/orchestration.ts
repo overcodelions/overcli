@@ -1,15 +1,22 @@
 // Orchestrator data model. An "orchestration" is a batch: the user asks an
 // AI (with their MCPs) to produce a list of small, self-contained asks
-// ("candidates"), maps each to a flow, and launches them — each child flow
-// runs in its own git worktree, with a concurrency cap so they trickle
-// rather than flood. The orchestration record is the ledger: it remembers
-// where the batch came from (the producer conversation) and tracks each
-// item from queued → running → done, linking out to the child FlowRun.
+// ("candidates"), maps each to a flow, and launches them — by default each
+// child flow runs in its own git worktree, with a concurrency cap so they
+// trickle rather than flood. A batch can instead run in the project's own
+// working tree (`runIn: 'cwd'`), which trades that parallelism for working
+// on the tree the user is actually looking at. The orchestration record is
+// the ledger: it remembers where the batch came from (the producer
+// conversation) and tracks each item from queued → running → done, linking
+// out to the child FlowRun.
 //
 // Lives in `shared` so the main-process engine and the renderer store share
 // one source of truth for the shapes that cross IPC.
 
 import type { UUID } from '../types';
+
+/// Where a run does its work: `cwd` = the project's own working tree,
+/// `worktree` = a fresh git worktree forked from a base branch.
+export type RunIn = 'cwd' | 'worktree';
 
 /// One ask surfaced by the producer turn, before the user maps it to a
 /// flow. The producer is instructed to end its reply with a
@@ -35,6 +42,13 @@ export interface Candidate {
 }
 
 export type OrchestrationItemStatus =
+  /// Produced by a scheduled producer turn and PARKED — not queued, not
+  /// launched, waiting for a human to approve the batch. Distinct from
+  /// `queued` precisely so it survives a restart: `queued` means "we already
+  /// committed to launching this", which is why the loader settles those on
+  /// boot, whereas a proposal has committed to nothing and costs nothing to
+  /// keep. See `approveBatch` in main/flows/orchestrator.
+  | 'proposed'
   /// Waiting for a concurrency slot — not yet launched.
   | 'queued'
   /// A child flow run is in flight (see `runId`).
@@ -80,9 +94,21 @@ export interface Orchestration {
   title: string;
   /// Project the batch's flows launch against (their worktrees fork from it).
   projectPath: string;
-  /// Default base branch for items that don't override it.
+  /// Where each item's child run works. `worktree` (the default, and the
+  /// value assumed by batches persisted before this field existed) forks a
+  /// fresh worktree per item so they can run in parallel without colliding.
+  /// `cwd` runs them straight in `projectPath`'s working tree — one repo, one
+  /// checkout, so the batch is forced to `maxConcurrent: 1` and items run
+  /// strictly one after another (see `startBatch`). Use it for work that has
+  /// to see the tree as it actually is — uncommitted changes, untracked
+  /// files, a local build — where a clean worktree would be the wrong input.
+  runIn?: RunIn;
+  /// Default base branch for items that don't override it. Ignored entirely
+  /// when `runIn === 'cwd'` (nothing forks — the run uses whatever branch the
+  /// working tree already has checked out).
   baseBranch?: string;
-  /// Max items running at once. The `pump` never exceeds this.
+  /// Max items running at once. The `pump` never exceeds this. Always 1 for a
+  /// `cwd` batch.
   maxConcurrent: number;
   items: OrchestrationItem[];
   /// Provenance: the producer turn that generated the candidates. We keep
@@ -91,6 +117,15 @@ export interface Orchestration {
   producer?: {
     prompt: string;
     reply: string;
+  };
+  /// Set when a schedule produced this batch rather than the user asking for
+  /// it directly. Such a batch arrives with every item `proposed` and does
+  /// nothing until approved — see shared/flows/schedule.ts for why a schedule
+  /// is never allowed to dispatch on its own.
+  origin?: {
+    kind: 'schedule';
+    scheduleId: UUID;
+    scheduleName: string;
   };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).
@@ -189,10 +224,18 @@ function extractCandidatesBlock(reply: string): string | null {
 }
 
 /// True once every item is in a terminal status — used to stamp
-/// `completedAt` and to show the batch as finished.
+/// `completedAt` and to show the batch as finished. A `proposed` item is not
+/// terminal (it hasn't started), so a parked batch never reads as complete.
 export function isOrchestrationComplete(o: Orchestration): boolean {
   return o.items.every(
     (it) =>
       it.status === 'done' || it.status === 'failed' || it.status === 'cancelled',
   );
+}
+
+/// True while a batch is waiting on a human. Parked batches are the whole
+/// point of a scheduled orchestration, so the UI needs a cheap predicate to
+/// surface them ahead of finished ledgers.
+export function isOrchestrationAwaitingApproval(o: Orchestration): boolean {
+  return o.items.some((it) => it.status === 'proposed');
 }

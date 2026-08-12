@@ -70,18 +70,19 @@ async function detectDefaultBranch(repo: string): Promise<string> {
   return 'main';
 }
 
-/// The revision the diff/status should be computed against. We prefer the
-/// commit captured when the worktree was forked (`baselineCommit` /
-/// `baselineCommitsByMember`) over the base branch NAME because: (a) it's
-/// exact — it shows precisely what the flow changed even if the base
-/// branch has moved on since, and (b) it's present on runs created before
-/// `baseBranch` was persisted, so legacy worktree runs diff correctly
-/// instead of erroring against a non-existent `main`.
-function singleDiffBase(run: FlowRun, baseBranch: string): string {
-  return run.baselineCommit ?? baseBranch;
+/// The captured fork point, kept SEPARATE from the base branch name.
+///
+/// This used to prefer the fork commit outright and pass it as the diff
+/// base. That's exact on the day of the run and wrong afterwards: once the
+/// branch takes upstream in, every upstream commit reads as the run's own
+/// work. Main now resolves the live divergence point from the branch name
+/// and treats the fork commit only as a floor / last resort — which also
+/// keeps legacy runs (created before `baseBranch` was persisted) working.
+function singleBaselineCommit(run: FlowRun): string | null {
+  return run.baselineCommit ?? null;
 }
-function memberDiffBase(run: FlowRun, name: string, baseBranch: string): string {
-  return run.baselineCommitsByMember?.[name]?.commit ?? baseBranch;
+function memberBaselineCommit(run: FlowRun, name: string): string | null {
+  return run.baselineCommitsByMember?.[name]?.commit ?? null;
 }
 
 export function FlowRunReviewSheet({ runId }: { runId: UUID }) {
@@ -136,7 +137,7 @@ export function FlowRunReviewSheet({ runId }: { runId: UUID }) {
           worktreePath={member.worktreePath}
           branchName={member.branchName}
           baseBranch={baseBranch}
-          diffBase={memberDiffBase(run, member.name, baseBranch)}
+          baselineCommit={memberBaselineCommit(run, member.name)}
           description={description}
           onBack={() => setSelectedMember(null)}
           onClose={() => openSheet(null)}
@@ -163,7 +164,7 @@ export function FlowRunReviewSheet({ runId }: { runId: UUID }) {
         worktreePath={run.worktreePath}
         branchName={run.branchName}
         baseBranch={baseBranch}
-        diffBase={singleDiffBase(run, baseBranch)}
+        baselineCommit={singleBaselineCommit(run)}
         description={description}
         onClose={() => openSheet(null)}
       />
@@ -218,7 +219,7 @@ function WorktreeReviewPane({
   worktreePath,
   branchName,
   baseBranch,
-  diffBase,
+  baselineCommit,
   description,
   onBack,
   onClose,
@@ -229,11 +230,9 @@ function WorktreeReviewPane({
   branchName: string;
   /// Branch name used for merge-to-base / rebase / display.
   baseBranch: string;
-  /// Revision the diff + status are computed against — the captured fork
-  /// commit when available, else the base branch. Splitting this from
-  /// `baseBranch` lets the diff stay exact while merge still targets a
-  /// real branch.
-  diffBase: string;
+  /// The run's captured fork point, if it has one. Main uses it only as a
+  /// floor under the live merge-base — see `resolveDiffBase`.
+  baselineCommit: string | null;
   description: { subject: string; body?: string };
   onBack?: () => void;
   onClose: () => void;
@@ -249,14 +248,19 @@ function WorktreeReviewPane({
   const reload = async () => {
     setLoading(true);
     const [diff, stat] = await Promise.all([
-      window.overcli.invoke('git:worktreeDiff', { cwd: worktreePath, baseBranch: diffBase }),
+      window.overcli.invoke('git:worktreeDiff', {
+        cwd: worktreePath,
+        baseBranch,
+        baselineCommit,
+      }),
       window.overcli.invoke('git:worktreeStatus', {
         projectPath,
         worktreePath,
         branchName,
-        // Status math (numstat, commits-ahead, merge-base) runs against the
-        // fork point too, so counts match the diff shown.
-        baseBranch: diffBase,
+        // Status math (numstat, commits-ahead, merge-base) resolves the same
+        // way as the diff above, so the counts match the file list shown.
+        baseBranch,
+        baselineCommit,
       }),
     ]);
     let text = diff.stdout;
@@ -274,7 +278,7 @@ function WorktreeReviewPane({
   useEffect(() => {
     void reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worktreePath, diffBase]);
+  }, [worktreePath, baseBranch, baselineCommit]);
 
   const canMergeToBase =
     status != null && status.currentProjectBranch === baseBranch && files.length > 0;
@@ -566,9 +570,9 @@ function FlowWorkspaceReview({
           projectPath: m.projectPath,
           worktreePath: m.worktreePath,
           branchName: m.branchName,
-          // Diff/status against the captured fork commit (exact + present
-          // on legacy runs); falls back to the base branch.
-          baseBranch: memberDiffBase(run, m.name, baseBranch),
+          // Branch drives the live merge-base; the fork commit is the floor.
+          baseBranch,
+          baselineCommit: memberBaselineCommit(run, m.name),
         });
         return [m.name, stat] as const;
       }),

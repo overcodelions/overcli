@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   claudeProjectSlug,
   codexContentText,
+  codexToolOutputText,
   dedupeCodexEvents,
   normalizePathKey,
   normalizeSigText,
@@ -61,6 +62,35 @@ describe('normalizeSigText', () => {
     const input = 'a'.repeat(1000);
     expect(normalizeSigText(input).length).toBe(500);
   });
+
+  it('does not throw when a transcript smuggles a non-string past the type', () => {
+    // @ts-expect-error — codex writes tool output as content blocks
+    expect(normalizeSigText([{ type: 'input_text', text: 'hi  there' }])).toBe('hi there');
+  });
+});
+
+describe('codexToolOutputText', () => {
+  it('passes a plain string through', () => {
+    expect(codexToolOutputText('done')).toBe('done');
+  });
+
+  it('unwraps the JSON envelope codex usually writes', () => {
+    expect(codexToolOutputText(JSON.stringify({ output: 'ls: ok', metadata: {} }))).toBe('ls: ok');
+  });
+
+  it('joins the content-block array codex started emitting mid-2026', () => {
+    const raw = [
+      { type: 'input_text', text: 'Script completed' },
+      { type: 'input_text', text: 'Wall time 16.4 seconds' },
+    ];
+    expect(codexToolOutputText(raw)).toBe('Script completed\nWall time 16.4 seconds');
+  });
+
+  it('yields a string for missing or unrecognised output', () => {
+    expect(codexToolOutputText(undefined)).toBe('');
+    expect(codexToolOutputText(null)).toBe('');
+    expect(codexToolOutputText({ unexpected: true })).toBe('');
+  });
 });
 
 describe('codexContentText', () => {
@@ -109,6 +139,73 @@ describe('parseClaudeHistoryLine', () => {
     });
     const [ev] = parseClaudeHistoryLine(line);
     expect(ev.kind).toEqual({ type: 'metaReminder', text: 'be brief' });
+  });
+
+  it('surfaces a model_refusal_fallback as a systemNotice', () => {
+    // The CLI silently retries on another model when the API refuses; without
+    // this the conversation just runs on a model the user never picked.
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'model_refusal_fallback',
+      timestamp: 1000,
+      originalModel: 'claude-fable-5',
+      fallbackModel: 'claude-opus-4-8',
+      apiRefusalCategory: 'bio',
+    });
+    const [ev] = parseClaudeHistoryLine(line);
+    expect(ev.kind).toEqual({
+      type: 'systemNotice',
+      text: 'Model fallback — claude-fable-5 refused this message (flagged: bio). Ran on claude-opus-4-8 instead.',
+    });
+  });
+
+  it('replays a compact_boundary, reading the transcript camelCase metadata', () => {
+    // Live this is the only marker explaining why the transcript above the
+    // line is a summary; replay used to drop it on the floor.
+    const line = JSON.stringify({
+      type: 'system',
+      subtype: 'compact_boundary',
+      timestamp: 1000,
+      compactMetadata: { trigger: 'auto', preTokens: 1_275_004, durationMs: 157_716 },
+    });
+    const [ev] = parseClaudeHistoryLine(line);
+    expect(ev.kind).toEqual({
+      type: 'systemNotice',
+      text: 'Conversation auto-compacted · took 2m 38s',
+    });
+  });
+
+  it('drops the compaction summary instead of replaying it as the user talking', () => {
+    // The CLI writes it as an ordinary string-bodied user message, so the
+    // localUser branch would attribute 25k characters of summary to the user.
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: 1000,
+      isCompactSummary: true,
+      isVisibleInTranscriptOnly: true,
+      message: { role: 'user', content: 'This session is being continued from a previous…' },
+    });
+    expect(parseClaudeHistoryLine(line)).toEqual([]);
+  });
+
+  it('routes a task-notification user message to taskNotification, not localUser', () => {
+    // The harness injects these with no isMeta/isSidechain flag, so they are
+    // otherwise indistinguishable from a message the user typed.
+    const line = JSON.stringify({
+      type: 'user',
+      timestamp: 1000,
+      isSidechain: false,
+      message: {
+        content:
+          '<task-notification><task-id>abc</task-id><summary>Agent "Fix ch02" finished</summary><result>Done. Both chapters updated.</result></task-notification>',
+      },
+    });
+    const [ev] = parseClaudeHistoryLine(line);
+    expect(ev.kind).toEqual({
+      type: 'taskNotification',
+      summary: 'Agent "Fix ch02" finished',
+      body: 'Done. Both chapters updated.',
+    });
   });
 
   it('parses an assistant event with text, thinking, and a tool_use block', () => {
@@ -206,6 +303,26 @@ describe('parseCodexHistoryLine', () => {
     });
     const ev = parseCodexHistoryLine(line);
     expect(ev?.kind).toEqual({ type: 'localUser', text: 'please do X' });
+  });
+
+  it('yields string content for a block-array function_call_output, and survives dedupe', () => {
+    // The shape that broke runner:loadHistory — codex writes `output` as
+    // content blocks, so `content` arrived as an array and the dedupe
+    // signature called .trim() on it.
+    const line = JSON.stringify({
+      timestamp: 1000,
+      payload: {
+        type: 'function_call_output',
+        call_id: 'call_1',
+        output: [{ type: 'input_text', text: 'Script completed' }],
+      },
+    });
+    const ev = parseCodexHistoryLine(line)!;
+    expect(ev.kind).toEqual({
+      type: 'toolResult',
+      results: [{ id: 'call_1', content: 'Script completed', isError: false }],
+    });
+    expect(() => dedupeCodexEvents([ev])).not.toThrow();
   });
 
   it('filters out system/developer messages', () => {
