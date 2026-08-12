@@ -1,7 +1,5 @@
-import { Fragment } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useStore } from '../../store';
-
-const VERSION = '0.1.0';
 
 const PILLARS = [
   {
@@ -97,7 +95,16 @@ const FLOW_POINTS = [
 ] as const;
 
 export function AboutSheet() {
-  const close = useStore((s) => s.openSheet);
+  const openSheet = useStore((s) => s.openSheet);
+  const whatsNewUnseen = useStore((s) => s.whatsNewUnseen);
+  // Read from main rather than a constant here — the constant this replaced
+  // said 0.1.0 while the app shipped 0.12.0, and nightly stamps its version
+  // in CI where no source file can be hand-edited to match.
+  const [version, setVersion] = useState('');
+
+  useEffect(() => {
+    void window.overcli.invoke('app:version').then(setVersion);
+  }, []);
 
   return (
     <div className="flex h-[840px] max-h-[90vh] flex-col bg-surface-elevated">
@@ -110,9 +117,24 @@ export function AboutSheet() {
           <div className="min-w-0 flex-1 pt-1">
             <div className="flex items-baseline gap-3">
               <div className="text-[36px] font-bold leading-none tracking-tight text-ink">overcli</div>
-              <div className="rounded-full border border-card-strong bg-card/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
-                v{VERSION}
-              </div>
+              {version && (
+                <div className="rounded-full border border-card-strong bg-card/60 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
+                  v{version}
+                </div>
+              )}
+              {/* The deliberate way in. The panel opens by itself once per
+                  update; this is for everyone who dismissed it, or who came
+                  back wondering what changed. */}
+              <button
+                onClick={() => openSheet({ type: 'whatsNew' })}
+                className="group flex items-center gap-1.5 rounded-full border border-accent/30 bg-accent/10 px-2.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-accent hover:bg-accent/20"
+              >
+                {whatsNewUnseen && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_6px_currentColor]" />
+                )}
+                What's new
+                <span className="transition-transform group-hover:translate-x-0.5">→</span>
+              </button>
             </div>
             <div className="mt-3 text-[15px] leading-snug text-ink-muted">
               <span className="font-medium text-ink">over·CLI</span>
@@ -179,7 +201,7 @@ export function AboutSheet() {
           GitHub
         </a>
         <button
-          onClick={() => close(null)}
+          onClick={() => openSheet(null)}
           className="rounded-md bg-accent/80 px-3.5 py-1.5 text-[12px] font-medium text-ink hover:bg-accent"
         >
           Done

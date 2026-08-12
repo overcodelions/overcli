@@ -34,16 +34,44 @@ const COMMIT_STATE_BADGE: Record<CommitState, { label: string; title: string; cl
   },
 };
 
+/// Porcelain v1 puts the index code first and the worktree code second, so a
+/// deletion shows up as `D `, ` D` or `AD` depending on what's staged. Any `D`
+/// in either column means the file is gone from disk — clicking it can only
+/// ever show the diff, never file contents.
+/// `DU`/`UD` are merge-conflict states, not deletions — the file is still
+/// there with conflict markers, so they're excluded.
+function isDeletedStatus(status: string): boolean {
+  const code = status.trim();
+  return code.includes('D') && !code.includes('U');
+}
+
 /// Collapsible bar above the composer. Numbers come straight from a
 /// `git diff --numstat` pass (plus line counts for untracked files). The
 /// main chat feeds it `HEAD`-relative counts (`git:commitStatus`, matching
 /// the header commit badge — see `refreshGitStatus`); flow worktree runs
 /// feed it fork-point-relative counts (`git:worktreeChanges`) so it matches
 /// the review sheet's diff.
-export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
+export function ChangesBar({
+  files,
+  baseRef,
+}: {
+  files: FileChangeSummary[];
+  /// Ref the counts were measured against, e.g. `origin/master`. When it's
+  /// set we render an explicit empty state instead of hiding: a run whose
+  /// work has landed upstream legitimately has zero files, and silently
+  /// showing nothing reads as a broken probe.
+  baseRef?: string | null;
+}) {
   const openFile = useStore((s) => s.openFile);
   const [expanded, setExpanded] = useState(false);
-  if (files.length === 0) return null;
+  if (files.length === 0) {
+    if (!baseRef) return null;
+    return (
+      <div className="rounded-xl border border-card bg-card px-3 py-2 text-xs text-ink-faint">
+        No changes vs <code className="text-ink">{baseRef}</code> — nothing left to merge.
+      </div>
+    );
+  }
   const totals = files.reduce(
     (acc, f) => {
       acc.additions += Number(f.additions) || 0;
@@ -64,19 +92,32 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
         </span>
         <span className="diff-add-ink">+{totals.additions}</span>
         <span className="diff-remove-ink">-{totals.deletions}</span>
+        {baseRef && <span className="ml-auto text-ink-faint">vs {baseRef}</span>}
       </button>
       {expanded && (
-        <div className="border-t border-card">
-          {files.map((f) => (
+        // Runs that touch dozens of files would otherwise push the composer
+        // off-screen, so the list scrolls once it outgrows ~14 rows.
+        <div className="border-t border-card max-h-[45vh] overflow-y-auto">
+          {files.map((f) => {
+            const deleted = isDeletedStatus(f.status);
+            return (
             <button
               key={f.path}
               onClick={() => openFile(f.path, undefined, 'diff')}
+              title={deleted ? 'File deleted — opens the diff of what it contained' : f.path}
               className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-card-strong border-t border-card first:border-t-0"
             >
               <span className="text-ink-faint text-[10px] font-mono w-6 shrink-0">
                 {f.status.trim() || '??'}
               </span>
-              <code className="text-ink flex-1 truncate">{f.path}</code>
+              <code
+                className={
+                  'flex-1 truncate ' +
+                  (deleted ? 'text-ink-faint line-through decoration-ink-faint/60' : 'text-ink')
+                }
+              >
+                {f.path}
+              </code>
               {f.commitState && (
                 <span
                   title={COMMIT_STATE_BADGE[f.commitState].title}
@@ -88,7 +129,8 @@ export function ChangesBar({ files }: { files: FileChangeSummary[] }) {
               <span className="diff-add-ink text-[11px]">+{Number(f.additions) || 0}</span>
               <span className="diff-remove-ink text-[11px]">-{Number(f.deletions) || 0}</span>
             </button>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

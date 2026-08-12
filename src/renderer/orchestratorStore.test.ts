@@ -35,6 +35,11 @@ beforeEach(() => {
     proposing: false,
     producerError: null,
     recentPrompts: [],
+    // Fresh store defaults — restore between tests so the restoreDefaults specs
+    // don't depend on run order.
+    runIn: 'worktree',
+    maxConcurrent: 2,
+    openPrOnFinish: true,
   });
 });
 
@@ -84,5 +89,32 @@ describe('orchestratorStore — recent prompts', () => {
     await useOrchestratorStore.getState().removeRecentPrompt('drop me');
     expect(mockInvoke).toHaveBeenCalledWith('orchestrator:deleteRecentPrompt', { text: 'drop me' });
     expect(useOrchestratorStore.getState().recentPrompts).toEqual([]);
+  });
+});
+
+describe('orchestratorStore — restoreDefaults (persisted across reload)', () => {
+  it('restores a saved "main tree" (cwd) choice instead of the worktree default', () => {
+    // Fresh store default is 'worktree' — the bug was this winning after reload.
+    expect(useOrchestratorStore.getState().runIn).toBe('worktree');
+    useOrchestratorStore.getState().restoreDefaults({ runIn: 'cwd', maxConcurrent: 5 });
+    const s = useOrchestratorStore.getState();
+    expect(s.runIn).toBe('cwd');
+    // cwd shares one tree — the cap is pinned to 1 regardless of the saved value.
+    expect(s.maxConcurrent).toBe(1);
+  });
+
+  it('restores a worktree batch with its saved (clamped) concurrency cap', () => {
+    useOrchestratorStore.getState().restoreDefaults({ runIn: 'worktree', maxConcurrent: 99 });
+    const s = useOrchestratorStore.getState();
+    expect(s.runIn).toBe('worktree');
+    expect(s.maxConcurrent).toBe(8); // clamped to the 1..8 range
+  });
+
+  it('keeps current values for absent fields', () => {
+    useOrchestratorStore.setState({ runIn: 'cwd', maxConcurrent: 1, openPrOnFinish: false });
+    useOrchestratorStore.getState().restoreDefaults({ openPrOnFinish: true });
+    const s = useOrchestratorStore.getState();
+    expect(s.runIn).toBe('cwd');
+    expect(s.openPrOnFinish).toBe(true);
   });
 });

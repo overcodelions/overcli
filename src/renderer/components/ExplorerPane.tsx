@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { FileTree } from './FileTree';
 import { FileEditorPane } from './FileEditorPane';
@@ -39,25 +39,35 @@ export function ExplorerPane() {
   const [compareDirty, setCompareDirty] = useState(false);
   // Confirm before throwing away unsaved comparison moves. Returns false if
   // the user cancels — callers bail on navigation in that case.
-  const confirmDiscard = () =>
-    !(comparePair && compareDirty) ||
-    window.confirm('Discard unsaved changes to these files?');
-  const handleCompare = (path: string) => {
-    if (!compareBase) {
-      setCompareBase(path);
-      return;
-    }
-    if (compareBase === path) {
-      setCompareBase(null); // ⌥-click the base again to cancel
-      return;
-    }
-    if (!confirmDiscard()) {
+  //
+  // Both of these are useCallback'd because they're props of the memoized
+  // FileTree: a fresh closure per render would defeat the memo and put the
+  // whole tree back on the critical path of every divider pointermove.
+  const confirmDiscard = useCallback(
+    () =>
+      !(comparePair && compareDirty) ||
+      window.confirm('Discard unsaved changes to these files?'),
+    [comparePair, compareDirty],
+  );
+  const handleCompare = useCallback(
+    (path: string) => {
+      if (!compareBase) {
+        setCompareBase(path);
+        return;
+      }
+      if (compareBase === path) {
+        setCompareBase(null); // ⌥-click the base again to cancel
+        return;
+      }
+      if (!confirmDiscard()) {
+        setCompareBase(null);
+        return;
+      }
+      setComparePair({ a: compareBase, b: path });
       setCompareBase(null);
-      return;
-    }
-    setComparePair({ a: compareBase, b: path });
-    setCompareBase(null);
-  };
+    },
+    [compareBase, confirmDiscard],
+  );
   // Reset the picker when the explorer root changes, and drop a stale
   // comparison once the user opens a file normally so the editor wins.
   useEffect(() => {

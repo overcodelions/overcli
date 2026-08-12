@@ -85,7 +85,7 @@ export function FlowParticipantsCard() {
     const defaultModel: { backend: Backend; model: string } =
       kindHint === 'worker'
         ? { backend: 'ollama', model: ollamaModels[0] ?? '' }
-        : { backend: 'claude', model: 'claude-opus-4-7' };
+        : { backend: 'claude', model: BACKEND_MODELS.claude[0] };
     // Default name uses the kind label ("Primary", "Worker", …) when
     // one is set; otherwise mirror the model so the user sees the
     // role-or-model in one column instead of a generic "Participant".

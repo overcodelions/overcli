@@ -21,8 +21,10 @@ import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
-import { canonicalizePremiumModel } from '../../shared/modelCatalog';
+import { normalizeFlowTag } from '../../shared/flows/schema';
+import { canonicalizePremiumModel, liftMissingModel } from '../../shared/modelCatalog';
 import { parseFlowYaml } from '../../shared/flows/yaml';
+import { TAG_AXES } from '../../shared/flows/tagTaxonomy';
 import {
   validateFlow,
   ARTIFACT_NAME_RE,
@@ -34,7 +36,7 @@ import {
   drafterModelFor,
   drafterModelHints,
 } from '../../shared/flows/drafterBackend';
-import { probeBackendHealth } from '../health';
+import { healthyBackends } from '../health';
 import type { OneShotResult, RunnerManager } from '../runner';
 
 export interface DraftDeps {
@@ -80,12 +82,21 @@ function systemPrompt(backend: Backend): string {
     '  name        — required, short human title',
     '  description — optional, 1–3 line summary',
     '  input       — always the literal string `user_prompt`',
+    '  tags        — optional list of 2–4 lowercase labels, used to group and filter the',
+    '                library. Pick ONLY from the vocabulary below, and only ones that',
+    '                genuinely apply — omit the key entirely rather than reaching. Drawing',
+    '                from a fixed list is what lets a hand-drafted flow sit alongside a',
+    '                published one under the same filter.',
+    ...TAG_AXES.map((axis) => `                ${axis.axis}: ${axis.tags.join(', ')}`),
     '  steps       — list of step objects',
     '',
     'Each step has:',
     '  id            — kebab-case identifier referenced by other steps',
     '  model         — { backend: claude|codex|gemini|copilot|ollama, model: "<id>" }',
-    '  role          — one of the presets listed under ROLES below (or `custom`)',
+    '  role          — one of the presets listed under ROLES below, or `custom` when no',
+    '                  preset fits (see ROLE FIT CHECK). `custom` REQUIRES system_prompt.',
+    '  system_prompt — required when role is `custom`, omit otherwise. The full system',
+    '                  prompt for the step, written by you.',
     '  inputs        — list of refs. May include "user_prompt" and outputs of EARLIER steps',
     '  tools         — list of tool ids. For claude/codex/gemini/copilot: Read, Write, Edit, Grep,',
     '                  Glob, Bash, WebFetch, Task. For ollama: read_file, list_dir, grep.',
@@ -143,6 +154,58 @@ function systemPrompt(backend: Backend): string {
     '  - Only reach for `reviewer`/`code-reviewer`/etc. AFTER an `implementer` step in the',
     '    same flow has produced a diff.',
     '',
+    'ROLE FIT CHECK (do this for EVERY step before you emit it)',
+    '==========================================================',
+    'The presets cover the common software-engineering jobs, but they are not exhaustive.',
+    'Do not force a step into the nearest-sounding preset — a preset carries a full system',
+    'prompt written for ITS job, and a mismatched one will steer the step wrong in ways the',
+    'role name does not reveal.',
+    '',
+    'For each step, ask: "does a preset describe what this step ACTUALLY does — its real job,',
+    'not just a similar-sounding one?"',
+    '  - YES  → use that preset. Do NOT set system_prompt. This is the common case; prefer a',
+    '           preset whenever one genuinely fits, since preset prompts are battle-tested.',
+    '  - NO   → use `role: custom` and write a `system_prompt` yourself.',
+    '',
+    'Reach for `custom` when the step\'s job is real but outside the preset set, e.g.:',
+    '  - a domain task the presets never model (triage tickets, summarize logs, draft a',
+    '    changelog from commits, extract structured data, translate, classify)',
+    '  - a specific analysis the user described that no preset performs',
+    '  - a step whose job is close to a preset but whose CONSTRAINTS materially differ',
+    '    (e.g. "review, but ONLY for accessibility" — `reviewer` reviews everything)',
+    'Do NOT reach for `custom` merely to reword a preset, to be thorough, or because you are',
+    'unsure. An ill-fitting preset is a bug; an unnecessary custom prompt is a regression.',
+    '',
+    'A custom system_prompt MUST be self-contained — it is the step\'s ENTIRE instruction set,',
+    'and it inherits nothing from any preset. Write it as a complete prompt that states:',
+    '  - who the step is and that it is one step of an automated multi-step flow',
+    '  - its exact job, and what it must NOT do',
+    '  - whether it may edit files (say so explicitly — read-only steps must be told to use',
+    '    read-only tools and not edit code; this must agree with the `tools` you grant)',
+    '  - the shape of the deliverable it must produce',
+    'Do NOT mention the <output> wrapper or artifact names — that contract is appended',
+    'automatically. Use YAML block scalars (`system_prompt: |`) for multi-line prompts.',
+    '',
+    'EXAMPLE — a step no preset covers:',
+    '  - id: triage',
+    '    model: { backend: claude, model: claude-sonnet-4-6 }',
+    '    role: custom',
+    '    system_prompt: |',
+    '      You are the TRIAGE step of a multi-stage automated flow.',
+    '',
+    '      Your job: read the incoming bug reports and group them by root-cause area,',
+    '      then rank each group by user impact. Judge severity from evidence in the',
+    '      reports themselves — do not speculate about causes you cannot support.',
+    '',
+    '      You are READ-ONLY. Use read-only tools to check the repo. Never edit code,',
+    '      and do not propose fixes — a later step owns that.',
+    '',
+    '      Produce markdown: one section per group, ordered most-impactful first, each',
+    '      with a one-line cause, the reports it covers, and a severity rating.',
+    '    inputs: [user_prompt]',
+    '    tools: [Read, Grep]',
+    '    output: triage.md',
+    '',
     'CONVENTIONS',
     '===========',
     `This user prefers the "${backend}" backend (${label}). Use it for EVERY step unless the user`,
@@ -150,6 +213,11 @@ function systemPrompt(backend: Backend): string {
     `  - planning + review: { backend: ${backend}, model: ${hints.thinking} }`,
     `  - rebound critic / cheaper steps: { backend: ${backend}, model: ${hints.standard} }`,
     `  - implementers + test-writers: { backend: ${backend}, model: ${hints.fast} }`,
+    `Do NOT put every step on ${hints.thinking}. It is the most expensive model available and`,
+    'the user pays per step. Reserve it for steps that genuinely need deep reasoning — the',
+    'plan, and the review that judges the plan. Extraction, summarising, formatting, drafting',
+    `from an existing artifact, and mechanical checks all belong on ${hints.fast}. A flow whose`,
+    'every step is the top model is a bug, not a thorough flow.',
     'Always include at least one step that consumes "user_prompt".',
     'Default to permission_mode: bypassPermissions on any step that writes (so the flow can run',
     'unattended). pause_before: true is the right knob for human checkpoints — set it on shipper',
@@ -176,10 +244,13 @@ export async function draftFlowFromPrompt(
   const desc = args.description.trim();
   if (!desc) return { ok: false, error: 'Description is empty.' };
 
+  // Health is resolved up front rather than probed inside the predicate:
+  // probing executes a CLI, so it's async now (it used to block the main
+  // thread) and `pickDrafterBackend` can't await mid-predicate.
+  const healthy = await healthyBackends(deps.settings.backendPaths);
   const backend = pickDrafterBackend({
     preferred: deps.settings.preferredBackend,
-    isHealthy: (b) =>
-      probeBackendHealth(b, deps.settings.backendPaths[b]).kind === 'ready',
+    isHealthy: (b) => healthy.has(b),
     isEnabled: (b) => deps.settings.disabledBackends[b] !== true,
   });
   if (!backend) {
@@ -299,6 +370,15 @@ function finalizeDraft(
   // as "not supported"; snap each premium ref to its canonical spelling first.
   repairModelIds(parsed);
 
+  // Reconcile role against the system prompt the model did (or didn't) write,
+  // so a near-miss on the custom-prompt path doesn't ship a broken step.
+  repairRoleFit(parsed);
+
+  // Drop invented tags. The vocabulary is the whole point — a drafted flow
+  // tagged "jira-triage" doesn't sit under the `triage` filter next to the
+  // published ones, so a free-form tag is worse than no tag.
+  repairTags(parsed);
+
   const v = validateFlow(parsed);
   if (!v.ok) {
     return {
@@ -319,24 +399,75 @@ function stripCodeFences(text: string): string {
   return text;
 }
 
+/// Keep only tags from the shared taxonomy, capped at 4. Anything the model
+/// invented is dropped rather than corrected — there's no reliable mapping
+/// from "code-review" to `review`, and a wrong tag files the flow under a
+/// filter its user will never think to open. Clears the key entirely when
+/// nothing survives, so the saved YAML stays byte-identical to an untagged
+/// flow's.
+function repairTags(flow: Flow): void {
+  if (!flow.tags) return;
+  const allowed = new Set(TAG_AXES.flatMap((a) => a.tags));
+  const kept: string[] = [];
+  for (const raw of flow.tags) {
+    const tag = normalizeFlowTag(raw);
+    if (tag && allowed.has(tag) && !kept.includes(tag)) kept.push(tag);
+    if (kept.length === 4) break;
+  }
+  flow.tags = kept.length > 0 ? kept : undefined;
+}
+
 /// Snap every premium model ref in the flow to its canonical catalog
 /// spelling, fixing dot-vs-dash version mismatches (e.g. drafted
-/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend). Walks
-/// participants, legacy step-level models, and rebound critics. Ollama and
+/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend) and
+/// lifting any reference to a retired model (e.g. `claude-opus-4-7`) up to
+/// the next-highest in-family version we still ship. Walks participants,
+/// legacy step-level models, and rebound critics. Ollama and
 /// already-canonical refs pass through untouched. Mutates `flow` in place.
 function repairModelIds(flow: Flow): void {
+  // Canonicalize first (snaps a dotted alias onto its catalog spelling),
+  // then lift (rewrites a still-unsupported id to a newer in-family one).
+  const repair = (backend: FlowModelRef['backend'], model: string) =>
+    liftMissingModel(
+      backend as Exclude<typeof backend, 'ollama'>,
+      canonicalizePremiumModel(backend as Exclude<typeof backend, 'ollama'>, model),
+    );
   const fix = (ref: FlowModelRef | undefined) => {
     if (!ref || ref.backend === 'ollama') return;
-    ref.model = canonicalizePremiumModel(ref.backend, ref.model);
+    ref.model = repair(ref.backend, ref.model);
   };
   for (const p of flow.participants ?? []) {
     if (p.backend !== 'ollama') {
-      p.model = canonicalizePremiumModel(p.backend, p.model);
+      p.model = repair(p.backend, p.model);
     }
   }
   for (const step of flow.steps) {
     fix(step.model);
     fix(step.rebound?.critic);
+  }
+}
+
+/// Reconcile each step's `role` with its `system_prompt`. The drafting model
+/// is asked to judge preset fit and fall back to `custom` + `system_prompt`
+/// when nothing fits; it lands near-miss combinations two ways, both of which
+/// resolveSystemPrompt would otherwise handle silently and wrongly:
+///
+///   - a written prompt left under a preset role — the override is dropped and
+///     the preset's body runs instead, quietly discarding the model's judgement
+///     that the preset did NOT fit. The prompt is the more specific signal, so
+///     honour it: flip the role to `custom` (the same invariant the builder
+///     enforces when a user edits the prompt textarea).
+///   - a role that isn't a preset at all (a typo, or an invented name like
+///     `summarizer`) carrying a prompt — same fix, and it rescues the step from
+///     a `ROLE_PROMPTS[role]` miss that resolves to the string "undefined".
+///
+/// An unknown role with NO prompt is left alone for validateFlow to reject —
+/// there's nothing here to recover it from. Mutates `flow` in place.
+function repairRoleFit(flow: Flow): void {
+  for (const step of flow.steps) {
+    if (!step.systemPromptOverride?.trim()) continue;
+    if (step.role === 'custom') continue;
+    step.role = 'custom';
   }
 }
 

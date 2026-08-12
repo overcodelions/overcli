@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import { noBackendReady, useStore } from './store';
+import { anyBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
 import { useThemeEffect } from './useThemeEffect';
 import { useShortcuts } from './useShortcuts';
+import { useRunningReconcile } from './useRunningReconcile';
+import { useFileScope } from './fileScope';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
@@ -13,6 +15,7 @@ import { ExplorerPane } from './components/ExplorerPane';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { useFlowsStore } from './flowsStore';
+import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
 import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
@@ -30,6 +33,9 @@ const SIDE_FILE_MAX = 1000;
 const SIDE_FILE_DEFAULT = 640;
 
 export function App() {
+  // Keeps the file editor's open tabs pointed at the right scope
+  // (conversation / flow run / explorer root). See ./fileScope.ts.
+  useFileScope();
   const init = useStore((s) => s.init);
   const ingest = useStore((s) => s.ingestMainEvent);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
@@ -119,6 +125,70 @@ export function App() {
     void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
       void useOrchestratorStore.getState().reload();
     });
+    // Schedules hydrate at startup rather than with the Flows pane, because
+    // the title bar's indicator has to be right from the first paint — the
+    // whole point of it is telling you something is running before you've
+    // thought to go looking.
+    void import('./schedulesStore').then(({ useSchedulesStore }) => {
+      void useSchedulesStore.getState().reload();
+    });
+  }, []);
+
+  // Surface release notes on the first launch after an update. The install is
+  // deferred to quit (see updater.ts), so UpdateToast fires while the user is
+  // still on the old build — this is the first moment they actually have the
+  // features being described. Anything already on screen wins: an auto-opened
+  // panel that stomps a restored sheet is worse than one the user opens from
+  // About a minute later.
+  useEffect(() => {
+    void window.overcli.invoke('app:whatsNew').then((report) => {
+      if (!report.unseen) return;
+      const { activeSheet, openSheet, setWhatsNewUnseen } = useStore.getState();
+      setWhatsNewUnseen(true);
+      if (!activeSheet) openSheet({ type: 'whatsNew' });
+    });
+  }, []);
+
+  // Persist the current "where am I" view (detail mode, focused project/
+  // workspace, active flow run, active orchestration) whenever it changes, so
+  // a full renderer reload — e.g. macOS discarding the render process during a
+  // long sleep — restores the same screen on relaunch instead of dropping back
+  // to the default conversation view. selectedConversationId is persisted
+  // separately by selectConversation; this covers everything else. init()
+  // reads these back on launch.
+  useEffect(() => {
+    let last = '';
+    const persist = () => {
+      const s = useStore.getState();
+      const orch = useOrchestratorStore.getState();
+      const view = {
+        detailMode: s.detailMode,
+        focusedProjectId: s.focusedProjectId,
+        focusedWorkspaceId: s.focusedWorkspaceId,
+        activeRunId: useFlowsStore.getState().activeRunId,
+        activeOrchestrationId: orch.activeOrchestrationId,
+        // Sticky batch-launch defaults — so "main tree" (runIn: 'cwd') and its
+        // coupled concurrency / PR-on-finish choices survive a reload instead
+        // of snapping back to the worktree default.
+        orchestrator: {
+          runIn: orch.runIn,
+          maxConcurrent: orch.maxConcurrent,
+          openPrOnFinish: orch.openPrOnFinish,
+        },
+      };
+      // The main store fires on every stream delta; skip the IPC write unless
+      // the view identity actually changed.
+      const key = JSON.stringify(view);
+      if (key === last) return;
+      last = key;
+      void window.overcli.invoke('store:saveView', view);
+    };
+    const unsubs = [
+      useStore.subscribe(persist),
+      useFlowsStore.subscribe(persist),
+      useOrchestratorStore.subscribe(persist),
+    ];
+    return () => unsubs.forEach((u) => u());
   }, []);
 
   // Self-heal: if the selected conversation has been deleted (e.g. the
@@ -199,11 +269,22 @@ export function App() {
 
   useShortcuts();
 
+  // Retract per-conversation running flags main no longer stands behind —
+  // otherwise one lost `running: false` spins a conversation (and any flow
+  // run that owns it) until the window reloads.
+  useRunningReconcile();
+
   // First-run onboarding: with no projects and no usable CLI the sidebar is
   // empty (its add buttons are disabled anyway), so hide it and give the
   // welcome/setup screen the full width. Settings stays reachable via the
   // title-bar gear.
-  const onboarding = projects.length === 0 && noBackendReady(backendHealth);
+  //
+  // Deliberately `!anyBackendReady` and not `noBackendReady`: the latter is
+  // false until the first health probe returns, so a fresh install painted
+  // an empty sidebar and then tore it away mid-glance. Treating "not probed
+  // yet" as onboarding costs nothing (with zero projects there's nothing in
+  // the sidebar to miss) and keeps the first frame stable.
+  const onboarding = projects.length === 0 && !anyBackendReady(backendHealth);
   const showSidebar = sidebarVisible && !onboarding;
 
   return (

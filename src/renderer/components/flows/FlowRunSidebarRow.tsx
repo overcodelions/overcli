@@ -6,14 +6,13 @@
 // Click → switches detail mode to 'flows' and points the FlowRunPane at
 // this run.
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
-import { useAllRunners } from '../../runnersStore';
+import { useRunningMap } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
-import { flowRunActivityAt, flowRunOwnerPath } from '@shared/flows/schema';
-import { ACTIVE_CONVERSATION_WINDOW_MS } from '../../conversationLookup';
+import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle as runTitle } from '@shared/flows/schema';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
@@ -22,7 +21,7 @@ import { SidebarMarker } from '../SidebarMarker';
 /// participant convs is currently streaming (e.g. you're hijack-chatting
 /// after the run finished). Drives the sidebar "still alive" indicator
 /// so a `done` run that's still responding to you doesn't read as idle.
-function runIsLive(
+export function runIsLive(
   run: FlowRun,
   runners: Record<string, { isRunning: boolean } | undefined>,
 ): boolean {
@@ -30,13 +29,14 @@ function runIsLive(
   return Object.values(run.conversationIds).some((cid) => runners[cid]?.isRunning);
 }
 
-/// Whether a run belongs in the top-of-sidebar "Active" set. A run
-/// qualifies while it's live (orchestrating or a participant is
-/// streaming) or paused, AND — mirroring how recently-touched
-/// conversations linger in Active — for a grace window after its last
-/// activity. Without the recency clause a finished run dropped out of
-/// Active instantly, even seconds after completing.
-function runIsActive(
+/// Whether a run earns a slot in the top-of-sidebar "Active" set on merit. A
+/// run qualifies while it's live (orchestrating or a participant is
+/// streaming) or paused, AND — mirroring how recently-touched conversations
+/// linger in Active — for a grace window after its last activity. Without the
+/// recency clause a finished run dropped out of Active instantly, even
+/// seconds after completing. Past that window it can still be held in Active
+/// by the section's floor (see selectActiveEntries), just not on merit.
+export function runIsActive(
   run: FlowRun,
   runners: Record<string, { isRunning: boolean } | undefined>,
   cutoff: number,
@@ -78,7 +78,7 @@ export function flowRunMatchesQuery(run: FlowRun, query: string): boolean {
 export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   const runs = useFlowsStore((s) => s.runs);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   const matches = Object.values(runs)
     .filter((r) => flowRunOwnerPath(r) === path && flowRunMatchesQuery(r, query))
     .sort((a, b) => b.createdAt - a.createdAt);
@@ -100,75 +100,15 @@ export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   );
 }
 
-/// Cheap subscription used by Sidebar to decide whether to draw the
-/// Active section when there are no active conversations but a flow
-/// is still live (running/paused, or you're hijack-chatting it).
-export function useHasActiveFlows(): boolean {
-  const runs = useFlowsStore((s) => s.runs);
-  const runners = useAllRunners();
-  return useMemo(() => {
-    const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
-    return Object.values(runs).some((r) => runIsActive(r, runners, cutoff));
-  }, [runs, runners]);
-}
-
-/// Top-of-sidebar "Active" listing for flow runs. Surfaces a run when
-/// it's mid-orchestration, paused waiting for the user, or when the
-/// user is hijack-chatting and a participant conv is currently
-/// streaming. Mirrors the conversations Active section so live work is
-/// reachable from the top of the sidebar regardless of which
-/// project/workspace it lives under.
-export function ActiveFlowsList({ limit = 4 }: { limit?: number }) {
-  const runs = useFlowsStore((s) => s.runs);
-  const runners = useAllRunners();
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
-  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
-  const setDetailMode = useStore((s) => s.setDetailMode);
-
-  const active = useMemo(() => {
-    const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
-    return Object.values(runs)
-      .map((run) => ({ run, live: runIsLive(run, runners) }))
-      .filter(({ run }) => runIsActive(run, runners, cutoff))
-      .sort((a, b) => {
-        // Live > paused > recently-finished, then by recency.
-        const aRank = a.live ? 2 : a.run.state.kind === 'paused' ? 1 : 0;
-        const bRank = b.live ? 2 : b.run.state.kind === 'paused' ? 1 : 0;
-        if (aRank !== bRank) return bRank - aRank;
-        return flowRunActivityAt(b.run) - flowRunActivityAt(a.run);
-      })
-      .slice(0, limit);
-  }, [runs, runners, limit]);
-
-  if (active.length === 0) return null;
-  return (
-    <>
-      {active.map(({ run, live }) => {
-        const owner = resolveOwner(flowRunOwnerPath(run), projects, workspaces);
-        return (
-          <ActiveFlowRow
-            key={run.id}
-            run={run}
-            isLive={live}
-            ownerName={owner.name}
-            ownerKind={owner.kind}
-            onClick={() => {
-              setActiveRun(run.id);
-              setDetailMode('flows');
-            }}
-          />
-        );
-      })}
-    </>
-  );
-}
-
 /// Top-active row designed to be a visual sibling of RecentConversationRow:
 /// left marker (pulsing while live, ✓ when done, dot otherwise), title +
 /// quiet owner subtitle. No monogram, no right-side state badge — the
 /// marker carries the live/done signal so the row reads like a chat.
-function ActiveFlowRow({
+///
+/// Sidebar owns the Active section's ranking (flow runs and conversations
+/// share one ordered pool), so this component just renders the row it's told
+/// to.
+export function ActiveFlowRow({
   run,
   isLive,
   ownerName,
@@ -181,18 +121,57 @@ function ActiveFlowRow({
   ownerKind: 'project' | 'workspace' | 'unknown';
   onClick: () => void;
 }) {
+  const renameRun = useFlowsStore((s) => s.renameRun);
+  // Same double-click-to-rename affordance as the per-project Flows row.
+  // A live run is usually only visible up here, so this is where the user
+  // reaches for it first.
+  const [renameValue, setRenameValue] = useState<string | null>(null);
   const completed = !isLive && run.state.kind === 'done';
   // Neutral tint matches the FlowMonogram palette feel without trying to
   // map a single backend color onto a multi-participant flow.
   const restColor = 'rgb(168 85 247 / 0.65)';
+
+  if (renameValue !== null) {
+    const commit = () => {
+      const next = renameValue;
+      setRenameValue(null);
+      void renameRun(run.id, next);
+    };
+    return (
+      <div className="mt-0.5 flex w-full items-center gap-1 rounded px-2 py-1">
+        <SidebarMarker color={restColor} active={isLive} completed={completed} />
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setRenameValue(null);
+            }
+          }}
+          placeholder={runTitle(run)}
+          aria-label="Run name"
+          className="min-w-0 flex-1 rounded border border-accent bg-transparent px-1.5 py-0.5 text-xs text-ink outline-none"
+        />
+      </div>
+    );
+  }
+
   return (
     <button
       onClick={onClick}
+      onDoubleClick={() => setRenameValue(run.title ?? '')}
       className={
         'sidebar-row group mt-0.5 flex w-full items-center gap-1 rounded px-2 py-1 text-left text-xs ' +
         'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card'
       }
-      title={`${runTitle(run)} · ${ownerName} · ${run.state.kind}${isLive ? ' (responding)' : ''}`}
+      title={`${runTitle(run)} · ${ownerName} · ${run.state.kind}${isLive ? ' (responding)' : ''} — double-click to rename`}
     >
       <SidebarMarker color={restColor} active={isLive} completed={completed} />
       <span className="min-w-0 flex-1">
@@ -206,7 +185,7 @@ function ActiveFlowRow({
   );
 }
 
-function resolveOwner(
+export function resolveOwner(
   projectPath: string,
   projects: { id: string; name: string; path: string }[],
   workspaces: { id: string; name: string; rootPath: string }[],
@@ -231,15 +210,26 @@ function FlowRunRow({
 }) {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const removeRun = useFlowsStore((s) => s.removeRun);
+  const renameRun = useFlowsStore((s) => s.renameRun);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const detailMode = useStore((s) => s.detailMode);
   const [confirming, setConfirming] = useState(false);
+  // Non-null while this row's title is an input. Renaming is allowed at
+  // any point in the run's life — a run in flight is exactly the one you
+  // want to label, since that's what's sitting in the list.
+  const [renameValue, setRenameValue] = useState<string | null>(null);
 
   async function commitDelete(e: React.MouseEvent) {
     e.stopPropagation();
     const res = await deleteFlowRunWithDirtyGuard(run.id);
     if (res.deleted) removeRun(run.id);
     setConfirming(false);
+  }
+
+  function commitRename() {
+    const next = renameValue ?? '';
+    setRenameValue(null);
+    void renameRun(run.id, next);
   }
   // Only show as selected when the user is actually viewing the flows
   // pane — otherwise the selection feels stale (highlighted even when
@@ -255,7 +245,31 @@ function FlowRunRow({
       }
       title={`${runTitle(run)} — ${run.flowSnapshot.name} · ${run.state.kind}`}
     >
-      {confirming ? (
+      {renameValue !== null ? (
+        // Inline rename — same "replace the row contents" treatment as the
+        // delete confirm, so the sidebar never grows a popover. Enter or
+        // blur commits, Escape backs out, and an empty value clears the
+        // custom title (back to the prompt-derived one).
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
+          onBlur={commitRename}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitRename();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setRenameValue(null);
+            }
+          }}
+          placeholder={runTitle(run)}
+          aria-label="Run name"
+          className="flex-1 min-w-0 mx-1 my-0.5 rounded border border-accent bg-transparent px-1.5 py-0.5 text-xs text-ink outline-none"
+        />
+      ) : confirming ? (
         // Inline confirm — replaces the row contents so we don't have to
         // squeeze native dialog styling into the app. Compact two-button
         // affordance keyed off the same row chrome.
@@ -286,6 +300,7 @@ function FlowRunRow({
               setActiveRun(run.id);
               setDetailMode('flows');
             }}
+            onDoubleClick={() => setRenameValue(run.title ?? '')}
             className="flex items-center gap-2 flex-1 min-w-0 text-left px-2 py-1"
           >
             <FlowMonogram name={run.flowSnapshot.name} size="sm" live={isLive} />
@@ -297,6 +312,24 @@ function FlowRunRow({
               isLive={isLive}
               escalated={run.state.kind === 'watching' && run.state.watch.escalated}
             />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              // Seed with the current custom title only — otherwise the
+              // input opens pre-filled with the whole first line of the
+              // prompt, which the user then has to clear before typing.
+              // The prompt-derived title shows as the placeholder instead.
+              setRenameValue(run.title ?? '');
+            }}
+            className={
+              'w-4 h-4 flex items-center justify-center text-[10px] text-ink-faint hover:text-ink rounded transition-opacity ' +
+              (visiblySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100')
+            }
+            title="Rename this run"
+            aria-label="Rename this run"
+          >
+            ✎
           </button>
           <button
             onClick={(e) => {
@@ -315,14 +348,6 @@ function FlowRunRow({
       )}
     </div>
   );
-}
-
-/// Sidebar title for a run. Uses the first non-empty line of the user
-/// prompt so runs of the same flow are distinguishable at a glance;
-/// falls back to the flow name when the prompt is blank.
-function runTitle(run: FlowRun): string {
-  const firstLine = run.userPrompt?.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0);
-  return firstLine || run.flowSnapshot.name;
 }
 
 /// Explicit state badge — spinner for running, glyph for paused, no badge

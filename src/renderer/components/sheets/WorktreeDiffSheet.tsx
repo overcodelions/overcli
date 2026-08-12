@@ -3,14 +3,16 @@
 // (file list + diff body) with the same action buttons in the header
 // (Refresh, Rebase onto base, Merge to base, Merge to current, Push, Open PR).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useStore } from '../../store';
 import { useRunner } from '../../runnersStore';
 import { Conversation, RemoteKind, UUID, WorktreeStatus } from '@shared/types';
 import {
+  DiffMatch,
   FileDiff,
   agentDescription,
   fileBaseName,
+  findDiffMatches,
   findOwningProjectPath,
   lastAssistantText,
   parseUnifiedDiffByFile,
@@ -350,6 +352,17 @@ export function WorktreeDiffSheet({ convId }: { convId: UUID }) {
               label="Check out (workspace)…"
               title="Workspace agents check out every project at once from the coordinator's review sheet, so the workspace doesn't end up half in agents and half in local branches."
             />
+          ) : conv.adoptedWorktree ? (
+            /* Checking out locally does `git worktree remove --force` —
+               on a borrowed worktree that would pull the tree out from
+               under the flow run that owns it. The run's own Review &
+               merge sheet is the sanctioned way home. */
+            <ActionButton
+              onClick={() => {}}
+              disabled
+              label="Check out locally"
+              title="This worktree belongs to a flow run — check it out from that run's Review & merge instead, so the run isn't left without its tree."
+            />
           ) : (
             <ActionButton
               onClick={() => void runCheckoutLocally()}
@@ -496,13 +509,201 @@ export function StatusFooter({ status, remote }: { status: WorktreeStatus; remot
 /// just a single hunk — and because we already have FileDiff.body split by
 /// file, we just need hunk + line styling. Tracks old/new line numbers
 /// from the @@ hunk headers so we can render an editor-style gutter.
-export function UnifiedDiffBody({ text }: { text: string }) {
-  const lines = text.split('\n');
+export function UnifiedDiffBody({ text, searchable = true }: { text: string; searchable?: boolean }) {
+  const lines = useMemo(() => text.split('\n'), [text]);
+  const rows = useMemo(() => buildDiffRows(lines), [lines]);
+
+  const [findOpen, setFindOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  const matches = useMemo(
+    () => (searchable && findOpen ? findDiffMatches(lines, query) : []),
+    [searchable, findOpen, lines, query],
+  );
+  // Clamp rather than reset: the query and the diff can both change under
+  // us (switching files in a sheet keeps the bar open), and an index past
+  // the end would leave the counter reading "5/2".
+  const current = matches.length === 0 ? -1 : Math.min(activeIndex, matches.length - 1);
+  const activeMatch = current < 0 ? undefined : matches[current];
+  const matchesByLine = useMemo(() => {
+    const map = new Map<number, DiffMatch[]>();
+    for (const m of matches) {
+      const list = map.get(m.line);
+      if (list) list.push(m);
+      else map.set(m.line, [m]);
+    }
+    return map;
+  }, [matches]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [query, text]);
+
+  // Keep the current hit on screen. `nearest` means a match already in
+  // view doesn't yank the scroll position around as you type.
+  useEffect(() => {
+    if (!activeMatch) return;
+    const el = bodyRef.current?.querySelector<HTMLElement>(
+      `[data-diff-line="${activeMatch.line}"]`,
+    );
+    el?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeMatch]);
+
+  const openFind = () => {
+    setFindOpen(true);
+    // The input may not exist yet on the first open, so focus after paint.
+    requestAnimationFrame(() => inputRef.current?.select());
+  };
+  const closeFind = () => {
+    setFindOpen(false);
+    setQuery('');
+  };
+  const step = (delta: number) => {
+    if (matches.length === 0) return;
+    setActiveIndex((current + delta + matches.length) % matches.length);
+  };
+
+  // ⌘F while a diff is on screen opens the bar, matching the CodeMirror
+  // editor's search keymap. Several diff bodies can be mounted at once (a
+  // sheet over the explorer pane), so only the most recently mounted one —
+  // the topmost — claims the key.
+  useEffect(() => {
+    if (!searchable) return;
+    const claim = () => openFind();
+    findKeyStack.push(claim);
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || (e.key !== 'f' && e.key !== 'F')) return;
+      if (findKeyStack[findKeyStack.length - 1] !== claim) return;
+      e.preventDefault();
+      claim();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      const i = findKeyStack.indexOf(claim);
+      if (i !== -1) findKeyStack.splice(i, 1);
+    };
+  }, [searchable]);
+
+  const onInputKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      step(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFind();
+    }
+  };
+
+  return (
+    <div ref={bodyRef} className="group font-mono text-[11px] leading-[1.5]">
+      {searchable &&
+        (findOpen ? (
+          <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-card bg-surface-muted px-2 py-1.5 font-sans">
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={onInputKey}
+              placeholder="Find in diff"
+              spellCheck={false}
+              autoFocus
+              className="w-56 rounded border border-card bg-card px-2 py-1 text-[12px] text-ink outline-none focus:border-accent"
+            />
+            <span className="w-20 tabular-nums text-ink-faint">
+              {!query ? '' : matches.length === 0 ? 'no results' : `${current + 1}/${matches.length}`}
+            </span>
+            <FindButton label="Previous match (⇧↵)" onClick={() => step(-1)} disabled={!matches.length}>
+              ↑
+            </FindButton>
+            <FindButton label="Next match (↵)" onClick={() => step(1)} disabled={!matches.length}>
+              ↓
+            </FindButton>
+            <button
+              type="button"
+              onClick={closeFind}
+              title="Close find (Esc)"
+              className="ml-auto px-1 text-ink-faint hover:text-ink"
+            >
+              ×
+            </button>
+          </div>
+        ) : (
+          // Zero-height sticky row so the affordance floats over the diff
+          // without shifting a single line of it.
+          <div className="pointer-events-none sticky top-0 z-10 flex h-0 justify-end">
+            <button
+              type="button"
+              onClick={openFind}
+              className="pointer-events-auto mr-3 mt-1 rounded border border-card bg-surface px-1.5 py-0.5 font-sans text-[10px] text-ink-faint opacity-0 transition-opacity hover:text-ink focus:opacity-100 group-hover:opacity-100"
+            >
+              Find ⌘F
+            </button>
+          </div>
+        ))}
+      {rows.map(({ raw, kind, oldNum, newNum }, i) => {
+        const bg =
+          kind === 'add'
+            ? 'diff-add-row'
+            : kind === 'remove'
+            ? 'diff-remove-row'
+            : kind === 'hunk'
+            ? 'bg-card'
+            : '';
+        const fg =
+          kind === 'add'
+            ? 'diff-add-ink'
+            : kind === 'remove'
+            ? 'diff-remove-ink'
+            : kind === 'hunk'
+            ? 'diff-hunk-ink'
+            : kind === 'fileHeader'
+            ? 'diff-file-ink'
+            : kind === 'meta'
+            ? 'text-ink-faint'
+            : 'text-ink';
+        return (
+          <div
+            key={i}
+            data-diff-line={i}
+            className={'flex whitespace-pre select-text ' + bg + ' ' + fg}
+          >
+            <span className="select-none text-ink-faint pl-2 pr-1 text-right tabular-nums w-10 shrink-0">
+              {oldNum ?? ''}
+            </span>
+            <span className="select-none text-ink-faint pr-2 text-right tabular-nums w-10 shrink-0">
+              {newNum ?? ''}
+            </span>
+            <span className="px-1 flex-1">
+              {renderRowText(raw, matchesByLine.get(i), activeMatch)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/// Mounted-diff-body stack for the ⌘F binding — the last entry is the
+/// topmost body on screen and is the only one allowed to answer the key.
+const findKeyStack: Array<() => void> = [];
+
+type DiffRowKind = 'add' | 'remove' | 'context' | 'hunk' | 'fileHeader' | 'meta';
+
+/// Classify each raw diff line and thread the old/new line numbers
+/// through from the @@ hunk headers, so the body can render an
+/// editor-style gutter.
+function buildDiffRows(
+  lines: string[],
+): Array<{ raw: string; kind: DiffRowKind; oldNum: number | null; newNum: number | null }> {
+  const hunkHeader = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
   let oldLine = 0;
   let newLine = 0;
-  const hunkHeader = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
-  const rows = lines.map((raw) => {
-    let kind: 'add' | 'remove' | 'context' | 'hunk' | 'fileHeader' | 'meta' = 'context';
+  return lines.map((raw) => {
+    let kind: DiffRowKind = 'context';
     if (raw.startsWith('+++') || raw.startsWith('---')) kind = 'fileHeader';
     else if (raw.startsWith('@@')) kind = 'hunk';
     else if (raw.startsWith('diff ') || raw.startsWith('index ')) kind = 'meta';
@@ -529,42 +730,59 @@ export function UnifiedDiffBody({ text }: { text: string }) {
     }
     return { raw, kind, oldNum, newNum };
   });
+}
 
+/// Split one diff line around its search hits. Returns the plain string
+/// when there's nothing to highlight so the common (no search) path stays
+/// a single text node.
+function renderRowText(
+  raw: string,
+  hits: DiffMatch[] | undefined,
+  active: DiffMatch | undefined,
+): React.ReactNode {
+  if (!hits?.length) return raw || ' ';
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  hits.forEach((hit, i) => {
+    if (hit.start > cursor) out.push(raw.slice(cursor, hit.start));
+    const isActive = active?.line === hit.line && active?.start === hit.start;
+    out.push(
+      <mark
+        key={i}
+        className={
+          'rounded-[2px] text-inherit ' + (isActive ? 'bg-amber-500/50' : 'bg-amber-500/25')
+        }
+      >
+        {raw.slice(hit.start, hit.end)}
+      </mark>,
+    );
+    cursor = hit.end;
+  });
+  if (cursor < raw.length) out.push(raw.slice(cursor));
+  return out;
+}
+
+function FindButton({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="font-mono text-[11px] leading-[1.5]">
-      {rows.map(({ raw, kind, oldNum, newNum }, i) => {
-        const bg =
-          kind === 'add'
-            ? 'diff-add-row'
-            : kind === 'remove'
-            ? 'diff-remove-row'
-            : kind === 'hunk'
-            ? 'bg-card'
-            : '';
-        const fg =
-          kind === 'add'
-            ? 'diff-add-ink'
-            : kind === 'remove'
-            ? 'diff-remove-ink'
-            : kind === 'hunk'
-            ? 'diff-hunk-ink'
-            : kind === 'fileHeader'
-            ? 'diff-file-ink'
-            : kind === 'meta'
-            ? 'text-ink-faint'
-            : 'text-ink';
-        return (
-          <div key={i} className={'flex whitespace-pre select-text ' + bg + ' ' + fg}>
-            <span className="select-none text-ink-faint pl-2 pr-1 text-right tabular-nums w-10 shrink-0">
-              {oldNum ?? ''}
-            </span>
-            <span className="select-none text-ink-faint pr-2 text-right tabular-nums w-10 shrink-0">
-              {newNum ?? ''}
-            </span>
-            <span className="px-1 flex-1">{raw || ' '}</span>
-          </div>
-        );
-      })}
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className="rounded border border-card px-1.5 py-0.5 text-[11px] text-ink-muted hover:bg-card-strong hover:text-ink disabled:opacity-40"
+    >
+      {children}
+    </button>
   );
 }

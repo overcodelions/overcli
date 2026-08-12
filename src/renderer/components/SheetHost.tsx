@@ -11,7 +11,9 @@ import { NewColosseumSheet } from './sheets/NewColosseumSheet';
 import { ColosseumCompareSheet } from './sheets/ColosseumCompareSheet';
 import { FileFinderSheet } from './sheets/FileFinderSheet';
 import { QuickSwitcherSheet } from './sheets/QuickSwitcherSheet';
+import { FlowLaunchSheet } from './sheets/FlowLaunchSheet';
 import { ShortcutsHelpSheet } from './sheets/ShortcutsHelpSheet';
+import { WhatsNewSheet } from './sheets/WhatsNewSheet';
 import { WorktreeDiffSheet } from './sheets/WorktreeDiffSheet';
 import { ProjectDiffSheet } from './sheets/ProjectDiffSheet';
 import { WorkspaceDiffSheet } from './sheets/WorkspaceDiffSheet';
@@ -35,15 +37,38 @@ const WIDE_SHEETS = new Set<string>([
   'capabilities',
 ]);
 
+/// Sheets that already render as their own floating card. They get the
+/// backdrop and the centring, but no surface/border/shadow of ours —
+/// otherwise the result is a panel inside a panel, with the host's fixed
+/// frame stranding dead space around a short piece of content.
+const BARE_SHEETS = new Set<string>(['flowLaunch']);
+
 export function SheetHost() {
   const sheet = useStore((s) => s.activeSheet);
   const close = useStore((s) => s.openSheet);
   if (!sheet) return null;
+  if (BARE_SHEETS.has(sheet.type)) {
+    return (
+      <div
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+        onClick={() => close(null)}
+      >
+        <div className="w-full max-w-[720px]" onClick={(e) => e.stopPropagation()}>
+          {sheet.type === 'flowLaunch' && <FlowLaunchSheet flowId={sheet.flowId} />}
+        </div>
+      </div>
+    );
+  }
   const wide = WIDE_SHEETS.has(sheet.type);
   // About sits between the two tiers: wider than the default shell so the
   // feature grids and flows showcase have room to breathe, but height stays
   // content-driven (max-h) rather than locked to the viewport.
   const isAbout = sheet.type === 'about';
+  // The palette sits a tier below About: it needs room for a title, an
+  // owner subtitle, a type tag and a status pill on one line, which 680px
+  // truncates into uselessness. Height is fixed so the frame doesn't jump
+  // as results narrow while typing.
+  const isPalette = sheet.type === 'quickSwitcher';
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
@@ -61,7 +86,9 @@ export function SheetHost() {
             ? 'max-w-[1240px] h-[88vh]'
             : isAbout
               ? 'max-w-[1040px] max-h-[90vh]'
-              : 'max-w-[680px] max-h-[80vh]')
+              : isPalette
+                ? 'max-w-[760px] h-[560px] max-h-[78vh]'
+                : 'max-w-[680px] max-h-[80vh]')
         }
         onClick={(e) => e.stopPropagation()}
       >
@@ -97,6 +124,7 @@ export function SheetHost() {
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet />}
         {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}
+        {sheet.type === 'whatsNew' && <WhatsNewSheet />}
       </div>
     </div>
   );

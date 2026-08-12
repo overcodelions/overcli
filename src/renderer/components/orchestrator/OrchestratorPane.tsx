@@ -18,7 +18,9 @@ import { useOrchestratorStore, type ProducerTurn } from '../../orchestratorStore
 import { backendColor } from '../../theme';
 import { Markdown } from '../Markdown';
 import { ResizableDivider } from '../ResizableDivider';
+import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
+import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 
 /// A launch target the batch can run against: a single project or a whole
@@ -72,7 +74,15 @@ export function OrchestratorPane() {
   }, [flows]);
 
   const batches = useMemo(
-    () => Object.values(s.orchestrations).sort((a, b) => b.createdAt - a.createdAt),
+    () =>
+      Object.values(s.orchestrations).sort(
+        // A parked batch is the one thing here that's blocked on the user, so
+        // it sorts above everything regardless of age — a proposal from this
+        // morning shouldn't sit below a batch that finished an hour ago.
+        (a, b) =>
+          Number(isOrchestrationAwaitingApproval(b)) -
+            Number(isOrchestrationAwaitingApproval(a)) || b.createdAt - a.createdAt,
+      ),
     [s.orchestrations],
   );
 
@@ -328,7 +338,8 @@ function ProducerBody({
             <p className="text-sm text-ink-faint leading-relaxed mt-1.5 max-w-xl mx-auto">
               The producer investigates with your connected tools and MCP servers, then
               returns a list of small, self-contained asks. Map each to a flow and launch
-              them together — one git worktree per ask.
+              them together — one git worktree per ask, or one at a time in your own
+              working tree.
             </p>
             <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mt-5 mb-2">
               Start from an example
@@ -555,6 +566,8 @@ function MapPane({
   const itemConfig = useOrchestratorStore((s) => s.itemConfig);
   const defaultFlowId = useOrchestratorStore((s) => s.defaultFlowId);
   const defaultBaseBranch = useOrchestratorStore((s) => s.defaultBaseBranch);
+  const runIn = useOrchestratorStore((s) => s.runIn);
+  const setRunIn = useOrchestratorStore((s) => s.setRunIn);
   const setDefaultFlow = useOrchestratorStore((s) => s.setDefaultFlow);
   const setDefaultBaseBranch = useOrchestratorStore((s) => s.setDefaultBaseBranch);
   const selectAll = useOrchestratorStore((s) => s.selectAll);
@@ -598,13 +611,38 @@ function MapPane({
                 onChange={(id) => setDefaultFlow(id)}
                 placeholder="Pick a flow…"
               />
-              <span className="font-medium text-sm text-ink-muted ml-1">Base</span>
-              <input
-                value={defaultBaseBranch}
-                onChange={(e) => setDefaultBaseBranch(e.target.value)}
-                placeholder="(repo default)"
-                className="text-xs font-mono bg-card-strong rounded-md px-2 py-1.5 text-ink w-32 border-0 outline-none"
-              />
+              {/* Where the whole batch works. Same idiom as a single flow
+                  launch, but batch-wide — mixing the two inside one batch
+                  would just be a confusing way to serialize half of it. */}
+              <div className="inline-flex p-0.5 rounded-lg bg-card-strong">
+                <SegmentButton
+                  active={runIn === 'cwd'}
+                  onClick={() => setRunIn('cwd')}
+                  title="Run every ask in the project's own working tree, one at a time"
+                >
+                  main tree
+                </SegmentButton>
+                <SegmentButton
+                  active={runIn === 'worktree'}
+                  onClick={() => setRunIn('worktree')}
+                  title="Give each ask its own fresh worktree so they can run in parallel"
+                >
+                  worktree each
+                </SegmentButton>
+              </div>
+              {/* Nothing forks from a base branch in the main tree — the runs
+                  use whatever it already has checked out. */}
+              {runIn === 'worktree' && (
+                <>
+                  <span className="font-medium text-sm text-ink-muted ml-1">Base</span>
+                  <input
+                    value={defaultBaseBranch}
+                    onChange={(e) => setDefaultBaseBranch(e.target.value)}
+                    placeholder="(repo default)"
+                    className="text-xs font-mono bg-card-strong rounded-md px-2 py-1.5 text-ink w-32 border-0 outline-none"
+                  />
+                </>
+              )}
               <div className="flex-1" />
               <button
                 className="text-xs text-accent font-medium disabled:opacity-40"
@@ -640,9 +678,15 @@ function LaunchFooter() {
   const itemConfig = useOrchestratorStore((s) => s.itemConfig);
   const maxConcurrent = useOrchestratorStore((s) => s.maxConcurrent);
   const setMaxConcurrent = useOrchestratorStore((s) => s.setMaxConcurrent);
+  const runIn = useOrchestratorStore((s) => s.runIn);
   const openPr = useOrchestratorStore((s) => s.openPrOnFinish);
   const setOpenPr = useOrchestratorStore((s) => s.setOpenPrOnFinish);
   const startBatch = useOrchestratorStore((s) => s.startBatch);
+
+  // One working tree can't host two agents editing the same files, so a
+  // main-tree batch drains strictly one at a time. Show that as a fact
+  // rather than a stepper the user can move but main will overrule.
+  const serialized = runIn === 'cwd';
 
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [launching, setLaunching] = useState(false);
@@ -659,25 +703,34 @@ function LaunchFooter() {
 
   return (
     <div className="flex-none px-4 py-2.5 bg-surface-muted/40 flex items-center gap-3 flex-wrap">
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-ink-faint">Run at most</span>
-        <div className="flex items-center bg-card-strong rounded-md overflow-hidden">
-          <button
-            className="w-6 h-6 text-ink hover:bg-card-border"
-            onClick={() => setMaxConcurrent(maxConcurrent - 1)}
-          >
-            −
-          </button>
-          <span className="w-7 text-center text-sm font-semibold">{maxConcurrent}</span>
-          <button
-            className="w-6 h-6 text-ink hover:bg-card-border"
-            onClick={() => setMaxConcurrent(maxConcurrent + 1)}
-          >
-            +
-          </button>
+      {serialized ? (
+        <span
+          className="text-xs text-ink-faint"
+          title="Every ask runs in the project's working tree, so they can't overlap — the queue runs them one after another."
+        >
+          Running <b className="text-ink">one at a time</b> in the main tree
+        </span>
+      ) : (
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-ink-faint">Run at most</span>
+          <div className="flex items-center bg-card-strong rounded-md overflow-hidden">
+            <button
+              className="w-6 h-6 text-ink hover:bg-card-border"
+              onClick={() => setMaxConcurrent(maxConcurrent - 1)}
+            >
+              −
+            </button>
+            <span className="w-7 text-center text-sm font-semibold">{maxConcurrent}</span>
+            <button
+              className="w-6 h-6 text-ink hover:bg-card-border"
+              onClick={() => setMaxConcurrent(maxConcurrent + 1)}
+            >
+              +
+            </button>
+          </div>
+          <span className="text-xs text-ink-faint">at a time</span>
         </div>
-        <span className="text-xs text-ink-faint">at a time</span>
-      </div>
+      )}
       <label className="text-xs text-ink-faint flex items-center gap-1.5">
         <input type="checkbox" checked={openPr} onChange={(e) => setOpenPr(e.target.checked)} />
         open a PR when each finishes
@@ -878,9 +931,62 @@ function BatchLedger({
     (i) => i.status === 'failed' || i.status === 'cancelled',
   ).length;
   const active = !batch.completedAt;
+  const awaiting = isOrchestrationAwaitingApproval(batch);
+
+  // Which parked items the user has kept. Local, not persisted: it's a
+  // decision in progress, and it's resolved the moment they hit Approve.
+  const [declined, setDeclined] = useState<Set<string>>(() => new Set());
+  const [approving, setApproving] = useState(false);
+  const proposed = batch.items.filter((i) => i.status === 'proposed');
+  const keeping = proposed.filter((i) => !declined.has(i.candidate.id));
+
+  async function approve(): Promise<void> {
+    if (approving) return;
+    setApproving(true);
+    try {
+      await window.overcli.invoke('orchestrator:approveBatch', {
+        id: batch.id,
+        approve: keeping.map((i) => ({ candidateId: i.candidate.id })),
+      });
+    } finally {
+      setApproving(false);
+    }
+  }
 
   return (
     <div>
+      {awaiting && (
+        <div className="mb-2 rounded-lg border border-violet-400/40 bg-violet-500/10 px-3 py-2.5">
+          <div className="text-[13px] text-ink">
+            <span className="font-semibold">{proposed.length}</span>{' '}
+            {proposed.length === 1 ? 'ask' : 'asks'} proposed
+            {batch.origin?.kind === 'schedule' && (
+              <span className="text-ink-muted"> by {batch.origin.scheduleName}</span>
+            )}
+            . Nothing has run yet.
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={() => void approve()}
+              disabled={approving || keeping.length === 0}
+              className="text-[11px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {approving
+                ? 'Launching…'
+                : `Launch ${keeping.length} of ${proposed.length}`}
+            </button>
+            <button
+              onClick={() => void window.overcli.invoke('orchestrator:abort', { id: batch.id })}
+              className="text-[11px] px-2.5 py-1 rounded-md border border-card-strong text-ink-muted hover:bg-white/5"
+            >
+              Discard all
+            </button>
+            <span className="text-[11px] text-ink-faint ml-auto">
+              Untick anything you don&apos;t want.
+            </span>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-2 mb-1.5">
         <div className="text-[11px] uppercase tracking-wide text-ink-faint font-bold">
           {batch.title} · {done}/{batch.items.length} done
@@ -897,7 +1003,7 @@ function BatchLedger({
             ↻ Retry {retryable} failed
           </button>
         )}
-        {active ? (
+        {awaiting ? null : active ? (
           <button className="text-[11px] text-ink-faint hover:text-red-400" onClick={() => abort(batch.id)}>
             Abort batch
           </button>
@@ -909,7 +1015,24 @@ function BatchLedger({
       </div>
       <div className="space-y-1.5">
         {batch.items.map((it, i) => (
-          <LedgerRow key={i} item={it} flowById={flowById} orchestrationId={batch.id} />
+          <LedgerRow
+            key={i}
+            item={it}
+            flowById={flowById}
+            orchestrationId={batch.id}
+            kept={it.status === 'proposed' ? !declined.has(it.candidate.id) : undefined}
+            onToggleKeep={
+              it.status === 'proposed'
+                ? () =>
+                    setDeclined((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(it.candidate.id)) next.delete(it.candidate.id);
+                      else next.add(it.candidate.id);
+                      return next;
+                    })
+                : undefined
+            }
+          />
         ))}
       </div>
     </div>
@@ -924,6 +1047,8 @@ function statusRail(status: OrchestrationItem['status']): string {
       return 'var(--c-running-pulse, #16a34a)';
     case 'paused':
       return '#f0a83d';
+    case 'proposed':
+      return '#a78bfa';
     case 'done':
       return 'var(--c-accent)';
     case 'failed':
@@ -937,10 +1062,15 @@ function LedgerRow({
   item,
   flowById,
   orchestrationId,
+  kept,
+  onToggleKeep,
 }: {
   item: OrchestrationItem;
   flowById: Map<string, Flow>;
   orchestrationId: string;
+  /// Set only for a `proposed` item: whether it's still in the approval set.
+  kept?: boolean;
+  onToggleKeep?: () => void;
 }) {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const setDetailMode = useStore((s) => s.setDetailMode);
@@ -961,7 +1091,10 @@ function LedgerRow({
 
   return (
     <div
-      className="relative grid items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors"
+      className={
+        'relative grid items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors ' +
+        (kept === false ? 'opacity-45' : '')
+      }
       style={{ gridTemplateColumns: '1fr 112px 96px' }}
     >
       <span
@@ -971,14 +1104,25 @@ function LedgerRow({
         }
         style={{ background: statusRail(item.status) }}
       />
-      <button
-        className="text-left font-medium text-[13px] text-ink truncate hover:text-accent disabled:hover:text-ink"
-        onClick={openRun}
-        disabled={!item.runId}
-        title={item.candidate.prompt}
-      >
-        {item.candidate.title}
-      </button>
+      <div className="flex items-center gap-2 min-w-0">
+        {onToggleKeep && (
+          <input
+            type="checkbox"
+            checked={kept ?? true}
+            onChange={onToggleKeep}
+            title="Include this ask when you launch the batch"
+            className="flex-none"
+          />
+        )}
+        <button
+          className="text-left font-medium text-[13px] text-ink truncate hover:text-accent disabled:hover:text-ink"
+          onClick={openRun}
+          disabled={!item.runId}
+          title={item.candidate.prompt}
+        >
+          {item.candidate.title}
+        </button>
+      </div>
       <span
         className="text-xs text-ink-muted flex items-center gap-1.5 truncate"
         title={item.branchName ? `branch ${item.branchName}` : undefined}
@@ -1018,6 +1162,7 @@ function StatusLabel({ item }: { item: OrchestrationItem }) {
   const map: Record<string, { text: string; cls: string }> = {
     running: { text: 'running…', cls: 'text-green-400' },
     paused: { text: 'paused', cls: 'text-amber-400' },
+    proposed: { text: 'proposed', cls: 'text-violet-400' },
     queued: { text: 'queued', cls: 'text-ink-muted' },
     done: { text: 'done', cls: 'text-accent' },
     failed: { text: 'failed', cls: 'text-red-400' },

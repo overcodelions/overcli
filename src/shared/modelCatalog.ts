@@ -9,15 +9,20 @@ import type { Backend } from './types';
 /// surface in every picker that imports `PREMIUM_MODELS`. The first
 /// entry per backend is the auto-pick default — the "(pick a model)"
 /// fallback and the template resolver's per-tier substitution both take
-/// the first matching id. We keep `claude-opus-4-8` first so it's the
-/// default Claude model. `claude-fable-5` is the most premium/advanced
-/// model (roughly 2x the cost of Opus 4.8), listed right after the
-/// default for anyone who explicitly wants it. Order also picks the
-/// per-tier default: the template resolver substitutes the *first* id at
-/// a given speed tier, so `claude-sonnet-5` precedes `claude-sonnet-4-6`
-/// to make Sonnet 5 the default 'fast' Claude model.
+/// the first matching id. We keep `claude-opus-5` first so it's the
+/// default Claude model (the newest Opus-tier thinking model).
+/// `claude-fable-5` is the most premium/advanced model (roughly 2x the
+/// cost of Opus), listed right after the default for anyone who
+/// explicitly wants it. Order also picks the per-tier default: the
+/// template resolver substitutes the *first* id at a given speed tier, so
+/// `claude-sonnet-5` precedes `claude-sonnet-4-6` to make Sonnet 5 the
+/// default 'fast' Claude model.
+///
+/// When an older model is retired here, flows that still reference it are
+/// auto-lifted to the next-highest version in the same family on load —
+/// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-fable-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
@@ -57,6 +62,73 @@ export function canonicalizePremiumModel(
   return list.find((m) => norm(m) === wanted) ?? model;
 }
 
+/// Parse a model id into a comparable version. Splits the id at its first
+/// run of digits: everything before is the `prefix`, everything after is
+/// the `suffix`, and the run itself becomes a numeric `version` tuple. The
+/// `familyKey` (prefix + suffix) identifies the model *line* independent of
+/// version, so `claude-opus-4-7`, `claude-opus-4-8`, and `claude-opus-5`
+/// all share the key `claude-opus|` while `gpt-5.4-mini`/`gpt-5.6-mini`
+/// share `gpt|mini`. Returns null for ids with no numeric version.
+function parseModelVersion(id: string): { familyKey: string; version: number[] } | null {
+  const m = id.match(/\d+(?:[.-]\d+)*/);
+  if (!m || m.index === undefined) return null;
+  const run = m[0];
+  const prefix = id.slice(0, m.index).replace(/[-.]+$/, '');
+  const suffix = id.slice(m.index + run.length).replace(/^[-.]+/, '');
+  const version = run.split(/[.-]/).map((n) => Number(n));
+  return { familyKey: `${prefix}|${suffix}`, version };
+}
+
+/// Compare two version tuples lexicographically, padding the shorter with
+/// zeros so `[5]` (opus 5) sorts above `[4, 8]` (opus 4.8).
+function compareModelVersion(a: number[], b: number[]): number {
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/// Auto-lift a model id that's no longer in the catalog (e.g. a retired
+/// `claude-opus-4-7`) to the *next-highest* version in the same model
+/// family that we still ship. This keeps existing flows runnable after we
+/// drop an old model: a flow pinned to Opus 4.7 lifts to Opus 4.8 rather
+/// than failing validation with "not supported".
+///
+///   - Already-supported ids pass through untouched.
+///   - A missing id whose family we recognise lifts to the smallest
+///     catalog version strictly greater than it (so 4.7 → 4.8, not → 5),
+///     falling back to the family's highest version when nothing newer
+///     exists (a downgrade beats an unrunnable flow).
+///   - An id from an unknown family (e.g. a long-retired dated snapshot)
+///     passes through unchanged so validation can still reject it.
+///
+/// Handles dot/dash version spellings via `parseModelVersion`, so a lift is
+/// also a canonicalization for stale ids.
+export function liftMissingModel(backend: Exclude<Backend, 'ollama'>, model: string): string {
+  const list = PREMIUM_MODELS[backend];
+  if (!list || list.includes(model)) return model;
+  const target = parseModelVersion(model);
+  if (!target) return model;
+  const family = list
+    .map((id) => ({ id, parsed: parseModelVersion(id) }))
+    .filter(
+      (e): e is { id: string; parsed: { familyKey: string; version: number[] } } =>
+        e.parsed !== null && e.parsed.familyKey === target.familyKey,
+    );
+  if (family.length === 0) return model;
+  const higher = family
+    .filter((e) => compareModelVersion(e.parsed.version, target.version) > 0)
+    .sort((a, b) => compareModelVersion(a.parsed.version, b.parsed.version));
+  if (higher.length > 0) return higher[0].id;
+  // Nothing newer in the family — settle for its highest available version.
+  const highest = family
+    .slice()
+    .sort((a, b) => compareModelVersion(b.parsed.version, a.parsed.version));
+  return highest[0].id;
+}
+
 /// Speed tier per model id. Drives a ⚡ marker in the picker so users
 /// can spot the fast/cheap tier at a glance.
 ///   - 'fast': low latency, low cost; good for workers and quick tasks
@@ -71,8 +143,8 @@ export type ModelSpeed = 'fast' | 'standard' | 'thinking' | 'frontier';
 const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Claude
   'claude-fable-5': 'frontier',
+  'claude-opus-5': 'thinking',
   'claude-opus-4-8': 'thinking',
-  'claude-opus-4-7': 'thinking',
   'claude-sonnet-5': 'fast',
   'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',

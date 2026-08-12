@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useStore } from '../../store';
+import { useStore, isLiveWorkspaceAgent } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
 import { ProjectPicker } from './ProjectPicker';
 import { BaseBranchSelect } from './BaseBranchSelect';
@@ -45,7 +45,7 @@ export function EditWorkspaceSheet({ workspaceId }: { workspaceId: UUID }) {
   }, [workspace, projects]);
 
   const agents = useMemo(
-    () => (workspace?.conversations ?? []).filter((c) => (c.workspaceAgentMemberIds?.length ?? 0) > 0),
+    () => (workspace?.conversations ?? []).filter(isLiveWorkspaceAgent),
     [workspace],
   );
 

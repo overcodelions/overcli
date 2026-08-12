@@ -50,6 +50,10 @@ export function saveOrchestration(o: Orchestration): void {
 /// Load every persisted batch. Down-converts any item still marked
 /// `running` to `failed` — its child run's subprocess is dead after a
 /// restart, mirroring how runsStore demotes in-flight runs to `aborted`.
+///
+/// `proposed` items pass through untouched. A schedule can park a batch at
+/// 8am and the user might not open the app until the afternoon; settling the
+/// proposal on boot would throw away the entire point of scheduling it.
 export function loadAllOrchestrations(): Orchestration[] {
   ensureDir();
   let names: string[] = [];

@@ -10,7 +10,7 @@
 
 import { create } from 'zustand';
 
-import type { Candidate, Orchestration, RecentPrompt } from '@shared/flows/orchestration';
+import type { Candidate, Orchestration, RecentPrompt, RunIn } from '@shared/flows/orchestration';
 
 /// Client-side overlay on a Candidate: the mapping decisions that aren't part
 /// of the producer's output. Keyed by candidate id in `itemConfig`.
@@ -65,6 +65,11 @@ interface OrchestratorState {
   /// Batch defaults — applied to any candidate without an override.
   defaultFlowId: string | null;
   defaultBaseBranch: string;
+  /// Where every item in the batch works: a fresh worktree each (the default,
+  /// and the only way items can run in parallel), or the project's own working
+  /// tree. `cwd` pins `maxConcurrent` to 1 — one checkout can't host two
+  /// agents at once — and makes the base branch moot.
+  runIn: RunIn;
   maxConcurrent: number;
   /// Open a PR when each child finishes (passed through to flows that ship).
   openPrOnFinish: boolean;
@@ -82,8 +87,14 @@ interface OrchestratorActions {
   setProjectPath(path: string | null): void;
   setDefaultFlow(flowId: string | null): void;
   setDefaultBaseBranch(branch: string): void;
+  setRunIn(runIn: RunIn): void;
   setMaxConcurrent(n: number): void;
   setOpenPrOnFinish(v: boolean): void;
+  /// Rehydrate the sticky batch-launch defaults from a persisted view on
+  /// launch. Applies the same cwd↔concurrency coupling setRunIn/setMaxConcurrent
+  /// enforce, so a restored `cwd` batch still pins the cap to 1. Absent fields
+  /// keep the current value.
+  restoreDefaults(d: { runIn?: RunIn; maxConcurrent?: number; openPrOnFinish?: boolean }): void;
 
   /// Clear the producer conversation + candidate mapping to start a fresh
   /// batch. Keeps the launched orchestrations (the ledger) and the batch
@@ -135,6 +146,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   itemConfig: {},
   defaultFlowId: null,
   defaultBaseBranch: '',
+  runIn: 'worktree',
   maxConcurrent: 2,
   openPrOnFinish: true,
 
@@ -182,11 +194,34 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   setDefaultBaseBranch(branch) {
     set({ defaultBaseBranch: branch });
   },
+  setRunIn(runIn) {
+    // Items in a cwd batch share one working tree, so they can't overlap.
+    // Drop the cap to 1 as we switch, which is also what main enforces —
+    // better the UI shows the truth than launches something it didn't promise.
+    set(runIn === 'cwd' ? { runIn, maxConcurrent: 1 } : { runIn });
+  },
   setMaxConcurrent(n) {
+    if (get().runIn === 'cwd') return;
     set({ maxConcurrent: Math.max(1, Math.min(8, Math.round(n) || 1)) });
   },
   setOpenPrOnFinish(v) {
     set({ openPrOnFinish: v });
+  },
+  restoreDefaults(d) {
+    set((s) => {
+      const runIn = d.runIn ?? s.runIn;
+      // cwd shares one working tree, so it can't overlap — pin the cap to 1,
+      // matching setRunIn/setMaxConcurrent. Otherwise clamp the saved cap.
+      const maxConcurrent =
+        runIn === 'cwd'
+          ? 1
+          : Math.max(1, Math.min(8, Math.round(d.maxConcurrent ?? s.maxConcurrent) || 1));
+      return {
+        runIn,
+        maxConcurrent,
+        openPrOnFinish: d.openPrOnFinish ?? s.openPrOnFinish,
+      };
+    });
   },
 
   resetDraft() {
@@ -343,10 +378,14 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     // When "open a PR when each finishes" is on, nudge each launched flow to
     // ship — appended to the prompt the run actually sees (and shown in the
     // ledger tooltip). Flows with their own shipper step already do this; the
-    // suffix makes the intent explicit for flows that merely could.
-    const prSuffix = s.openPrOnFinish
-      ? '\n\nWhen the work is complete, commit it on this worktree branch and open a pull request.'
-      : '';
+    // suffix makes the intent explicit for flows that merely could. A cwd run
+    // has no worktree branch of its own to commit on, so it has to cut one
+    // itself rather than commit onto whatever the user has checked out.
+    const prSuffix = !s.openPrOnFinish
+      ? ''
+      : s.runIn === 'cwd'
+        ? '\n\nWhen the work is complete, commit it on a new branch and open a pull request.'
+        : '\n\nWhen the work is complete, commit it on this worktree branch and open a pull request.';
 
     const items = selected.map((c) => {
       const flowId = get().effectiveFlowId(c.id);
@@ -354,7 +393,8 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       return {
         candidate,
         flowId: flowId ?? '',
-        baseBranch: get().effectiveBaseBranch(c.id) || undefined,
+        baseBranch:
+          s.runIn === 'cwd' ? undefined : get().effectiveBaseBranch(c.id) || undefined,
       };
     });
     const missingFlow = items.find((i) => !i.flowId);
@@ -371,7 +411,8 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
     const res = await window.overcli.invoke('orchestrator:startBatch', {
       title: title.trim() || 'Batch',
       projectPath: s.projectPath,
-      baseBranch: s.defaultBaseBranch.trim() || undefined,
+      runIn: s.runIn,
+      baseBranch: s.runIn === 'cwd' ? undefined : s.defaultBaseBranch.trim() || undefined,
       maxConcurrent: s.maxConcurrent,
       producer:
         lastPrompt && lastReply ? { prompt: lastPrompt, reply: lastReply } : undefined,

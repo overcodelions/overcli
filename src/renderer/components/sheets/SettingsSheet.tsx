@@ -9,8 +9,24 @@ import {
   BackendHealth,
 } from '@shared/types';
 import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
+import { Group, SheetActionButton } from './settingsChrome';
+import { StoragePane } from './StoragePane';
+import { ConversationsPane } from './ConversationsPane';
 
-type Section = 'general' | 'backends' | 'models' | 'local' | 'agents' | 'flows' | 'advanced';
+// Re-exported so the several sheets that already import it from here keep
+// working now that the definition lives in ./settingsChrome.
+export { SheetActionButton };
+
+type Section =
+  | 'general'
+  | 'backends'
+  | 'models'
+  | 'local'
+  | 'agents'
+  | 'flows'
+  | 'storage'
+  | 'conversations'
+  | 'advanced';
 
 // Hoisted out of the panes so they aren't reallocated on every keystroke
 // re-render (each render would otherwise create fresh arrays).
@@ -51,6 +67,8 @@ export function SettingsSheet() {
           <NavItem label="Local models" active={section === 'local'} onClick={() => setSection('local')} />
           <NavItem label="Agents" active={section === 'agents'} onClick={() => setSection('agents')} />
           <NavItem label="Flows" active={section === 'flows'} onClick={() => setSection('flows')} />
+          <NavItem label="Storage" active={section === 'storage'} onClick={() => setSection('storage')} />
+          <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
         <div className="flex-1 min-w-0 overflow-y-auto p-5">
@@ -66,7 +84,9 @@ export function SettingsSheet() {
           {section === 'models' && <ModelsPane local={local} patch={patch} />}
           {section === 'local' && <OllamaPane local={local} patch={patch} />}
           {section === 'agents' && <AgentsPane local={local} patch={patch} />}
-          {section === 'flows' && <FlowsRegistriesPane />}
+          {section === 'flows' && <FlowsPane local={local} patch={patch} />}
+          {section === 'storage' && <StoragePane />}
+          {section === 'conversations' && <ConversationsPane />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
       </div>
@@ -109,18 +129,6 @@ function NavItem({ label, active, onClick }: { label: string; active: boolean; o
     >
       {label}
     </button>
-  );
-}
-
-function Group({ title, description, children }: { title: string; description?: string; children: React.ReactNode }) {
-  return (
-    <section className="mb-5">
-      <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">{title}</div>
-      {description && <div className="text-xs text-ink-faint mb-2">{description}</div>}
-      <div className="flex flex-col gap-2 rounded-lg bg-card border border-card p-3">
-        {children}
-      </div>
-    </section>
   );
 }
 
@@ -424,7 +432,7 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
 }
 
 function placeholderFor(b: Backend): string {
-  if (b === 'claude') return 'e.g. claude-opus-4-7';
+  if (b === 'claude') return 'e.g. claude-opus-5';
   if (b === 'codex') return 'e.g. gpt-5.6-sol';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
   if (b === 'copilot') return 'e.g. claude-haiku-4.5';
@@ -536,6 +544,22 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           value={local.autoDowngrade}
           onChange={(v) => patch({ autoDowngrade: v })}
         />
+        <Row
+          label="Release idle sessions after"
+          help="A conversation's CLI stays resident between turns — with every MCP server it started — so a stack of sessions you're no longer using can hold gigabytes. Once a session has been idle this long, overcli shuts it down; your next message respawns it and resumes the same thread. Raise it if you bounce between many conversations; Never keeps every session alive until quit."
+        >
+          <select
+            value={String(local.idleSessionTimeoutMinutes ?? 30)}
+            onChange={(e) => patch({ idleSessionTimeoutMinutes: Number(e.target.value) })}
+            className="field px-2 py-1 text-xs"
+          >
+            <option value="10">10 minutes</option>
+            <option value="30">30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="180">3 hours</option>
+            <option value="0">Never</option>
+          </select>
+        </Row>
       </Group>
       <Group title="Updates" description="Which build channel this app auto-updates from.">
         <Row label="Channel" help="Stable tracks tagged releases. Nightly tracks the rolling nightly prerelease — newer, less tested, and not notarized, so macOS Gatekeeper warns on a fresh nightly download. Switching takes effect immediately.">
@@ -605,32 +629,65 @@ function HealthBadge({ kind, message }: { kind: string; message?: string }) {
   );
 }
 
+function FlowsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  return (
+    <div className="space-y-5">
+      <Group title="Run behavior">
+        <Toggle
+          label="Run flows in a worktree by default"
+          help="Starts the launcher's run-in toggle on “worktree”, so a flow forks a fresh worktree off the base branch instead of working in the project's main tree. You can still flip it per run."
+          value={(local.defaultFlowRunIn ?? 'cwd') === 'worktree'}
+          onChange={(v) => patch({ defaultFlowRunIn: v ? 'worktree' : 'cwd' })}
+        />
+      </Group>
+      <FlowsRegistriesPane />
+    </div>
+  );
+}
+
 function FlowsRegistriesPane() {
   const [registries, setRegistries] = useState<import('@shared/types').FlowRegistry[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingAuth, setEditingAuth] = useState('');
+  const [formKind, setFormKind] = useState<'remote' | 'local'>('remote');
   const [formId, setFormId] = useState('');
   const [formName, setFormName] = useState('');
   const [formUrl, setFormUrl] = useState('');
+  const [formDir, setFormDir] = useState('');
   const [formAuth, setFormAuth] = useState('');
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const formLocator = formKind === 'local' ? formDir : formUrl;
 
   useEffect(() => {
     void window.overcli.invoke('flows:listRegistries').then(setRegistries);
   }, []);
 
+  async function handlePickDir() {
+    const picked = await window.overcli.invoke('fs:pickDirectory');
+    if (picked && picked.length > 0) setFormDir(picked[0]);
+  }
+
   async function handleAddRegistry() {
-    if (!formId || !formName || !formUrl) return;
+    if (!formId || !formName || !formLocator) return;
     const result = await window.overcli.invoke('flows:upsertRegistry', {
-      registry: { id: formId, name: formName, indexUrl: formUrl },
-      authHeader: formAuth || undefined,
+      registry:
+        formKind === 'local'
+          ? { id: formId, name: formName, dir: formDir }
+          : { id: formId, name: formName, indexUrl: formUrl },
+      authHeader: formKind === 'local' ? undefined : formAuth || undefined,
     });
     if (result.ok) {
       setFormId('');
       setFormName('');
       setFormUrl('');
+      setFormDir('');
       setFormAuth('');
+      setFormError(null);
       const updated = await window.overcli.invoke('flows:listRegistries');
       setRegistries(updated);
+    } else {
+      setFormError(result.error);
     }
   }
 
@@ -661,10 +718,29 @@ function FlowsRegistriesPane() {
         {registries.map((reg) => (
           <div key={reg.id} className="flex items-center justify-between gap-4 p-2 rounded border border-card">
             <div className="flex-1">
-              <div className="font-semibold text-sm">{reg.name}</div>
-              <div className="text-xs text-ink-faint mt-1 break-all">{reg.indexUrl}</div>
+              <div className="font-semibold text-sm flex items-center gap-2">
+                {reg.name}
+                {reg.dir && (
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded bg-card text-ink-faint font-normal"
+                    title="Read straight from this folder. overcli never runs git — pull it yourself."
+                  >
+                    local folder
+                  </span>
+                )}
+              </div>
+              <div className="text-xs text-ink-faint mt-1 break-all">{reg.dir ?? reg.indexUrl}</div>
             </div>
-            {editingId === reg.id ? (
+            {reg.dir ? (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => handleRemoveRegistry(reg.id)}
+                  className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
+                >
+                  Remove
+                </button>
+              </div>
+            ) : editingId === reg.id ? (
               <div className="flex items-center gap-2">
                 <input
                   type="password"
@@ -714,6 +790,23 @@ function FlowsRegistriesPane() {
       </Group>
 
       <Group title="Add registry">
+        <div className="flex gap-1 p-0.5 rounded bg-card w-fit">
+          {(['remote', 'local'] as const).map((kind) => (
+            <button
+              key={kind}
+              onClick={() => {
+                setFormKind(kind);
+                setFormError(null);
+              }}
+              className={
+                'text-xs px-2.5 py-1 rounded ' +
+                (formKind === kind ? 'bg-accent/30 text-accent' : 'text-ink-muted hover:text-ink')
+              }
+            >
+              {kind === 'remote' ? 'Remote URL' : 'Local folder'}
+            </button>
+          ))}
+        </div>
         <input
           type="text"
           placeholder="Registry ID (slug)"
@@ -728,26 +821,56 @@ function FlowsRegistriesPane() {
           onChange={(e) => setFormName(e.target.value)}
           className="text-xs px-2 py-1 rounded border border-card bg-card"
         />
-        <input
-          type="text"
-          placeholder="Index URL (https://...)"
-          value={formUrl}
-          onChange={(e) => setFormUrl(e.target.value)}
-          className="text-xs px-2 py-1 rounded border border-card bg-card"
-        />
-        <input
-          type="password"
-          placeholder="Auth header (optional)"
-          value={formAuth}
-          onChange={(e) => setFormAuth(e.target.value)}
-          className="text-xs px-2 py-1 rounded border border-card bg-card"
-        />
-        <div className="text-[11px] text-ink-faint -mt-1">
-          Sent verbatim as the <code>Authorization</code> header. Use <code>Bearer &lt;token&gt;</code> for GitHub/GitLab/Bitbucket Cloud OAuth, or <code>Basic &lt;base64&gt;</code> for Bitbucket Cloud app passwords.
-        </div>
+        {formKind === 'local' ? (
+          <>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="/path/to/my-flows"
+                value={formDir}
+                onChange={(e) => setFormDir(e.target.value)}
+                className="flex-1 text-xs px-2 py-1 rounded border border-card bg-card"
+              />
+              <button
+                onClick={handlePickDir}
+                className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0"
+              >
+                Choose…
+              </button>
+            </div>
+            <div className="text-[11px] text-ink-faint -mt-1">
+              Every <code>*.yaml</code> file in the folder is offered as a flow — no index file to
+              maintain. Point it at a git repo you already have and keep it current the usual way;
+              overcli only reads the folder, it never pulls.
+            </div>
+          </>
+        ) : (
+          <>
+            <input
+              type="text"
+              placeholder="Index URL (https://...)"
+              value={formUrl}
+              onChange={(e) => setFormUrl(e.target.value)}
+              className="text-xs px-2 py-1 rounded border border-card bg-card"
+            />
+            <input
+              type="password"
+              placeholder="Auth header (optional)"
+              value={formAuth}
+              onChange={(e) => setFormAuth(e.target.value)}
+              className="text-xs px-2 py-1 rounded border border-card bg-card"
+            />
+            <div className="text-[11px] text-ink-faint -mt-1">
+              Sent verbatim as the <code>Authorization</code> header. Use <code>Bearer &lt;token&gt;</code> for GitHub/GitLab/Bitbucket Cloud OAuth, or <code>Basic &lt;base64&gt;</code> for Bitbucket Cloud app passwords.
+            </div>
+          </>
+        )}
+        {formError && (
+          <div className="text-[11px] text-red-600 bg-red-500/10 rounded px-2 py-1">{formError}</div>
+        )}
         <button
           onClick={handleAddRegistry}
-          disabled={!formId || !formName || !formUrl}
+          disabled={!formId || !formName || !formLocator}
           className="text-xs px-3 py-1 rounded bg-accent/30 text-accent hover:bg-accent/40 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Add registry
@@ -757,29 +880,3 @@ function FlowsRegistriesPane() {
   );
 }
 
-export function SheetActionButton({
-  label,
-  onClick,
-  primary,
-  disabled,
-}: {
-  label: string;
-  onClick: () => void;
-  primary?: boolean;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={
-        'px-3 py-1 rounded text-xs border disabled:opacity-40 disabled:cursor-not-allowed ' +
-        (primary
-          ? 'bg-accent/30 border-accent/60 text-accent hover:bg-accent/40'
-          : 'border-transparent text-ink-muted hover:text-ink hover:bg-card-strong hover:border-card')
-      }
-    >
-      {label}
-    </button>
-  );
-}
