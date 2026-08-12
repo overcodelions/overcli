@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { noBackendReady, useStore } from '../store';
+import { backendHealthLoaded, noBackendReady, useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
 import { createBranchedAgent } from './sheets/NewAgentSheet';
@@ -35,6 +35,7 @@ import {
   isBackendEnabled,
   modeLabel,
   permissionTone,
+  pickDefaultBackend,
 } from './conversationHeaderHelpers';
 
 const WELCOME_KEY = '__welcome__';
@@ -81,7 +82,12 @@ export function WelcomePane() {
   // the composer after the user clicks a starter prompt chip without
   // mutating store-level state.
   const [composerFocusNudge, setComposerFocusNudge] = useState(0);
-  const [backend, setBackend] = useState<Backend>(() => firstEnabledBackend(settings));
+  const [backend, setBackend] = useState<Backend>(() =>
+    pickDefaultBackend(settings, backendHealth),
+  );
+  // Once the user picks from the backend pill, that choice is theirs — the
+  // health-driven re-seed below stops second-guessing it.
+  const [backendPicked, setBackendPicked] = useState(false);
   const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(
     settings.defaultPermissionMode,
   );
@@ -136,10 +142,25 @@ export function WelcomePane() {
     if (focusedProjectId) setSelectedProjectId(focusedProjectId);
   }, [focusedProjectId]);
 
+  // Keep the pill on something that can actually run. Two triggers: the
+  // chosen backend got switched off in settings (always re-seed — a
+  // disabled backend can't be sent to), or the health probe landed after
+  // mount and the seeded default turns out not to be installed. The latter
+  // only applies while the user hasn't picked a backend themselves.
   useEffect(() => {
-    if (isBackendEnabled(settings, backend)) return;
-    setBackend(firstEnabledBackend(settings));
-  }, [settings, backend]);
+    if (!isBackendEnabled(settings, backend)) {
+      setBackend(pickDefaultBackend(settings, backendHealth));
+      setModel('');
+      return;
+    }
+    if (backendPicked) return;
+    const seeded = pickDefaultBackend(settings, backendHealth);
+    if (seeded === backend) return;
+    setBackend(seeded);
+    // The model belonged to the backend we just moved off — an empty model
+    // means "whatever this CLI defaults to", which is the right answer here.
+    setModel('');
+  }, [settings, backend, backendHealth, backendPicked]);
 
   const selectedProject = useMemo(
     () => projects.find((p) => p.id === selectedProjectId) ?? null,
@@ -352,10 +373,18 @@ export function WelcomePane() {
                 items={enabledBackends(settings).map((b) => ({
                   value: b,
                   label: backendName(b),
+                  // Say so before they pick it, not after the send fails.
+                  note:
+                    backendHealth[b]?.kind === 'unauthenticated'
+                      ? 'Installed, signed out'
+                      : backendHealth[b] && backendHealth[b].kind !== 'ready'
+                      ? 'Not installed'
+                      : undefined,
                 }))}
                 onPick={(v) => {
                   const next = v as Backend;
                   setBackend(next);
+                  setBackendPicked(true);
                   // `auto` is Claude-only; demote to default when leaving Claude
                   // so the picker label and the eventual mapped behaviour agree.
                   if (next !== 'claude' && permissionMode === 'auto') {
@@ -1261,7 +1290,16 @@ function EmptyWelcome({
   onPick: () => void;
   backendHealth: Record<string, BackendHealth>;
 }) {
+  // Three states, not two. Until the first probe lands we know *nothing*,
+  // and rendering the happy path in the meantime meant a fresh install
+  // painted an enabled "Add your first project" button and then yanked it
+  // away a moment later when the setup card shoved everything down the
+  // page. "Checking" is its own state so the first frame is never a lie.
+  const probed = backendHealthLoaded(backendHealth);
   const blocked = noBackendReady(backendHealth);
+  const readyNames = ALL_SETUP_BACKENDS.filter(
+    (b) => backendHealth[b]?.kind === 'ready',
+  ).map((b) => backendName(b));
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -1281,7 +1319,18 @@ function EmptyWelcome({
           you've signed into.
         </div>
 
-        {blocked && <CliSetupGuide backendHealth={backendHealth} />}
+        {!probed ? (
+          <div className="mt-6 flex items-center justify-center gap-2 text-[11px] text-ink-faint">
+            <Spinner />
+            Looking for installed CLIs…
+          </div>
+        ) : blocked ? (
+          <CliSetupGuide backendHealth={backendHealth} />
+        ) : (
+          <div className="mt-6 text-[11px] text-emerald-500 dark:text-emerald-400">
+            {joinNames(readyNames)} ready to go.
+          </div>
+        )}
 
         <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
           <FeatureCard
@@ -1313,15 +1362,17 @@ function EmptyWelcome({
         <div className="mt-8 flex flex-col items-center gap-2">
           <button
             onClick={onPick}
-            disabled={blocked}
-            title={blocked ? 'Install a CLI first to add a project' : undefined}
+            disabled={blocked || !probed}
+            title={blocked ? 'Set up a CLI first to add a project' : undefined}
             className="px-5 py-2.5 rounded-md bg-accent/30 text-accent hover:bg-accent/40 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent/30"
           >
             Add your first project
           </button>
           <div className="text-[11px] text-ink-faint">
-            {blocked
-              ? 'Install a CLI above to get started.'
+            {!probed
+              ? 'One moment — checking what you already have installed.'
+              : blocked
+              ? 'Set up a CLI above first — this unlocks as soon as one is ready.'
               : 'Pick a folder on disk. Git repos unlock agents; any folder works for chat.'}
           </div>
         </div>
@@ -1331,30 +1382,44 @@ function EmptyWelcome({
   );
 }
 
-const CLI_SETUP: {
+interface CliSetupEntry {
   backend: Backend;
   name: string;
+  /// One line on what you get, so the choice isn't five identical npm
+  /// commands with different package names.
+  blurb: string;
   install: string;
   auth: string | null;
   docs: string;
-}[] = [
+  /// Shown above the fold as a suggested starting point. The rest sit
+  /// under "Also supported" — every CLI works, but a first-run screen
+  /// that refuses to have an opinion is a worse first run.
+  featured?: boolean;
+}
+
+const CLI_SETUP: CliSetupEntry[] = [
   {
     backend: 'claude',
     name: 'Claude',
+    blurb: 'Anthropic’s Claude Code. Broadest tool + agent support in overcli.',
     install: 'npm install -g @anthropic-ai/claude-code',
     auth: 'claude auth login',
     docs: 'https://docs.claude.com/en/docs/claude-code/setup',
+    featured: true,
   },
   {
     backend: 'codex',
     name: 'Codex',
+    blurb: 'OpenAI’s Codex CLI. Signs in with your ChatGPT account.',
     install: 'npm install -g @openai/codex',
     auth: 'codex login',
     docs: 'https://github.com/openai/codex',
+    featured: true,
   },
   {
     backend: 'gemini',
     name: 'Gemini',
+    blurb: 'Google’s Gemini CLI.',
     install: 'npm install -g @google/gemini-cli',
     auth: 'gemini auth login',
     docs: 'https://github.com/google-gemini/gemini-cli',
@@ -1362,6 +1427,7 @@ const CLI_SETUP: {
   {
     backend: 'copilot',
     name: 'Copilot',
+    blurb: 'GitHub Copilot CLI, on your GitHub account.',
     install: 'npm install -g @github/copilot',
     auth: 'copilot login',
     docs: 'https://www.npmjs.com/package/@github/copilot',
@@ -1369,11 +1435,21 @@ const CLI_SETUP: {
   {
     backend: 'ollama',
     name: 'Ollama',
+    blurb: 'Open models running locally. No account, no network.',
     install: 'Download from ollama.com',
     auth: null,
     docs: 'https://ollama.com/download',
   },
 ];
+
+const ALL_SETUP_BACKENDS = CLI_SETUP.map((c) => c.backend);
+
+/// "Claude", "Claude and Codex", "Claude, Codex and Ollama".
+function joinNames(names: string[]): string {
+  if (names.length === 0) return 'No CLI';
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -1394,55 +1470,216 @@ function CopyButton({ value }: { value: string }) {
 }
 
 function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
-  const rows = CLI_SETUP.filter(({ backend }) => {
-    const kind = backendHealth[backend]?.kind ?? 'missing';
-    return kind !== 'ready';
-  });
-  if (rows.length === 0) return null;
+  const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
+  const openSheet = useStore((s) => s.openSheet);
+  const [recheckedAt, setRecheckedAt] = useState(0);
+
+  // Someone staring at this screen is, right now, in a terminal running one
+  // of the commands below. Poll while we're blocked so the app notices on
+  // its own — the alternative is a user who installs a CLI, comes back to a
+  // screen that still says "install a CLI", and concludes the app is broken.
+  // `force` drops main's 15s probe cache; only when the window has focus, so
+  // a backgrounded app isn't respawning CLIs forever.
+  useEffect(() => {
+    const tick = () => {
+      if (!document.hasFocus()) return;
+      void refreshBackendHealth(true);
+    };
+    const id = setInterval(tick, 4000);
+    // Coming back from the terminal is the exact moment the answer changes.
+    window.addEventListener('focus', tick);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', tick);
+    };
+  }, [refreshBackendHealth]);
+
+  const rows = CLI_SETUP.map((cli) => ({
+    ...cli,
+    health: backendHealth[cli.backend],
+    // Absent means we haven't heard about it; treat as missing rather than
+    // rendering an empty row.
+    kind: backendHealth[cli.backend]?.kind ?? 'missing',
+  }))
+    // `unknown` is only ever produced by the store for a backend the user
+    // turned off in Settings. Telling someone to npm-install something they
+    // deliberately disabled is noise.
+    .filter((r) => r.kind !== 'ready' && r.kind !== 'unknown');
+
+  if (rows.length === 0) {
+    return (
+      <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
+        <div className="text-sm font-medium text-ink">Every CLI is switched off</div>
+        <div className="mt-1 text-[12px] text-ink-muted">
+          All five backends are disabled in settings, so there's nothing for overcli to
+          drive. Re-enable one to get started.
+        </div>
+        <button
+          onClick={() => openSheet({ type: 'settings' })}
+          className="mt-3 px-3 py-1.5 rounded-md bg-accent/25 text-accent hover:bg-accent/35 text-xs font-medium"
+        >
+          Open settings
+        </button>
+      </div>
+    );
+  }
+
+  // An installed-but-signed-out CLI is one click from done, so it leads —
+  // it's a far shorter path than any install below it.
+  const signIn = rows.filter((r) => r.kind === 'unauthenticated');
+  const rest = rows.filter((r) => r.kind !== 'unauthenticated');
+  const featured = rest.filter((r) => r.featured);
+  const others = rest.filter((r) => !r.featured);
+
+  const headline =
+    signIn.length > 0
+      ? `Sign in to ${joinNames(signIn.map((r) => r.name))} to get started`
+      : 'Install a coding CLI to get started';
+  const subline =
+    signIn.length > 0
+      ? `${signIn.length === 1 ? 'It’s' : 'They’re'} already installed — one sign-in and you're in. overcli picks it up automatically.`
+      : 'overcli drives the coding CLIs you sign into — there are no API keys to paste here. Set up any one of these and this screen unlocks on its own.';
+
   return (
     <div className="mt-6 rounded-lg border border-amber-500/40 bg-surface-elevated p-5 text-left">
-      <div className="text-xs font-medium text-ink-muted mb-4">
-        You'll need at least one CLI installed to get started
+      <div className="text-sm font-medium text-ink">{headline}</div>
+      <div className="mt-1 mb-4 text-[12px] leading-relaxed text-ink-muted">{subline}</div>
+
+      <div className="flex flex-col gap-1.5">
+        {signIn.map((row) => (
+          <CliSetupRow key={row.backend} row={row} />
+        ))}
+        {featured.map((row) => (
+          <CliSetupRow key={row.backend} row={row} />
+        ))}
       </div>
-      <div className="flex flex-col gap-2">
-        {rows.map(({ backend, name, install, auth, docs }) => {
-          const health = backendHealth[backend];
-          const kind = health?.kind ?? 'missing';
-          const isAuth = kind === 'unauthenticated';
-          const command = isAuth && auth ? auth : install;
-          const canCopy = command.startsWith('npm') || isAuth;
-          return (
-            <div
-              key={backend}
-              className="flex items-center gap-3 rounded-md px-3 py-2 bg-card/60"
-            >
-              <span
-                className="text-xs font-semibold w-14 shrink-0"
-                style={{ color: backendColor(backend as Backend) }}
-              >
-                {name}
-              </span>
-              <code className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">
-                {command}
-              </code>
-              {isAuth && (
-                <span className="text-[10px] text-amber-400 shrink-0">needs login</span>
-              )}
-              {canCopy && <CopyButton value={command} />}
-              <a
-                href={docs}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-accent hover:bg-card-strong"
-                title={`${name} install & sign-in docs`}
-              >
-                Docs ↗
-              </a>
-            </div>
-          );
-        })}
+
+      {others.length > 0 && (
+        <>
+          <div className="mt-4 mb-1.5 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+            Also supported
+          </div>
+          <div className="flex flex-col gap-1.5">
+            {others.map((row) => (
+              <CliSetupRow key={row.backend} row={row} compact />
+            ))}
+          </div>
+        </>
+      )}
+
+      <div className="mt-4 pt-3 border-t border-card flex items-center gap-2 text-[10.5px] text-ink-faint">
+        <Spinner />
+        <span className="flex-1">Watching for a CLI — no need to restart overcli.</span>
+        <button
+          onClick={() => {
+            setRecheckedAt(Date.now());
+            void refreshBackendHealth(true);
+          }}
+          className="rounded px-1.5 py-0.5 font-medium text-ink-muted hover:text-ink hover:bg-card-strong"
+        >
+          {recheckedAt ? 'Check again' : 'Check now'}
+        </button>
       </div>
     </div>
+  );
+}
+
+type CliSetupRowData = CliSetupEntry & { health?: BackendHealth; kind: BackendHealth['kind'] };
+
+function CliSetupRow({ row, compact }: { row: CliSetupRowData; compact?: boolean }) {
+  const { backend, name, blurb, install, auth, docs, kind, health } = row;
+  const isAuth = kind === 'unauthenticated';
+  const command = isAuth && auth ? auth : install;
+  // "Download from ollama.com" is prose, not something to paste in a shell.
+  const canCopy = command.startsWith('npm') || isAuth;
+  return (
+    <div className="rounded-md px-3 py-2 bg-card/60">
+      <div className="flex items-center gap-2.5">
+        <span
+          className="w-1.5 h-1.5 rounded-full shrink-0"
+          style={{
+            backgroundColor: isAuth ? '#f59e0b' : backendColor(backend),
+            opacity: isAuth ? 1 : 0.45,
+          }}
+        />
+        <span className="text-xs font-semibold shrink-0" style={{ color: backendColor(backend) }}>
+          {name}
+        </span>
+        {isAuth ? (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-300 shrink-0">
+            installed · signed out
+          </span>
+        ) : (
+          <code className="flex-1 min-w-0 text-[11px] font-mono text-ink truncate">{command}</code>
+        )}
+        {isAuth && <span className="flex-1" />}
+        {isAuth && <SignInButton backend={backend} name={name} />}
+        {canCopy && <CopyButton value={command} />}
+        <a
+          href={docs}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-accent hover:bg-card-strong"
+          title={`${name} install & sign-in docs`}
+        >
+          Docs ↗
+        </a>
+      </div>
+      {isAuth && (
+        <code className="mt-1 block text-[11px] font-mono text-ink-muted truncate">{command}</code>
+      )}
+      {!compact && !isAuth && (
+        <div className="mt-0.5 text-[10.5px] text-ink-faint">{blurb}</div>
+      )}
+      {/* An `error` kind means the binary is there but wouldn't run — a
+          version mismatch, a broken shim, a quarantined binary. The install
+          command won't fix that, so show what actually went wrong. */}
+      {kind === 'error' && health?.message && (
+        <div className="mt-1 text-[10.5px] text-red-500 dark:text-red-400 break-words">
+          Found it, but it wouldn't run: {health.message}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/// Opens Terminal on the backend's login command (same path the in-chat
+/// auth banner uses). Beats "copy this, find a terminal, paste it".
+function SignInButton({ backend, name }: { backend: Backend; name: string }) {
+  const [launching, setLaunching] = useState(false);
+  const [launched, setLaunched] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <>
+      {error && <span className="text-[10px] text-red-400 shrink-0">{error}</span>}
+      <button
+        onClick={async () => {
+          setLaunching(true);
+          setError(null);
+          try {
+            const res = await window.overcli.invoke('auth:openCliLogin', backend);
+            if (res.ok) setLaunched(true);
+            else setError(res.error);
+          } finally {
+            setLaunching(false);
+          }
+        }}
+        disabled={launching}
+        title={`Open Terminal and sign into ${name}`}
+        className="shrink-0 rounded px-2 py-0.5 text-[10px] font-medium bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 disabled:opacity-50"
+      >
+        {launching ? 'Opening…' : launched ? 'Reopen Terminal' : 'Sign in'}
+      </button>
+    </>
+  );
+}
+
+function Spinner() {
+  return (
+    <svg className="w-3 h-3 animate-spin shrink-0" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" opacity="0.25" />
+      <path d="M14 8a6 6 0 00-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -1551,17 +1788,6 @@ function WorkspaceGlyph() {
       />
     </svg>
   );
-}
-
-type BackendPrefs = {
-  disabledBackends?: Partial<Record<Backend, boolean>>;
-  preferredBackend?: Backend;
-};
-
-function firstEnabledBackend(settings: BackendPrefs): Backend {
-  const preferred = settings.preferredBackend;
-  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
-  return enabledBackends(settings)[0] ?? 'claude';
 }
 
 function ContextPill({
