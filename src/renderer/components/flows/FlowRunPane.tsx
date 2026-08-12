@@ -24,9 +24,15 @@ import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { CompactButton } from '../CompactButton';
+import { ContextMeter } from '../ContextMeter';
+import { FileTree } from '../FileTree';
+import { ResizableDivider } from '../ResizableDivider';
+import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
+  flowRunTitle,
   resolveRunStepModel,
   type FlowArtifact,
   type FlowParticipant,
@@ -38,15 +44,32 @@ import {
 import { modelSpeed, friendlyModelLabel, PREMIUM_MODELS } from '@shared/modelCatalog';
 import { FlowMonogram } from './FlowMonogram';
 
+// Bounds for the worktree file-browser tree (same feel as ExplorerPane).
+const TREE_MIN = 200;
+const TREE_MAX = 520;
+
 export function FlowRunPane({ runId }: { runId: string }) {
   const run = useFlowsStore((s) => s.runs[runId]);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
+  const newConversationInWorktree = useStore((s) => s.newConversationInWorktree);
+  const settings = useStore((s) => s.settings);
+  const saveSettings = useStore((s) => s.saveSettings);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [confirmingRerun, setConfirmingRerun] = useState(false);
   const [diffSheetOpen, setDiffSheetOpen] = useState(false);
   const [watchSetupOpen, setWatchSetupOpen] = useState(false);
+  // Worktree file browser — a lazy FileTree rooted at the run's cwd
+  // (which IS the worktree for `runIn: 'worktree'` runs). Off by default;
+  // toggled from the header "Files" button. Reuses the shared
+  // `explorerTreeWidth` preference so the column feels like the standalone
+  // explorer's tree.
+  const [filesOpen, setFilesOpen] = useState(false);
+  const [treeWidth, setTreeWidth] = useState(() =>
+    Math.max(TREE_MIN, Math.min(TREE_MAX, settings.explorerTreeWidth ?? 280)),
+  );
 
   useEffect(() => {
     if (!run) {
@@ -105,29 +128,55 @@ export function FlowRunPane({ runId }: { runId: string }) {
     ? run.conversationIds[activeParticipant.id]
     : undefined;
 
+  // Attach a brand-new conversation to this run's worktree and jump to
+  // it. `selectConversation` flips detailMode back to 'conversation', so
+  // the run stays the active one and Flows returns here.
+  const newChatHere = async () => {
+    if (!run.worktreePath || !run.sourceProjectPath) return;
+    const conv = await newConversationInWorktree({
+      projectPath: run.sourceProjectPath,
+      worktreePath: run.worktreePath,
+      branchName: run.branchName,
+      baseBranch: run.baseBranch,
+      name: flowRunTitle(run).slice(0, 60),
+    });
+    if (!conv) {
+      window.alert(
+        `Couldn't find the project this run forked from (${run.sourceProjectPath}). Add it as a project to open a chat in its worktree.`,
+      );
+    }
+  };
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+    <div className="flex-1 flex min-h-0 overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {/* Header — flow name as h1, original prompt as a real subtitle
           underneath. Treating the prompt as the run's identity rather
           than a separate banner reads cleaner than the colored strip
           and stops the page from having two competing "anchors". */}
       <div className="pl-2 pr-3 pt-4 pb-2 border-b border-card">
-        <div className="flex items-center gap-3 mb-1">
-          <div className="flex items-center gap-1.5 text-xs text-ink-faint">
-            <button
-              onClick={() => setActiveRun(null)}
-              className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
-            >
-              Flows
-            </button>
-            <span className="text-ink-faint">/</span>
+        {/* Two wrapping groups — identity on the left, actions on the right.
+            Both wrap rather than compress: in a narrow window the actions
+            drop to their own line and the title truncates with an ellipsis,
+            instead of the title being squeezed into a one-word-per-line
+            column by the button cluster. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-1">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1 basis-64">
+            <div className="flex items-center gap-1.5 text-xs text-ink-faint flex-shrink-0">
+              <button
+                onClick={() => setActiveRun(null)}
+                className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+              >
+                Flows
+              </button>
+              <span className="text-ink-faint">/</span>
+            </div>
+            <RunTitle run={run} />
+            <RunStateBadge state={run.state} />
+            <RunTokenSummary run={run} />
+            <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
           </div>
-          <div className="text-xl font-semibold">{run.flowSnapshot.name}</div>
-          <RunStateBadge state={run.state} />
-          <RunTokenSummary run={run} />
-          <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
-          <div className="flex-1 min-w-0" />
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2 ml-auto">
             {activeParticipant && (
               <HijackModelPicker
                 runId={run.id}
@@ -136,19 +185,94 @@ export function FlowRunPane({ runId }: { runId: string }) {
             )}
             {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
               <button
+                onClick={() => setFilesOpen((v) => !v)}
+                className={
+                  'text-xs px-3 py-1 rounded-md border transition-colors whitespace-nowrap ' +
+                  (filesOpen
+                    ? 'border-accent/50 bg-accent/10 text-accent'
+                    : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
+                }
+                title="Browse the files in this run's worktree"
+              >
+                Files
+              </button>
+            )}
+            {/* Keep working in this run's worktree from a fresh chat —
+                the escape hatch for when the run's own context is spent
+                but the tree still has work left in it. Single-project
+                worktree runs only: a workspace run has one worktree per
+                member, with no single cwd to hand a conversation. */}
+            {run.worktreePath && run.sourceProjectPath && (
+              <button
+                onClick={newChatHere}
+                className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50 whitespace-nowrap"
+                title="Start a new conversation in this run's worktree — same files and branch, clean context"
+              >
+                New chat here
+              </button>
+            )}
+            {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
+              <button
                 onClick={() => openSheet({ type: 'flowRunReview', runId })}
-                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25"
+                className="text-xs px-3 py-1 rounded-md bg-accent/15 text-accent border border-accent/30 hover:bg-accent/25 whitespace-nowrap"
                 title="Review the worktree diff and merge / push / open a PR — pull the work back into your local repo"
               >
                 Review &amp; merge
               </button>
             )}
+            {/* Re-run from the currently-viewed step. The user's "how do I
+                go back?" answer: rewind to this step and re-execute it plus
+                every later step, picking up any edits made to upstream
+                artifacts via hijack chat. Only offered on a settled run for
+                a step that has actually run — re-running a never-reached step
+                is meaningless, and re-running while a step is live would race
+                the subprocess (Abort shows instead in that case). */}
+            {activeStep &&
+              (run.state.kind === 'paused' ||
+                run.state.kind === 'done' ||
+                run.state.kind === 'aborted') &&
+              run.attempts.some((a) => a.stepId === activeStep.id) &&
+              (confirmingRerun ? (
+                <div className="flex items-center gap-1">
+                  <span className="text-[11px] text-ink-faint mr-1">
+                    Re-run from <span className="font-mono">{activeStep.id}</span>? Re-does it
+                    and every later step.
+                  </span>
+                  <button
+                    onClick={async () => {
+                      const result = await window.overcli.invoke('flows:rerunFromStep', {
+                        runId,
+                        stepId: activeStep.id,
+                      });
+                      setConfirmingRerun(false);
+                      if (!result.ok) alert(`Couldn't re-run: ${result.error}`);
+                    }}
+                    className="text-xs px-2 py-1 rounded-md bg-amber-500/80 text-white"
+                  >
+                    Re-run
+                  </button>
+                  <button
+                    onClick={() => setConfirmingRerun(false)}
+                    className="text-xs px-2 py-1 rounded-md bg-card"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setConfirmingRerun(true)}
+                  className="text-xs px-3 py-1 rounded-md border border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-amber-500/50 whitespace-nowrap"
+                  title={`Rewind and re-run from "${activeStep.id}" — re-does this step and every later step using the current (possibly edited) upstream artifacts`}
+                >
+                  ↻ Re-run from here
+                </button>
+              ))}
             {(run.state.kind === 'running' || run.state.kind === 'paused') && (
               <button
                 onClick={() => {
                   void window.overcli.invoke('flows:abortRun', { runId });
                 }}
-                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30"
+                className="text-xs px-3 py-1 rounded-md bg-red-500/20 text-red-700 dark:text-red-200 hover:bg-red-500/30 whitespace-nowrap"
               >
                 Abort
               </button>
@@ -165,7 +289,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               <button
                 onClick={() => setWatchSetupOpen((v) => !v)}
                 className={
-                  'inline-flex items-center gap-1.5 text-xs px-3 py-1 rounded-md border transition-colors ' +
+                  'inline-flex items-center gap-1.5 whitespace-nowrap text-xs px-3 py-1 rounded-md border transition-colors ' +
                   (watchSetupOpen
                     ? 'border-accent/50 bg-accent/10 text-accent'
                     : 'border-card-strong bg-surface-elevated text-ink-muted hover:text-ink hover:border-accent/50')
@@ -181,14 +305,16 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 <span className="text-[11px] text-ink-faint mr-1">Delete this run?</span>
                 <button
                   onClick={async () => {
-                    const result = await window.overcli.invoke('flows:deleteRun', { runId });
-                    if (!result.ok) {
-                      alert(`Couldn't delete: ${result.error}`);
+                    const res = await deleteFlowRunWithDirtyGuard(runId);
+                    if (res.error) {
+                      alert(`Couldn't delete: ${res.error}`);
                       return;
                     }
                     setConfirmingDelete(false);
-                    removeRun(runId);
-                    setActiveRun(null);
+                    if (res.deleted) {
+                      removeRun(runId);
+                      setActiveRun(null);
+                    }
                   }}
                   className="text-xs px-2 py-1 rounded-md bg-red-500/80 text-white"
                 >
@@ -204,7 +330,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
             ) : (
               <button
                 onClick={() => setConfirmingDelete(true)}
-                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong"
+                className="text-xs px-3 py-1 rounded-md text-ink-muted hover:text-red-700 dark:hover:text-red-300 hover:bg-card-strong whitespace-nowrap"
                 title="Delete this run permanently"
               >
                 Delete
@@ -219,7 +345,13 @@ export function FlowRunPane({ runId }: { runId: string }) {
           <InlineStepPipeline
             run={run}
             activeStepId={activeStepId}
-            onPick={setFocusStepId}
+            onPick={(id) => {
+              // Switching steps abandons any half-open re-run confirmation —
+              // it's bound to the step being viewed, so it must never carry
+              // over to the step the user just navigated to.
+              setConfirmingRerun(false);
+              setFocusStepId(id);
+            }}
           />
         </div>
         {/* Original prompt as subtitle. Sits directly under the flow
@@ -260,6 +392,32 @@ export function FlowRunPane({ runId }: { runId: string }) {
         />
       )}
       {diffSheetOpen && <DiffSheet run={run} onClose={() => setDiffSheetOpen(false)} />}
+      </div>
+      {/* Worktree file browser. Rooted at the run's cwd — the worktree for
+          a single-project run, or the coordinator symlink root for a
+          workspace run (the file walker follows the member symlinks, so
+          files list as `<member>/…`). Picking a file routes through the
+          store's openFile, which the right-hand side-file editor (App.tsx,
+          rooted at the same path) then renders. Sits between the run body
+          and that editor so tree and editor end up adjacent. */}
+      {filesOpen && (run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
+        <>
+          <ResizableDivider
+            width={treeWidth}
+            onChange={setTreeWidth}
+            onCommit={(w) => void saveSettings({ ...settings, explorerTreeWidth: w })}
+            minWidth={TREE_MIN}
+            maxWidth={TREE_MAX}
+            side="right"
+          />
+          <div
+            style={{ width: treeWidth }}
+            className="flex-shrink-0 h-full border-l border-card overflow-hidden"
+          >
+            <FileTree rootPath={run.projectPath} />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -902,6 +1060,37 @@ function ParticipantBody({
     if (convId) void loadHistoryIfNeeded(convId);
   }, [convId, loadHistoryIfNeeded]);
 
+  // A participant's conversation is shared across every step assigned to
+  // it (see `executeStep` in runtime.ts). If the user is viewing a step
+  // that hasn't produced an attempt yet — e.g. it's paused, waiting for
+  // Continue — but an EARLIER step on this same participant already ran,
+  // the chat below is that earlier step's transcript, not this step's.
+  // Shown bare, that reads as "this step already ran" (the exact
+  // confusion reported for a `pause_before` step sharing a model with the
+  // step right before it). Surface which step the content actually
+  // belongs to instead of leaving it unlabeled.
+  //
+  // Point at the step whose turn is actually the TAIL of the shared
+  // transcript — i.e. the most recently-run owned step — not the first.
+  // `run.attempts` is chronological, so walk it backwards. Using the
+  // first owned step (pipeline order) mislabeled the thread as an early
+  // step's when the visible content really ended with a later one (e.g.
+  // viewing unrun `review` showed `research`'s name while the transcript
+  // ended at `validate`, another step sharing the same model).
+  const focusStepHasRun = !!focusStepId && run.attempts.some((a) => a.stepId === focusStepId);
+  const focusStepIsRunning =
+    run.state.kind === 'running' && run.state.currentStepId === focusStepId;
+  const priorRunStep = useMemo(() => {
+    if (focusStepHasRun || focusStepIsRunning) return null;
+    for (let i = run.attempts.length - 1; i >= 0; i--) {
+      const stepId = run.attempts[i].stepId;
+      if (stepId === focusStepId) continue;
+      const step = ownedSteps.find((s) => s.id === stepId);
+      if (step) return step;
+    }
+    return null;
+  }, [focusStepHasRun, focusStepIsRunning, run.attempts, focusStepId, ownedSteps]);
+
   return (
     <div className="flex-1 flex flex-col min-h-0">
       {/* Context strip — "this participant ran/will-run these steps; you're
@@ -926,7 +1115,16 @@ function ParticipantBody({
           Virtuoso never gets a height and the chat renders blank. */}
       <div className="flex-1 min-h-0 flex flex-col border-t border-card">
         {convId ? (
-          <ChatView conversationId={convId} />
+          <>
+            {priorRunStep && (
+              <div className="px-4 py-2 text-xs text-amber-700 dark:text-amber-200 bg-amber-400/10 border-b border-amber-400/20 flex-shrink-0">
+                ⏸ <span className="font-semibold">{focusStepId}</span> hasn't run yet — the
+                conversation below is <span className="font-semibold">{priorRunStep.id}</span>
+                's, which shares this model. It'll run once you continue.
+              </div>
+            )}
+            <ChatView conversationId={convId} />
+          </>
         ) : (
           <div className="flex-1 flex items-center justify-center p-6 text-center">
             <div>
@@ -1194,7 +1392,7 @@ function RunDiffStats({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
   return (
     <button
       onClick={onOpen}
-      className="ml-1 inline-flex items-center gap-1.5 text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
+      className="inline-flex flex-shrink-0 items-center gap-1.5 whitespace-nowrap text-[11px] font-mono px-1.5 py-0.5 rounded hover:bg-card-strong transition"
       title="Click to view the diff"
     >
       <span className="text-emerald-700 dark:text-emerald-300">+{added}</span>
@@ -1361,6 +1559,10 @@ function HijackComposer({
   // probe deps only fire when the count actually changes.
   const isRunning = useRunnerIsRunning(convId ?? '');
   const [changes, setChanges] = useState<FileChangeSummary[]>([]);
+  // Ref the counts were measured against. Now that the bar can honestly
+  // read zero, it has to say what it compared against — otherwise an empty
+  // bar is indistinguishable from a probe that failed.
+  const [baseRef, setBaseRef] = useState<string | null>(null);
 
   // A flow's cwd can be one of three things — a project path, a fresh
   // worktree, or a workspace's symlink root that fans out to multiple
@@ -1379,7 +1581,17 @@ function HijackComposer({
   const workspaces = useStore((s) => s.workspaces);
   const workspaceProjects = useMemo(() => {
     if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
-      return run.workspaceWorktrees.map((w) => ({ name: w.name, path: w.worktreePath }));
+      // Branch name and captured fork point travel in separate slots: main
+      // resolves the live divergence point from the branch and keeps the
+      // fork point only as a floor. Collapsing them (as this used to) makes
+      // every upstream commit the branch has taken in look like the run's
+      // own work.
+      return run.workspaceWorktrees.map((w) => ({
+        name: w.name,
+        path: w.worktreePath,
+        baseBranch: run.baseBranch ?? '',
+        baselineCommit: run.baselineCommitsByMember?.[w.name]?.commit ?? null,
+      }));
     }
     const ws = workspaces.find((w) => w.rootPath === run.projectPath);
     if (!ws) return null;
@@ -1388,7 +1600,14 @@ function HijackComposer({
       .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
       .map((p) => ({ name: p.name, path: p.path }));
     return workspaceSymlinkNames(projs);
-  }, [workspaces, projects, run.projectPath, run.workspaceWorktrees]);
+  }, [
+    workspaces,
+    projects,
+    run.projectPath,
+    run.workspaceWorktrees,
+    run.baselineCommitsByMember,
+    run.baseBranch,
+  ]);
 
   // Re-probe the working tree whenever a step attempt finishes or the
   // runner flips running/idle. Mirrors how ConversationPane keeps its
@@ -1399,27 +1618,55 @@ function HijackComposer({
   // typing feel laggy. Attempt boundaries + the running-flip are when
   // diffs actually land anyway.
   const attemptCount = run.attempts.length;
+  // For a single-project worktree run, count changes against the run's fork
+  // point (committed + uncommitted) so the bar matches the review sheet —
+  // `git:commitStatus` is HEAD-relative and loses files the moment a step
+  // commits. Workspace and in-place runs keep the HEAD-relative probe.
+  const worktreeBase = run.worktreePath ? (run.baseBranch ?? '') : '';
+  const worktreeBaseline = run.worktreePath ? (run.baselineCommit ?? null) : null;
+  const worktreePath = run.worktreePath ?? '';
   useEffect(() => {
     let cancelled = false;
     const probe = workspaceProjects
       ? window.overcli.invoke('git:workspaceCommitStatus', { projects: workspaceProjects })
-      : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
+      : worktreePath && (worktreeBase || worktreeBaseline)
+        ? window.overcli.invoke('git:worktreeChanges', {
+            worktreePath,
+            baseBranch: worktreeBase,
+            baselineCommit: worktreeBaseline,
+          })
+        : window.overcli.invoke('git:commitStatus', { cwd: run.projectPath });
     void probe
       .then((res) => {
         if (cancelled) return;
         if (!res.isRepo) {
           setChanges([]);
+          setBaseRef(null);
           return;
         }
         setChanges(res.changes ?? []);
+        // `git:commitStatus` (the in-place/non-worktree probe) has no base
+        // ref to report — its counts are HEAD-relative.
+        setBaseRef('baseRef' in res ? ((res.baseRef as string | null) ?? null) : null);
       })
       .catch(() => {
-        if (!cancelled) setChanges([]);
+        if (!cancelled) {
+          setChanges([]);
+          setBaseRef(null);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [run.projectPath, workspaceProjects, attemptCount, isRunning]);
+  }, [
+    run.projectPath,
+    workspaceProjects,
+    worktreePath,
+    worktreeBase,
+    worktreeBaseline,
+    attemptCount,
+    isRunning,
+  ]);
 
   // Pull the draft setters so we can clear the composer immediately
   // after a send. The shared `store.send` action does this for the
@@ -1439,7 +1686,10 @@ function HijackComposer({
   const modelOverride = useFlowsStore((s) => s.runs[run.id]?.modelOverrides?.[participant.id]);
   const effectiveModel = modelOverride ?? participant.model;
 
-  const handleSend = (prompt: string, attachments: Attachment[]) => {
+  /// Send a turn on the participant's session. `clearComposer` is false for
+  /// button-driven turns (compact) — those must not wipe a draft the user
+  /// is in the middle of writing.
+  const sendTurn = (prompt: string, attachments: Attachment[], clearComposer: boolean) => {
     // Mint a conv id if this participant hasn't been used yet so the
     // first hijack message actually starts a session.
     const id = convId ?? cryptoRandomUuid();
@@ -1448,12 +1698,22 @@ function HijackComposer({
       // it'll get synced once a real flow event arrives. For now the
       // local runner store handles per-conv state by id.
     }
+    // Resume the participant's EXISTING step session (via the CLI's
+    // --resume) so the hijack chat continues the same thread the flow
+    // step ran on — with its full context (the plan, the diff it
+    // reviewed, its own output). Without this the send starts a brand-new
+    // session and the model answers as if it just woke up ("this looks
+    // like the start of our conversation"), and the visible transcript is
+    // a disconnected fresh thread rather than the step's. Undefined when
+    // this participant hasn't run yet — then it correctly starts fresh.
+    const resumeSessionId = run.sessionIdsByParticipant?.[participant.id];
     void window.overcli.invoke('runner:send', {
       conversationId: id,
       prompt,
       backend: participant.backend,
       cwd: run.projectPath,
       model: effectiveModel,
+      sessionId: resumeSessionId,
       // Hijack turns inherit the run's default permission — bypass for
       // worker/primary participants that need write access, default
       // otherwise. The user can be more conservative by adjusting
@@ -1461,9 +1721,13 @@ function HijackComposer({
       permissionMode: 'bypassPermissions',
       attachments,
     });
+    if (!clearComposer) return;
     setDraft(draftKey, '');
     clearAttachments(draftKey);
   };
+
+  const handleSend = (prompt: string, attachments: Attachment[]) =>
+    sendTurn(prompt, attachments, true);
 
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
@@ -1476,7 +1740,7 @@ function HijackComposer({
           directly (not via ConversationPane), so without this the live
           Thinking/Working/Reading… cue never shows while a step runs. */}
       {convId && <RunningIndicator conversationId={convId} />}
-      <ChangesBar files={changes} />
+      <ChangesBar files={changes} baseRef={baseRef} />
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
@@ -1491,6 +1755,15 @@ function HijackComposer({
       <FlowStatsFooter
         convId={convId}
         fallbackModel={`${participant.backend}:${effectiveModel}`}
+        // Compaction rides the same resumed session the flow's next step
+        // will pick up (see `handleSend`), so freeing context here frees it
+        // for the run — not just for this side chat.
+        onCompact={
+          participant.backend === 'claude' && convId
+            ? () => sendTurn('/compact', [], false)
+            : undefined
+        }
+        isRunning={isRunning}
       />
     </div>
   );
@@ -1615,9 +1888,14 @@ function HijackModelPicker({
 function FlowStatsFooter({
   convId,
   fallbackModel,
+  onCompact,
+  isRunning,
 }: {
   convId: string | undefined;
   fallbackModel: string;
+  /// Undefined for non-Claude participants, which have no slash commands.
+  onCompact?: () => void;
+  isRunning?: boolean;
 }) {
   // Subscribe to the runner here, not in the parent HijackComposer.
   // Streamed events update the runner on every chunk; keeping that
@@ -1637,6 +1915,16 @@ function FlowStatsFooter({
       <span>
         {turns} turn{turns === 1 ? '' : 's'}
       </span>
+      {/* Participants keep ONE conversation across every step they run,
+          so this is the number that quietly climbs over a long flow. */}
+      <ContextMeter conversationId={convId} />
+      {onCompact && (
+        <CompactButton
+          onCompact={onCompact}
+          disabled={isRunning}
+          disabledReason="Available once this step finishes"
+        />
+      )}
       {model && <span>· {model}</span>}
       {sessionId && <span className="truncate">· {sessionId.slice(0, 8)}</span>}
     </div>
@@ -1671,6 +1959,7 @@ function RunPromptSubtitle({
   activeStepId: string | null;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
   // Steps the active participant owns, in order — relocated here from the
   // body so the "which steps this thread covers" info sits next to the
@@ -1701,6 +1990,34 @@ function RunPromptSubtitle({
           >
             {prompt}
           </div>
+          <span
+            role="button"
+            tabIndex={0}
+            title="Copy prompt"
+            onClick={(e) => {
+              e.stopPropagation();
+              void navigator.clipboard.writeText(prompt);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                void navigator.clipboard.writeText(prompt);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1200);
+              }
+            }}
+            className={
+              'text-[10px] flex-shrink-0 rounded px-1.5 py-0.5 transition-colors cursor-pointer ' +
+              (copied
+                ? 'text-emerald-700 dark:text-emerald-300'
+                : 'text-ink-faint opacity-0 group-hover:opacity-100 hover:text-ink hover:bg-card-strong')
+            }
+          >
+            {copied ? 'copied' : 'copy'}
+          </span>
           <span
             aria-hidden
             className={
@@ -1866,14 +2183,25 @@ function PauseBanner({ run }: { run: FlowRun }) {
   // unchanged for one round-trip after the click, looking unresponsive.
   const [clicked, setClicked] = useState(false);
   const continuing = !!run.pendingContinue;
-  // Reset the local optimistic flag once the main process has either
-  // confirmed via pendingContinue OR fully advanced (banner unmounts).
-  useEffect(() => {
-    if (continuing) setClicked(false);
-  }, [continuing]);
 
   const nextStepId = run.state.kind === 'paused' ? run.state.nextStepId : null;
   const reason = run.state.kind === 'paused' ? run.state.reason : null;
+
+  // Clear the optimistic "clicked" flag once the main process has responded.
+  // Every SUCCESSFUL resume that leaves us still mounted in this banner
+  // changes one of these deps:
+  //   - a finalize turn started (pendingContinue set → `continuing` flips), or
+  //   - the resume moved us to a DIFFERENT pause — e.g. Override rolls past a
+  //     failed step and lands on the next step's pre-step pause, flipping
+  //     reason/nextStepId while staying `paused`.
+  // Without this the spinner sticks on "Continuing…" forever even though the
+  // run advanced correctly (the banner is wedged, not the flow). A resume that
+  // returns not-ok changes none of these deps, so the click handler clears the
+  // flag itself in that case.
+  useEffect(() => {
+    setClicked(false);
+  }, [continuing, nextStepId, reason]);
+
   const nextStep = nextStepId
     ? run.flowSnapshot.steps.find((s) => s.id === nextStepId)
     : null;
@@ -1881,6 +2209,19 @@ function PauseBanner({ run }: { run: FlowRun }) {
 
   const inFlight = continuing || clicked;
   const priorOutput = run.pendingContinue?.priorOutput;
+
+  // Fire a resume and keep the optimistic spinner honest: if the main process
+  // rejects it (run no longer paused, etc.) the pause state won't change, so
+  // the dep-driven effect above won't clear `clicked` — do it here.
+  const resume = (extra?: { override?: boolean }) => {
+    if (inFlight) return;
+    setClicked(true);
+    void window.overcli
+      .invoke('flows:resumeRun', { runId: run.id, ...extra })
+      .then((res) => {
+        if (!res || res.ok === false) setClicked(false);
+      });
+  };
 
   return (
     <div className="px-6 py-3 border-b border-amber-400/30 bg-amber-400/5">
@@ -1899,7 +2240,9 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 : 'Continuing…'
               : reason === 'preStep'
                 ? 'Paused before next step'
-                : 'Paused — step needs attention'}
+                : reason === 'interrupted'
+                  ? 'Interrupted — resume to re-run this step'
+                  : 'Paused — step needs attention'}
           </div>
           <div className="text-xs text-amber-700 dark:text-amber-100/80">
             {inFlight ? (
@@ -1907,6 +2250,21 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 Your Continue was received. The prior step's participant is
                 re-emitting its <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
                 to reflect your changes, then the next step will start.
+              </>
+            ) : reason === 'interrupted' ? (
+              <>
+                This run was still working on a step when the app last closed, so it
+                couldn't continue on its own. Earlier steps' results are kept — resume to
+                re-run <span className="font-semibold">{nextStep?.id ?? 'this step'}</span> from
+                the start and roll forward.
+              </>
+            ) : reason === 'failure' ? (
+              <>
+                <span className="font-semibold">{nextStep?.id ?? 'This step'}</span> didn't
+                pass — a reviewer that didn't approve, or a step whose failure policy is to
+                pause. Redirect the participant below and <span className="font-semibold">Re-run
+                step</span> to try again, or <span className="font-semibold">Override</span> to
+                accept this step's current result and roll forward to the next step.
               </>
             ) : (
               <>
@@ -1923,29 +2281,98 @@ function PauseBanner({ run }: { run: FlowRun }) {
             )}
           </div>
         </div>
-        <button
-          onClick={() => {
-            if (inFlight) return;
-            setClicked(true);
-            void window.overcli.invoke('flows:resumeRun', { runId: run.id });
-          }}
-          disabled={inFlight}
-          className={`text-xs px-3 py-1.5 rounded-md text-white flex items-center gap-1.5 ${
-            inFlight
-              ? 'bg-emerald-500/40 cursor-not-allowed'
-              : 'bg-emerald-500/80 hover:bg-emerald-500'
-          }`}
-        >
-          {inFlight && (
-            <span
-              aria-hidden
-              className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
-            />
+        <div className="flex items-center gap-2">
+          {reason === 'failure' && !inFlight && (
+            // Escape hatch for a false-negative gate: accept the failed
+            // step's current output and roll forward to the next step
+            // instead of re-running the step (the primary button's job).
+            <button
+              onClick={() => resume({ override: true })}
+              title="Accept this step's current result and continue to the next step"
+              className="text-xs px-3 py-1.5 rounded-md border border-amber-500/50 text-amber-700 dark:text-amber-200 hover:bg-amber-500/10"
+            >
+              Override & continue →
+            </button>
           )}
-          {inFlight ? 'Continuing…' : 'Continue →'}
-        </button>
+          <button
+            onClick={() => resume()}
+            disabled={inFlight}
+            className={`text-xs px-3 py-1.5 rounded-md text-white flex items-center gap-1.5 ${
+              inFlight
+                ? 'bg-emerald-500/40 cursor-not-allowed'
+                : 'bg-emerald-500/80 hover:bg-emerald-500'
+            }`}
+          >
+            {inFlight && (
+              <span
+                aria-hidden
+                className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
+              />
+            )}
+            {inFlight
+              ? 'Continuing…'
+              : reason === 'interrupted' || reason === 'failure'
+                ? 'Re-run step →'
+                : 'Continue →'}
+          </button>
+        </div>
       </div>
     </div>
+  );
+}
+
+/// The run's headline. Shows the name the user gave this run when there
+/// is one (with the flow it came from demoted to a quiet subtitle chip),
+/// otherwise the flow name as before. Double-click edits it in place —
+/// the same gesture as the sidebar rows, and the reason a run in flight
+/// can be labelled without leaving the pane.
+function RunTitle({ run }: { run: FlowRun }) {
+  const renameRun = useFlowsStore((s) => s.renameRun);
+  const [renameValue, setRenameValue] = useState<string | null>(null);
+
+  if (renameValue !== null) {
+    const commit = () => {
+      const next = renameValue;
+      setRenameValue(null);
+      void renameRun(run.id, next);
+    };
+    return (
+      <input
+        autoFocus
+        value={renameValue}
+        onChange={(e) => setRenameValue(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commit();
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            setRenameValue(null);
+          }
+        }}
+        placeholder={flowRunTitle(run)}
+        aria-label="Run name"
+        className="min-w-0 flex-1 rounded border border-accent bg-transparent px-1.5 py-0.5 text-xl font-semibold text-ink outline-none"
+      />
+    );
+  }
+
+  return (
+    <>
+      <div
+        onDoubleClick={() => setRenameValue(run.title ?? '')}
+        title={`${flowRunTitle(run)} — double-click to rename this run`}
+        className="text-xl font-semibold truncate min-w-0"
+      >
+        {run.title?.trim() || run.flowSnapshot.name}
+      </div>
+      {run.title?.trim() && (
+        <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
+          {run.flowSnapshot.name}
+        </span>
+      )}
+    </>
   );
 }
 
@@ -1964,7 +2391,9 @@ function RunStateBadge({ state }: { state: { kind: string } }) {
               ? 'bg-card-strong text-ink-muted'
               : 'bg-red-500/20 text-red-700 dark:text-red-300';
   return (
-    <span className={`text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}>
+    <span
+      className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded uppercase tracking-wider ${cls}`}
+    >
       {label}
     </span>
   );
@@ -2033,7 +2462,7 @@ function RunTokenSummary({ run }: { run: FlowRun }) {
   if (visible.length === 0) return null;
   return (
     <span
-      className="ml-2 inline-flex items-center gap-2 text-[11px] font-medium"
+      className="inline-flex flex-shrink-0 items-center gap-2 whitespace-nowrap text-[11px] font-medium"
       title={
         'Tokens by model tier (input + output):\n' +
         visible

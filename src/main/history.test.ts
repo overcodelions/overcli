@@ -56,6 +56,46 @@ describe('loadHistory', () => {
     });
   });
 
+  it('finds the Claude session dir case-insensitively when the cwd casing drifted', () => {
+    // Simulates a flow whose cwd was cleaned up: claudeProjectSlug can no
+    // longer realpath it, so the slug falls back to the raw stored path
+    // (lowercase here), while Claude actually wrote the session under a
+    // differently-cased directory. The transcript must still load.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-history-'));
+    vi.spyOn(os, 'homedir').mockReturnValue(home);
+
+    // Deliberately NOT created on disk → realpathSync.native throws inside
+    // claudeProjectSlug → slug derives from the raw (lowercase) path.
+    const projectPath = path.join(home, 'application support', 'overcli');
+    const lowerSlug = projectPath.replaceAll('/', '-').replaceAll('.', '-').replaceAll(' ', '-');
+    // The real on-disk dir uses different casing than the fallback slug.
+    const realSlug = lowerSlug.replace('-overcli', '-Overcli');
+    expect(realSlug).not.toBe(lowerSlug);
+
+    const claudeDir = path.join(home, '.claude', 'projects', realSlug);
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(claudeDir, 'session-1.jsonl'),
+      `${JSON.stringify({
+        type: 'user',
+        timestamp: 1,
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'tool-1',
+              content: [{ type: 'text', text: 'survived the missing cwd' }],
+            },
+          ],
+        },
+      })}\n`,
+      'utf-8',
+    );
+
+    const events = loadHistory({ backend: 'claude', projectPath, sessionId: 'session-1' });
+    expect(events.length).toBeGreaterThan(0);
+  });
+
   it('replays copilot history from ~/.copilot/session-state/<id>/events.jsonl', () => {
     // Build a minimal fixture covering the lines parseCopilotLine
     // handles: user.message echoes (must synthesize as localUser since

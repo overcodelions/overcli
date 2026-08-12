@@ -51,7 +51,12 @@ export const codexBackend: BackendSpec = {
     const { sandbox, approval } = codexTransportPermissions(args.permissionMode);
     const a: string[] = [];
     if (args.model) a.push('-m', args.model);
-    a.push('-s', sandbox, '-a', approval, 'exec');
+    // --skip-git-repo-check lets codex run when cwd is a synthetic
+    // workspace/coordinator root (a dir of symlinks that isn't itself a
+    // git repo) or a worktree codex declines to treat as trusted.
+    // Without it codex exits with "Not inside a trusted directory and
+    // --skip-git-repo-check was not specified" (mirrors the reviewer).
+    a.push('-s', sandbox, '-a', approval, 'exec', '--skip-git-repo-check');
     // Coordinator-style cwds (folders of symlinks pointing into each
     // member worktree) need their symlink targets explicitly granted as
     // writable roots; otherwise codex's workspace-write sandbox refuses

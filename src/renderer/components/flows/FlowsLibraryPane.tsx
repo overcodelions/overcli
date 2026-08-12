@@ -7,16 +7,34 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
-import { flowRunOwnerPath, resolveStepModel, flowStarKey, type Flow } from '@shared/flows/schema';
+import {
+  flowProjectPath,
+  flowRunOwnerPath,
+  flowRunTitle as runTitle,
+  resolveStepModel,
+  flowStarKey,
+  type Flow,
+} from '@shared/flows/schema';
+import { deleteFlowRunWithDirtyGuard } from './deleteRun';
+import {
+  flowTagCounts,
+  groupFlows,
+  installedRegistryKeys,
+  registryEntryMatchesQuery,
+} from './flowGrouping';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
 import { BrowseLibraryModal } from './BrowseLibraryModal';
 import { FlowMonogram } from './FlowMonogram';
-import { RunPanel } from './FlowLaunch';
+import { FlowRunLauncher } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
+import { SchedulesPane } from './SchedulesPane';
+import { useSchedulesStore } from '../../schedulesStore';
+import { describeTrigger, untilLabel } from '@shared/flows/schedule';
+import { useOrchestratorStore } from '../../orchestratorStore';
+import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { FlowRun } from '@shared/flows/schema';
-import type { Attachment } from '@shared/types';
 
 export function FlowsLibraryPane() {
   const projects = useStore((s) => s.projects);
@@ -30,7 +48,42 @@ export function FlowsLibraryPane() {
   const dismissJustSaved = useFlowsStore((s) => s.dismissJustSaved);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Seeded from the library's own filter when the user browses out of a
+  // failed local search, so they don't retype it in the modal.
+  const [browseQuery, setBrowseQuery] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
+  // Schedules are a segment here rather than a top-level tab: a schedule is a
+  // trigger on a flow, not a separate kind of work, and a fourth tab would
+  // have made a third place to launch a run from. The segment lives in the
+  // store so the title bar can deep-link into it from any tab.
+  const segment = useFlowsStore((s) => s.librarySegment);
+  const setSegment = useFlowsStore((s) => s.setLibrarySegment);
+  const settings = useStore((s) => s.settings);
+  const saveSettings = useStore((s) => s.saveSettings);
+  const schedules = useSchedulesStore((s) => s.schedules);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  // A parked proposal outranks a running run on the tab: one is blocked on the
+  // user, the other is just working and will notify when it's done.
+  const scheduleBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
+    const waiting = Object.values(orchestrations).filter(
+      (o) => o.origin?.kind === 'schedule' && isOrchestrationAwaitingApproval(o),
+    ).length;
+    if (waiting > 0) return { count: waiting, tone: 'waiting' };
+    const running = Object.values(schedules).filter((s) => s.activeRunId).length;
+    return running > 0 ? { count: running, tone: 'running' } : undefined;
+  }, [schedules, orchestrations]);
+
+  // Arriving on Schedules retires the discovery glow, however the user got
+  // here — the segment button, the library strip, or the title bar.
+  useEffect(() => {
+    if (segment === 'schedules' && !settings.seenSchedules) {
+      void saveSettings({ ...settings, seenSchedules: true });
+    }
+  }, [segment, settings.seenSchedules]);
+
+  function showSchedules(): void {
+    setSegment('schedules');
+  }
 
   // Auto-dismiss the "Saved" banner after 3 seconds.
   useEffect(() => {
@@ -55,39 +108,70 @@ export function FlowsLibraryPane() {
     });
   }, []);
 
-  if (activeRunId) return <FlowRunPane runId={activeRunId} />;
+  // Key on the run id so switching flows mounts a fresh FlowRunPane
+  // instead of reusing the instance — otherwise per-run local state
+  // (focusStepId / autoFollowedId) carries over. A step manually picked
+  // in the previous flow would stay selected, and since that step id
+  // doesn't exist in the new flow, nothing highlights and the body
+  // falsely reads "no participants".
+  if (activeRunId) return <FlowRunPane key={activeRunId} runId={activeRunId} />;
   if (editor.kind !== 'idle') return <FlowEditor />;
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-6">
+      <div className="flex items-center gap-3 mb-7">
         <div className="text-2xl font-semibold">Flows</div>
-        <div className="text-xs text-ink-faint">Multi-model pipelines</div>
-        <button
-          onClick={() => setAboutOpen(true)}
-          className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
-          title="What is a flow?"
-        >
-          About
-        </button>
-        <button
-          onClick={() => void reload(projectPaths)}
-          className="text-xs text-ink-faint hover:text-ink hover:bg-white/5 px-2 py-1 rounded"
-        >
-          ↻ Refresh
-        </button>
-        <button
-          onClick={() => setPickerOpen(true)}
-          className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90"
-        >
-          + New flow
-        </button>
-        <button
-          onClick={() => setBrowseOpen(true)}
-          className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
-        >
-          Browse library
-        </button>
+        {/* A real segmented control, not two bare words. The track is what
+            makes the inactive half legible as an option: without an enclosing
+            surface, "Schedules" was just grey text next to a heading and read
+            as a subtitle rather than something you could click. The filled
+            pill then says which one you're on.
+
+            Sits well clear of the title, too — butted against a 2xl heading
+            the two read as one crowded lump instead of a title and a control. */}
+        <div className="flex items-center gap-0.5 ml-5 p-0.5 rounded-lg bg-card border border-card-strong">
+          <SegmentTab
+            label="Library"
+            active={segment === 'flows'}
+            onClick={() => setSegment('flows')}
+          />
+          <SegmentTab
+            label="Schedules"
+            active={segment === 'schedules'}
+            onClick={showSchedules}
+            discover={!settings.seenSchedules && segment !== 'schedules'}
+            badge={scheduleBadge}
+          />
+        </div>
+        {segment === 'flows' && (
+          <>
+            <button
+              onClick={() => setAboutOpen(true)}
+              className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
+              title="What is a flow?"
+            >
+              About
+            </button>
+            <button
+              onClick={() => void reload(projectPaths)}
+              className="text-xs text-ink-faint hover:text-ink hover:bg-white/5 px-2 py-1 rounded"
+            >
+              ↻ Refresh
+            </button>
+            <button
+              onClick={() => setPickerOpen(true)}
+              className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90"
+            >
+              + New flow
+            </button>
+            <button
+              onClick={() => { setBrowseQuery(''); setBrowseOpen(true); }}
+              className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
+            >
+              Browse library
+            </button>
+          </>
+        )}
       </div>
 
       {justSaved && (
@@ -101,29 +185,119 @@ export function FlowsLibraryPane() {
         </div>
       )}
 
-      <RunsOverview />
-
-      {!loaded ? (
-        <div className="text-sm text-ink-muted">Loading flows…</div>
-      ) : flows.length === 0 ? (
-        <EmptyState onCreate={() => setPickerOpen(true)} />
+      {segment === 'schedules' ? (
+        <SchedulesPane />
       ) : (
         <>
-          <SectionHeading title="Your flows" count={flows.length} />
-          <div className="space-y-3">
-            {flows.map((flow) => (
-              <FlowRow key={`${flow.source}:${flow.id}`} flow={flow} projectPaths={projectPaths} />
-            ))}
-          </div>
+          <ScheduleStrip onOpen={showSchedules} />
+          <RunsOverview />
+
+          {!loaded ? (
+            <div className="text-sm text-ink-muted">Loading flows…</div>
+          ) : flows.length === 0 ? (
+            <EmptyState onCreate={() => setPickerOpen(true)} />
+          ) : (
+            <FlowLibraryList
+              flows={flows}
+              projectPaths={projectPaths}
+              onBrowse={(q) => { setBrowseQuery(q); setBrowseOpen(true); }}
+            />
+          )}
         </>
       )}
 
       {pickerOpen && <NewFlowPicker onClose={() => setPickerOpen(false)} />}
-      {browseOpen && <BrowseLibraryModal onClose={() => setBrowseOpen(false)} />}
+      {browseOpen && (
+        <BrowseLibraryModal
+          initialQuery={browseQuery}
+          onClose={() => {
+            setBrowseOpen(false);
+            // Pick up anything installed while the modal was open.
+            void reload(projectPaths);
+          }}
+        />
+      )}
       {aboutOpen && <FlowsAboutModal onClose={() => setAboutOpen(false)} />}
     </div>
   );
 }
+
+/// One line about schedules, sitting in the default view so the feature is
+/// findable without clicking anything.
+///
+/// Escalates rather than nags. With schedules armed it's a status line (what
+/// fires next, or what's running now). With none and the segment never opened,
+/// it's a one-time invitation. With none and the segment already seen, it
+/// renders nothing at all — the user has looked and decided, and a permanent
+/// prompt to use a feature is just clutter.
+function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
+  const schedules = useSchedulesStore((s) => s.schedules);
+  const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
+  const seen = useStore((s) => s.settings.seenSchedules);
+
+  const rows = useMemo(() => Object.values(schedules), [schedules]);
+  const running = rows.filter((s) => s.activeRunId);
+  // Soonest enabled schedule. `nextFireAt` comes from main so this never
+  // second-guesses the engine's own arithmetic.
+  const next = useMemo(() => {
+    let best: { name: string; at: number; trigger: string } | null = null;
+    for (const s of rows) {
+      const at = nextFireAt[s.id];
+      if (!s.enabled || !at) continue;
+      if (!best || at < best.at) {
+        best = { name: s.name, at, trigger: describeTrigger(s.trigger) };
+      }
+    }
+    return best;
+  }, [rows, nextFireAt]);
+
+  if (rows.length === 0) {
+    if (seen) return null;
+    return (
+      <button
+        onClick={onOpen}
+        className="w-full mb-5 flex items-center gap-2.5 text-left rounded-lg border border-accent/40 bg-accent/5 px-3.5 py-2.5 hover:bg-accent/10 transition-colors"
+      >
+        <span className="text-base leading-none">⏱</span>
+        <span className="flex-1 min-w-0">
+          <span className="block text-[13px] text-ink">Run flows on a schedule</span>
+          <span className="block text-[11px] text-ink-muted">
+            Launch a flow on a timer — or have the orchestrator triage overnight and leave a
+            batch waiting for your approval.
+          </span>
+        </span>
+        <span className="text-[11px] text-accent whitespace-nowrap">Set one up →</span>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      onClick={onOpen}
+      className="w-full mb-5 flex items-center gap-2 text-left rounded-md border border-card px-3 py-1.5 hover:bg-card/40 transition-colors"
+    >
+      <span className="text-ink-faint text-[11px]">⏱</span>
+      {running.length > 0 ? (
+        <span className="text-[11px] text-sky-700 dark:text-sky-300 flex items-center">
+          <RunningDot />
+          {running.length === 1
+            ? `${running[0].name} is running now`
+            : `${running.length} schedules running now`}
+        </span>
+      ) : next ? (
+        <span className="text-[11px] text-ink-muted truncate" title={next.trigger}>
+          Next: <span className="text-ink">{next.name}</span> {untilLabel(next.at)}
+        </span>
+      ) : (
+        <span className="text-[11px] text-ink-faint">
+          {rows.length} {rows.length === 1 ? 'schedule' : 'schedules'} · all paused
+        </span>
+      )}
+      <span className="ml-auto text-[11px] text-ink-faint">Schedules →</span>
+    </button>
+  );
+}
+
 
 /// Active + recent runs surfaced at the top of the library. Renders as
 /// rows (not grid cards) so timestamps + project + actions fit cleanly
@@ -244,15 +418,15 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
 
   async function handleDelete(e: React.MouseEvent) {
     e.stopPropagation();
-    const result = await window.overcli.invoke('flows:deleteRun', { runId: run.id });
-    if (!result.ok) {
+    const res = await deleteFlowRunWithDirtyGuard(run.id);
+    if (res.error) {
       // Server failed but the optimistic remove already happened — re-add isn't
       // worth the complexity; the next listRuns refresh would restore it. Just
       // surface the error.
-      alert(`Couldn't delete: ${result.error}`);
+      alert(`Couldn't delete: ${res.error}`);
       return;
     }
-    removeRun(run.id);
+    if (res.deleted) removeRun(run.id);
   }
 
   return (
@@ -268,6 +442,15 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
       <FlowMonogram name={run.flowSnapshot.name} size="sm" />
       <div className="flex-1 min-w-0 flex items-baseline gap-2">
         <span className="text-sm font-semibold truncate" title={run.userPrompt}>{runTitle(run)}</span>
+        {/* A run nobody remembers starting is alarming; say who did. */}
+        {run.scheduleName && (
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded bg-violet-500/20 text-violet-700 dark:text-violet-300 whitespace-nowrap"
+            title={`Launched by the "${run.scheduleName}" schedule`}
+          >
+            ⏱ {run.scheduleName}
+          </span>
+        )}
         <span className="text-[11px] text-ink-faint truncate">
           {run.flowSnapshot.name}
           <span className="mx-1">·</span>
@@ -341,20 +524,311 @@ function RunningDot() {
   );
 }
 
-/// Title for a run row: first non-empty line of the user prompt so runs
-/// of the same flow are distinguishable; falls back to the flow name.
-function runTitle(run: FlowRun): string {
-  const firstLine = run.userPrompt
-    ?.split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l.length > 0);
-  return firstLine || run.flowSnapshot.name;
-}
-
 function pathBasenameSafe(p: string): string {
   if (!p) return '';
   const segs = p.split(/[\\/]/).filter(Boolean);
   return segs[segs.length - 1] ?? p;
+}
+
+function SegmentTab({
+  label,
+  active,
+  onClick,
+  discover,
+  badge,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  /// Draw the one-time discovery glow. Retires the moment the user opens it.
+  discover?: boolean;
+  /// Live count. Earned attention, so unlike the glow it stays for as long as
+  /// it's true. `waiting` outranks `running` at the call site: one is blocked
+  /// on the user, the other is just working.
+  badge?: { count: number; tone: 'waiting' | 'running' };
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={
+        'relative px-3.5 py-1.5 rounded-md text-xs font-medium flex items-center gap-2 transition-colors ' +
+        // The inactive half is `ink-muted`, not `ink-faint`: faint is the tone
+        // this codebase uses for disabled and for metadata, and a tab you can
+        // click shouldn't wear it.
+        // `surface-elevated`, not `card-strong`: card-strong is 4% white in
+        // dark and the track behind it is 2%, so the pill would barely lift
+        // off it. A segmented control only works if the track reads recessed
+        // and the selection reads raised.
+        (active
+          ? 'bg-surface-elevated text-ink shadow-sm'
+          : 'text-ink-muted hover:text-ink hover:bg-white/5') +
+        (discover ? ' nav-segment-discover text-ink' : '')
+      }
+    >
+      {label}
+      {badge ? (
+        badge.tone === 'waiting' ? (
+          <span className="flex items-center gap-1 text-[10px] text-violet-700 dark:text-violet-300">
+            <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />
+            {badge.count}
+          </span>
+        ) : (
+          <span className="flex items-center gap-1 text-[10px] text-sky-700 dark:text-sky-300">
+            <RunningDot />
+            {badge.count}
+          </span>
+        )
+      ) : (
+        discover && (
+          <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-accent text-white leading-none">
+            new
+          </span>
+        )
+      )}
+    </button>
+  );
+}
+
+/// The library list proper: a filter box, tag chips, then flows grouped by
+/// where they came from. Flat-and-alphabetical worked at five flows; past
+/// twenty (most of them installed from a registry) the ones you wrote
+/// yourself become the hardest to find, which is exactly backwards.
+function FlowLibraryList({
+  flows,
+  projectPaths,
+  onBrowse,
+}: {
+  flows: Flow[];
+  projectPaths: string[];
+  onBrowse: (query: string) => void;
+}) {
+  const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
+  const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
+  const registryEntries = useFlowsStore((s) => s.registryEntries);
+  const registryLoaded = useFlowsStore((s) => s.registryLoaded);
+  const browseRegistries = useFlowsStore((s) => s.browseRegistries);
+  const installFromRegistry = useFlowsStore((s) => s.installFromRegistry);
+  const reload = useFlowsStore((s) => s.reload);
+  const [query, setQuery] = useState('');
+  const [tags, setTags] = useState<Set<string>>(new Set());
+  const [installingKey, setInstallingKey] = useState<string | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [drafting, setDrafting] = useState(false);
+  const openEditor = useFlowsStore((s) => s.openEditor);
+
+  const tagCounts = useMemo(() => flowTagCounts(flows), [flows]);
+  const groups = useMemo(
+    () => groupFlows(flows, { starred: starredFlows, installed: installedFlows, query, tags }),
+    [flows, starredFlows, installedFlows, query, tags],
+  );
+  const matchCount = groups.reduce((n, g) => n + g.flows.length, 0);
+  const filtering = query.trim().length > 0 || tags.size > 0;
+  const searching = query.trim().length > 0;
+
+  // Fetch the registry index lazily on first search — same policy as the
+  // welcome gallery, so neither view pays for a network call nobody asked
+  // for and both read from the store's cached copy afterwards.
+  useEffect(() => {
+    if (query.trim().length >= 2 && !registryLoaded) void browseRegistries(false);
+  }, [query, registryLoaded]);
+
+  const registryMatches = useMemo(() => {
+    if (!searching) return [];
+    const have = installedRegistryKeys(flows, installedFlows);
+    return registryEntries
+      .filter((e) => !have.has(`${e.registryId}:${e.id}`))
+      .filter((e) => registryEntryMatchesQuery(e, query))
+      .slice(0, 8);
+  }, [searching, registryEntries, flows, installedFlows, query]);
+
+  /// Same third rail as the welcome gallery: search text becomes the
+  /// drafter's brief, and the draft opens in the editor for review rather
+  /// than running unseen.
+  async function draft() {
+    const description = query.trim();
+    if (!description || drafting) return;
+    setDrafting(true);
+    setInstallError(null);
+    try {
+      const result = await window.overcli.invoke('flows:draftFromPrompt', { description });
+      if (!result.ok) setInstallError(result.error);
+      else openEditor({ kind: 'new' }, result.flow);
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function install(entry: { registryId: string; id: string; version: string }) {
+    const key = `${entry.registryId}:${entry.id}`;
+    setInstallingKey(key);
+    setInstallError(null);
+    try {
+      const res = await installFromRegistry(entry);
+      if (!res.ok) setInstallError(res.error || 'Install failed.');
+      else await reload(projectPaths);
+    } finally {
+      setInstallingKey(null);
+    }
+  }
+
+  // Most-used tags first, capped — the chip row is a shortcut, not a
+  // complete index of every label anyone ever typed.
+  const chips = useMemo(
+    () => [...tagCounts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 12),
+    [tagCounts],
+  );
+
+  return (
+    <>
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search your flows and the registry…"
+          className="field flex-1 text-sm px-3 py-1.5"
+        />
+        {filtering && (
+          <button
+            onClick={() => { setQuery(''); setTags(new Set()); }}
+            className="text-xs text-ink-faint hover:text-ink px-2 py-1"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-4">
+          {chips.map(([tag, count]) => (
+            <button
+              key={tag}
+              onClick={() => setTags((prev) => {
+                const n = new Set(prev);
+                if (n.has(tag)) n.delete(tag); else n.add(tag);
+                return n;
+              })}
+              className={
+                'text-[11px] px-2 py-0.5 rounded-full border transition-colors ' +
+                (tags.has(tag)
+                  ? 'border-accent/60 bg-accent/20 text-accent'
+                  : 'border-card text-ink-faint hover:text-ink hover:border-card-strong')
+              }
+            >
+              {tag} <span className="opacity-60">{count}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {matchCount === 0 ? (
+        <div className="text-sm text-ink-muted py-6 text-center">
+          No flow of yours matches that.
+        </div>
+      ) : (
+        groups.map((group) => (
+          <div key={group.key} className="mb-6">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+                {group.title}
+              </span>
+              <span className="text-[11px] text-ink-faint">· {group.flows.length}</span>
+              {group.hint && (
+                <span className="text-[11px] text-ink-faint/60">{group.hint}</span>
+              )}
+            </div>
+            <div className="space-y-3">
+              {group.flows.map((flow) => (
+                <FlowRow
+                  key={`${flow.source}:${flow.id}`}
+                  flow={flow}
+                  projectPaths={projectPaths}
+                  onTagClick={(tag) => setTags((prev) => {
+                    const n = new Set(prev);
+                    if (n.has(tag)) n.delete(tag); else n.add(tag);
+                    return n;
+                  })}
+                />
+              ))}
+            </div>
+          </div>
+        ))
+      )}
+
+      {/* Registry results for the same query, inline. Only while searching:
+          unfiltered, this would be a second full library competing with
+          the user's own. */}
+      {searching && (
+        <div className="mb-6">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+              From the registry
+            </span>
+            {registryMatches.length > 0 && (
+              <span className="text-[11px] text-ink-faint">· {registryMatches.length}</span>
+            )}
+            <span className="text-[11px] text-ink-faint/60">not installed yet</span>
+          </div>
+          {!registryLoaded ? (
+            <div className="text-xs text-ink-faint py-2">Searching the registry…</div>
+          ) : registryMatches.length === 0 ? (
+            <div className="text-xs text-ink-faint py-2">
+              Nothing new in the registry for that.
+              {matchCount === 0 && (
+                <button
+                  onClick={() => void draft()}
+                  disabled={drafting}
+                  className="ml-2 text-accent hover:underline disabled:opacity-60"
+                >
+                  {drafting ? 'Drafting…' : `Build one for “${query.trim()}” with AI →`}
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {registryMatches.map((entry) => (
+                <div
+                  key={`${entry.registryId}:${entry.id}`}
+                  className="flex items-center gap-3 rounded-lg border border-dashed border-card-strong px-3 py-2.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold truncate">{entry.name}</div>
+                    {entry.description && (
+                      <div className="text-xs text-ink-faint line-clamp-1 mt-0.5">
+                        {entry.description}
+                      </div>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-ink-faint flex-shrink-0">
+                    {entry.registryId} · {entry.version}
+                  </span>
+                  <button
+                    onClick={() => void install(entry)}
+                    disabled={installingKey === `${entry.registryId}:${entry.id}`}
+                    className="text-xs px-2.5 py-1 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-50 flex-shrink-0"
+                  >
+                    {installingKey === `${entry.registryId}:${entry.id}` ? 'Installing…' : 'Install'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {installError && <div className="mt-2 text-xs text-red-400">{installError}</div>}
+        </div>
+      )}
+
+      {/* Always reachable from the bottom of the list — the modal is where
+          you browse by tag axis rather than by a term you already have. */}
+      <button
+        onClick={() => onBrowse(query)}
+        className="w-full rounded-lg border border-dashed border-card-strong px-3 py-2.5 text-left hover:bg-white/5 transition-colors"
+      >
+        <div className="text-[13px] text-ink">Browse the full flow registry →</div>
+        <div className="text-[11px] text-ink-faint mt-0.5">
+          Filter published flows by activity, surface, or domain.
+        </div>
+      </button>
+    </>
+  );
 }
 
 function SectionHeading({
@@ -409,10 +883,29 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] }) {
+function FlowRow({
+  flow,
+  projectPaths,
+  onTagClick,
+}: {
+  flow: Flow;
+  projectPaths: string[];
+  onTagClick?: (tag: string) => void;
+}) {
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
+  const renameFlow = useFlowsStore((s) => s.renameFlow);
   const [running, setRunning] = useState(false);
+  // Non-null while the row's title is an editable input. Renaming happens
+  // in place so the common "I picked a bad name" fix doesn't require a
+  // trip through the full editor.
+  const [renameValue, setRenameValue] = useState<string | null>(null);
+  // Was the rename input open when the current click started? Clicking the
+  // card to dismiss the input blurs it (which commits and closes it) before
+  // the click lands, so by the time onClick runs `renameValue` is already
+  // null and the card would open the editor. Sampling at mousedown records
+  // the state the user actually clicked in.
+  const renamingAtMouseDown = useRef(false);
   const starred = useStore(
     (s) => (s.settings.starredFlows ?? []).includes(flowStarKey(flow)),
   );
@@ -426,13 +919,10 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   }
 
   async function handleDelete() {
-    const projectPath = flow.source === 'project'
-      ? flow.filePath.replace(/\/\.overcli\/flows\/.+$/, '')
-      : undefined;
     const result = await window.overcli.invoke('flows:delete', {
       flowId: flow.id,
       source: flow.source,
-      projectPath,
+      projectPath: flowProjectPath(flow),
     });
     if (result.ok) {
       await reload(projectPaths);
@@ -441,11 +931,27 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
     }
   }
 
+  async function commitRename() {
+    const next = renameValue ?? '';
+    setRenameValue(null);
+    const result = await renameFlow(flow, next, projectPaths);
+    if (!result.ok && result.error) alert(result.error);
+  }
+
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={() => openEditor({ kind: 'editing', flowId: flow.id })}
+      onMouseDownCapture={() => {
+        renamingAtMouseDown.current = renameValue !== null;
+      }}
+      onClick={() => {
+        // Mid-rename the card is a form, not a link — clicking around the
+        // input shouldn't yank the user into the editor.
+        if (renameValue === null && !renamingAtMouseDown.current) {
+          openEditor({ kind: 'editing', flowId: flow.id });
+        }
+      }}
       onKeyDown={(e) => {
         // Only the card itself opens the editor on Enter/Space — a keypress
         // while an inner button (Run / ⋯) is focused must not also edit.
@@ -461,16 +967,65 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
       <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <div className="text-base font-semibold truncate transition-colors group-hover:text-accent">
-              {flow.name}
-            </div>
-            <SourceBadge source={flow.source} />
-            <span className="text-[11px] font-medium text-accent opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-              ✎ Edit
-            </span>
+            {renameValue !== null ? (
+              <input
+                autoFocus
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                onBlur={() => void commitRename()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void commitRename();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setRenameValue(null);
+                  }
+                }}
+                aria-label="Flow name"
+                className="flex-1 min-w-0 bg-transparent border border-accent rounded px-1.5 py-0.5 text-base font-semibold outline-none"
+              />
+            ) : (
+              <>
+                <div className="text-base font-semibold truncate transition-colors group-hover:text-accent">
+                  {flow.name}
+                </div>
+                <SourceBadge source={flow.source} />
+                <span className="text-[11px] font-medium text-accent opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
+                  ✎ Edit
+                </span>
+              </>
+            )}
           </div>
           {flow.description && (
             <div className="text-sm text-ink-muted line-clamp-2 mb-2">{flow.description}</div>
+          )}
+          {flow.tags && flow.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1 mb-2">
+              {flow.tags.map((tag) => (
+                <span
+                  key={tag}
+                  role={onTagClick ? 'button' : undefined}
+                  onClick={
+                    onTagClick
+                      ? (e) => {
+                          e.stopPropagation();
+                          onTagClick(tag);
+                        }
+                      : undefined
+                  }
+                  title={onTagClick ? `Filter by "${tag}"` : undefined}
+                  className={
+                    'text-[10px] px-1.5 py-0.5 rounded-full border border-card text-ink-faint ' +
+                    (onTagClick ? 'cursor-pointer hover:text-ink hover:border-card-strong' : '')
+                  }
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
           )}
           <div className="flex flex-wrap items-center gap-1.5">
             {flow.steps.map((step) => {
@@ -511,6 +1066,7 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
           </button>
           <RowActionsMenu
             onEdit={() => openEditor({ kind: 'editing', flowId: flow.id })}
+            onRename={() => setRenameValue(flow.name)}
             onDelete={handleDelete}
           />
         </div>
@@ -519,14 +1075,16 @@ function FlowRow({ flow, projectPaths }: { flow: Flow; projectPaths: string[] })
   );
 }
 
-/// Overflow menu for a flow row — holds the secondary Edit/Delete actions
-/// so they don't each claim a permanent button. Delete confirms inline
-/// inside the menu rather than firing a modal.
+/// Overflow menu for a flow row — holds the secondary Edit/Rename/Delete
+/// actions so they don't each claim a permanent button. Delete confirms
+/// inline inside the menu rather than firing a modal.
 function RowActionsMenu({
   onEdit,
+  onRename,
   onDelete,
 }: {
   onEdit: () => void;
+  onRename: () => void;
   onDelete: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -566,6 +1124,15 @@ function RowActionsMenu({
           >
             Edit
           </button>
+          <button
+            onClick={() => {
+              setOpen(false);
+              onRename();
+            }}
+            className="w-full text-left text-xs px-3 py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink"
+          >
+            Rename
+          </button>
           {!confirming ? (
             <button
               onClick={() => setConfirming(true)}
@@ -597,149 +1164,6 @@ function RowActionsMenu({
       )}
     </div>
   );
-}
-
-/// Run launcher for a flow row. Owns the target (project/workspace)
-/// selection + worktree controls and drives the shared `RunPanel`. The
-/// target picker rides in the panel footer because — unlike the start
-/// page — the Flows library isn't scoped to a single context.
-function FlowRunLauncher({ flow, onClose }: { flow: Flow; onClose: () => void }) {
-  const projects = useStore((s) => s.projects);
-  const workspaces = useStore((s) => s.workspaces);
-  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
-  const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
-  const setLaunchProgress = useFlowsStore((s) => s.setLaunchProgress);
-  const launchProgressMap = useFlowsStore((s) => s.launchProgress);
-  const setDraft = useStore((s) => s.setDraft);
-  const clearAttachments = useStore((s) => s.clearAttachments);
-
-  /// `target` is `project:<path>` | `workspace:<rootPath>` | ''.
-  const [target, setTarget] = useState('');
-  const [runIn, setRunIn] = useState<'cwd' | 'worktree'>('cwd');
-  // Empty → BaseBranchSelect auto-detects the repo's default branch.
-  const [baseBranch, setBaseBranch] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-
-  const targetPath = stripTargetPrefix(target);
-  const targetIsWorkspace = target.startsWith('workspace:');
-  const canUseWorktree = !!targetPath;
-  const draftKey = `__flow-launch:${flow.id}__`;
-
-  // Repos the worktree(s) are minted from. Workspace → each member's
-  // path (so the branch list is the intersection); single project → one.
-  const baseBranchRepoPaths = useMemo(() => {
-    if (targetIsWorkspace) {
-      const ws = workspaces.find((w) => w.rootPath === targetPath);
-      return ws
-        ? ws.projectIds
-            .map((pid) => projects.find((p) => p.id === pid))
-            .filter((p): p is NonNullable<typeof p> => !!p && !!p.path)
-            .map((p) => p.path)
-        : [];
-    }
-    return targetPath ? [targetPath] : [];
-  }, [target, targetPath, targetIsWorkspace, projects, workspaces]);
-
-  const targetLabel = useMemo(() => {
-    if (!targetPath) return 'Pick a target';
-    if (targetIsWorkspace) {
-      return workspaces.find((w) => w.rootPath === targetPath)?.name ?? targetPath;
-    }
-    return projects.find((p) => p.path === targetPath)?.name ?? targetPath;
-  }, [target, targetPath, targetIsWorkspace, projects, workspaces]);
-
-  async function handleRun(prompt: string, attachments: Attachment[]) {
-    const text = prompt.trim();
-    if (!targetPath || !text) {
-      setError('Pick a project or workspace, and tell the flow what to work on.');
-      return;
-    }
-    if (submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const result = await window.overcli.invoke('flows:startRun', {
-        flowId: flow.id,
-        projectPath: targetPath,
-        userPrompt: text,
-        attachments: attachments.length > 0 ? attachments : undefined,
-        runIn: canUseWorktree ? runIn : 'cwd',
-        baseBranch: canUseWorktree && runIn === 'worktree' ? baseBranch : undefined,
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      const run = await window.overcli.invoke('flows:getRun', { runId: result.runId });
-      if (run) applyRunUpdate(run);
-      setDraft(draftKey, '');
-      clearAttachments(draftKey);
-      setActiveRun(result.runId);
-    } finally {
-      setSubmitting(false);
-      setLaunchProgress(targetPath, null);
-    }
-  }
-
-  const targetControl = (
-    <div className="inline-flex items-center gap-1.5 text-[11px] text-ink-muted">
-      <span className="text-ink-faint">in</span>
-      <select
-        value={target}
-        onChange={(e) => {
-          setTarget(e.target.value);
-          // A workspace can't run a worktree until we know its members;
-          // safe to leave runIn — canUseWorktree gates the controls.
-        }}
-        className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-[11px] text-ink max-w-[160px]"
-      >
-        <option value="">Pick a target…</option>
-        {projects.length > 0 && (
-          <optgroup label="Projects">
-            {projects.map((p) => (
-              <option key={`p:${p.id}`} value={`project:${p.path}`}>{p.name}</option>
-            ))}
-          </optgroup>
-        )}
-        {workspaces.length > 0 && (
-          <optgroup label="Workspaces">
-            {workspaces.map((w) => (
-              <option key={`w:${w.id}`} value={`workspace:${w.rootPath}`}>{w.name}</option>
-            ))}
-          </optgroup>
-        )}
-      </select>
-    </div>
-  );
-
-  return (
-    <RunPanel
-      flow={flow}
-      targetLabel={targetLabel}
-      targetControl={targetControl}
-      draftKey={draftKey}
-      rootPath={targetPath}
-      error={error}
-      submitting={submitting}
-      onCancel={onClose}
-      onRun={handleRun}
-      canUseWorktree={canUseWorktree}
-      isWorkspace={targetIsWorkspace}
-      runIn={runIn}
-      onRunIn={setRunIn}
-      baseBranch={baseBranch}
-      onBaseBranch={setBaseBranch}
-      baseBranchRepoPaths={baseBranchRepoPaths}
-      launchProgress={launchProgressMap[targetPath]}
-    />
-  );
-}
-
-function stripTargetPrefix(target: string): string {
-  if (target.startsWith('project:')) return target.slice('project:'.length);
-  if (target.startsWith('workspace:')) return target.slice('workspace:'.length);
-  return '';
 }
 
 function StepChip({ id, model }: { id: string; model: string }) {

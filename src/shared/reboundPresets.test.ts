@@ -93,6 +93,6 @@ describe('resolvePreset with copilot primary', () => {
     expect(resolved!.reviewBackend).toBe('codex');
     expect(resolved!.reviewPersona).toBe('security');
     expect(resolved!.reviewMode).toBe('review');
-    expect(resolved!.reviewModel).toBe('gpt-5.5'); // codex.smart tier
+    expect(resolved!.reviewModel).toBe('gpt-5.6-sol'); // codex.smart tier
   });
 });

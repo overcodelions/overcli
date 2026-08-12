@@ -22,6 +22,8 @@ import {
   MainToRendererEvent,
   AppSettings,
   Attachment,
+  ReviewInfo,
+  RunningConversation,
   UserInputAnswer,
 } from '../shared/types';
 import {
@@ -97,12 +99,205 @@ type Emit = (event: MainToRendererEvent) => void;
 /// success, or a surfaced error string.
 export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
 
+/// Activity label used when a turn has ended but a detached background
+/// agent is still working. Shared between the emit site and the stale-state
+/// sweep, which treats it as a bounded (not indefinite) wait.
+export const AGENT_WORKING_LABEL = 'Agent working…';
+
+/// How long a reviewer ("rebound") turn may run before we cancel it. The
+/// running indicator is pinned on ("Rebounding…") for the whole await, so
+/// a reviewer that never resolves would leave the conversation — and any
+/// flow run that owns it — spinning forever.
+const REVIEWER_TIMEOUT_MS = 10 * 60_000;
+
+/// Grace period before the sweep is willing to believe a conversation
+/// marked running has no transport. Several send paths emit the optimistic
+/// "Thinking…" strip before the subprocess/session is registered.
+const NO_TRANSPORT_GRACE_MS = 60_000;
+
+/// How long an `Agent working…` wait may go without any event before we
+/// conclude the background agent's `completed` notification is never
+/// coming and release the indicator.
+const BACKGROUND_TASK_IDLE_MS = 5 * 60_000;
+
+/// Cadence of the stale-running sweep. Only armed while at least one
+/// conversation is marked running.
+const RECONCILE_INTERVAL_MS = 30_000;
+
+/// Cadence of the idle-session reap. Armed for the manager's whole life —
+/// unlike the running sweep, the states it collects are ones no event will
+/// ever announce (a session goes idle by *stopping* on its own).
+const IDLE_REAP_INTERVAL_MS = 60_000;
+
+/// Fallback idle timeout when settings carry no `idleSessionTimeoutMinutes`
+/// (a store written by an older build). Matches DEFAULT_SETTINGS.
+const DEFAULT_IDLE_TIMEOUT_MIN = 30;
+
+/// Whether an idle backend runtime may be torn down to reclaim its memory.
+///
+/// Every resident session costs its backend's full footprint — for `claude
+/// -p --input-format stream-json` that's the CLI plus one child process per
+/// configured MCP server, held for as long as stdin stays open. Nothing in
+/// the protocol says "I'm done for now", so a conversation the user replied
+/// to once and left alone looks identical to one mid-turn until you check
+/// what it still owes. This is that check.
+///
+/// Reaping is safe precisely because it's invisible: the sessionId is
+/// persisted in the store, so the next send respawns with `--resume` and the
+/// thread continues. The cost is one slower first turn, which is why the
+/// conservative cases below all decline.
+export function shouldReapIdle(args: {
+  /// Whether the backend still owes output for the current turn. Undefined
+  /// for transports that don't track it — treated as "still working".
+  turnInFlight?: boolean;
+  /// A prompt is on screen waiting for the user. Killing the process now
+  /// would strand the dialog and lose the turn.
+  hasPendingPrompts: boolean;
+  /// Whether the next send can pick the thread back up — a sessionId to
+  /// `--resume`, or (codex exec) a transcript we replay ourselves. Without
+  /// one, reaping isn't a memory optimization, it's silent history loss.
+  canResume: boolean;
+  /// Last time anything happened on this conversation.
+  lastActivityAt: number;
+  /// Configured timeout in minutes; 0 (or negative) disables reaping.
+  timeoutMinutes: number;
+  now: number;
+}): boolean {
+  if (args.timeoutMinutes <= 0) return false;
+  if (args.turnInFlight !== false) return false;
+  if (args.hasPendingPrompts) return false;
+  if (!args.canResume) return false;
+  return args.now - args.lastActivityAt >= args.timeoutMinutes * 60_000;
+}
+
+/// Why a conversation's running state can no longer be cleared by an
+/// incoming event, or null if it's a legitimately busy turn. Deliberately
+/// conservative: a long tool call (a test suite, a big build) is silent for
+/// minutes at a time, so silence alone is never enough — we also need to
+/// know that nothing is left to produce the closing event.
+export function staleRunningReason(args: {
+  /// Activity label we last published for the conversation.
+  label?: string;
+  /// When the conversation flipped from idle to running.
+  since: number;
+  /// Last event of any kind seen for the conversation.
+  lastEventAt: number;
+  /// Whether any transport (subprocess, ollama/gemini session, in-flight
+  /// broker prep, or a live reviewer round) could still speak for it.
+  hasTransport: boolean;
+  /// Whether the backend still owes output for this turn. Undefined for
+  /// transports that don't track it (ollama, gemini ACP) — treated as
+  /// "still working", i.e. never stale on this rule alone.
+  turnInFlight?: boolean;
+  /// Whether a reviewer round is actually running right now.
+  reviewerRunning?: boolean;
+  now: number;
+}): string | null {
+  if (!args.hasTransport) {
+    // Grace period: several send paths flip the indicator on before the
+    // subprocess/session lands in its map.
+    if (args.now - args.since < NO_TRANSPORT_GRACE_MS) return null;
+    return 'no live transport for this conversation';
+  }
+  const silentMs = args.now - args.lastEventAt;
+  if (silentMs <= BACKGROUND_TASK_IDLE_MS) return null;
+  if (args.reviewerRunning) return null;
+  // The backend closed out the turn (`result` landed) and no reviewer is
+  // running, so nothing outside this process is going to speak again. What
+  // remains is our own bookkeeping — a wait on a detached agent's
+  // `completed` notification, or a hand-off that lost its release — and it
+  // has been quiet long enough to call it.
+  if (args.turnInFlight === false) {
+    const what = args.label === AGENT_WORKING_LABEL ? 'background agent' : `"${args.label ?? ''}"`;
+    return `turn already ended; ${what} silent for ${Math.round(silentMs / 1000)}s`;
+  }
+  return null;
+}
+
+/// What the runner last told the renderer about a conversation's activity,
+/// plus the timing needed to spot a state that can no longer be cleared by
+/// an incoming event. See `reconcileRunning`.
+interface RunningRecord {
+  label?: string;
+  /// When the conversation first flipped to running (not updated by
+  /// subsequent label changes within the same busy stretch).
+  since: number;
+  /// Last event of any kind we saw for this conversation.
+  lastEventAt: number;
+}
+
+/// True once an AskUserQuestion tool_use's inputJSON actually carries a
+/// non-empty `questions` array. A streaming snapshot or a consolidated
+/// message with omitted input parses to `{}`, which would otherwise pass
+/// the presence check below and end the turn before there's anything for
+/// the question card to render, leaving the UI on its empty-options
+/// fallback until the process is already dead.
+export function askUserQuestionHasData(inputJSON: string): boolean {
+  try {
+    const parsed = JSON.parse(inputJSON);
+    return Array.isArray(parsed?.questions) && parsed.questions.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /// SHA-256 hex of a synthetic collab pingPrompt, used to mark it for
 /// skip-on-replay. Hashing keeps `Conversation.syntheticPrompts` bounded
 /// at 64 chars/entry regardless of prompt size, so a long collab
 /// session can't bloat persisted state.
 function hashSyntheticPrompt(prompt: string): string {
   return createHash('sha256').update(prompt, 'utf8').digest('hex');
+}
+
+/// True when `binary` starts with a `#!` shebang, i.e. it's an
+/// interpreter script (e.g. npm's `#!/usr/bin/env node` codex) rather
+/// than a self-contained native executable. Used to break codex-version
+/// ties toward the native binary, which has no `node`-on-PATH dependency.
+function isShebangScript(binary: string): boolean {
+  try {
+    const fd = fs.openSync(binary, 'r');
+    try {
+      const buf = Buffer.alloc(2);
+      const read = fs.readSync(fd, buf, 0, 2, 0);
+      return read === 2 && buf[0] === 0x23 && buf[1] === 0x21; // "#!"
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+export interface CodexBinaryCaps {
+  hasAppServer: boolean;
+  /// [major, minor, patch]; [-1, -1, -1] when unknown (not probed / unparsable).
+  version: [number, number, number];
+  isScript: boolean;
+}
+
+/// True when candidate `a` should be preferred over `b`: a higher version
+/// wins, and on a version tie a native binary beats a `#!node` script
+/// (which can't run without `node` on PATH). Pure so the selection policy
+/// is unit-testable without spawning real binaries.
+export function codexCandidateBeats(a: CodexBinaryCaps, b: CodexBinaryCaps): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (a.version[i] !== b.version[i]) return a.version[i] > b.version[i];
+  }
+  return !a.isScript && b.isScript;
+}
+
+/// From probed (binary, caps) pairs, pick the best app-server-capable
+/// binary — newest version, native over script on a tie — or null when
+/// none support app-server. Pure: the caller supplies the probed caps.
+export function pickBestCodexCandidate(
+  candidates: Array<{ binary: string; caps: CodexBinaryCaps }>,
+): string | null {
+  let best: { binary: string; caps: CodexBinaryCaps } | null = null;
+  for (const c of candidates) {
+    if (!c.caps.hasAppServer) continue;
+    if (!best || codexCandidateBeats(c.caps, best.caps)) best = c;
+  }
+  return best?.binary ?? null;
 }
 
 /// When a live conversation is torn down to apply changed launch params
@@ -119,6 +314,26 @@ export function resumeSessionAfterParamChange(
   liveSessionId: string | undefined,
 ): string | undefined {
   return callerSessionId || liveSessionId;
+}
+
+/// Whether a closing process may report its conversation idle (running:false).
+/// Only the conversation's CURRENT process may: a superseded one — killed to
+/// apply changed launch params, then draining asynchronously — closes while a
+/// replacement turn is already live on the same conversation, and that turn
+/// owns the running state. Letting the dead process speak for the conversation
+/// makes the flow runtime mistake its close for the new step's finish, which
+/// fails the step off an empty buffer ("produced no <output>") while the real
+/// turn is still working. `claudeSendPending` covers the same hazard one step
+/// earlier, when the replacement Claude send is still preparing its broker and
+/// hasn't registered a process yet. Explicit stop() emits its own
+/// running:false, so staying quiet here never strands the indicator.
+export function shouldSkipIdleOnClose(args: {
+  isCurrent: boolean;
+  backend: Backend;
+  claudeSendPending: boolean;
+}): boolean {
+  if (!args.isCurrent) return true;
+  return args.backend === 'claude' && args.claudeSendPending;
 }
 
 /// True when CLI stderr indicates the cached --resume id no longer exists
@@ -235,6 +450,14 @@ interface ActiveProcess {
   currentUserPrompt: string;
   currentAssistantText: string;
   currentToolActivity: string[];
+  /// Tool_use_ids of background `Agent`/`Workflow` tasks the primary has
+  /// launched this burst that haven't reported `completed` yet. A detached
+  /// agent keeps streaming `taskProgress` out-of-band AFTER the launching
+  /// turn's `result` fires, so a non-empty set at turn end means "primary
+  /// paused waiting on a background agent" — we hold the reviewer/rebound
+  /// until it drains rather than reviewing a half-finished step. Cleared
+  /// per fresh send; drained by `task_notification` (phase 'completed').
+  pendingBackgroundTasks: Set<string>;
   /// Prior turns of (user, assistant) text so the reviewer has the
   /// conversation context, not just the latest exchange. Without this
   /// the reviewer can't tell what e.g. "ok 2" is answering. Pushed at
@@ -294,6 +517,16 @@ interface ActiveProcess {
   /// exit handler reads this so failure messages surface the CLI's real
   /// complaint instead of "Run the CLI manually for details."
   recentStderr: string;
+  /// Whether the backend still owes us output for the current turn. Set at
+  /// each send, cleared when its `result` event lands. Once it's false the
+  /// only thing keeping the running indicator on is our own bookkeeping
+  /// (a rebound await, a background-agent wait), so the stale-state sweep
+  /// can safely retract an indicator that's been silent since.
+  turnInFlight?: boolean;
+  /// Last time this conversation did anything — spawned, sent, or produced
+  /// output. The idle reap measures its silence from here. See
+  /// `shouldReapIdle`.
+  lastActivityAt: number;
 }
 
 interface GeminiAcpSession {
@@ -307,6 +540,9 @@ interface GeminiAcpSession {
   /// the streaming snapshot and confuse the UI).
   queuedPrompt?: { args: SendArgs; syntheticFromCollab: boolean };
   closing: boolean;
+  /// Last time this session did anything. Same role as `ActiveProcess.
+  /// lastActivityAt` — the gemini ACP client is a resident subprocess too.
+  lastActivityAt: number;
   stderrBuffer: string;
   currentModelId: string;
   currentModeId: string;
@@ -385,7 +621,7 @@ export class RunnerManager {
   private emit: Emit;
   private settingsProvider: () => AppSettings;
   private reviewer: ReviewerManager;
-  private codexCapabilities = new Map<string, { hasAppServer: boolean }>();
+  private codexCapabilities = new Map<string, CodexBinaryCaps>();
   /// codex exec has no --resume: every turn spawns a fresh session that
   /// knows nothing about prior exchanges. The exec fallback (used for
   /// pre-0.30 codex binaries that lack app-server) stitches context back
@@ -434,6 +670,16 @@ export class RunnerManager {
     }
   >();
 
+  /// What we last told the renderer about each busy conversation. The
+  /// running indicator is edge-triggered (`running: true` … `running:
+  /// false`), so any path that turns it on and then fails to turn it off
+  /// pins a spinner for the rest of the session. This map is the single
+  /// record of those edges; `reconcileRunning` sweeps it for states that
+  /// no incoming event can ever clear.
+  private runningConvs = new Map<UUID, RunningRecord>();
+  private reconcileTimer: NodeJS.Timeout | null = null;
+  private idleReapTimer: NodeJS.Timeout | null = null;
+
   constructor(emit: Emit, settingsProvider: () => AppSettings) {
     // Tee every emitted event through the one-shot tap before it reaches
     // the renderer. For a tracked one-shot conversation the tap consumes
@@ -442,11 +688,247 @@ export class RunnerManager {
     // state or fire completion notifications. A no-op for normal convs.
     this.emit = (event) => {
       if (this.tapOneShot(event)) return;
+      this.trackRunning(event);
       emit(event);
     };
     this.settingsProvider = settingsProvider;
     this.reviewer = new ReviewerManager(emit);
     this.claudeBroker = new ClaudePermissionBroker((req) => this.handleClaudeApproval(req));
+    // Unlike the running sweep, this one is armed for the manager's whole
+    // life: an idle session produces no event to arm it on.
+    this.idleReapTimer = setInterval(() => this.reapIdleSessions(), IDLE_REAP_INTERVAL_MS);
+    this.idleReapTimer.unref?.();
+  }
+
+  /// Conversations main currently believes are busy. The renderer
+  /// reconciles its own per-conversation flags against this so a `running`
+  /// event lost in transit (or a spinner left over from a state main has
+  /// since abandoned) self-heals instead of spinning until the next reload.
+  runningSnapshot(): RunningConversation[] {
+    this.reconcileRunning();
+    return Array.from(this.runningConvs.entries()).map(([conversationId, rec]) => ({
+      conversationId,
+      activityLabel: rec.label,
+    }));
+  }
+
+  /// Fold an outgoing event into `runningConvs`. Every event carrying a
+  /// conversation id counts as liveness for that conversation — the sweep
+  /// uses the gap since the last one to tell a working turn from a wait
+  /// that will never end.
+  private trackRunning(event: MainToRendererEvent): void {
+    const convId = 'conversationId' in event ? (event.conversationId as UUID) : null;
+    if (!convId) return;
+    const now = Date.now();
+    // Every event is also liveness for the idle reap. Stamping here rather
+    // than at each parse site means a transport can't drift into "idle"
+    // while it's visibly producing output.
+    this.touchActivity(convId, now);
+    if (event.type === 'running') {
+      if (!event.isRunning) {
+        this.runningConvs.delete(convId);
+        if (this.runningConvs.size === 0) this.stopReconcileTimer();
+        return;
+      }
+      const prev = this.runningConvs.get(convId);
+      this.runningConvs.set(convId, {
+        label: event.activityLabel,
+        since: prev?.since ?? now,
+        lastEventAt: now,
+      });
+      this.ensureReconcileTimer();
+      return;
+    }
+    const rec = this.runningConvs.get(convId);
+    if (rec) rec.lastEventAt = now;
+  }
+
+  /// Whether any runtime for this conversation still owes work — a turn
+  /// mid-flight, a prompt waiting on the user, a queued follow-up. The
+  /// conservative reading: a transport that doesn't report turn state
+  /// counts as busy.
+  private hasWorkInFlight(conversationId: UUID): boolean {
+    const active = this.procs.get(conversationId);
+    if (active) {
+      if (active.turnInFlight !== false) return true;
+      if (
+        active.pendingPermissions.size > 0 ||
+        active.pendingCodexApprovals.size > 0 ||
+        active.pendingUserInputs.size > 0
+      ) {
+        return true;
+      }
+    }
+    const gemini = this.geminiAcpSessions.get(conversationId);
+    if (gemini && (gemini.promptInFlight || gemini.queuedPrompt || gemini.pendingPermissions.size > 0)) {
+      return true;
+    }
+    if (this.ollamaSessions.get(conversationId)?.inFlight) return true;
+    return this.reviewer.isRunning(conversationId);
+  }
+
+  /// Mark a conversation as having just done something, for the idle reap.
+  private touchActivity(convId: UUID, now = Date.now()): void {
+    const proc = this.procs.get(convId);
+    if (proc) proc.lastActivityAt = now;
+    const gemini = this.geminiAcpSessions.get(convId);
+    if (gemini) gemini.lastActivityAt = now;
+  }
+
+  /// Tear down every backend runtime that has been idle past the configured
+  /// timeout. Returns the conversation ids reaped (for tests and logging).
+  ///
+  /// These sessions are not "leaked" in the usual sense — the maps are
+  /// correct, every entry has a real process behind it. They're parked: a
+  /// finished turn holding a full CLI + MCP-server footprint against the
+  /// possibility of a follow-up that may never come. Since `--resume` makes
+  /// the respawn transparent, holding them is a bet we should only take for
+  /// a bounded time.
+  reapIdleSessions(now = Date.now()): UUID[] {
+    const timeoutMinutes = this.settingsProvider().idleSessionTimeoutMinutes ?? DEFAULT_IDLE_TIMEOUT_MIN;
+    if (timeoutMinutes <= 0) return [];
+    const reaped: UUID[] = [];
+    for (const [convId, active] of Array.from(this.procs)) {
+      const hasPendingPrompts =
+        active.pendingPermissions.size > 0 ||
+        active.pendingCodexApprovals.size > 0 ||
+        active.pendingUserInputs.size > 0;
+      // codex exec has no --resume; the runner replays the accumulated
+      // transcript instead, and that lives on the manager (not the proc),
+      // so it survives the teardown.
+      const codexExec = active.backend === 'codex' && active.codexMode === 'exec';
+      if (
+        !shouldReapIdle({
+          turnInFlight: active.turnInFlight,
+          hasPendingPrompts,
+          canResume: !!active.sessionId || codexExec,
+          lastActivityAt: active.lastActivityAt,
+          timeoutMinutes,
+          now,
+        })
+      ) {
+        continue;
+      }
+      log(
+        'info',
+        'runner.reapIdle',
+        `${active.backend} conv=${convId} idle ${Math.round((now - active.lastActivityAt) / 60_000)}m — releasing; next send resumes session ${active.sessionId ?? '(none)'}`,
+      );
+      this.killProc(convId);
+      reaped.push(convId);
+    }
+    for (const [convId, session] of Array.from(this.geminiAcpSessions)) {
+      if (
+        !shouldReapIdle({
+          // Gemini ACP has no `result` event to clear a turn on;
+          // `promptInFlight` carries the same meaning and polarity.
+          turnInFlight: session.promptInFlight,
+          hasPendingPrompts: session.pendingPermissions.size > 0 || !!session.queuedPrompt,
+          canResume: !!session.sessionId,
+          lastActivityAt: session.lastActivityAt,
+          timeoutMinutes,
+          now,
+        })
+      ) {
+        continue;
+      }
+      log(
+        'info',
+        'runner.reapIdle',
+        `gemini conv=${convId} idle ${Math.round((now - session.lastActivityAt) / 60_000)}m — releasing`,
+      );
+      this.killGeminiAcp(convId);
+      reaped.push(convId);
+    }
+    return reaped;
+  }
+
+  private ensureReconcileTimer(): void {
+    if (this.reconcileTimer) return;
+    this.reconcileTimer = setInterval(() => this.reconcileRunning(), RECONCILE_INTERVAL_MS);
+    this.reconcileTimer.unref?.();
+  }
+
+  private stopReconcileTimer(): void {
+    if (!this.reconcileTimer) return;
+    clearInterval(this.reconcileTimer);
+    this.reconcileTimer = null;
+  }
+
+  /// Retract running states that can no longer be cleared by an incoming
+  /// event: the conversation has no transport left to speak through, or
+  /// it's parked waiting on a background agent whose completion signal
+  /// never arrived. Emitting `running: false` here goes through the normal
+  /// emit path, so the renderer, the flow runtime, and this map all settle
+  /// together.
+  reconcileRunning(now = Date.now()): void {
+    for (const [convId, rec] of Array.from(this.runningConvs)) {
+      const reason = this.staleRunningReason(convId, rec, now);
+      if (!reason) continue;
+      log(
+        'warn',
+        'runner.reconcileRunning',
+        `clearing stale running state for conv=${convId} (${reason})`,
+      );
+      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+    }
+    if (this.runningConvs.size === 0) this.stopReconcileTimer();
+  }
+
+  private staleRunningReason(convId: UUID, rec: RunningRecord, now: number): string | null {
+    const proc = this.procs.get(convId);
+    const reviewerRunning = this.reviewer.isRunning(convId);
+    return staleRunningReason({
+      ...rec,
+      now,
+      hasTransport:
+        !!proc ||
+        this.ollamaSessions.has(convId) ||
+        this.geminiAcpSessions.has(convId) ||
+        this.claudeSendPending.has(convId) ||
+        reviewerRunning,
+      turnInFlight: proc?.turnInFlight,
+      reviewerRunning,
+    });
+  }
+
+  /// `reviewer.run` with a hard ceiling. Every caller pins the running
+  /// indicator on ("Rebounding…") for the duration and only releases it in
+  /// its `finally`, so an await that never settles is indistinguishable
+  /// from a conversation that never stops working. On timeout we cancel
+  /// the reviewer — which also settles the underlying promise — and hand
+  /// back an errored result, which every caller already treats as "no
+  /// usable feedback, stop here".
+  private async runReviewer(
+    args: Parameters<ReviewerManager['run']>[0],
+  ): Promise<ReviewInfo> {
+    const startedAt = Date.now();
+    let timer: NodeJS.Timeout | undefined;
+    const expiry = new Promise<ReviewInfo>((resolve) => {
+      timer = setTimeout(() => {
+        log(
+          'warn',
+          'runner.reviewerTimeout',
+          `reviewer (${args.reviewBackend}) for conv=${args.conversationId} exceeded ` +
+            `${Math.round(REVIEWER_TIMEOUT_MS / 1000)}s — cancelling`,
+        );
+        this.reviewer.stop(args.conversationId);
+        resolve({
+          backend: args.reviewBackend,
+          text: '',
+          isRunning: false,
+          error: 'Reviewer timed out.',
+          startedAt,
+          round: 0,
+          mode: args.reviewMode ?? 'review',
+        });
+      }, REVIEWER_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([this.reviewer.run(args), expiry]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /// Run a single headless turn against any backend and resolve with the
@@ -763,6 +1245,9 @@ export class RunnerManager {
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
+      active.pendingBackgroundTasks.clear();
+      active.turnInFlight = true;
+      active.lastActivityAt = Date.now();
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
       active.reviewModel = args.reviewModel ?? null;
@@ -793,6 +1278,7 @@ export class RunnerManager {
     const active: ActiveProcess = {
       proc: undefined,
       backend: 'claude',
+      lastActivityAt: Date.now(),
       sessionId: args.sessionId,
       launchModel: args.model,
       launchPermissionMode: args.permissionMode,
@@ -805,6 +1291,7 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      pendingBackgroundTasks: new Set(),
       priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
@@ -850,18 +1337,32 @@ export class RunnerManager {
         conversationId: convId,
         message: `Claude SDK error: ${err.message}`,
       });
-      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      // Only the conversation's current client may report it idle — a
+      // superseded client's late error must not stop a turn that has since
+      // started on the same conversation (see the close handler below).
+      if (this.procs.get(convId) === active) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
     });
     client.on('close', () => {
       // The SDK consumer loop exited (either close() called or query()
       // finished). Tear down the active record so the next send creates
       // a fresh client; the session id we captured earlier still lets
       // the next query() resume the conversation.
-      if (this.procs.get(convId) === active) {
+      const isCurrent = this.procs.get(convId) === active;
+      if (isCurrent) {
         this.procs.delete(convId);
         this.reviewer.dispose(convId);
       }
-      this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      // Same rule as handleActiveClose: a superseded client (killProc →
+      // respawn on a model/permission change) drains asynchronously, and by
+      // the time its close lands a replacement turn may already be live on
+      // this conversation. Reporting idle would yank the running state out
+      // from under that turn — and a flow step running on this conversation
+      // would be finished off an empty buffer.
+      if (isCurrent) {
+        this.emit({ type: 'running', conversationId: convId, isRunning: false });
+      }
     });
     return active;
   }
@@ -1039,6 +1540,37 @@ export class RunnerManager {
     this.codexExecTranscriptByConversation.delete(conversationId);
   }
 
+  /// Release every runtime holding a conversation that's going away
+  /// (deleted) or being parked (archived).
+  ///
+  /// The UI's existing teardown is `stop()`, but it's only offered for a
+  /// *running* conversation — a finished turn leaves a resident CLI with all
+  /// its MCP servers loaded and no running indicator to hang a Stop button
+  /// on. Deleting the row from the store used to leave that process behind
+  /// with nothing left referencing it, so it survived until quit.
+  ///
+  /// Identical teardown to `newConversation` today; kept separate because
+  /// the intents diverge (one keeps the row and wants a fresh session, the
+  /// other is disposing of the conversation entirely).
+  ///
+  /// `onlyIfIdle` is the archive path: the UI tells the user "archiving is
+  /// safe" next to a running session, so archiving must never cut a turn
+  /// short. Delete passes it off — the user confirmed the destruction.
+  release(conversationId: UUID, opts: { onlyIfIdle?: boolean } = {}): void {
+    if (opts.onlyIfIdle && this.hasWorkInFlight(conversationId)) return;
+    this.killProc(conversationId);
+    this.killOllama(conversationId);
+    this.killGeminiAcp(conversationId);
+    this.reviewer.dispose(conversationId);
+    this.codexExecTranscriptByConversation.delete(conversationId);
+    this.claudeSdkFallbackConvs.delete(conversationId);
+    // Drop any running record too: no transport is left to emit the
+    // `running: false` that would normally clear it, and the reconcile
+    // sweep only runs while something is marked running.
+    this.runningConvs.delete(conversationId);
+    if (this.runningConvs.size === 0) this.stopReconcileTimer();
+  }
+
   respondPermission(
     conversationId: UUID,
     requestId: string,
@@ -1160,6 +1692,11 @@ export class RunnerManager {
     for (const id of Array.from(this.ollamaSessions.keys())) this.killOllama(id);
     for (const id of Array.from(this.geminiAcpSessions.keys())) this.killGeminiAcp(id);
     this.claudeBroker.shutdown();
+    this.stopReconcileTimer();
+    // The idle-reap timer deliberately survives: on macOS `killAll` also
+    // fires on `window-all-closed`, and the app can be reopened from the
+    // dock into the same manager. It's unref'd, so it never holds the
+    // process open on its own.
   }
 
   // --- Internals ---
@@ -1268,6 +1805,9 @@ export class RunnerManager {
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
+      active.pendingBackgroundTasks.clear();
+      active.turnInFlight = true;
+      active.lastActivityAt = Date.now();
       active.reviewBackend = (args.reviewBackend as Backend | null) ?? null;
       active.reviewMode = args.reviewMode ?? null;
       active.reviewModel = args.reviewModel ?? null;
@@ -1683,7 +2223,7 @@ export class RunnerManager {
       return;
     }
 
-    const result = await this.reviewer.run({
+    const result = await this.runReviewer({
       conversationId: convId,
       reviewBackend,
       reviewMode: params.reviewMode,
@@ -1930,6 +2470,7 @@ export class RunnerManager {
       next.initialized = false;
       next.promptInFlight = false;
       next.closing = false;
+      next.lastActivityAt = Date.now();
       next.stderrBuffer = '';
       next.currentModelId = '';
       next.currentModeId = '';
@@ -2302,7 +2843,7 @@ export class RunnerManager {
       return;
     }
 
-    const result = await this.reviewer.run({
+    const result = await this.runReviewer({
       conversationId: convId,
       reviewBackend: session.reviewBackend,
       reviewMode: session.reviewMode,
@@ -2395,6 +2936,28 @@ export class RunnerManager {
       return this.spawnCodexAppServer(args, binary, env, codexPerms);
     }
     const spawnArgs = this.buildArgs(args, codexMode);
+    // An empty model means `buildArgs` drops `--model` and the CLI silently
+    // picks its own default — the user ends up on a model they didn't choose
+    // while the header still shows the one they did. Callers are expected to
+    // resolve a concrete id (flow steps carry their participant's model; chat
+    // falls back to the configured default), so blank here is a bug upstream.
+    // Warn rather than substitute: guessing a model would hide the defect the
+    // same way the CLI's default did.
+    // Copilot rides the prompt in argv (claude/codex/gemini use stdin), so the
+    // raw text would otherwise land in session.log on disk. Redact it, and cap
+    // any other long arg, so this line stays a diagnostic and not a transcript.
+    const safeArgs = spawnArgs.map((a) =>
+      args.prompt && a === args.prompt
+        ? '<prompt redacted>'
+        : a.length > 120
+          ? `${a.slice(0, 120)}…`
+          : a,
+    );
+    log(
+      args.model ? 'info' : 'warn',
+      'runner.spawn',
+      `${args.backend} conv=${args.conversationId} model=${args.model || '(unset — CLI will pick its own default)'} :: ${binary} ${safeArgs.join(' ')}`,
+    );
     const shell = backendNeedsShell(binary);
     const proc = spawn(binary, spawnArgs, {
       cwd: args.cwd,
@@ -2418,6 +2981,7 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      pendingBackgroundTasks: new Set(),
       priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
@@ -2432,6 +2996,7 @@ export class RunnerManager {
       cwd: args.cwd,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
+      lastActivityAt: Date.now(),
       parserState: getBackendSpec(args.backend).makeParserState?.({ codexMode }),
     };
     this.procs.set(args.conversationId, active);
@@ -2517,6 +3082,7 @@ export class RunnerManager {
           active.pendingCodexApprovals.set(e.kind.info.callId, () => {});
         } else if (e.kind.type === 'result') {
           turnEnded = true;
+          active.turnInFlight = false;
         } else if (e.kind.type === 'assistant') {
           if (e.kind.info.text && e.kind.info.text.length > active.currentAssistantText.length) {
             active.currentAssistantText = e.kind.info.text;
@@ -2536,6 +3102,16 @@ export class RunnerManager {
           else if (e.kind.info.text.length > 0 || e.kind.info.thinking.length > 0) nextActivity = 'Writing…';
         } else if (e.kind.type === 'toolResult' || e.kind.type === 'patchApply') {
           nextActivity = 'Reading tool output…';
+        } else if (e.kind.type === 'taskProgress') {
+          // Track detached background agents/workflows so the reviewer
+          // doesn't fire while one is still working. `started`/`progress`
+          // mark it in-flight; `completed` (from task_notification) drains
+          // it. See pendingBackgroundTasks + the turnEnded gate below.
+          const { toolUseId, phase } = e.kind.info;
+          if (toolUseId) {
+            if (phase === 'completed') active.pendingBackgroundTasks.delete(toolUseId);
+            else active.pendingBackgroundTasks.add(toolUseId);
+          }
         }
       }
       this.emit({ type: 'stream', conversationId: convId, events: emitted });
@@ -2549,10 +3125,25 @@ export class RunnerManager {
       const asksQuestion = emitted.some(
         (e) =>
           e.kind.type === 'assistant' &&
-          e.kind.info.toolUses.some((t) => t.name === 'AskUserQuestion'),
+          e.kind.info.toolUses.some(
+            (t) => t.name === 'AskUserQuestion' && askUserQuestionHasData(t.inputJSON),
+          ),
       );
 
-      if (turnEnded) {
+      if (turnEnded && active.pendingBackgroundTasks.size > 0) {
+        // The primary ended its turn but launched a background agent that's
+        // still working (e.g. "I'll wait for the Explore agent to complete
+        // and then produce the plan"). Firing the rebound now would review a
+        // half-finished step. Hold it: when the agent completes, Claude
+        // auto-continues into a follow-up turn whose `result` fires the
+        // reviewer with the pending set drained.
+        this.emit({
+          type: 'running',
+          conversationId: convId,
+          isRunning: true,
+          activityLabel: AGENT_WORKING_LABEL,
+        });
+      } else if (turnEnded) {
         if (active.reviewBackend) {
           this.emit({
             type: 'running',
@@ -2588,19 +3179,25 @@ export class RunnerManager {
   }
 
   private handleActiveClose(conversationId: UUID, active: ActiveProcess, code: number | null): void {
-    if (this.procs.get(conversationId) === active) {
+    // A superseded proc (param change / quick resend spawned a replacement)
+    // can fire its async 'close' AFTER the new proc registered a fresh broker
+    // session + temp mcp-config for the same conversation. Only tear down
+    // broker/mcp state when THIS close belongs to the current proc — otherwise
+    // we'd unlink the live proc's --mcp-config file out from under it, and it
+    // dies with "MCP config file not found".
+    const isCurrent = this.procs.get(conversationId) === active;
+    if (isCurrent) {
       this.procs.delete(conversationId);
     }
-    if (active.backend === 'claude') {
+    if (active.backend === 'claude' && isCurrent) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
     }
-    // Skip the running:false emit only when a fresh Claude send is
-    // mid-flight on this same conversation AND the closing proc was the
-    // previous Claude turn. The flag is Claude-specific (codex/gemini
-    // don't use it), so closes from other backends always emit normally.
-    const skipRunningFalse =
-      active.backend === 'claude' && this.claudeSendPending.has(conversationId);
+    const skipRunningFalse = shouldSkipIdleOnClose({
+      isCurrent,
+      backend: active.backend,
+      claudeSendPending: this.claudeSendPending.has(conversationId),
+    });
     // Codex exec close fires the reviewer right below for code===0 — keep
     // the running indicator on (as "Rebounding…") so the sidebar doesn't
     // flicker idle between primary close and reviewer launch.
@@ -2819,6 +3416,11 @@ export class RunnerManager {
 
   private nextCodexFallbackModel(model: string): string | null {
     const m = (model || '').trim().toLowerCase();
+    // GPT-5.6 (sol/terra/luna) may not be enabled on every account yet;
+    // fall back to the equivalent-tier 5.5/5.4 model when it's rejected.
+    if (m === 'gpt-5.6-sol') return 'gpt-5.5';
+    if (m === 'gpt-5.6-terra') return 'gpt-5.5';
+    if (m === 'gpt-5.6-luna') return 'gpt-5.4-mini';
     if (m === 'gpt-5.5-mini') return 'gpt-5.4-mini';
     if (m === 'gpt-5.4-mini') return 'gpt-5.4';
     return null;
@@ -2870,29 +3472,33 @@ export class RunnerManager {
   /// builds (e.g. homebrew 0.29) only have `exec`, which fails outside a
   /// trusted git repo. When multiple codex binaries are installed (common
   /// when `npm i -g @openai/codex` lands a fresh one alongside a stale
-  /// homebrew install), PATH order alone can pick the older one. Walk
-  /// every visible candidate and return the first that supports
-  /// app-server; null falls back to the default first-match resolver.
+  /// homebrew install), PATH order alone can pick the older one. Probe
+  /// every visible candidate and return the *newest* app-server-capable
+  /// one — first-match would let a stale-but-app-server binary earlier on
+  /// PATH win over a newer install. On a version tie, prefer a native
+  /// binary over a `#!/usr/bin/env node` script: the script only runs when
+  /// `node` is itself resolvable, so it fails (exit 127) under a bare
+  /// launchd PATH. null falls back to the default first-match resolver.
   private pickCodexBinary(): string | null {
     const env = buildBackendEnv(process.env);
-    for (const candidate of listBackendPathCandidates('codex', env)) {
-      if (this.detectCodexCapabilities(candidate, env).hasAppServer) {
-        return candidate;
-      }
-    }
-    return null;
+    return pickBestCodexCandidate(
+      listBackendPathCandidates('codex', env).map((binary) => ({
+        binary,
+        caps: this.detectCodexCapabilities(binary, env),
+      })),
+    );
   }
 
-  private detectCodexCapabilities(
-    binary: string,
-    env: NodeJS.ProcessEnv,
-  ): { hasAppServer: boolean } {
+  private detectCodexCapabilities(binary: string, env: NodeJS.ProcessEnv): CodexBinaryCaps {
     const cached = this.codexCapabilities.get(binary);
     if (cached) return cached;
     const shell = backendNeedsShell(binary);
+    // Cold node-shebang scripts spawn a child interpreter; give the probe
+    // headroom over a warm run (~0.1s) so a slow disk doesn't misreport a
+    // capable binary as exec-only.
     const help = spawnSync(binary, ['--help'], {
       encoding: 'utf-8',
-      timeout: 3000,
+      timeout: 5000,
       env,
       shell,
     });
@@ -2900,9 +3506,31 @@ export class RunnerManager {
     // app-server arrived in codex 0.30+ (still marked experimental). Older
     // binaries fall back to the `exec --json` one-shot path.
     const hasAppServer = /^\s*app-server\s+/m.test(helpText);
-    const caps = { hasAppServer };
+    // Only app-server-capable candidates compete on version, so skip the
+    // extra `--version` spawn for the rest.
+    const version = hasAppServer
+      ? this.probeCodexVersion(binary, env, shell)
+      : ([-1, -1, -1] as [number, number, number]);
+    const caps = { hasAppServer, version, isScript: isShebangScript(binary) };
     this.codexCapabilities.set(binary, caps);
     return caps;
+  }
+
+  private probeCodexVersion(
+    binary: string,
+    env: NodeJS.ProcessEnv,
+    shell: boolean,
+  ): [number, number, number] {
+    const res = spawnSync(binary, ['--version'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+      env,
+      shell,
+    });
+    const text = `${res.stdout ?? ''}\n${res.stderr ?? ''}`;
+    const m = text.match(/(\d+)\.(\d+)\.(\d+)/);
+    if (!m) return [-1, -1, -1];
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
   }
 
   private pickCodexMode(
@@ -2932,6 +3560,7 @@ export class RunnerManager {
     const active: ActiveProcess = {
       proc: undefined,
       backend: args.backend,
+      lastActivityAt: Date.now(),
       sessionId: args.sessionId,
       launchModel: args.model,
       launchPermissionMode: args.permissionMode,
@@ -2947,6 +3576,7 @@ export class RunnerManager {
       currentUserPrompt: args.prompt,
       currentAssistantText: '',
       currentToolActivity: [],
+      pendingBackgroundTasks: new Set(),
       priorTurns: [],
       reviewBackend: (args.reviewBackend as Backend | null) ?? null,
       reviewMode: args.reviewMode ?? null,
@@ -3148,7 +3778,7 @@ export class RunnerManager {
       return;
     }
 
-    const result = await this.reviewer.run({
+    const result = await this.runReviewer({
       conversationId: convId,
       reviewBackend: active.reviewBackend,
       reviewMode: active.reviewMode,
@@ -3250,6 +3880,8 @@ export class RunnerManager {
       active.currentUserPrompt = pingPrompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
+      active.pendingBackgroundTasks.clear();
+      active.turnInFlight = true;
       this.emit({
         type: 'running',
         conversationId: convId,

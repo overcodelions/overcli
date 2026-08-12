@@ -4,16 +4,32 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
-import { app, BrowserWindow, dialog, ipcMain, shell, Menu, nativeTheme } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  session,
+  shell,
+  Menu,
+  nativeTheme,
+  Notification,
+} from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { Store } from './store';
+import { Store, flushStoreSync } from './store';
 import { RunnerManager } from './runner';
+import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
-import { probeBackendHealth, listInstalledReviewers, resolveBackendPath } from './health';
+import {
+  probeBackendHealth,
+  invalidateHealthCache,
+  listInstalledReviewers,
+  resolveBackendPath,
+} from './health';
 import { primeBackendUpdates } from './backendUpdater';
 import {
   runGit,
@@ -31,13 +47,22 @@ import {
   pushBranch,
   openPR,
   worktreeStatus,
+  worktreeDiff,
   rescueMainTree,
   commitStatus,
+  worktreeChanges,
+  resolveDiffBase,
   currentBranch,
+  restoreFileToHead,
   workspaceCommitStatus,
   commitAll,
   workspaceCommitAll,
 } from './git';
+import {
+  scanWorktrees,
+  sweepWorktrees,
+  conversationWorktreeStates,
+} from './worktreeSweep';
 import { computeStats } from './stats';
 import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
@@ -48,6 +73,21 @@ import {
 } from './mcpCatalog';
 import { loginCodexMcp } from './mcpLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
+import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
+import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
+import {
+  closeAllTreeWatchers,
+  noteRelistCost,
+  unwatchTree,
+  watchTree,
+} from './fileTreeWatch';
+import { readHtmlPreviewAssets } from './htmlPreviewAssets';
+import { buildReactPreviewBundle } from './reactPreviewBundle';
+import {
+  handlePreviewProtocol,
+  publishPreviewDocument,
+  registerPreviewScheme,
+} from './previewProtocol';
 import {
   listMarketplaceSkills,
   installMarketplaceSkill,
@@ -66,10 +106,12 @@ import {
 import { deleteOllamaSession } from './ollamaStore';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
+import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
+import { SchedulerEngine } from './flows/scheduler';
 import { flushRuns } from './flows/runsStore';
 import {
   listRecentPrompts,
@@ -87,7 +129,7 @@ import {
   rebindCoordinatorRootToProjects,
   removeCoordinatorSymlinkRoot,
 } from './workspace';
-import { openTerminalAt, runInTerminal } from './terminal';
+import { openTerminalAt, openTerminalIn, runInTerminal } from './terminal';
 import {
   ArtifactPreviewResult,
   Backend,
@@ -119,6 +161,8 @@ let runner: RunnerManager | null = null;
 // already load flows and build them without a crash on Run.
 let flowRuntime: FlowRuntime | null = null;
 let orchestrator: OrchestratorImpl | null = null;
+let scheduler: SchedulerEngine | null = null;
+let symbolLookup: SymbolLookupManager | null = null;
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -183,6 +227,28 @@ function emitToRenderer(event: MainToRendererEvent): void {
   }
 }
 
+/// Native OS notification. The only way a scheduled run reaches the user when
+/// the window is behind everything else or they've walked away — which is the
+/// normal case for scheduled work, not the exception. Best-effort: a Linux box
+/// with no notification daemon just gets nothing, which must not take the
+/// scheduler down with it.
+function showDesktopNotification(args: { title: string; body: string }): void {
+  try {
+    if (!Notification.isSupported()) return;
+    const n = new Notification({ title: args.title, body: args.body });
+    n.on('click', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+    n.show();
+  } catch (err) {
+    log('warn', 'schedules', `Notification failed: ${String(err)}`);
+  }
+}
+
 function registerIpc(): void {
   // The flow runtime needs to tap every stream event the runner emits so
   // it can detect step completion + accumulate assistant text for artifact
@@ -211,23 +277,80 @@ function registerIpc(): void {
     () => Store.load().projects,
     () => Store.load().settings,
   );
-  flowRuntime.setRunObserver((run) => orchestrator?.onRunUpdate(run));
+  // The scheduler is the other thing that launches runs nobody is watching.
+  // It borrows the orchestrator for `orchestrate` targets, which is why it's
+  // built after it.
+  scheduler = new SchedulerEngine({
+    launcher: flowRuntime,
+    parker: orchestrator,
+    isGitRepo: (projectPath) => currentBranch(projectPath).isRepo,
+    emit: flowAwareEmit,
+    notify: showDesktopNotification,
+  });
+  // One observer slot on the runtime, two consumers. The orchestrator pumps
+  // its queue on a terminal child run; the scheduler clears its overlap guard
+  // and notifies. Each ignores runs it didn't launch, so the fan-out is free.
+  flowRuntime.setRunObserver((run) => {
+    orchestrator?.onRunUpdate(run);
+    scheduler?.onRunUpdate(run);
+  });
+  scheduler.start();
+  // Symbol lookup resolves its backend per call rather than capturing one:
+  // the user can change the preferred backend in Settings mid-session, and
+  // a lookup is short-lived enough that there's nothing to migrate.
+  symbolLookup = new SymbolLookupManager({
+    backendFor: () => {
+      const settings = Store.load().settings;
+      // Only these three take a stdin prompt and a `-m/--model` override
+      // (see buildLookupArgs). Copilot wants its prompt in argv; ollama
+      // isn't a subprocess at all.
+      const supported: Backend[] = ['claude', 'codex', 'gemini'];
+      const preferred = settings.preferredBackend;
+      const order =
+        preferred && supported.includes(preferred)
+          ? [preferred, ...supported.filter((b) => b !== preferred)]
+          : supported;
+      for (const backend of order) {
+        if (settings.disabledBackends?.[backend]) continue;
+        const binary = resolveBackendPath(backend, settings.backendPaths[backend]);
+        if (binary) return { backend, binary };
+      }
+      return { backend: preferred ?? 'claude', binary: null };
+    },
+  });
 
-  ipcMain.handle('store:load', () => Store.load());
+  ipcMain.handle('store:load', async () => {
+    const state = Store.load();
+    // Restored editor tabs are checked against disk once, here, so the
+    // renderer never hydrates a strip of tabs for files that are gone.
+    await Store.pruneFileTabs();
+    return state;
+  });
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
+  ipcMain.handle('store:patchConversation', (_e, { id, patch }) =>
+    Store.patchConversation(id, patch),
+  );
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     Store.saveSettings(settings);
     refreshUpdateChannel();
   });
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
+  ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
+  ipcMain.handle('store:saveFileTabs', (_e, tabs) => Store.saveFileTabs(tabs));
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
+  ipcMain.handle('app:whatsNew', () => getWhatsNew());
+  ipcMain.handle('app:markWhatsNewSeen', () => markWhatsNewSeen());
+  ipcMain.handle('app:version', () => app.getVersion());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
   ipcMain.handle('runner:newConversation', (_e, { conversationId }) =>
     runner!.newConversation(conversationId),
+  );
+  ipcMain.handle('runner:release', (_e, { conversationId, onlyIfIdle }) =>
+    runner!.release(conversationId, { onlyIfIdle }),
   );
   ipcMain.handle(
     'runner:respondPermission',
@@ -242,12 +365,18 @@ function registerIpc(): void {
   ipcMain.handle('runner:respondUserInput', (_e, { conversationId, requestId, answers }) =>
     runner!.respondUserInput(conversationId, requestId, answers),
   );
+  ipcMain.handle('runner:runningSnapshot', () => runner?.runningSnapshot() ?? []);
   ipcMain.handle('runner:loadHistory', (_e, args) => loadHistory(args));
   ipcMain.handle('runner:probeHealth', (_e, backend: Backend) => {
     const settings = Store.load().settings;
     return probeBackendHealth(backend, settings.backendPaths[backend]);
   });
   ipcMain.handle('runner:listInstalledReviewers', () => listInstalledReviewers());
+  // Drop the probe cache so the next refresh re-executes the CLIs. The
+  // sign-in banner polls through this while the user finishes an OAuth
+  // round-trip in Terminal, where a cached "unauthenticated" would leave the
+  // badge stale for up to the TTL.
+  ipcMain.handle('health:invalidate', () => invalidateHealthCache());
   ipcMain.handle('capabilities:scan', () => scanCapabilities());
   ipcMain.handle('skills:listMarketplace', () => listMarketplaceSkills());
   ipcMain.handle('skills:installMarketplace', (_e, { skillId, targets }) =>
@@ -357,12 +486,28 @@ function registerIpc(): void {
   ipcMain.handle('fs:readArtifactPreview', async (_e, args: { path: string; rootPath?: string }) =>
     readArtifactPreview(args?.path ?? '', args?.rootPath),
   );
-  ipcMain.handle('fs:writeFile', (_e, { path: p, content }) => {
-    if (!isPathUnderRegisteredRoot(p)) {
+  ipcMain.handle('fs:writeFile', (_e, { path: p, content, rootPath }) => {
+    // Tabs opened from a workspace/flow diff keep their member-prefixed
+    // relative path (`<member>/src/foo.ts`) so the ChangesBar and diff
+    // logic can peel the prefix — reads already run that through the
+    // resolver, and saving has to as well. Writing the hint as given made
+    // `path.resolve` fall back to the main process cwd, which ENOENTs at
+    // best and lands in an unrelated tree at worst.
+    //
+    // `resolveWriteTarget`, not the read cascade: see the note there for
+    // why a write anchors on the caller's root instead of searching.
+    const target = resolveWriteTarget(p, rootPath);
+    if (!target) {
+      return {
+        ok: false,
+        error: `Could not place "${p}" — no project root for this file.`,
+      };
+    }
+    if (!isPathUnderRegisteredRoot(target)) {
       return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
     }
     try {
-      fs.writeFileSync(p, content, 'utf-8');
+      fs.writeFileSync(target, content, 'utf-8');
       return { ok: true };
     } catch (err: any) {
       return { ok: false, error: err?.message ?? 'Could not write file' };
@@ -373,8 +518,24 @@ function registerIpc(): void {
     return listFilesRecursive(root);
   });
   ipcMain.handle('fs:listFileEntries', (_e, root: string) => {
-    if (!isPathUnderRegisteredRoot(root)) return [];
-    return listFileEntriesRecursive(root);
+    if (!isPathUnderRegisteredRoot(root)) return Promise.resolve([]);
+    return listFileEntriesShared(root);
+  });
+  // Live tree watching. The renderer's file tree lists its root once per
+  // mount; without this, a file the agent writes only appears after the pane
+  // is closed and reopened. The returned `key` is the resolved root the
+  // change events carry.
+  ipcMain.handle('fs:watchTree', (_e, root: string) => {
+    if (!isPathUnderRegisteredRoot(root)) return { ok: false, key: path.resolve(root) };
+    return watchTree(root, (key) => {
+      // The walk's own cache would otherwise hand the renderer the same
+      // stale listing it already has.
+      fileListCache.delete(key);
+      emitToRenderer({ type: 'fileTreeChanged', root: key });
+    });
+  });
+  ipcMain.handle('fs:unwatchTree', (_e, root: string) => {
+    unwatchTree(root);
   });
   ipcMain.handle('fs:openInFinder', (_e, p: string) => {
     if (!isReadablePath(p)) return;
@@ -387,6 +548,43 @@ function registerIpc(): void {
     }
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
+  });
+  /// Shared guard for both symbol entry points: the file and the project
+  /// root both have to be inside something the user registered.
+  const resolveSymbolArgs = (
+    args: { cwd?: string; filePath?: string; symbol?: string; line?: number } | undefined,
+  ):
+    | { ok: true; cwd: string; filePath: string; symbol: string; line: number }
+    | { ok: false; error: string } => {
+    const filePath = resolveFilePath(args?.filePath ?? '');
+    if (!filePath || !isReadablePath(filePath)) {
+      return { ok: false, error: 'File is outside any registered project.' };
+    }
+    // The renderer sends the *conversation's* root. In a flow run that is
+    // routinely not the tree the open file lives in — worktree runs mint a
+    // worktree outside the project, and workspace/coordinator roots are
+    // directories of symlinks. Searching the root as sent finds nothing
+    // there, so resolve to the tree the file actually belongs to and
+    // validate that, since it's the one we read.
+    const cwd = resolveSearchRoot(filePath, args?.cwd ?? '');
+    if (!cwd || !isPathUnderRegisteredRoot(cwd)) {
+      return { ok: false, error: 'Project root is not registered.' };
+    }
+    if (!symbolLookup) {
+      return { ok: false, error: 'Symbol lookup is not available.' };
+    }
+    return { ok: true, cwd, filePath, symbol: args?.symbol ?? '', line: args?.line ?? 1 };
+  };
+
+  ipcMain.handle('symbols:findDefinition', async (_e, args) => {
+    const checked = resolveSymbolArgs(args);
+    if (!checked.ok) return { ok: false as const, error: checked.error };
+    return symbolLookup!.find(checked);
+  });
+  ipcMain.handle('symbols:refineDefinition', async (_e, args) => {
+    const checked = resolveSymbolArgs(args);
+    if (!checked.ok) return { ok: false as const, error: checked.error };
+    return symbolLookup!.refine(checked);
   });
   ipcMain.handle(
     'flows:openArtifact',
@@ -407,6 +605,33 @@ function registerIpc(): void {
         return { ok: false, error: err?.message ?? 'Could not open artifact' };
       }
     },
+  );
+  ipcMain.handle(
+    'preview:htmlAssets',
+    (_e, args: { path: string; rootPath?: string; refs: string[] }) =>
+      readHtmlPreviewAssets(
+        {
+          path: resolveFilePath(args?.path ?? '', args?.rootPath) ?? '',
+          rootPath: args?.rootPath,
+          refs: args?.refs ?? [],
+        },
+        isReadablePath,
+      ),
+  );
+  ipcMain.handle(
+    'preview:reactBundle',
+    (_e, args: { path: string; rootPath?: string; contents?: string }) =>
+      buildReactPreviewBundle(
+        {
+          path: resolveFilePath(args?.path ?? '', args?.rootPath) ?? '',
+          rootPath: args?.rootPath,
+          contents: args?.contents,
+        },
+        { isReadable: isReadablePath },
+      ),
+  );
+  ipcMain.handle('preview:publishDocument', (_e, args: { html: string }) =>
+    publishPreviewDocument(args?.html ?? ''),
   );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
@@ -436,6 +661,23 @@ function registerIpc(): void {
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
+  // The renderer supplies conversation worktrees (it owns that state); the
+  // flow runtime is asked here so a run's tree is never reported as an
+  // orphan just because the renderer doesn't track runs.
+  ipcMain.handle('git:scanWorktrees', (_e, args) => {
+    const runPaths: string[] = [];
+    for (const run of flowRuntime ? flowRuntime.listRuns() : []) {
+      if (run.worktreePath) runPaths.push(run.worktreePath);
+      for (const m of run.workspaceWorktrees ?? []) runPaths.push(m.worktreePath);
+    }
+    return scanWorktrees({ ...args, runPaths }, (p) =>
+      emitToRenderer({ type: 'worktreeScanProgress', ...p }),
+    );
+  });
+  ipcMain.handle('git:sweepWorktrees', (_e, args) => sweepWorktrees(args));
+  ipcMain.handle('git:conversationWorktreeStates', (_e, args) =>
+    conversationWorktreeStates(args),
+  );
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
     const res = checkoutAgentLocally(args);
     if (!res.ok) return res;
@@ -461,9 +703,20 @@ function registerIpc(): void {
   ipcMain.handle('git:pushBranch', (_e, args) => pushBranch(args));
   ipcMain.handle('git:openPR', (_e, args) => openPR(args));
   ipcMain.handle('git:worktreeStatus', (_e, args) => worktreeStatus(args));
+  ipcMain.handle('git:worktreeDiff', (_e, args) => worktreeDiff(args));
   ipcMain.handle('git:rescueMainTree', (_e, args) => rescueMainTree(args));
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
+  ipcMain.handle('git:worktreeChanges', (_e, args) => worktreeChanges(args));
+  ipcMain.handle('git:resolveDiffBase', (_e, args) => resolveDiffBase(args));
   ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranch(cwd));
+  ipcMain.handle('git:restoreFile', (_e, { cwd, path }) => {
+    // Destructive git write — re-validate the cwd here rather than trusting
+    // the renderer, mirroring the `git:run` allowlist gate.
+    if (typeof cwd !== 'string' || typeof path !== 'string' || !isPathUnderRegisteredRoot(cwd)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return restoreFileToHead({ cwd, path });
+  });
   ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
   ipcMain.handle('git:workspaceCommitAll', (_e, args) => workspaceCommitAll(args));
@@ -540,7 +793,15 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'terminal:popConversation',
-    (_e, { cwd, backend, sessionId }: { cwd: string; backend: Backend; sessionId?: string }) => {
+    (
+      _e,
+      {
+        cwd,
+        backend,
+        sessionId,
+        model,
+      }: { cwd: string; backend: Backend; sessionId?: string; model?: string },
+    ) => {
       if (backend === 'ollama') {
         return { ok: false, error: 'Ollama runs in-app — there is no CLI to resume in a terminal.' };
       }
@@ -564,9 +825,33 @@ function registerIpc(): void {
       // Codex has no --resume flag; just drop the user into the interactive
       // TUI in the workspace and they can pick up from there.
       const resumeSuffix = sessionId && needsResumeId ? ` --resume ${sessionId}` : '';
-      return openTerminalAt(cwd, `${quoted}${resumeSuffix}`);
+      // Carry the session's model across. Without it the CLI resumes on its own
+      // default and silently swaps the model out from under the conversation.
+      // Same metacharacter guard as the session id — this lands in a `do script`
+      // line, so anything exotic is dropped rather than escaped.
+      const modelFlag = backend === 'claude' || backend === 'copilot' ? '--model' : '-m';
+      const modelSuffix =
+        model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
+      return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`);
     },
   );
+
+  ipcMain.handle('terminal:openFolder', async (_e, { path: target }: { path: string }) => {
+    // Same containment rule as popping a conversation out: only folders
+    // inside a project, workspace or worktree the user has registered.
+    if (!isPathUnderRegisteredRoot(target)) {
+      return { ok: false, error: 'That folder is not inside a registered project root.' };
+    }
+    try {
+      const stat = await fs.promises.stat(target);
+      if (!stat.isDirectory()) {
+        return { ok: false, error: 'That path is not a folder.' };
+      }
+    } catch {
+      return { ok: false, error: 'That folder no longer exists.' };
+    }
+    return openTerminalIn(target);
+  });
 
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
@@ -646,6 +931,9 @@ function registerIpc(): void {
   ipcMain.handle('flows:resumeRun', (_e, args) =>
     flowRuntime ? flowRuntime.resumeRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:rerunFromStep', (_e, args) =>
+    flowRuntime ? flowRuntime.rerunFromStep(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
   ipcMain.handle('flows:abortRun', (_e, args) =>
     flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
@@ -653,6 +941,9 @@ function registerIpc(): void {
     flowRuntime
       ? flowRuntime.setModelOverride(runId, participantId, model)
       : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:renameRun', (_e, args) =>
+    flowRuntime ? flowRuntime.renameRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:enterWatch', (_e, args) =>
     flowRuntime ? flowRuntime.enterWatch(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
@@ -699,6 +990,11 @@ function registerIpc(): void {
       ? orchestrator.retry(args)
       : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
+  ipcMain.handle('orchestrator:approveBatch', (_e, args) =>
+    orchestrator
+      ? orchestrator.approveBatch(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
   ipcMain.handle('orchestrator:delete', (_e, args) =>
     orchestrator
       ? orchestrator.delete(args)
@@ -709,6 +1005,35 @@ function registerIpc(): void {
   ipcMain.handle('orchestrator:recentPrompts', () => listRecentPrompts());
   ipcMain.handle('orchestrator:recordRecentPrompt', (_e, { text }) => recordRecentPrompt(text));
   ipcMain.handle('orchestrator:deleteRecentPrompt', (_e, { text }) => deleteRecentPrompt(text));
+
+  ipcMain.handle('schedules:list', () =>
+    scheduler
+      ? scheduler.list().map((schedule) => ({
+          schedule,
+          nextFireAt: scheduler!.nextFireAt(schedule.id),
+        }))
+      : [],
+  );
+  ipcMain.handle('schedules:save', (_e, { schedule }) =>
+    scheduler
+      ? scheduler.save(schedule)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+  ipcMain.handle('schedules:setEnabled', (_e, { id, enabled }) =>
+    scheduler
+      ? scheduler.setEnabled(id, enabled)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+  ipcMain.handle('schedules:delete', (_e, { id }) =>
+    scheduler
+      ? scheduler.remove(id)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+  ipcMain.handle('schedules:runNow', (_e, { id }) =>
+    scheduler
+      ? scheduler.runNow(id)
+      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
 }
 
 // In-flight Ollama pulls, keyed by model tag. Cancelling is just aborting
@@ -719,9 +1044,13 @@ function fileInfo(hint: string, rootPath?: string) {
   const resolved = resolveFilePath(hint, rootPath);
   if (!resolved) {
     if (path.isAbsolute(hint) && isReadablePath(hint)) {
-      return { ok: false, error: `File not found at ${hint}.` };
+      return { ok: false, missing: true, error: `File not found at ${hint}.` };
     }
-    return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+    return {
+      ok: false,
+      missing: true,
+      error: `Could not find "${hint}" in any registered project.`,
+    };
   }
   if (!isReadablePath(resolved)) {
     return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
@@ -749,6 +1078,9 @@ function fileInfo(hint: string, rootPath?: string) {
           : undefined,
     };
   } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      return { ok: false, missing: true, error: `File not found at ${resolved}.` };
+    }
     return { ok: false, error: err?.message ?? 'Could not inspect file' };
   }
 }
@@ -1119,6 +1451,53 @@ function registeredRoots(): string[] {
   return [...roots];
 }
 
+// Containment checks compare a target against the realpath'd form of every
+// registered root. Computing that means a `realpathSync` per root on EVERY
+// file IPC call (open / preview / diff / git) — and each syscall is
+// intercepted by on-access antivirus, so on a busy machine these dominate
+// file-open latency.
+//
+// `realpath` of a registered directory is effectively immutable for the app's
+// lifetime, so memoize it per raw path. The root *set* is NOT cached —
+// `registeredRoots()` is recomputed fresh each call (cheap: in-memory store
+// state + a list walk, no syscalls) — so a newly-added project or flow-run
+// worktree is recognized immediately and a removed one drops out at once.
+// Only successful realpaths are memoized; a root not yet on disk (a worktree
+// registered just before it's created) is retried each call until it exists.
+const rootRealpathMemo = new Map<string, string>();
+
+function realpathRoot(root: string): string | null {
+  const key = path.resolve(root);
+  const memo = rootRealpathMemo.get(key);
+  if (memo !== undefined) return memo;
+  try {
+    // `.native` (vs plain realpathSync) canonicalizes CASE on case-insensitive
+    // filesystems (macOS/Windows). A registered root persisted with different
+    // casing than the live userData dir — e.g. `.../overcli/…` vs the on-disk
+    // `.../Overcli/…` after an app-name case change — resolves to the same
+    // directory, and normalizing both sides here lets the case-sensitive
+    // `path.relative` containment check still recognize files under it.
+    const real = fs.realpathSync.native(key);
+    rootRealpathMemo.set(key, real);
+    return real;
+  } catch {
+    return null; // not memoized — the directory may appear later
+  }
+}
+
+function resolvedRegisteredRoots(): string[] {
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  for (const root of registeredRoots()) {
+    const real = realpathRoot(root);
+    if (real && !seen.has(real)) {
+      seen.add(real);
+      resolved.push(real);
+    }
+  }
+  return resolved;
+}
+
 // The renderer only needs a handful of read-oriented git subcommands to
 // power the file editor, diff sheets, and branch pickers. Anything else —
 // `clone`, `fetch`, `push`, `-c core.sshCommand=…`, `-C /some/dir` — is
@@ -1157,16 +1536,15 @@ function isRendererSafeGitInvocation(args: unknown, cwd: unknown): boolean {
 // symlink planted inside a project can't point out to an unrelated file.
 function isPathUnderRegisteredRoot(target: string): boolean {
   if (!target) return false;
-  const roots = registeredRoots();
+  // A relative path would be resolved against the main process cwd, which
+  // in a dev build is the overcli checkout itself — a registered project.
+  // That let unresolved hints pass containment and then fail (or write)
+  // somewhere the caller never meant. Callers resolve before validating.
+  if (!path.isAbsolute(target)) return false;
+  const roots = resolvedRegisteredRoots();
   if (roots.length === 0) return false;
   const resolvedTarget = resolveExistingAncestor(path.resolve(target));
-  for (const root of roots) {
-    let resolvedRoot: string;
-    try {
-      resolvedRoot = fs.realpathSync(path.resolve(root));
-    } catch {
-      continue;
-    }
+  for (const resolvedRoot of roots) {
     const rel = path.relative(resolvedRoot, resolvedTarget);
     if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
   }
@@ -1186,7 +1564,7 @@ function isReadablePlanPath(target: string): boolean {
   const resolvedTarget = resolveExistingAncestor(path.resolve(target));
   let resolvedRoot: string;
   try {
-    resolvedRoot = fs.realpathSync(plansRoot);
+    resolvedRoot = fs.realpathSync.native(plansRoot);
   } catch {
     return false;
   }
@@ -1209,7 +1587,9 @@ function resolveExistingAncestor(p: string): string {
   let current = absolute;
   while (true) {
     try {
-      return path.join(fs.realpathSync(current), ...tail);
+      // `.native` canonicalizes case on case-insensitive filesystems so this
+      // matches the same-cased roots from `realpathRoot` (see note there).
+      return path.join(fs.realpathSync.native(current), ...tail);
     } catch {
       const parent = path.dirname(current);
       if (parent === current) return absolute;
@@ -1219,136 +1599,120 @@ function resolveExistingAncestor(p: string): string {
   }
 }
 
-// Tool output (grep, glob, etc.) emits paths relative to the conversation
-// cwd — and the renderer's path-link handler strips trailing `:LINE`
-// suffixes, so by the time a click lands here we often get something like
-// `src/main/index.ts` or even just `store.ts`. Neither resolves against
-// Electron's cwd, so `fs.readFileSync` ENOENTs.
-//
-// Resolution cascade:
-//   1. absolute + exists,
-//   2. join against the caller's rootPath (conversation cwd),
-//   3. join against each registered root,
-//   4. Command-P-style basename search across registered roots, tie-broken
-//      by how many trailing path segments match the hint (so a hint of
-//      `renderer/store.ts` prefers `.../src/renderer/store.ts` over
-//      `.../some/other/store.ts`), then by shortest full path.
+/// Thin wrapper over the injected-fs resolver in `resolveFilePath.ts` —
+/// see that file for the cascade and why the caller's own root wins.
 function resolveFilePath(hint: string, rootPath?: string): string | null {
-  if (!hint) return null;
-  if (path.isAbsolute(hint) && fs.existsSync(hint)) return hint;
+  return resolveFilePathIn(hint, {
+    rootPath,
+    roots: registeredRoots(),
+    scopeRoots: searchScope(rootPath),
+    exists: (c) => fs.existsSync(c),
+    listFiles: listFilesRecursive,
+  });
+}
 
-  const tried = new Set<string>();
-  const tryCandidate = (c: string): string | null => {
-    if (tried.has(c)) return null;
-    tried.add(c);
-    return fs.existsSync(c) ? c : null;
+/// The roots a recursive basename search may walk for a click that came
+/// from `rootPath`: that root itself, plus the project (or workspace, and
+/// its member projects) the conversation was forked from. Nothing else —
+/// a file mentioned in one conversation belongs to that conversation's
+/// checkout or the repo behind it, never to an unrelated project's tree.
+///
+/// This is deliberately NOT `registeredRoots()`. That set is a security
+/// allowlist and holds one entry per conversation that ever forked a
+/// worktree, so it only grows; searching it meant a full recursive walk of
+/// every tree the user had ever opened (hundreds, ~500k files) on any hint
+/// that didn't resolve — e.g. clicking the chip for a deleted file.
+///
+/// Returns undefined when the click has no root context, which leaves the
+/// resolver searching every root as it did before.
+function searchScope(rootPath?: string): string[] | undefined {
+  if (!rootPath) return undefined;
+  const canon = (p: string) => realpathRoot(p) ?? path.resolve(p);
+  const target = canon(rootPath);
+  const scope = new Set<string>([rootPath]);
+  const add = (p?: string) => {
+    if (p) scope.add(p);
   };
+  const isTarget = (p?: string) => !!p && canon(p) === target;
 
-  if (rootPath) {
-    const direct = tryCandidate(path.resolve(rootPath, hint));
-    if (direct) return direct;
-  }
-  const roots = registeredRoots();
-  for (const root of roots) {
-    const direct = tryCandidate(path.resolve(root, hint));
-    if (direct) return direct;
-  }
-
-  const hintSegments = hint.split(/[\\/]/).filter(Boolean);
-  const basename = hintSegments[hintSegments.length - 1];
-  if (!basename) return null;
-
-  const searchRoots: string[] = [];
-  const seenRoot = new Set<string>();
-  const pushRoot = (r: string | undefined) => {
-    if (!r || seenRoot.has(r)) return;
-    seenRoot.add(r);
-    searchRoots.push(r);
-  };
-  pushRoot(rootPath);
-  for (const r of roots) pushRoot(r);
-
-  type Match = { file: string; suffixScore: number };
-  let best: Match | null = null;
-  for (const root of searchRoots) {
-    let files: string[];
-    try {
-      files = listFilesRecursive(root);
-    } catch {
-      continue;
-    }
-    for (const file of files) {
-      if (path.basename(file) !== basename) continue;
-      const fileSegments = file.split(path.sep);
-      let score = 0;
-      for (let i = 0; i < hintSegments.length && i < fileSegments.length; i++) {
-        if (fileSegments[fileSegments.length - 1 - i] === hintSegments[hintSegments.length - 1 - i]) {
-          score++;
-        } else {
-          break;
-        }
-      }
-      if (
-        !best ||
-        score > best.suffixScore ||
-        (score === best.suffixScore && file.length < best.file.length)
-      ) {
-        best = { file, suffixScore: score };
-      }
+  const state = Store.load();
+  for (const project of state.projects) {
+    if (isTarget(project.path) || (project.conversations ?? []).some((c) => isTarget(c.worktreePath))) {
+      add(project.path);
     }
   }
-  return best?.file ?? null;
+  for (const workspace of state.workspaces) {
+    const owns =
+      isTarget(workspace.rootPath) ||
+      (workspace.conversations ?? []).some(
+        (c) => isTarget(c.worktreePath) || isTarget(c.coordinatorRootPath),
+      );
+    if (!owns) continue;
+    add(workspace.rootPath);
+    // Workspace roots front their members through symlinks, but a hint can
+    // name a member's real path — keep the member checkouts in scope too.
+    for (const id of workspace.projectIds ?? []) {
+      add(state.projects.find((p) => p.id === id)?.path);
+    }
+  }
+  if (flowRuntime) {
+    for (const run of flowRuntime.listRuns()) {
+      const owns =
+        isTarget(run.projectPath) ||
+        isTarget(run.worktreePath) ||
+        (run.workspaceWorktrees ?? []).some((w) => isTarget(w.worktreePath));
+      if (!owns) continue;
+      add(run.projectPath);
+      add(run.worktreePath);
+    }
+  }
+  return [...scope];
+}
+
+// A recursive walk costs a readdir per directory, each one antivirus-taxed,
+// so the same tree getting listed twice in a second (resolver cascade, then
+// the file finder mounting) is worth avoiding. Short TTL: long enough to
+// collapse those bursts, short enough that a file the agent just wrote shows
+// up in the finder without the user wondering why it's missing.
+const FILE_LIST_TTL_MS = 15_000;
+const fileListCache = new Map<string, { at: number; files: string[] }>();
+
+// The tree can be mounted twice over the same root (standalone explorer and
+// a conversation's right pane), and both relist on the same watcher event.
+// Sharing the in-flight walk halves that without ever serving a stale
+// listing the way a TTL cache would — the whole point of the event is that
+// what's on disk just changed.
+const inFlightEntryWalks = new Map<string, Promise<Array<{ path: string; sizeBytes: number }>>>();
+
+function listFileEntriesShared(root: string): Promise<Array<{ path: string; sizeBytes: number }>> {
+  const key = path.resolve(root);
+  const running = inFlightEntryWalks.get(key);
+  if (running) return running;
+  const startedAt = Date.now();
+  const walk = listFileEntriesAsync(root)
+    .then((entries) => {
+      // What the walk cost is what paces the watcher: a root that takes half
+      // a second to list doesn't get relisted every 1.5s.
+      noteRelistCost(root, Date.now() - startedAt);
+      return entries;
+    })
+    .finally(() => {
+      inFlightEntryWalks.delete(key);
+    });
+  inFlightEntryWalks.set(key, walk);
+  return walk;
 }
 
 function listFilesRecursive(root: string): string[] {
-  return listFileEntriesRecursive(root).map((entry) => entry.path);
+  const key = path.resolve(root);
+  const hit = fileListCache.get(key);
+  const now = Date.now();
+  if (hit && now - hit.at < FILE_LIST_TTL_MS) return hit.files;
+  const files = listFileEntriesSync(root).map((entry) => entry.path);
+  fileListCache.set(key, { at: now, files });
+  return files;
 }
 
-function listFileEntriesRecursive(root: string): Array<{ path: string; sizeBytes: number }> {
-  const skipDirs = new Set([
-    '.git',
-    'node_modules',
-    '.build',
-    'build',
-    'bin',
-    'dist',
-    '.next',
-    '.venv',
-    'venv',
-    '__pycache__',
-    '.DS_Store',
-    'DerivedData',
-    '.swiftpm',
-  ]);
-  const out: Array<{ path: string; sizeBytes: number }> = [];
-  const stack: string[] = [root];
-  while (stack.length) {
-    const cur = stack.pop()!;
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(cur);
-    } catch {
-      continue;
-    }
-    for (const name of entries) {
-      if (skipDirs.has(name)) continue;
-      const full = path.join(cur, name);
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(full);
-      } catch {
-        continue;
-      }
-      if (stat.isDirectory()) {
-        stack.push(full);
-      } else if (stat.isFile()) {
-        out.push({ path: full, sizeBytes: stat.size });
-        if (out.length > 20000) return out; // safety cap
-      }
-    }
-  }
-  return out;
-}
 
 function buildMenu(): void {
   const isMac = process.platform === 'darwin';
@@ -1383,7 +1747,37 @@ function buildMenu(): void {
         { role: 'close' },
       ],
     },
-    { role: 'editMenu' },
+    {
+      // Spelled out instead of `role: 'editMenu'` so we can stop the
+      // native Undo/Redo accelerators from swallowing Cmd/Ctrl+Z before
+      // it reaches the web content. The native role runs
+      // document.execCommand('undo'), which is a no-op inside CodeMirror
+      // (it manages its own history), so the menu was silently eating the
+      // keystroke and undo looked broken in the file editor. With
+      // `registerAccelerator: false` the shortcut is still shown in the
+      // menu but the keydown falls through to CodeMirror's / the browser's
+      // own undo handling.
+      label: 'Edit',
+      submenu: [
+        { role: 'undo', accelerator: 'CmdOrCtrl+Z', registerAccelerator: false },
+        { role: 'redo', accelerator: 'Shift+CmdOrCtrl+Z', registerAccelerator: false },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        ...(isMac
+          ? ([
+              { role: 'pasteAndMatchStyle' },
+              { role: 'delete' },
+              { role: 'selectAll' },
+            ] as Electron.MenuItemConstructorOptions[])
+          : ([
+              { role: 'delete' },
+              { type: 'separator' },
+              { role: 'selectAll' },
+            ] as Electron.MenuItemConstructorOptions[])),
+      ],
+    },
     { role: 'viewMenu' },
     { role: 'windowMenu' },
   ];
@@ -1399,8 +1793,31 @@ if (process.platform === 'darwin' && process.arch !== 'arm64') {
   app.commandLine.appendSwitch('disable-features', 'SkiaGraphite');
 }
 
+/// In dev the renderer is served over HTTP by Vite, and HMR appends a fresh
+/// `?t=<timestamp>` cache-buster to every module on every edit. Chromium
+/// treats each of those as a brand-new, permanently-cacheable URL, so the
+/// HTTP cache (and the V8 code cache keyed off it) grows without bound —
+/// months of dev had accumulated ~32k entries and 1.6GB of userData. Prod
+/// loads from `file://` and never enters this cache, so this is dev-only.
+async function clearDevHttpCache(): Promise<void> {
+  if (!isDev) return;
+  try {
+    await session.defaultSession.clearCodeCaches({ urls: [] });
+    await session.defaultSession.clearCache();
+    log('info', 'main.devCache', 'Cleared dev HTTP + code caches');
+  } catch (err) {
+    log('warn', 'main.devCache', 'Failed to clear dev caches', err);
+  }
+}
+
+// Scheme privileges are only accepted before the app is ready, so this
+// cannot move into whenReady below.
+registerPreviewScheme();
+
 app.whenReady().then(() => {
   nativeTheme.themeSource = 'dark';
+  handlePreviewProtocol();
+  void clearDevHttpCache();
   // In dev the dock shows Electron's default icon because we're running the
   // Electron binary directly (no .app bundle). Override it so dev matches prod.
   if (isDev && process.platform === 'darwin' && app.dock) {
@@ -1423,6 +1840,9 @@ app.whenReady().then(() => {
   });
   registerIpc();
   buildMenu();
+  // Before the window exists, so the renderer's first `app:whatsNew` call
+  // already sees a baseline and a fresh install isn't handed four changelogs.
+  seedWhatsNewBaseline();
   createWindow();
 
   // Nudge self-updating CLIs (claude, codex) in the background, hidden, so
@@ -1447,7 +1867,16 @@ app.on('window-all-closed', () => {
 let flushedRuns = false;
 app.on('before-quit', (event) => {
   runner?.killAll();
+  symbolLookup?.dispose();
+  closeAllTreeWatchers();
+  // Drop the pending timer so a quit can't fire a schedule into a runtime
+  // that's already tearing its subprocesses down.
+  scheduler?.dispose();
   ollamaServer.stop();
+  // Store writes are debounced now (see store.save). Take the freshest
+  // snapshot synchronously so a quit inside the debounce window can't drop
+  // the last mutation.
+  flushStoreSync();
   // Run writes are async now (see runsStore.saveRun). Defer the first quit
   // long enough to flush any in-flight checkpoint to disk, then quit for real.
   // Writes are sub-10ms, so the delay is imperceptible.

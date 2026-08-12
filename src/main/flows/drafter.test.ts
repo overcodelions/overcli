@@ -10,10 +10,11 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: mockQuery,
 }));
 
-// Drafter resolves a backend via probeBackendHealth — stub it so tests are
-// hermetic and always land on Claude (the SDK path the suite mocks).
+// Drafter resolves which backends are healthy before picking one — stub it so
+// tests are hermetic and always land on Claude (the SDK path the suite mocks).
 vi.mock('../health', () => ({
-  probeBackendHealth: vi.fn(() => ({ kind: 'ready' })),
+  probeBackendHealth: vi.fn(async () => ({ kind: 'ready' })),
+  healthyBackends: vi.fn(async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama'])),
 }));
 
 import { draftFlowFromPrompt, type DraftDeps } from './drafter';
@@ -146,6 +147,111 @@ describe('draftFlowFromPrompt', () => {
     }
   });
 
+  it('keeps a drafted custom step with its own system prompt', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Triage Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: triage',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: custom',
+        '    system_prompt: |',
+        '      You are the TRIAGE step of a multi-stage automated flow.',
+        '      Group the incoming reports by root cause. You are READ-ONLY.',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: triage.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'Triage bugs' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps[0].role).toBe('custom');
+      expect(result.flow.steps[0].systemPromptOverride).toContain('TRIAGE step');
+    }
+  });
+
+  it('flips a step to custom when a system prompt lands under a preset role', async () => {
+    // The prompt is the more specific signal: resolveSystemPrompt would drop
+    // it on a preset role and silently run the preset body instead.
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Narrow Review',
+        'input: user_prompt',
+        'steps:',
+        '  - id: a11y',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: reviewer',
+        '    system_prompt: Review the diff ONLY for accessibility regressions.',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: a11y.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'a11y review' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps[0].role).toBe('custom');
+      expect(result.flow.steps[0].systemPromptOverride).toContain('accessibility');
+    }
+  });
+
+  it('rescues an invented role name that carries a system prompt', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Summary Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: sum',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: summarizer',
+        '    system_prompt: Summarize the input logs into a short digest.',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: digest.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'summarize logs' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow.steps[0].role).toBe('custom');
+  });
+
+  it('rejects an unknown role with no system prompt to recover it from', async () => {
+    mockQuery.mockReturnValue(
+      claudeStream([
+        '```yaml',
+        'name: Typo Flow',
+        'input: user_prompt',
+        'steps:',
+        '  - id: review',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: reviewr',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: review.md',
+        '```',
+      ].join('\n')),
+    );
+
+    const result = await draftFlowFromPrompt({ description: 'review it' }, claudeDeps());
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('Unknown role "reviewr"');
+  });
+
   it('drafts Claude through runner.oneShot on the default cli transport', async () => {
     const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('CLI Drafted') });
     const deps: DraftDeps = {
@@ -181,16 +287,84 @@ describe('draftFlowFromPrompt', () => {
     const result = await draftFlowFromPrompt({ description: 'Build via Codex' }, deps);
 
     expect(oneShot).toHaveBeenCalledTimes(1);
-    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'codex', model: 'gpt-5.5' });
+    expect(oneShot.mock.calls[0][0]).toMatchObject({ backend: 'codex', model: 'gpt-5.6-sol' });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.flow.name).toBe('Codex Drafted');
   });
 
+  /// Tags drafted by the model are only useful if they land in the same
+  /// vocabulary the registry publishes — otherwise a drafted flow never
+  /// shows up under the filter its user clicks.
+  describe('tags', () => {
+    function yamlWithTags(tags: string): string {
+      return [
+        '```yaml',
+        'name: Tagged Flow',
+        'input: user_prompt',
+        `tags: ${tags}`,
+        'steps:',
+        '  - id: plan',
+        '    model: { backend: claude, model: claude-sonnet-4-6 }',
+        '    role: planner',
+        '    inputs: [user_prompt]',
+        '    tools: [Read]',
+        '    output: plan.md',
+        '```',
+      ].join('\n');
+    }
+
+    it('keeps tags drawn from the shared taxonomy', async () => {
+      mockQuery.mockReturnValue(claudeStream(yamlWithTags('[review, tickets]')));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toEqual(['review', 'tickets']);
+    });
+
+    it('drops invented tags rather than guessing at a mapping', async () => {
+      mockQuery.mockReturnValue(claudeStream(yamlWithTags('[review, code-review, jira-triage]')));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toEqual(['review']);
+    });
+
+    it('leaves tags undefined when nothing survives, so the YAML stays clean', async () => {
+      mockQuery.mockReturnValue(claudeStream(yamlWithTags('[made-up, nonsense]')));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toBeUndefined();
+    });
+
+    it('caps the list at four so a card stays scannable', async () => {
+      mockQuery.mockReturnValue(
+        claudeStream(yamlWithTags('[review, tickets, prs, design, research, testing]')),
+      );
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toEqual(['review', 'tickets', 'prs', 'design']);
+    });
+
+    it('drafts without tags at all when the model omits the key', async () => {
+      mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+      const result = await draftFlowFromPrompt({ description: 'x' }, claudeDeps());
+
+      expect(result.ok).toBe(true);
+      if (result.ok) expect(result.flow.tags).toBeUndefined();
+    });
+  });
+
   it('surfaces an error when no backend is signed in', async () => {
-    const { probeBackendHealth } = await import('../health');
-    vi.mocked(probeBackendHealth).mockReturnValueOnce({ kind: 'missing' } as never);
-    vi.mocked(probeBackendHealth).mockReturnValue({ kind: 'unauthenticated' } as never);
+    const { healthyBackends } = await import('../health');
+    vi.mocked(healthyBackends).mockResolvedValueOnce(new Set() as never);
 
     const result = await draftFlowFromPrompt({ description: 'anything' }, {
       settings: {

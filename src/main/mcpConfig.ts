@@ -39,7 +39,7 @@ export function isMcpCli(cli: Backend): cli is McpCli {
   return cli === 'claude' || cli === 'codex' || cli === 'gemini';
 }
 
-interface Paths {
+export interface Paths {
   claude: string;
   codex: string;
   gemini: string;

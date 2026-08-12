@@ -25,10 +25,11 @@ import type {
   Candidate,
   Orchestration,
   OrchestrationItem,
+  RunIn,
 } from '../../shared/flows/orchestration';
 import { isOrchestrationComplete, parseCandidates } from '../../shared/flows/orchestration';
 import { pickDrafterBackend, drafterModelFor } from '../../shared/flows/drafterBackend';
-import { probeBackendHealth } from '../health';
+import { healthyBackends } from '../health';
 import type { RunnerManager } from '../runner';
 import {
   deleteOrchestration,
@@ -48,6 +49,9 @@ export interface FlowLauncher {
     baseBranch?: string;
     parentOrchestrationId?: UUID;
     orchestrationItemTitle?: string;
+    scheduleId?: UUID;
+    scheduleName?: string;
+    title?: string;
   }): Promise<{ ok: true; runId: UUID } | { ok: false; error: string }>;
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
   getRun(runId: UUID): FlowRun | null;
@@ -167,10 +171,12 @@ export class OrchestratorImpl {
     if (!message) return { ok: false, error: 'Message is empty.' };
 
     const settings = this.getSettings();
+    // Resolved up front — probing runs a CLI, so it's async (see health.ts)
+    // and can't happen inside a sync predicate.
+    const healthy = await healthyBackends(settings.backendPaths);
     const backend = pickDrafterBackend({
       preferred: settings.preferredBackend,
-      isHealthy: (b: Backend) =>
-        probeBackendHealth(b, settings.backendPaths[b]).kind === 'ready',
+      isHealthy: (b: Backend) => healthy.has(b),
       isEnabled: (b: Backend) => settings.disabledBackends[b] !== true,
     });
     if (!backend) {
@@ -226,6 +232,7 @@ export class OrchestratorImpl {
   async startBatch(args: {
     title: string;
     projectPath: string;
+    runIn?: RunIn;
     baseBranch?: string;
     maxConcurrent: number;
     producer?: { prompt: string; reply: string };
@@ -236,19 +243,31 @@ export class OrchestratorImpl {
     const items = args.items.filter((i) => i.candidate && i.flowId);
     if (items.length === 0) return { ok: false, error: 'No items to launch.' };
 
-    const cap = Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1));
+    const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
+    // A cwd batch shares one working tree across every item, so two items in
+    // flight would edit the same files underneath each other. Serialize it —
+    // the queue still drains, just strictly one at a time. (The UI pins the
+    // stepper to 1 in cwd mode; this is the load-bearing enforcement.)
+    const cap =
+      runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1));
+    // Nothing forks from a base branch in cwd mode — the run just uses
+    // whatever the tree has checked out. Drop it rather than record a value
+    // the launch will ignore.
+    const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
     const orchestration: Orchestration = {
       id: randomUUID(),
       title: args.title?.trim() || 'Batch',
       projectPath,
-      baseBranch: args.baseBranch?.trim() || undefined,
+      runIn,
+      baseBranch,
       maxConcurrent: cap,
       producer: args.producer,
       createdAt: Date.now(),
       items: items.map<OrchestrationItem>((i) => ({
         candidate: i.candidate,
         flowId: i.flowId,
-        baseBranch: i.baseBranch?.trim() || args.baseBranch?.trim() || undefined,
+        baseBranch:
+          runIn === 'cwd' ? undefined : i.baseBranch?.trim() || baseBranch,
         status: 'queued',
       })),
     };
@@ -258,11 +277,116 @@ export class OrchestratorImpl {
     return { ok: true, orchestrationId: orchestration.id };
   }
 
+  // ---- PARK (scheduled proposals) ---------------------------------------
+
+  /// Run the producer turn and record what it found as a batch that has NOT
+  /// launched anything — every item lands `proposed`.
+  ///
+  /// This is the only entry point a schedule gets. `startBatch` dispatches
+  /// immediately, which is fine when a human just clicked Launch and is
+  /// looking at the candidate list; it is not fine at 8am with nobody there,
+  /// because the producer decides how many items exist and a bad pull would
+  /// fork a dozen worktrees unsupervised. Parking keeps the expensive half of
+  /// the decision with the user while still doing the slow half (the
+  /// investigation) on their behalf.
+  async parkProposal(args: {
+    scheduleId: UUID;
+    scheduleName: string;
+    projectPath: string;
+    prompt: string;
+    flowId: string;
+    runIn: RunIn;
+    baseBranch?: string;
+    maxConcurrent: number;
+    /// Title for the batch, already carrying its `[SR-n]` sequence so two
+    /// mornings' worth of the same schedule are tellable apart in the ledger.
+    title?: string;
+  }): Promise<
+    { ok: true; orchestrationId: UUID; count: number } | { ok: false; error: string }
+  > {
+    const projectPath = args.projectPath?.trim();
+    if (!projectPath) return { ok: false, error: 'Schedule has no project.' };
+
+    const produced = await this.propose({ message: args.prompt, projectPath });
+    if (!produced.ok) return { ok: false, error: produced.error };
+
+    const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
+    const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
+    const orchestration: Orchestration = {
+      id: randomUUID(),
+      title: args.title?.trim() || args.scheduleName,
+      projectPath,
+      runIn,
+      baseBranch,
+      maxConcurrent:
+        runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1)),
+      producer: { prompt: args.prompt, reply: produced.reply },
+      origin: { kind: 'schedule', scheduleId: args.scheduleId, scheduleName: args.scheduleName },
+      createdAt: Date.now(),
+      items: produced.candidates.map<OrchestrationItem>((candidate) => ({
+        candidate,
+        // The producer may name a flow per candidate; the schedule's flow is
+        // the fallback, since there was nobody around to pick one.
+        flowId: candidate.suggestedFlowId?.trim() || args.flowId,
+        baseBranch: runIn === 'cwd' ? undefined : baseBranch,
+        status: 'proposed',
+      })),
+    };
+    this.batches.set(orchestration.id, orchestration);
+    this.persistAndEmit(orchestration);
+    // Deliberately no `pump` — that's what approval is for.
+    return { ok: true, orchestrationId: orchestration.id, count: orchestration.items.length };
+  }
+
+  /// Release a parked batch. Items named in `approve` are queued (with an
+  /// optional flow remap); every other `proposed` item is cancelled, because
+  /// the user reviewed the list and left them out on purpose. Omit `approve`
+  /// to take the whole batch as proposed.
+  async approveBatch(args: {
+    id: UUID;
+    approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+  }): Promise<{ ok: true; queued: number } | { ok: false; error: string }> {
+    const o = this.batches.get(args.id);
+    if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
+    const proposed = o.items.filter((i) => i.status === 'proposed');
+    if (proposed.length === 0) return { ok: false, error: 'Nothing is waiting for approval.' };
+
+    type Pick = { candidateId?: string; flowId?: string; baseBranch?: string };
+    const picks: Map<string, Pick> | null = args.approve
+      ? new Map(args.approve.map((a) => [a.candidateId, a as Pick]))
+      : null;
+    let queued = 0;
+    for (const item of proposed) {
+      // No `approve` list at all means "take it as proposed" — every item gets
+      // an empty override rather than being read as unpicked.
+      const pick: Pick | undefined = picks ? picks.get(item.candidate.id) : {};
+      if (!pick) {
+        item.status = 'cancelled';
+        item.note = 'Not approved.';
+        item.finishedAt = Date.now();
+        continue;
+      }
+      if (pick.flowId?.trim()) item.flowId = pick.flowId.trim();
+      if (o.runIn !== 'cwd' && pick.baseBranch?.trim()) item.baseBranch = pick.baseBranch.trim();
+      item.status = 'queued';
+      queued++;
+    }
+    this.persistAndEmit(o);
+    if (queued === 0) {
+      // Everything was declined — the batch is settled, not launched.
+      this.maybeComplete(o);
+      return { ok: true, queued: 0 };
+    }
+    await this.pump(o.id);
+    return { ok: true, queued };
+  }
+
   /// Fill open concurrency slots with queued items. Each launch mints a
-  /// child FlowRun in its own worktree; the run links back via
-  /// `parentOrchestrationId` so `onRunUpdate` can pump the next item when
-  /// it finishes. Safe to call repeatedly — it's a no-op once the cap is
-  /// reached or the queue is empty.
+  /// child FlowRun — in its own worktree, or in the project's working tree
+  /// for a `runIn: 'cwd'` batch (which is capped at one slot, so those items
+  /// land one at a time). The run links back via `parentOrchestrationId` so
+  /// `onRunUpdate` can pump the next item when it finishes. Safe to call
+  /// repeatedly — it's a no-op once the cap is reached or the queue is empty.
   private async pump(orchestrationId: UUID): Promise<void> {
     const o = this.batches.get(orchestrationId);
     if (!o) return;
@@ -282,12 +406,15 @@ export class OrchestratorImpl {
       launchedAny = true;
       let res: Awaited<ReturnType<FlowLauncher['startRun']>>;
       try {
+        // Batches persisted before `runIn` existed have it undefined — they
+        // were all worktree batches, so that's the default.
+        const runIn: RunIn = o.runIn ?? 'worktree';
         res = await this.launcher.startRun({
           flowId: next.flowId,
           projectPath: o.projectPath,
           userPrompt: next.candidate.prompt,
-          runIn: 'worktree',
-          baseBranch: next.baseBranch ?? o.baseBranch,
+          runIn,
+          baseBranch: runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch),
           parentOrchestrationId: o.id,
           orchestrationItemTitle: next.candidate.title,
         });
@@ -385,16 +512,32 @@ export class OrchestratorImpl {
     // mid-abort. Draining the queue up front means there's nothing left for
     // that pump to start.
     for (const item of o.items) {
-      if (item.status === 'queued') {
+      // `queued` never launched, and neither did `proposed` (aborting a
+      // parked batch is how the user says "not this morning's list"); a
+      // `paused` item with no run (shouldn't happen, but be defensive) has
+      // nothing to kill — settle all three straight to cancelled so they
+      // can't hold the batch open.
+      if (
+        item.status === 'queued' ||
+        item.status === 'proposed' ||
+        (item.status === 'paused' && !item.runId)
+      ) {
         item.status = 'cancelled';
         item.finishedAt = Date.now();
       }
     }
     for (const item of o.items) {
-      if (item.status === 'running' && item.runId) {
+      // Kill anything tied to a live or checkpointed child run: `running`
+      // items hold a concurrency slot, `paused` ones are parked at a
+      // `pause_before` step waiting for the user. Neither is terminal, so if
+      // abort skips them the batch never completes — leaving the ledger stuck
+      // on "Abort batch" with no "Clear" and abort appearing to do nothing.
+      if ((item.status === 'running' || item.status === 'paused') && item.runId) {
         const runId = item.runId;
         this.runToBatch.delete(runId);
-        item.status = 'failed';
+        // running was in flight → failed; paused never produced a result and
+        // the user chose to abort → cancelled.
+        item.status = item.status === 'running' ? 'failed' : 'cancelled';
         item.note = item.note ?? 'Batch aborted.';
         item.finishedAt = Date.now();
         try {
@@ -412,9 +555,10 @@ export class OrchestratorImpl {
     return { ok: true };
   }
 
-  /// Re-queue failed/cancelled items so they launch again (fresh worktree,
-  /// fresh run). With `candidateId`, retry just that one; without, retry every
-  /// failed/cancelled item in the batch. Reactivates a completed batch.
+  /// Re-queue failed/cancelled items so they launch again as fresh runs (in a
+  /// fresh worktree, or back in the project's tree for a cwd batch — `pump`
+  /// re-reads the batch's `runIn`). With `candidateId`, retry just that one;
+  /// without, retry every failed/cancelled item. Reactivates a completed batch.
   retry(args: { id: UUID; candidateId?: string }): { ok: true } | { ok: false; error: string } {
     const o = this.batches.get(args.id);
     if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
@@ -427,7 +571,7 @@ export class OrchestratorImpl {
     for (const item of targets) {
       // Drop any stale run mapping and clear the prior attempt's traces so the
       // item launches clean. The old child run (if any) keeps its own history;
-      // retry mints a brand-new run + worktree.
+      // retry mints a brand-new run.
       if (item.runId) this.runToBatch.delete(item.runId);
       item.status = 'queued';
       item.runId = undefined;

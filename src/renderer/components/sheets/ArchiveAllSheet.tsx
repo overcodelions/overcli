@@ -101,9 +101,33 @@ export function ArchiveAllSheet(props: Props) {
       } else {
         await archiveInactiveInWorkspace(props.workspaceId);
       }
+      // First pass: delete every run whose worktree is clean. Runs with
+      // uncommitted changes come back `needsConfirm` and are held aside so
+      // we can warn ONCE in aggregate rather than prompting per run.
+      const dirtyRuns: typeof flowTargets = [];
       for (const run of flowTargets) {
         const result = await window.overcli.invoke('flows:deleteRun', { runId: run.id });
-        if (result.ok) removeFlowRun(run.id);
+        if (result.ok) {
+          removeFlowRun(run.id);
+        } else if ('needsConfirm' in result && result.needsConfirm) {
+          dirtyRuns.push(run);
+        }
+      }
+      if (dirtyRuns.length > 0) {
+        const plural = dirtyRuns.length === 1 ? '' : 's';
+        const proceed = window.confirm(
+          `${dirtyRuns.length} flow run${plural} have uncommitted changes in their worktrees ` +
+            `that will be permanently lost.\n\nDelete them too?`,
+        );
+        if (proceed) {
+          for (const run of dirtyRuns) {
+            const result = await window.overcli.invoke('flows:deleteRun', {
+              runId: run.id,
+              force: true,
+            });
+            if (result.ok) removeFlowRun(run.id);
+          }
+        }
       }
       openSheet(null);
     } catch (e) {

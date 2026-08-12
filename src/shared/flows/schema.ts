@@ -65,8 +65,15 @@ export const DEFAULT_PARTICIPANT_ID = 'primary' as const;
 
 /// Per-step rebound config. Maps onto the existing ReviewerManager: the
 /// `critic` model is what overcli already calls "reviewBackend/reviewModel",
-/// and `mode` mirrors the existing review/collab modes. `maxIters` caps how
-/// many rounds the critic gets before the step has to move on.
+/// and `mode` mirrors the existing review/collab modes.
+///
+/// `maxIters` caps how many rounds the critic gets before the step has to
+/// move on — but ONLY in `collab` mode, where it becomes the runner's
+/// `collabMaxTurns`. In `review` mode the round count is fixed by the
+/// runner: round 1 always, round 2 only if the step actually changed code,
+/// never a round 3. So a text-producing step (design, research) that wants
+/// real back-and-forth needs `mode: collab`; in `review` mode it gets a
+/// single verdict and `maxIters` is ignored.
 export interface FlowReboundConfig {
   critic: FlowModelRef;
   mode: 'review' | 'collab';
@@ -147,6 +154,11 @@ export interface Flow {
   /// synthesizes them from per-step models for old-format flows.
   participants: FlowParticipant[];
   steps: FlowStep[];
+  /// Free-form labels, round-tripped from the YAML's top-level `tags:`. The
+  /// registry index already carries these for published flows, so an
+  /// installed flow arrives pre-tagged; hand-written flows get whatever the
+  /// author typed. Used to group and filter the library.
+  tags?: string[];
   /// Resolved at load time — where this flow was read from.
   source: 'user' | 'project';
   /// Absolute path on disk. Re-saves write back to this path.
@@ -288,7 +300,17 @@ export interface WatchTickLogEntry {
 
 export type FlowRunState =
   | { kind: 'running'; currentStepId: string }
-  | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' }
+  /// `reason`:
+  /// - `preStep`: parked at a `pause_before` step; Continue finalizes the
+  ///   prior step's artifact from any hijack chat, then advances.
+  /// - `failure`: a step failed (or a reviewer rejected) and the on-fail
+  ///   policy left the run for the user to decide.
+  /// - `interrupted`: the run was mid-step when the app last closed. On
+  ///   restart it's demoted from `running` to here (its subprocess is dead)
+  ///   with `nextStepId` pointing at the interrupted step, so Continue
+  ///   re-runs that step from scratch instead of the run being abandoned as
+  ///   `aborted`. Earlier steps' artifacts are intact and kept as inputs.
+  | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' | 'interrupted' }
   | { kind: 'done'; success: boolean }
   | { kind: 'aborted' }
   /// Post-completion stewardship tail — see WatchState. Reached from `done`
@@ -401,6 +423,37 @@ export interface FlowRun {
   /// candidate's title). Display only — lets a run surfaced on its own
   /// (sidebar, run pane) show which ask spawned it.
   orchestrationItemTitle?: string;
+  /// Set when a Schedule fired this run rather than the user launching it.
+  /// The scheduler uses it to route the run's terminal state home; the UI
+  /// uses `scheduleName` to say so out loud, because a run the user has no
+  /// memory of starting is otherwise alarming.
+  scheduleId?: UUID;
+  scheduleName?: string;
+  /// User-supplied name for THIS run, set from the sidebar / library row.
+  /// Overrides the prompt-derived title everywhere a run is listed (see
+  /// `flowRunTitle`). Absent until the user renames the run — a run is
+  /// identified by what was asked of it until they say otherwise.
+  title?: string;
+}
+
+/// Maximum length of a user-supplied run title. Titles are display-only
+/// and live in the sidebar's narrow column, so anything longer is the
+/// user pasting a wall of text rather than naming something.
+export const MAX_RUN_TITLE_LENGTH = 200;
+
+/// Display title for a run, in priority order: the name the user gave it,
+/// then the first non-empty line of the prompt (so runs of the same flow
+/// are distinguishable at a glance), then the flow's own name. Shared so
+/// the sidebar, the library list, and search all agree on what a run is
+/// called.
+export function flowRunTitle(run: FlowRun): string {
+  const explicit = run.title?.trim();
+  if (explicit) return explicit;
+  const firstLine = run.userPrompt
+    ?.split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return firstLine || run.flowSnapshot.name;
 }
 
 /// The project/workspace a run logically belongs to — i.e. where the user
@@ -506,4 +559,43 @@ export function resolveStepParticipant(
 /// user and project layers (`storage.ts:81-89` — project wins).
 export function flowStarKey(flow: Pick<Flow, 'source' | 'id'>): string {
   return `${flow.source}:${flow.id}`;
+}
+
+/// Canonical form of a tag: trimmed and lowercased, or null if there's
+/// nothing left. Shared by the YAML parser and the editor's tag input so
+/// the editor can't produce a tag that a save-then-load would silently
+/// rewrite (type "Review", get "review" back, wonder what happened).
+export function normalizeFlowTag(raw: string): string | null {
+  const tag = raw.trim().toLowerCase();
+  return tag.length > 0 ? tag : null;
+}
+
+/// Where a flow came from, which is the axis users actually sort on: "the
+/// ones I wrote" vs "the ones I installed" vs "the ones that ship with this
+/// repo". Installed flows are identified by their entry in
+/// `settings.installedRegistryFlows` — matched on filename, which
+/// `registry.ts:154` mints as `installed-<registryId>-<entryId>.yaml`.
+export type FlowOrigin = 'project' | 'installed' | 'mine';
+
+export function flowOrigin(
+  flow: Pick<Flow, 'source' | 'id'>,
+  installed: ReadonlyArray<{ filename: string }> | undefined,
+): FlowOrigin {
+  if (flow.source === 'project') return 'project';
+  const file = `${flow.id}.yaml`;
+  return (installed ?? []).some((i) => i.filename === file) ? 'installed' : 'mine';
+}
+
+/// The project directory a project-layer flow belongs to, recovered from
+/// its on-disk path (`<projectPath>/.overcli/flows/<id>.yaml`). The
+/// storage-layer IPCs (`flows:save` / `flows:delete`) need it to resolve
+/// the file, and a Flow only carries the full path. Undefined for
+/// user-layer flows (which don't need one) and for a project flow whose
+/// path doesn't match the expected shape.
+export function flowProjectPath(
+  flow: Pick<Flow, 'source' | 'filePath'>,
+): string | undefined {
+  if (flow.source !== 'project') return undefined;
+  const m = /^(.*)\/\.overcli\/flows\/[^/]+$/.exec(flow.filePath);
+  return m ? m[1] : undefined;
 }

@@ -83,6 +83,23 @@ describe('openEditor', () => {
     expect(useFlowsStore.getState().editorDraft!.id).toBe('custom');
   });
 
+  it('kind:new suffixes the id when a flow with that id already exists', () => {
+    // A blank flow always starts as `new-flow`; creating a second one must
+    // not reuse the id (the id is the on-disk filename) or it overwrites the
+    // first. Existing `new-flow` and `new-flow-2` force a `-3` suffix.
+    useFlowsStore.setState({
+      flows: [minimalFlow({ id: 'new-flow' }), minimalFlow({ id: 'new-flow-2' })],
+    });
+    useFlowsStore.getState().openEditor({ kind: 'new' });
+    expect(useFlowsStore.getState().editorDraft!.id).toBe('new-flow-3');
+  });
+
+  it('kind:new suffixes a colliding template id too', () => {
+    useFlowsStore.setState({ flows: [minimalFlow({ id: 'custom' })] });
+    useFlowsStore.getState().openEditor({ kind: 'new' }, minimalFlow({ id: 'custom' }));
+    expect(useFlowsStore.getState().editorDraft!.id).toBe('custom-2');
+  });
+
   it('kind:new clears editorSaveError', () => {
     useFlowsStore.setState({ editorSaveError: 'prior error' });
     useFlowsStore.getState().openEditor({ kind: 'new' });
@@ -293,7 +310,7 @@ describe('setStepModel', () => {
   });
 
   it('reuses an existing participant when the model already has one', () => {
-    // The blank flow starts with a 'primary' participant (claude-opus-4-7).
+    // The blank flow starts with a 'primary' participant (claude-opus-5).
     // Switching step 0 back to the same model should reuse that participant.
     const { participants } = useFlowsStore.getState().editorDraft!;
     const existingModel = { backend: participants[0].backend, model: participants[0].model };
@@ -411,5 +428,311 @@ describe('dismissJustSaved', () => {
     useFlowsStore.setState({ justSaved: { name: 'My Flow', at: Date.now() } });
     useFlowsStore.getState().dismissJustSaved();
     expect(useFlowsStore.getState().justSaved).toBeNull();
+  });
+});
+
+// ─── renameFlow ──────────────────────────────────────────────────────────────
+
+describe('renameFlow', () => {
+  beforeEach(() => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'flows:save') return { ok: true, filePath: '/tmp/test.yaml' };
+      if (channel === 'flows:list') return [];
+      return undefined;
+    });
+  });
+
+  it('saves the flow under the new name, keeping its id and layer', async () => {
+    const flow = minimalFlow();
+    const result = await useFlowsStore.getState().renameFlow(flow, 'Renamed', []);
+    expect(result.ok).toBe(true);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:save', {
+      flow: { ...flow, name: 'Renamed' },
+      target: 'user',
+      projectPath: undefined,
+    });
+  });
+
+  it('trims the new name', async () => {
+    await useFlowsStore.getState().renameFlow(minimalFlow(), '  Padded  ', []);
+    const [, args] = mockInvoke.mock.calls.find(([c]) => c === 'flows:save')!;
+    expect((args as { flow: Flow }).flow.name).toBe('Padded');
+  });
+
+  it('derives the projectPath for a project-layer flow', async () => {
+    const flow = minimalFlow({
+      source: 'project',
+      filePath: '/repos/app/.overcli/flows/test-flow.yaml',
+    });
+    await useFlowsStore.getState().renameFlow(flow, 'Renamed', []);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:save', {
+      flow: { ...flow, name: 'Renamed' },
+      target: 'project',
+      projectPath: '/repos/app',
+    });
+  });
+
+  it('rejects a blank name without touching disk', async () => {
+    const result = await useFlowsStore.getState().renameFlow(minimalFlow(), '   ', []);
+    expect(result.ok).toBe(false);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it('no-ops when the name is unchanged', async () => {
+    const flow = minimalFlow();
+    const result = await useFlowsStore.getState().renameFlow(flow, flow.name, []);
+    expect(result.ok).toBe(true);
+    expect(mockInvoke).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a save failure and skips the reload', async () => {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:save' ? { ok: false, error: 'disk full' } : undefined,
+    );
+    const result = await useFlowsStore.getState().renameFlow(minimalFlow(), 'Renamed', []);
+    expect(result).toEqual({ ok: false, error: 'disk full' });
+    expect(mockInvoke).not.toHaveBeenCalledWith('flows:list', expect.anything());
+  });
+
+  it('reloads with every project path so other projects keep their flows', async () => {
+    await useFlowsStore.getState().renameFlow(minimalFlow(), 'Renamed', ['/a', '/b']);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:list', { projectPaths: ['/a', '/b'] });
+  });
+});
+
+// ─── saveDraft ───────────────────────────────────────────────────────────────
+
+describe('saveDraft', () => {
+  beforeEach(() => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'flows:save') return { ok: true, filePath: '/tmp/test.yaml' };
+      if (channel === 'flows:delete') return { ok: true };
+      if (channel === 'flows:list') return [];
+      return undefined;
+    });
+  });
+
+  function deleteCalls() {
+    return mockInvoke.mock.calls.filter(([c]) => c === 'flows:delete');
+  }
+
+  it('removes the old file when the id changed in the same layer', async () => {
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ id: 'renamed-flow' });
+    await useFlowsStore.getState().saveDraft('user');
+    expect(deleteCalls()).toEqual([
+      ['flows:delete', { flowId: 'test-flow', source: 'user', projectPath: undefined }],
+    ]);
+  });
+
+  it('leaves the original alone when only the display name changed', async () => {
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ name: 'Renamed' });
+    await useFlowsStore.getState().saveDraft('user');
+    expect(deleteCalls()).toEqual([]);
+  });
+
+  it('leaves the original alone when saving a copy into the other layer', async () => {
+    // Different layer = the user deliberately targeted the other layer.
+    // That's a copy, not a rename — deleting the source would be data loss.
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ id: 'renamed-flow' });
+    await useFlowsStore.getState().saveDraft('project', '/repos/app');
+    expect(deleteCalls()).toEqual([]);
+  });
+
+  it('never deletes when creating a new flow', async () => {
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'new' });
+    await useFlowsStore.getState().saveDraft('user');
+    expect(deleteCalls()).toEqual([]);
+  });
+
+  it('does not delete when the save itself failed', async () => {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:save' ? { ok: false, error: 'nope' } : { ok: true },
+    );
+    useFlowsStore.setState({ flows: [minimalFlow()] });
+    useFlowsStore.getState().openEditor({ kind: 'editing', flowId: 'test-flow' });
+    useFlowsStore.getState().updateDraft({ id: 'renamed-flow' });
+    const result = await useFlowsStore.getState().saveDraft('user');
+    expect(result.ok).toBe(false);
+    expect(deleteCalls()).toEqual([]);
+  });
+});
+
+// ─── saveDraftedFlow ─────────────────────────────────────────────────────────
+
+describe('saveDraftedFlow', () => {
+  beforeEach(() => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'flows:save') return { ok: true, filePath: '/tmp/saved.yaml' };
+      if (channel === 'flows:list') return [];
+      return undefined;
+    });
+  });
+
+  function savePayload() {
+    return mockInvoke.mock.calls.find(([c]) => c === 'flows:save')?.[1];
+  }
+
+  it('saves an AI draft to the user layer and reports the stored flow', async () => {
+    useFlowsStore.setState({ flows: [] });
+    const result = await useFlowsStore
+      .getState()
+      .saveDraftedFlow(minimalFlow({ id: 'review-my-prs' }), []);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.id).toBe('review-my-prs');
+      expect(result.flow.filePath).toBe('/tmp/saved.yaml');
+    }
+    expect(savePayload()).toMatchObject({ target: 'user' });
+  });
+
+  it('suffixes an id that collides so a second draft cannot overwrite the first', async () => {
+    // The drafter derives the id from the description, so drafting "review
+    // my PRs" twice produces the same id twice. Without the suffix the
+    // second save silently replaces a flow the user already ran.
+    useFlowsStore.setState({ flows: [minimalFlow({ id: 'review-my-prs' })] });
+    const result = await useFlowsStore
+      .getState()
+      .saveDraftedFlow(minimalFlow({ id: 'review-my-prs' }), []);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow.id).toBe('review-my-prs-2');
+    expect(savePayload()).toMatchObject({ flow: { id: 'review-my-prs-2' } });
+  });
+
+  it('keeps counting past the first collision', async () => {
+    useFlowsStore.setState({
+      flows: [minimalFlow({ id: 'audit' }), minimalFlow({ id: 'audit-2' })],
+    });
+    const result = await useFlowsStore.getState().saveDraftedFlow(minimalFlow({ id: 'audit' }), []);
+
+    if (result.ok) expect(result.flow.id).toBe('audit-3');
+  });
+
+  it('forces the user layer even if the draft claims otherwise', async () => {
+    // A drafted flow has no file, so `source` is whatever the parser
+    // defaulted to. Saving it as 'project' would try to write into a
+    // repo's .overcli/flows without a project path.
+    useFlowsStore.setState({ flows: [] });
+    await useFlowsStore
+      .getState()
+      .saveDraftedFlow(minimalFlow({ id: 'x', source: 'project' }), []);
+
+    expect(savePayload()).toMatchObject({ target: 'user', flow: { source: 'user' } });
+  });
+
+  it('surfaces a save failure without reloading the library', async () => {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:save' ? { ok: false, error: 'disk full' } : [],
+    );
+    useFlowsStore.setState({ flows: [] });
+    const result = await useFlowsStore.getState().saveDraftedFlow(minimalFlow(), []);
+
+    expect(result).toEqual({ ok: false, error: 'disk full' });
+    expect(mockInvoke.mock.calls.filter(([c]) => c === 'flows:list')).toEqual([]);
+  });
+
+  it('reloads the library so the new flow shows up without a refresh', async () => {
+    useFlowsStore.setState({ flows: [] });
+    await useFlowsStore.getState().saveDraftedFlow(minimalFlow(), ['/repos/app']);
+
+    expect(mockInvoke.mock.calls.some(([c]) => c === 'flows:list')).toBe(true);
+  });
+});
+
+// ─── renameRun ───────────────────────────────────────────────────────────────
+
+describe('renameRun', () => {
+  beforeEach(() => {
+    mockInvoke.mockResolvedValue({ ok: true });
+    useFlowsStore.getState().applyRunUpdate(minimalRun('r1'));
+  });
+
+  it('patches the run optimistically and tells the main process', async () => {
+    await useFlowsStore.getState().renameRun('r1', 'Login work');
+    expect(useFlowsStore.getState().runs['r1'].title).toBe('Login work');
+    expect(mockInvoke).toHaveBeenCalledWith('flows:renameRun', {
+      runId: 'r1',
+      title: 'Login work',
+    });
+  });
+
+  it('trims the title', async () => {
+    await useFlowsStore.getState().renameRun('r1', '  Login work  ');
+    expect(useFlowsStore.getState().runs['r1'].title).toBe('Login work');
+  });
+
+  it('clears the title when handed a blank string', async () => {
+    await useFlowsStore.getState().renameRun('r1', 'Login work');
+    await useFlowsStore.getState().renameRun('r1', '   ');
+    expect(useFlowsStore.getState().runs['r1'].title).toBeUndefined();
+    expect(mockInvoke).toHaveBeenLastCalledWith('flows:renameRun', { runId: 'r1', title: '' });
+  });
+
+  it('caps an absurdly long title', async () => {
+    await useFlowsStore.getState().renameRun('r1', 'x'.repeat(500));
+    expect(useFlowsStore.getState().runs['r1'].title).toHaveLength(200);
+  });
+
+  it('still calls through for an unknown run so the main process can answer', async () => {
+    await useFlowsStore.getState().renameRun('ghost', 'Nope');
+    expect(useFlowsStore.getState().runs['ghost']).toBeUndefined();
+    expect(mockInvoke).toHaveBeenCalledWith('flows:renameRun', { runId: 'ghost', title: 'Nope' });
+  });
+});
+
+// ─── browseRegistries ─────────────────────────────────────────────────────────
+
+describe('browseRegistries', () => {
+  // The search boxes call this from an effect guarded on `registryLoaded`,
+  // which only flips once the fetch RESOLVES — so without in-flight sharing,
+  // every keystroke before the first response starts another index fetch.
+  it('shares one fetch between callers that overlap it', async () => {
+    let release!: (v: unknown) => void;
+    mockInvoke.mockReturnValueOnce(new Promise((r) => { release = r; }));
+
+    const first = useFlowsStore.getState().browseRegistries();
+    const second = useFlowsStore.getState().browseRegistries();
+    const third = useFlowsStore.getState().browseRegistries();
+
+    release({ entries: [{ id: 'a' }], errors: [] });
+    await Promise.all([first, second, third]);
+
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(useFlowsStore.getState().registryLoaded).toBe(true);
+    expect(useFlowsStore.getState().registryEntries).toEqual([{ id: 'a' }]);
+  });
+
+  it('fetches again once the shared fetch has settled', async () => {
+    mockInvoke.mockResolvedValue({ entries: [], errors: [] });
+
+    await useFlowsStore.getState().browseRegistries();
+    await useFlowsStore.getState().browseRegistries();
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  // A force refresh is an explicit "get me fresh data" — answering it with
+  // an in-flight cached read would silently ignore the request.
+  it('never joins an in-flight fetch when forced', async () => {
+    let release!: (v: unknown) => void;
+    mockInvoke.mockReturnValueOnce(new Promise((r) => { release = r; }));
+    mockInvoke.mockResolvedValue({ entries: [], errors: [] });
+
+    const background = useFlowsStore.getState().browseRegistries();
+    const forced = useFlowsStore.getState().browseRegistries(true);
+
+    release({ entries: [], errors: [] });
+    await Promise.all([background, forced]);
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenLastCalledWith('flows:browseRegistry', { force: true });
   });
 });

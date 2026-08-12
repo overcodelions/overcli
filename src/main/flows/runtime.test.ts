@@ -9,6 +9,8 @@ import {
   extractOutput,
   isGatingReviewerRole,
   isReviewApproved,
+  stepParticipantKey,
+  stuckStepMessage,
 } from './runtime';
 
 describe('extractOutput', () => {
@@ -136,6 +138,17 @@ describe('isReviewApproved', () => {
     expect(isReviewApproved('approved')).toBe(true);
   });
 
+  it('approves through a leading verdict label', () => {
+    expect(isReviewApproved('Verdict: APPROVED (against the current repo state)')).toBe(true);
+    expect(isReviewApproved('# Review\n\n**Verdict: APPROVED**\nrationale')).toBe(true);
+    expect(isReviewApproved('Decision - APPROVED')).toBe(true);
+    expect(isReviewApproved('Status: APPROVED')).toBe(true);
+  });
+
+  it('does NOT approve a negated labelled verdict', () => {
+    expect(isReviewApproved('Verdict: NOT APPROVED — needs work')).toBe(false);
+  });
+
   it('does NOT approve an explicit rejection', () => {
     expect(isReviewApproved('Status: REJECTED\nThe diff does not implement the plan.')).toBe(
       false,
@@ -149,5 +162,43 @@ describe('isReviewApproved', () => {
   it('does NOT approve "NOT APPROVED"', () => {
     expect(isReviewApproved('NOT APPROVED — needs work')).toBe(false);
     expect(isReviewApproved('This is not approved yet.')).toBe(false);
+  });
+});
+
+describe('stuckStepMessage', () => {
+  // Regression: a run only ever leaves `running` on an inbound event
+  // (`running: false` → onStepFinished). A step whose backend died quietly
+  // — or whose send never reached a CLI at all — held the run there
+  // forever, and since that transition isn't checkpointed, a restart
+  // couldn't recover it either.
+  const timeoutMs = 30 * 60_000;
+
+  it('says nothing while the step is within its silence budget', () => {
+    expect(stuckStepMessage({ stepId: 'build', silentMs: 29 * 60_000, timeoutMs })).toBeNull();
+  });
+
+  it('is inclusive at the boundary', () => {
+    expect(stuckStepMessage({ stepId: 'build', silentMs: timeoutMs, timeoutMs })).toBeNull();
+  });
+
+  it('names the step and how long it was silent once past the timeout', () => {
+    expect(stuckStepMessage({ stepId: 'build', silentMs: 45 * 60_000, timeoutMs })).toBe(
+      'Step "build" produced no output for 45 minutes — treating it as failed.',
+    );
+  });
+});
+
+describe('stepParticipantKey', () => {
+  it('files a step under its participant so steps share one conversation', () => {
+    expect(stepParticipantKey({ id: 'build', participantId: 'impl' })).toBe('impl');
+  });
+
+  // Regression: `executeStep` minted the conversation under the step id
+  // when participantId was blank, but the `running: false` guard looked it
+  // up under the blank participantId. The lookup missed, the step's own
+  // completion event was discarded as "a different conversation", and the
+  // run spun on that step forever.
+  it('falls back to the step id when no participant is assigned', () => {
+    expect(stepParticipantKey({ id: 'build', participantId: '' })).toBe('build');
   });
 });

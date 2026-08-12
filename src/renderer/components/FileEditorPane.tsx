@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -8,10 +9,11 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { useStore } from '../store';
+import type { FileTab } from '../uiSlice';
 import { useFlowsStore } from '../flowsStore';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
-import type { ArtifactPreviewResult, FileInfoResult } from '@shared/types';
+import type { ArtifactPreviewResult, FileInfoResult, SymbolCandidate } from '@shared/types';
 import hljs from 'highlight.js';
 import {
   canPreviewFile,
@@ -19,6 +21,8 @@ import {
   isBinaryPreviewKind,
   isUnsupportedBinaryFile,
 } from '../filePreview';
+import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
+import { dirName, fileName, tabLabels } from '../tabLabels';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
@@ -32,6 +36,27 @@ import { CodeMirrorEditor } from './CodeMirrorEditor';
 const USE_CODEMIRROR_EDITOR = true;
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
+/// Cmd-click go-to-definition state. `loading` shows a inline chip (a
+/// model-tier lookup takes a second or two); `choose` shows the candidate
+/// picker when the lookup came back ambiguous.
+type SymbolNavState =
+  | { status: 'loading'; symbol: string }
+  | { status: 'error'; symbol: string; error: string }
+  | {
+      status: 'choose';
+      symbol: string;
+      /// The clicked line, carried so a later "Refine" can re-send the same
+      /// context the first lookup used.
+      line: number;
+      candidates: SymbolCandidate[];
+      /// The grep tier produced this list and a model could narrow it down.
+      /// Offered as a button rather than done automatically: grep answers in
+      /// milliseconds, the model tier costs seconds, and most of the time the
+      /// right candidate is already visible.
+      refinable?: boolean;
+      /// A refine pass is running for the list currently on screen.
+      refining?: boolean;
+    };
 type LargeTextPreview = {
   content: string;
   truncated: boolean;
@@ -39,7 +64,14 @@ type LargeTextPreview = {
   previewBytes: number;
 };
 
-export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string | null } = {}) {
+/// Memoized for the same reason FileTree is: both of its parents
+/// (ConversationPane, ExplorerPane) re-render on every pointermove while a
+/// divider is dragged, and none of that changes what the editor shows. Its
+/// own store subscriptions still re-render it when the file, tab, mode or
+/// buffer actually changes.
+export const FileEditorPane = memo(function FileEditorPane({
+  rootPathOverride,
+}: { rootPathOverride?: string | null } = {}) {
   const convId = useStore((s) => s.selectedConversationId);
   const convRoot = useConversationRoot(convId);
   const rootPath = rootPathOverride ?? convRoot;
@@ -77,8 +109,12 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       name: w.name,
       path: w.worktreePath,
       projectPath: w.projectPath,
-      baseBranch:
-        flowRun.baselineCommitsByMember?.[w.name]?.commit ?? flowRun.baseBranch ?? null,
+      // Branch and fork point stay in separate slots — main resolves the
+      // live divergence point from the branch and uses the fork point only
+      // as a floor. Collapsing them made every upstream commit the branch
+      // had taken in show up as this run's work.
+      baseBranch: flowRun.baseBranch ?? null,
+      baselineCommit: flowRun.baselineCommitsByMember?.[w.name]?.commit ?? null,
     }));
   }, [flowRun]);
   const workspaceMembers = useMemo(
@@ -89,10 +125,9 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   // against the captured fork commit (else the base branch) so a flow
   // that hasn't committed still shows its work instead of an empty/HEAD
   // diff.
-  const flowSingleBase =
-    flowRun && !flowRun.workspaceWorktrees?.length
-      ? flowRun.baselineCommit ?? flowRun.baseBranch ?? null
-      : null;
+  const flowSingle = flowRun && !flowRun.workspaceWorktrees?.length ? flowRun : null;
+  const flowSingleBase = flowSingle?.baseBranch ?? null;
+  const flowSingleBaseline = flowSingle?.baselineCommit ?? null;
   const path = useStore((s) => s.openFilePath);
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
@@ -105,12 +140,30 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
   const [largeTextPreview, setLargeTextPreview] = useState<LargeTextPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [dirty, setDirty] = useState(false);
+  // Unsaved-edit tracking is split: the text lives in ../fileBuffers (a
+  // plain module Map, so keystrokes never touch the store) and the flag
+  // lives in the store, keyed by path, so a tab switch preserves both and
+  // the tab strip can show a dot on files that aren't in view.
+  const markFileDirty = useStore((s) => s.markFileDirty);
+  const clearFileDirty = useStore((s) => s.clearFileDirty);
+  const dirty = useStore((s) => (path ? !!s.dirtyFiles[path] : false));
   const [copiedPath, setCopiedPath] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  // True when the diff is a brand-new untracked file — it has no HEAD
+  // version to revert to, so we hide the Revert action for it.
+  const [diffUntracked, setDiffUntracked] = useState(false);
+  // Bumped to force a re-read of the file + diff after a revert, so the
+  // view reflects the restored-to-HEAD content.
+  const [refreshToken, setRefreshToken] = useState(0);
   const previewKind = detectFilePreviewKind(path);
-  const previewable = canPreviewFile(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
   const unsupportedBinary = isUnsupportedBinaryFile(path);
+  // The file isn't on disk — almost always because the agent deleted it.
+  // There's nothing to read, edit or preview, so the only view that means
+  // anything is the diff (which renders the deletion hunk).
+  const missingFile =
+    fileInfo?.requestedPath === path && !fileInfo.ok && !!fileInfo.missing;
+  const previewable = canPreviewFile(path) && !missingFile;
   const blockedFile =
     (fileInfo?.requestedPath === path &&
       fileInfo.ok &&
@@ -118,13 +171,124 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     (unsupportedBinary && !!error);
 
   const openFile = useStore((s) => s.openFile);
+  const tabs = useStore((s) => s.tabs);
+  const retargetTab = useStore((s) => s.retargetTab);
+  const selectTab = useStore((s) => s.selectTab);
+  const selectAdjacentTab = useStore((s) => s.selectAdjacentTab);
+  const closeTab = useStore((s) => s.closeTab);
+  const dirtyFiles = useStore((s) => s.dirtyFiles);
+  /// Closing a tab throws its unsaved buffer away, so ask first. Matches
+  /// the ExplorerPane compare-view prompt.
+  const requestCloseTab = useCallback(
+    (target: string) => {
+      if (
+        useStore.getState().dirtyFiles[target] &&
+        !window.confirm(`Discard unsaved changes to ${fileName(target)}?`)
+      ) {
+        return;
+      }
+      closeTab(target);
+    },
+    [closeTab],
+  );
+
+  const [symbolNav, setSymbolNav] = useState<SymbolNavState | null>(null);
+  // Monotonic token so a slow lookup can't land after the user has clicked
+  // a different symbol (or closed the file) and clobber the newer state.
+  const symbolNavSeq = useRef(0);
+  const jumpToCandidate = useCallback(
+    (candidate: SymbolCandidate) => {
+      setSymbolNav(null);
+      openFile(candidate.absolutePath, {
+        startLine: candidate.line,
+        endLine: candidate.line,
+        requestId: crypto.randomUUID(),
+      });
+    },
+    [openFile],
+  );
+  const handleSymbolNavigate = useCallback(
+    async ({ symbol, line }: { symbol: string; line: number }) => {
+      if (!path || !rootPath) return;
+      const seq = ++symbolNavSeq.current;
+      setSymbolNav({ status: 'loading', symbol });
+      // NOTE: the lookup reads the file from disk, so with unsaved edits in
+      // the buffer the line we pass as context can be off by however much
+      // the user has typed. The symbol itself is still right, which is what
+      // actually drives the search.
+      const result = await window.overcli.invoke('symbols:findDefinition', {
+        cwd: rootPath,
+        filePath: path,
+        symbol,
+        line,
+      });
+      if (seq !== symbolNavSeq.current) return;
+      if (!result.ok) {
+        setSymbolNav({ status: 'error', symbol, error: result.error });
+        return;
+      }
+      if (result.candidates.length === 1) {
+        jumpToCandidate(result.candidates[0]);
+        return;
+      }
+      setSymbolNav({
+        status: 'choose',
+        symbol,
+        line,
+        candidates: result.candidates,
+        refinable: result.refinable,
+      });
+    },
+    [path, rootPath, jumpToCandidate],
+  );
+  /// Ask a fast model to pick between grep's candidates. Same seq guard as
+  /// the initial lookup: a refine that lands after the user has clicked
+  /// elsewhere is dropped rather than replacing the newer state.
+  const refineSymbolNav = useCallback(
+    async (symbol: string, line: number) => {
+      if (!path || !rootPath) return;
+      const seq = symbolNavSeq.current;
+      setSymbolNav((cur) =>
+        cur?.status === 'choose' ? { ...cur, refining: true } : cur,
+      );
+      const result = await window.overcli.invoke('symbols:refineDefinition', {
+        cwd: rootPath,
+        filePath: path,
+        symbol,
+        line,
+      });
+      if (seq !== symbolNavSeq.current) return;
+      if (!result.ok) {
+        // Keep the grep candidates on screen — they're still the best thing
+        // we have — and just say the refine didn't land.
+        setSymbolNav((cur) =>
+          cur?.status === 'choose'
+            ? { ...cur, refining: false, refinable: false }
+            : { status: 'error', symbol, error: result.error },
+        );
+        return;
+      }
+      if (result.candidates.length === 1) {
+        jumpToCandidate(result.candidates[0]);
+        return;
+      }
+      setSymbolNav({ status: 'choose', symbol, line, candidates: result.candidates });
+    },
+    [path, rootPath, jumpToCandidate],
+  );
+  // Drop any open picker when the file changes — its candidates were
+  // resolved against the file we just navigated away from.
+  useEffect(() => {
+    symbolNavSeq.current++;
+    setSymbolNav(null);
+  }, [path]);
+
   useEffect(() => {
     if (!path) return;
     let cancelled = false;
     if (unsupportedBinary) {
       setLoading(false);
       setError('This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.');
-      setDirty(false);
       setArtifactPreview(null);
       setLargeTextPreview(null);
       setContent('');
@@ -134,10 +298,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     }
     setLoading(true);
     setError(null);
-    setDirty(false);
     setArtifactPreview(null);
     setLargeTextPreview(null);
     setFileInfo(null);
+    // Unsaved edits beat disk. This effect also runs when the user comes
+    // back to a tab (or reopens a file they closed with edits pending), and
+    // re-reading from disk there would silently throw their work away.
+    // Read imperatively so `dirtyFiles` isn't a dependency — it changes on
+    // the first keystroke, which must not re-trigger the load.
+    const buffered = useStore.getState().dirtyFiles[path] ? readBuffer(path) : undefined;
     const isWorkspaceMemberPath =
       !!workspaceMembers &&
       workspaceMembers.some((m) => path.startsWith(`${m.name}/`));
@@ -146,15 +315,27 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       if (cancelled) return;
       setFileInfo({ ...info, requestedPath: path });
       if (!info.ok) {
-        setError(info.error);
+        // A deleted file isn't an error to surface — the diff effect picks
+        // it up and renders the deletion. Anything else (unreadable, outside
+        // a project) still gets the raw message.
+        if (!info.missing) setError(info.error);
+        setContent('');
         return;
       }
       if (!isWorkspaceMemberPath && info.resolvedPath && info.resolvedPath !== path) {
-        openFile(info.resolvedPath, highlight ?? undefined, mode);
+        // Same file, better path. Retarget rather than re-open: a second
+        // openFile would leave two tabs on one file, and it would also
+        // yank the editor back to the inline slot mid-load when a subagent
+        // opened the file into the side pane.
+        retargetTab(path, info.resolvedPath);
         return;
       }
       if (info.tooLarge || info.unsupportedBinary) {
         setError(info.error ?? 'File is not safe to open.');
+        return;
+      }
+      if (buffered != null) {
+        setContent(buffered);
         return;
       }
       if (binaryPreview) {
@@ -194,34 +375,49 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     return () => {
       cancelled = true;
     };
-  }, [binaryPreview, highlight, mode, openFile, path, rootPath, unsupportedBinary, workspaceMembers]);
+  }, [binaryPreview, highlight, mode, retargetTab, path, rootPath, unsupportedBinary, workspaceMembers, refreshToken]);
 
   // For workspace conversations the display root is a symlink dir and
   // not a git repo, so paths in the ChangesBar come in as
   // "<member>/…path". Peel that prefix to run git in the real project.
   const diffTarget = useMemo(
-    () => resolveDiffTarget(path, rootPath, workspaceMembers, conv?.baseBranch ?? flowSingleBase ?? null),
-    [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase],
+    () =>
+      resolveDiffTarget(
+        path,
+        rootPath,
+        workspaceMembers,
+        conv?.baseBranch ?? flowSingleBase ?? null,
+        flowSingleBaseline,
+      ),
+    [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase, flowSingleBaseline],
   );
   useEffect(() => {
-    if (!path || mode !== 'diff' || !diffTarget) return;
+    // A missing file has no readable content, so we fetch its diff whatever
+    // the mode says — the deletion is the only thing left to show.
+    if (!path || !diffTarget || (mode !== 'diff' && !missingFile)) return;
     if (!fileInfo || fileInfo.requestedPath !== path) return;
-    if (!fileInfo.ok) {
+    // A file that's gone from disk still has a diff — the deletion itself.
+    // Only bail on failures that aren't "it isn't there".
+    const deleted = !fileInfo.ok && !!fileInfo.missing;
+    if (!fileInfo.ok && !deleted) {
       setDiffText('');
       setError(fileInfo.error);
       return;
     }
-    if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
-      setDiffText('');
-      setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
-      return;
-    }
-    if (unsupportedBinary) {
-      setDiffText('');
-      return;
+    if (fileInfo.ok) {
+      if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
+        setDiffText('');
+        setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
+        return;
+      }
+      if (unsupportedBinary) {
+        setDiffText('');
+        return;
+      }
     }
     setLoading(true);
     setError(null);
+    setDiffUntracked(false);
     (async () => {
       // Agents commit as they go, so `HEAD` already includes their
       // edits — diffing HEAD returns empty and the no-index fallback
@@ -229,7 +425,20 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       // the agent's base branch, diff against it to roll committed and
       // uncommitted changes into one view. Falls back to HEAD for
       // non-agent file views (explorer, project root).
-      const baseRef = diffTarget.baseBranch ?? 'HEAD';
+      //
+      // Resolve through main so this file's diff is measured from the same
+      // live divergence point the ChangesBar and review sheet use — against
+      // a frozen fork point, a file that upstream also touched renders
+      // other people's commits as if the run had made them.
+      let baseRef = 'HEAD';
+      if (diffTarget.baseBranch || diffTarget.baselineCommit) {
+        const resolved = await window.overcli.invoke('git:resolveDiffBase', {
+          cwd: diffTarget.cwd,
+          preferredBranch: diffTarget.baseBranch,
+          fallbackCommit: diffTarget.baselineCommit,
+        });
+        baseRef = resolved.commit;
+      }
       const tracked = await window.overcli.invoke('git:run', {
         args: ['diff', baseRef, '--', diffTarget.path],
         cwd: diffTarget.cwd,
@@ -241,12 +450,21 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       // add. `git ls-files` exits 0 with the path on stdout iff git
       // knows about the file. Untracked files print nothing, so the
       // fallback fires only for genuine adds.
+      if (deleted) {
+        // No `--no-index` fallback for a file that isn't on disk — it would
+        // just fail. An empty diff here means the deletion is already part
+        // of `baseRef`, or the path never existed; the missing-file panel
+        // covers both.
+        setDiffText(text);
+        return;
+      }
       if (tracked.exitCode === 0 && !text.trim()) {
         const ls = await window.overcli.invoke('git:run', {
           args: ['ls-files', '--', diffTarget.path],
           cwd: diffTarget.cwd,
         });
         const isTracked = ls.exitCode === 0 && !!ls.stdout?.trim();
+        setDiffUntracked(!isTracked);
         if (!isTracked) {
           const untracked = await window.overcli.invoke('git:run', {
             args: ['diff', '--no-index', '--', '/dev/null', diffTarget.path],
@@ -265,14 +483,80 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
     })()
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false));
-  }, [path, mode, diffTarget, unsupportedBinary, fileInfo]);
+  }, [path, mode, diffTarget, unsupportedBinary, fileInfo, missingFile, refreshToken]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
-    const res = await window.overcli.invoke('fs:writeFile', { path, content });
-    if (res.ok) setDirty(false);
-    else setError(res.error);
-  }, [path, dirty, content]);
+    // Save to the file we actually read. `path` stays member-prefixed and
+    // relative for workspace/flow tabs (see the retarget skip in the load
+    // effect), and re-resolving it at write time is a second chance to
+    // land somewhere else — the project's main checkout rather than the
+    // run's worktree. `resolvedPath` is the file whose bytes are in the
+    // editor, so writing there can't disagree with what's on screen.
+    // Falls back to the hint (main anchors it on `rootPath`) when there's
+    // no fresh info — e.g. saving a file that was deleted from disk.
+    const target =
+      fileInfo?.requestedPath === path && fileInfo.ok && fileInfo.resolvedPath
+        ? fileInfo.resolvedPath
+        : path;
+    const res = await window.overcli.invoke('fs:writeFile', {
+      path: target,
+      content,
+      rootPath: rootPath ?? undefined,
+    });
+    if (res.ok) {
+      clearFileDirty(path);
+      dropBuffer(path);
+    } else setError(res.error);
+  }, [path, dirty, content, clearFileDirty, rootPath, fileInfo]);
+
+  // Discard all uncommitted changes to the current file, back to HEAD.
+  // Only offered on HEAD-based diffs (see `canRevert`) where "revert" is
+  // unambiguous — destructive, so we confirm first. For a deleted file the
+  // same checkout brings it back, so it's offered as "Restore" instead.
+  const revertFile = useCallback(async () => {
+    if (!diffTarget || reverting) return;
+    const name = diffTarget.path.split('/').pop() || diffTarget.path;
+    const prompt = missingFile
+      ? `Restore ${name}?\n\nThis brings the deleted file back from HEAD.`
+      : `Revert ${name}?\n\nThis discards all uncommitted changes to it and cannot be undone.`;
+    if (!window.confirm(prompt)) {
+      return;
+    }
+    setReverting(true);
+    setError(null);
+    try {
+      const res = await window.overcli.invoke('git:restoreFile', {
+        cwd: diffTarget.cwd,
+        path: diffTarget.path,
+      });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
+      if (path) {
+        clearFileDirty(path);
+        dropBuffer(path);
+      }
+      setRefreshToken((t) => t + 1);
+    } finally {
+      setReverting(false);
+    }
+  }, [diffTarget, reverting, missingFile, path, clearFileDirty]);
+
+  /// Every edit in either editor. Stashes the text where a tab switch can
+  /// find it again and flags the path dirty — the flag only on the first
+  /// keystroke, since a store write per character would notify every
+  /// subscriber in the app for nothing.
+  const onEdit = useCallback(
+    (v: string) => {
+      setContent(v);
+      if (!path) return;
+      for (const evicted of stashBuffer(path, v)) clearFileDirty(evicted);
+      if (!dirty) markFileDirty(path);
+    },
+    [path, dirty, markFileDirty, clearFileDirty],
+  );
 
   // Keyboard: Cmd/Ctrl+S or Cmd/Ctrl+Enter saves; Cmd/Ctrl+Shift+D
   // toggles between Diff and File modes (Preview is button-only).
@@ -293,12 +577,27 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       }
       if ((e.key === 'd' || e.key === 'D') && e.shiftKey) {
         e.preventDefault();
+        if (missingFile) return; // nothing to toggle to — the file is gone
         setMode(mode === 'diff' ? 'edit' : 'diff');
+        return;
+      }
+      // Tab navigation. ⌥⌘←/→ cycles (⌃Tab is CodeMirror's indent-with-tab
+      // territory and ⌘W belongs to the window), ⌘1-9 jumps by position.
+      if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        selectAdjacentTab(e.key === 'ArrowRight' ? 1 : -1);
+        return;
+      }
+      if (!e.shiftKey && !e.altKey && e.key >= '1' && e.key <= '9') {
+        const target = tabs[Number(e.key) - 1];
+        if (!target) return;
+        e.preventDefault();
+        selectTab(target.path);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [path, mode, save, setMode]);
+  }, [path, mode, save, setMode, missingFile, tabs, selectTab, selectAdjacentTab]);
 
   // The folder icon (conversation header) and the project/workspace
   // Explore buttons now route through ExplorerPane, which owns its
@@ -311,9 +610,31 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
       </div>
     );
   }
+  // Offer Revert only on a HEAD-based diff with real changes to a tracked
+  // file — that's where "discard uncommitted changes" is unambiguous.
+  // Agent/flow views diff against a base branch (baseBranch set) and can
+  // include committed work, so reverting there would mean something riskier
+  // than a checkout; we leave those out.
+  const canRevert =
+    (mode === 'diff' || missingFile) &&
+    !loading &&
+    !error &&
+    !!diffText.trim() &&
+    !diffUntracked &&
+    !!diffTarget &&
+    diffTarget.baseBranch == null;
   return (
     <div className="flex flex-col h-full">
       <div className="flex flex-col flex-1 min-h-0">
+        {tabs.length > 1 && (
+          <FileTabStrip
+            tabs={tabs}
+            activePath={path}
+            dirtyFiles={dirtyFiles}
+            onSelect={selectTab}
+            onClose={requestCloseTab}
+          />
+        )}
         <div className="flex items-center justify-between px-3 py-2 border-b border-card">
           <div className="min-w-0 flex items-center gap-2">
             <div
@@ -338,16 +659,26 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             >
               {copiedPath ? 'Copied' : 'Copy'}
             </button>
-            <button
-              onClick={async () => {
-                const res = await window.overcli.invoke('fs:openPath', path);
-                if (!res.ok) setError(res.error);
-              }}
-              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
-              title="Open in default app (e.g. VS Code)"
-            >
-              Open
-            </button>
+            {!missingFile && (
+              <button
+                onClick={async () => {
+                  const res = await window.overcli.invoke('fs:openPath', path);
+                  if (!res.ok) setError(res.error);
+                }}
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+                title="Open in default app (e.g. VS Code)"
+              >
+                Open
+              </button>
+            )}
+            {missingFile && (
+              <span
+                title="This file is no longer on disk"
+                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium bg-red-500/15 text-red-700 dark:text-red-200"
+              >
+                deleted
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
@@ -378,10 +709,15 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
               )}
               <button
                 onClick={() => setMode('edit')}
-                title="Toggle Diff/File (⌘⇧D)"
+                disabled={missingFile}
+                title={
+                  missingFile
+                    ? 'This file is no longer on disk — only the diff is available'
+                    : 'Toggle Diff/File (⌘⇧D)'
+                }
                 className={
-                  'px-2.5 py-1 ' +
-                  (mode === 'edit'
+                  'px-2.5 py-1 disabled:opacity-40 disabled:cursor-not-allowed ' +
+                  (mode === 'edit' && !missingFile
                     ? 'bg-accent text-surface'
                     : 'text-ink hover:bg-card-strong')
                 }
@@ -389,6 +725,31 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
                 File
               </button>
             </div>
+            {canRevert && (
+              <button
+                onClick={() => void revertFile()}
+                disabled={reverting}
+                title={
+                  missingFile
+                    ? 'Bring this deleted file back (git checkout HEAD)'
+                    : 'Discard all uncommitted changes to this file (git checkout HEAD)'
+                }
+                className={
+                  'text-xs font-medium px-2.5 py-1 rounded border border-card disabled:opacity-40 ' +
+                  (missingFile
+                    ? 'text-emerald-300 hover:text-emerald-200 hover:bg-emerald-500/10'
+                    : 'text-red-300 hover:text-red-200 hover:bg-red-500/10')
+                }
+              >
+                {missingFile
+                  ? reverting
+                    ? 'Restoring…'
+                    : 'Restore'
+                  : reverting
+                    ? 'Reverting…'
+                    : 'Revert'}
+              </button>
+            )}
             {dirty && (
               <button
                 onClick={() => void save()}
@@ -400,19 +761,42 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
             )}
             <button
               onClick={closeFile}
+              title={tabs.length > 1 ? 'Close the editor (all tabs)' : 'Close the editor'}
               className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong"
             >
               ✕
             </button>
           </div>
         </div>
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div className="relative flex-1 min-h-0 overflow-auto">
+          {symbolNav && (
+            <SymbolNavOverlay
+              state={symbolNav}
+              onPick={jumpToCandidate}
+              onRefine={(symbol, line) => void refineSymbolNav(symbol, line)}
+              onDismiss={() => {
+                symbolNavSeq.current++;
+                setSymbolNav(null);
+              }}
+            />
+          )}
           {loading ? (
             <div className="p-4 text-xs text-ink-faint">Loading…</div>
           ) : blockedFile ? (
             <BlockedFilePanel path={path} message={error ?? 'This file cannot be previewed in Overcli.'} />
           ) : error ? (
             <div className="p-4 text-xs text-red-300">{error}</div>
+          ) : missingFile ? (
+            diffText.trim() ? (
+              <>
+                <div className="px-4 py-2 text-xs text-ink-muted border-b border-card">
+                  This file was deleted. Showing the diff of what it contained.
+                </div>
+                <UnifiedDiffBody text={diffText} />
+              </>
+            ) : (
+              <MissingFilePanel path={path} />
+            )
           ) : mode === 'diff' ? (
             diffText.trim() ? (
               <UnifiedDiffBody text={diffText} />
@@ -440,25 +824,277 @@ export function FileEditorPane({ rootPathOverride }: { rootPathOverride?: string
           ) : USE_CODEMIRROR_EDITOR ? (
             <CodeMirrorEditor
               content={content}
-              onChange={(v) => {
-                setContent(v);
-                setDirty(true);
-              }}
+              onChange={onEdit}
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
+              onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
             />
           ) : (
             <Editor
               content={content}
-              onChange={(v) => {
-                setContent(v);
-                setDirty(true);
-              }}
+              onChange={onEdit}
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
             />
           )}
         </div>
+      </div>
+    </div>
+  );
+});
+
+/// Tab strip above the editor header. Rendered only with more than one
+/// file open, so a single-file view looks exactly as it did before tabs
+/// existed and the narrow editor pane doesn't lose a row to a strip of one.
+///
+/// The header below still shows the full path of the active file, so tabs
+/// stay short: name only, with one directory level when names collide.
+///
+/// Once the tabs outrun the pane the strip scrolls, and a scrolled-away tab
+/// is unreachable by mouse (the scrollbar is hidden). Two things keep every
+/// file in reach: the active tab is scrolled back into view whenever it
+/// changes, and the count button on the right opens the full list.
+function FileTabStrip({
+  tabs,
+  activePath,
+  dirtyFiles,
+  onSelect,
+  onClose,
+}: {
+  tabs: FileTab[];
+  activePath: string | null;
+  dirtyFiles: Record<string, true>;
+  onSelect: (path: string) => void;
+  onClose: (path: string) => void;
+}) {
+  const labels = useMemo(() => tabLabels(tabs.map((t) => t.path)), [tabs]);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // ⌘1-9, ⌥⌘←/→ and clicks in the file tree all move the selection without
+  // touching the strip's scroll offset, which would otherwise leave the tab
+  // you just selected off screen.
+  useEffect(() => {
+    stripRef.current
+      ?.querySelector<HTMLElement>('[data-active-tab="true"]')
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activePath, tabs.length]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [menuOpen]);
+
+  return (
+    <div className="flex items-stretch border-b border-card bg-surface-muted/40">
+      <div ref={stripRef} className="flex items-stretch flex-1 min-w-0 overflow-x-auto no-scrollbar">
+        {tabs.map((tab, i) => {
+          const active = tab.path === activePath;
+          const dirty = !!dirtyFiles[tab.path];
+          return (
+            <div
+              key={tab.path}
+              role="tab"
+              aria-selected={active}
+              data-active-tab={active ? 'true' : undefined}
+              title={`${tab.path}${i < 9 ? `  (⌘${i + 1})` : ''}`}
+              onMouseDown={(e) => {
+                // Middle-click closes, matching every other tabbed editor.
+                if (e.button === 1) {
+                  e.preventDefault();
+                  onClose(tab.path);
+                  return;
+                }
+                if (e.button === 0 && !active) onSelect(tab.path);
+              }}
+              className={
+                'group flex items-center gap-1.5 pl-2.5 pr-1.5 py-1.5 shrink-0 max-w-[200px] cursor-default border-r border-card text-xs ' +
+                (active
+                  ? 'bg-surface text-ink border-b-2 border-b-accent'
+                  : 'text-ink-muted hover:bg-card-strong hover:text-ink')
+              }
+            >
+              <span className="truncate">{labels[i]}</span>
+              {dirty && (
+                <span
+                  title="Unsaved changes"
+                  className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent"
+                />
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(tab.path);
+                }}
+                title="Close tab"
+                className={
+                  'shrink-0 w-4 h-4 leading-none rounded text-ink-faint hover:text-ink hover:bg-card-strong ' +
+                  (active ? '' : 'opacity-0 group-hover:opacity-100')
+                }
+              >
+                ✕
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <div ref={menuRef} className="relative shrink-0 flex items-stretch border-l border-card">
+        <button
+          onClick={() => setMenuOpen((o) => !o)}
+          title={`${tabs.length} open files`}
+          className="flex items-center gap-1 px-2 text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+        >
+          <span>{tabs.length}</span>
+          <span className="text-[9px] opacity-70">▾</span>
+        </button>
+        {menuOpen && (
+          <div className="absolute right-0 top-full mt-1 min-w-[260px] max-w-[460px] max-h-[60vh] overflow-y-auto bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 text-xs">
+            {tabs.map((tab, i) => {
+              const active = tab.path === activePath;
+              return (
+                <div
+                  key={tab.path}
+                  className={
+                    'group flex items-center gap-2 px-2.5 py-1.5 cursor-default ' +
+                    (active ? 'bg-card-strong text-ink' : 'text-ink-muted hover:bg-card-strong')
+                  }
+                  onMouseDown={(e) => {
+                    if (e.button !== 0) return;
+                    onSelect(tab.path);
+                    setMenuOpen(false);
+                  }}
+                >
+                  <span className="flex-1 min-w-0 truncate" title={tab.path}>
+                    <span className="text-ink">{fileName(tab.path)}</span>
+                    <span className="text-ink-faint"> {dirName(tab.path)}</span>
+                  </span>
+                  {i < 9 && <span className="shrink-0 text-ink-faint">⌘{i + 1}</span>}
+                  {!!dirtyFiles[tab.path] && (
+                    <span
+                      title="Unsaved changes"
+                      className="shrink-0 w-1.5 h-1.5 rounded-full bg-accent"
+                    />
+                  )}
+                  <button
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onClose(tab.path);
+                    }}
+                    title="Close tab"
+                    className="shrink-0 w-4 h-4 leading-none rounded text-ink-faint hover:text-ink hover:bg-card opacity-0 group-hover:opacity-100"
+                  >
+                    ✕
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/// Floating status/picker for a Cmd-click go-to-definition lookup.
+///
+/// Rendered as the scroller's first child inside a zero-height `sticky`
+/// wrapper, so it stays pinned to the top-right of the *visible* editor
+/// area instead of scrolling away with the document — and contributes no
+/// layout height, so the code underneath doesn't shift when it appears.
+function SymbolNavOverlay({
+  state,
+  onPick,
+  onRefine,
+  onDismiss,
+}: {
+  state: SymbolNavState;
+  onPick: (candidate: SymbolCandidate) => void;
+  onRefine: (symbol: string, line: number) => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="sticky top-0 z-20 h-0">
+      <div className="absolute right-3 top-3 w-80 rounded-lg border border-card-strong bg-surface shadow-lg">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-card">
+          <span className="font-mono text-xs text-ink truncate">{state.symbol}</span>
+          <span className="ml-auto shrink-0">
+            <button
+              onClick={onDismiss}
+              className="text-xs px-1.5 rounded text-ink-faint hover:text-ink hover:bg-card-strong"
+            >
+              ✕
+            </button>
+          </span>
+        </div>
+        {state.status === 'loading' && (
+          <div className="px-3 py-2 text-xs text-ink-faint">Finding definition…</div>
+        )}
+        {state.status === 'error' && (
+          <div className="px-3 py-2 text-xs text-ink-muted">{state.error}</div>
+        )}
+        {state.status === 'choose' && (
+          <>
+            <div className="flex items-baseline gap-2 px-3 pt-2">
+              <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+                {state.candidates.length} candidates
+              </span>
+              {state.refinable && (
+                <button
+                  onClick={() => onRefine(state.symbol, state.line)}
+                  disabled={state.refining}
+                  title="Ask a fast model to pick the definition (takes a few seconds)"
+                  className="ml-auto text-[11px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong disabled:opacity-50"
+                >
+                  {state.refining ? 'Refining…' : 'Refine'}
+                </button>
+              )}
+            </div>
+            <div className="max-h-64 overflow-auto py-1">
+              {state.candidates.map((candidate) => (
+                <button
+                  key={`${candidate.absolutePath}:${candidate.line}`}
+                  onClick={() => onPick(candidate)}
+                  className="block w-full text-left px-3 py-1.5 hover:bg-card-strong"
+                >
+                  <div className="text-xs text-ink truncate">
+                    {candidate.path}
+                    <span className="text-ink-faint">:{candidate.line}</span>
+                  </div>
+                  <div className="font-mono text-[11px] text-ink-muted truncate">
+                    {candidate.snippet}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/// Shown when the open path isn't on disk *and* git has no deletion diff for
+/// it — the file was deleted in an earlier commit, or the path is stale.
+/// Either way there's nothing to read: say so instead of leaking an ENOENT.
+function MissingFilePanel({ path }: { path: string }) {
+  return (
+    <div className="h-full min-h-0 bg-surface-muted p-4">
+      <div className="max-w-xl border border-card-strong bg-surface rounded-lg p-4">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">File not on disk</div>
+        <div className="mt-1 text-sm font-semibold text-ink truncate">
+          {path.split(/[/\\]/).pop() ?? path}
+        </div>
+        <div className="mt-3 text-xs text-ink-muted leading-relaxed">
+          This file has been deleted, so there's nothing to open. Its contents are still in git
+          history if you need them back.
+        </div>
+        <div className="mt-3 text-[11px] text-ink-faint font-mono break-all">{path}</div>
       </div>
     </div>
   );
@@ -783,7 +1419,7 @@ function detectLanguage(path: string): string | null {
 /// what `git diff` wants. `baseBranch` is the ref the caller should
 /// diff against — each workspace member carries its own base, so we
 /// attach it when we match a member prefix.
-function resolveDiffTarget(
+export function resolveDiffTarget(
   path: string | null,
   rootPath: string | null,
   members: Array<{
@@ -791,9 +1427,16 @@ function resolveDiffTarget(
     path: string;
     projectPath?: string | null;
     baseBranch?: string | null;
+    baselineCommit?: string | null;
   }> | null,
   convBaseBranch: string | null,
-): { cwd: string; path: string; baseBranch: string | null } | null {
+  convBaselineCommit?: string | null,
+): {
+  cwd: string;
+  path: string;
+  baseBranch: string | null;
+  baselineCommit: string | null;
+} | null {
   if (!path || !rootPath) return null;
   if (members && members.length > 0) {
     for (const m of members) {
@@ -803,15 +1446,22 @@ function resolveDiffTarget(
           cwd: m.path,
           path: path.slice(namePrefix.length),
           baseBranch: m.baseBranch ?? null,
+          baselineCommit: m.baselineCommit ?? null,
         };
       }
       // Tool output often emits absolute paths; reverse-map them onto
       // the owning member so the diff runs in the real repo (and against
       // the member's base branch) instead of the workspace symlink root.
-      // Match against both the worktree path and the original project
-      // path — agents sometimes emit the upstream-repo path even when
-      // they edit through a worktree.
-      const candidates = [m.path, m.projectPath ?? null].filter(
+      // Three forms have to be matched:
+      //   - `<root>/<member>/…` — the path AS THE USER SEES IT, threaded
+      //     through the workspace/coordinator symlink. This is what the
+      //     ChangesBar hands us when a row is clicked, and without it we
+      //     fell through to the `rootPath` branch below and ran git in
+      //     the symlink dir (not a repo) — `Could not access 'HEAD'`.
+      //   - the member's worktree path.
+      //   - the original project path — agents sometimes emit the
+      //     upstream-repo path even when they edit through a worktree.
+      const candidates = [`${rootPath}/${m.name}`, m.path, m.projectPath ?? null].filter(
         (p): p is string => !!p,
       );
       for (const root of candidates) {
@@ -820,6 +1470,7 @@ function resolveDiffTarget(
             cwd: m.path,
             path: path === root ? '.' : path.slice(root.length + 1),
             baseBranch: m.baseBranch ?? null,
+            baselineCommit: m.baselineCommit ?? null,
           };
         }
       }
@@ -834,7 +1485,12 @@ function resolveDiffTarget(
       : path.startsWith(`${rootPath}/`)
         ? path.slice(rootPath.length + 1)
         : path;
-  return { cwd: rootPath, path: rel, baseBranch: convBaseBranch };
+  return {
+    cwd: rootPath,
+    path: rel,
+    baseBranch: convBaseBranch,
+    baselineCommit: convBaselineCommit ?? null,
+  };
 }
 
 function resolveWorkspaceMembers(
@@ -865,6 +1521,7 @@ function resolveWorkspaceMembers(
   path: string;
   projectPath?: string | null;
   baseBranch?: string | null;
+  baselineCommit?: string | null;
 }> | null {
   for (const w of workspaces) {
     const c = convId ? (w.conversations ?? []).find((x) => x.id === convId) : null;

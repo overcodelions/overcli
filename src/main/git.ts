@@ -74,6 +74,16 @@ function gitEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/// Git's ref rules permit a branch literally named `--output=/path`, and a
+/// clone/fetch carries such a ref over verbatim from a hostile remote. Every
+/// consumer below interpolates the base branch into a `git diff <base>` argv,
+/// where git would parse it as an option — `--output=` alone is an
+/// arbitrary-file-truncate primitive. Refuse to hand a leading-dash ref to
+/// callers at the two points where refs enter from the repo.
+function isSafeRefName(name: string): boolean {
+  return name.length > 0 && !name.startsWith('-');
+}
+
 /// Best-guess "base branch" for new agents. Prefers the currently
 /// checked-out local branch (so agents inherit the user's WIP branch),
 /// falls back to origin/HEAD → main → master. Mirrors the Swift
@@ -82,7 +92,7 @@ export function detectBaseBranch(projectPath: string): string {
   const current = runGit(['branch', '--show-current'], projectPath);
   if (current.exitCode === 0) {
     const trimmed = current.stdout.trim();
-    if (trimmed) return trimmed;
+    if (isSafeRefName(trimmed)) return trimmed;
   }
   const head = runGit(['symbolic-ref', 'refs/remotes/origin/HEAD'], projectPath);
   if (head.exitCode === 0) {
@@ -100,7 +110,7 @@ export function listBaseBranches(projectPath: string): string[] {
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     branches.push(trimmed);
   };
@@ -140,7 +150,7 @@ function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): s
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);
   };
@@ -156,6 +166,116 @@ function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): s
     if (ref.exitCode === 0) return candidate;
   }
   return null;
+}
+
+/// The commit a "what did this branch add?" diff should start from.
+///
+/// Callers used to diff straight against the fork point captured when the
+/// worktree was minted (`baselineCommit`). That is exact on the day of the
+/// run and wrong forever after: once the branch takes upstream in — a pull,
+/// a merge, a rebase — `git diff <forkPoint>` reports every upstream commit
+/// as part of this branch's work. A run whose PR had already landed showed
+/// 199 changed files, all of them other people's merges.
+///
+/// So resolve it live: find the base branch and start from
+/// `merge-base(base, HEAD)` — the point where this branch actually diverges
+/// from what's upstream. Merging upstream INTO the branch doesn't push that
+/// point past the branch's own commits (they still aren't in base), so
+/// in-flight work survives; once the work lands in base, the diff correctly
+/// collapses to nothing.
+///
+/// Remote-tracking refs beat local ones — a local `master` nobody has
+/// fetched in a week reports stale extra files. We never fetch here; this
+/// sits behind a render path.
+///
+/// `fallbackCommit` (the old frozen baseline) is both the last resort and a
+/// floor: when the resolved merge-base is OLDER than it, keep the baseline.
+/// That covers a worktree forked from another feature branch, where
+/// `merge-base(master, HEAD)` reaches back past the parent branch's work and
+/// would drag all of it into the diff.
+export async function resolveDiffBase(args: {
+  cwd: string;
+  preferredBranch?: string | null;
+  fallbackCommit?: string | null;
+}): Promise<{ commit: string; ref: string | null }> {
+  const { cwd } = args;
+  // Normalise the baseline to a full sha up front, and drop it if the
+  // commit is gone — a rebase orphans it and a later gc reaps it, after
+  // which every diff against it fails with `bad object`.
+  let fallback: string | null = null;
+  if (cwd && args.fallbackCommit && isSafeRefName(args.fallbackCommit)) {
+    const res = await runGitAsync(
+      ['rev-parse', '--verify', '--quiet', `${args.fallbackCommit}^{commit}`],
+      cwd,
+    );
+    if (res.exitCode === 0) fallback = res.stdout.trim() || null;
+  }
+  if (!cwd) return { commit: fallback ?? 'HEAD', ref: null };
+
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (name: string | null | undefined) => {
+    const trimmed = (name ?? '').trim();
+    if (!trimmed || !isSafeRefName(trimmed) || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+  /// Try a branch name in its remote-tracking form first, then local.
+  /// Vet the RAW name, not just the forms we derive from it — `origin/`
+  /// prefixing would otherwise launder a hostile `--output=…` branch into
+  /// a token that passes `isSafeRefName`.
+  const pushBranch = (name: string | null | undefined) => {
+    const trimmed = (name ?? '').trim();
+    if (!trimmed || !isSafeRefName(trimmed)) return;
+    if (trimmed.startsWith('origin/')) {
+      push(trimmed);
+      push(trimmed.slice('origin/'.length));
+      return;
+    }
+    push(`origin/${trimmed}`);
+    push(trimmed);
+  };
+
+  pushBranch(args.preferredBranch);
+  // origin/HEAD names the remote's default branch. Only set by clone, and
+  // routinely missing, hence the explicit main/master sweep after it.
+  const head = await runGitAsync(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], cwd);
+  if (head.exitCode === 0) push(head.stdout.trim());
+  pushBranch('main');
+  pushBranch('master');
+
+  for (const ref of candidates) {
+    const mb = await runGitAsync(['merge-base', ref, 'HEAD'], cwd);
+    if (mb.exitCode !== 0) continue;
+    const commit = mb.stdout.trim();
+    if (!commit) continue;
+    if (fallback && commit !== fallback) {
+      // `--is-ancestor A B` exits 0 when A is an ancestor of B, i.e. here
+      // when the merge-base is older than the frozen baseline.
+      const older = await runGitAsync(['merge-base', '--is-ancestor', commit, fallback], cwd);
+      if (older.exitCode === 0) return { commit: fallback, ref: null };
+    }
+    return { commit, ref };
+  }
+  return { commit: fallback ?? 'HEAD', ref: null };
+}
+
+/// Callers have historically passed EITHER a branch name or a frozen
+/// baseline sha through the same `baseBranch` slot. Split them into the two
+/// roles `resolveDiffBase` distinguishes — a sha handed over as a "branch"
+/// would merge-base to itself and silently reinstate the stale-baseline bug.
+/// A branch whose name happens to be all hex is misread as a sha here; it
+/// still resolves as a commit-ish, so the diff is right either way.
+function splitBaseArg(
+  base: string | null | undefined,
+  baselineCommit?: string | null,
+): { preferredBranch: string | null; fallbackCommit: string | null } {
+  const trimmed = (base ?? '').trim();
+  const isSha = /^[0-9a-f]{7,40}$/i.test(trimmed);
+  return {
+    preferredBranch: isSha ? null : trimmed || null,
+    fallbackCommit: baselineCommit ?? (isSha ? trimmed : null),
+  };
 }
 
 export function runGit(args: string[], cwd: string, extraEnv?: NodeJS.ProcessEnv): GitResult {
@@ -249,7 +369,7 @@ async function resolveBaseBranchStartPointAsync(
   const seen = new Set<string>();
   const push = (name: string) => {
     const trimmed = name.trim();
-    if (!trimmed || seen.has(trimmed)) return;
+    if (!isSafeRefName(trimmed) || seen.has(trimmed)) return;
     seen.add(trimmed);
     candidates.push(trimmed);
   };
@@ -618,6 +738,46 @@ export function removeWorktree(args: {
   return { ok: true };
 }
 
+/// Async sibling of `removeWorktree`. `removeWorktree` shells out via the
+/// blocking `runGit`/`spawnSync`, which freezes the main-process thread for
+/// the whole `git worktree remove --force` — noticeable as a UI beachball on
+/// a large repo. The flow-delete path runs teardown in the background and has
+/// no need for a synchronous result, so it uses this version, which yields to
+/// the event loop between git calls. Behaviour otherwise mirrors `removeWorktree`.
+export async function removeWorktreeAsync(args: {
+  projectPath: string;
+  worktreePath: string;
+  branchName: string;
+}): Promise<{ ok: boolean; error?: string; warning?: string }> {
+  const res = await runGitAsync(
+    ['worktree', 'remove', '--force', args.worktreePath],
+    args.projectPath,
+  );
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
+  }
+  if (args.branchName) {
+    const safe = await runGitAsync(['branch', '-d', args.branchName], args.projectPath);
+    if (safe.exitCode !== 0) {
+      const stderr = (safe.stderr || safe.stdout).trim();
+      if (/not fully merged/i.test(stderr)) {
+        await runGitAsync(['branch', '-D', args.branchName], args.projectPath);
+        return {
+          ok: true,
+          warning:
+            `Branch \`${args.branchName}\` had unmerged commits and was force-deleted. ` +
+            `Recover them with \`git reflog\` / \`git branch <name> <sha>\` if needed.`,
+        };
+      }
+      return {
+        ok: true,
+        warning: `Worktree removed, but couldn't delete branch \`${args.branchName}\`: ${stderr}`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 /// Auto-commit dirty worktree state, stash any uncommitted changes in the
 /// project repo, remove the worktree (keeping the branch), then
 /// `git switch` the project repo onto it — so the user can keep working on
@@ -706,8 +866,8 @@ function ghAvailable(): boolean {
 /// Classify the worktree's `origin` so the UI can decide between Push and
 /// Open PR. Returns 'github' only if `gh` is on PATH — so the Open PR
 /// action doesn't dead-end at a missing CLI.
-export function detectRemoteKind(cwd: string): RemoteKind {
-  const res = runGit(['remote', 'get-url', 'origin'], cwd);
+export async function detectRemoteKind(cwd: string): Promise<RemoteKind> {
+  const res = await runGitAsync(['remote', 'get-url', 'origin'], cwd);
   if (res.exitCode !== 0) return 'none';
   const url = res.stdout.trim();
   if (!url) return 'none';
@@ -960,16 +1120,29 @@ export function openPR(args: {
 /// merged status, and whether the *main* project checkout has dirty files
 /// that belong in the worktree. Individual git calls are cheap enough that
 /// batching via `--numstat` + a few shortstat queries keeps this sub-100ms.
-export function worktreeStatus(args: {
+export async function worktreeStatus(args: {
   projectPath: string;
   worktreePath: string;
   branchName: string;
   baseBranch: string;
-}): WorktreeStatus {
+  baselineCommit?: string | null;
+}): Promise<WorktreeStatus> {
+  // Every number below is measured from the live divergence point, not the
+  // frozen fork point — otherwise the counts here contradict the file list
+  // in the same sheet (which comes from `worktreeDiff`). One consequence
+  // worth knowing: `isMergedIntoBase` now goes true for a worktree whose
+  // work has actually landed upstream, which disables the merge button.
+  // That's the honest answer — there is nothing left to merge.
+  const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
+  const { commit: base } = await resolveDiffBase({
+    cwd: args.worktreePath,
+    preferredBranch,
+    fallbackCommit,
+  });
   // `git diff --numstat <base>` (working-tree-vs-base) rolls committed +
   // uncommitted divergence into a single pass, so every file the agent
   // has touched shows up exactly once — no double-counting.
-  const numstat = runGit(['diff', '--numstat', args.baseBranch], args.worktreePath);
+  const numstat = await runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath);
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
@@ -986,36 +1159,65 @@ export function worktreeStatus(args: {
     }
   }
 
-  const ahead = runGit(
-    ['rev-list', '--count', `${args.baseBranch}..HEAD`],
+  // numstat omits untracked files, so a net-new file the agent wrote but
+  // never staged wouldn't be counted — leaving the badge ("1 file +3") out
+  // of sync with the diff sheet, which now includes those files. Tally the
+  // same `--exclude-standard` set the diff uses, counting added lines from
+  // disk (untracked files are pure additions).
+  const untracked = await runGitAsync(
+    ['ls-files', '--others', '--exclude-standard'],
+    args.worktreePath,
+  );
+  if (untracked.exitCode === 0) {
+    for (const line of untracked.stdout.split('\n')) {
+      const p = line.trim();
+      if (!p) continue;
+      filesChanged += 1;
+      insertions += await countLinesOnDiskAsync(path.join(args.worktreePath, p));
+    }
+  }
+
+  const ahead = await runGitAsync(
+    ['rev-list', '--count', `${base}..HEAD`],
     args.worktreePath,
   );
   const commitsAhead = ahead.exitCode === 0 ? parseInt(ahead.stdout.trim(), 10) || 0 : 0;
 
-  const status = runGit(['status', '--porcelain'], args.worktreePath);
+  const status = await runGitAsync(['status', '--porcelain'], args.worktreePath);
   const hasUncommittedChanges = status.exitCode === 0 && !!status.stdout.trim();
 
-  const isAncestor = runGit(
-    ['merge-base', '--is-ancestor', 'HEAD', args.baseBranch],
+  const isAncestor = await runGitAsync(
+    ['merge-base', '--is-ancestor', 'HEAD', base],
     args.worktreePath,
   );
   // exit 0 = HEAD is already in base, 1 = diverged. Treat errors (2) as
   // "not merged" so we don't wrongly disable the merge button.
-  const isMergedIntoBase = isAncestor.exitCode === 0 && commitsAhead === 0;
+  //
+  // "Merged" must mean there's nothing left to bring back: HEAD is in base,
+  // no commits ahead, AND no pending work. Without the last two clauses a
+  // worktree whose changes were never committed reads as merged — HEAD still
+  // equals base, so it's trivially an ancestor — which both mislabels it and
+  // disables the merge button even though there are uncommitted changes to
+  // land.
+  const isMergedIntoBase =
+    isAncestor.exitCode === 0 &&
+    commitsAhead === 0 &&
+    !hasUncommittedChanges &&
+    filesChanged === 0;
 
-  const projectBranch = runGit(['branch', '--show-current'], args.projectPath);
+  const projectBranch = await runGitAsync(['branch', '--show-current'], args.projectPath);
   const currentProjectBranch =
     projectBranch.exitCode === 0 && projectBranch.stdout.trim()
       ? projectBranch.stdout.trim()
       : null;
 
-  const remoteKind = detectRemoteKind(args.worktreePath);
+  const remoteKind = await detectRemoteKind(args.worktreePath);
 
   // "agent wrote to the wrong tree" detector: count dirty files in the
   // main project checkout. This is noisy (the user may have their own
   // WIP) but is the only signal we have without spelunking into the
   // runner's event stream.
-  const mainStatus = runGit(['status', '--porcelain'], args.projectPath);
+  const mainStatus = await runGitAsync(['status', '--porcelain'], args.projectPath);
   const mainTreeDirtyFiles =
     mainStatus.exitCode === 0
       ? mainStatus.stdout.split('\n').filter((l) => l.trim()).length
@@ -1034,6 +1236,74 @@ export function worktreeStatus(args: {
   };
 }
 
+/// Unified diff of a worktree against `baseBranch`, including newly created
+/// files. A plain `git diff <base>` only reports *tracked* changes, so a file
+/// the agent wrote but never `git add`-ed (untracked) is silently dropped from
+/// the review sheet. We mirror what `git merge` would actually bring across:
+/// the tracked diff, plus a synthetic `new file` block per untracked path via
+/// `git diff --no-index /dev/null <path>`. `--exclude-standard` honours
+/// .gitignore so build output and node_modules stay out. Returns the same
+/// `{ stdout, stderr, exitCode }` shape as `git:run` so the renderer can treat
+/// it identically.
+export async function worktreeDiff(args: {
+  cwd: string;
+  baseBranch: string;
+  baselineCommit?: string | null;
+}): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
+  const { commit: base } = await resolveDiffBase({
+    cwd: args.cwd,
+    preferredBranch,
+    fallbackCommit,
+  });
+  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', base, '--'], args.cwd);
+  // A failed tracked diff (bad ref, not a repo) is fatal — surface it as-is
+  // rather than returning a partial untracked-only diff that hides the error.
+  if (tracked.exitCode !== 0) return tracked;
+
+  const untrackedList = await runGitAsync(['ls-files', '--others', '--exclude-standard'], args.cwd);
+  const untrackedPaths =
+    untrackedList.exitCode === 0
+      ? untrackedList.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
+      : [];
+
+  const blocks = [tracked.stdout];
+  for (const p of untrackedPaths) {
+    // `--no-index` exits 1 when the two inputs differ — the normal case when
+    // diffing a real file against /dev/null — so 1 isn't a failure here.
+    // Anything else (missing file, etc.) we skip rather than abort.
+    const r = await runGitAsync(['diff', '--no-color', '--no-ext-diff', '--no-index', '/dev/null', p], args.cwd);
+    if ((r.exitCode === 0 || r.exitCode === 1) && r.stdout) blocks.push(r.stdout);
+  }
+
+  return { stdout: blocks.filter(Boolean).join(''), stderr: tracked.stderr, exitCode: 0 };
+}
+
+/// Discard all uncommitted changes to a single tracked file, resetting both
+/// the index and working tree to the file's HEAD version. Backs the
+/// explorer diff view's "Revert" action.
+///
+/// This is destructive, so the renderer confirms with the user first and
+/// the IPC handler re-validates `cwd` against the registered roots before
+/// calling in. `checkout HEAD -- <path>` (rather than plain `restore`)
+/// clears staged and unstaged edits in one shot; the `--` guards a path
+/// that might otherwise parse as a ref or option. Untracked (brand-new)
+/// files aren't in HEAD, so git reports an error we surface verbatim.
+export function restoreFileToHead(args: {
+  cwd: string;
+  path: string;
+}): { ok: true } | { ok: false; error: string } {
+  const { cwd, path } = args;
+  if (!path || path === '.') {
+    return { ok: false, error: 'Refusing to revert without a specific file path.' };
+  }
+  const res = runGit(['checkout', 'HEAD', '--', path], cwd);
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || `git checkout exited ${res.exitCode}` };
+  }
+  return { ok: true };
+}
+
 /// Cheapest possible "what branch is this repo on right now". One git
 /// invocation, no diff math, no file walks. Used by the
 /// base-branch-mismatch banner which only needs the branch name and is
@@ -1047,30 +1317,46 @@ export function currentBranch(cwd: string): { isRepo: boolean; branch: string } 
   return { isRepo: true, branch };
 }
 
+/// Per-file change entry shared by the status probes below and the
+/// renderer's ChangesBar. `commitState` distinguishes changes already
+/// committed on the branch (relative to the fork point) from still-
+/// uncommitted working-tree edits — `'both'` means a file was committed
+/// *and* has further pending edits on top. `commitStatus` is HEAD-relative
+/// so everything it sees is `'uncommitted'` by definition; `worktreeChanges`
+/// computes the real split.
+export type CommitState = 'committed' | 'uncommitted' | 'both';
+export type FileChange = {
+  path: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  commitState: CommitState;
+};
+
 /// Quick probe for the header commit button. Returns `isRepo: false` when
 /// `cwd` isn't a git working tree (missing `.git`, git binary missing, or
 /// the path doesn't exist) so the renderer can hide the button entirely.
 /// Porcelain v1 status codes are preserved in `.status` (e.g. ` M`, `??`,
 /// `A `) so the UI can show staged vs unstaged vs untracked.
-export function commitStatus(cwd: string): {
+export async function commitStatus(cwd: string): Promise<{
   isRepo: boolean;
   currentBranch: string;
-  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  changes: FileChange[];
   insertions: number;
   deletions: number;
-} {
+}> {
   if (!cwd) {
     return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
   }
-  const check = runGit(['rev-parse', '--is-inside-work-tree'], cwd);
+  const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], cwd);
   if (check.exitCode !== 0 || check.stdout.trim() !== 'true') {
     return { isRepo: false, currentBranch: '', changes: [], insertions: 0, deletions: 0 };
   }
-  const branch = runGit(['branch', '--show-current'], cwd);
+  const branch = await runGitAsync(['branch', '--show-current'], cwd);
   // `--untracked-files=all` so a newly-created directory is listed as one
   // entry per file inside it, not a single `?? path/to/dir/` line that
   // collapses everything the agent wrote into a zero-line directory row.
-  const status = runGit(['status', '--porcelain=v1', '--untracked-files=all'], cwd);
+  const status = await runGitAsync(['status', '--porcelain=v1', '--untracked-files=all'], cwd);
   const statusByPath = new Map<string, string>();
   if (status.exitCode === 0) {
     for (const line of status.stdout.split('\n')) {
@@ -1089,7 +1375,7 @@ export function commitStatus(cwd: string): {
   const deletionsByPath = new Map<string, number>();
   let insertions = 0;
   let deletions = 0;
-  const numstat = runGit(['diff', 'HEAD', '--numstat'], cwd);
+  const numstat = await runGitAsync(['diff', 'HEAD', '--numstat'], cwd);
   if (numstat.exitCode === 0) {
     for (const line of numstat.stdout.split('\n')) {
       const parts = line.trim().split(/\s+/);
@@ -1115,19 +1401,22 @@ export function commitStatus(cwd: string): {
 
   for (const [p, code] of statusByPath) {
     if (code !== '??') continue;
-    const lines = countLinesOnDisk(path.join(cwd, p));
+    const lines = await countLinesOnDiskAsync(path.join(cwd, p));
     if (lines > 0) {
       insertions += lines;
       additionsByPath.set(p, (additionsByPath.get(p) ?? 0) + lines);
     }
   }
 
-  const changes = Array.from(statusByPath.entries())
+  const changes: FileChange[] = Array.from(statusByPath.entries())
     .map(([p, code]) => ({
       path: p,
       status: code,
       additions: additionsByPath.get(p) ?? 0,
       deletions: deletionsByPath.get(p) ?? 0,
+      // HEAD-relative probe: every file here is a working-tree change that
+      // hasn't been committed yet. Once committed, `git diff HEAD` drops it.
+      commitState: 'uncommitted' as const,
     }))
     .sort((a, b) => a.path.localeCompare(b.path));
 
@@ -1140,31 +1429,237 @@ export function commitStatus(cwd: string): {
   };
 }
 
+/// Base-relative per-file changes for a flow worktree, returned in the same
+/// `{ path, status, additions, deletions }` shape the ChangesBar renders.
+/// `commitStatus` only sees `HEAD` (`git diff HEAD`), so the moment a flow
+/// step commits, its files drop out of the chat bar while still showing in
+/// the review sheet — which diffs against the run's fork point. This mirrors
+/// `worktreeStatus`'s scope (`git diff --numstat <base>` = committed +
+/// uncommitted vs base, plus untracked files) so the bar and the review diff
+/// agree on the file set.
+export async function worktreeChanges(args: {
+  worktreePath: string;
+  baseBranch: string;
+  /// The run's frozen fork point, when the caller has one. Used only as a
+  /// floor/last resort — see `resolveDiffBase`.
+  baselineCommit?: string | null;
+}): Promise<{
+  isRepo: boolean;
+  currentBranch: string;
+  changes: FileChange[];
+  insertions: number;
+  deletions: number;
+  /// The ref the diff was actually measured against (`origin/master`), or
+  /// null when we fell back to the frozen fork point. The UI labels the bar
+  /// with it — once the count can legitimately be zero, an empty bar has to
+  /// be distinguishable from a probe that failed.
+  baseRef: string | null;
+}> {
+  const empty = {
+    isRepo: false,
+    currentBranch: '',
+    changes: [] as FileChange[],
+    insertions: 0,
+    deletions: 0,
+    baseRef: null,
+  };
+  if (!args.worktreePath || (!args.baseBranch && !args.baselineCommit)) return empty;
+  const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.worktreePath);
+  if (check.exitCode !== 0 || check.stdout.trim() !== 'true') return empty;
+
+  const branch = await runGitAsync(['branch', '--show-current'], args.worktreePath);
+  const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
+  const resolved = await resolveDiffBase({
+    cwd: args.worktreePath,
+    preferredBranch,
+    fallbackCommit,
+  });
+  const base = resolved.commit;
+
+  // `git diff --numstat <base>` rolls committed + uncommitted divergence into
+  // one pass — the exact tracked-file set the review badge counts. Tab
+  // separated: `add\tdel\tpath` (a rename keeps a single `old => new` field).
+  const additionsByPath = new Map<string, number>();
+  const deletionsByPath = new Map<string, number>();
+  let insertions = 0;
+  let deletions = 0;
+  const numstat = await runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath);
+  if (numstat.exitCode === 0) {
+    for (const line of numstat.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      if (parts.length < 3) continue;
+      const add = parseInt(parts[0], 10);
+      const del = parseInt(parts[1], 10);
+      const p = parts.slice(2).join('\t').trim();
+      if (!p) continue;
+      if (!Number.isNaN(add)) {
+        insertions += add;
+        additionsByPath.set(p, add);
+      }
+      if (!Number.isNaN(del)) {
+        deletions += del;
+        deletionsByPath.set(p, del);
+      }
+    }
+  }
+
+  // Per-file status letter (A/M/D/R/…) for the left-column indicator. Keyed
+  // by the final path so a modified file lines up with its numstat row.
+  const statusByPath = new Map<string, string>();
+  const nameStatus = await runGitAsync(
+    ['diff', '--name-status', base, '--'],
+    args.worktreePath,
+  );
+  if (nameStatus.exitCode === 0) {
+    for (const line of nameStatus.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const code = parts[0]?.charAt(0) ?? '';
+      const p = parts[parts.length - 1]?.trim();
+      if (p && code) statusByPath.set(p, code);
+    }
+  }
+
+  // Split the merged set into committed-vs-fork-point and still-dirty so
+  // each file gets a `commitState`. `git diff --name-status <base> HEAD` is
+  // what's already committed on the branch; `git status --porcelain` is
+  // what's uncommitted in the working tree (staged + unstaged + untracked).
+  // A file can be in both — committed once, then edited again.
+  const committedPaths = new Set<string>();
+  const nameStatusHead = await runGitAsync(
+    ['diff', '--name-status', base, 'HEAD', '--'],
+    args.worktreePath,
+  );
+  if (nameStatusHead.exitCode === 0) {
+    for (const line of nameStatusHead.stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const parts = line.split('\t');
+      const p = parts[parts.length - 1]?.trim();
+      if (p) committedPaths.add(p);
+    }
+  }
+  const uncommittedPaths = new Set<string>();
+  const porcelain = await runGitAsync(
+    ['status', '--porcelain=v1', '--untracked-files=all'],
+    args.worktreePath,
+  );
+  if (porcelain.exitCode === 0) {
+    for (const line of porcelain.stdout.split('\n')) {
+      if (line.length < 3) continue;
+      // Renames read `R  old -> new`; the new path is what the diff keys on.
+      const rest = line.slice(3).trim();
+      const arrow = rest.indexOf(' -> ');
+      const p = arrow >= 0 ? rest.slice(arrow + 4).trim() : rest;
+      if (p) uncommittedPaths.add(p);
+    }
+  }
+  const commitStateFor = (p: string): CommitState => {
+    const committed = committedPaths.has(p);
+    const uncommitted = uncommittedPaths.has(p);
+    if (committed && uncommitted) return 'both';
+    if (committed) return 'committed';
+    return 'uncommitted';
+  };
+
+  const changes: FileChange[] = [];
+  const seen = new Set<string>();
+  for (const p of additionsByPath.keys()) {
+    seen.add(p);
+    changes.push({
+      path: p,
+      status: statusByPath.get(p) ?? 'M',
+      additions: additionsByPath.get(p) ?? 0,
+      deletions: deletionsByPath.get(p) ?? 0,
+      commitState: commitStateFor(p),
+    });
+  }
+  // Safety net for a name-status entry the numstat pass didn't surface
+  // (e.g. a binary file, which numstat reports as `-\t-`).
+  for (const [p, code] of statusByPath) {
+    if (!seen.has(p)) {
+      seen.add(p);
+      changes.push({ path: p, status: code, additions: 0, deletions: 0, commitState: commitStateFor(p) });
+    }
+  }
+
+  // Untracked files: numstat omits them, but the review diff includes them
+  // as pure additions — count them off disk so the bar matches the diff.
+  const untracked = await runGitAsync(
+    ['ls-files', '--others', '--exclude-standard'],
+    args.worktreePath,
+  );
+  if (untracked.exitCode === 0) {
+    for (const line of untracked.stdout.split('\n')) {
+      const p = line.trim();
+      if (!p || seen.has(p)) continue;
+      seen.add(p);
+      const lines = await countLinesOnDiskAsync(path.join(args.worktreePath, p));
+      insertions += lines;
+      changes.push({ path: p, status: '??', additions: lines, deletions: 0, commitState: 'uncommitted' });
+    }
+  }
+
+  changes.sort((a, b) => a.path.localeCompare(b.path));
+  return {
+    isRepo: true,
+    currentBranch: branch.exitCode === 0 ? branch.stdout.trim() : '',
+    changes,
+    insertions,
+    deletions,
+    baseRef: resolved.ref,
+  };
+}
+
 /// Aggregate `commitStatus` across a workspace's member projects. Each
 /// returned path is prefixed with the project's symlink name so it
 /// resolves through the workspace root via the on-disk symlinks, and so
 /// the ChangesBar shows which project a file belongs to.
-export function workspaceCommitStatus(
-  members: Array<{ name: string; path: string }>,
-): {
+export async function workspaceCommitStatus(
+  members: Array<{
+    name: string;
+    path: string;
+    baseBranch?: string;
+    baselineCommit?: string | null;
+  }>,
+): Promise<{
   isRepo: boolean;
   currentBranch: string;
-  changes: Array<{ path: string; status: string; additions: number; deletions: number }>;
+  changes: FileChange[];
   insertions: number;
   deletions: number;
-} {
+  /// Only set when every member resolved to the SAME ref. Members can sit
+  /// on different default branches, and labelling the aggregate with one
+  /// repo's base would be a lie — so we say nothing rather than guess.
+  baseRef: string | null;
+}> {
   let insertions = 0;
   let deletions = 0;
-  const changes: Array<{ path: string; status: string; additions: number; deletions: number }> = [];
+  const changes: FileChange[] = [];
   let anyRepo = false;
+  const baseRefs = new Set<string | null>();
   // Names come pre-assigned by the caller (workspace members use the
   // shared basename-dedup rule; coordinator members use the project
   // name), so `name` is used verbatim as the path prefix.
-  for (const { name, path: projPath } of members) {
+  for (const { name, path: projPath, baseBranch, baselineCommit } of members) {
     if (!name || !projPath) continue;
-    const res = commitStatus(projPath);
+    // A worktree workspace run captures a per-member fork point; count
+    // against it (committed + uncommitted) so the bar matches the review
+    // sheet. In-place workspace runs have no baseline — fall back to the
+    // HEAD-relative probe.
+    const res =
+      baseBranch || baselineCommit
+        ? await worktreeChanges({
+            worktreePath: projPath,
+            baseBranch: baseBranch ?? '',
+            baselineCommit,
+          })
+        : // In-place workspace run: no fork point to measure from, so this
+          // stays HEAD-relative and contributes no base ref.
+          { ...(await commitStatus(projPath)), baseRef: null as string | null };
     if (!res.isRepo) continue;
     anyRepo = true;
+    baseRefs.add(res.baseRef);
     insertions += res.insertions;
     deletions += res.deletions;
     for (const c of res.changes) {
@@ -1172,7 +1667,15 @@ export function workspaceCommitStatus(
     }
   }
   changes.sort((a, b) => a.path.localeCompare(b.path));
-  return { isRepo: anyRepo, currentBranch: '', changes, insertions, deletions };
+  const [onlyRef] = baseRefs;
+  return {
+    isRepo: anyRepo,
+    currentBranch: '',
+    changes,
+    insertions,
+    deletions,
+    baseRef: baseRefs.size === 1 ? onlyRef ?? null : null,
+  };
 }
 
 /// Count non-empty lines in a file. Used for untracked-file additions,
@@ -1187,6 +1690,27 @@ function countLinesOnDisk(filePath: string): number {
     if (stat.size > 1024 * 1024) return 0;
     const buf = fs.readFileSync(filePath);
     // Cheap binary sniff: any NUL in the first 8 KB → skip.
+    const sniffEnd = Math.min(buf.length, 8192);
+    for (let i = 0; i < sniffEnd; i++) if (buf[i] === 0) return 0;
+    const text = buf.toString('utf8');
+    let n = 0;
+    for (const raw of text.split('\n')) {
+      if (raw.replace(/\r$/, '').length > 0) n++;
+    }
+    return n;
+  } catch {
+    return 0;
+  }
+}
+
+/// Async sibling of `countLinesOnDisk` - same logic, non-blocking fs so it
+/// never stalls the main-process event loop during a status probe.
+async function countLinesOnDiskAsync(filePath: string): Promise<number> {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (stat.isDirectory()) return 0;
+    if (stat.size > 1024 * 1024) return 0;
+    const buf = await fs.promises.readFile(filePath);
     const sniffEnd = Math.min(buf.length, 8192);
     for (let i = 0; i < sniffEnd; i++) if (buf[i] === 0) return 0;
     const text = buf.toString('utf8');
@@ -1310,4 +1834,3 @@ export function rescueMainTree(args: {
   }
   return { ok: true, message: `Moved dirty files into worktree ${args.worktreePath}` };
 }
-

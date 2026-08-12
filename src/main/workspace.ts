@@ -44,7 +44,15 @@ function linkDir(target: string, linkPath: string): void {
 /// the user switch backends per-conversation without losing context.
 const CONTEXT_FILES = ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md'] as const;
 
+/// Workspace/coordinator ids are `crypto.randomUUID()` values, but they
+/// arrive over IPC and are joined straight into a path that gets
+/// `rmSync(recursive, force)`d — an id of `../../Documents` would delete
+/// the user's home folder. Reject anything that isn't a bare slug so a
+/// traversal can never reach the path builders below.
+const ID_RE = /^[A-Za-z0-9_-]+$/;
+
 export function workspaceRootPath(workspaceId: string): string {
+  if (!ID_RE.test(workspaceId)) throw new Error('Invalid workspace id');
   return path.join(app.getPath('userData'), 'workspaces', workspaceId);
 }
 
@@ -53,7 +61,7 @@ export function ensureWorkspaceSymlinkRoot(
   projects: ProjectRef[],
   instructions?: string,
 ): { ok: true; rootPath: string } | { ok: false; error: string } {
-  if (!workspaceId) return { ok: false, error: 'Missing workspaceId' };
+  if (!ID_RE.test(workspaceId)) return { ok: false, error: 'Missing or invalid workspaceId' };
   const rootPath = workspaceRootPath(workspaceId);
   try {
     fs.mkdirSync(rootPath, { recursive: true });
@@ -73,7 +81,16 @@ export function ensureWorkspaceSymlinkRoot(
       const full = path.join(rootPath, entry.name);
       const target = desired.get(entry.name);
       if (!target) {
-        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        // No current member/project owns this name. Only reclaim entries
+        // WE manage — symlinks (stale links from an earlier reconcile). NEVER
+        // delete regular files or directories: agents write standalone
+        // deliverables / scratch notes at this root, and this reconcile
+        // re-runs on every app launch/reload — so unlinking unknown entries
+        // silently destroys the agent's work "between edits". Leave anything
+        // that isn't one of our symlinks alone.
+        if (entry.isSymbolicLink()) {
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+        }
         continue;
       }
       try {
@@ -106,7 +123,7 @@ export function ensureWorkspaceSymlinkRoot(
 export function removeWorkspaceSymlinkRoot(
   workspaceId: string,
 ): { ok: true } | { ok: false; error: string } {
-  if (!workspaceId) return { ok: false, error: 'Missing workspaceId' };
+  if (!ID_RE.test(workspaceId)) return { ok: false, error: 'Missing or invalid workspaceId' };
   try {
     fs.rmSync(workspaceRootPath(workspaceId), { recursive: true, force: true });
     return { ok: true };
@@ -116,6 +133,7 @@ export function removeWorkspaceSymlinkRoot(
 }
 
 export function coordinatorRootPath(coordinatorId: string): string {
+  if (!ID_RE.test(coordinatorId)) throw new Error('Invalid coordinator id');
   return path.join(app.getPath('userData'), 'coordinators', coordinatorId);
 }
 
@@ -164,7 +182,7 @@ export function ensureCoordinatorSymlinkRoot(
   coordinatorId: string,
   members: Array<{ name: string; worktreePath: string }>,
 ): { ok: true; rootPath: string } | { ok: false; error: string } {
-  if (!coordinatorId) return { ok: false, error: 'Missing coordinatorId' };
+  if (!ID_RE.test(coordinatorId)) return { ok: false, error: 'Missing or invalid coordinatorId' };
   const rootPath = coordinatorRootPath(coordinatorId);
   try {
     fs.mkdirSync(rootPath, { recursive: true });
@@ -190,7 +208,16 @@ export function ensureCoordinatorSymlinkRoot(
       const full = path.join(rootPath, entry.name);
       const target = desired.get(entry.name);
       if (!target) {
-        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        // No current member/project owns this name. Only reclaim entries
+        // WE manage — symlinks (stale links from an earlier reconcile). NEVER
+        // delete regular files or directories: agents write standalone
+        // deliverables / scratch notes at this root, and this reconcile
+        // re-runs on every app launch/reload — so unlinking unknown entries
+        // silently destroys the agent's work "between edits". Leave anything
+        // that isn't one of our symlinks alone.
+        if (entry.isSymbolicLink()) {
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+        }
         continue;
       }
       try {
@@ -234,7 +261,7 @@ export function rebindCoordinatorRootToProjects(
   coordinatorId: string,
   projects: Array<{ name: string; projectPath: string; branchName?: string | null }>,
 ): { ok: true; rootPath: string } | { ok: false; error: string } {
-  if (!coordinatorId) return { ok: false, error: 'Missing coordinatorId' };
+  if (!ID_RE.test(coordinatorId)) return { ok: false, error: 'Missing or invalid coordinatorId' };
   const rootPath = coordinatorRootPath(coordinatorId);
   try {
     fs.mkdirSync(rootPath, { recursive: true });
@@ -260,7 +287,12 @@ export function rebindCoordinatorRootToProjects(
       const full = path.join(rootPath, entry.name);
       const spec = desired.get(entry.name);
       if (!spec) {
-        try { fs.unlinkSync(full); } catch { /* ignore */ }
+        // Only reclaim our own stale symlinks — never delete regular files
+        // or directories the agent wrote at this root (see the note in
+        // ensureCoordinatorSymlinkRoot). This runs on every app reload.
+        if (entry.isSymbolicLink()) {
+          try { fs.unlinkSync(full); } catch { /* ignore */ }
+        }
         continue;
       }
       try {
@@ -331,7 +363,7 @@ Guidelines:
 export function removeCoordinatorSymlinkRoot(
   coordinatorId: string,
 ): { ok: true } | { ok: false; error: string } {
-  if (!coordinatorId) return { ok: false, error: 'Missing coordinatorId' };
+  if (!ID_RE.test(coordinatorId)) return { ok: false, error: 'Missing or invalid coordinatorId' };
   try {
     fs.rmSync(coordinatorRootPath(coordinatorId), { recursive: true, force: true });
     return { ok: true };

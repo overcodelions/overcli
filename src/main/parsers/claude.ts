@@ -91,6 +91,57 @@ export function claudeToolResultText(raw: unknown): string {
   return '';
 }
 
+/// One line describing a `model_refusal_fallback`: the API refused the turn on
+/// the model we asked for and the CLI retried on a different one. Shared by the
+/// live parser and history replay so a reopened conversation shows the same
+/// warning it showed live. The refusal category ('bio', 'cyber', …) is the most
+/// actionable part — it's usually the subject matter, not the request.
+export function modelFallbackText(json: any): string {
+  const from = typeof json?.originalModel === 'string' ? json.originalModel : 'the selected model';
+  const to = typeof json?.fallbackModel === 'string' ? json.fallbackModel : 'another model';
+  const category = typeof json?.apiRefusalCategory === 'string' ? json.apiRefusalCategory : '';
+  const why = category ? ` (flagged: ${category})` : '';
+  return `Model fallback — ${from} refused this message${why}. Ran on ${to} instead.`;
+}
+
+/// One-line summary of a compaction that just landed.
+///
+/// Deliberately carries NO token counts. `pre_tokens` / `post_tokens` are
+/// not window occupancy: `pre_tokens` routinely exceeds the model's window
+/// (1,275,004 against a 1M window in the run that prompted this), so no
+/// such request was ever sent, and `pre - post` comes out exactly equal to
+/// `cumulative_dropped_tokens` — a session-lifetime counter. Rendered as a
+/// before/after they credited one compaction with freeing half a million
+/// tokens when it had bought almost nothing, directly contradicting the
+/// ContextMeter sitting underneath. The meter reads real per-request usage
+/// and is the number to trust; it picks up the true drop on the next turn.
+///
+/// The duration stays. A compaction can stall the run for minutes (158s in
+/// that same case) and this notice is the only thing that accounts for it.
+///
+/// Both key spellings are accepted: the stream-json stdout is snake_case,
+/// the JSONL transcript history replays is camelCase.
+export function compactBoundaryText(json: any): string {
+  const meta = json?.compact_metadata ?? json?.compactMetadata ?? {};
+  // Only claim "auto" when the CLI actually said so — an unlabeled
+  // boundary gets the neutral wording rather than a guess.
+  const how = meta.trigger === 'auto' ? 'Conversation auto-compacted' : 'Conversation compacted';
+  const ms =
+    typeof meta.duration_ms === 'number'
+      ? meta.duration_ms
+      : typeof meta.durationMs === 'number'
+        ? meta.durationMs
+        : null;
+  // Sub-second compactions didn't stall anything worth reporting.
+  return ms != null && ms >= 1000 ? `${how} · took ${compactDuration(ms)}` : how;
+}
+
+/// 157716 → "2m 38s". Only ever describes a stall the user sat through.
+function compactDuration(ms: number): string {
+  const secs = Math.round(ms / 1000);
+  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
 /// Distill a `task_started` / `task_progress` / `task_notification`
 /// system line into a TaskProgressInfo. Returns null when the line has no
 /// tool_use_id to bucket against (nothing the renderer can attach it to).
@@ -232,7 +283,39 @@ function parseClaudeLineInto(
       }
       if (json.subtype === 'compact_boundary') {
         return eventFromKind(
-          { type: 'systemNotice', text: 'Conversation compacted' },
+          { type: 'systemNotice', text: compactBoundaryText(json) },
+          trimmed,
+        );
+      }
+      // Compaction progress. `status` is otherwise noise ('requesting' on
+      // every turn), but the compaction slice of it is the only signal we
+      // get for two states the user needs to see: the ~20s stall while a
+      // large transcript is summarized, and a compaction that FAILED —
+      // which the CLI reports here and nowhere else. Dropping it meant a
+      // manual /compact could silently do nothing.
+      if (json.subtype === 'status') {
+        if (json.status === 'compacting') {
+          return eventFromKind({ type: 'systemNotice', text: 'Compacting conversation…' }, trimmed);
+        }
+        if (json.compact_result === 'failed') {
+          const why = typeof json.compact_error === 'string' ? json.compact_error.trim() : '';
+          return eventFromKind(
+            { type: 'systemNotice', text: why ? `Compaction failed — ${why}` : 'Compaction failed' },
+            trimmed,
+          );
+        }
+        // `compact_result: 'success'` is deliberately dropped — the
+        // compact_boundary that follows reports the same thing with token
+        // counts attached.
+        return null;
+      }
+      // The API refused the turn on the selected model and the CLI silently
+      // retried on another one. We pass --model explicitly, so without this the
+      // conversation just runs on a different model than the header claims,
+      // with nothing anywhere to say so.
+      if (json.subtype === 'model_refusal_fallback') {
+        return eventFromKind(
+          { type: 'systemNotice', text: modelFallbackText(json) },
           trimmed,
         );
       }
@@ -252,7 +335,7 @@ function parseClaudeLineInto(
         const info = taskProgressInfo(json);
         return info ? eventFromKind({ type: 'taskProgress', info }, trimmed) : null;
       }
-      // stop_hook_summary, turn_duration, thinking_summary, status,
+      // stop_hook_summary, turn_duration, thinking_summary,
       // task_updated, hook_started/hook_response, etc — noise.
       return null;
     }
@@ -349,6 +432,12 @@ function parseClaudeLineInto(
           outputTokens: usage?.outputTokens ?? 0,
           cacheReadInputTokens: usage?.cacheReadInputTokens ?? 0,
           cacheCreationInputTokens: usage?.cacheCreationInputTokens ?? 0,
+          // Denominator for the context meter. Only present on the CLI's
+          // first-party entries; omitted rather than defaulted so the
+          // renderer can tell "1M window" from "window unknown".
+          ...(typeof usage?.contextWindow === 'number' && usage.contextWindow > 0
+            ? { contextWindow: usage.contextWindow }
+            : {}),
         };
       }
       return eventFromKind(

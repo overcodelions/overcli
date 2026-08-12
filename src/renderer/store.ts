@@ -21,6 +21,7 @@ import {
   DEFAULT_SETTINGS,
   MarketplaceSkill,
   McpCatalogItem,
+  PersistedFileTabs,
   Project,
   SkillTarget,
   StreamEvent,
@@ -37,8 +38,9 @@ import {
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { flowStarKey } from '@shared/flows/schema';
-import { FileViewMode } from './filePreview';
+import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
+import { appendContextNotice } from '@shared/contextNotices';
 import {
   findConversation as findConversationFromIndex,
   findContainerPath as findContainerPathFromIndex,
@@ -47,11 +49,27 @@ import {
   findOwnerProject,
   isActiveConversation,
 } from './conversationLookup';
-import { createUiSlice, uiSliceInitialState } from './uiSlice';
-import { useRunnersStore, getRunner, getAllRunners, mergeTaskProgress } from './runnersStore';
+import {
+  createUiSlice,
+  uiSliceInitialState,
+  MAX_TABS_PER_SCOPE,
+  type FileTab,
+  type ScopeTabs,
+} from './uiSlice';
+import {
+  useRunnersStore,
+  getRunner,
+  getAllRunners,
+  mergeTaskProgress,
+  foldContextUsage,
+} from './runnersStore';
 import { useFlowsStore } from './flowsStore';
-import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
-import { isSupportedPremiumModel } from '@shared/modelCatalog';
+import {
+  enabledBackends,
+  isBackendEnabled,
+  pickDefaultBackend,
+} from './components/conversationHeaderHelpers';
+import { isSupportedPremiumModel, premiumModelsForBackend } from '@shared/modelCatalog';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 /// Forward a diagnostic line to the main-process session log. Fire-and-forget:
@@ -85,7 +103,12 @@ export type ActiveSheet =
   | { type: 'bulkConversationActions' }
   | { type: 'fileFinder'; rootPath: string }
   | { type: 'quickSwitcher' }
-  | { type: 'shortcutsHelp' };
+  /// Launch a flow from outside the Flows pane (today: the ⌘K palette).
+  /// Renders bare — the launcher panel is already a floating card, so the
+  /// sheet host must not wrap it in a second one.
+  | { type: 'flowLaunch'; flowId: string }
+  | { type: 'shortcutsHelp' }
+  | { type: 'whatsNew' };
 
 export type DetailMode =
   | 'conversation'
@@ -134,6 +157,11 @@ interface StoreState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
+  /// Open editor tabs for the scope on screen, and the saved tabs for
+  /// every other scope. See uiSlice + ./fileScope.ts.
+  tabs: FileTab[];
+  fileScopeKey: string | null;
+  fileTabsByScope: Record<string, ScopeTabs>;
   /// Root directory for the standalone file explorer view. Set by
   /// `openExplorer`; consumed by ExplorerPane when detailMode is
   /// 'explorer'. Unlike conversation-scoped file browsing, this is
@@ -154,6 +182,11 @@ interface StoreState {
   subagentDrawerConversationId: string | null;
   /// Per-conversation list of dismissed subagent tabs. See uiSlice.
   dismissedSubagents: Record<string, string[]>;
+  /// Paths with unsaved editor edits. See uiSlice; the text itself lives
+  /// in ./fileBuffers.ts.
+  dirtyFiles: Record<string, true>;
+  /// Whether release notes are waiting to be read. See uiSlice.
+  whatsNewUnseen: boolean;
   /// Where the file editor renders. See uiSlice for the contract.
   fileEditorSide: 'inline' | 'side';
   pendingFinderQuery: string;
@@ -211,9 +244,17 @@ interface StoreState {
   openSheet(sheet: ActiveSheet | null): void;
   openFile(path: string, highlight?: OpenFileHighlight, mode?: FileViewMode): void;
   setOpenFileMode(mode: FileViewMode): void;
+  selectTab(path: string): void;
+  selectAdjacentTab(delta: number): void;
+  retargetTab(from: string, to: string): void;
+  closeTab(path: string): void;
   closeFile(): void;
+  switchFileScope(key: string | null): void;
+  markFileDirty(path: string): void;
+  clearFileDirty(path: string): void;
   toggleSidebar(): void;
   toggleToolActivity(): void;
+  setWhatsNewUnseen(unseen: boolean): void;
   openSubagentDrawer(parentToolUseId: string, conversationId?: string): void;
   closeSubagentDrawer(): void;
   dismissSubagent(conversationId: UUID, parentToolUseId: string): void;
@@ -239,6 +280,19 @@ interface StoreState {
   pickProject(): Promise<void>;
   newConversation(projectId: UUID): Promise<Conversation>;
   newConversationInWorkspace(workspaceId: UUID): Promise<Conversation | null>;
+  /// Open a fresh conversation inside an EXISTING worktree owned by
+  /// something else — today a flow run's, so you can keep working in
+  /// that tree with a clean context. `projectPath` is the repo the
+  /// worktree was forked from (`FlowRun.sourceProjectPath`); the
+  /// conversation is filed under that project. Returns null when no
+  /// project matches that path. See `Conversation.adoptedWorktree`.
+  newConversationInWorktree(args: {
+    projectPath: string;
+    worktreePath: string;
+    branchName?: string;
+    baseBranch?: string;
+    name: string;
+  }): Promise<Conversation | null>;
   newWorkspace(name: string, projectIds: UUID[], instructions?: string): Promise<Workspace | null>;
   updateWorkspaceProjects(workspaceId: UUID, projectIds: UUID[]): Promise<boolean>;
   updateWorkspaceInstructions(workspaceId: UUID, instructions: string): Promise<boolean>;
@@ -253,6 +307,19 @@ interface StoreState {
     /// repos can take seconds per repo, so the sheet shows a live status.
     onProgress?: (message: string) => void;
   }): Promise<Conversation | null>;
+  /// Apply newly-added workspace projects to every existing worktree agent
+  /// (coordinator) in the workspace: mint a worktree per agent for each
+  /// added project, extend the coordinator's member set, rebuild its
+  /// symlink root, and queue a context notice. Lets an agent created before
+  /// the projects existed pick them up. Idempotent — a project the agent
+  /// already has a worktree for is skipped. Returns how many agents were
+  /// updated plus any per-worktree failure messages.
+  applyProjectsToWorkspaceAgents(args: {
+    workspaceId: UUID;
+    projectIds: UUID[];
+    baseBranches: Record<UUID, string>;
+    onProgress?: (message: string) => void;
+  }): Promise<{ appliedAgents: number; failures: string[] }>;
   /// Read-only docs agent that spans every member repo in a workspace.
   /// Creates no worktrees — the coordinator runs in the workspace's
   /// symlink root so it can read every member project at HEAD, and the
@@ -371,7 +438,7 @@ interface StoreState {
   prefetchFlowRunHistories(): Promise<void>;
 
   // Health
-  refreshBackendHealth(): Promise<void>;
+  refreshBackendHealth(force?: boolean): Promise<void>;
   refreshInstalledReviewers(): Promise<void>;
   refreshCapabilities(): Promise<void>;
   refreshMarketplaceSkills(): Promise<void>;
@@ -438,6 +505,13 @@ function uuid(): string {
 /// Long enough to register, short enough to feel like a flash.
 const COMPLETION_FLASH_MS = 3000;
 
+/// How long a history-load read may be in flight before a re-select is
+/// allowed to retry it. A disk read of a trimmed transcript settles in
+/// well under a second even when the main process is busy, so a load
+/// still "in flight" past this window has been stranded (the invoke never
+/// settled) — retrying self-heals instead of leaving the transcript blank.
+const STALE_HISTORY_LOAD_MS = 15_000;
+
 /// Clear the completion marker after a brief flash, but only if the
 /// conversation hasn't completed *again* in the meantime — comparing
 /// the captured timestamp avoids racing a fresh completion that landed
@@ -449,6 +523,26 @@ function scheduleClearCompletion(conversationId: UUID, completedAt: number): voi
       useRunnersStore.getState().patchRunner(conversationId, { completedAt: null });
     }
   }, COMPLETION_FLASH_MS);
+}
+
+/// Hand a conversation's backend runtime back to main because the
+/// conversation is being deleted or archived.
+///
+/// A finished turn leaves the CLI resident — `claude -p --input-format
+/// stream-json` holds its process, and every MCP server it started, until
+/// stdin closes. That session shows `isRunning: false`, so none of the
+/// existing "stop it first" paths touch it, and dropping the row here used
+/// to leave it running with nothing left to reference it. Best-effort: a
+/// failure to release must not block the user's delete.
+///
+/// `onlyIfIdle` is for archive, which the UI advertises as safe to do while
+/// a turn is running — main declines rather than cutting it short.
+async function releaseRuntime(id: UUID, onlyIfIdle = false): Promise<void> {
+  try {
+    await window.overcli.invoke('runner:release', { conversationId: id, onlyIfIdle });
+  } catch (err) {
+    logToMain('warn', 'renderer.releaseRuntime', `Failed to release runtime for ${id}: ${String(err)}`);
+  }
 }
 
 function findConversation(state: StoreState, id: UUID): Conversation | null {
@@ -474,6 +568,25 @@ function lookupSource(state: StoreState): {
 
 function isAgentConversation(conv: Conversation): boolean {
   return !!conv.worktreePath || (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+}
+
+/// Workspace-agent coordinators still worth acting on. Archived (`hidden`)
+/// agents are gone from the sidebar, and `continuedLocally` ones have had
+/// their worktrees dissolved back into the main repos — minting new members
+/// into either is work the user never asked for and can't see.
+export function isLiveWorkspaceAgent(conv: Conversation): boolean {
+  if (conv.hidden || conv.continuedLocally) return false;
+  return (conv.workspaceAgentMemberIds?.length ?? 0) > 0;
+}
+
+/// Whether deleting `conv` should also `git worktree remove` its tree.
+/// True for agents that minted their own worktree; false for one that
+/// merely borrowed a flow run's — the run still owns that tree and needs
+/// it for Review & merge, so deleting the chat drops only the row.
+export function ownsWorktree(
+  conv: Conversation,
+): conv is Conversation & { worktreePath: string } {
+  return !!conv.worktreePath && !conv.adoptedWorktree;
 }
 
 /// Ask the main process which Ollama models are actually pulled locally
@@ -554,6 +667,26 @@ function buildWorkspaceUpdateNotice(
   return lines.join('\n');
 }
 
+/// Notice queued onto a worktree-agent coordinator after new member
+/// projects are provisioned into it. Unlike the workspace-conversation
+/// notice, the paths that matter here are the coordinator's own symlink
+/// root and its per-member worktrees — the branches the agent should
+/// actually edit — not the workspace's read-only symlink tree.
+function buildWorkspaceAgentUpdateNotice(
+  coordinatorRootPath: string | undefined,
+  added: Array<{ name: string }>,
+): string {
+  const lines: string[] = ['[Workspace agent update]', 'New member projects were added to this agent:'];
+  for (const p of added) lines.push(`- ${p.name}`);
+  lines.push('');
+  lines.push(
+    coordinatorRootPath
+      ? `Your working root ${coordinatorRootPath} now includes a fresh git worktree for each new project above. Read them before continuing — edits there land on this agent's branch, not the main tree.`
+      : 'A fresh git worktree for each new project above was linked into your working root. Read them before continuing.',
+  );
+  return lines.join('\n');
+}
+
 /// For a coordinator's memberIds, return the list of
 /// `{name, worktreePath}` records the main-process helper wants. The
 /// name is the project's human name (with numeric dedup on collision)
@@ -580,6 +713,51 @@ function collectCoordinatorMembers(
     }
   }
   return out;
+}
+
+/// Provision one member for a workspace-agent coordinator: mint a git
+/// worktree in `project` off `baseBranch`, then build the hidden member
+/// Conversation that lives under the project and points the coordinator at
+/// it. Returns the conversation plus the `{name, worktreePath}` record the
+/// coordinator symlink root wants, or an error string when the worktree
+/// couldn't be created. Shared by `newWorkspaceAgent` (initial members)
+/// and `applyProjectsToWorkspaceAgents` (members added to a running agent).
+async function provisionCoordinatorMember(params: {
+  project: { id: UUID; name: string; path: string };
+  agentSlug: string;
+  agentName: string;
+  baseBranch: string;
+  branchPrefix: string;
+  coordinatorId: UUID;
+  permissionMode: Conversation['permissionMode'];
+  backend: Backend;
+}): Promise<
+  | { ok: true; conversation: Conversation; member: { name: string; worktreePath: string } }
+  | { ok: false; error: string }
+> {
+  const res = await window.overcli.invoke('git:createWorktree', {
+    projectPath: params.project.path,
+    agentName: params.agentSlug,
+    baseBranch: params.baseBranch,
+    branchPrefix: params.branchPrefix,
+  });
+  if (!res.ok) return { ok: false, error: res.error };
+  const conversation: Conversation = {
+    id: uuid(),
+    name: `${params.agentName} · ${params.project.name}`,
+    createdAt: Date.now(),
+    totalCostUSD: 0,
+    turnCount: 0,
+    currentModel: '',
+    permissionMode: params.permissionMode,
+    primaryBackend: params.backend,
+    worktreePath: res.worktreePath,
+    branchName: res.branchName,
+    baseBranch: params.baseBranch,
+    workspaceAgentCoordinatorId: params.coordinatorId,
+    hidden: true, // members are visible under the coordinator, not in the project list
+  };
+  return { ok: true, conversation, member: { name: params.project.name, worktreePath: res.worktreePath } };
 }
 
 function findContainerPath(state: StoreState, convId: UUID): string | null {
@@ -649,12 +827,6 @@ function parentDir(p: string): string | null {
   return p.slice(0, idx);
 }
 
-function defaultBackend(settings: AppSettings): Backend {
-  const preferred = settings.preferredBackend;
-  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
-  return enabledBackends(settings)[0] ?? 'claude';
-}
-
 /// True once backend health has been probed at least once. Until then we
 /// avoid gating UI, since "nothing ready" is indistinguishable from "not
 /// checked yet" on a fresh launch.
@@ -697,7 +869,7 @@ export const useStore = create<StoreState>((set, get) => ({
   lastSelectedAt: {},
   gitStatusByConv: {},
   projectIsGitRepo: {},
-  ...createUiSlice<StoreState>(set),
+  ...createUiSlice<StoreState>(set, get),
 
   async init() {
     const state = await window.overcli.invoke('store:load');
@@ -746,6 +918,12 @@ export const useStore = create<StoreState>((set, get) => ({
         workspaces.push(ws);
       }
     }
+    // Restore the non-conversation part of the last view (detail mode, focused
+    // project/workspace) so a renderer reload — e.g. after a long macOS sleep
+    // discards and reloads the render process — lands the user back where they
+    // were instead of resetting to the default conversation view. The sibling
+    // stores (flow run, orchestration) are restored just below.
+    const view = state.view;
     set({
       projects: state.projects,
       workspaces,
@@ -753,8 +931,39 @@ export const useStore = create<StoreState>((set, get) => ({
       settings: state.settings,
       lastInit: state.lastInit,
       selectedConversationId: state.selectedConversationId ?? null,
+      // Reopening the app is touching what you had open. Without this the
+      // restored conversation carries no selection stamp, so the sidebar's
+      // Active section ranks it by whenever you last typed in it and the
+      // thing on screen isn't at the top. (The restored flow run gets the
+      // same treatment via setActiveRun, just below.)
+      lastSelectedAt: state.selectedConversationId
+        ? { [state.selectedConversationId]: Date.now() }
+        : {},
+      detailMode: (view?.detailMode as DetailMode) ?? 'conversation',
+      focusedProjectId: view?.focusedProjectId ?? null,
+      focusedWorkspaceId: view?.focusedWorkspaceId ?? null,
       showToolActivity: state.settings.defaultShowToolActivity ?? false,
+      // Editor tabs come back per scope. `useFileScope` hydrates the live
+      // `tabs` for whichever scope this view resolves to, right after the
+      // fields above land.
+      fileTabsByScope: hydrateFileTabs(state.fileTabs),
     });
+    if (view?.activeRunId) {
+      const { useFlowsStore } = await import('./flowsStore');
+      useFlowsStore.getState().setActiveRun(view.activeRunId);
+    }
+    if (view?.activeOrchestrationId || view?.orchestrator) {
+      const { useOrchestratorStore } = await import('./orchestratorStore');
+      if (view.activeOrchestrationId) {
+        useOrchestratorStore.getState().setActiveOrchestration(view.activeOrchestrationId);
+      }
+      // Rehydrate the sticky batch-launch defaults (main-tree vs worktree, its
+      // coupled cap, PR-on-finish) so a reload doesn't revert the user's choice
+      // to the worktree default.
+      if (view.orchestrator) {
+        useOrchestratorStore.getState().restoreDefaults(view.orchestrator);
+      }
+    }
     if (workspacesChanged) await get().saveWorkspaces();
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
@@ -791,14 +1000,24 @@ export const useStore = create<StoreState>((set, get) => ({
         )
       : false;
     const bumpProject = !!id && !!owningProject && !projectAlreadyActive;
+    // Opening a conversation counts as touching it. Without this,
+    // `lastActiveAt` only ever moved when a turn streamed, so a conversation
+    // you read regularly but never sent to still looked abandoned — and
+    // Settings → Conversations would offer it for deletion dated by its
+    // *creation*. Throttled to an hour: staleness is measured in days, so
+    // finer granularity would only buy extra writes on every click.
+    const touched = id ? findConversation(before, id) : null;
+    const bumpActive =
+      !!touched && Date.now() - (touched.lastActiveAt ?? 0) > 60 * 60 * 1000;
     set((s) => ({
       selectedConversationId: id,
       detailMode: id ? 'conversation' : s.detailMode,
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
+      // The editor isn't cleared here any more: `useFileScope` sees the new
+      // conversation and swaps in that conversation's own tabs (see
+      // ./fileScope.ts), so the files you had open come back when you
+      // return instead of being dropped on every switch.
       lastSelectedAt: id ? { ...s.lastSelectedAt, [id]: Date.now() } : s.lastSelectedAt,
       projects: bumpProject
         ? s.projects.map((p) =>
@@ -806,9 +1025,12 @@ export const useStore = create<StoreState>((set, get) => ({
           )
         : s.projects,
     }));
+    if (bumpActive && id) {
+      mutateConversation(set, get, id, (c) => ({ ...c, lastActiveAt: Date.now() }));
+    }
     window.overcli.invoke('store:saveSelection', id);
-    if (bumpProject) {
-      void get().saveProjects();
+    if (bumpProject || bumpActive) {
+      void saveConversationState(get);
     }
     if (id) {
       void get().loadHistoryIfNeeded(id);
@@ -826,9 +1048,6 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: projectId,
       focusedWorkspaceId: null,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -840,9 +1059,6 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: null,
       focusedWorkspaceId: workspaceId,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -857,22 +1073,24 @@ export const useStore = create<StoreState>((set, get) => ({
     // a file browser alongside the chat — not to swap the whole right
     // side over to the standalone explorer view and lose the
     // conversation. Branch on whether a conversation is selected:
-    //   - Conversation active → open the explorer in the conversation's
-    //     right pane (ConversationPane swaps FileEditorPane out for
-    //     ExplorerPane when explorerRootPath is non-null). detailMode,
-    //     selectedConversationId, focus IDs all stay put.
-    //   - No conversation → original behavior: switch detailMode to
-    //     'explorer' so App.tsx renders the standalone ExplorerPane,
-    //     and clear focus so the sidebar doesn't lie about what's
-    //     selected.
+    //   - Conversation view showing → open the explorer in the
+    //     conversation's right pane (ConversationPane swaps FileEditorPane
+    //     out for ExplorerPane when explorerRootPath is non-null).
+    //     detailMode, selectedConversationId, focus IDs all stay put.
+    //   - Anywhere else (Flows / Orchestrator / Stats / Local / Welcome) →
+    //     switch detailMode to 'explorer' so App.tsx renders the standalone
+    //     ExplorerPane full-screen, and clear focus so the sidebar doesn't
+    //     lie about what's selected. Gate on detailMode, not just
+    //     selectedConversationId: those other views often leave a
+    //     conversation selected under the hood, and keying off it alone
+    //     made Explore a no-op there (it set the root but never swapped the
+    //     visible pane).
     const state = get();
-    if (state.selectedConversationId) {
-      set({
-        explorerRootPath: rootPath,
-        openFilePath: null,
-        openFileHighlight: null,
-        openFileMode: 'edit',
-      });
+    // Both branches leave the editor alone: the explorer root is its own
+    // tab scope, so `useFileScope` parks the conversation's tabs and
+    // restores whatever was open in this explorer root last time.
+    if (state.detailMode === 'conversation' && state.selectedConversationId) {
+      set({ explorerRootPath: rootPath });
       return;
     }
     set({
@@ -881,9 +1099,6 @@ export const useStore = create<StoreState>((set, get) => ({
       selectedConversationId: null,
       focusedProjectId: null,
       focusedWorkspaceId: null,
-      openFilePath: null,
-      openFileHighlight: null,
-      openFileMode: 'edit',
     });
     window.overcli.invoke('store:saveSelection', null);
   },
@@ -930,17 +1145,29 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async saveProjects() {
-    await window.overcli.invoke('store:saveProjects', get().projects);
+    await coalescedSave('projects', () =>
+      window.overcli.invoke('store:saveProjects', get().projects),
+    );
   },
   async saveWorkspaces() {
-    await window.overcli.invoke('store:saveWorkspaces', get().workspaces);
+    await coalescedSave('workspaces', () =>
+      window.overcli.invoke('store:saveWorkspaces', get().workspaces),
+    );
   },
   async saveColosseums() {
     await window.overcli.invoke('store:saveColosseums', get().colosseums);
   },
   async saveSettings(next) {
+    const prev = get().settings;
     set({ settings: next });
     await window.overcli.invoke('store:saveSettings', next);
+    // Only re-probe when something that can change a backend's health
+    // actually moved. Health probing executes every installed CLI, and this
+    // action is how the app persists things like pane widths, theme and
+    // toggles — so dragging a divider used to end in a round of CLI spawns
+    // (and the reviewer list re-probing all of them again). That's the
+    // stutter you'd see on pointer-up.
+    if (!backendSettingsChanged(prev, next)) return;
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
   },
@@ -1116,7 +1343,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async newConversation(projectId) {
-    const preferred = defaultBackend(get().settings);
+    const preferred = pickDefaultBackend(get().settings, get().backendHealth);
     // Capture the project's current branch so the conversation header can
     // warn if the working tree drifts onto a different branch later. Best
     // effort — a non-git project just leaves it undefined.
@@ -1144,6 +1371,40 @@ export const useStore = create<StoreState>((set, get) => ({
     set((s) => ({
       projects: s.projects.map((p) =>
         p.id === projectId
+          ? { ...p, conversations: [...p.conversations, conv], lastOpenedAt: Date.now() }
+          : p,
+      ),
+    }));
+    await get().saveProjects();
+    get().selectConversation(conv.id);
+    return conv;
+  },
+
+  async newConversationInWorktree(args) {
+    // The worktree already exists and belongs to someone else (a flow
+    // run) — we only build the conversation row that points at it, so
+    // `cwd = conv.worktreePath` (see refreshGitStatus / the runner turn
+    // args) lands every turn in that tree. `adoptedWorktree` is what
+    // keeps `removeAgent` from deleting it later.
+    const project = get().projects.find((p) => p.path === args.projectPath);
+    if (!project) return null;
+    const conv: Conversation = {
+      id: uuid(),
+      name: args.name,
+      createdAt: Date.now(),
+      totalCostUSD: 0,
+      turnCount: 0,
+      currentModel: '',
+      permissionMode: get().settings.defaultPermissionMode,
+      primaryBackend: pickDefaultBackend(get().settings, get().backendHealth),
+      worktreePath: args.worktreePath,
+      branchName: args.branchName,
+      baseBranch: args.baseBranch,
+      adoptedWorktree: true,
+    };
+    set((s) => ({
+      projects: s.projects.map((p) =>
+        p.id === project.id
           ? { ...p, conversations: [...p.conversations, conv], lastOpenedAt: Date.now() }
           : p,
       ),
@@ -1215,9 +1476,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const conversations = notice
           ? (w.conversations ?? []).map((c) => ({
               ...c,
-              pendingContextUpdate: c.pendingContextUpdate
-                ? `${c.pendingContextUpdate}\n\n${notice}`
-                : notice,
+              pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
             }))
           : w.conversations;
         return { ...w, projectIds, rootPath, conversations };
@@ -1252,9 +1511,7 @@ export const useStore = create<StoreState>((set, get) => ({
         const conversations = notice
           ? (w.conversations ?? []).map((c) => ({
               ...c,
-              pendingContextUpdate: c.pendingContextUpdate
-                ? `${c.pendingContextUpdate}\n\n${notice}`
-                : notice,
+              pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
             }))
           : w.conversations;
         return { ...w, instructions: trimmed, rootPath, conversations };
@@ -1267,7 +1524,7 @@ export const useStore = create<StoreState>((set, get) => ({
   async newConversationInWorkspace(workspaceId) {
     const ws = get().workspaces.find((w) => w.id === workspaceId);
     if (!ws) return null;
-    const preferred = defaultBackend(get().settings);
+    const preferred = pickDefaultBackend(get().settings, get().backendHealth);
     const conv: Conversation = {
       id: uuid(),
       name: 'New conversation',
@@ -1292,7 +1549,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async newWorkspaceAgent(args) {
     const state = get();
-    const preferred = defaultBackend(state.settings);
+    const preferred = pickDefaultBackend(state.settings, state.backendHealth);
     const ws = state.workspaces.find((w) => w.id === args.workspaceId);
     if (!ws) return null;
     const name = args.name.trim();
@@ -1321,37 +1578,23 @@ export const useStore = create<StoreState>((set, get) => ({
       args.onProgress?.(
         `Creating worktree in ${project.name} (${i + 1} of ${memberProjects.length})…`,
       );
-      const res = await window.overcli.invoke('git:createWorktree', {
-        projectPath: project.path,
-        agentName: agentSlug,
+      const res = await provisionCoordinatorMember({
+        project,
+        agentSlug,
+        agentName: name,
         baseBranch,
         branchPrefix: state.settings.agentBranchPrefix,
+        coordinatorId,
+        permissionMode: state.settings.defaultPermissionMode,
+        backend: preferred,
       });
       if (!res.ok) {
         logToMain('warn', 'renderer.createWorktree', `Worktree create failed in ${project.name}: ${res.error}`);
         continue;
       }
-      const memberId = uuid();
-      memberIds.push(memberId);
-      coordinatorMembers.push({
-        name: project.name,
-        worktreePath: res.worktreePath,
-      });
-      const memberConv: Conversation = {
-        id: memberId,
-        name: `${name} · ${project.name}`,
-        createdAt: Date.now(),
-        totalCostUSD: 0,
-        turnCount: 0,
-        currentModel: '',
-        permissionMode: state.settings.defaultPermissionMode,
-        primaryBackend: preferred,
-        worktreePath: res.worktreePath,
-        branchName: res.branchName,
-        baseBranch,
-        workspaceAgentCoordinatorId: coordinatorId,
-        hidden: true, // members are visible under the coordinator, not in the project list
-      };
+      const memberConv = res.conversation;
+      memberIds.push(memberConv.id);
+      coordinatorMembers.push(res.member);
       set((s) => ({
         projects: s.projects.map((p) =>
           p.id === projectId ? { ...p, conversations: [...p.conversations, memberConv] } : p,
@@ -1405,9 +1648,127 @@ export const useStore = create<StoreState>((set, get) => ({
     return coordinator;
   },
 
+  async applyProjectsToWorkspaceAgents(args) {
+    const state = get();
+    const ws = state.workspaces.find((w) => w.id === args.workspaceId);
+    if (!ws) return { appliedAgents: 0, failures: [] };
+    const coordinators = (ws.conversations ?? []).filter(isLiveWorkspaceAgent);
+    if (coordinators.length === 0) return { appliedAgents: 0, failures: [] };
+    const projectsById = new Map(state.projects.map((p) => [p.id, p]));
+    const addedProjects = args.projectIds
+      .map((id) => projectsById.get(id))
+      .filter((p): p is NonNullable<typeof p> => !!p);
+    if (addedProjects.length === 0) return { appliedAgents: 0, failures: [] };
+
+    const backend = pickDefaultBackend(state.settings, state.backendHealth);
+    const failures: string[] = [];
+    let appliedAgents = 0;
+
+    for (const coordinator of coordinators) {
+      // Re-derive the slug the same way newWorkspaceAgent does, so each new
+      // member's branch matches the agent's other members.
+      const agentSlug = coordinator.name
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      if (!agentSlug) continue;
+
+      // Projects this coordinator already has a worktree for — skip them so
+      // re-applying (or a project that was added twice) is idempotent.
+      const existingProjectPaths = new Set<string>();
+      for (const memberId of coordinator.workspaceAgentMemberIds ?? []) {
+        for (const proj of get().projects) {
+          const m = proj.conversations.find((x) => x.id === memberId);
+          if (m?.worktreePath) existingProjectPaths.add(proj.path);
+        }
+      }
+
+      const newMemberIds: UUID[] = [];
+      const addedForCoordinator: typeof addedProjects = [];
+      for (const project of addedProjects) {
+        if (existingProjectPaths.has(project.path)) continue;
+        const baseBranch = args.baseBranches[project.id];
+        if (!baseBranch) {
+          failures.push(`${coordinator.name} · ${project.name}: no base branch selected`);
+          continue;
+        }
+        args.onProgress?.(`Creating worktree in ${project.name} for ${coordinator.name}…`);
+        const res = await provisionCoordinatorMember({
+          project,
+          agentSlug,
+          agentName: coordinator.name,
+          baseBranch,
+          branchPrefix: state.settings.agentBranchPrefix,
+          coordinatorId: coordinator.id,
+          permissionMode: state.settings.defaultPermissionMode,
+          backend,
+        });
+        if (!res.ok) {
+          failures.push(`${coordinator.name} · ${project.name}: ${res.error}`);
+          continue;
+        }
+        const memberConv = res.conversation;
+        const projectId = project.id;
+        set((s) => ({
+          projects: s.projects.map((p) =>
+            p.id === projectId ? { ...p, conversations: [...p.conversations, memberConv] } : p,
+          ),
+        }));
+        newMemberIds.push(memberConv.id);
+        addedForCoordinator.push(project);
+      }
+
+      if (newMemberIds.length === 0) continue;
+
+      // Rebuild the coordinator's symlink root over the full member set so
+      // the new worktrees show up in its cwd. collectCoordinatorMembers reads
+      // the freshly-set project conversations, so it sees the new members.
+      const allMemberIds = [...(coordinator.workspaceAgentMemberIds ?? []), ...newMemberIds];
+      const members = collectCoordinatorMembers(get().projects, allMemberIds);
+      args.onProgress?.(`Linking ${coordinator.name}…`);
+      let coordinatorRootPath = coordinator.coordinatorRootPath;
+      const rootRes = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
+        coordinatorId: coordinator.id,
+        members,
+      });
+      if (rootRes.ok) {
+        coordinatorRootPath = rootRes.rootPath;
+      } else {
+        logToMain('warn', 'renderer.coordinatorRoot', `Coordinator root rebuild failed: ${rootRes.error}`);
+        failures.push(`${coordinator.name}: link refresh failed (${rootRes.error})`);
+      }
+
+      const notice = buildWorkspaceAgentUpdateNotice(coordinatorRootPath, addedForCoordinator);
+      set((s) => ({
+        workspaces: s.workspaces.map((w) =>
+          w.id === args.workspaceId
+            ? {
+                ...w,
+                conversations: (w.conversations ?? []).map((c) =>
+                  c.id === coordinator.id
+                    ? {
+                        ...c,
+                        workspaceAgentMemberIds: allMemberIds,
+                        coordinatorRootPath,
+                        pendingContextUpdate: appendContextNotice(c.pendingContextUpdate, notice),
+                      }
+                    : c,
+                ),
+              }
+            : w,
+        ),
+      }));
+      appliedAgents += 1;
+    }
+
+    await get().saveProjects();
+    await get().saveWorkspaces();
+    return { appliedAgents, failures };
+  },
+
   async newWorkspaceDocsAgent(args) {
     const state = get();
-    const preferred = defaultBackend(state.settings);
+    const preferred = pickDefaultBackend(state.settings, state.backendHealth);
     const ws = state.workspaces.find((w) => w.id === args.workspaceId);
     if (!ws) return null;
     const name = args.name.trim();
@@ -1481,6 +1842,9 @@ export const useStore = create<StoreState>((set, get) => ({
     // Snapshot before we drop the row so we can clean up sidecar state
     // that lives outside overcli.json (currently just Ollama transcripts).
     const conv = findConversation(get(), id);
+    // Release the backend runtime first — once the row is gone there's
+    // nothing left in the UI that could reach the process.
+    await releaseRuntime(id);
     set((s) => ({
       projects: s.projects.map((p) => ({
         ...p,
@@ -1524,13 +1888,22 @@ export const useStore = create<StoreState>((set, get) => ({
               worktreePath: m.worktreePath,
               branchName: m.branchName,
             });
-            if (!res.ok && res.error) errors.push(`${p.name}: ${res.error}`);
             if (res.warning) warnings.push(`${p.name}: ${res.warning}`);
+            if (!res.ok) {
+              // Keep the member row so the tree stays reachable (see the
+              // single-agent branch below). It outlives its coordinator and
+              // shows up as a normal project conversation, flagged orphaned.
+              errors.push(`${p.name}: ${res.error ?? 'worktree removal failed'}`);
+              mutateConversation(set, get, memberId, (c) => ({ ...c, orphaned: true }));
+              await releaseRuntime(memberId);
+              break;
+            }
           }
           await get().removeConversation(memberId);
           break;
         }
       }
+      await saveConversationState(get);
       await window.overcli.invoke('workspace:removeCoordinatorSymlinkRoot', id);
       await get().removeConversation(id);
       return {
@@ -1543,14 +1916,32 @@ export const useStore = create<StoreState>((set, get) => ({
     // Single-project agent: git worktree remove + drop the conversation.
     // Review agents live on a detached HEAD with no branch, so we pass
     // an empty branchName and let git skip the branch-delete step.
-    if (conv.worktreePath && ownerProjectPath) {
+    // Adopted worktrees are the exception (see `ownsWorktree`): the tree
+    // belongs to a flow run, which still needs it for Review & merge, so
+    // we drop only the conversation row and leave tree and branch alone.
+    if (ownsWorktree(conv) && ownerProjectPath) {
       const res = await window.overcli.invoke('git:removeWorktree', {
         projectPath: ownerProjectPath,
         worktreePath: conv.worktreePath,
         branchName: conv.branchName ?? '',
       });
-      if (!res.ok && res.error) errors.push(res.error);
       if (res.warning) warnings.push(res.warning);
+      // Removal failed — a locked worktree, a file the OS won't release, a
+      // submodule git refuses to blow away. Dropping the row here would
+      // strand the tree: nothing else in the app records that path, so no
+      // code path could ever reach it again (that leak is why Settings →
+      // Storage exists). Keep the conversation instead and flag it so the
+      // user can see what happened and retry.
+      if (!res.ok) {
+        mutateConversation(set, get, id, (c) => ({ ...c, orphaned: true }));
+        await releaseRuntime(id);
+        await saveConversationState(get);
+        return {
+          ok: false,
+          error: res.error ?? 'worktree removal failed',
+          warning: warnings.join('\n') || undefined,
+        };
+      }
     }
     await get().removeConversation(id);
     if (conv.colosseumId) {
@@ -1797,6 +2188,10 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async setConversationHidden(id, hidden) {
     mutateConversation(set, get, id, (c) => ({ ...c, hidden }));
+    // Archiving is the user saying "I'm done with this for now" — the
+    // strongest signal we get that its session can be released. The
+    // sessionId is persisted, so unarchiving and sending resumes the thread.
+    if (hidden) await releaseRuntime(id, true);
     await saveConversationState(get);
   },
 
@@ -1828,6 +2223,10 @@ export const useStore = create<StoreState>((set, get) => ({
           : p,
       ),
     }));
+    // Bulk archive is where the parked-session count actually comes down:
+    // it's the one action that touches every conversation the user has
+    // stopped caring about in a single pass.
+    await Promise.all(ids.map((id) => releaseRuntime(id, true)));
     await get().saveProjects();
     return ids.length;
   },
@@ -1860,6 +2259,7 @@ export const useStore = create<StoreState>((set, get) => ({
           : w,
       ),
     }));
+    await Promise.all(ids.map((id) => releaseRuntime(id, true)));
     await get().saveWorkspaces();
     return ids.length;
   },
@@ -1936,6 +2336,7 @@ export const useStore = create<StoreState>((set, get) => ({
       if (backend === 'codex') next.codexModel = model;
       if (backend === 'gemini') next.geminiModel = model;
       if (backend === 'ollama') next.ollamaModel = model;
+      if (backend === 'copilot') next.copilotModel = model;
       return next;
     });
     await saveConversationState(get);
@@ -2105,12 +2506,13 @@ export const useStore = create<StoreState>((set, get) => ({
         pendingLocalUserIds: nextPending,
         errorMessage: undefined,
         isRunning: true,
+        runningSince: runner.isRunning ? runner.runningSince ?? Date.now() : Date.now(),
         activityLabel: runner.activityLabel ?? 'Thinking…',
         completedAt: null,
       };
     });
 
-    const backend = conv.primaryBackend ?? defaultBackend(state.settings);
+    const backend = conv.primaryBackend ?? pickDefaultBackend(state.settings, state.backendHealth);
     if (!isBackendEnabled(state.settings, backend)) {
       useRunnersStore.getState().patchRunner(conversationId, {
         errorMessage: `${backend} is disabled in Settings > Backends.`,
@@ -2128,7 +2530,20 @@ export const useStore = create<StoreState>((set, get) => ({
         ? conv.geminiModel ?? conv.currentModel
         : backend === 'ollama'
         ? conv.ollamaModel ?? conv.currentModel
+        : backend === 'copilot'
+        ? conv.copilotModel ?? conv.currentModel
         : conv.claudeModel ?? conv.currentModel;
+
+    // Never ship an empty premium model. `buildArgs` omits `--model` when it's
+    // blank, and the backend CLI then silently substitutes its own default —
+    // so the user runs on a model they didn't pick, with the header still
+    // showing the one they did. Resolve the configured default, then the
+    // catalog's first id, so the flag is always explicit. (Ollama resolves its
+    // own tag from the local pull list below.)
+    if (backend !== 'ollama' && !model) {
+      model =
+        state.settings.backendDefaultModels?.[backend] ?? premiumModelsForBackend(backend)[0] ?? '';
+    }
 
     if (backend !== 'ollama' && model && !isSupportedPremiumModel(backend, model)) {
       useRunnersStore.getState().patchRunner(conversationId, {
@@ -2194,6 +2609,22 @@ export const useStore = create<StoreState>((set, get) => ({
       }));
     }
 
+    // Stamped BEFORE the send goes out, not after it comes back. Hitting
+    // enter is the user's turn — the sidebar should reorder on that, not on
+    // however long the backend takes to accept the request (and not never,
+    // if the invoke rejects).
+    const promptedAt = Date.now();
+    mutateConversation(set, get, conversationId, (c) => ({
+      ...c,
+      lastActiveAt: promptedAt,
+      lastPromptAt: promptedAt,
+      turnCount: c.turnCount + 1,
+      name:
+        c.name === 'New conversation' && prompt.trim().length > 0
+          ? prompt.trim().slice(0, 48)
+          : c.name,
+    }));
+
     await window.overcli.invoke('runner:send', {
       conversationId,
       prompt: outgoingPrompt,
@@ -2218,15 +2649,6 @@ export const useStore = create<StoreState>((set, get) => ({
       claudeTransport: backend === 'claude' ? get().settings.claudeTransport ?? 'cli' : undefined,
     });
 
-    mutateConversation(set, get, conversationId, (c) => ({
-      ...c,
-      lastActiveAt: Date.now(),
-      turnCount: c.turnCount + 1,
-      name:
-        c.name === 'New conversation' && prompt.trim().length > 0
-          ? prompt.trim().slice(0, 48)
-          : c.name,
-    }));
     await saveConversationState(get);
   },
 
@@ -2343,7 +2765,6 @@ export const useStore = create<StoreState>((set, get) => ({
     const conv = findConversation(state, conversationId);
     if (!conv) return;
     const existing = getRunner(conversationId);
-    if (existing && (existing.historyLoaded || existing.historyLoading)) return;
     // If the runner already holds live events for this conversation, those
     // ARE the transcript — captured in full this session as the run/chat
     // streamed. Merging the on-disk history on top would DOUBLE every
@@ -2356,17 +2777,43 @@ export const useStore = create<StoreState>((set, get) => ({
     // disk read; history is only needed to repopulate an EMPTY runner (e.g.
     // after an app restart, when the in-memory events are gone).
     if (existing && existing.events.length > 0) {
-      useRunnersStore.getState().patchRunner(conversationId, { historyLoaded: true });
+      if (!existing.historyLoaded) {
+        useRunnersStore.getState().patchRunner(conversationId, { historyLoaded: true });
+      }
+      return;
+    }
+    // A load that started recently (visible OR quiet) is still settling —
+    // don't fire a second read on top of it. `historyLoadStartedAt` is
+    // cleared when the load settles, so a load that somehow never settles
+    // self-heals after the window rather than blocking every retry. Note we
+    // deliberately do NOT gate on `historyLoaded`/`historyLoading` here: an
+    // EMPTY runner that cached `historyLoaded: true` — from a load that
+    // errored, or raced a not-yet-present worktree/session file (the
+    // workspace-coordinator "history never loads" bug) — must be allowed to
+    // re-attempt, otherwise the stale flag hides an intact transcript
+    // forever until the app restarts.
+    if (
+      existing?.historyLoadStartedAt != null &&
+      Date.now() - existing.historyLoadStartedAt < STALE_HISTORY_LOAD_MS
+    ) {
       return;
     }
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
-    useRunnersStore.getState().patchRunner(conversationId, { historyLoading: true });
+    // First load shows the "Loading history…" spinner. A RELOAD of a runner
+    // that already settled empty runs QUIETLY (no spinner flip): a
+    // genuinely-empty new conversation shouldn't flash a spinner on every
+    // open, while a conversation whose transcript is now readable gets it
+    // merged in silently.
+    const quiet = !!existing?.historyLoaded;
+    useRunnersStore
+      .getState()
+      .patchRunner(conversationId, { historyLoading: !quiet, historyLoadStartedAt: Date.now() });
     let events;
     try {
       events = await window.overcli.invoke('runner:loadHistory', {
         conversationId,
-        backend: conv.primaryBackend ?? defaultBackend(state.settings),
+        backend: conv.primaryBackend ?? pickDefaultBackend(state.settings, state.backendHealth),
         projectPath: cwd,
         sessionId: conv.sessionId,
         codexRolloutPaths: conv.codexRolloutPaths,
@@ -2383,9 +2830,11 @@ export const useStore = create<StoreState>((set, get) => ({
       // loaded so the chat falls back to the empty/intro view, and clear the
       // spinner so a re-open can try again.
       console.error('loadHistoryIfNeeded failed', conversationId, e);
-      useRunnersStore
-        .getState()
-        .patchRunner(conversationId, { historyLoading: false, historyLoaded: true });
+      useRunnersStore.getState().patchRunner(conversationId, {
+        historyLoading: false,
+        historyLoaded: true,
+        historyLoadStartedAt: null,
+      });
       return;
     }
     useRunnersStore.getState().patchRunner(conversationId, (existingRunner) => {
@@ -2411,10 +2860,24 @@ export const useStore = create<StoreState>((set, get) => ({
         merged.push(e);
       }
       merged.sort((a, b) => a.timestamp - b.timestamp);
+      // Seed the context meter off the replayed transcript. Reopening a
+      // long-running conversation is exactly when "how full is this?"
+      // matters, and waiting for the next live turn to answer would be too
+      // late. Replayed usage has no contextWindow (the session JSONL
+      // doesn't record one), so this shows raw occupancy until the next
+      // real result line supplies the denominator.
+      const context = foldContextUsage(
+        { tokens: existingRunner.contextTokens, window: existingRunner.contextWindow },
+        merged,
+        existingRunner.currentModel,
+      );
       return {
         events: merged,
         historyLoading: false,
         historyLoaded: true,
+        historyLoadStartedAt: null,
+        contextTokens: context.tokens,
+        contextWindow: context.window,
       };
     });
   },
@@ -2476,7 +2939,13 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
-  async refreshBackendHealth() {
+  /// `force` drops main's probe cache first. Used by the sign-in banner,
+  /// which polls while the user completes an OAuth round-trip in Terminal
+  /// and needs the badge to flip the moment it lands — everywhere else a
+  /// cached answer (main caps it at 15s) is what you want, since probing
+  /// means executing every backend's CLI.
+  async refreshBackendHealth(force?: boolean) {
+    if (force) await window.overcli.invoke('health:invalidate');
     const out: Record<string, BackendHealth> = {};
     await Promise.all(
       ALL_BACKENDS.map(async (backend) => {
@@ -2709,12 +3178,23 @@ export const useStore = create<StoreState>((set, get) => ({
             currentModel = e.kind.info.model;
           }
         }
+        // Context meter. Folded off `mainIncoming` (not `event.events`) so
+        // a subagent's own window can't be mistaken for this
+        // conversation's, and after `currentModel` is resolved so a batch
+        // that carries both init and result picks the right usage entry.
+        const context = foldContextUsage(
+          { tokens: runner.contextTokens, window: runner.contextWindow },
+          mainIncoming,
+          currentModel,
+        );
         return {
           events: nextEvents,
           subagentEvents: nextSubagentEvents,
           taskProgressByToolUse: nextTaskProgress,
           pendingLocalUserIds: pending,
           currentModel,
+          contextTokens: context.tokens,
+          contextWindow: context.window,
         };
       });
       if (initForGlobal) set({ lastInit: initForGlobal });
@@ -2725,11 +3205,18 @@ export const useStore = create<StoreState>((set, get) => ({
       const justCompleted = wasRunning && !event.isRunning;
       const justStarted = !wasRunning && event.isRunning;
       const completedAt = justCompleted ? Date.now() : justStarted ? null : undefined;
-      useRunnersStore.getState().patchRunner(event.conversationId, {
+      useRunnersStore.getState().patchRunner(event.conversationId, (runner) => ({
         isRunning: event.isRunning,
+        // Stamped on the idle→running edge only, so a long turn's activity
+        // label churn doesn't keep pushing the reconcile grace window out.
+        runningSince: !event.isRunning
+          ? null
+          : justStarted
+            ? Date.now()
+            : runner.runningSince ?? Date.now(),
         activityLabel: event.activityLabel,
         ...(completedAt !== undefined ? { completedAt } : {}),
-      });
+      }));
       if (justCompleted && get().selectedConversationId === event.conversationId) {
         scheduleClearCompletion(event.conversationId, completedAt as number);
       }
@@ -2737,11 +3224,21 @@ export const useStore = create<StoreState>((set, get) => ({
         // Bump lastActiveAt so the sidebar's "Active" 10-min window
         // restarts at finish time, not at the original prompt — long
         // runs were dropping off the list the instant they finished.
-        mutateConversation(set, get, event.conversationId, (c) => ({
-          ...c,
-          lastActiveAt: Date.now(),
-        }));
-        void saveConversationState(get);
+        const lastActiveAt = Date.now();
+        mutateConversation(set, get, event.conversationId, (c) => ({ ...c, lastActiveAt }));
+        // Targeted write — this is the hottest save in the app and it only
+        // moves one scalar. The bulk path would clone every conversation in
+        // the store across IPC to do it. Fall back to the full save only if
+        // main doesn't know this conversation yet.
+        void window.overcli
+          .invoke('store:patchConversation', {
+            id: event.conversationId,
+            patch: { lastActiveAt },
+          })
+          .then((ok) => {
+            if (!ok) return saveConversationState(get);
+          })
+          .catch(() => saveConversationState(get));
         // Main-side guard skips the bounce if the window is focused or
         // we already nudged in the last 10s, so this is safe to fire on
         // every completion regardless of view state.
@@ -2871,6 +3368,14 @@ export const useStore = create<StoreState>((set, get) => ({
       void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
         useOrchestratorStore.getState().applyProducerProgress(event.text, event.tools);
       });
+    } else if (event.type === 'scheduleUpdate') {
+      void import('./schedulesStore').then(({ useSchedulesStore }) => {
+        useSchedulesStore.getState().applyUpdate(event.schedule, event.nextFireAt);
+      });
+    } else if (event.type === 'scheduleDeleted') {
+      void import('./schedulesStore').then(({ useSchedulesStore }) => {
+        useSchedulesStore.getState().removeLocal(event.id);
+      });
     }
   },
 }));
@@ -2916,27 +3421,192 @@ function buildWorkspaceDocsPrompt(args: { topic: string; projectNames: string[] 
 /// `sessionId`, `turnCount`, model, and settings for workspace
 /// conversations on reload (symptom: empty chat pane after clicking a
 /// workspace conversation you'd been working in).
+/// Renderer-side coalescing window for the two bulk saves.
+///
+/// `store:saveProjects` structured-clones every project and every
+/// conversation across the IPC boundary — hundreds of KB, serialized on the
+/// renderer's own thread before main ever sees it. There are ~55 call sites
+/// and several can fire per completed turn, so bursts of them stalled the UI
+/// on the clone alone. Each key keeps at most one scheduled write; callers
+/// arriving inside the window await that same write. The payload is read at
+/// fire time rather than call time, so a coalesced write still carries the
+/// newest state — collapsing N writes into one loses nothing.
+const SAVE_COALESCE_MS = 250;
+
+const pendingSaves = new Map<string, { promise: Promise<void>; fire: () => void }>();
+
+function coalescedSave(key: string, run: () => Promise<unknown>): Promise<void> {
+  const existing = pendingSaves.get(key);
+  if (existing) return existing.promise;
+  let timer: ReturnType<typeof setTimeout>;
+  let fired = false;
+  let fire = () => {};
+  const promise = new Promise<void>((resolve) => {
+    const go = () => {
+      if (fired) return;
+      fired = true;
+      clearTimeout(timer);
+      pendingSaves.delete(key);
+      void Promise.resolve(run())
+        .catch(() => undefined)
+        .then(() => resolve());
+    };
+    fire = go;
+    timer = setTimeout(go, SAVE_COALESCE_MS);
+  });
+  pendingSaves.set(key, { promise, fire });
+  return promise;
+}
+
+/// Fire every scheduled save immediately. Used on window teardown so a
+/// reload inside the coalescing window can't strand the last mutation.
+export function flushPendingSaves(): void {
+  for (const entry of Array.from(pendingSaves.values())) entry.fire();
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', flushPendingSaves);
+}
+
+/// Whether a settings change can plausibly change a backend's health badge:
+/// a different binary path, or a backend enabled/disabled. Everything else
+/// (widths, theme, model defaults, toggles) leaves the CLIs exactly as they
+/// were, so re-probing them is pure stall.
+export function backendSettingsChanged(prev: AppSettings, next: AppSettings): boolean {
+  if (prev === next) return false;
+  const keys = new Set([
+    ...Object.keys(prev.backendPaths ?? {}),
+    ...Object.keys(next.backendPaths ?? {}),
+  ]);
+  for (const k of keys) {
+    if ((prev.backendPaths as Record<string, unknown>)?.[k] !==
+        (next.backendPaths as Record<string, unknown>)?.[k]) {
+      return true;
+    }
+  }
+  const flags = new Set([
+    ...Object.keys(prev.disabledBackends ?? {}),
+    ...Object.keys(next.disabledBackends ?? {}),
+  ]);
+  for (const k of flags) {
+    if ((prev.disabledBackends as Record<string, unknown>)?.[k] !==
+        (next.disabledBackends as Record<string, unknown>)?.[k]) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Turn saved tabs from disk back into live tab objects. View mode and
+/// highlight are deliberately not persisted: a restored tab opens in its
+/// natural default (preview for a README, edit for code) with no line jump,
+/// because a line number captured days ago usually points somewhere else by
+/// now.
+export function hydrateFileTabs(
+  persisted: PersistedFileTabs | undefined,
+): Record<string, ScopeTabs> {
+  if (!persisted) return {};
+  const out: Record<string, ScopeTabs> = {};
+  for (const [scope, entry] of Object.entries(persisted)) {
+    const tabs: FileTab[] = entry.paths.slice(0, MAX_TABS_PER_SCOPE).map((p) => ({
+      path: p,
+      mode: defaultFileViewMode(p, false),
+      highlight: null,
+    }));
+    if (!tabs.length) continue;
+    const activePath = entry.activePath && tabs.some((t) => t.path === entry.activePath)
+      ? entry.activePath
+      : tabs[0].path;
+    out[scope] = { tabs, activePath };
+  }
+  return out;
+}
+
+/// Project the tab state down to what's worth persisting. The scope on
+/// screen lives in `tabs`/`openFilePath` rather than in `fileTabsByScope`
+/// (it's only flushed there on a scope switch), so it's merged in here —
+/// otherwise quitting without changing views would save a stale list.
+export function serializeFileTabs(s: StoreState): PersistedFileTabs {
+  const out: PersistedFileTabs = {};
+  for (const [scope, entry] of Object.entries(s.fileTabsByScope)) {
+    if (!entry.tabs.length) continue;
+    out[scope] = { paths: entry.tabs.map((t) => t.path), activePath: entry.activePath };
+  }
+  if (s.fileScopeKey) {
+    if (s.tabs.length) {
+      out[s.fileScopeKey] = { paths: s.tabs.map((t) => t.path), activePath: s.openFilePath };
+    } else {
+      delete out[s.fileScopeKey];
+    }
+  }
+  return out;
+}
+
+// Persist open tabs whenever they change. A subscription rather than a call
+// in each action: opening, closing, reordering and switching scopes all end
+// up here, and the 250ms coalescing window collapses the burst you get from
+// an agent touching several files at once into one write.
+if (typeof window !== 'undefined') {
+  useStore.subscribe((s, prev) => {
+    if (
+      s.tabs === prev.tabs &&
+      s.openFilePath === prev.openFilePath &&
+      s.fileTabsByScope === prev.fileTabsByScope
+    ) {
+      return;
+    }
+    void coalescedSave('fileTabs', () =>
+      window.overcli.invoke('store:saveFileTabs', serializeFileTabs(useStore.getState())),
+    );
+  });
+}
+
 async function saveConversationState(get: () => StoreState): Promise<void> {
   await get().saveProjects();
   await get().saveWorkspaces();
 }
 
+/// Apply a mutator to one conversation, rebuilding only the project or
+/// workspace that actually owns it.
+///
+/// The previous version mapped every project AND every workspace on every
+/// call, so touching a single `lastActiveAt` minted a fresh object for all
+/// 40-odd projects and invalidated every sidebar subscriber. Conversation
+/// ids are unique across the tree, so stopping at the first match is
+/// equivalent — and it leaves untouched groups referentially stable, which
+/// is what keeps the sidebar from re-rendering wholesale on every completed
+/// turn.
 function mutateConversation(
   set: (fn: (s: StoreState) => Partial<StoreState>) => void,
   _get: () => StoreState,
   id: UUID,
   mutator: (c: Conversation) => Conversation,
 ): void {
-  set((s) => ({
-    projects: s.projects.map((p) => ({
-      ...p,
-      conversations: p.conversations.map((c) => (c.id === id ? mutator(c) : c)),
-    })),
-    workspaces: s.workspaces.map((w) => ({
-      ...w,
-      conversations: (w.conversations ?? []).map((c) => (c.id === id ? mutator(c) : c)),
-    })),
-  }));
+  set((s) => {
+    let found = false;
+    const projects = s.projects.map((p) => {
+      if (found) return p;
+      const idx = p.conversations.findIndex((c) => c.id === id);
+      if (idx === -1) return p;
+      found = true;
+      const conversations = p.conversations.slice();
+      conversations[idx] = mutator(conversations[idx]);
+      return { ...p, conversations };
+    });
+    if (found) return { projects };
+
+    const workspaces = s.workspaces.map((w) => {
+      if (found) return w;
+      const list = w.conversations ?? [];
+      const idx = list.findIndex((c) => c.id === id);
+      if (idx === -1) return w;
+      found = true;
+      const conversations = list.slice();
+      conversations[idx] = mutator(conversations[idx]);
+      return { ...w, conversations };
+    });
+    return found ? { workspaces } : {};
+  });
 }
 
 /// Incoming stream events either append to the tail OR replace an existing

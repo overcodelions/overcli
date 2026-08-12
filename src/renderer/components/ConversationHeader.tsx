@@ -2,7 +2,7 @@ import { CSSProperties, ReactNode, useCallback, useEffect, useMemo, useRef, useS
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../store';
 import {
-  useAllRunners,
+  getRunner,
   useRunnerCodexFlags,
   useRunnerCurrentModel,
   useRunnerIsRunning,
@@ -78,6 +78,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     resetConversation,
     openSheet,
     toggleToolActivity,
+    send,
   } = useStore(
     useShallow((s) => ({
       backendHealth: s.backendHealth,
@@ -106,6 +107,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       resetConversation: s.resetConversation,
       openSheet: s.openSheet,
       toggleToolActivity: s.toggleToolActivity,
+      send: s.send,
     })),
   );
   const runnerIsRunning = useRunnerIsRunning(conversationId);
@@ -166,6 +168,8 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       ? conv.codexModel ?? conv.currentModel
       : backend === 'gemini'
       ? conv.geminiModel ?? conv.currentModel
+      : backend === 'copilot'
+      ? conv.copilotModel ?? conv.currentModel
       : conv.claudeModel ?? conv.currentModel;
   const sessionModel = runnerModel || configuredModel || settings.backendDefaultModels[backend] || '';
   const refocusComposer = useCallback(() => {
@@ -430,6 +434,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 	                    cwd,
 	                    backend,
 	                    sessionId: conv.sessionId,
+	                    model: sessionModel || undefined,
 	                  });
 	                  if (!res.ok) {
 	                    window.alert(res.error);
@@ -461,6 +466,11 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
 
         <MoreMenu
           onReset={() => setConfirmingReset(true)}
+          // Claude-only: the other backends have no slash commands and
+          // would take "/compact" as a literal prompt.
+          onCompact={
+            backend === 'claude' ? () => void send(conversationId, '/compact') : undefined
+          }
           onArchive={() =>
             openSheet({ type: 'archiveConversation', convId: conversationId })
           }
@@ -828,7 +838,6 @@ function useForkActions(conversationId: UUID): {
       setDraft: s.setDraft,
     })),
   );
-  const runners = useAllRunners();
   if (!conv) {
     return { items: [], forkTo: async () => {}, ready: false };
   }
@@ -838,17 +847,21 @@ function useForkActions(conversationId: UUID): {
     : workspaces.find((w) => (w.conversations ?? []).some((c) => c.id === conversationId));
   const currentBackend = conv.primaryBackend ?? (enabledBackends(settings)[0] ?? 'claude');
 
-  const sourceEvents = runners[conversationId]?.events ?? [];
-  const lastUserPrompt = (() => {
-    for (let i = sourceEvents.length - 1; i >= 0; i--) {
-      const e = sourceEvents[i];
-      if (e.kind.type === 'localUser') return e.kind.text;
-    }
-    return '';
-  })();
-
   const forkTo = async (targetBackend: Backend) => {
     if (!ownerProject && !ownerWorkspace) return;
+    // Read the transcript imperatively at fork time rather than subscribing.
+    // It's only needed inside this handler, and subscribing to the runners
+    // map here re-rendered the header on every streamed delta of every
+    // conversation in the app.
+    const sourceEvents = getRunner(conversationId)?.events ?? [];
+    let lastUserPrompt = '';
+    for (let i = sourceEvents.length - 1; i >= 0; i--) {
+      const e = sourceEvents[i];
+      if (e.kind.type === 'localUser') {
+        lastUserPrompt = e.kind.text;
+        break;
+      }
+    }
     const { preamble, turnCount } = buildForkPreamble(sourceEvents, lastUserPrompt);
     const forked = ownerProject
       ? await newConversation(ownerProject.id)
@@ -1906,11 +1919,14 @@ function SlidersIcon() {
 
 function MoreMenu({
   onReset,
+  onCompact,
   onArchive,
   onRevealInFinder,
   worktreeAvailable,
 }: {
   onReset: () => void;
+  /// Undefined for backends without slash commands.
+  onCompact?: () => void;
   onArchive: () => void;
   onRevealInFinder: () => void;
   worktreeAvailable: boolean;
@@ -1939,6 +1955,15 @@ function MoreMenu({
               onReset();
             }}
           />
+          {onCompact && (
+            <MenuRow
+              label="Compact conversation"
+              onClick={() => {
+                setOpen(false);
+                onCompact();
+              }}
+            />
+          )}
           {worktreeAvailable && (
             <MenuRow
               label="Reveal worktree in Finder"

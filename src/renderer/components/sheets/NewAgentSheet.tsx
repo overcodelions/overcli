@@ -257,7 +257,10 @@ interface CreateCtx {
   onError: (msg: string) => void;
 }
 
-async function createBranchedAgent(
+/// Mint a build worktree on a fresh branch and register the agent
+/// conversation. Exported so the welcome composer can offer "run as
+/// agent" without duplicating the worktree wiring.
+export async function createBranchedAgent(
   args: CreateCtx & {
     name: string;
     baseBranch: string;

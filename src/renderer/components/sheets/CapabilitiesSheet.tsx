@@ -808,6 +808,7 @@ const MCP_CAT_META: Record<string, { color: string; icon: IconKey }> = {
   'Dev tools':     { color: '#5b9cff', icon: 'branch' },
   'Productivity':  { color: '#b587ff', icon: 'check' },
   'Search & web':  { color: '#36cfc9', icon: 'cloud' },
+  'Design':        { color: '#f24e1e', icon: 'figma' },
   'CRM & product': { color: '#ec4899', icon: 'book' },
   'Cloud':         { color: '#ff9900', icon: 'cloud' },
   'Utilities':     { color: '#f59e0b', icon: 'server' },
@@ -859,6 +860,10 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
   const meta = mcpCatMeta(item.category);
   const installedClis = item.targets.filter((c) => item.installed[c]);
   const anyInstalled = installedClis.length > 0;
+  // `?.` guards the dev window where the renderer has hot-reloaded but the
+  // main process hasn't restarted, so `legacy` isn't in the IPC payload yet.
+  const legacyClis = item.targets.filter((c) => item.legacy?.[c]);
+  const anyLegacy = legacyClis.length > 0;
   const canCodexLogin = item.transport === 'remote' && !!item.installed.codex;
 
   const [loggingIn, setLoggingIn] = useState(false);
@@ -877,21 +882,35 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<Record<McpCli, boolean>>(() => initialPicks(item));
   const [secrets, setSecrets] = useState<Record<string, string>>({});
+  /// Rewrite the config on CLIs that already have it, rather than only
+  /// filling in the ones that don't. Set by the Reinstall button.
+  const [reinstall, setReinstall] = useState(false);
 
-  const needsSecrets = !anyInstalled && item.secrets.length > 0;
+  // A reinstall re-collects too — the old config's values may not carry
+  // the same meaning under the new template.
+  const needsSecrets = (!anyInstalled || reinstall) && item.secrets.length > 0;
+
+  const openPanel = (asReinstall: boolean) => {
+    setError(null);
+    // Legacy implies installed, so the stale CLIs are already checked.
+    setPicked(initialPicks(item));
+    setSecrets(defaultSecrets(item));
+    setReinstall(asReinstall);
+    setOpen(true);
+  };
 
   const toggleOpen = () => {
-    setError(null);
-    if (!open) {
-      setPicked(initialPicks(item));
-      setSecrets({});
+    if (open) {
+      setError(null);
+      setOpen(false);
+      return;
     }
-    setOpen((v) => !v);
+    openPanel(false);
   };
 
   const save = async () => {
     setError(null);
-    const toInstall = item.targets.filter((c) => picked[c] && !item.installed[c]);
+    const toInstall = item.targets.filter((c) => picked[c] && (reinstall || !item.installed[c]));
     const toRemove = item.targets.filter((c) => !picked[c] && item.installed[c]);
     if (toInstall.length === 0 && toRemove.length === 0) {
       setOpen(false);
@@ -903,8 +922,10 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
       if (toInstall.length > 0) {
         // If the server already exists on a CLI, copy from it so secrets
         // carry over; otherwise this is a first-time install and we write
-        // the collected secrets directly.
-        const source = item.targets.find((c) => item.installed[c]);
+        // the collected secrets directly. A reinstall always takes the
+        // template path, and never copies from a legacy CLI — either would
+        // just propagate the config we're trying to replace.
+        const source = reinstall ? undefined : item.targets.find((c) => item.installed[c] && !item.legacy?.[c]);
         if (source) {
           for (const target of toInstall) {
             const res = await copy(item.id, source, target);
@@ -963,7 +984,16 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
                 {item.transport === 'remote' ? 'Remote' : 'Local'}
               </span>
             </div>
-            {anyInstalled && <InstalledBadge compact />}
+            {anyLegacy ? (
+              <span
+                className="shrink-0 text-[9px] px-1.5 py-0.5 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 uppercase tracking-wider"
+                title={item.legacyNote}
+              >
+                Legacy
+              </span>
+            ) : (
+              anyInstalled && <InstalledBadge compact />
+            )}
           </div>
           <div className="mt-0.5 text-[11px] text-ink-muted line-clamp-2 leading-snug">
             {item.description}
@@ -974,6 +1004,14 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
               {installedClis.map((c) => (
                 <Chip key={c} tone="cli">{CLI_LABEL[c]}</Chip>
               ))}
+            </div>
+          )}
+          {anyLegacy && item.legacyNote && (
+            <div className="mt-1.5 text-[10.5px] text-amber-300/90 leading-snug">
+              {item.legacyNote}
+              {legacyClis.length < installedClis.length && (
+                <> Affects {legacyClis.map((c) => CLI_LABEL[c]).join(', ')}.</>
+              )}
             </div>
           )}
         </div>
@@ -996,6 +1034,15 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
         >
           {open ? 'Cancel' : anyInstalled ? 'Manage' : 'Install'}
         </button>
+        {anyLegacy && !open && (
+          <button
+            onClick={() => openPanel(true)}
+            title="Overwrite the outdated config with the current one"
+            className="text-[10.5px] px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/15"
+          >
+            Reinstall
+          </button>
+        )}
         {canCodexLogin && (
           <button
             disabled={loggingIn}
@@ -1081,7 +1128,7 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
               onClick={() => void save()}
               className="text-[11.5px] px-3 py-1.5 rounded-md bg-accent text-ink font-medium disabled:opacity-50"
             >
-              {busy ? 'Saving…' : 'Apply'}
+              {busy ? 'Saving…' : reinstall ? 'Reinstall' : 'Apply'}
             </button>
             <button
               disabled={busy}
@@ -1103,6 +1150,14 @@ function initialPicks(item: McpCatalogItem): Record<McpCli, boolean> {
     codex: !!item.installed.codex,
     gemini: !!item.installed.gemini,
   };
+}
+
+function defaultSecrets(item: McpCatalogItem): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const field of item.secrets) {
+    if (field.defaultValue) out[field.key] = field.defaultValue;
+  }
+  return out;
 }
 
 // ---------- Per-tab install guide (for non-skill tabs) ----------

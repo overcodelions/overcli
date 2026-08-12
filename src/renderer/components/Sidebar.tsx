@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
-import { useAllRunners, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
+import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { flowRunActivityAt, flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
@@ -8,10 +8,19 @@ import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
   conversationActivityAt,
+  conversationPromptAt,
   isActiveConversation,
 } from '../conversationLookup';
+import { type ActiveCandidate, selectActiveEntries } from '../activeSection';
 import { useFlowsStore } from '../flowsStore';
-import { ActiveFlowsList, FlowRunsSection, useHasActiveFlows } from './flows/FlowRunSidebarRow';
+import {
+  ActiveFlowRow,
+  FlowRunsSection,
+  flowRunMatchesQuery,
+  resolveOwner as resolveFlowOwner,
+  runIsActive as flowRunIsActive,
+  runIsLive as flowRunIsLive,
+} from './flows/FlowRunSidebarRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 
 export function Sidebar() {
@@ -40,8 +49,13 @@ export function Sidebar() {
   const openExplorer = useStore((s) => s.openExplorer);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const lastSelectedAt = useStore((s) => s.lastSelectedAt);
+  const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
+  const activeRunId = useFlowsStore((s) => s.activeRunId);
+  const openedRunId = detailMode === 'flows' ? activeRunId : null;
   const [search, setSearch] = useState('');
   const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
   const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
@@ -78,6 +92,19 @@ export function Sidebar() {
   const query = search.trim().toLowerCase();
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
+  // Owner paths (project repo path / workspace root) that have at least
+  // one flow run matching the search. Lets a project/workspace surface in
+  // results purely because one of its flow runs matches, even when its
+  // name and conversations don't.
+  const flowMatchPaths = useMemo(() => {
+    const set = new Set<string>();
+    if (!query) return set;
+    for (const run of Object.values(flowRuns)) {
+      if (flowRunMatchesQuery(run, query)) set.add(flowRunOwnerPath(run));
+    }
+    return set;
+  }, [flowRuns, query]);
+
   const allGroupIds = useMemo(
     () => [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
     [projects, workspaces],
@@ -99,8 +126,13 @@ export function Sidebar() {
             (c.sessionId ?? '').toLowerCase().includes(query),
         ),
       }))
-      .filter((p) => p.name.toLowerCase().includes(query) || p.conversations.length > 0);
-  }, [projects, query]);
+      .filter(
+        (p) =>
+          p.name.toLowerCase().includes(query) ||
+          p.conversations.length > 0 ||
+          flowMatchPaths.has(p.path),
+      );
+  }, [projects, query, flowMatchPaths]);
 
   const visibleWorkspaces = useMemo(() => {
     if (!query) return workspaces;
@@ -117,15 +149,36 @@ export function Sidebar() {
         const memberMatch = w.projectIds.some((pid) =>
           projectsById.get(pid)?.name.toLowerCase().includes(query),
         );
-        return w.name.toLowerCase().includes(query) || memberMatch || w.conversations.length > 0;
+        return (
+          w.name.toLowerCase().includes(query) ||
+          memberMatch ||
+          w.conversations.length > 0 ||
+          flowMatchPaths.has(w.rootPath)
+        );
       });
-  }, [projectsById, query, workspaces]);
+  }, [projectsById, query, workspaces, flowMatchPaths]);
 
-  const topConversations = useMemo(
-    () => collectTopConversations(projects, workspaces, runners).slice(0, 3),
-    [projects, runners, workspaces],
+  const activeEntries = useMemo(
+    () =>
+      selectActiveEntries(
+        collectActiveCandidates(projects, workspaces, flowRuns, runners, {
+          openedConversationId: selectedId,
+          lastSelectedAt,
+          openedRunId,
+          lastOpenedAtByRun,
+        }),
+      ),
+    [
+      flowRuns,
+      projects,
+      runners,
+      workspaces,
+      selectedId,
+      lastSelectedAt,
+      openedRunId,
+      lastOpenedAtByRun,
+    ],
   );
-  const hasActiveFlows = useHasActiveFlows();
   const sortedProjects = useMemo(
     () =>
       [...projects].sort(
@@ -194,6 +247,7 @@ export function Sidebar() {
       onNewAgent={() => openSheet({ type: 'newAgent', projectId: project.id })}
       onNewColosseum={() => openSheet({ type: 'newColosseum', projectId: project.id })}
       onExplore={() => openExplorer(project.path)}
+      searchQuery={query}
     />
   );
   const renderMoreProjectGroup = (project: Project) => (
@@ -237,20 +291,33 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
-        {!query && showActiveSection && (topConversations.length > 0 || hasActiveFlows) && (
+        {!query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Active" />
-            <ActiveFlowsList />
-            {topConversations.map((item) => (
-              <RecentConversationRow
-                key={item.conv.id}
-                item={item}
-                onClick={() => {
-                  setDetailMode('conversation');
-                  selectConversation(item.conv.id);
-                }}
-              />
-            ))}
+            {activeEntries.map(({ entry }) =>
+              entry.kind === 'flow' ? (
+                <ActiveFlowRow
+                  key={entry.run.id}
+                  run={entry.run}
+                  isLive={entry.isLive}
+                  ownerName={entry.ownerName}
+                  ownerKind={entry.ownerKind}
+                  onClick={() => {
+                    setActiveRun(entry.run.id);
+                    setDetailMode('flows');
+                  }}
+                />
+              ) : (
+                <RecentConversationRow
+                  key={entry.conv.id}
+                  item={entry}
+                  onClick={() => {
+                    setDetailMode('conversation');
+                    selectConversation(entry.conv.id);
+                  }}
+                />
+              ),
+            )}
           </>
         )}
         {query && <SidebarSectionTitle label="Search results" />}
@@ -280,6 +347,7 @@ export function Sidebar() {
             onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
             onRemove={() => void removeWorkspace(ws.id)}
             onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
+            searchQuery={query}
           />
         ))}
         {!query && (visibleProjectGroups.length > 0 || overflowActiveProjects.length > 0 || inactiveProjects.length > 0) && (
@@ -397,38 +465,113 @@ function projectLabel(project: Project): string {
 }
 
 interface RecentConversationItem {
+  kind: 'conversation';
   conv: Conversation;
   ownerName: string;
   ownerKind: 'project' | 'workspace';
 }
 
-function collectTopConversations(
+interface ActiveFlowItem {
+  kind: 'flow';
+  run: FlowRun;
+  ownerName: string;
+  ownerKind: 'project' | 'workspace' | 'unknown';
+  /// Drives the row's live indicator only. Liveness deliberately has no say
+  /// in where the row sits — see selectActiveEntries.
+  isLive: boolean;
+}
+
+type ActiveItem = RecentConversationItem | ActiveFlowItem;
+
+/// What the user is currently looking at, and when they last looked at
+/// everything else. This is what holds a row's slot while a long turn runs —
+/// you aren't typing, but that chat is still what you're working on. It only
+/// feeds `touchedAt`, never `promptedAt`: opening something keeps it on
+/// screen, it doesn't move it (see selectActiveEntries).
+interface ActiveSelection {
+  openedConversationId: UUID | null;
+  lastSelectedAt: Record<UUID, number>;
+  openedRunId: string | null;
+  lastOpenedAtByRun: Record<string, number>;
+}
+
+/// Every chat, agent and flow run eligible for the Active section, whether or
+/// not it's still active — selectActiveEntries ranks them and decides which
+/// make the cut. Hidden conversations and archived runs are left out: the user
+/// has explicitly put those away, so they shouldn't be dragged back in by the
+/// section's floor.
+export function collectActiveCandidates(
   projects: Project[],
   workspaces: Workspace[],
+  flowRuns: Record<UUID, FlowRun>,
   runners: Record<UUID, { isRunning: boolean } | undefined>,
-): RecentConversationItem[] {
-  const out: RecentConversationItem[] = [];
-  const cutoff = Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
+  selection: ActiveSelection,
+  now: number = Date.now(),
+): ActiveCandidate<ActiveItem>[] {
+  const cutoff = now - ACTIVE_CONVERSATION_WINDOW_MS;
+  const out: ActiveCandidate<ActiveItem>[] = [];
+
+  const pushConversation = (
+    conv: Conversation,
+    ownerName: string,
+    ownerKind: 'project' | 'workspace',
+  ) => {
+    if (conv.hidden) return;
+    const running = !!runners[conv.id]?.isRunning;
+    const opened = conv.id === selection.openedConversationId;
+    out.push({
+      entry: { kind: 'conversation', conv, ownerName, ownerKind },
+      // The chat on screen always gets a slot. Without this a busy set of
+      // backends could fill the cap and evict the one you're reading.
+      active: opened || isActiveConversation(conv, running, cutoff),
+      promptedAt: conversationPromptAt(conv),
+      touchedAt: Math.max(
+        conversationPromptAt(conv),
+        selection.lastSelectedAt[conv.id] ?? 0,
+      ),
+    });
+  };
+
   for (const project of projects) {
     for (const conv of project.conversations) {
-      if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
-        out.push({ conv, ownerName: projectLabel(project), ownerKind: 'project' });
-      }
+      pushConversation(conv, projectLabel(project), 'project');
     }
   }
   for (const workspace of workspaces) {
     for (const conv of workspace.conversations ?? []) {
-      if (!conv.hidden && isActiveConversation(conv, !!runners[conv.id]?.isRunning, cutoff)) {
-        out.push({ conv, ownerName: workspace.name, ownerKind: 'workspace' });
-      }
+      pushConversation(conv, workspace.name, 'workspace');
     }
   }
-  return out.sort((a, b) => {
-    const aRunning = runners[a.conv.id]?.isRunning ? 1 : 0;
-    const bRunning = runners[b.conv.id]?.isRunning ? 1 : 0;
-    if (aRunning !== bRunning) return bRunning - aRunning;
-    return conversationActivityAt(b.conv) - conversationActivityAt(a.conv);
-  });
+
+  for (const run of Object.values(flowRuns)) {
+    if (run.state.kind === 'archived') continue;
+    const owner = resolveFlowOwner(flowRunOwnerPath(run), projects, workspaces);
+    out.push({
+      entry: {
+        kind: 'flow',
+        run,
+        ownerName: owner.name,
+        ownerKind: owner.kind,
+        isLive: flowRunIsLive(run, runners),
+      },
+      active: run.id === selection.openedRunId || flowRunIsActive(run, runners, cutoff),
+      promptedAt: flowRunPromptedAt(run),
+      touchedAt: Math.max(
+        flowRunPromptedAt(run),
+        selection.lastOpenedAtByRun[run.id] ?? 0,
+      ),
+    });
+  }
+
+  return out;
+}
+
+/// When the user last drove this run: launching it, or clicking Continue on
+/// a paused step. Deliberately NOT flowRunActivityAt — attempts are pushed by
+/// the runtime for every step it takes, so keying off those would let a flow
+/// walking itself through ten steps outrank a chat the user just typed in.
+function flowRunPromptedAt(run: FlowRun): number {
+  return Math.max(run.createdAt ?? 0, run.pendingContinue?.startedAt ?? 0);
 }
 
 function hasProjectActivity(
@@ -570,6 +713,7 @@ function ProjectGroup({
   onNewAgent,
   onNewColosseum,
   onExplore,
+  searchQuery = '',
 }: {
   project: Project;
   colosseums: Colosseum[];
@@ -582,36 +726,51 @@ function ProjectGroup({
   onNewAgent: () => void;
   onNewColosseum: () => void;
   onExplore: () => void;
+  searchQuery?: string;
 }) {
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   // `true`/`false` once probed, `undefined` while still unknown. Agents
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
   const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
-  const visible = project.conversations.filter(
-    (c) => !isAgentConversation(c) && !c.hidden,
+  // Memoized because this group is re-rendered by every unrelated store
+  // change, and a mature project list carries hundreds of conversations —
+  // walking them four times per render was showing up in profiles.
+  const { visible, agents } = useMemo(() => {
+    const vis: Conversation[] = [];
+    const ags: Conversation[] = [];
+    for (const c of project.conversations) {
+      if (c.hidden) continue;
+      if (!isAgentConversation(c)) vis.push(c);
+      else if (!c.colosseumId && !c.workspaceAgentCoordinatorId) ags.push(c);
+    }
+    return { visible: vis, agents: ags };
+  }, [project.conversations]);
+  const archivableCount = useMemo(
+    () =>
+      project.conversations.filter(
+        (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
+      ).length,
+    [project.conversations, selectedId, runners],
   );
-  const agents = project.conversations.filter(
-    (c) =>
-      isAgentConversation(c) &&
-      !c.hidden &&
-      !c.colosseumId &&
-      !c.workspaceAgentCoordinatorId,
-  );
-  const archivableCount = project.conversations.filter(
-    (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
-  ).length;
   const flowRuns = useFlowsStore((s) => s.runs);
-  const deletableFlowCount = Object.values(flowRuns).filter(
-    (r) =>
-      flowRunOwnerPath(r) === project.path &&
-      r.state.kind !== 'running' &&
-      r.state.kind !== 'paused' &&
-      !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
-  ).length;
-  const workspaceRefs = workspaces.filter((w) => w.projectIds.includes(project.id));
+  const deletableFlowCount = useMemo(
+    () =>
+      Object.values(flowRuns).filter(
+        (r) =>
+          flowRunOwnerPath(r) === project.path &&
+          r.state.kind !== 'running' &&
+          r.state.kind !== 'paused' &&
+          !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
+      ).length,
+    [flowRuns, project.path, runners],
+  );
+  const workspaceRefs = useMemo(
+    () => workspaces.filter((w) => w.projectIds.includes(project.id)),
+    [workspaces, project.id],
+  );
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const removeDetails = useMemo(() => {
@@ -731,7 +890,7 @@ function ProjectGroup({
               onSelect={onSelect}
             />
           ))}
-          <FlowRunsSection path={project.path} />
+          <FlowRunsSection path={project.path} query={searchQuery} />
           <div className="flex gap-1 my-1 pl-1">
             {isGitRepo !== false && (
               <button
@@ -781,7 +940,7 @@ function ColosseumSidebarGroup({
   const openSheet = useStore((s) => s.openSheet);
   const cancelColosseum = useStore((s) => s.cancelColosseum);
   const removeColosseum = useStore((s) => s.removeColosseum);
-  const runners = useAllRunners();
+  const runners = useRunningMap();
   const [expanded, setExpanded] = useState(true);
   const [confirmRemove, setConfirmRemove] = useState(false);
 
@@ -1027,6 +1186,7 @@ function WorkspaceGroup({
   onEdit,
   onRemove,
   onExplore,
+  searchQuery = '',
 }: {
   workspace: Workspace;
   expanded: boolean;
@@ -1038,23 +1198,39 @@ function WorkspaceGroup({
   onEdit: () => void;
   onRemove: () => void;
   onExplore?: () => void;
+  searchQuery?: string;
 }) {
-  const convs = (workspace.conversations ?? []).filter((c) => !c.hidden);
-  const plain = convs.filter((c) => !isAgentConversation(c));
-  const agents = convs.filter(isAgentConversation);
   const openSheet = useStore((s) => s.openSheet);
-  const runners = useAllRunners();
-  const archivableCount = (workspace.conversations ?? []).filter(
-    (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
-  ).length;
+  const runners = useRunningMap();
+  // See the matching note in ProjectGroup — memoized so an unrelated store
+  // change doesn't re-walk the whole conversation list.
+  const { convs, plain, agents } = useMemo(() => {
+    const all = (workspace.conversations ?? []).filter((c) => !c.hidden);
+    return {
+      convs: all,
+      plain: all.filter((c) => !isAgentConversation(c)),
+      agents: all.filter(isAgentConversation),
+    };
+  }, [workspace.conversations]);
+  const archivableCount = useMemo(
+    () =>
+      (workspace.conversations ?? []).filter(
+        (c) => !c.hidden && c.id !== selectedId && !(runners[c.id]?.isRunning ?? false),
+      ).length,
+    [workspace.conversations, selectedId, runners],
+  );
   const flowRuns = useFlowsStore((s) => s.runs);
-  const deletableFlowCount = Object.values(flowRuns).filter(
-    (r) =>
-      flowRunOwnerPath(r) === workspace.rootPath &&
-      r.state.kind !== 'running' &&
-      r.state.kind !== 'paused' &&
-      !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
-  ).length;
+  const deletableFlowCount = useMemo(
+    () =>
+      Object.values(flowRuns).filter(
+        (r) =>
+          flowRunOwnerPath(r) === workspace.rootPath &&
+          r.state.kind !== 'running' &&
+          r.state.kind !== 'paused' &&
+          !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
+      ).length,
+    [flowRuns, workspace.rootPath, runners],
+  );
   const [confirmRemove, setConfirmRemove] = useState(false);
 
   const removeDetails = useMemo(
@@ -1152,7 +1328,7 @@ function WorkspaceGroup({
               onClick={() => onSelect(conv.id)}
             />
           ))}
-          <FlowRunsSection path={workspace.rootPath} />
+          <FlowRunsSection path={workspace.rootPath} query={searchQuery} />
           <div className="flex gap-1 my-1 pl-1">
             <button
               onClick={onNewAgent}

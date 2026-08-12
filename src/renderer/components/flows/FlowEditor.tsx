@@ -10,6 +10,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { serializeFlow } from '@shared/flows/yaml';
+import { flowProjectPath, normalizeFlowTag } from '@shared/flows/schema';
+import { TAG_AXES } from '@shared/flows/tagTaxonomy';
 import { validateFlow } from '@shared/flows/validation';
 import { FlowStepCard } from './FlowStepCard';
 import { FlowPipelineDiagram } from './FlowPipelineDiagram';
@@ -31,8 +33,16 @@ export function FlowEditor() {
   const addStep = useFlowsStore((s) => s.addStep);
   const saveError = useFlowsStore((s) => s.editorSaveError);
 
-  const [target, setTarget] = useState<'user' | 'project'>('user');
-  const [selectedProject, setSelectedProject] = useState<string>(projects[0]?.path ?? '');
+  // Editing an existing flow defaults to saving back to the layer it came
+  // from. Defaulting to 'user' meant Save on a project flow quietly forked a
+  // user copy — and made an id rename leave the original file behind under
+  // its old name instead of moving it.
+  const [target, setTarget] = useState<'user' | 'project'>(
+    editor.kind === 'editing' ? draft?.source ?? 'user' : 'user',
+  );
+  const [selectedProject, setSelectedProject] = useState<string>(
+    (draft ? flowProjectPath(draft) : undefined) ?? projects[0]?.path ?? '',
+  );
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState('');
   const [saving, setSaving] = useState(false);
@@ -180,6 +190,16 @@ export function FlowEditor() {
               placeholder="What does this flow do? (1–2 sentences)"
               className="w-full bg-transparent text-sm text-ink-muted placeholder:text-ink-faint focus:outline-none resize-none mb-3"
             />
+            <TagsField
+              tags={draft.tags ?? []}
+              onChange={(tags) =>
+                // Empty list writes `undefined`, not `[]` — serializeFlow
+                // skips the key entirely then, so a flow that never had
+                // tags round-trips byte-identical to its old file.
+                updateDraft({ tags: tags.length > 0 ? tags : undefined })
+              }
+            />
+
             <div className="rounded-lg bg-card-strong/40 px-3 py-2 mt-1">
               <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">
                 Default prompt
@@ -199,7 +219,9 @@ export function FlowEditor() {
                 onChange={(e) => updateDraft({ id: e.target.value })}
                 className="bg-card-strong rounded px-2 py-1 text-xs font-mono min-w-[180px] focus:outline-none"
               />
-              <span className="text-[10px] text-ink-faint">filename on disk</span>
+              <span className="text-[10px] text-ink-faint">
+                filename on disk — changing it renames the file
+              </span>
             </div>
           </div>
 
@@ -288,6 +310,81 @@ export function FlowEditor() {
           </div>
         </aside>
       </div>
+    </div>
+  );
+}
+
+/// Tag chips + an add box. Tags group and filter the library, and the
+/// registry publishes them, so the input suggests the shared taxonomy
+/// (`TAG_AXES`) via a datalist — free text is still allowed, but a flow
+/// tagged from the vocabulary sits under the same filter as a published
+/// one, which is the entire value of the field.
+function TagsField({
+  tags,
+  onChange,
+}: {
+  tags: string[];
+  onChange: (tags: string[]) => void;
+}) {
+  const [entry, setEntry] = useState('');
+  const suggestions = useMemo(() => {
+    const chosen = new Set(tags);
+    return TAG_AXES.flatMap((a) => a.tags).filter((t) => !chosen.has(t));
+  }, [tags]);
+
+  function commit(raw: string) {
+    const tag = normalizeFlowTag(raw);
+    setEntry('');
+    if (!tag || tags.includes(tag)) return;
+    onChange([...tags, tag]);
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 mb-3">
+      <span className="text-[10px] uppercase tracking-wider text-ink-faint">tags</span>
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border border-card text-ink-muted"
+        >
+          {tag}
+          <button
+            onClick={() => onChange(tags.filter((t) => t !== tag))}
+            className="text-ink-faint hover:text-ink leading-none"
+            aria-label={`Remove tag ${tag}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <input
+        list="flow-tag-suggestions"
+        value={entry}
+        onChange={(e) => {
+          // Picking from the datalist fires change, not keydown — commit
+          // on an exact vocabulary hit so a click on a suggestion lands
+          // the tag without also needing Enter.
+          const v = e.target.value;
+          if (suggestions.includes(v)) commit(v);
+          else setEntry(v);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ',') {
+            e.preventDefault();
+            commit(entry);
+          } else if (e.key === 'Backspace' && entry === '' && tags.length > 0) {
+            onChange(tags.slice(0, -1));
+          }
+        }}
+        onBlur={() => commit(entry)}
+        placeholder={tags.length === 0 ? 'add a tag…' : '+'}
+        className="bg-transparent text-[11px] text-ink placeholder:text-ink-faint focus:outline-none min-w-[90px] flex-1 py-0.5"
+      />
+      <datalist id="flow-tag-suggestions">
+        {suggestions.map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
     </div>
   );
 }

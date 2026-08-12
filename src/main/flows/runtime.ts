@@ -52,6 +52,7 @@ import type {
 } from '../../shared/flows/schema';
 import {
   FLOW_USER_PROMPT_REF,
+  MAX_RUN_TITLE_LENGTH,
   resolveStepModel,
   resolveRunStepModel,
   effectiveParticipantModel,
@@ -62,6 +63,7 @@ import { loadAllFlows } from './storage';
 import {
   createWorktreeAsync,
   detectBaseBranchAsync,
+  removeWorktreeAsync,
   runGit,
   runGitAsync,
   worktreeNameTaken,
@@ -103,11 +105,26 @@ export interface FlowRuntimeStartArgs {
   /// The orchestration item's human title (the candidate's title), stored
   /// on the run for display when it's surfaced on its own.
   orchestrationItemTitle?: string;
+  /// Set when a Schedule fired this run. Routes the run's terminal state back
+  /// to the scheduler (which clears the overlap guard and notifies).
+  scheduleId?: UUID;
+  /// The schedule's name at launch time, stored on the run so a scheduled run
+  /// found in the sidebar can say who started it — nobody was watching when
+  /// it did.
+  scheduleName?: string;
+  /// Explicit run title, set at launch instead of derived from the prompt.
+  /// Only the scheduler uses it: a scheduled prompt never changes, so the
+  /// prompt-derived title would be identical for every occurrence.
+  title?: string;
 }
 
 export interface FlowRuntimeResumeArgs {
   runId: UUID;
   editedArtifacts?: Record<string, string>;
+  /// Force a FAILURE pause to roll forward past the failed step instead of
+  /// re-running it — the "override the gate" escape hatch. Ignored on
+  /// non-failure pauses. See `resumeRun`.
+  override?: boolean;
 }
 
 export interface FlowRuntimeDeleteArgs {
@@ -210,7 +227,7 @@ export class FlowRuntimeImpl {
   /// this, the oldest done/aborted runs are evicted. Running + paused +
   /// watching runs are NEVER evicted regardless of count (they're load-
   /// bearing). Sized to be generous for a normal session — bump if it's not.
-  private static readonly MAX_RETAINED_RUNS = 20;
+  private static readonly MAX_RETAINED_RUNS = 50;
 
   // ---- Watch engine (post-completion "stewardship tail") -----------------
   /// The single sweep timer that drives ALL watching runs. Lazily started
@@ -235,6 +252,22 @@ export class FlowRuntimeImpl {
   private static readonly WATCH_MIN_POLL_MS = 60_000;
   /// Default poll cadence when the caller doesn't specify one (10 min).
   private static readonly WATCH_DEFAULT_POLL_MS = 600_000;
+
+  // ---- Step watchdog ----------------------------------------------------
+  /// Last time we saw ANY event on the conversation of a run's currently
+  /// executing step, keyed by run id. A `running` state is only ever left
+  /// by an inbound event (`running: false` → `onStepFinished`), so a step
+  /// whose backend dies quietly — or never starts — would otherwise hold
+  /// the run (and its sidebar spinner) forever. Stamped when the step is
+  /// kicked off and on every event that reaches `observeEvent`.
+  private stepActivity = new Map<UUID, number>();
+  private stepWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+  /// How long a running step may produce nothing at all before we treat it
+  /// as dead. Generous: a step can legitimately sit inside one long tool
+  /// call (a full test suite, a big build) without emitting anything.
+  private static readonly STEP_SILENCE_TIMEOUT_MS = 30 * 60_000;
+  /// How often the watchdog wakes. Only armed while a run is executing.
+  private static readonly STEP_WATCHDOG_SWEEP_MS = 60_000;
 
   /// Max combined size of artifact inputs + system prompt we'll feed to a
   /// step's first turn before truncating. Local models choke on huge
@@ -309,7 +342,22 @@ export class FlowRuntimeImpl {
           )?.[0];
           if (participantId) {
             const existing = run.sessionIdsByParticipant?.[participantId];
-            if (existing !== event.sessionId) {
+            // Only let a NEW session id REPLACE an existing one while the
+            // runtime is actively executing THIS participant's step.
+            // Otherwise this `sessionConfigured` comes from a hijack/side
+            // chat — the user talking to the participant during a pause or
+            // after the run settled. If that hijack started a fresh session
+            // (e.g. it didn't resume), letting it overwrite the pointer
+            // discards the step's real transcript, and the chat panel then
+            // shows only the hijack turn ("can't see the step history").
+            // We still SET the pointer when there's none yet, so a
+            // hijack-only participant that never ran a step is resumable.
+            const st = run.state;
+            const executingThisParticipant =
+              st.kind === 'running' &&
+              run.flowSnapshot.steps.find((s) => s.id === st.currentStepId)?.participantId ===
+                participantId;
+            if (existing !== event.sessionId && (!existing || executingThisParticipant)) {
               run.sessionIdsByParticipant = {
                 ...(run.sessionIdsByParticipant ?? {}),
                 [participantId]: event.sessionId,
@@ -327,6 +375,7 @@ export class FlowRuntimeImpl {
       if (!runId) return;
       const run = this.runs.get(runId);
       if (!run) return;
+      this.markStepActivity(runId);
 
       // Capture the latest non-partial assistant text per participant,
       // regardless of run state. Hijack replies during a `preStep` pause
@@ -415,6 +464,10 @@ export class FlowRuntimeImpl {
       }
       return;
     }
+    if (event.type === 'running') {
+      const activeRunId = this.convIdToRun.get(event.conversationId);
+      if (activeRunId) this.markStepActivity(activeRunId);
+    }
     if (event.type === 'running' && event.isRunning === false) {
       const runId = this.convIdToRun.get(event.conversationId);
       if (!runId) return;
@@ -469,7 +522,11 @@ export class FlowRuntimeImpl {
       const currentStepId = run.state.currentStepId;
       const currentStep = run.flowSnapshot.steps.find((s) => s.id === currentStepId);
       if (!currentStep) return;
-      const currentConvId = run.conversationIds[currentStep.participantId];
+      // Keyed the same way `executeStep` minted it — a step with a blank
+      // participantId is filed under its own id, and looking it up by the
+      // blank key would never match, so the step's own `running: false`
+      // would be discarded and the run would hang on it forever.
+      const currentConvId = run.conversationIds[stepParticipantKey(currentStep)];
       if (currentConvId !== event.conversationId) return;
       this.onStepFinished(runId, currentStepId);
     }
@@ -702,6 +759,9 @@ export class FlowRuntimeImpl {
       workspaceWorktrees,
       parentOrchestrationId: args.parentOrchestrationId,
       orchestrationItemTitle: args.orchestrationItemTitle,
+      scheduleId: args.scheduleId,
+      scheduleName: args.scheduleName,
+      title: args.title,
     };
     this.runs.set(runId, run);
     if (args.attachments && args.attachments.length > 0) {
@@ -771,6 +831,20 @@ export class FlowRuntimeImpl {
     const pausedReason = run.state.reason;
     const nextStepId = run.state.nextStepId;
 
+    // Gate override: on a FAILURE pause, `nextStepId` is the step that
+    // failed (a rejecting reviewer, or a step whose on_fail is `pause`).
+    // A plain Continue re-runs it — which loops forever when the failure
+    // is a false negative (e.g. a reviewer that approved in a phrasing
+    // the verdict gate didn't recognize). Override rolls the run FORWARD
+    // past the failed step instead: its artifact is already recorded, so
+    // `advanceAfterStep` hands that output to the next step (or finishes
+    // the run / parks on a pause_before), exactly as if the step had
+    // passed. Only meaningful for a failure pause — ignored otherwise.
+    if (args.override && pausedReason === 'failure') {
+      this.advanceAfterStep(args.runId, nextStepId);
+      return { ok: true };
+    }
+
     // Explicit artifact overrides always win — apply, then advance.
     if (args.editedArtifacts) {
       for (const [name, body] of Object.entries(args.editedArtifacts)) {
@@ -833,6 +907,67 @@ export class FlowRuntimeImpl {
 
     // No chat happened (or it's a failure pause) — advance directly.
     this.advanceToStep(args.runId, nextStepId);
+    return { ok: true };
+  }
+
+  /// Rewind the run and re-execute starting at `stepId`, then roll forward
+  /// through every later step in order. This is the user-facing "Re-run from
+  /// this step" affordance — the one form of going BACKWARD the runtime
+  /// allows at the user's request (vs. `on_fail.goto`, which is automatic).
+  ///
+  /// Why this exists: artifacts handed between steps are snapshotted at the
+  /// moment each step finished, and downstream steps never re-read an
+  /// upstream artifact once they've run. So editing `plan.md` (via hijack
+  /// chat) while paused before `review` does nothing — `build` already
+  /// consumed the old plan and won't re-run on its own. Re-running from
+  /// `build` re-reads the now-updated `plan.md` and propagates it forward.
+  ///
+  /// Artifacts produced by steps BEFORE `stepId` are kept intact (they're
+  /// this step's inputs). `stepId` and everything after it re-execute and
+  /// overwrite their own outputs as they go. The worktree is NOT reverted —
+  /// a re-run of a build/diff step continues editing from the current tree,
+  /// same as `on_fail.goto`.
+  ///
+  /// Only valid from a settled state (paused / done / aborted). Refused
+  /// while a step is actively running (it would race the live subprocess)
+  /// or while the run is watching (archive it first).
+  rerunFromStep(args: { runId: UUID; stepId: string }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.state.kind === 'running') {
+      return {
+        ok: false,
+        error: 'A step is still running — abort or let it finish before re-running.',
+      };
+    }
+    if (run.state.kind === 'watching' || run.state.kind === 'archived') {
+      return { ok: false, error: 'This run is being watched — archive it before re-running.' };
+    }
+    if (this.finalizingRuns.has(args.runId)) {
+      return { ok: false, error: 'Still finalizing the previous step — try again in a moment.' };
+    }
+    const step = run.flowSnapshot.steps.find((s) => s.id === args.stepId);
+    if (!step) return { ok: false, error: `Step "${args.stepId}" not found in this flow.` };
+
+    // Rewinding abandons any pending pause/continue bookkeeping for this run:
+    // we're no longer advancing out of that pause, we're jumping elsewhere.
+    delete run.pendingContinue;
+    for (const key of Array.from(this.pauseChatHappened)) {
+      if (key.startsWith(`${args.runId}:`)) this.pauseChatHappened.delete(key);
+    }
+    // Reset `goto` retry budgets for the whole run so the re-run segment gets
+    // a fresh allowance — otherwise a step that exhausted its retries on the
+    // first pass would refuse to loop on this one.
+    for (const key of Array.from(this.retryCounts.keys())) {
+      if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
+    }
+
+    // Mirror `advanceToStep`: flip to running and kick the step. Deliberately
+    // no checkpoint here — like every other 'running' transition, a mid-step
+    // crash isn't resumable, so we persist at the next step boundary instead.
+    run.state = { kind: 'running', currentStepId: step.id };
+    this.emitRunUpdate(run);
+    void this.executeStep(args.runId, step.id);
     return { ok: true };
   }
 
@@ -993,10 +1128,93 @@ export class FlowRuntimeImpl {
     this.advanceToStep(runId, nextStepId);
   }
 
+  /// Report each of a run's worktrees that has uncommitted changes (a
+  /// dirty working tree, including untracked files). Used by `deleteRun`
+  /// to warn before `removeRunWorktrees` discards that work with
+  /// `git worktree remove --force`. A worktree whose status can't be read
+  /// (path gone, not a git dir) is treated as clean — we don't block a
+  /// delete on a directory we can't inspect.
+  private runDirtyWorktrees(
+    run: FlowRun,
+  ): Array<{ name: string; worktreePath: string; fileCount: number }> {
+    const out: Array<{ name: string; worktreePath: string; fileCount: number }> = [];
+    const check = (name: string, worktreePath: string): void => {
+      const status = runGit(['status', '--porcelain'], worktreePath);
+      if (status.exitCode !== 0) return;
+      const fileCount = status.stdout.split('\n').filter((l) => l.trim().length > 0).length;
+      if (fileCount > 0) out.push({ name, worktreePath, fileCount });
+    };
+    if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
+      for (const m of run.workspaceWorktrees) check(m.name, m.worktreePath);
+    } else if (run.worktreePath) {
+      check(run.flowSnapshot.name, run.worktreePath);
+    }
+    return out;
+  }
+
+  /// Remove the git worktree(s) a run forked, if any. Only invoked from
+  /// the explicit `deleteRun` path — NOT from `pruneOldRuns` auto-eviction,
+  /// which only frees in-memory/on-disk run metadata and must leave the
+  /// user's worktrees and branches untouched. Best-effort: a failure here
+  /// never blocks the run deletion itself, since the metadata is already
+  /// gone. Mirrors the agent-conversation cleanup in `removeAgent`. Runs
+  /// async (and is fired without awaiting from `deleteRun`) so the git
+  /// worktree teardown never blocks the delete round-trip or freezes the UI.
+  private async removeRunWorktrees(run: FlowRun): Promise<void> {
+    // Workspace worktree run: one worktree per member project.
+    if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
+      for (const m of run.workspaceWorktrees) {
+        try {
+          const res = await removeWorktreeAsync({
+            projectPath: m.projectPath,
+            worktreePath: m.worktreePath,
+            branchName: m.branchName,
+          });
+          if (!res.ok && res.error) {
+            log('warn', 'flows.deleteRun', `worktree remove failed for ${m.name}: ${res.error}`);
+          } else if (res.warning) {
+            log('warn', 'flows.deleteRun', `${m.name}: ${res.warning}`);
+          }
+        } catch (err) {
+          log('error', 'flows.deleteRun', `worktree remove threw for ${m.name}`, err);
+        }
+      }
+      return;
+    }
+    // Single-project worktree run. `git worktree remove` must run from the
+    // source repo the worktree was forked from, not the worktree path.
+    if (run.worktreePath) {
+      const projectPath = run.sourceProjectPath ?? run.projectPath;
+      try {
+        const res = await removeWorktreeAsync({
+          projectPath,
+          worktreePath: run.worktreePath,
+          branchName: run.branchName ?? '',
+        });
+        if (!res.ok && res.error) {
+          log('warn', 'flows.deleteRun', `worktree remove failed: ${res.error}`);
+        } else if (res.warning) {
+          log('warn', 'flows.deleteRun', res.warning);
+        }
+      } catch (err) {
+        log('error', 'flows.deleteRun', 'worktree remove threw', err);
+      }
+    }
+  }
+
   /// Permanently remove a run from memory + disk. Aborts it first if
   /// it's still active so any in-flight subprocess gets a chance to
-  /// stop. Used by the library's "Delete run" affordance.
-  deleteRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
+  /// stop, then removes any git worktree(s) the run forked. Used by the
+  /// library's "Delete run" affordance — an explicit user action, distinct
+  /// from `pruneOldRuns` auto-eviction which leaves worktrees in place.
+  deleteRun(args: { runId: UUID; force?: boolean }):
+    | { ok: true }
+    | { ok: false; error: string }
+    | {
+        ok: false;
+        needsConfirm: true;
+        dirty: Array<{ name: string; worktreePath: string; fileCount: number }>;
+      } {
     const run = this.runs.get(args.runId);
     if (!run) {
       // Idempotent: deleting an unknown run is a no-op success rather
@@ -1006,9 +1224,20 @@ export class FlowRuntimeImpl {
       clearAttachments(args.runId);
       return { ok: true };
     }
+    // Guard uncommitted work: unless the caller already confirmed via
+    // `force`, refuse to delete a run whose worktree(s) are dirty and
+    // hand the renderer the details so it can prompt. Checked before any
+    // mutation (stop / evict / disk delete) so a declined confirm leaves
+    // the run completely intact.
+    if (!args.force) {
+      const dirty = this.runDirtyWorktrees(run);
+      if (dirty.length > 0) {
+        return { ok: false, needsConfirm: true, dirty };
+      }
+    }
     if (run.state.kind === 'running') {
       const step = run.flowSnapshot.steps.find((s) => s.id === (run.state as any).currentStepId);
-      const convId = step ? run.conversationIds[step.participantId] : undefined;
+      const convId = step ? run.conversationIds[stepParticipantKey(step)] : undefined;
       if (convId) {
         try {
           this.runner.stop(convId);
@@ -1049,6 +1278,14 @@ export class FlowRuntimeImpl {
     clearAttachments(args.runId);
     // Tell the renderer so its in-memory `runs` map evicts in lockstep.
     this.emit({ type: 'flowRunUpdate', run: { ...run, state: { kind: 'aborted' } } });
+    // Explicit delete only: tear down the worktree(s) the run forked. This
+    // shells out to `git worktree remove`, which can take a second on a large
+    // repo — but the run's metadata is already gone and the teardown is
+    // best-effort, so fire it in the background rather than making the delete
+    // round-trip (and the UI) wait on it. Errors are logged inside.
+    void this.removeRunWorktrees(run).catch((err) => {
+      log('error', 'flows.deleteRun', 'worktree teardown failed', err);
+    });
     return { ok: true };
   }
 
@@ -1057,7 +1294,7 @@ export class FlowRuntimeImpl {
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
     if (run.state.kind === 'running') {
       const step = run.flowSnapshot.steps.find(s => s.id === (run.state as any).currentStepId);
-      const convId = step ? run.conversationIds[step.participantId] : undefined;
+      const convId = step ? run.conversationIds[stepParticipantKey(step)] : undefined;
       if (convId) {
         try {
           this.runner.stop(convId);
@@ -1201,6 +1438,69 @@ export class FlowRuntimeImpl {
     this.emitRunUpdate(run);
     this.checkpoint(run);
     return { ok: true };
+  }
+
+  /// Note that the run's executing step is still alive. Any event on one
+  /// of its conversations counts — the watchdog only cares about total
+  /// silence, not about progress.
+  private markStepActivity(runId: UUID): void {
+    const run = this.runs.get(runId);
+    if (!run || run.state.kind !== 'running') return;
+    this.stepActivity.set(runId, Date.now());
+  }
+
+  /// Lazily start the step watchdog. Idempotent; `unref` so it never holds
+  /// the process open on its own.
+  private ensureStepWatchdog(): void {
+    if (this.stepWatchdogTimer) return;
+    this.stepWatchdogTimer = setInterval(
+      () => this.sweepStuckSteps(),
+      FlowRuntimeImpl.STEP_WATCHDOG_SWEEP_MS,
+    );
+    this.stepWatchdogTimer.unref?.();
+  }
+
+  /// Fail any step that has gone completely silent past the timeout. This
+  /// is the runtime's only escape from `running` that doesn't depend on the
+  /// backend saying something: a CLI that dies without a closing event, or
+  /// a send that never reaches one, used to wedge the run permanently (its
+  /// state isn't even checkpointed, so a restart couldn't recover it
+  /// either). Routing through `handleStepFailure` means the run lands in
+  /// the same recoverable failure-pause a rejected step gets — the user can
+  /// re-run the step or override forward.
+  private sweepStuckSteps(now = Date.now()): void {
+    let anyRunning = false;
+    for (const run of Array.from(this.runs.values())) {
+      if (run.state.kind !== 'running') {
+        this.stepActivity.delete(run.id);
+        continue;
+      }
+      anyRunning = true;
+      const last = this.stepActivity.get(run.id);
+      if (last == null) {
+        // First sighting (e.g. a run restored mid-flight) — start its clock
+        // here rather than declaring it stuck on the strength of no record.
+        this.stepActivity.set(run.id, now);
+        continue;
+      }
+      const stepId = run.state.currentStepId;
+      const message = stuckStepMessage({
+        stepId,
+        silentMs: now - last,
+        timeoutMs: FlowRuntimeImpl.STEP_SILENCE_TIMEOUT_MS,
+      });
+      if (!message) continue;
+      const step = run.flowSnapshot.steps.find((s) => s.id === stepId);
+      if (!step) continue;
+      log('warn', 'flows.stepWatchdog', `run=${run.id} ${message}`);
+      this.stepActivity.delete(run.id);
+      this.finishAttempt(run, stepId, { outcome: 'error', errorMessage: message });
+      this.handleStepFailure(run.id, step, message);
+    }
+    if (!anyRunning && this.stepWatchdogTimer) {
+      clearInterval(this.stepWatchdogTimer);
+      this.stepWatchdogTimer = null;
+    }
   }
 
   /// Lazily start the single sweep timer. Idempotent. Uses `unref` so the
@@ -1548,6 +1848,22 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Give a run its own display title. Purely cosmetic — nothing in the
+  /// runtime reads it — so it's safe at any point in a run's life,
+  /// including mid-step. An empty/blank title clears the override and the
+  /// UI falls back to the prompt-derived name.
+  renameRun(args: { runId: UUID; title: string }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    const trimmed = args.title.trim().slice(0, MAX_RUN_TITLE_LENGTH);
+    const next = trimmed || undefined;
+    if (run.title === next) return { ok: true };
+    run.title = next;
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   private async executeStep(runId: UUID, stepId: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
@@ -1568,7 +1884,7 @@ export class FlowRuntimeImpl {
     // its plan when it later reviews. If the participant's id can't be
     // resolved to a real participant, fall back to a per-step conv to
     // avoid hanging the run.
-    const participantId = step.participantId || step.id;
+    const participantId = stepParticipantKey(step);
     let convId = run.conversationIds[participantId];
     if (!convId) {
       convId = randomUUID();
@@ -1591,6 +1907,10 @@ export class FlowRuntimeImpl {
       conversationId: convId,
     };
     run.attempts.push(attempt);
+    // Start the silence clock at the send, not at the first event: a send
+    // that never produces one is exactly the case the watchdog exists for.
+    this.stepActivity.set(runId, Date.now());
+    this.ensureStepWatchdog();
     this.emitRunUpdate(run);
 
     const stepModel = resolveRunStepModel(run, step);
@@ -1620,6 +1940,13 @@ export class FlowRuntimeImpl {
       reviewMode: step.rebound?.mode ?? null,
       reviewModel: step.rebound?.critic.model ?? null,
       reviewPersona: step.rebound?.persona ?? null,
+      // `max_iters` is the step's round budget. The runner already caps
+      // collab ping-pong at `collabMaxTurns`; without passing it here the
+      // budget silently fell back to the interactive default of 3, so a
+      // step asking for 1 round got 3 and a step asking for 5 got 3.
+      // `review` mode ignores this by design — its round count is fixed
+      // (see the round gate in runner.sendClaude and friends).
+      collabMaxTurns: step.rebound?.maxIters ?? null,
       // Tool allowlist is only enforceable on the Ollama path (overcli
       // owns the dispatch). For Claude/Codex/Gemini/Copilot, the CLI's
       // permission mode is the gate — the user opts into autonomy via
@@ -2148,6 +2475,29 @@ export function detectArtifactKind(name: string): FlowArtifact['kind'] {
   return 'text';
 }
 
+/// Key a step's conversation is filed under in `FlowRun.conversationIds`.
+/// Normally the participant it's assigned to — participants share one
+/// conversation across all their steps so context carries forward. A step
+/// with no resolvable participant falls back to its own id, which gives it
+/// a private conversation rather than one shared by every such step.
+/// Every reader must key the same way; see the guard in `observeEvent`.
+export function stepParticipantKey(step: Pick<FlowStep, 'id' | 'participantId'>): string {
+  return step.participantId || step.id;
+}
+
+/// The failure message for a step that has gone silent past the watchdog's
+/// timeout, or null while it's still within budget. Split out from the
+/// sweep so the boundary is testable without a live runtime.
+export function stuckStepMessage(args: {
+  stepId: string;
+  silentMs: number;
+  timeoutMs: number;
+}): string | null {
+  if (args.silentMs <= args.timeoutMs) return null;
+  const minutes = Math.round(args.silentMs / 60_000);
+  return `Step "${args.stepId}" produced no output for ${minutes} minutes — treating it as failed.`;
+}
+
 /// Role presets whose whole job is to render an APPROVE/REJECT verdict on
 /// prior work. A step with one of these roles GATES the flow: if its
 /// produced artifact doesn't clearly approve, the runtime treats the step
@@ -2188,6 +2538,12 @@ export function isReviewApproved(reviewBody: string): boolean {
     const line = raw
       .replace(/^[\s>#*_-]+/, '')
       .replace(/[*_`]+/g, '')
+      // Drop a leading verdict label so "Verdict: APPROVED" /
+      // "Decision: APPROVED" read as approvals — models routinely
+      // prefix the word rather than putting it bare on its own line.
+      // A negated verdict ("Verdict: NOT APPROVED") still fails the
+      // test below because the remaining text starts with "NOT".
+      .replace(/^(?:verdict|decision|result|status|outcome)\s*[:\-–]\s*/i, '')
       .trim();
     if (/^APPROVED\b/i.test(line)) return true;
   }

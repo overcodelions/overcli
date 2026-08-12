@@ -16,8 +16,10 @@
 
 <p align="center">
   <a href="https://github.com/overcodelions/overcli/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/overcodelions/overcli/actions/workflows/ci.yml/badge.svg?branch=master" /></a>
+  <a href="https://github.com/overcodelions/overcli/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/overcodelions/overcli/actions/workflows/codeql.yml/badge.svg?branch=master" /></a>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/overcodelions/overcli"><img alt="OpenSSF Scorecard" src="https://api.securityscorecards.dev/projects/github.com/overcodelions/overcli/badge" /></a>
   <img alt="status" src="https://img.shields.io/badge/status-beta-orange" />
-  <img alt="version" src="https://img.shields.io/badge/version-0.2.0-informational" />
+  <a href="https://github.com/overcodelions/overcli/releases/latest"><img alt="version" src="https://img.shields.io/github/v/release/overcodelions/overcli?sort=semver" /></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-blue" />
   <img alt="electron" src="https://img.shields.io/badge/electron-41-47848F" />
   <img alt="license" src="https://img.shields.io/badge/license-Apache%202.0-green" />
@@ -33,6 +35,7 @@
   <a href="#features">Features</a> ·
   <a href="#download">Download</a> ·
   <a href="#quick-start">Quick Start</a> ·
+  <a href="#security">Security</a> ·
   <a href="#a-fatherson-project">About</a>
 </p>
 
@@ -113,9 +116,9 @@ Coding-agent workflows are powerful, but they usually live across half a dozen t
 | 06 | **Tool cards** | File edits render as diffs. Bash lives in a terminal block. Reads, writes, todos each get their own card — so you can actually see what the agent did. |
 | 07 | **Permission & approval** | Claude permission prompts and Codex approval cards (exec + apply_patch) are proper UI elements, not modal interruptions. |
 | 08 | **History from disk** | Reads prior transcripts straight out of `~/.claude/projects`, `~/.codex/sessions`, and `~/.gemini/tmp`. Nothing re-invented. |
-| 09 | **File editor** | Syntax highlighting, line-range highlighting, HTML & Markdown preview tabs. No context-switch to VS Code. |
+| 09 | **File editor** | Tabs, per-file view modes, syntax highlighting, line-range highlighting, HTML & Markdown preview with local CSS and images resolved, and live rendering of `.tsx`/`.jsx` components (Tailwind included, compiled with the project's own Tailwind). <kbd>⌘</kbd>-click a symbol to jump to its definition. Open files are remembered per conversation, flow run and explorer root — leave and come back and they're still there. No context-switch to VS Code. |
 | 10 | **Extensions browser** | Unified pane for slash commands, sub-agents, skills, plugins, MCP servers — across every backend. Copy an MCP server from one CLI to the others in a click. Rescan on demand. |
-| 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher. |
+| 11 | **Keyboard first** | <kbd>⌘P</kbd> file finder, <kbd>⌘\</kbd> sidebar, <kbd>⌘,</kbd> settings, <kbd>⌘K</kbd> quick switcher, <kbd>⌘1</kbd>–<kbd>⌘9</kbd> and <kbd>⌥⌘←/→</kbd> for editor tabs. |
 | 12 | **Agent worktrees** | Create, update, rebase, merge, push, or remove a git worktree from inside the conversation. Agents work in isolation; you merge when you like what you read. |
 | 13 | **Changes bar** | Live `+/−` rollup above the composer counting everything touched this turn. Click to expand, click a file to jump to it, click commit. |
 | 14 | **Local model dashboard** | A real UI for Ollama: catalog, filter by maker or country, pull & delete with one click, live server logs, GPU readout. |
@@ -251,6 +254,21 @@ src/
 - **Replay bundles** — exporting a conversation as a self-contained replay
 
 Anything else missing that you'd expect? It's a bug — please file it.
+
+## Security
+
+Overcli can read your code, run commands, and use the credentials your CLIs
+already hold — so we take being trustworthy seriously:
+
+- **No API keys, no telemetry, no tracking.** It uses your CLIs' existing auth
+  and sends no usage data anywhere.
+- **Signed & notarized** macOS builds, with a **cryptographic build provenance
+  attestation** and `SHA256SUMS.txt` on every release — [verify your download](docs/SECURITY.md#verify-your-download).
+- **Watched supply chain** — CodeQL, Dependabot, an SBOM per release, and a
+  public [OpenSSF Scorecard](https://securityscorecards.dev/viewer/?uri=github.com/overcodelions/overcli).
+
+Full details: **[Security & Privacy](docs/SECURITY.md)**. Reporting a
+vulnerability: **[SECURITY.md](SECURITY.md)**.
 
 ## A father–son project
 

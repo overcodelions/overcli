@@ -528,7 +528,7 @@ function ReboundEditor({
             if (e.target.checked) {
               onPatch({
                 rebound: {
-                  critic: { backend: 'claude', model: 'claude-sonnet-4-6' },
+                  critic: { backend: 'claude', model: 'claude-sonnet-5' },
                   mode: 'review',
                   maxIters: 2,
                 },

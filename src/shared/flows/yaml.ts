@@ -11,9 +11,11 @@
 
 import { parse as yamlParse, stringify as yamlStringify } from 'yaml';
 
+import { liftMissingModel } from '../modelCatalog';
 import type { Backend } from '../types';
 import {
   DEFAULT_PARTICIPANT_ID,
+  normalizeFlowTag,
   type Flow,
   type FlowFailureAction,
   type FlowParticipant,
@@ -32,6 +34,7 @@ interface YamlFlow {
   default_prompt?: unknown;
   participants?: unknown;
   steps?: unknown;
+  tags?: unknown;
 }
 
 interface YamlStep {
@@ -188,6 +191,25 @@ function parseStep(raw: unknown, idx: number): FlowStep {
   };
 }
 
+/// Lift a step's legacy `model` and its rebound critic to the newest
+/// in-family catalog id when they reference a retired model. Mutates the
+/// step in place. Ollama refs and already-supported ids pass through.
+function liftStepModels(step: FlowStep): void {
+  if (step.model && step.model.backend !== 'ollama' && step.model.model) {
+    step.model = {
+      ...step.model,
+      model: liftMissingModel(step.model.backend, step.model.model),
+    };
+  }
+  const critic = step.rebound?.critic;
+  if (step.rebound && critic && critic.backend !== 'ollama' && critic.model) {
+    step.rebound = {
+      ...step.rebound,
+      critic: { ...critic, model: liftMissingModel(critic.backend, critic.model) },
+    };
+  }
+}
+
 /// Back-compat migration. If the YAML had no `participants:` block, walk
 /// the steps' legacy `model` fields and synthesize one participant per
 /// unique backend+model. Each step's `participantId` is then pointed at
@@ -272,6 +294,19 @@ export function parseFlowYaml(args: {
   const participantsRaw = Array.isArray(y.participants) ? y.participants : [];
   const parsedSteps = stepsRaw.map((s, i) => parseStep(s, i));
   const parsedParticipants = participantsRaw.map((p, i) => parseParticipant(p, i));
+  // Auto-lift references to retired models (e.g. a flow pinned to
+  // `claude-opus-4-7` after we dropped it) to the next-highest version in
+  // the same family, so old flows stay runnable. Do this before
+  // `migrateFlowParticipants` so any participants it synthesizes from
+  // legacy step-level models inherit the lifted id too.
+  for (const p of parsedParticipants) {
+    if (p.backend !== 'ollama' && p.model) {
+      p.model = liftMissingModel(p.backend, p.model);
+    }
+  }
+  for (const s of parsedSteps) {
+    liftStepModels(s);
+  }
   const { participants, steps } = migrateFlowParticipants(parsedParticipants, parsedSteps);
   return {
     id: args.id,
@@ -284,9 +319,25 @@ export function parseFlowYaml(args: {
         : undefined,
     participants,
     steps,
+    tags: parseTags(y.tags),
     source: args.source,
     filePath: args.filePath,
   };
+}
+
+/// Top-level `tags:` — a plain string list. Non-strings are dropped rather
+/// than failing the parse: a bad tag shouldn't cost the user their flow.
+/// Trimmed and de-duped so `[review, review , Review]` doesn't render as
+/// three chips.
+function parseTags(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const seen = new Set<string>();
+  for (const t of raw) {
+    if (typeof t !== 'string') continue;
+    const tag = normalizeFlowTag(t);
+    if (tag) seen.add(tag);
+  }
+  return seen.size > 0 ? [...seen] : undefined;
 }
 
 function serializeModel(m: { backend: Backend; model: string }) {
@@ -345,6 +396,7 @@ export function serializeFlow(flow: Flow): string {
     name: flow.name,
   };
   if (flow.description) doc.description = flow.description;
+  if (flow.tags && flow.tags.length > 0) doc.tags = flow.tags;
   doc.input = flow.input;
   if (flow.defaultPrompt && flow.defaultPrompt.trim()) {
     doc.default_prompt = flow.defaultPrompt;
