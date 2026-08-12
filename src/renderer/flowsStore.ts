@@ -176,6 +176,15 @@ function uniqueFlowId(desired: string, existing: Flow[]): string {
   return `${desired}-${n}`;
 }
 
+/// The registry fetch currently in flight, so overlapping callers join it
+/// instead of each firing their own. The library and start-page search boxes
+/// both call `browseRegistries` from an effect guarded on `registryLoaded`,
+/// which only flips once the fetch RESOLVES — so typing "review" would
+/// otherwise fire five index fetches before the first came back. Only
+/// unforced calls share; a `force` refresh is an explicit "get me fresh
+/// data" and must never be answered by an in-flight cached read.
+let registryFetch: Promise<void> | null = null;
+
 /// Friendly auto-name for a synthesized participant. Uses the shared
 /// model catalog's `friendlyModelLabel` so the auto-name matches what
 /// users see in pickers ("Claude Sonnet 4.6", "GPT-5.4 mini",
@@ -570,8 +579,19 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   },
 
   async browseRegistries(force) {
-    const res = await window.overcli.invoke('flows:browseRegistry', { force: !!force });
-    set({ registryEntries: res.entries, registryErrors: res.errors, registryLoaded: true });
+    if (!force && registryFetch) return registryFetch;
+    const run = (async () => {
+      const res = await window.overcli.invoke('flows:browseRegistry', { force: !!force });
+      set({ registryEntries: res.entries, registryErrors: res.errors, registryLoaded: true });
+    })();
+    registryFetch = run;
+    // Clear on settle, not just success: a failed fetch that left the handle
+    // set would wedge the search box on "loading" for the rest of the session.
+    try {
+      await run;
+    } finally {
+      if (registryFetch === run) registryFetch = null;
+    }
   },
 
   async previewRegistryFlow(args) {

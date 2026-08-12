@@ -124,14 +124,16 @@ export function saveFlow(args: {
   }
 }
 
-/// Delete a flow file. The caller specifies which layer to delete from
-/// (you might have a flow with the same id in both layers and only want to
-/// remove one). The `projectPath` is required when source === 'project'.
 /// Drop a deleted flow's registry bookkeeping. `installedRegistryFlows` is
 /// what the browse UI reads to say "✓ installed" and what the inline search
 /// uses to hide flows you already have — leaving an entry for a file that
 /// no longer exists makes a deleted flow both wrongly-marked and
 /// impossible to reinstall from search. Cheap no-op for non-registry flows.
+///
+/// User layer only: every entry's `filename` names a file in
+/// `userFlowsDir()` (see `registry.ts`, which mints
+/// `installed-<registryId>-<entryId>.yaml` there), so a project-layer flow
+/// that happens to share the name refers to a different file entirely.
 function forgetInstalledFlow(filename: string): void {
   const settings = Store.load().settings;
   const list = settings.installedRegistryFlows ?? [];
@@ -141,6 +143,9 @@ function forgetInstalledFlow(filename: string): void {
   }
 }
 
+/// Delete a flow file. The caller specifies which layer to delete from
+/// (you might have a flow with the same id in both layers and only want to
+/// remove one). The `projectPath` is required when source === 'project'.
 export function deleteFlow(args: {
   flowId: string;
   source: 'user' | 'project';
@@ -169,7 +174,7 @@ export function deleteFlow(args: {
   }
   try {
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    forgetInstalledFlow(path.basename(filePath));
+    if (args.source === 'user') forgetInstalledFlow(path.basename(filePath));
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
