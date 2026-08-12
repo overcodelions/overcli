@@ -399,13 +399,6 @@ function stripCodeFences(text: string): string {
   return text;
 }
 
-/// Snap every premium model ref in the flow to its canonical catalog
-/// spelling, fixing dot-vs-dash version mismatches (e.g. drafted
-/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend) and
-/// lifting any reference to a retired model (e.g. `claude-opus-4-7`) up to
-/// the next-highest in-family version we still ship. Walks participants,
-/// legacy step-level models, and rebound critics. Ollama and
-/// already-canonical refs pass through untouched. Mutates `flow` in place.
 /// Keep only tags from the shared taxonomy, capped at 4. Anything the model
 /// invented is dropped rather than corrected — there's no reliable mapping
 /// from "code-review" to `review`, and a wrong tag files the flow under a
@@ -424,6 +417,13 @@ function repairTags(flow: Flow): void {
   flow.tags = kept.length > 0 ? kept : undefined;
 }
 
+/// Snap every premium model ref in the flow to its canonical catalog
+/// spelling, fixing dot-vs-dash version mismatches (e.g. drafted
+/// `claude-haiku-4.5` → `claude-haiku-4-5` on the claude backend) and
+/// lifting any reference to a retired model (e.g. `claude-opus-4-7`) up to
+/// the next-highest in-family version we still ship. Walks participants,
+/// legacy step-level models, and rebound critics. Ollama and
+/// already-canonical refs pass through untouched. Mutates `flow` in place.
 function repairModelIds(flow: Flow): void {
   // Canonicalize first (snaps a dotted alias onto its catalog spelling),
   // then lift (rewrites a still-unsupported id to a newer in-family one).

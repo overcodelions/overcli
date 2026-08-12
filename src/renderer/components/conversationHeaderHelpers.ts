@@ -1,4 +1,4 @@
-import type { Backend, EffortLevel, PermissionMode } from '@shared/types';
+import type { Backend, BackendHealth, EffortLevel, PermissionMode } from '@shared/types';
 
 export function modeLabel(mode: PermissionMode): string {
   switch (mode) {
@@ -38,4 +38,28 @@ export function enabledBackends(
 ): Backend[] {
   const all: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
   return all.filter((b) => isBackendEnabled(settings, b));
+}
+
+/// The backend a new conversation should start on.
+///
+/// An explicit `preferredBackend` always wins. Failing that we take the
+/// first enabled CLI the health probe says is actually *ready*, rather than
+/// the first one in list order — which is always Claude, so a machine with
+/// only Codex installed used to open every conversation on a CLI that isn't
+/// there and fail on the first send.
+///
+/// Falls back to plain enabled-order when health hasn't been probed yet, or
+/// when nothing is ready: a default that might not run beats no default.
+export function pickDefaultBackend(
+  settings: {
+    disabledBackends?: Partial<Record<Backend, boolean>>;
+    preferredBackend?: Backend;
+  },
+  health?: Record<string, BackendHealth>,
+): Backend {
+  const preferred = settings.preferredBackend;
+  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
+  const enabled = enabledBackends(settings);
+  const ready = health ? enabled.find((b) => health[b]?.kind === 'ready') : undefined;
+  return ready ?? enabled[0] ?? 'claude';
 }

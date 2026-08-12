@@ -1,6 +1,31 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { validateFlowYaml } from './storage';
+import { deleteFlow, validateFlowYaml } from './storage';
+
+let userDataDir = '';
+let settings: { installedRegistryFlows?: Array<{ filename: string }> } = {};
+
+const { mockGetPath, mockSaveSettings } = vi.hoisted(() => ({
+  mockGetPath: vi.fn(() => userDataDir),
+  mockSaveSettings: vi.fn(),
+}));
+
+vi.mock('electron', () => ({
+  app: { getPath: mockGetPath },
+}));
+
+vi.mock('../store', () => ({
+  Store: {
+    load: () => ({ settings }),
+    saveSettings: (next: typeof settings) => {
+      settings = next;
+      mockSaveSettings(next);
+    },
+  },
+}));
 
 const VALID_YAML = `
 name: Test Flow
@@ -13,6 +38,63 @@ steps:
     tools: [Read]
     output: plan.md
 `;
+
+describe('deleteFlow', () => {
+  let projectDir = '';
+
+  beforeEach(() => {
+    userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-flows-user-'));
+    projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-flows-project-'));
+    settings = { installedRegistryFlows: [{ filename: 'installed-reg-entry.yaml' }] };
+    mockSaveSettings.mockClear();
+  });
+
+  afterEach(() => {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+    fs.rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  function writeFlow(dir: string, id: string): void {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${id}.yaml`), VALID_YAML, 'utf-8');
+  }
+
+  it('forgets the registry record when the installed user flow is deleted', () => {
+    writeFlow(path.join(userDataDir, 'flows'), 'installed-reg-entry');
+
+    expect(deleteFlow({ flowId: 'installed-reg-entry', source: 'user' })).toEqual({ ok: true });
+    expect(settings.installedRegistryFlows).toEqual([]);
+  });
+
+  // A project flow lives at <project>/.overcli/flows/, but every
+  // installedRegistryFlows filename names a file in <userData>/flows/. A
+  // same-named project flow is a DIFFERENT file, so deleting it must not
+  // strip the record for the user-layer flow that's still installed.
+  it('leaves installedRegistryFlows alone when a same-named project flow is deleted', () => {
+    writeFlow(path.join(userDataDir, 'flows'), 'installed-reg-entry');
+    writeFlow(path.join(projectDir, '.overcli', 'flows'), 'installed-reg-entry');
+
+    const result = deleteFlow({
+      flowId: 'installed-reg-entry',
+      source: 'project',
+      projectPath: projectDir,
+    });
+
+    expect(result).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(projectDir, '.overcli', 'flows', 'installed-reg-entry.yaml')))
+      .toBe(false);
+    expect(fs.existsSync(path.join(userDataDir, 'flows', 'installed-reg-entry.yaml'))).toBe(true);
+    expect(settings.installedRegistryFlows).toEqual([{ filename: 'installed-reg-entry.yaml' }]);
+    expect(mockSaveSettings).not.toHaveBeenCalled();
+  });
+
+  it('does not write settings when the deleted flow was never installed', () => {
+    writeFlow(path.join(userDataDir, 'flows'), 'hand-written');
+
+    expect(deleteFlow({ flowId: 'hand-written', source: 'user' })).toEqual({ ok: true });
+    expect(mockSaveSettings).not.toHaveBeenCalled();
+  });
+});
 
 describe('validateFlowYaml', () => {
   it('returns a parsed flow for valid YAML', () => {

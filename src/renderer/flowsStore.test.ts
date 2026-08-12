@@ -687,3 +687,52 @@ describe('renameRun', () => {
     expect(mockInvoke).toHaveBeenCalledWith('flows:renameRun', { runId: 'ghost', title: 'Nope' });
   });
 });
+
+// ─── browseRegistries ─────────────────────────────────────────────────────────
+
+describe('browseRegistries', () => {
+  // The search boxes call this from an effect guarded on `registryLoaded`,
+  // which only flips once the fetch RESOLVES — so without in-flight sharing,
+  // every keystroke before the first response starts another index fetch.
+  it('shares one fetch between callers that overlap it', async () => {
+    let release!: (v: unknown) => void;
+    mockInvoke.mockReturnValueOnce(new Promise((r) => { release = r; }));
+
+    const first = useFlowsStore.getState().browseRegistries();
+    const second = useFlowsStore.getState().browseRegistries();
+    const third = useFlowsStore.getState().browseRegistries();
+
+    release({ entries: [{ id: 'a' }], errors: [] });
+    await Promise.all([first, second, third]);
+
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+    expect(useFlowsStore.getState().registryLoaded).toBe(true);
+    expect(useFlowsStore.getState().registryEntries).toEqual([{ id: 'a' }]);
+  });
+
+  it('fetches again once the shared fetch has settled', async () => {
+    mockInvoke.mockResolvedValue({ entries: [], errors: [] });
+
+    await useFlowsStore.getState().browseRegistries();
+    await useFlowsStore.getState().browseRegistries();
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+  });
+
+  // A force refresh is an explicit "get me fresh data" — answering it with
+  // an in-flight cached read would silently ignore the request.
+  it('never joins an in-flight fetch when forced', async () => {
+    let release!: (v: unknown) => void;
+    mockInvoke.mockReturnValueOnce(new Promise((r) => { release = r; }));
+    mockInvoke.mockResolvedValue({ entries: [], errors: [] });
+
+    const background = useFlowsStore.getState().browseRegistries();
+    const forced = useFlowsStore.getState().browseRegistries(true);
+
+    release({ entries: [], errors: [] });
+    await Promise.all([background, forced]);
+
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
+    expect(mockInvoke).toHaveBeenLastCalledWith('flows:browseRegistry', { force: true });
+  });
+});
