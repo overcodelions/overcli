@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { noBackendReady, useStore } from './store';
+import { anyBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
 import { useThemeEffect } from './useThemeEffect';
@@ -278,7 +278,13 @@ export function App() {
   // empty (its add buttons are disabled anyway), so hide it and give the
   // welcome/setup screen the full width. Settings stays reachable via the
   // title-bar gear.
-  const onboarding = projects.length === 0 && noBackendReady(backendHealth);
+  //
+  // Deliberately `!anyBackendReady` and not `noBackendReady`: the latter is
+  // false until the first health probe returns, so a fresh install painted
+  // an empty sidebar and then tore it away mid-glance. Treating "not probed
+  // yet" as onboarding costs nothing (with zero projects there's nothing in
+  // the sidebar to miss) and keeps the first frame stable.
+  const onboarding = projects.length === 0 && !anyBackendReady(backendHealth);
   const showSidebar = sidebarVisible && !onboarding;
 
   return (
