@@ -64,7 +64,11 @@ import {
   foldContextUsage,
 } from './runnersStore';
 import { useFlowsStore } from './flowsStore';
-import { enabledBackends, isBackendEnabled } from './components/conversationHeaderHelpers';
+import {
+  enabledBackends,
+  isBackendEnabled,
+  pickDefaultBackend,
+} from './components/conversationHeaderHelpers';
 import { isSupportedPremiumModel, premiumModelsForBackend } from '@shared/modelCatalog';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
@@ -823,12 +827,6 @@ function parentDir(p: string): string | null {
   return p.slice(0, idx);
 }
 
-function defaultBackend(settings: AppSettings): Backend {
-  const preferred = settings.preferredBackend;
-  if (preferred && isBackendEnabled(settings, preferred)) return preferred;
-  return enabledBackends(settings)[0] ?? 'claude';
-}
-
 /// True once backend health has been probed at least once. Until then we
 /// avoid gating UI, since "nothing ready" is indistinguishable from "not
 /// checked yet" on a fresh launch.
@@ -1345,7 +1343,7 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   async newConversation(projectId) {
-    const preferred = defaultBackend(get().settings);
+    const preferred = pickDefaultBackend(get().settings, get().backendHealth);
     // Capture the project's current branch so the conversation header can
     // warn if the working tree drifts onto a different branch later. Best
     // effort — a non-git project just leaves it undefined.
@@ -1398,7 +1396,7 @@ export const useStore = create<StoreState>((set, get) => ({
       turnCount: 0,
       currentModel: '',
       permissionMode: get().settings.defaultPermissionMode,
-      primaryBackend: defaultBackend(get().settings),
+      primaryBackend: pickDefaultBackend(get().settings, get().backendHealth),
       worktreePath: args.worktreePath,
       branchName: args.branchName,
       baseBranch: args.baseBranch,
@@ -1526,7 +1524,7 @@ export const useStore = create<StoreState>((set, get) => ({
   async newConversationInWorkspace(workspaceId) {
     const ws = get().workspaces.find((w) => w.id === workspaceId);
     if (!ws) return null;
-    const preferred = defaultBackend(get().settings);
+    const preferred = pickDefaultBackend(get().settings, get().backendHealth);
     const conv: Conversation = {
       id: uuid(),
       name: 'New conversation',
@@ -1551,7 +1549,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async newWorkspaceAgent(args) {
     const state = get();
-    const preferred = defaultBackend(state.settings);
+    const preferred = pickDefaultBackend(state.settings, state.backendHealth);
     const ws = state.workspaces.find((w) => w.id === args.workspaceId);
     if (!ws) return null;
     const name = args.name.trim();
@@ -1662,7 +1660,7 @@ export const useStore = create<StoreState>((set, get) => ({
       .filter((p): p is NonNullable<typeof p> => !!p);
     if (addedProjects.length === 0) return { appliedAgents: 0, failures: [] };
 
-    const backend = defaultBackend(state.settings);
+    const backend = pickDefaultBackend(state.settings, state.backendHealth);
     const failures: string[] = [];
     let appliedAgents = 0;
 
@@ -1770,7 +1768,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async newWorkspaceDocsAgent(args) {
     const state = get();
-    const preferred = defaultBackend(state.settings);
+    const preferred = pickDefaultBackend(state.settings, state.backendHealth);
     const ws = state.workspaces.find((w) => w.id === args.workspaceId);
     if (!ws) return null;
     const name = args.name.trim();
@@ -2514,7 +2512,7 @@ export const useStore = create<StoreState>((set, get) => ({
       };
     });
 
-    const backend = conv.primaryBackend ?? defaultBackend(state.settings);
+    const backend = conv.primaryBackend ?? pickDefaultBackend(state.settings, state.backendHealth);
     if (!isBackendEnabled(state.settings, backend)) {
       useRunnersStore.getState().patchRunner(conversationId, {
         errorMessage: `${backend} is disabled in Settings > Backends.`,
@@ -2815,7 +2813,7 @@ export const useStore = create<StoreState>((set, get) => ({
     try {
       events = await window.overcli.invoke('runner:loadHistory', {
         conversationId,
-        backend: conv.primaryBackend ?? defaultBackend(state.settings),
+        backend: conv.primaryBackend ?? pickDefaultBackend(state.settings, state.backendHealth),
         projectPath: cwd,
         sessionId: conv.sessionId,
         codexRolloutPaths: conv.codexRolloutPaths,
