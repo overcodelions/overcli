@@ -17,6 +17,7 @@ import {
   type ScheduleDraft,
 } from '../../schedulesStore';
 import {
+  SCHEDULE_AUTO_APPROVE_MAX,
   WEEKDAY_SET,
   describeTrigger,
   untilLabel,
@@ -69,7 +70,7 @@ export function SchedulesPane() {
         <button
           disabled={!canCreate}
           onClick={() =>
-            openEditor(newScheduleDraft(projects[0]?.path ?? workspaces[0]?.rootPath ?? ''))
+            openEditor(newScheduleDraft(workspaces[0]?.rootPath ?? projects[0]?.path ?? ''))
           }
           className="ml-auto text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
         >
@@ -212,11 +213,19 @@ function ScheduleRow({
             >
               {schedule.name}
             </span>
-            {schedule.target.kind === 'orchestrate' && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider bg-violet-500/20 text-violet-700 dark:text-violet-300">
-                proposes
-              </span>
-            )}
+            {schedule.target.kind === 'orchestrate' &&
+              (schedule.target.autoApprove ? (
+                <span
+                  title={`Launches up to ${schedule.target.autoApprove.maxItems} unattended.`}
+                  className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                >
+                  auto ×{schedule.target.autoApprove.maxItems}
+                </span>
+              ) : (
+                <span className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider bg-violet-500/20 text-violet-700 dark:text-violet-300">
+                  proposes
+                </span>
+              ))}
           </div>
           <div className="text-[11px] text-ink-faint truncate">
             {describeTrigger(schedule.trigger)}
@@ -426,6 +435,12 @@ function ScheduleEditor() {
 
   const problem = validateSchedule(draft as never);
   const isWorktree = draft.target.runIn === 'worktree';
+  const autoApprove =
+    draft.target.kind === 'orchestrate' ? draft.target.autoApprove : undefined;
+  const projectLabel =
+    [...workspaces.map((w) => ({ name: w.name, path: w.rootPath })), ...projects].find(
+      (t) => t.path === draft.projectPath,
+    )?.name ?? null;
 
   // Whether the target is a git repo at all. `null` while we're finding out.
   // A schedule that pulls data or pokes an API doesn't need one, and main
@@ -439,6 +454,14 @@ function ScheduleEditor() {
     }
     let cancelled = false;
     setIsRepo(null);
+    // A workspace root is never itself a git repo, but a run targeting one
+    // gets a worktree per member — so asking git about the root alone would
+    // grey out "Fresh worktree" for every workspace schedule and quietly pin
+    // it to the working tree.
+    if (workspaces.some((w) => w.rootPath === draft.projectPath)) {
+      setIsRepo(true);
+      return;
+    }
     void window.overcli
       .invoke('git:commitStatus', { cwd: draft.projectPath })
       .then((res) => {
@@ -450,39 +473,83 @@ function ScheduleEditor() {
     return () => {
       cancelled = true;
     };
-  }, [draft.projectPath]);
+  }, [draft.projectPath, workspaces]);
 
   function patchTarget(p: Partial<ScheduleDraft['target']>): void {
     patch({ target: { ...draft.target, ...p } as ScheduleDraft['target'] });
   }
 
   return (
-    <div className="max-w-[720px]">
-      <div className="flex items-center gap-3 mb-5">
-        <button onClick={close} className="text-xs text-ink-faint hover:text-ink">
+    <div>
+      {/* Header, two-column body, card sections, summary-at-the-top: the same
+          skeleton as the flow editor. These are the two places in the app
+          where you build a thing rather than run one, and they were shaped
+          differently for no reason a user could see. */}
+      <div className="flex items-center gap-3 mb-4">
+        <button
+          onClick={close}
+          className="text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
+        >
           ← Schedules
         </button>
-        <div className="text-lg font-semibold">
+        <div className="text-2xl font-semibold">
           {draft.id ? 'Edit schedule' : 'New schedule'}
+        </div>
+        {/* Save at the top, like the flow editor's. It used to sit under a
+            long form, so on a tall schedule you had to scroll past everything
+            you'd just decided to commit it. */}
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-1.5 text-xs text-ink-muted mr-1">
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(e) => patch({ enabled: e.target.checked })}
+            />
+            Enabled
+          </label>
+          <button
+            onClick={close}
+            className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
+          >
+            Cancel
+          </button>
+          <button
+            disabled={!!problem || busy}
+            onClick={() => void save()}
+            className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+          >
+            {busy ? 'Saving…' : draft.id ? 'Save changes' : 'Create schedule'}
+          </button>
         </div>
       </div>
 
-      <div className="space-y-5">
-        <Field label="Name">
-          <input
-            value={draft.name}
-            onChange={(e) => patch({ name: e.target.value })}
-            placeholder="Morning triage"
-            className="w-full bg-card border border-card-strong rounded px-2.5 py-1.5 text-sm text-ink"
-          />
-        </Field>
+      <div className="grid grid-cols-[1fr_minmax(280px,360px)] gap-6 items-start">
+        <div className="min-w-0 space-y-4">
+          <ScheduleTimeline draft={draft} projectLabel={projectLabel} />
 
+          <div className="rounded-xl bg-card p-5 shadow-sm">
+            <div className="text-[10px] uppercase tracking-[0.18em] text-ink-faint mb-2">
+              Schedule
+            </div>
+            <input
+              value={draft.name}
+              onChange={(e) => patch({ name: e.target.value })}
+              placeholder="Untitled schedule"
+              className="w-full bg-transparent text-2xl font-semibold text-ink placeholder:text-ink-faint focus:outline-none mb-4"
+            />
+            <TriggerField />
+          </div>
+
+          <div className="rounded-xl bg-card p-5 shadow-sm space-y-5">
+            <div className="text-sm font-semibold -mb-1">What it does</div>
         <Field
           label="What it does"
           hint={
             draft.target.kind === 'flow'
               ? 'Launches one run, unattended.'
-              : 'Runs the producer and parks the batch. Nothing launches until you approve it.'
+              : draft.target.autoApprove
+                ? 'Runs the producer and launches what it finds, up to the cap below.'
+                : 'Runs the producer and parks the batch. Nothing launches until you approve it.'
           }
         >
           <div className="flex gap-1.5 mb-2">
@@ -523,27 +590,31 @@ function ScheduleEditor() {
         </Field>
 
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Project">
+          <Field label="Workspace / Project">
             <select
               value={draft.projectPath}
               onChange={(e) => patch({ projectPath: e.target.value })}
               className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
             >
               <option value="">Pick a target…</option>
-              {projects.length > 0 && (
-                <optgroup label="Projects">
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.path}>
-                      {p.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
+              {/* Workspaces first, as in the Orchestrator's picker: scheduled
+                  work more often spans a whole workspace than one repo, and a
+                  list that opens on the less likely answer makes you scroll to
+                  the usual one every time. */}
               {workspaces.length > 0 && (
                 <optgroup label="Workspaces">
                   {workspaces.map((w) => (
                     <option key={w.id} value={w.rootPath}>
                       {w.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {projects.length > 0 && (
+                <optgroup label="Projects">
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.path}>
+                      {p.name}
                     </option>
                   ))}
                 </optgroup>
@@ -586,8 +657,10 @@ function ScheduleEditor() {
           />
         </Field>
 
-        <TriggerField />
+          </div>
 
+          <div className="rounded-xl bg-card p-5 shadow-sm space-y-5">
+            <div className="text-sm font-semibold -mb-1">How it runs</div>
         <Field label="Where it works">
           <div className="flex gap-1.5">
             <Segment
@@ -616,7 +689,10 @@ function ScheduleEditor() {
               </div>
             )
           )}
-          {isWorktree && isRepo === true && draft.projectPath && (
+          {isWorktree &&
+            isRepo === true &&
+            draft.projectPath &&
+            !workspaces.some((w) => w.rootPath === draft.projectPath) && (
             <div className="mt-2">
               <BaseBranchSelect
                 value={draft.target.baseBranch ?? ''}
@@ -626,6 +702,60 @@ function ScheduleEditor() {
             </div>
           )}
         </Field>
+
+        {draft.target.kind === 'orchestrate' && (
+          <Field
+            label="When the producer comes back"
+            hint={
+              autoApprove
+                ? 'Anything past the cap still waits for you.'
+                : 'The safe default — you see the list before anything runs.'
+            }
+          >
+            <div className="flex gap-1.5">
+              <Segment
+                active={!autoApprove}
+                onClick={() => patchTarget({ autoApprove: undefined })}
+              >
+                Wait for my approval
+              </Segment>
+              <Segment
+                active={!!autoApprove}
+                onClick={() => patchTarget({ autoApprove: { maxItems: 3 } })}
+              >
+                Launch it
+              </Segment>
+            </div>
+            {autoApprove && (
+              <>
+                <div className="mt-2.5 flex items-center gap-2 text-xs text-ink-muted">
+                  <span>Launch at most</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={SCHEDULE_AUTO_APPROVE_MAX}
+                    value={autoApprove.maxItems}
+                    onChange={(e) =>
+                      patchTarget({
+                        autoApprove: { maxItems: Number(e.target.value) },
+                      })
+                    }
+                    className="w-16 bg-card border border-card-strong rounded px-2 py-1 text-sm text-ink"
+                  />
+                  <span>
+                    {autoApprove.maxItems === 1 ? 'ask' : 'asks'} per firing, the rest parked
+                  </span>
+                </div>
+                <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                  The producer decides what these are, and they run with nobody watching.
+                  {isWorktree
+                    ? ' Each gets its own worktree.'
+                    : ' They land straight in your working tree, one at a time.'}
+                </div>
+              </>
+            )}
+          </Field>
+        )}
 
         <div className="grid grid-cols-2 gap-4">
           <Field label="If the last run is still going">
@@ -651,37 +781,234 @@ function ScheduleEditor() {
           </Field>
         </div>
 
-        {(problem || error) && (
-          <div className="text-sm text-red-700 dark:text-red-300 bg-red-500/15 border border-red-400/40 rounded px-3 py-2">
-            {error ?? problem}
           </div>
-        )}
 
-        <div className="flex items-center gap-2 pt-1">
-          <button
-            disabled={!!problem || busy}
-            onClick={() => void save()}
-            className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
-          >
-            {busy ? 'Saving…' : draft.id ? 'Save changes' : 'Create schedule'}
-          </button>
-          <button
-            onClick={close}
-            className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
-          >
-            Cancel
-          </button>
-          <label className="ml-auto flex items-center gap-1.5 text-xs text-ink-muted">
-            <input
-              type="checkbox"
-              checked={draft.enabled}
-              onChange={(e) => patch({ enabled: e.target.checked })}
-            />
-            Enabled
-          </label>
+          {(problem || error) && (
+            <div className="text-sm text-red-700 dark:text-red-300 bg-red-500/15 border border-red-400/40 rounded px-3 py-2">
+              {error ?? problem}
+            </div>
+          )}
         </div>
+        <HelpRail draft={draft} patch={patch} />
       </div>
     </div>
+  );
+}
+
+/// The schedule's answer to the flow editor's pipeline diagram: what this
+/// thing will actually do, read left to right, before you've read a single
+/// field. Same grammar — pills and arrows on a card — because it's the same
+/// question in a different editor.
+///
+/// Derived, never stored. Every chip is a projection of the draft, so it can't
+/// drift from the form the way a hand-written summary would.
+function ScheduleTimeline({
+  draft,
+  projectLabel,
+}: {
+  draft: ScheduleDraft;
+  projectLabel: string | null;
+}) {
+  const t = draft.target;
+  const auto = t.kind === 'orchestrate' ? t.autoApprove : undefined;
+  const chips: string[] = [
+    t.kind === 'flow' ? 'Run one flow' : 'Ask the producer',
+    projectLabel ?? 'no project',
+    t.runIn === 'worktree' ? 'Fresh worktree' : 'Project tree',
+  ];
+  if (t.kind === 'orchestrate') {
+    chips.push(
+      auto
+        ? `Launch up to ${auto.maxItems}, park the rest`
+        : 'Park it for your approval',
+    );
+  }
+  return (
+    <div className="rounded-xl bg-card p-4 shadow-sm">
+      <div className="text-[11px] uppercase tracking-wider text-ink-faint mb-2">Timeline</div>
+      <div className="flex flex-wrap items-center gap-x-1 gap-y-3">
+        <div className="rounded-full bg-card-strong px-3 py-1.5 text-[11px] text-ink shadow-sm">
+          {describeTrigger(draft.trigger)}
+        </div>
+        {chips.map((c) => (
+          <span key={c} className="flex items-center gap-1">
+            <TimelineArrow />
+            <span className="rounded-full bg-card-strong px-3 py-1.5 text-[11px] text-ink-muted shadow-sm">
+              {c}
+            </span>
+          </span>
+        ))}
+      </div>
+      {!draft.target.flowId && (
+        <div className="mt-3 text-[11px] text-amber-600 dark:text-amber-400">
+          No flow picked yet — a schedule can&apos;t fire without one.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TimelineArrow() {
+  return (
+    <svg width="20" height="14" viewBox="0 0 20 14" className="text-ink-faint flex-shrink-0">
+      <path d="M2 7 H16" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M14 3 L18 7 L14 11" stroke="currentColor" strokeWidth="1.4" fill="none" />
+    </svg>
+  );
+}
+
+/// Three shapes a schedule actually takes, as one-click starters. They fill
+/// everything except the project and the flow — those are yours, and guessing
+/// at them would make the button feel like it did the wrong thing.
+///
+/// Chosen to differ on the axes the form asks about rather than on subject
+/// matter: one runs a single flow, one proposes a batch and waits, one
+/// proposes and launches. Read together they answer "what are these controls
+/// for" better than any amount of prose next to each field.
+const SCHEDULE_PRESETS: Array<{
+  label: string;
+  blurb: string;
+  patch: Omit<ScheduleDraft, 'id' | 'projectPath' | 'enabled'>;
+}> = [
+  {
+    label: 'Morning triage',
+    blurb: 'Asks your tracker for small jobs before you start, and parks them for you.',
+    patch: {
+      name: 'Morning triage',
+      target: {
+        kind: 'orchestrate',
+        flowId: '',
+        prompt:
+          'Look at my open tickets and recent feedback, and pull out the small, self-contained ones I could knock out individually today.',
+        runIn: 'worktree',
+        maxConcurrent: 2,
+      },
+      trigger: { kind: 'daily', time: '08:00', days: [1, 2, 3, 4, 5] },
+      onOverlap: 'skip',
+      catchUp: 'skip',
+    },
+  },
+  {
+    label: 'Overnight sweep',
+    blurb: 'Proposes a batch at 2am and launches the first few unattended.',
+    patch: {
+      name: 'Overnight sweep',
+      target: {
+        kind: 'orchestrate',
+        flowId: '',
+        prompt:
+          'Find the flaky or failing tests from the last day and the small fixes they point at.',
+        runIn: 'worktree',
+        maxConcurrent: 2,
+        autoApprove: { maxItems: 3 },
+      },
+      trigger: { kind: 'daily', time: '02:00', days: [1, 2, 3, 4, 5] },
+      onOverlap: 'skip',
+      catchUp: 'skip',
+    },
+  },
+  {
+    label: 'Weekly changelog',
+    blurb: 'One run, one flow, same prompt every Monday.',
+    patch: {
+      name: 'Weekly changelog',
+      target: {
+        kind: 'flow',
+        flowId: '',
+        prompt: 'Update the changelog from the commits since the last release.',
+        runIn: 'worktree',
+      },
+      trigger: { kind: 'daily', time: '09:00', days: [1] },
+      onOverlap: 'skip',
+      catchUp: 'once',
+    },
+  },
+];
+
+/// What each section of the form is deciding, in the order the form asks. Kept
+/// to one line each: a rail you have to read is a rail you stop reading, and
+/// the fields already carry their own hints for the details.
+const HELP_NOTES: Array<{ title: string; body: string }> = [
+  {
+    title: 'What it does',
+    body: 'One run with a fixed prompt, or a producer turn that finds several jobs and fans them out.',
+  },
+  {
+    title: 'What to look for',
+    body: 'Fires with nobody watching, so the prompt has to stand on its own — no “the ticket I mentioned”.',
+  },
+  {
+    title: 'Where it works',
+    body: 'A fresh worktree keeps unattended edits off your checked-out branch. A workspace forks one per repo.',
+  },
+  {
+    title: 'When the producer comes back',
+    body: 'Waiting is the safe default. Launching is capped per firing, so a big morning parks the overflow instead of forking a dozen worktrees.',
+  },
+  {
+    title: 'If it overlaps or you were closed',
+    body: 'Schedules only fire while overcli is open. These two decide what a missed or overlapping slot costs you.',
+  },
+];
+
+/// Sits beside the form rather than above it: the form is already long, and
+/// help stacked on top of it is help you scroll past once and never see again.
+/// Hidden below `xl` — under that the form has the width and the rail would
+/// squeeze it.
+function HelpRail({
+  draft,
+  patch,
+}: {
+  draft: ScheduleDraft;
+  patch: (p: Partial<ScheduleDraft>) => void;
+}) {
+  return (
+    <aside className="sticky top-4 space-y-4">
+      <div className="rounded-lg border border-card-strong p-4">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mb-2.5">
+          Start from an example
+        </div>
+        <div className="space-y-1.5">
+          {SCHEDULE_PRESETS.map((p) => (
+            <button
+              key={p.label}
+              // Project and flow survive on purpose — the user picked those,
+              // and a starter that silently reset them would be a trap.
+              onClick={() =>
+                patch({
+                  ...p.patch,
+                  target: { ...p.patch.target, flowId: draft.target.flowId },
+                })
+              }
+              className="group w-full text-left p-2.5 rounded-md bg-card hover:bg-card-strong transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-[13px] font-medium text-ink">{p.label}</span>
+                <span className="ml-auto text-[11px] text-accent opacity-0 group-hover:opacity-100 transition-opacity">
+                  use →
+                </span>
+              </div>
+              <div className="text-[11px] text-ink-faint mt-0.5 leading-snug">{p.blurb}</div>
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] text-ink-faint mt-2.5 mb-0 leading-snug">
+          Fills everything but the project and flow — those stay as you set them.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-card-strong p-4 space-y-3">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold">
+          What you&apos;re deciding
+        </div>
+        {HELP_NOTES.map((n) => (
+          <div key={n.title}>
+            <div className="text-xs text-ink font-medium">{n.title}</div>
+            <div className="text-[11px] text-ink-faint leading-snug mt-0.5">{n.body}</div>
+          </div>
+        ))}
+      </div>
+    </aside>
   );
 }
 
