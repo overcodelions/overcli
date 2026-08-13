@@ -71,7 +71,7 @@ import {
   runOllamaToolLoop,
 } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
-import { ReviewerManager } from './reviewer';
+import { claudeSupportsEffort, ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
 import { ClaudeSdkClient } from './claude-sdk-client';
@@ -1086,6 +1086,10 @@ export class RunnerManager {
   private backendCtx(): BackendCtx {
     return {
       mcpConfigPathFor: (id) => this.claudeMcpByConv.get(id),
+      // Probed (and cached) per binary path in reviewer.ts — same
+      // question the reviewer rebound already asks before it passes
+      // `--effort`.
+      claudeSupportsEffort: () => claudeSupportsEffort(this.resolveBinary('claude')),
       codexExecTranscriptFor: (id) => this.codexExecTranscriptByConversation.get(id),
     };
   }

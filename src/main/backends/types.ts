@@ -34,6 +34,12 @@ export interface BackendSendArgs {
 /// without holding a back-reference to the full RunnerManager.
 export interface BackendCtx {
   mcpConfigPathFor(conversationId: UUID): string | undefined;
+  /// Whether the installed `claude` CLI advertises `--effort`. Older
+  /// releases reject the flag outright (`error: unknown option '--effort'`)
+  /// and the subprocess dies before the first turn, so the spec drops it
+  /// when this returns false. Probed once per binary by the runner;
+  /// omitted (treated as supported) by non-claude callers and tests.
+  claudeSupportsEffort?(): boolean;
   /// Codex exec has no `--resume`: every turn spawns a fresh session that
   /// knows nothing about prior exchanges. We stitch context back by
   /// prepending the accumulated transcript to the next prompt.
