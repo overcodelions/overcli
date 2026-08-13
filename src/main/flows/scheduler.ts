@@ -6,9 +6,11 @@
 //   1. It does not poll on a fixed tick. It computes the nearest due time
 //      across every enabled schedule and sleeps until then (bounded — see
 //      MAX_TIMER_MS). Twenty schedules cost one timer, not twenty.
-//   2. It never dispatches an orchestrator batch. A scheduled `orchestrate`
-//      target runs the producer turn and PARKS what it finds; approving it is
-//      a human action. See shared/flows/schedule.ts for the reasoning.
+//   2. It does not dispatch an orchestrator batch unless the schedule asked
+//      for it. A scheduled `orchestrate` target runs the producer turn and
+//      PARKS what it finds; approving it is a human action. A target with
+//      `autoApprove` set releases the first N items itself and parks the rest.
+//      See shared/flows/schedule.ts for the reasoning and the bound.
 //
 // All the awkward arithmetic — missed while asleep, came due mid-run, restart
 // mid-interval — lives in `evaluateSchedule` in shared/, which is pure and
@@ -53,16 +55,20 @@ export interface ProposalParker {
     maxConcurrent: number;
     /// Title for the parked batch, already carrying its `[SR-n]` sequence.
     title: string;
+    /// Set to launch without waiting for approval, up to `maxItems`.
+    autoApprove?: { maxItems: number };
   }): Promise<
-    { ok: true; orchestrationId: UUID; count: number } | { ok: false; error: string }
+    | { ok: true; orchestrationId: UUID; count: number; queued: number }
+    | { ok: false; error: string }
   >;
 }
 
 export interface SchedulerDeps {
   launcher: FlowLauncher;
   parker: ProposalParker;
-  /// Whether a path is inside a git work tree. Used to degrade a `worktree`
-  /// target to `cwd` rather than fail — see `effectiveRunIn`.
+  /// Whether a `worktree` target can actually fork here: a git work tree, or a
+  /// workspace root (whose members each get one). Used to degrade to `cwd`
+  /// rather than fail — see `effectiveRunIn`.
   isGitRepo: (projectPath: string) => boolean;
   emit: (event: MainToRendererEvent) => void;
   /// Desktop notification. A scheduled run finishing with nobody watching is
@@ -362,6 +368,7 @@ export class SchedulerEngine {
         // Same problem as runs: every morning's batch would otherwise be
         // called "Morning triage" and the ledger couldn't tell them apart.
         title: `[SR-${sequence}] ${s.name}`,
+        autoApprove: s.target.autoApprove,
       });
       if (!res.ok) {
         this.record(s, { at: this.now(), outcome: 'failed', note: res.error });
@@ -373,15 +380,12 @@ export class SchedulerEngine {
         at: this.now(),
         outcome: 'done',
         orchestrationId: res.orchestrationId,
-        note: joinNotes(lateNote, `${res.count} proposed — waiting for approval.`),
+        note: joinNotes(lateNote, describeProposal(res.count, res.queued)),
       });
       this.persistAndEmit(s);
       this.deps.notify({
         title: s.name,
-        body:
-          res.count === 0
-            ? 'Nothing new to propose.'
-            : `${res.count} ${res.count === 1 ? 'candidate' : 'candidates'} waiting for your approval in Orchestrator.`,
+        body: describeProposalNotification(res.count, res.queued),
       });
       return;
     }
@@ -507,6 +511,31 @@ function describeFailure(run: FlowRun): string {
   if (run.state.kind === 'aborted') return 'Run aborted.';
   if (run.state.kind === 'done' && !run.state.success) return 'Run finished unsuccessfully.';
   return 'Run ended without completing.';
+}
+
+/// History line for an `orchestrate` firing. The split between launched and
+/// held is the part worth reading later — "8 proposed" alone doesn't say
+/// whether anything is burning tokens right now.
+function describeProposal(count: number, queued: number): string {
+  if (count === 0) return 'Nothing to propose.';
+  if (queued === 0) return `${count} proposed — waiting for approval.`;
+  const held = count - queued;
+  if (held === 0) return `${count} proposed — ${queued} launched.`;
+  return `${count} proposed — ${queued} launched, ${held} waiting for approval.`;
+}
+
+function describeProposalNotification(count: number, queued: number): string {
+  if (count === 0) return 'Nothing new to propose.';
+  const held = count - queued;
+  if (queued === 0) {
+    return `${count} ${plural(count, 'candidate')} waiting for your approval in Orchestrator.`;
+  }
+  if (held === 0) return `${queued} ${plural(queued, 'run')} launched in Orchestrator.`;
+  return `${queued} launched, ${held} waiting for your approval in Orchestrator.`;
+}
+
+function plural(n: number, word: string): string {
+  return n === 1 ? word : `${word}s`;
 }
 
 function joinNotes(...parts: Array<string | undefined>): string | undefined {

@@ -452,6 +452,104 @@ describe('OrchestratorImpl parked proposals', () => {
     expect(o.completedAt).toBeUndefined();
   });
 
+  it('launches the first N and parks the rest when the schedule opted in', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await h.engine.parkProposal({
+      scheduleId: 'sched-1',
+      scheduleName: 'Morning triage',
+      projectPath: '/proj',
+      prompt: 'pull feedback',
+      flowId: 'default-flow',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+      autoApprove: { maxItems: 2 },
+    });
+
+    expect(res).toMatchObject({ ok: true, count: 3, queued: 2 });
+    const o = h.engine.list()[0];
+    // maxConcurrent caps how many are in flight; the auto-launch cap governs
+    // how many were committed to at all. Item 2 is queued behind item 1's
+    // slot, item 3 was never committed.
+    expect(o.items[2].status).toBe('proposed');
+    expect(o.items[2].note).toMatch(/2-item auto-launch cap/i);
+    expect(o.items.slice(0, 2).map((i) => i.status)).not.toContain('proposed');
+    expect(h.started).toHaveLength(2);
+    // The overflow keeps the batch on the approval surface rather than
+    // letting it look finished.
+    expect(o.completedAt).toBeUndefined();
+  });
+
+  // The Orchestrator banner's "Discard the rest" leans on this: declining the
+  // parked overflow must not touch the children the cap already launched.
+  it('declines parked overflow without disturbing the launched items', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await h.engine.parkProposal({
+      scheduleId: 'sched-1',
+      scheduleName: 'Morning triage',
+      projectPath: '/proj',
+      prompt: 'pull feedback',
+      flowId: 'default-flow',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+      autoApprove: { maxItems: 2 },
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+
+    const declined = await h.engine.approveBatch({ id, approve: [] });
+
+    expect(declined).toMatchObject({ ok: true, queued: 0 });
+    const o = h.engine.list()[0];
+    expect(o.items[0].status).toBe('running');
+    expect(o.items[1].status).toBe('running');
+    expect(o.items[2].status).toBe('cancelled');
+    // Two children are still working, so the batch is not settled.
+    expect(o.completedAt).toBeUndefined();
+  });
+
+  it('launches everything when the cap is above what the producer found', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await h.engine.parkProposal({
+      scheduleId: 'sched-1',
+      scheduleName: 'Morning triage',
+      projectPath: '/proj',
+      prompt: 'pull feedback',
+      flowId: 'default-flow',
+      runIn: 'worktree',
+      maxConcurrent: 3,
+      autoApprove: { maxItems: 10 },
+    });
+
+    expect(res).toMatchObject({ ok: true, count: 3, queued: 3 });
+    const o = h.engine.list()[0];
+    expect(o.items.some((i) => i.status === 'proposed')).toBe(false);
+    expect(o.items.every((i) => !i.note)).toBe(true);
+    expect(h.started).toHaveLength(3);
+  });
+
+  // A schedule written by an older build, or hand-edited on disk, must not be
+  // able to talk the engine into an unbounded unattended dispatch — the cap is
+  // re-clamped here, not just at save time.
+  it('clamps a nonsense cap instead of trusting it', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await h.engine.parkProposal({
+      scheduleId: 'sched-1',
+      scheduleName: 'Morning triage',
+      projectPath: '/proj',
+      prompt: 'pull feedback',
+      flowId: 'default-flow',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+      autoApprove: { maxItems: Number.NaN },
+    });
+
+    expect(res).toMatchObject({ ok: true, count: 3, queued: 0 });
+    expect(h.started).toHaveLength(0);
+    expect(h.engine.list()[0].items.map((i) => i.status)).toEqual([
+      'proposed',
+      'proposed',
+      'proposed',
+    ]);
+  });
 
   // Regression: the producer ran under a flat 300s wall clock, so a schedule
   // whose prompt spanned two issue trackers and three repos failed every
@@ -469,6 +567,7 @@ describe('OrchestratorImpl parked proposals', () => {
     // but it must be well clear of how long a real investigation takes.
     expect(call.timeoutMs).toBeGreaterThan(300_000);
   });
+
   it('falls back to the schedule flow but honours a per-candidate suggestion', async () => {
     const h = makeHarness({ producerReply: REPLY });
     await park(h);

@@ -119,9 +119,10 @@ export interface Orchestration {
     reply: string;
   };
   /// Set when a schedule produced this batch rather than the user asking for
-  /// it directly. Such a batch arrives with every item `proposed` and does
-  /// nothing until approved — see shared/flows/schedule.ts for why a schedule
-  /// is never allowed to dispatch on its own.
+  /// it directly. Such a batch normally arrives with every item `proposed` and
+  /// does nothing until approved; a schedule with `autoApprove` set instead
+  /// arrives with its first N items already queued and the rest still
+  /// `proposed` — see shared/flows/schedule.ts for the bound that N enforces.
   origin?: {
     kind: 'schedule';
     scheduleId: UUID;
