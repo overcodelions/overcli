@@ -857,13 +857,14 @@ function TimelineArrow() {
   );
 }
 
-/// Three shapes a schedule actually takes, as one-click starters. They fill
+/// Four shapes a schedule actually takes, as one-click starters. They fill
 /// everything except the project and the flow — those are yours, and guessing
 /// at them would make the button feel like it did the wrong thing.
 ///
 /// Chosen to differ on the axes the form asks about rather than on subject
 /// matter: one runs a single flow, one proposes a batch and waits, one
-/// proposes and launches. Read together they answer "what are these controls
+/// proposes and launches, one repeats on an interval inside working hours and
+/// never touches the tree. Read together they answer "what are these controls
 /// for" better than any amount of prose next to each field.
 const SCHEDULE_PRESETS: Array<{
   label: string;
@@ -904,6 +905,44 @@ const SCHEDULE_PRESETS: Array<{
       },
       trigger: { kind: 'daily', time: '02:00', days: [1, 2, 3, 4, 5] },
       onOverlap: 'skip',
+      catchUp: 'skip',
+    },
+  },
+  {
+    // The one preset that repeats through the day rather than firing once,
+    // and the one that has no business making a worktree — it answers people,
+    // it doesn't write code. Both of those are hard to discover from the form
+    // alone, which is why this shape is worth a button.
+    //
+    // Reaches Slack through whatever the user has connected, like every other
+    // prompt here; if they haven't, the run says so rather than inventing an
+    // answer, which is the same failure a mis-typed tracker prompt gives.
+    label: 'Answer Slack questions',
+    blurb: 'Hourly through the working day — replies in the thread, from what it can read here.',
+    patch: {
+      name: 'Answer Slack questions',
+      target: {
+        kind: 'flow',
+        flowId: '',
+        // Standing on its own matters more here than anywhere else: it fires
+        // 9 times a day with nobody watching, and it writes where other people
+        // can see it. Hence the explicit "leave it alone" — an unattended run
+        // that guesses in public is worse than one that does nothing.
+        prompt:
+          'Check Slack for questions aimed at me or my team that nobody has answered yet, and reply in the thread. Answer from the code and docs in this project. If a question is already answered, or you cannot answer it confidently from what you can read, leave it alone rather than guessing.',
+        // No worktree: it reads to answer and writes to Slack, so forking the
+        // repo every hour would leave a trail of empty branches.
+        runIn: 'cwd',
+      },
+      trigger: {
+        kind: 'interval',
+        everyMinutes: 60,
+        days: [1, 2, 3, 4, 5],
+        window: { start: '09:00', end: '17:00' },
+      },
+      onOverlap: 'skip',
+      // A missed hour is a stale hour — the next firing covers the same
+      // backlog, so there is nothing to catch up on.
       catchUp: 'skip',
     },
   },
