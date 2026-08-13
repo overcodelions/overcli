@@ -200,6 +200,13 @@ export class FlowRuntimeImpl {
   /// Track how many `goto` retries each step has consumed in a run, so
   /// `on_fail.goto.maxRetries` is respected.
   private retryCounts = new Map<string, number>(); // `${runId}:${stepId}` → count
+  /// Feedback owed to the NEXT execution of a `on_fail.goto` target: why it
+  /// got sent back and which artifact holds the details. Set when the jump
+  /// is scheduled, consumed (and cleared) by that step's `executeStep`.
+  /// One entry per run — a run only ever has one step in flight.
+  /// In-memory like `retryCounts`; a restart loses it, which at worst
+  /// costs the retried step its feedback preamble.
+  private retryFeedback = new Map<UUID, FlowRetryFeedback & { targetStepId: string }>();
 
   /// Worktree snapshot (a git tree-ish) captured after each diff-producing
   /// step, so the NEXT diff step can compute only what IT changed rather
@@ -795,6 +802,7 @@ export class FlowRuntimeImpl {
       this.stepBuffers.delete(victim.id);
       this.diffSnapshots.delete(victim.id);
       this.pendingAttachments.delete(victim.id);
+      this.retryFeedback.delete(victim.id);
       // Sweep any retry counters keyed under this run's id.
       for (const key of this.retryCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.retryCounts.delete(key);
@@ -961,6 +969,9 @@ export class FlowRuntimeImpl {
     for (const key of Array.from(this.retryCounts.keys())) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
     }
+    // A manual rewind isn't a rejection — don't hand the step a stale
+    // "you were sent back" notice from an earlier automatic retry.
+    this.retryFeedback.delete(args.runId);
 
     // Mirror `advanceToStep`: flip to running and kick the step. Deliberately
     // no checkpoint here — like every other 'running' transition, a mid-step
@@ -1253,6 +1264,7 @@ export class FlowRuntimeImpl {
     this.stepBuffers.delete(args.runId);
     this.diffSnapshots.delete(args.runId);
     this.pendingAttachments.delete(args.runId);
+    this.retryFeedback.delete(args.runId);
     this.watchTicking.delete(args.runId);
     this.watchPhase.delete(args.runId);
     this.watchBuffers.delete(args.runId);
@@ -1922,6 +1934,11 @@ export class FlowRuntimeImpl {
     // The model still receives the full `prompt` with role + contract,
     // so behavior doesn't change.
     const displayText = this.buildStepDisplayText(run, step);
+    // Both builders have read it — this attempt owns the feedback, so a
+    // later step (or a manual re-run) doesn't get a stale rejection notice.
+    if (this.retryFeedback.get(runId)?.targetStepId === step.id) {
+      this.retryFeedback.delete(runId);
+    }
     // Launch attachments ride along with the step(s) that consume the
     // user's prompt — typically just the first / planning step.
     const attachments = step.inputs.includes(FLOW_USER_PROMPT_REF)
@@ -2041,10 +2058,13 @@ export class FlowRuntimeImpl {
     // back to an earlier step the user wired up. The artifact itself is
     // already recorded above, so the user sees the rejecting review.
     if (isGatingReviewerRole(step.role) && !isReviewApproved(body)) {
+      const gist = summarizeReviewRejection(body);
       this.handleStepFailure(
         runId,
         step,
-        `Reviewer step "${step.id}" did not approve (no "APPROVED" verdict in ${step.output}).`,
+        `Reviewer step "${step.id}" did not approve (no "APPROVED" verdict in ${step.output})` +
+          (gist ? ` — ${gist}` : '') +
+          '.',
       );
       return;
     }
@@ -2092,6 +2112,19 @@ export class FlowRuntimeImpl {
       const used = this.retryCounts.get(key) ?? 0;
       if (used < policy.maxRetries) {
         this.retryCounts.set(key, used + 1);
+        // Hand the target step the reason it's being re-run. The failing
+        // step's artifact (a reviewer's `review.md`) is the substance —
+        // `buildStepPrompt` pulls it in as an extra input even when the
+        // target's declared `inputs` don't list it.
+        const produced = run.artifacts[step.output];
+        this.retryFeedback.set(runId, {
+          targetStepId: policy.target,
+          fromStepId: step.id,
+          artifactName: produced ? step.output : null,
+          reason: message,
+          attempt: used + 1,
+          maxRetries: policy.maxRetries,
+        });
         run.state = { kind: 'running', currentStepId: policy.target };
         this.emitRunUpdate(run);
         void this.executeStep(runId, policy.target);
@@ -2171,6 +2204,18 @@ export class FlowRuntimeImpl {
         if (art) rawInputs.push({ name: ref, body: art.body });
       }
     }
+    // `on_fail.goto` sent us back here: prepend why, and make sure the
+    // rejecting step's artifact is actually in front of the model. It's
+    // usually NOT in `step.inputs` (a `build` step declares `plan.md`, not
+    // the `review.md` that doesn't exist yet when the flow is authored), so
+    // without this the retry is blind. Pushed through the same
+    // attach/truncate path as every other input.
+    const feedback = this.pendingRetryFeedback(run, step);
+    if (feedback?.artifactName && !rawInputs.some((p) => p.name === feedback.artifactName)) {
+      const art = run.artifacts[feedback.artifactName];
+      if (art) rawInputs.push({ name: feedback.artifactName, body: art.body });
+    }
+    const retryBlock = feedback ? `${buildRetryFeedbackBlock(feedback)}\n\n---\n\n` : '';
 
     const inputParts: InputPart[] = rawInputs.map((p) => {
       const isLarge = p.body.length > FlowRuntimeImpl.INLINE_THRESHOLD_BYTES;
@@ -2198,7 +2243,7 @@ export class FlowRuntimeImpl {
       stepModel.backend === 'ollama'
         ? FlowRuntimeImpl.PROMPT_BUDGET_OLLAMA
         : FlowRuntimeImpl.PROMPT_BUDGET_PREMIUM;
-    const overhead = systemPrompt.length + 500; // wrappers + instructions
+    const overhead = systemPrompt.length + retryBlock.length + 500; // wrappers + instructions
     const inlineParts = inputParts.filter(
       (p): p is InlineInput => p.kind === 'inline',
     );
@@ -2264,10 +2309,19 @@ export class FlowRuntimeImpl {
     const preamble = preambleNotes.length > 0 ? `\n\nNOTE: ${preambleNotes.join(' ')}` : '';
 
     return (
-      `${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
+      `${retryBlock}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
       `<output name="${step.output}">…</output>.`
     );
+  }
+
+  /// Retry feedback owed to `step`, or null. Read-only — `executeStep`
+  /// clears the entry once it has built both the prompt and the display
+  /// text from it.
+  private pendingRetryFeedback(run: FlowRun, step: FlowStep): FlowRetryFeedback | null {
+    const fb = this.retryFeedback.get(run.id);
+    if (!fb || fb.targetStepId !== step.id) return null;
+    return fb;
   }
 
   /// True when the step's participant already completed an EARLIER step in
@@ -2304,6 +2358,13 @@ export class FlowRuntimeImpl {
     // produced an earlier step's output (same persistent conversation is
     // being resumed, so the model keeps its prior context).
     const header: string[] = [`### Step: \`${step.id}\`  ·  ${step.role}`];
+    const feedback = this.pendingRetryFeedback(run, step);
+    if (feedback) {
+      header.push(
+        `_↺ Retry ${feedback.attempt} of ${feedback.maxRetries} — sent back by ` +
+          `**${feedback.fromStepId}**: ${feedback.reason}_`,
+      );
+    }
     if (this.isParticipantContinuation(run, step)) {
       header.push(
         `_↩ Picking up this thread — same model as a previous step, ` +
@@ -2328,6 +2389,12 @@ export class FlowRuntimeImpl {
         const art = run.artifacts[ref];
         if (art) inputs.push({ name: ref, body: art.body });
       }
+    }
+    // Mirror buildStepPrompt: on a retry the rejecting step's artifact is
+    // fed in even though it isn't a declared input, so show it here too.
+    if (feedback?.artifactName && !inputs.some((i) => i.name === feedback.artifactName)) {
+      const art = run.artifacts[feedback.artifactName];
+      if (art) inputs.push({ name: feedback.artifactName, body: art.body });
     }
     const inputParts: string[] = [];
     if (inputs.length === 0) {
@@ -2548,6 +2615,77 @@ export function isReviewApproved(reviewBody: string): boolean {
     if (/^APPROVED\b/i.test(line)) return true;
   }
   return false;
+}
+
+/// What a `goto` retry needs to know about the failure that sent it back.
+/// Built by `handleStepFailure` and consumed by the next `executeStep` of
+/// the target step.
+export interface FlowRetryFeedback {
+  /// Step that failed (usually the reviewer that rejected the work).
+  fromStepId: string;
+  /// The failing step's output artifact name, when it produced one — e.g.
+  /// `review.md`. Null when the step failed WITHOUT an artifact (missing
+  /// <output> block, backend error).
+  artifactName: string | null;
+  /// The runtime's own one-line description of why the step failed.
+  reason: string;
+  /// 1-based retry number and the configured budget, so the target step
+  /// knows how many shots it has left.
+  attempt: number;
+  maxRetries: number;
+}
+
+/// Render the "you're being sent back, here's why" preamble prepended to a
+/// `goto` target's prompt. Without this the retried step re-ran with only
+/// its ORIGINAL inputs (e.g. `plan.md`) and no idea what the reviewer
+/// objected to — so it would produce the same work and get rejected again
+/// until the retry budget ran out. Kept pure so it can be unit-tested.
+export function buildRetryFeedbackBlock(fb: FlowRetryFeedback): string {
+  const lines: string[] = [];
+  lines.push(
+    `RETRY ${fb.attempt} of ${fb.maxRetries} — your previous attempt at this step was REJECTED.`,
+  );
+  lines.push('');
+  lines.push(`Rejected by step "${fb.fromStepId}": ${fb.reason}`);
+  if (fb.artifactName) {
+    lines.push('');
+    lines.push(
+      `That step's full feedback is included below as input "${fb.artifactName}". ` +
+        'Read it first — it is the authoritative list of what is wrong.',
+    );
+  }
+  lines.push('');
+  lines.push('How to handle this retry:');
+  lines.push('  - Do NOT start over. The work already on disk is your starting point.');
+  lines.push(
+    '  - Address EVERY concrete problem raised. If you disagree with one, fix the rest and say why in your output.',
+  );
+  lines.push(
+    '  - Do not re-litigate or re-summarize the feedback; change the code, then emit your output block as usual.',
+  );
+  return lines.join('\n');
+}
+
+/// One-line gist of WHY a review rejected, for the failure message that
+/// rides along with a `goto` retry (and shows in the step header). Prefers
+/// an explicit verdict line ("Verdict: CHANGES REQUESTED"), falling back to
+/// the first substantive line of the review. The full body is handed to the
+/// retried step as an input regardless — this is just the headline.
+export function summarizeReviewRejection(reviewBody: string): string | null {
+  const lines = reviewBody.split('\n');
+  const clean = (raw: string): string =>
+    raw.replace(/^[\s>#*_-]+/, '').replace(/[*_`]+/g, '').trim();
+  const cap = (line: string): string =>
+    line.length > 200 ? `${line.slice(0, 200)}…` : line;
+  for (const raw of lines) {
+    const line = clean(raw);
+    if (/^(?:verdict|decision|result|status|outcome)\s*[:\-–]/i.test(line)) return cap(line);
+  }
+  for (const raw of lines) {
+    const line = clean(raw);
+    if (line.length > 0) return cap(line);
+  }
+  return null;
 }
 
 /// Pull the artifact body out of an assistant turn. Robust against the
