@@ -41,7 +41,8 @@ import { deleteSchedule, loadAllSchedules, saveSchedule } from './schedulesStore
 /// a minute, not a scan loop with work in it.
 const MAX_TIMER_MS = 60_000;
 
-/// Produce candidates and park them as an unapproved batch. Implemented by the
+/// Produce candidates and record them as a batch — parked for approval, or
+/// (with `autoApprove`) released up to its cap. Implemented by the
 /// orchestrator; injected so this engine stays testable without a CLI.
 export interface ProposalParker {
   parkProposal(args: {
