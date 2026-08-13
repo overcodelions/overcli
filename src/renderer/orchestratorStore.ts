@@ -429,6 +429,12 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       return {
         candidates,
         itemConfig,
+        // Nothing left to map means the draft is spent — the work lives in the
+        // ledger now. Dropping the transcript with it hands the screen back to
+        // the running flows, instead of leaving a finished conversation and an
+        // empty Map pane parked on top of them. A partial launch keeps both:
+        // the candidates still on the table need that context to be refined.
+        turns: candidates.length === 0 ? [] : state.turns,
         activeOrchestrationId: res.orchestrationId,
       };
     });
