@@ -42,6 +42,7 @@ import {
   checkoutAgentLocally,
   detectBaseBranch,
   listBaseBranches,
+  listBaseBranchesFresh,
   mergeAgent,
   rebaseAgent,
   pushBranch,
@@ -695,6 +696,9 @@ function registerIpc(): void {
     return res;
   });
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));
+  ipcMain.handle('git:listBaseBranchesFresh', (_e, projectPath: string) =>
+    listBaseBranchesFresh(projectPath),
+  );
   ipcMain.handle('git:detectBaseBranch', (_e, projectPath: string) =>
     detectBaseBranch(projectPath),
   );
