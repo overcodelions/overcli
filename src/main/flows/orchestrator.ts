@@ -206,7 +206,14 @@ export class OrchestratorImpl {
       model,
       prompt,
       cwd,
-      timeoutMs: 300_000,
+      // A producer that searches two issue trackers and diffs three repos is
+      // doing dozens of MCP round-trips; a flat 5-minute wall clock killed
+      // healthy runs mid-investigation. Budget on SILENCE instead (the same
+      // shape as the flow runtime's step watchdog) with a generous absolute
+      // ceiling behind it, so a turn that keeps working keeps going and only
+      // a genuinely stalled one — or a runaway — gets cut.
+      timeoutMs: 30 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
       permissionMode: 'bypassPermissions',
       onProgress: (snap) => {
         const now = Date.now();

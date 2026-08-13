@@ -36,6 +36,9 @@ function makeHarness(opts: { producerReply?: string } = {}) {
   }> = [];
 
   const emitted: any[] = [];
+  /// Every args object the producer handed to runner.oneShot, so a test can
+  /// assert how the turn was budgeted.
+  const oneShotCalls: any[] = [];
   let observer: ((run: FlowRun) => void) | null = null;
 
   const launcher: FlowLauncher = {
@@ -75,7 +78,10 @@ function makeHarness(opts: { producerReply?: string } = {}) {
   const engine = new OrchestratorImpl(
     // runner — unused by the dispatch path, stubbed for the producer path.
     {
-      oneShot: async () => ({ ok: true, text: opts.producerReply ?? '<candidates>[]</candidates>' }),
+      oneShot: async (a: any) => {
+        oneShotCalls.push(a);
+        return { ok: true, text: opts.producerReply ?? '<candidates>[]</candidates>' };
+      },
     } as any,
     launcher,
     (e) => emitted.push(e),
@@ -105,7 +111,7 @@ function makeHarness(opts: { producerReply?: string } = {}) {
     await flush();
   };
 
-  return { engine, launcher, started, runs, finish, transition, emitted, flush };
+  return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush };
 }
 
 function items(n: number) {
@@ -446,6 +452,23 @@ describe('OrchestratorImpl parked proposals', () => {
     expect(o.completedAt).toBeUndefined();
   });
 
+
+  // Regression: the producer ran under a flat 300s wall clock, so a schedule
+  // whose prompt spanned two issue trackers and three repos failed every
+  // single morning with "Timed out after 300s." — mid-investigation, while
+  // the turn was still streaming tool calls. The budget has to key off
+  // silence, with the wall clock demoted to a far-off backstop.
+  it('budgets the producer turn on silence, not a short wall clock', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await park(h);
+
+    expect(h.oneShotCalls).toHaveLength(1);
+    const call = h.oneShotCalls[0];
+    expect(call.idleTimeoutMs).toBeGreaterThanOrEqual(60_000);
+    // The absolute cap still exists — a runaway producer can't sit forever —
+    // but it must be well clear of how long a real investigation takes.
+    expect(call.timeoutMs).toBeGreaterThan(300_000);
+  });
   it('falls back to the schedule flow but honours a per-candidate suggestion', async () => {
     const h = makeHarness({ producerReply: REPLY });
     await park(h);
