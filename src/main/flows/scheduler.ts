@@ -157,6 +157,13 @@ export class SchedulerEngine {
     const invalid = validateSchedule(input as Partial<Schedule>);
     if (invalid) return { ok: false, error: invalid };
 
+    // A base branch only means something for a worktree run. Dropping it on
+    // the way in keeps a name picked before the target was flipped to
+    // "project tree" from coming back to life if it's ever flipped again.
+    if (input.target.runIn !== 'worktree' && input.target.baseBranch) {
+      input = { ...input, target: { ...input.target, baseBranch: undefined } };
+    }
+
     const existing = input.id ? this.schedules.get(input.id) : undefined;
     const now = this.now();
     // Re-anchor when the cadence changed or the schedule was just switched
