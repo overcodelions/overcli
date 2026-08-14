@@ -47,9 +47,10 @@ export function drafterModelFor(backend: Backend): string {
 /// `standard` on "rebound critic / cheaper steps", so when a backend has no
 /// middle model the honest substitute is its fast one — degrading upward
 /// put every critic loop in every Claude-drafted flow on Opus, which is the
-/// exact opposite of what that prompt line is asking for. Claude and Gemini
-/// both lack a 'standard' model today, so this is the common path, not an
-/// edge case. `thinking` still degrades upward (to the strongest available)
+/// exact opposite of what that prompt line is asking for. Claude still
+/// lacks a 'standard' model today, so this is a live path rather than an
+/// edge case; gemini gained a real middle tier once Flash / Flash-Lite
+/// split its catalog. `thinking` still degrades upward (to the strongest available)
 /// because that line asks for the best reasoning model.
 export function drafterModelHints(
   backend: Backend,

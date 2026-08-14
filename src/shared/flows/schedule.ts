@@ -7,9 +7,14 @@
 // bounded, reviewable commitment: one worktree, one run, the user reads the
 // diff afterwards. Dispatching a whole orchestrator batch unattended is not —
 // the producer decides how many child runs exist, so a bad morning could fork
-// a dozen worktrees and burn tokens with nobody watching. So a scheduled
-// orchestration stops at the proposal: the batch lands in `proposed` and waits
-// (see OrchestrationItemStatus in ./orchestration).
+// a dozen worktrees and burn tokens with nobody watching. So by default a
+// scheduled orchestration stops at the proposal: the batch lands in `proposed`
+// and waits (see OrchestrationItemStatus in ./orchestration).
+//
+// `autoApprove` opts out of the waiting, but not out of the bound: it carries
+// a per-firing item cap, so the unattended commitment stays finite no matter
+// what the producer decides overnight. Overflow parks exactly as it would
+// have. See ScheduleOrchestrateTarget below.
 //
 // Lives in `shared` so the main-process engine and the renderer agree on the
 // shapes that cross IPC, and so the firing arithmetic below is unit-testable
@@ -65,8 +70,9 @@ export interface ScheduleFlowTarget {
   baseBranch?: string;
 }
 
-/// Run the orchestrator's producer turn and park what it finds. Never
-/// dispatches on its own — see the file header.
+/// Run the orchestrator's producer turn and park what it finds. Dispatches on
+/// its own only when `autoApprove` is set, and even then only up to its cap —
+/// see the file header.
 export interface ScheduleOrchestrateTarget {
   kind: 'orchestrate';
   /// The producer seed prompt ("pull new ProductBoard feedback and triage…").
@@ -77,9 +83,26 @@ export interface ScheduleOrchestrateTarget {
   flowId: string;
   runIn: RunIn;
   baseBranch?: string;
-  /// Concurrency the batch will use *once approved*. Nothing runs before then.
+  /// Concurrency the batch will use once released — by approval, or by
+  /// `autoApprove` below.
   maxConcurrent: number;
+  /// Launch the batch as soon as the producer returns, instead of parking it.
+  /// Absent — the default — parks, and nothing runs until a human approves.
+  ///
+  /// `maxItems` is required rather than optional, and that is the point. The
+  /// hazard here was never "a scheduled batch launched", it was "the producer
+  /// decided at 3am that there were thirty things to do". A cap turns that
+  /// from an unbounded fork into launch the first N, park the rest: overflow
+  /// items stay `proposed` and wait for a human exactly as the whole batch
+  /// would have. `maxConcurrent` does not do this job — it limits how many run
+  /// at once, not how much work is committed to.
+  autoApprove?: { maxItems: number };
 }
+
+/// Ceiling on `autoApprove.maxItems`. An unattended firing is allowed to be
+/// large, but not unbounded — past this the user should be looking at the list
+/// rather than raising the number.
+export const SCHEDULE_AUTO_APPROVE_MAX = 20;
 
 export type ScheduleTarget = ScheduleFlowTarget | ScheduleOrchestrateTarget;
 
@@ -482,6 +505,15 @@ export function validateSchedule(s: Partial<Schedule>): string | null {
     return target.kind === 'flow'
       ? 'A scheduled run needs a prompt — there is nobody there to type one.'
       : 'The producer needs a seed prompt.';
+  }
+  if (target.kind === 'orchestrate' && target.autoApprove) {
+    const cap = Math.floor(target.autoApprove.maxItems);
+    if (!Number.isFinite(cap) || cap < 1) {
+      return 'Auto-launch needs a cap of at least one item.';
+    }
+    if (cap > SCHEDULE_AUTO_APPROVE_MAX) {
+      return `Auto-launch is capped at ${SCHEDULE_AUTO_APPROVE_MAX} items per firing.`;
+    }
   }
   const trigger = s.trigger;
   if (!trigger) return 'Pick when it runs.';

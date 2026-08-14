@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSpawnSync, mockExistsSync } = vi.hoisted(() => ({
+const { mockSpawnSync, mockExecFile, mockExistsSync } = vi.hoisted(() => ({
   mockSpawnSync: vi.fn(),
+  mockExecFile: vi.fn(),
   mockExistsSync: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
   spawnSync: mockSpawnSync,
+  execFile: mockExecFile,
 }));
 
 vi.mock('node:fs', async importOriginal => {
@@ -18,7 +20,7 @@ vi.mock('node:fs', async importOriginal => {
   };
 });
 
-import { detectBaseBranch, listBaseBranches } from './git';
+import { detectBaseBranch, listBaseBranches, listBaseBranchesFresh } from './git';
 
 function ok(stdout: string) {
   return { stdout, stderr: '', status: 0 };
@@ -28,9 +30,22 @@ function fail() {
   return { stdout: '', stderr: '', status: 1 };
 }
 
+/// `execFile` calls back with (error, stdout, stderr); a non-zero exit is
+/// reported as an Error carrying a numeric `code`.
+function execOk(stdout: string) {
+  return (cb: ExecCallback) => cb(null, stdout, '');
+}
+
+function execFail() {
+  return (cb: ExecCallback) => cb(Object.assign(new Error('git failed'), { code: 1 }), '', '');
+}
+
+type ExecCallback = (err: Error | null, stdout: string, stderr: string) => void;
+
 beforeEach(() => {
   mockExistsSync.mockReturnValue(true);
   mockSpawnSync.mockImplementation(() => fail());
+  mockExecFile.mockImplementation((_bin, _args, _opts, cb) => execFail()(cb));
 });
 
 afterEach(() => {
@@ -111,5 +126,71 @@ describe('option-injecting ref names', () => {
     });
 
     expect(listBaseBranches('/repo')).toEqual(['main']);
+  });
+});
+
+// The picker lists refs that are already local, so a branch pushed from
+// another machine (the PR you just opened) is invisible until something
+// fetches. `listBaseBranchesFresh` is that something.
+describe('listBaseBranchesFresh', () => {
+  function localRefs(extra: (cmd: string) => unknown = () => null) {
+    mockSpawnSync.mockImplementation((_bin: string[], args: string[]) => {
+      const cmd = args.join(' ');
+      const custom = extra(cmd);
+      if (custom) return custom;
+      if (cmd === 'for-each-ref --sort=-committerdate --format=%(refname:short) refs/heads') {
+        return ok('main\n');
+      }
+      return fail();
+    });
+  }
+
+  it('fetches origin before listing so newly pushed branches appear', async () => {
+    localRefs();
+    const calls: string[] = [];
+    mockExecFile.mockImplementation((_bin: string, args: string[], _opts: unknown, cb: ExecCallback) => {
+      const cmd = args.join(' ');
+      calls.push(cmd);
+      if (cmd === 'rev-parse --is-inside-work-tree') return execOk('true\n')(cb);
+      if (cmd === 'remote get-url origin') return execOk('git@github.com:o/r.git\n')(cb);
+      if (cmd === 'fetch origin --prune') {
+        // The fetch is what makes the remote ref resolvable locally.
+        localRefs((c) =>
+          c === 'for-each-ref --sort=-committerdate --format=%(refname:short) refs/remotes'
+            ? ok('origin/feature/new-pr\n')
+            : null,
+        );
+        return execOk('')(cb);
+      }
+      return execFail()(cb);
+    });
+
+    const branches = await listBaseBranchesFresh('/repo');
+    expect(calls).toContain('fetch origin --prune');
+    expect(branches).toContain('origin/feature/new-pr');
+    expect(branches).toContain('feature/new-pr');
+  });
+
+  it('still returns local refs when the fetch fails (offline, no creds)', async () => {
+    localRefs();
+    mockExecFile.mockImplementation((_bin: string, args: string[], _opts: unknown, cb: ExecCallback) => {
+      const cmd = args.join(' ');
+      if (cmd === 'rev-parse --is-inside-work-tree') return execOk('true\n')(cb);
+      if (cmd === 'remote get-url origin') return execOk('git@github.com:o/r.git\n')(cb);
+      return execFail()(cb);
+    });
+
+    expect(await listBaseBranchesFresh('/repo')).toEqual(['main']);
+  });
+
+  it('returns nothing outside a git repo instead of shelling out further', async () => {
+    const calls: string[] = [];
+    mockExecFile.mockImplementation((_bin: string, args: string[], _opts: unknown, cb: ExecCallback) => {
+      calls.push(args.join(' '));
+      return execFail()(cb);
+    });
+
+    expect(await listBaseBranchesFresh('/not-a-repo')).toEqual([]);
+    expect(calls).toEqual(['rev-parse --is-inside-work-tree']);
   });
 });

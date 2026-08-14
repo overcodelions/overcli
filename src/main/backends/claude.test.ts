@@ -55,6 +55,38 @@ describe('claudeBackend.buildArgs', () => {
     expect(a).toContain('plan');
   });
 
+  // Regression: we used to emit `--thinking-effort`, which the CLI has
+  // never accepted. Picking any effort other than the default killed the
+  // subprocess on turn one with
+  // `error: unknown option '--thinking-effort'`.
+  it('passes the effort level as --effort, never --thinking-effort', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, effortLevel: 'max' }, noMcpCtx);
+    expect(a).not.toContain('--thinking-effort');
+    expect(a[a.indexOf('--effort') + 1]).toBe('max');
+  });
+
+  it('omits --effort entirely when no effort level is set', () => {
+    const a = claudeBackend.buildArgs(baseArgs, noMcpCtx);
+    expect(a).not.toContain('--effort');
+  });
+
+  it('drops --effort when the installed CLI does not advertise it', () => {
+    const a = claudeBackend.buildArgs(
+      { ...baseArgs, effortLevel: 'high' },
+      { ...noMcpCtx, claudeSupportsEffort: () => false },
+    );
+    expect(a).not.toContain('--effort');
+    expect(a).not.toContain('high');
+  });
+
+  it('keeps --effort when the probe says the CLI supports it', () => {
+    const a = claudeBackend.buildArgs(
+      { ...baseArgs, effortLevel: 'high' },
+      { ...noMcpCtx, claudeSupportsEffort: () => true },
+    );
+    expect(a[a.indexOf('--effort') + 1]).toBe('high');
+  });
+
   it('wires --mcp-config + --permission-prompt-tool when context supplies a path', () => {
     const a = claudeBackend.buildArgs(baseArgs, withMcpCtx);
     expect(a).toContain('--mcp-config');

@@ -33,12 +33,19 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
     baseBranch?: string;
     title?: string;
   }> = [];
-  const parked: Array<{ scheduleId: string; prompt: string; runIn?: string; title?: string }> = [];
+  const parked: Array<{
+    scheduleId: string;
+    prompt: string;
+    runIn?: string;
+    title?: string;
+    autoApprove?: { maxItems: number };
+  }> = [];
   const notifications: Array<{ title: string; body: string }> = [];
   const emitted: any[] = [];
   const saved: Schedule[] = [];
-  let parkResult: { ok: true; orchestrationId: string; count: number } | { ok: false; error: string } =
-    { ok: true, orchestrationId: 'orch-1', count: 3 };
+  let parkResult:
+    | { ok: true; orchestrationId: string; count: number; queued: number }
+    | { ok: false; error: string } = { ok: true, orchestrationId: 'orch-1', count: 3, queued: 0 };
   let startResult: { ok: boolean; error?: string } = { ok: true };
 
   // One pending timer at a time — the engine is documented to hold exactly
@@ -82,6 +89,7 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
         prompt: args.prompt,
         runIn: args.runIn,
         title: args.title,
+        autoApprove: args.autoApprove,
       });
       return parkResult;
     },
@@ -468,9 +476,47 @@ describe('SchedulerEngine orchestrate targets', () => {
     expect(h.notifications[0].body).toMatch(/3 candidates waiting/i);
   });
 
+  it('passes the auto-launch cap through to the parker', async () => {
+    const seed = orchestrateSeed();
+    (seed.target as { autoApprove?: { maxItems: number } }).autoApprove = { maxItems: 2 };
+    const h = makeHarness({ seed: [seed] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-3', count: 5, queued: 2 });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+
+    expect(h.parked[0].autoApprove).toEqual({ maxItems: 2 });
+    // The history line has to distinguish "5 things exist" from "2 of them are
+    // burning tokens right now" — that's the whole reason to read it later.
+    const rec = h.engine.get('sched-1')!.history[0];
+    expect(rec).toMatchObject({ outcome: 'done', orchestrationId: 'orch-3' });
+    expect(rec.note).toMatch(/2 launched, 3 waiting for approval/i);
+    expect(h.notifications[0].body).toMatch(/2 launched, 3 waiting/i);
+  });
+
+  it('leaves the parker un-nudged when the schedule did not opt in', async () => {
+    const h = makeHarness({ seed: [orchestrateSeed()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+    expect(h.parked[0].autoApprove).toBeUndefined();
+  });
+
+  it('reports a fully auto-launched batch without mentioning approval', async () => {
+    const seed = orchestrateSeed();
+    (seed.target as { autoApprove?: { maxItems: number } }).autoApprove = { maxItems: 5 };
+    const h = makeHarness({ seed: [seed] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-4', count: 3, queued: 3 });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 1));
+
+    const rec = h.engine.get('sched-1')!.history[0];
+    expect(rec.note).toMatch(/3 launched/i);
+    expect(rec.note).not.toMatch(/waiting/i);
+    expect(h.notifications[0].body).not.toMatch(/waiting/i);
+  });
+
   it('says so plainly when the producer found nothing', async () => {
     const h = makeHarness({ seed: [orchestrateSeed()] });
-    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 0 });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 0, queued: 0 });
     h.engine.start();
     await h.advanceTo(local(2026, 3, 2, 9, 1));
     expect(h.notifications[0].body).toMatch(/nothing new/i);

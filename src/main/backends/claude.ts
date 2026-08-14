@@ -35,7 +35,13 @@ export const claudeBackend: BackendSpec = {
     if (args.permissionMode && args.permissionMode !== 'default') {
       a.push('--permission-mode', args.permissionMode);
     }
-    if (args.effortLevel) a.push('--thinking-effort', args.effortLevel);
+    // The CLI flag is `--effort` — `--thinking-effort` was never a real
+    // option, so any send with a non-default effort died instantly with
+    // `error: unknown option '--thinking-effort'`. Older CLIs don't know
+    // `--effort` either and reject it the same way, hence the probe.
+    if (args.effortLevel && (ctx.claudeSupportsEffort?.() ?? true)) {
+      a.push('--effort', args.effortLevel);
+    }
     // MCP debug logging. Prints server startup/registration diagnostics to
     // stderr (which the runner forwards to the Debug viewer) — used to
     // diagnose MCP issues like the permission broker failing to register in

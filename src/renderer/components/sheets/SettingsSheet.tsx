@@ -436,7 +436,7 @@ function placeholderFor(b: Backend): string {
   if (b === 'codex') return 'e.g. gpt-5.6-sol';
   if (b === 'ollama') return 'e.g. qwen2.5-coder:7b';
   if (b === 'copilot') return 'e.g. claude-haiku-4.5';
-  return 'e.g. gemini-2.5-pro';
+  return 'e.g. gemini-3.7-flash';
 }
 
 // ---------- Local models (Ollama) ----------

@@ -240,6 +240,17 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
 
   async reload(projectPaths) {
     const flows = await window.overcli.invoke('flows:list', { projectPaths });
+    // Main returns these sorted by id, which is the filename on disk and is
+    // editable independently of the name — so a list ordered by it only looks
+    // alphabetical until someone renames a flow without renaming its file.
+    // Sort by the string every surface actually renders: the picker in the
+    // schedule editor, the Orchestrator's flow-per-candidate select, and the
+    // library's own groups all take this order as given and none re-sort.
+    flows.sort(
+      (a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) ||
+        a.id.localeCompare(b.id),
+    );
     set({ flows, loaded: true });
   },
 
