@@ -4,6 +4,11 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.14.2] - 2026-08-14
+
+### Fixed
+- **A workspace run no longer dies on a base branch one member never had.** A schedule stores whatever branch its editor was showing when it was last saved, and that name outlives the target it was picked against: point the schedule at a workspace afterwards and every member repo gets forked off a branch that only ever existed somewhere else. The first repo without it failed the entire launch — one stale string taking out all twenty-three members in under a second, every weekday morning. Retry could not help, because the base branch lives on the batch record and each attempt replayed the same value, and neither could the editor, which hides the branch picker for workspace targets and so rendered the offending name invisible and unclearable in the one place you would go to fix it. A shared base is a hint across N independent repos rather than a contract — the launcher only ever offers names present in every member, but nothing keeps a stored one honest — so a member that does not have it now forks off its own default and says so in the log, instead of taking the run down with it. Single-project runs stay strict: there the branch was chosen against that one repo, so a missing one is a real error and not a mismatch to paper over. The editor also stops holding a base branch it does not show, clearing it when the target changes and dropping it for workspace targets and non-worktree runs, so the value cannot go stale out of sight again ([#140](https://github.com/overcodelions/overcli/pull/140)).
+
 ## [0.14.1] - 2026-08-13
 
 ### Added
@@ -339,7 +344,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.14.1...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/overcodelions/overcli/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/overcodelions/overcli/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/overcodelions/overcli/compare/v0.13.4...v0.14.0
 [0.13.4]: https://github.com/overcodelions/overcli/compare/v0.13.3...v0.13.4
