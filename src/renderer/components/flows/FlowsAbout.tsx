@@ -174,7 +174,20 @@ function box(text: string): ReactNode {
 
 /// Modal wrapper used by the library header's About button. Empty
 /// state inlines the content directly without this chrome.
-export function FlowsAboutModal({ onClose }: { onClose: () => void }) {
+/// `onCreate` / `onBrowse` are optional so the modal still stands alone, but
+/// the header passes both: a panel that explains what a flow is and then makes
+/// you find your own way to building one has answered the question and dropped
+/// the user. The two buttons are the same pair the header carries, so the verb
+/// you just read about is the verb you press.
+export function FlowsAboutModal({
+  onClose,
+  onCreate,
+  onBrowse,
+}: {
+  onClose: () => void;
+  onCreate?: () => void;
+  onBrowse?: () => void;
+}) {
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
@@ -196,6 +209,35 @@ export function FlowsAboutModal({ onClose }: { onClose: () => void }) {
         <div className="flex-1 overflow-y-auto p-5">
           <FlowsAboutContent />
         </div>
+        {(onCreate || onBrowse) && (
+          <div className="flex items-center gap-2 px-5 py-4 border-t border-card">
+            {onCreate && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onCreate();
+                }}
+                className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 font-medium"
+              >
+                + New flow
+              </button>
+            )}
+            {onBrowse && (
+              <button
+                onClick={() => {
+                  onClose();
+                  onBrowse();
+                }}
+                className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5"
+              >
+                Browse library
+              </button>
+            )}
+            <span className="ml-auto text-[11px] text-ink-faint">
+              Or start from one of the ready-made flows in the library.
+            </span>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   codexPermissionMapping,
   codexTransportPermissions,
@@ -15,6 +15,7 @@ import {
   askUserQuestionHasData,
   isBrokerPromptToolMissingError,
   isStaleSessionError,
+  makeIdleWatchdog,
   resumeSessionAfterParamChange,
   shouldReapIdle,
   shouldSkipIdleOnClose,
@@ -606,5 +607,61 @@ describe('shouldReapIdle', () => {
   it('measures silence from the last activity, not from spawn', () => {
     expect(shouldReapIdle({ ...base, lastActivityAt: 60 * 60_000, now: 61 * 60_000 })).toBe(false);
     expect(shouldReapIdle({ ...base, lastActivityAt: 60 * 60_000, now: 95 * 60_000 })).toBe(true);
+  });
+});
+
+describe('makeIdleWatchdog', () => {
+  // Regression: the orchestrator producer ran under a flat 300s wall clock.
+  // A schedule whose prompt spanned two issue trackers and three repos died
+  // with "Timed out after 300s." every morning — killed mid-investigation
+  // while it was still streaming tool calls. A wall clock can't tell "busy"
+  // from "wedged"; only silence can.
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it('expires after an unbroken stretch of silence', () => {
+    const onExpire = vi.fn();
+    const wd = makeIdleWatchdog({ idleMs: 1000, onExpire });
+    wd.bump();
+    vi.advanceTimersByTime(999);
+    expect(onExpire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(onExpire).toHaveBeenCalledTimes(1);
+  });
+
+  it('never expires while activity keeps arriving', () => {
+    const onExpire = vi.fn();
+    const wd = makeIdleWatchdog({ idleMs: 1000, onExpire });
+    wd.bump();
+    // Ten minutes of a slow-but-alive turn: each event lands inside the
+    // budget, so the deadline is pushed out and never arrives.
+    for (let i = 0; i < 600; i++) {
+      vi.advanceTimersByTime(900);
+      wd.bump();
+    }
+    expect(onExpire).not.toHaveBeenCalled();
+    // ...and it still expires once the activity actually stops.
+    vi.advanceTimersByTime(1000);
+    expect(onExpire).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays quiet after cancel, even if a later bump slips in', () => {
+    // The turn finished; a trailing event must not resurrect the timer and
+    // resolve an already-settled one-shot a second time.
+    const onExpire = vi.fn();
+    const wd = makeIdleWatchdog({ idleMs: 1000, onExpire });
+    wd.bump();
+    wd.cancel();
+    wd.bump();
+    vi.advanceTimersByTime(60_000);
+    expect(onExpire).not.toHaveBeenCalled();
+  });
+
+  it('is inert without an idle budget — the caller keeps a plain wall clock', () => {
+    const onExpire = vi.fn();
+    const wd = makeIdleWatchdog({ idleMs: undefined, onExpire });
+    wd.bump();
+    vi.advanceTimersByTime(60_000);
+    expect(onExpire).not.toHaveBeenCalled();
   });
 });

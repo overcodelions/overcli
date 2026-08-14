@@ -5,12 +5,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildRetryFeedbackBlock,
   detectArtifactKind,
   extractOutput,
   isGatingReviewerRole,
   isReviewApproved,
   stepParticipantKey,
   stuckStepMessage,
+  summarizeReviewRejection,
 } from './runtime';
 
 describe('extractOutput', () => {
@@ -200,5 +202,59 @@ describe('stepParticipantKey', () => {
   // run spun on that step forever.
   it('falls back to the step id when no participant is assigned', () => {
     expect(stepParticipantKey({ id: 'build', participantId: '' })).toBe('build');
+  });
+});
+
+describe('summarizeReviewRejection', () => {
+  it('prefers an explicit verdict line', () => {
+    const body = `# Review — RED-6648\n\n**Verdict: CHANGES REQUESTED.** The diff compiles but…\n\nmore text`;
+    expect(summarizeReviewRejection(body)).toBe(
+      'Verdict: CHANGES REQUESTED. The diff compiles but…',
+    );
+  });
+
+  it('falls back to the first substantive line', () => {
+    expect(summarizeReviewRejection('\n\n- the regex drops SSO links\nrest')).toBe(
+      'the regex drops SSO links',
+    );
+  });
+
+  it('caps very long lines', () => {
+    const gist = summarizeReviewRejection('x'.repeat(500));
+    expect(gist).toHaveLength(201); // 200 chars + ellipsis
+    expect(gist?.endsWith('…')).toBe(true);
+  });
+
+  it('returns null for an empty body', () => {
+    expect(summarizeReviewRejection('   \n\n  ')).toBeNull();
+  });
+});
+
+describe('buildRetryFeedbackBlock', () => {
+  const base = {
+    fromStepId: 'review',
+    artifactName: 'review.md',
+    reason: 'Reviewer step "review" did not approve — Verdict: CHANGES REQUESTED.',
+    attempt: 1,
+    maxRetries: 2,
+  };
+
+  it('states the retry budget and who rejected the work', () => {
+    const block = buildRetryFeedbackBlock(base);
+    expect(block).toContain('RETRY 1 of 2');
+    expect(block).toContain('REJECTED');
+    expect(block).toContain('Rejected by step "review"');
+    expect(block).toContain('Verdict: CHANGES REQUESTED');
+  });
+
+  it('points at the feedback artifact when there is one', () => {
+    expect(buildRetryFeedbackBlock(base)).toContain('input "review.md"');
+  });
+
+  it('omits the artifact pointer when the failing step produced none', () => {
+    const block = buildRetryFeedbackBlock({ ...base, artifactName: null });
+    expect(block).not.toContain('input "');
+    // Still tells the implementer not to start from scratch.
+    expect(block).toContain('Do NOT start over');
   });
 });

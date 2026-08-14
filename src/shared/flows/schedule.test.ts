@@ -9,6 +9,7 @@ import {
   scheduledRunTitle,
   untilLabel,
   validateSchedule,
+  SCHEDULE_AUTO_APPROVE_MAX,
   type Schedule,
   type ScheduleTrigger,
 } from './schedule';
@@ -242,6 +243,42 @@ describe('validateSchedule', () => {
       target: { kind: 'flow', flowId: 'fix-it', prompt: '   ', runIn: 'cwd' },
     });
     expect(validateSchedule(s)).toMatch(/prompt/i);
+  });
+
+  it('bounds the auto-launch cap on an orchestrate target', () => {
+    const withCap = (maxItems: number) =>
+      validateSchedule(
+        makeSchedule({
+          target: {
+            kind: 'orchestrate',
+            flowId: 'fix-it',
+            prompt: 'triage the queue',
+            runIn: 'worktree',
+            maxConcurrent: 2,
+            autoApprove: { maxItems },
+          },
+        }),
+      );
+    expect(withCap(3)).toBeNull();
+    expect(withCap(SCHEDULE_AUTO_APPROVE_MAX)).toBeNull();
+    expect(withCap(0)).toMatch(/at least one item/i);
+    expect(withCap(SCHEDULE_AUTO_APPROVE_MAX + 1)).toMatch(/capped at/i);
+  });
+
+  it('leaves a plain orchestrate target alone — parking is still the default', () => {
+    expect(
+      validateSchedule(
+        makeSchedule({
+          target: {
+            kind: 'orchestrate',
+            flowId: 'fix-it',
+            prompt: 'triage the queue',
+            runIn: 'worktree',
+            maxConcurrent: 2,
+          },
+        }),
+      ),
+    ).toBeNull();
   });
 
   it('rejects a sub-minute interval and a malformed time', () => {

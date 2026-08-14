@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { backendHealthLoaded, noBackendReady, useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
-import { createBranchedAgent } from './sheets/NewAgentSheet';
+import { createBranchedAgent, createDetachedAgent } from './sheets/NewAgentSheet';
+import { BranchCombobox } from './sheets/BranchCombobox';
+import { useProjectBranches } from './sheets/useProjectBranches';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
 import {
@@ -39,6 +41,11 @@ import {
 } from './conversationHeaderHelpers';
 
 const WELCOME_KEY = '__welcome__';
+
+/// How a send from the start page runs: in the project directory, in a
+/// fresh build worktree, or in a detached read-only worktree at another
+/// branch's tip (review / docs).
+type RunMode = 'local' | 'agent' | 'review' | 'docs';
 
 /// Composer-first start page. Modeled on the reference screenshot the user
 /// shared: a centered prompt + big input, with pills for model/effort/mode
@@ -97,8 +104,12 @@ export function WelcomePane() {
   const [branch, setBranch] = useState<string>('');
   // 'local' chats in the project directory; 'agent' mints an isolated git
   // worktree on a fresh branch (same wiring as the sidebar "+ agent"),
-  // letting background work stay off the working checkout.
-  const [runMode, setRunMode] = useState<'local' | 'agent'>('local');
+  // letting background work stay off the working checkout. 'review' and
+  // 'docs' are the read-only kinds from the "+ agent" sheet — a detached
+  // worktree at some other branch's tip — offered here so you don't have
+  // to leave the composer to review a branch.
+  const [runMode, setRunMode] = useState<RunMode>('local');
+  const [targetBranch, setTargetBranch] = useState('');
   const [agentError, setAgentError] = useState<string | null>(null);
   // Live worktree-creation status. Workspace agents mint one worktree per
   // member repo, which can take a few seconds, so we surface progress.
@@ -183,10 +194,39 @@ export function WelcomePane() {
   const canRunAgent =
     (!!focusedWorkspace && focusedWorkspace.projectIds.length > 0) ||
     (!!selectedProject && !focusedWorkspace && projectIsGitRepo[selectedProject.id] !== false);
+  // Review/docs check out one existing branch in a detached worktree, which
+  // only makes sense against a single git repo — a workspace spans several.
+  const canRunDetached =
+    !!selectedProject && !focusedWorkspace && projectIsGitRepo[selectedProject.id] !== false;
+  const detachedKind: 'review' | 'docs' | null =
+    runMode === 'review' || runMode === 'docs' ? runMode : null;
   // Keep the toggle honest if the target changes out from under it.
   useEffect(() => {
     if (!canRunAgent && runMode === 'agent') setRunMode('local');
-  }, [canRunAgent, runMode]);
+    if (!canRunDetached && (runMode === 'review' || runMode === 'docs')) setRunMode('local');
+  }, [canRunAgent, canRunDetached, runMode]);
+
+  // Branches for the review/docs target picker. Fetches origin behind the
+  // cached list so a branch pushed from elsewhere (the PR you just opened)
+  // is pickable without dropping to a terminal.
+  const {
+    branches: targetBranches,
+    loading: loadingTargets,
+    refreshing: refreshingTargets,
+    refresh: refreshTargets,
+  } = useProjectBranches(selectedProject?.path, !!detachedKind && canRunDetached);
+  // The base is whatever the project is currently on — same default the
+  // "+ agent" sheet lands on — so reviewing that branch against itself
+  // would diff nothing.
+  const targetBranchOptions = useMemo(
+    () => targetBranches.filter((b) => b !== branch),
+    [targetBranches, branch],
+  );
+  useEffect(() => {
+    if (!detachedKind) return;
+    if (targetBranch && targetBranchOptions.includes(targetBranch)) return;
+    setTargetBranch(targetBranchOptions[0] ?? '');
+  }, [detachedKind, targetBranch, targetBranchOptions]);
 
   // Resolve current branch for the selected project once we know which one
   // the user picked. Cheap — one git command — and updates reactively.
@@ -206,6 +246,29 @@ export function WelcomePane() {
     };
   }, [selectedProject]);
 
+  /// Hand a freshly-minted agent conversation the composer's pill
+  /// selections + attachments, then fire the opening turn. Shared by the
+  /// build-agent and review/docs paths, which differ only in what prompt
+  /// they send.
+  const applyPillsAndSend = async (
+    convId: UUID,
+    prompt: string,
+    attachments: Attachment[],
+  ) => {
+    clearAttachments(convId);
+    for (const a of attachments) addAttachment(convId, a);
+    void setPrimaryBackend(convId, backend);
+    void setPermissionMode(convId, permissionMode);
+    if (effort) void setEffortLevel(convId, effort);
+    if (model) void setBackendModel(convId, backend, model);
+    if (reviewPreset !== 'off') void setReviewPreset(convId, reviewPreset);
+    setDraft(WELCOME_KEY, '');
+    clearAttachments(WELCOME_KEY);
+    await saveProjects();
+    selectConversation(convId);
+    await send(convId, prompt);
+  };
+
   // Agent mode: mint git worktree(s) on fresh branch(es), then fire the
   // prompt into the resulting agent. For a single project that's a
   // branched build agent; for a workspace it's a coordinator spanning one
@@ -216,20 +279,7 @@ export function WelcomePane() {
     creatingAgent.current = true;
     setAgentError(null);
     setAgentProgress(null);
-    const applyAndSend = async (convId: UUID) => {
-      clearAttachments(convId);
-      for (const a of attachments) addAttachment(convId, a);
-      void setPrimaryBackend(convId, backend);
-      void setPermissionMode(convId, permissionMode);
-      if (effort) void setEffortLevel(convId, effort);
-      if (model) void setBackendModel(convId, backend, model);
-      if (reviewPreset !== 'off') void setReviewPreset(convId, reviewPreset);
-      setDraft(WELCOME_KEY, '');
-      clearAttachments(WELCOME_KEY);
-      await saveProjects();
-      selectConversation(convId);
-      await send(convId, prompt);
-    };
+    const applyAndSend = async (convId: UUID) => applyPillsAndSend(convId, prompt, attachments);
     try {
       if (focusedWorkspace) {
         // Resolve each member's base branch (repos may differ, e.g. one on
@@ -284,7 +334,53 @@ export function WelcomePane() {
     }
   };
 
+  // Review/docs mode: check the picked branch out in a detached worktree
+  // and fire the same read-only opening prompt the "+ agent" sheet uses,
+  // with whatever the user typed appended as extra direction.
+  const handleSendAsDetachedAgent = async (
+    kind: 'review' | 'docs',
+    prompt: string,
+    attachments: Attachment[],
+  ) => {
+    if (creatingAgent.current) return;
+    if (!selectedProject) return;
+    if (!targetBranch) {
+      setAgentError(`Pick a branch to ${kind === 'docs' ? 'document' : 'review'} first.`);
+      return;
+    }
+    creatingAgent.current = true;
+    setAgentError(null);
+    setAgentProgress(
+      kind === 'docs' ? 'Checking out docs worktree…' : 'Checking out review worktree…',
+    );
+    try {
+      await createDetachedAgent({
+        kind,
+        project: selectedProject,
+        projectId: selectedProject.id,
+        settings,
+        preferredBackend: backend,
+        targetBranch,
+        baseBranch: branch,
+        onError: setAgentError,
+        onCreated: async (convId, initialPrompt) => {
+          const extra = prompt.trim()
+            ? `\n\n---\n\nAdditional direction from the user for this ${kind}:\n\n${prompt.trim()}`
+            : '';
+          await applyPillsAndSend(convId, `${initialPrompt}${extra}`, attachments);
+        },
+      });
+    } finally {
+      creatingAgent.current = false;
+      setAgentProgress(null);
+    }
+  };
+
   const handleSend = async (prompt: string, attachments: Attachment[]) => {
+    if (detachedKind && canRunDetached) {
+      await handleSendAsDetachedAgent(detachedKind, prompt, attachments);
+      return;
+    }
     if (runMode === 'agent' && canRunAgent) {
       await handleSendAsAgent(prompt, attachments);
       return;
@@ -576,28 +672,54 @@ export function WelcomePane() {
             onAdd={pickProject}
           />
           <Pill
-            label={runMode === 'agent' ? 'Run as agent' : 'Work locally'}
-            color={runMode === 'agent' ? '#7dd3fc' : undefined}
-            items={
-              canRunAgent
-                ? [
-                    { value: 'local', label: 'Work locally', note: 'Chat in the project directory' },
-                    {
-                      value: 'agent',
-                      label: 'Run as agent',
-                      note: 'Isolated git worktree on a new branch',
-                    },
-                  ]
-                : [{ value: 'local', label: 'Work locally' }]
-            }
-            onPick={(v) => setRunMode(v as 'local' | 'agent')}
+            label={RUN_MODE_LABELS[runMode]}
+            color={runMode === 'local' ? undefined : '#7dd3fc'}
+            items={runModeItems(canRunAgent, canRunDetached)}
+            onPick={(v) => setRunMode(v as RunMode)}
           />
-          {!focusedWorkspace && !isNonGitProject && branch && (
-            <Pill
-              label={runMode === 'agent' ? `off ${branch}` : branch}
-              items={[{ value: branch, label: branch }]}
-              onPick={() => {}}
-            />
+          {detachedKind ? (
+            <div className="inline-flex items-center gap-1.5 text-xs">
+              <span className="text-ink-faint whitespace-nowrap">
+                {detachedKind === 'docs' ? 'document' : 'review'}
+              </span>
+              <div className="min-w-[140px] max-w-[240px]">
+                <BranchCombobox
+                  options={targetBranchOptions}
+                  value={targetBranch}
+                  onChange={setTargetBranch}
+                  disabled={loadingTargets}
+                  className="px-2.5 py-1 rounded-full bg-card-strong border border-card text-xs"
+                  placeholder={loadingTargets ? 'Loading branches…' : 'No branches available'}
+                  emptyText={
+                    refreshingTargets
+                      ? 'Still fetching from origin…'
+                      : 'No matching branches. If it was just pushed, hit ↻.'
+                  }
+                />
+              </div>
+              {branch && (
+                <span className="text-ink-faint whitespace-nowrap">vs {branch}</span>
+              )}
+              <button
+                type="button"
+                onClick={refreshTargets}
+                disabled={refreshingTargets}
+                title="Fetch from origin and reload the branch list"
+                className="text-ink-faint hover:text-ink disabled:opacity-40"
+              >
+                {refreshingTargets ? '…' : '↻'}
+              </button>
+            </div>
+          ) : (
+            !focusedWorkspace &&
+            !isNonGitProject &&
+            branch && (
+              <Pill
+                label={runMode === 'agent' ? `off ${branch}` : branch}
+                items={[{ value: branch, label: branch }]}
+                onPick={() => {}}
+              />
+            )
           )}
         </div>
         {agentProgress && (
@@ -1830,6 +1952,42 @@ function ContextPill({
       }}
     />
   );
+}
+
+const RUN_MODE_LABELS: Record<RunMode, string> = {
+  local: 'Work locally',
+  agent: 'Run as agent',
+  review: 'Review a branch',
+  docs: 'Document a branch',
+};
+
+/// The run-mode menu, gated by what the current target can actually do:
+/// build agents need a git repo (or a non-empty workspace), review/docs
+/// need a single git repo since they check out one branch.
+function runModeItems(canRunAgent: boolean, canRunDetached: boolean): PillItem[] {
+  const items: PillItem[] = [
+    { value: 'local', label: 'Work locally', note: 'Chat in the project directory' },
+  ];
+  if (canRunAgent) {
+    items.push({
+      value: 'agent',
+      label: 'Run as agent',
+      note: 'Isolated git worktree on a new branch',
+    });
+  }
+  if (canRunDetached) {
+    items.push({
+      value: 'review',
+      label: 'Review a branch',
+      note: 'PR-style review in a detached worktree. Read-only.',
+    });
+    items.push({
+      value: 'docs',
+      label: 'Document a branch',
+      note: 'User-facing docs for a branch, as markdown. Read-only.',
+    });
+  }
+  return items;
 }
 
 function shortPath(p: string): string {

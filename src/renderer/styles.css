@@ -238,6 +238,39 @@ html, body {
   background: color-mix(in srgb, var(--c-accent) 16%, var(--c-card-bg-strong));
   box-shadow: inset 2px 0 0 var(--c-accent);
 }
+/* Soft bloom for a small tinted glyph — currently the Schedules tab's clock.
+ * `currentColor`, so it takes whichever tint the icon is wearing and follows
+ * the theme without a second value to keep in sync.
+ *
+ * Static, deliberately. The one-time discovery ring above breathes because it
+ * retires the moment you open the thing; this mark is permanent, and something
+ * permanent that pulses is noise in a window you leave open all day. */
+.glyph-bloom {
+  filter: drop-shadow(0 0 4px currentColor);
+}
+
+/* Flow run rows (Active + Recent in the Flows library). Same trap as the
+ * palette above: `bg-card/40` on a var-driven colour compiles to nothing, so
+ * these rows used to render as bare outlines with no fill — which is exactly
+ * why they read as "all border". Named blends instead, and no border at all:
+ * the shade carries the row and the hover carries the affordance.
+ *
+ * An active run (running / paused / watching) gets a faint accent wash rather
+ * than a coloured edge, so "this one is live" is a property of the row instead
+ * of a line drawn around it. */
+.run-row {
+  background: var(--c-card-bg-strong);
+}
+.run-row:hover {
+  background: var(--c-surface-elevated);
+}
+.run-row-active {
+  background: color-mix(in srgb, var(--c-accent) 10%, var(--c-card-bg-strong));
+}
+.run-row-active:hover {
+  background: color-mix(in srgb, var(--c-accent) 18%, var(--c-card-bg-strong));
+}
+
 .palette-chip-active {
   background: color-mix(in srgb, var(--c-accent) 20%, var(--c-card-bg-strong));
   border-color: color-mix(in srgb, var(--c-accent) 36%, var(--c-card-border));

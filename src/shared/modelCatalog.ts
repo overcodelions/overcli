@@ -24,7 +24,16 @@ import type { Backend } from './types';
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-fable-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
-  gemini: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  // Gemini's Flash line iterates far faster than its Pro line — 3.7 Flash
+  // shipped while 3.1 Pro is still the newest Pro id. Pro leads the list so
+  // it stays the auto-pick + drafter default (first entry = strongest).
+  gemini: [
+    'gemini-3.1-pro',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
+  ],
   // Copilot CLI accepts a curated set of ids served via GitHub's Bedrock
   // gateway. These are the public Copilot-CLI-supported set as of
   // mid-2026; the user can override via Settings → Models if a newer id
@@ -160,7 +169,17 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'gpt-5.5': 'thinking',
   'gpt-5.4': 'standard',
   'gpt-5.4-mini': 'fast',
-  // Gemini
+  // Gemini. Flash is the mid tier and Flash-Lite the cheap one — the same
+  // full-vs-lite split as gpt-5.4 / gpt-5.4-mini above, which finally gives
+  // the gemini backend a real 'standard' model for critic loops.
+  'gemini-3.1-pro': 'thinking',
+  'gemini-3.7-flash': 'standard',
+  'gemini-3.6-flash': 'standard',
+  'gemini-3.5-flash-lite': 'fast',
+  'gemini-3.1-flash-lite': 'fast',
+  // Retired from the catalog but kept here so a conversation still pinned
+  // to a 2.5 id renders its tier marker correctly until `liftMissingModel`
+  // moves it forward.
   'gemini-2.5-pro': 'thinking',
   'gemini-2.5-flash': 'fast',
   // Copilot (uses the underlying model's profile)
@@ -243,12 +262,18 @@ function formatGptId(model: string): string {
   return `GPT-${version} ${nice}`;
 }
 
-/// `gemini-2.5-pro` → `Gemini 2.5 Pro`.
+/// `gemini-3.1-pro` → `Gemini 3.1 Pro`; `gemini-3.5-flash-lite` →
+/// `Gemini 3.5 Flash-Lite` (each hyphen segment of the qualifier is
+/// title-cased, matching how Google writes the name).
 function titleCaseGemini(model: string): string {
   const m = model.match(/^gemini-(\d+(?:\.\d+)?)-(.+)$/i);
   if (!m) return model;
   const [, version, qualifier] = m;
-  return `Gemini ${version} ${(qualifier[0]?.toUpperCase() ?? '') + qualifier.slice(1)}`;
+  const nice = qualifier
+    .split('-')
+    .map((part) => (part[0]?.toUpperCase() ?? '') + part.slice(1))
+    .join('-');
+  return `Gemini ${version} ${nice}`;
 }
 
 /// Tier classification used to group choices in pickers. Premium = paid

@@ -4,6 +4,7 @@ import { Backend, Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
 import { BaseBranchSelect } from './BaseBranchSelect';
 import { BranchCombobox } from './BranchCombobox';
+import { useProjectBranches } from './useProjectBranches';
 import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 
 type AgentKind = 'build' | 'review' | 'docs';
@@ -47,31 +48,18 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   const [name, setName] = useState('');
   const [baseBranch, setBaseBranch] = useState('');
   const [targetBranch, setTargetBranch] = useState('');
-  const [branches, setBranches] = useState<string[]>([]);
-  const [loadingBranches, setLoadingBranches] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const launchLock = useRef(false);
 
   const needsTargetBranch = kind === 'review' || kind === 'docs';
 
-  useEffect(() => {
-    if (!project || !needsTargetBranch) return;
-    let cancelled = false;
-    setLoadingBranches(true);
-    void window.overcli
-      .invoke('git:listBaseBranches', project.path)
-      .then((list) => {
-        if (cancelled) return;
-        setBranches(list);
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingBranches(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [project?.path, needsTargetBranch]);
+  const {
+    branches,
+    loading: loadingBranches,
+    refreshing: refreshingBranches,
+    refresh: refreshBranches,
+  } = useProjectBranches(project?.path, needsTargetBranch);
 
   const targetBranchOptions = useMemo(
     () => branches.filter((b) => b !== baseBranch),
@@ -204,15 +192,31 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
         </div>
       ) : (
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-faint">
-            {kind === 'docs' ? 'Branch to document' : 'Branch to review'}
-          </label>
+          <div className="flex items-baseline justify-between gap-2">
+            <label className="text-xs text-ink-faint">
+              {kind === 'docs' ? 'Branch to document' : 'Branch to review'}
+            </label>
+            <button
+              type="button"
+              onClick={refreshBranches}
+              disabled={refreshingBranches}
+              className="text-[11px] text-ink-faint hover:text-ink disabled:hover:text-ink-faint"
+              title="Fetch from origin and reload the branch list"
+            >
+              {refreshingBranches ? 'Fetching from origin…' : 'Refresh'}
+            </button>
+          </div>
           <BranchCombobox
             options={targetBranchOptions}
             value={targetBranch}
             onChange={setTargetBranch}
             disabled={loadingBranches}
             placeholder={loadingBranches ? 'Loading branches…' : 'No branches available'}
+            emptyText={
+              refreshingBranches
+                ? 'Still fetching from origin…'
+                : 'No matching branches. If it was just pushed, hit Refresh.'
+            }
           />
         </div>
       )}
@@ -304,7 +308,9 @@ export async function createBranchedAgent(
 /// Shared path for review + docs: both spawn a detached-HEAD worktree at
 /// the target branch and auto-fire a read-only first turn. The only
 /// difference is the label, the slug prefix, and the prompt builder.
-async function createDetachedAgent(
+/// Exported so the welcome composer can offer review/docs runs without
+/// duplicating the worktree + prompt wiring.
+export async function createDetachedAgent(
   args: CreateCtx & {
     kind: 'review' | 'docs';
     targetBranch: string;
