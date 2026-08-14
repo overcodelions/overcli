@@ -479,6 +479,17 @@ function ScheduleEditor() {
     patch({ target: { ...draft.target, ...p } as ScheduleDraft['target'] });
   }
 
+  // Don't hold a base branch the form doesn't show. The picker below is
+  // gated off for workspace targets (one name can't be picked against 20
+  // repos here the way the flow launcher does it), so a value left over
+  // from an earlier single-repo target would be invisible here and still
+  // shipped to every member at 4am. Runs re-detect per repo without it.
+  const targetIsWorkspace = workspaces.some((w) => w.rootPath === draft.projectPath);
+  useEffect(() => {
+    if (targetIsWorkspace && draft.target.baseBranch) patchTarget({ baseBranch: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetIsWorkspace, draft.target.baseBranch]);
+
   return (
     <div>
       {/* Header, two-column body, card sections, summary-at-the-top: the same
@@ -593,7 +604,18 @@ function ScheduleEditor() {
           <Field label="Workspace / Project">
             <select
               value={draft.projectPath}
-              onChange={(e) => patch({ projectPath: e.target.value })}
+              onChange={(e) =>
+                patch({
+                  projectPath: e.target.value,
+                  // A base branch is only meaningful against the repos it was
+                  // picked from. Carrying it across a target change is how a
+                  // schedule ends up forking a workspace off a branch that
+                  // only ever existed in some unrelated project — and since
+                  // the picker below is hidden for workspace targets, a stale
+                  // name is invisible AND unclearable from here.
+                  target: { ...draft.target, baseBranch: undefined },
+                })
+              }
               className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
             >
               <option value="">Pick a target…</option>
@@ -689,10 +711,7 @@ function ScheduleEditor() {
               </div>
             )
           )}
-          {isWorktree &&
-            isRepo === true &&
-            draft.projectPath &&
-            !workspaces.some((w) => w.rootPath === draft.projectPath) && (
+          {isWorktree && isRepo === true && draft.projectPath && !targetIsWorkspace && (
             <div className="mt-2">
               <BaseBranchSelect
                 value={draft.target.baseBranch ?? ''}

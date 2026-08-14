@@ -61,6 +61,7 @@ import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
 import {
+  baseBranchExistsAsync,
   createWorktreeAsync,
   detectBaseBranchAsync,
   removeWorktreeAsync,
@@ -615,7 +616,27 @@ export class FlowRuntimeImpl {
         let done = 0;
         const results = await Promise.all(
           members.map(async (p) => {
-            const baseBranch = sharedBase ?? (await detectBaseBranchAsync(p.path));
+            // A shared base is a HINT across N independent repos, not a
+            // contract. The launcher only offers names that exist in every
+            // member (BaseBranchSelect intersects the lists), but a stored
+            // one can outlive that guarantee — a schedule keeps whatever was
+            // picked when it was last edited, even after its target changed
+            // to a workspace those branches were never in. Falling back to
+            // this repo's own default beats failing the entire launch on the
+            // first member that never had the branch.
+            let baseBranch: string;
+            if (sharedBase && (await baseBranchExistsAsync(p.path, sharedBase))) {
+              baseBranch = sharedBase;
+            } else {
+              baseBranch = await detectBaseBranchAsync(p.path);
+              if (sharedBase) {
+                log(
+                  'warn',
+                  'flows',
+                  `${p.name}: base branch "${sharedBase}" doesn't exist here — forking off "${baseBranch}" instead.`,
+                );
+              }
+            }
             const r = await createWorktreeAsync({
               projectPath: p.path,
               agentName: wtNameBase,
