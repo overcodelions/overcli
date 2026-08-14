@@ -20,7 +20,12 @@ vi.mock('node:fs', async importOriginal => {
   };
 });
 
-import { detectBaseBranch, listBaseBranches, listBaseBranchesFresh } from './git';
+import {
+  baseBranchExistsAsync,
+  detectBaseBranch,
+  listBaseBranches,
+  listBaseBranchesFresh,
+} from './git';
 
 function ok(stdout: string) {
   return { stdout, stderr: '', status: 0 };
@@ -192,5 +197,25 @@ describe('listBaseBranchesFresh', () => {
 
     expect(await listBaseBranchesFresh('/not-a-repo')).toEqual([]);
     expect(calls).toEqual(['rev-parse --is-inside-work-tree']);
+  });
+});
+
+describe('baseBranchExistsAsync', () => {
+  it('resolves a branch reachable only as a remote ref', async () => {
+    mockExecFile.mockImplementation((_bin: string, args: string[], _opts: unknown, cb: ExecCallback) => {
+      const cmd = args.join(' ');
+      if (cmd === 'rev-parse --verify --quiet origin/release^{commit}') return execOk('abc\n')(cb);
+      return execFail()(cb);
+    });
+
+    expect(await baseBranchExistsAsync('/repo', 'release')).toBe(true);
+  });
+
+  it('reports a branch this repo has never had', async () => {
+    mockExecFile.mockImplementation((_bin: string, _args: string[], _opts: unknown, cb: ExecCallback) =>
+      execFail()(cb),
+    );
+
+    expect(await baseBranchExistsAsync('/repo', 'feature/from-some-other-repo')).toBe(false);
   });
 });
