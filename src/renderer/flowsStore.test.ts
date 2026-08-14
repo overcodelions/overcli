@@ -431,6 +431,40 @@ describe('dismissJustSaved', () => {
   });
 });
 
+// ─── reload ──────────────────────────────────────────────────────────────────
+
+describe('reload', () => {
+  /// Main sorts by id, which is the filename and is renamed independently of
+  /// the flow's name — so the list arrives in an order that looks alphabetical
+  /// right up until someone renames a flow without renaming its file. Every
+  /// surface (the schedule editor's picker, the Orchestrator's per-candidate
+  /// select, the library's groups) takes this order as given.
+  function listing(...flows: Array<[id: string, name: string]>) {
+    mockInvoke.mockImplementation(async (channel: string) =>
+      channel === 'flows:list' ? flows.map(([id, name]) => minimalFlow({ id, name })) : undefined,
+    );
+  }
+  const names = () => useFlowsStore.getState().flows.map((f) => f.name);
+
+  it('orders by the name the user sees, not the filename behind it', async () => {
+    listing(['a-first', 'Zebra triage'], ['z-last', 'Apple audit']);
+    await useFlowsStore.getState().reload([]);
+    expect(names()).toEqual(['Apple audit', 'Zebra triage']);
+  });
+
+  it('ignores case, so a lowercase flow does not sort below every capital', async () => {
+    listing(['1', 'Beta'], ['2', 'alpha'], ['3', 'Gamma']);
+    await useFlowsStore.getState().reload([]);
+    expect(names()).toEqual(['alpha', 'Beta', 'Gamma']);
+  });
+
+  it('falls back to the id so two same-named flows keep a stable order', async () => {
+    listing(['b-copy', 'Triage'], ['a-copy', 'Triage']);
+    await useFlowsStore.getState().reload([]);
+    expect(useFlowsStore.getState().flows.map((f) => f.id)).toEqual(['a-copy', 'b-copy']);
+  });
+});
+
 // ─── renameFlow ──────────────────────────────────────────────────────────────
 
 describe('renameFlow', () => {

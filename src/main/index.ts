@@ -42,6 +42,7 @@ import {
   checkoutAgentLocally,
   detectBaseBranch,
   listBaseBranches,
+  listBaseBranchesFresh,
   mergeAgent,
   rebaseAgent,
   pushBranch,
@@ -283,7 +284,15 @@ function registerIpc(): void {
   scheduler = new SchedulerEngine({
     launcher: flowRuntime,
     parker: orchestrator,
-    isGitRepo: (projectPath) => currentBranch(projectPath).isRepo,
+    // A workspace root is not itself a git repo, but the runtime mints a
+    // worktree per member when a run targets one (see `workspaceWorktrees` in
+    // flows/runtime). Testing only `currentBranch` silently downgraded every
+    // scheduled workspace run to `cwd` — unattended edits landing straight in
+    // the user's checked-out tree, which is exactly what picking a worktree is
+    // supposed to prevent.
+    isGitRepo: (projectPath) =>
+      currentBranch(projectPath).isRepo ||
+      Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
   });
@@ -695,6 +704,9 @@ function registerIpc(): void {
     return res;
   });
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));
+  ipcMain.handle('git:listBaseBranchesFresh', (_e, projectPath: string) =>
+    listBaseBranchesFresh(projectPath),
+  );
   ipcMain.handle('git:detectBaseBranch', (_e, projectPath: string) =>
     detectBaseBranch(projectPath),
   );

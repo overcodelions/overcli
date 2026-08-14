@@ -145,6 +145,38 @@ export function listBaseBranches(projectPath: string): string[] {
   return branches;
 }
 
+/// Fetch-then-list sibling of `listBaseBranches`.
+///
+/// `listBaseBranches` only reads refs that are already in the local repo, so
+/// a branch pushed from somewhere else — a PR opened on another machine, a
+/// teammate's branch, an agent that pushed from its own worktree — stays
+/// invisible in the branch pickers until the user runs `git fetch` by hand.
+/// The review worktree already fetches at creation time; this does the same
+/// one step earlier so the branch is actually pickable.
+///
+/// Async on purpose: `listBaseBranches` uses `spawnSync`, which is fine for
+/// sub-millisecond ref reads but would freeze the whole main process for the
+/// length of a network fetch. Fetch failures (offline, no credentials, dead
+/// remote) are non-fatal — we fall through to whatever refs are local.
+export async function listBaseBranchesFresh(projectPath: string): Promise<string[]> {
+  const inRepo = await runGitAsync(['rev-parse', '--is-inside-work-tree'], projectPath);
+  if (inRepo.exitCode !== 0) return [];
+  const hasOrigin = await runGitAsync(['remote', 'get-url', 'origin'], projectPath);
+  if (hasOrigin.exitCode === 0) {
+    await runGitAsync(
+      ['fetch', 'origin', '--prune'],
+      projectPath,
+      { GIT_TERMINAL_PROMPT: '0' },
+      FETCH_TIMEOUT_MS,
+    );
+  }
+  return listBaseBranches(projectPath);
+}
+
+/// A branch picker shouldn't sit on a spinner because a remote is
+/// unreachable; past this we show whatever refs we already have.
+const FETCH_TIMEOUT_MS = 20_000;
+
 function resolveBaseBranchStartPoint(projectPath: string, baseBranch: string): string | null {
   const candidates: string[] = [];
   const seen = new Set<string>();
@@ -307,6 +339,7 @@ export function runGitAsync(
   args: string[],
   cwd: string,
   extraEnv?: NodeJS.ProcessEnv,
+  timeoutMs?: number,
 ): Promise<GitResult> {
   const bin = resolveGitBinary();
   return new Promise((resolve) => {
@@ -320,6 +353,10 @@ export function runGitAsync(
         // `git worktree add` is quiet, but guard against a verbose subcommand
         // overflowing the default 1 MB pipe buffer and erroring spuriously.
         maxBuffer: 64 * 1024 * 1024,
+        // Network commands (`fetch`) can hang on a dead remote or a
+        // credential helper that never answers. Callers that talk to a
+        // remote pass a bound; local metadata reads leave it unset.
+        ...(timeoutMs ? { timeout: timeoutMs } : {}),
       },
       (error, stdout, stderr) => {
         // execFile sets `error` on non-zero exit (with numeric `error.code`)

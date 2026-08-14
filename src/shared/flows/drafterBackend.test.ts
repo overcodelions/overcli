@@ -60,7 +60,7 @@ describe('drafterModelFor', () => {
     // fable-5 is the frontier opt-in, not the drafter default.
     expect(drafterModelFor('claude')).toBe('claude-opus-5');
     expect(drafterModelFor('codex')).toBe('gpt-5.6-sol');
-    expect(drafterModelFor('gemini')).toBe('gemini-2.5-pro');
+    expect(drafterModelFor('gemini')).toBe('gemini-3.1-pro');
   });
 });
 
@@ -85,15 +85,13 @@ describe('drafterModelHints', () => {
     });
   });
 
-  it('degrades a missing middle tier downward, not up to the expensive one', () => {
-    // Gemini has no 'standard' model. It must fall to flash, not pro: the
-    // drafter spends this hint on critic loops and cheap steps, so picking
-    // the thinking model there inverts the intent and quietly runs the
-    // cheapest steps of every drafted flow on the priciest model.
+  it('fills all three tiers for gemini from pro / flash / flash-lite', () => {
+    // Flash-Lite is the cheap tier, so the critic-loop hint lands on the
+    // cheapest model rather than degrading into Flash.
     expect(drafterModelHints('gemini')).toEqual({
-      thinking: 'gemini-2.5-pro',
-      standard: 'gemini-2.5-flash',
-      fast: 'gemini-2.5-flash',
+      thinking: 'gemini-3.1-pro',
+      standard: 'gemini-3.7-flash',
+      fast: 'gemini-3.5-flash-lite',
     });
   });
 

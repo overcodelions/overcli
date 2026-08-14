@@ -71,7 +71,7 @@ import {
   runOllamaToolLoop,
 } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
-import { ReviewerManager } from './reviewer';
+import { claudeSupportsEffort, ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
 import { ClaudeSdkClient } from './claude-sdk-client';
@@ -98,6 +98,35 @@ type Emit = (event: MainToRendererEvent) => void;
 /// Result of a `RunnerManager.oneShot` call: the assistant's full text on
 /// success, or a surfaced error string.
 export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
+
+/// A watchdog that fires only after a stretch of *silence*: every `bump()`
+/// restarts the clock, so work that keeps producing output keeps the timer
+/// permanently at arm's length and only a genuinely stalled caller expires.
+///
+/// Split out of `oneShot` so the reset semantics are testable on their own —
+/// the bug this exists to prevent (killing a healthy turn that was still
+/// streaming) is invisible to any test that can't advance a clock.
+///
+/// A watchdog with no `idleMs` is inert: `bump` never arms anything, which
+/// is how callers that want a plain wall clock opt out.
+export function makeIdleWatchdog(args: { idleMs?: number; onExpire: () => void }): {
+  bump: () => void;
+  cancel: () => void;
+} {
+  let timer: NodeJS.Timeout | undefined;
+  let cancelled = false;
+  return {
+    bump: () => {
+      if (!args.idleMs || cancelled) return;
+      clearTimeout(timer);
+      timer = setTimeout(args.onExpire, args.idleMs);
+    },
+    cancel: () => {
+      cancelled = true;
+      clearTimeout(timer);
+    },
+  };
+}
 
 /// Activity label used when a turn has ended but a detached background
 /// agent is still working. Shared between the emit site and the stale-state
@@ -667,6 +696,11 @@ export class RunnerManager {
       tools: string[];
       seenToolIds: Set<string>;
       onProgress?: (snap: { text: string; tools: string[] }) => void;
+      /// Re-arms the caller's idle watchdog. `tapOneShot` calls this on every
+      /// streamed event so a turn that is slow but alive isn't killed — only
+      /// one that has genuinely gone quiet. No-op when the caller passed no
+      /// `idleTimeoutMs`.
+      bump: () => void;
     }
   >();
 
@@ -944,6 +978,16 @@ export class RunnerManager {
     prompt: string;
     cwd: string;
     timeoutMs?: number;
+    /// Idle watchdog, in ms. When set, the turn also fails if it produces no
+    /// streamed output for this long — and, crucially, that budget RESETS on
+    /// every event, so a turn making slow progress survives. `timeoutMs`
+    /// stays an absolute ceiling on top of it; whichever trips first wins.
+    ///
+    /// Callers doing open-ended investigation (the orchestrator producer,
+    /// which fans out across MCP servers and can legitimately grind for
+    /// 10+ minutes) want this. A wall clock alone can't tell "wedged" from
+    /// "busy", so it either kills healthy long turns or lets hung ones sit.
+    idleTimeoutMs?: number;
     /// Permission mode for the hidden turn. Defaults to `'default'` — right
     /// for pure text generation (the drafter), which never calls tools. A
     /// caller that NEEDS the turn to invoke tools unattended (e.g. the
@@ -960,12 +1004,14 @@ export class RunnerManager {
   }): Promise<OneShotResult> {
     const conversationId = randomUUID();
     const timeoutMs = args.timeoutMs ?? 120_000;
+    const idleTimeoutMs = args.idleTimeoutMs;
     return await new Promise<OneShotResult>((resolve) => {
       let done = false;
       const finish = (r: OneShotResult) => {
         if (done) return;
         done = true;
         clearTimeout(timer);
+        idle.cancel();
         this.oneShotWaiters.delete(conversationId);
         // Best-effort teardown so no subprocess / ACP session lingers. We
         // call the kill helpers directly rather than `stop()` because
@@ -984,6 +1030,16 @@ export class RunnerManager {
         () => finish({ ok: false, error: `Timed out after ${Math.round(timeoutMs / 1000)}s.` }),
         timeoutMs,
       );
+      // Armed here, then re-armed by `tapOneShot` on every streamed event.
+      const idle = makeIdleWatchdog({
+        idleMs: idleTimeoutMs,
+        onExpire: () =>
+          finish({
+            ok: false,
+            error: `No output for ${Math.round((idleTimeoutMs ?? 0) / 1000)}s — giving up.`,
+          }),
+      });
+      idle.bump();
       this.oneShotWaiters.set(conversationId, {
         text: '',
         settled: false,
@@ -992,6 +1048,7 @@ export class RunnerManager {
         tools: [],
         seenToolIds: new Set(),
         onProgress: args.onProgress,
+        bump: idle.bump,
       });
       const sent = this.send({
         conversationId,
@@ -1026,6 +1083,10 @@ export class RunnerManager {
     if (!waiter) return false;
     if (waiter.settled) return true; // mid-teardown — swallow trailing events
     if (event.type === 'stream') {
+      // Any streamed event is proof of life — reset the idle budget before
+      // looking at what's in it. Tool-only batches carry no assistant text
+      // but are exactly the activity a long investigation consists of.
+      waiter.bump();
       for (const ev of event.events) {
         if (ev.kind.type !== 'assistant' || ev.reviewer) continue;
         const info = ev.kind.info;
@@ -1086,6 +1147,10 @@ export class RunnerManager {
   private backendCtx(): BackendCtx {
     return {
       mcpConfigPathFor: (id) => this.claudeMcpByConv.get(id),
+      // Probed (and cached) per binary path in reviewer.ts — same
+      // question the reviewer rebound already asks before it passes
+      // `--effort`.
+      claudeSupportsEffort: () => claudeSupportsEffort(this.resolveBinary('claude')),
       codexExecTranscriptFor: (id) => this.codexExecTranscriptByConversation.get(id),
     };
   }

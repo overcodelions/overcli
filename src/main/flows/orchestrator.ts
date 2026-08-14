@@ -28,6 +28,7 @@ import type {
   RunIn,
 } from '../../shared/flows/orchestration';
 import { isOrchestrationComplete, parseCandidates } from '../../shared/flows/orchestration';
+import { SCHEDULE_AUTO_APPROVE_MAX } from '../../shared/flows/schedule';
 import { pickDrafterBackend, drafterModelFor } from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
 import type { RunnerManager } from '../runner';
@@ -206,7 +207,14 @@ export class OrchestratorImpl {
       model,
       prompt,
       cwd,
-      timeoutMs: 300_000,
+      // A producer that searches two issue trackers and diffs three repos is
+      // doing dozens of MCP round-trips; a flat 5-minute wall clock killed
+      // healthy runs mid-investigation. Budget on SILENCE instead (the same
+      // shape as the flow runtime's step watchdog) with a generous absolute
+      // ceiling behind it, so a turn that keeps working keeps going and only
+      // a genuinely stalled one — or a runaway — gets cut.
+      timeoutMs: 30 * 60_000,
+      idleTimeoutMs: 5 * 60_000,
       permissionMode: 'bypassPermissions',
       onProgress: (snap) => {
         const now = Date.now();
@@ -279,8 +287,8 @@ export class OrchestratorImpl {
 
   // ---- PARK (scheduled proposals) ---------------------------------------
 
-  /// Run the producer turn and record what it found as a batch that has NOT
-  /// launched anything — every item lands `proposed`.
+  /// Run the producer turn and record what it found as a batch. By default
+  /// nothing launches — every item lands `proposed`.
   ///
   /// This is the only entry point a schedule gets. `startBatch` dispatches
   /// immediately, which is fine when a human just clicked Launch and is
@@ -289,6 +297,12 @@ export class OrchestratorImpl {
   /// fork a dozen worktrees unsupervised. Parking keeps the expensive half of
   /// the decision with the user while still doing the slow half (the
   /// investigation) on their behalf.
+  ///
+  /// `autoApprove` hands the cheap half back too, for schedules whose producer
+  /// the user has learned to trust — but through the cap, not around it. The
+  /// first `maxItems` candidates queue and pump; everything past the cap stays
+  /// `proposed`, so an unexpectedly large morning degrades into a normal
+  /// parked batch instead of a dozen unsupervised worktrees.
   async parkProposal(args: {
     scheduleId: UUID;
     scheduleName: string;
@@ -301,8 +315,11 @@ export class OrchestratorImpl {
     /// Title for the batch, already carrying its `[SR-n]` sequence so two
     /// mornings' worth of the same schedule are tellable apart in the ledger.
     title?: string;
+    /// Set to dispatch without waiting for approval, up to `maxItems`.
+    autoApprove?: { maxItems: number };
   }): Promise<
-    { ok: true; orchestrationId: UUID; count: number } | { ok: false; error: string }
+    | { ok: true; orchestrationId: UUID; count: number; queued: number }
+    | { ok: false; error: string }
   > {
     const projectPath = args.projectPath?.trim();
     if (!projectPath) return { ok: false, error: 'Schedule has no project.' };
@@ -310,6 +327,12 @@ export class OrchestratorImpl {
     const produced = await this.propose({ message: args.prompt, projectPath });
     if (!produced.ok) return { ok: false, error: produced.error };
 
+    // Clamped here as well as validated at save time: a schedule persisted by
+    // an older build, or hand-edited on disk, must not be able to talk this
+    // engine into an unbounded unattended dispatch.
+    const autoCap = args.autoApprove
+      ? Math.max(0, Math.min(SCHEDULE_AUTO_APPROVE_MAX, Math.floor(args.autoApprove.maxItems) || 0))
+      : 0;
     const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
     const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
     const orchestration: Orchestration = {
@@ -323,19 +346,34 @@ export class OrchestratorImpl {
       producer: { prompt: args.prompt, reply: produced.reply },
       origin: { kind: 'schedule', scheduleId: args.scheduleId, scheduleName: args.scheduleName },
       createdAt: Date.now(),
-      items: produced.candidates.map<OrchestrationItem>((candidate) => ({
+      items: produced.candidates.map<OrchestrationItem>((candidate, index) => ({
         candidate,
         // The producer may name a flow per candidate; the schedule's flow is
         // the fallback, since there was nobody around to pick one.
         flowId: candidate.suggestedFlowId?.trim() || args.flowId,
         baseBranch: runIn === 'cwd' ? undefined : baseBranch,
-        status: 'proposed',
+        // Producer order is the only ranking available at 8am — it triages
+        // best-first by construction — so the cap takes a prefix of it.
+        status: index < autoCap ? 'queued' : 'proposed',
+        note:
+          autoCap > 0 && index >= autoCap
+            ? `Held back — over the ${autoCap}-item auto-launch cap.`
+            : undefined,
       })),
     };
     this.batches.set(orchestration.id, orchestration);
     this.persistAndEmit(orchestration);
-    // Deliberately no `pump` — that's what approval is for.
-    return { ok: true, orchestrationId: orchestration.id, count: orchestration.items.length };
+    const queued = orchestration.items.filter((i) => i.status === 'queued').length;
+    // Without `autoApprove` there is deliberately no `pump` — that's what
+    // approval is for. With it, the queued prefix goes now and the parked
+    // remainder still waits for a human.
+    if (queued > 0) await this.pump(orchestration.id);
+    return {
+      ok: true,
+      orchestrationId: orchestration.id,
+      count: orchestration.items.length,
+      queued,
+    };
   }
 
   /// Release a parked batch. Items named in `approve` are queued (with an

@@ -92,6 +92,51 @@ describe('orchestratorStore — recent prompts', () => {
   });
 });
 
+describe('orchestratorStore — launch clears a spent draft', () => {
+  const seed = (ids: string[]) =>
+    useOrchestratorStore.setState({
+      turns: [
+        { role: 'user', text: 'find the small docs fixes' },
+        { role: 'assistant', text: 'here they are' },
+      ],
+      candidates: ids.map((id) => ({ id, title: id, prompt: `do ${id}` })),
+      itemConfig: Object.fromEntries(
+        ids.map((id) => [id, { selected: true, flowId: 'fix-it', baseBranch: '' }]),
+      ),
+      defaultFlowId: 'fix-it',
+    });
+
+  beforeEach(() => {
+    mockInvoke.mockImplementation((channel: string) =>
+      channel === 'orchestrator:startBatch'
+        ? Promise.resolve({ ok: true, orchestrationId: 'orch-1' })
+        : Promise.resolve(undefined),
+    );
+  });
+
+  // Launching everything is the end of the conversation: leaving the
+  // transcript behind would park a finished producer turn and an empty Map
+  // pane on top of the runs the user just started.
+  it('drops the transcript when every candidate was launched', async () => {
+    seed(['a', 'b']);
+    const res = await useOrchestratorStore.getState().startBatch('Batch');
+    expect(res.ok).toBe(true);
+    expect(useOrchestratorStore.getState().candidates).toHaveLength(0);
+    expect(useOrchestratorStore.getState().turns).toHaveLength(0);
+  });
+
+  it('keeps the transcript when candidates are still on the table', async () => {
+    seed(['a', 'b']);
+    useOrchestratorStore.setState((s) => ({
+      itemConfig: { ...s.itemConfig, b: { ...s.itemConfig.b, selected: false } },
+    }));
+    await useOrchestratorStore.getState().startBatch('Batch');
+    // 'b' still needs mapping, and refining it needs the producer's context.
+    expect(useOrchestratorStore.getState().candidates.map((c) => c.id)).toEqual(['b']);
+    expect(useOrchestratorStore.getState().turns).toHaveLength(2);
+  });
+});
+
 describe('orchestratorStore — restoreDefaults (persisted across reload)', () => {
   it('restores a saved "main tree" (cwd) choice instead of the worktree default', () => {
     // Fresh store default is 'worktree' — the bug was this winning after reload.

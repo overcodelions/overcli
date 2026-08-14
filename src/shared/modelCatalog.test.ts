@@ -123,6 +123,17 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
     expect(PREMIUM_MODELS.codex[0]).toBe('gpt-5.6-sol');
   });
 
+  it('lists gemini-3.1-pro first so it is the gemini default', () => {
+    // Pro leads even though Flash is on a much newer version number — the
+    // first entry is the strongest model, not the newest release.
+    expect(PREMIUM_MODELS.gemini[0]).toBe('gemini-3.1-pro');
+  });
+
+  it('does not expose the retired 2.5 gemini models', () => {
+    expect(PREMIUM_MODELS.gemini).not.toContain('gemini-2.5-pro');
+    expect(PREMIUM_MODELS.gemini).not.toContain('gemini-2.5-flash');
+  });
+
   it('formats gpt-5.4 with Codex suffix', () => {
     expect(friendlyModelLabel('codex', 'gpt-5.4')).toBe('GPT-5.4 (Codex)');
   });
@@ -141,12 +152,20 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
 });
 
 describe('friendlyModelLabel — gemini', () => {
-  it('formats 2.5-pro with title-cased qualifier', () => {
-    expect(friendlyModelLabel('gemini', 'gemini-2.5-pro')).toBe('Gemini 2.5 Pro');
+  it('formats 3.1-pro with title-cased qualifier', () => {
+    expect(friendlyModelLabel('gemini', 'gemini-3.1-pro')).toBe('Gemini 3.1 Pro');
   });
 
-  it('formats 2.5-flash with title-cased qualifier', () => {
-    expect(friendlyModelLabel('gemini', 'gemini-2.5-flash')).toBe('Gemini 2.5 Flash');
+  it('formats 3.7-flash with title-cased qualifier', () => {
+    expect(friendlyModelLabel('gemini', 'gemini-3.7-flash')).toBe('Gemini 3.7 Flash');
+  });
+
+  it('title-cases both segments of a hyphenated qualifier', () => {
+    expect(friendlyModelLabel('gemini', 'gemini-3.5-flash-lite')).toBe('Gemini 3.5 Flash-Lite');
+  });
+
+  it('still formats a retired 2.5 id', () => {
+    expect(friendlyModelLabel('gemini', 'gemini-2.5-pro')).toBe('Gemini 2.5 Pro');
   });
 
   it('returns a pick-model placeholder when model is empty', () => {
@@ -204,6 +223,11 @@ describe('modelSpeed', () => {
     ['gpt-5.5', 'thinking'],
     ['gpt-5.4', 'standard'],
     ['gpt-5.4-mini', 'fast'],
+    ['gemini-3.1-pro', 'thinking'],
+    ['gemini-3.7-flash', 'standard'],
+    ['gemini-3.6-flash', 'standard'],
+    ['gemini-3.5-flash-lite', 'fast'],
+    ['gemini-3.1-flash-lite', 'fast'],
     ['gemini-2.5-pro', 'thinking'],
     ['gemini-2.5-flash', 'fast'],
     ['claude-haiku-4.5', 'fast'],

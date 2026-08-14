@@ -1347,6 +1347,9 @@ export interface IPCInvokeMap {
     | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
     | { ok: false; error: string };
   'git:listBaseBranches': (projectPath: string) => string[];
+  /// Same list, but fetches from origin first so branches pushed
+  /// elsewhere (a PR opened on another machine) show up in the picker.
+  'git:listBaseBranchesFresh': (projectPath: string) => string[];
   'git:detectBaseBranch': (projectPath: string) => string;
   'git:mergeAgent': (args: {
     projectPath: string;

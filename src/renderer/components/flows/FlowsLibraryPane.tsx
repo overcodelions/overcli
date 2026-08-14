@@ -3,7 +3,7 @@
 // edit / delete; Run is wired in Phase 4 when the runtime can execute
 // the steps.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
@@ -137,6 +137,7 @@ export function FlowsLibraryPane() {
           />
           <SegmentTab
             label="Schedules"
+            glyph={<ClockGlyph />}
             active={segment === 'schedules'}
             onClick={showSchedules}
             discover={!settings.seenSchedules && segment !== 'schedules'}
@@ -145,12 +146,18 @@ export function FlowsLibraryPane() {
         </div>
         {segment === 'flows' && (
           <>
+            {/* `ink-muted` and a glyph, not `ink-faint` on its own: faint is
+                this codebase's tone for disabled and for metadata, and sat
+                between a segmented control and two filled buttons it read as
+                the least pressable thing on the row. It's the answer to "what
+                is this page", which is not a footnote. */}
             <button
               onClick={() => setAboutOpen(true)}
-              className="text-xs text-ink-faint hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded"
+              className="text-xs text-ink-muted hover:text-ink ml-auto hover:bg-white/5 px-2 py-1 rounded flex items-center gap-1.5"
               title="What is a flow?"
             >
-              About
+              <span aria-hidden>?</span>
+              What's a flow
             </button>
             <button
               onClick={() => void reload(projectPaths)}
@@ -217,7 +224,16 @@ export function FlowsLibraryPane() {
           }}
         />
       )}
-      {aboutOpen && <FlowsAboutModal onClose={() => setAboutOpen(false)} />}
+      {aboutOpen && (
+        <FlowsAboutModal
+          onClose={() => setAboutOpen(false)}
+          onCreate={() => setPickerOpen(true)}
+          onBrowse={() => {
+            setBrowseQuery('');
+            setBrowseOpen(true);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -432,10 +448,13 @@ function RunRow({ run, projectLabel }: { run: FlowRun; projectLabel?: string }) 
   return (
     <div
       className={
-        'group flex items-center gap-3 rounded-md border px-3 py-2 cursor-pointer transition ' +
-        (isActive
-          ? 'border-accent/40 bg-card/40 hover:bg-card/60'
-          : 'border-card bg-card/20 hover:bg-card/40')
+        // Shading, not an outline. The previous version was `border` plus
+        // `bg-card/40` — and an opacity modifier on a CSS-var colour compiles
+        // to nothing (see the palette note in styles.css), so every one of
+        // these rows rendered as a bare rectangle with no fill at all. The
+        // named blends in `.run-row` do what those classes were meant to.
+        'group flex items-center gap-3 rounded-md px-3 py-2 cursor-pointer transition-colors ' +
+        (isActive ? 'run-row run-row-active' : 'run-row')
       }
       onClick={() => setActiveRun(run.id)}
     >
@@ -530,16 +549,40 @@ function pathBasenameSafe(p: string): string {
   return segs[segs.length - 1] ?? p;
 }
 
+/// Drawn rather than typed. "⏱" is an emoji: the platform picks the shape, it
+/// renders a size smaller than the label beside it, and on the inactive half of
+/// the track it was simply hard to see. A stroked path takes `currentColor`,
+/// so it inherits the violet and the bloom.
+function ClockGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="6.1" stroke="currentColor" strokeWidth="1.5" />
+      <path
+        d="M8 4.6 V8.2 L10.3 9.7"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function SegmentTab({
   label,
   active,
   onClick,
+  glyph,
   discover,
   badge,
 }: {
   label: string;
   active: boolean;
   onClick: () => void;
+  /// Small mark before the label. "Library" and "Schedules" as two bare words
+  /// on one track read as the same kind of thing seen twice; a clock says one
+  /// of them is about time before you've read it.
+  glyph?: ReactNode;
   /// Draw the one-time discovery glow. Retires the moment the user opens it.
   discover?: boolean;
   /// Live count. Earned attention, so unlike the glow it stays for as long as
@@ -565,6 +608,20 @@ function SegmentTab({
         (discover ? ' nav-segment-discover text-ink' : '')
       }
     >
+      {/* Violet, not a dimmed grey. This app already speaks violet for
+          everything a schedule touches — the badge on a scheduled run, a
+          parked proposal, the origin banner on its batch — so the tab wearing
+          it is the same word, not decoration. It also gives the inactive half
+          of the track something other than muted text, which was the whole
+          reason "Schedules" read as unclickable. */}
+      {glyph && (
+        <span
+          aria-hidden
+          className="flex-none text-violet-600 dark:text-violet-400 glyph-bloom"
+        >
+          {glyph}
+        </span>
+      )}
       {label}
       {badge ? (
         badge.tone === 'waiting' ? (
