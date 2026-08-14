@@ -398,6 +398,17 @@ export async function detectBaseBranchAsync(projectPath: string): Promise<string
   return 'main';
 }
 
+/// Does `baseBranch` resolve to a commit in this repo? Lets a caller that
+/// forks SEVERAL repos off one shared name (a workspace run) find out which
+/// members actually have it, instead of learning per-repo by way of a failed
+/// `git worktree add`.
+export async function baseBranchExistsAsync(
+  projectPath: string,
+  baseBranch: string,
+): Promise<boolean> {
+  return (await resolveBaseBranchStartPointAsync(projectPath, baseBranch)) !== null;
+}
+
 async function resolveBaseBranchStartPointAsync(
   projectPath: string,
   baseBranch: string,
