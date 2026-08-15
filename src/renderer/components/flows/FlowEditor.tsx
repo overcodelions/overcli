@@ -13,6 +13,7 @@ import { serializeFlow } from '@shared/flows/yaml';
 import { flowProjectPath, normalizeFlowTag } from '@shared/flows/schema';
 import { TAG_AXES } from '@shared/flows/tagTaxonomy';
 import { validateFlow } from '@shared/flows/validation';
+import { FlowAiEdit } from './FlowAiEdit';
 import { FlowStepCard } from './FlowStepCard';
 import { FlowPipelineDiagram } from './FlowPipelineDiagram';
 import { FlowParticipantsCard } from './FlowParticipantsCard';
@@ -156,6 +157,12 @@ export function FlowEditor() {
           {saveError}
         </div>
       )}
+
+      {/* AI editing sits above the two-column body and spans it: the same
+          CLI that drafts a flow from scratch, pointed at this draft. It
+          patches the in-memory draft only, so the Save button below stays
+          the single point where anything reaches disk. */}
+      <FlowAiEdit draft={draft} />
 
       {/* Two-column layout: left = flow body (pipeline, header card,
           participants, step cards, validation). Right = sticky YAML
