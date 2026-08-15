@@ -1551,6 +1551,16 @@ export interface IPCInvokeMap {
   'flows:draftFromPrompt': (args: { description: string }) =>
     | { ok: true; flow: Flow }
     | { ok: false; error: string };
+  /// Revise the flow currently open in the builder. Takes the draft's YAML
+  /// plus a plain-English instruction ("drop the test step", "review for
+  /// security before shipping") and returns the whole flow with that change
+  /// applied, validated the same way a fresh draft is. `id` carries the
+  /// draft's existing id through — the YAML body doesn't hold it, and a
+  /// revision must keep it so the next save updates the flow rather than
+  /// forking a new file.
+  'flows:reviseFromPrompt': (args: { yaml: string; instruction: string; id?: string }) =>
+    | { ok: true; flow: Flow }
+    | { ok: false; error: string };
   'flows:startRun': (args: {
     flowId: string;
     projectPath: string;
