@@ -1,8 +1,15 @@
-// AI-assisted flow drafting. The user types a description of what they
-// want (e.g. "fix a Jira ticket then open a PR"), and we ask their
+// AI-assisted flow drafting and revision. The user types a description of
+// what they want (e.g. "fix a Jira ticket then open a PR"), and we ask their
 // PREFERRED CLI — with the Flow YAML schema in its system prompt — to
 // generate a draft. The result lands in the editor; the user refines from
 // there.
+//
+// `reviseFlowFromPrompt` is the same call pointed at a flow that already
+// exists: the builder hands over the draft's current YAML plus an instruction
+// ("add a security review before the PR step"), and the CLI returns the whole
+// flow again with that one change applied. Same schema, same repairs, same
+// validation — so an AI edit can't put the editor into a state a hand edit
+// couldn't.
 //
 // Backend selection mirrors the rest of the app: the user's preferred
 // backend when it's healthy, otherwise the first healthy premium backend
@@ -44,6 +51,10 @@ export interface DraftDeps {
   runner: RunnerManager;
 }
 
+/// Which job the CLI is being asked to do. Both share the schema prompt and
+/// the whole parse/repair/validate pipeline; only the framing differs.
+type DraftMode = 'draft' | 'revise';
+
 /// Human-facing CLI name for error/status copy. Kept local so the drafter
 /// (main process) doesn't reach into renderer-only helpers.
 function backendLabel(backend: Backend): string {
@@ -67,14 +78,29 @@ function backendLabel(backend: Backend): string {
 /// the model sees the exact shape we expect back. The CONVENTIONS section and
 /// the closing note steer the generated flow's steps toward `backend` (the
 /// CLI the user prefers) instead of always defaulting to Claude.
-function systemPrompt(backend: Backend): string {
+///
+/// `mode` swaps only the framing: 'draft' writes a flow from a description,
+/// 'revise' rewrites an existing one the user hands us. Everything between —
+/// schema, roles, conventions, example — is identical, because a revision has
+/// to obey exactly the same contract the original draft did.
+function systemPrompt(backend: Backend, mode: DraftMode = 'draft'): string {
   const hints = drafterModelHints(backend);
   const label = backendLabel(backend);
   return [
-    'You are a flow designer for overcli. A "flow" is a sequence of LLM steps that run autonomously,',
-    'each step backed by its own model + tools, with artifact handoff. The user will describe what',
-    'they want; you respond with ONLY a YAML body that conforms to the schema below — no prose, no',
-    'code fences, no commentary. Start your response on the first line with `name:`.',
+    ...(mode === 'revise'
+      ? [
+          'You are a flow editor for overcli. A "flow" is a sequence of LLM steps that run',
+          'autonomously, each step backed by its own model + tools, with artifact handoff. The user',
+          'will give you an EXISTING flow as YAML plus a change they want made to it; you respond',
+          'with ONLY the complete revised YAML body conforming to the schema below — no prose, no',
+          'code fences, no commentary. Start your response on the first line with `name:`.',
+        ]
+      : [
+          'You are a flow designer for overcli. A "flow" is a sequence of LLM steps that run autonomously,',
+          'each step backed by its own model + tools, with artifact handoff. The user will describe what',
+          'they want; you respond with ONLY a YAML body that conforms to the schema below — no prose, no',
+          'code fences, no commentary. Start your response on the first line with `name:`.',
+        ]),
     '',
     'SCHEMA',
     '======',
@@ -230,7 +256,29 @@ function systemPrompt(backend: Backend): string {
     `NOTE: the example above happens to use claude + ollama, but THIS user prefers ${label} —`,
     `use ${backend} models (as listed under CONVENTIONS) for the steps you generate, not claude.`,
     '',
-    'Now produce a YAML for the user\'s described flow. Reply with YAML only.',
+    ...(mode === 'revise'
+      ? [
+          'REVISION RULES',
+          '==============',
+          'You are editing a flow that already exists and that the user is happy with apart from the',
+          'change they asked for. Treat the current YAML as the source of truth:',
+          '  - Make the requested change and NOTHING else. Preserve every step id, model, role,',
+          '    system_prompt, tool list, artifact name, and option the change does not touch —',
+          '    byte-for-byte where you can.',
+          '  - Do NOT re-tag, re-title, re-word descriptions, re-order steps, or "improve" prompts',
+          '    that the user did not ask you to touch. An unrequested edit is a bug, not a bonus.',
+          '  - Keep artifact wiring intact. If you rename a step\'s `output`, or add/remove/reorder',
+          '    steps, fix every `inputs` ref so each step still consumes an artifact an EARLIER step',
+          '    produces.',
+          '  - If the request is ambiguous, choose the smallest edit that satisfies it.',
+          '  - If the request cannot be expressed in the schema, return the flow UNCHANGED rather',
+          '    than inventing keys.',
+          '  - Keep the existing backend/model choices unless the user asked to change them, even if',
+          '    they differ from the CONVENTIONS above. Apply CONVENTIONS only to steps you ADD.',
+          '',
+          'Now apply the requested change and reply with the complete revised YAML only.',
+        ]
+      : ['Now produce a YAML for the user\'s described flow. Reply with YAML only.']),
   ].join('\n');
 }
 
@@ -244,6 +292,52 @@ export async function draftFlowFromPrompt(
   const desc = args.description.trim();
   if (!desc) return { ok: false, error: 'Description is empty.' };
 
+  const out = await runDrafter(deps, 'draft', `USER REQUEST:\n${desc}`);
+  if (!out.ok) return out;
+  return finalizeDraft(out.text, out.label);
+}
+
+/// Revise a flow the user already has open in the builder. Same CLI, same
+/// schema prompt, same repair-and-validate pipeline as drafting — the only
+/// difference is that the current YAML goes in alongside the instruction and
+/// the model is told to change one thing and leave the rest alone.
+///
+/// `id` is the draft's existing id, carried through because the YAML body
+/// doesn't hold it (the id is the filename on disk). Without it a revision
+/// that touches `name` would re-slugify into a new id and the next save would
+/// fork a second file instead of updating the flow the user is editing.
+export async function reviseFlowFromPrompt(
+  args: { yaml: string; instruction: string; id?: string },
+  deps: DraftDeps,
+): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }> {
+  const instruction = args.instruction.trim();
+  const current = args.yaml.trim();
+  if (!instruction) return { ok: false, error: 'Describe the change you want first.' };
+  if (!current) return { ok: false, error: 'There is no flow to edit.' };
+
+  const message = [
+    'CURRENT FLOW (YAML)',
+    '===================',
+    current,
+    '',
+    'REQUESTED CHANGE',
+    '================',
+    instruction,
+  ].join('\n');
+
+  const out = await runDrafter(deps, 'revise', message);
+  if (!out.ok) return out;
+  return finalizeDraft(out.text, out.label, { id: args.id });
+}
+
+/// Resolve the drafting CLI, run it, and hand back its raw text plus the
+/// label to name it by in errors. Shared by drafting and revising so the two
+/// can never drift on backend selection or transport.
+async function runDrafter(
+  deps: DraftDeps,
+  mode: DraftMode,
+  userMessage: string,
+): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
   // Health is resolved up front rather than probed inside the predicate:
   // probing executes a CLI, so it's async now (it used to block the main
   // thread) and `pickDrafterBackend` can't await mid-predicate.
@@ -257,7 +351,8 @@ export async function draftFlowFromPrompt(
     return {
       ok: false,
       error:
-        'No CLI is signed in to draft with. Set up Claude, Codex, Gemini, or Copilot in Settings first.',
+        `No CLI is signed in to ${mode === 'revise' ? 'edit' : 'draft'} with. ` +
+        'Set up Claude, Codex, Gemini, or Copilot in Settings first.',
     };
   }
   const model = drafterModelFor(backend);
@@ -271,30 +366,30 @@ export async function draftFlowFromPrompt(
   const useClaudeSdk =
     backend === 'claude' && deps.settings.claudeTransport === 'sdk';
   const text = useClaudeSdk
-    ? await draftViaClaudeSdk(desc, model, deps.settings.backendPaths.claude)
-    : await draftViaRunner(deps.runner, backend, model, desc);
+    ? await draftViaClaudeSdk(userMessage, model, mode, deps.settings.backendPaths.claude)
+    : await draftViaRunner(deps.runner, backend, model, mode, userMessage);
   if (!text.ok) return text;
-
-  return finalizeDraft(text.text, label);
+  return { ok: true, text: text.text, label };
 }
 
 /// Direct SDK path for Claude: a pure-text generation with the claude_code
 /// preset bypassed and tools fully disabled.
 async function draftViaClaudeSdk(
-  desc: string,
+  userMessage: string,
   model: string,
+  mode: DraftMode,
   claudeBinOverride?: string,
 ): Promise<OneShotResult> {
   const executable = claudeSdkExecutablePath(claudeBinOverride);
   let collected = '';
   try {
     const stream = query({
-      prompt: desc,
+      prompt: userMessage,
       options: {
         // Pure custom system prompt — we don't want the claude_code preset
         // injecting its project-context bits into a pure text-generation
         // task. The schema + example carries everything the model needs.
-        systemPrompt: systemPrompt('claude'),
+        systemPrompt: systemPrompt('claude', mode),
         model,
         cwd: os.homedir(),
         permissionMode: 'bypassPermissions',
@@ -330,24 +425,29 @@ async function draftViaRunner(
   runner: RunnerManager,
   backend: Backend,
   model: string,
-  desc: string,
+  mode: DraftMode,
+  userMessage: string,
 ): Promise<OneShotResult> {
-  const prompt = `${systemPrompt(backend)}\n\n---\n\nUSER REQUEST:\n${desc}\n\nReply with YAML only.`;
+  const prompt = `${systemPrompt(backend, mode)}\n\n---\n\n${userMessage}\n\nReply with YAML only.`;
   return runner.oneShot({ backend, model, prompt, cwd: os.homedir() });
 }
 
 /// Parse + validate the raw CLI output into a Flow. Shared by every
-/// backend path. `label` names the CLI in any error message.
+/// backend path. `label` names the CLI in any error message. `opts.id` pins
+/// the resulting flow's id (revisions of an existing flow keep theirs);
+/// without it the id is derived from the generated name.
 function finalizeDraft(
   raw: string,
   label: string,
+  opts: { id?: string } = {},
 ): { ok: true; flow: Flow } | { ok: false; error: string } {
   const yaml = stripCodeFences(raw.trim());
   if (!yaml) return { ok: false, error: `${label} returned no content.` };
 
+  const keepId = opts.id?.trim();
   const parsed = parseFlowYaml({
     yaml,
-    id: 'drafted-flow',
+    id: keepId || 'drafted-flow',
     source: 'user',
     filePath: '',
   });
@@ -355,7 +455,7 @@ function finalizeDraft(
 
   // Give it a unique id derived from the name so saving it later doesn't
   // collide with another flow named "drafted-flow".
-  parsed.id = slugify(parsed.name) || 'drafted-flow';
+  parsed.id = keepId || slugify(parsed.name) || 'drafted-flow';
 
   // Salvage near-miss artifact names before validating. The model sometimes
   // emits an `output` with spaces or slashes ("audit report", "zendesk
@@ -384,7 +484,7 @@ function finalizeDraft(
     return {
       ok: false,
       error:
-        `${label}'s draft failed validation: ` +
+        `${label}'s ${keepId ? 'revision' : 'draft'} failed validation: ` +
         v.errors.map((e) => `${e.path}: ${e.message}`).join('; '),
     };
   }

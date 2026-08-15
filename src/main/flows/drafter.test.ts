@@ -17,7 +17,7 @@ vi.mock('../health', () => ({
   healthyBackends: vi.fn(async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama'])),
 }));
 
-import { draftFlowFromPrompt, type DraftDeps } from './drafter';
+import { draftFlowFromPrompt, reviseFlowFromPrompt, type DraftDeps } from './drafter';
 
 /// Deps that route the drafter to the mocked Claude SDK path. The SDK path is
 /// only taken when the experimental SDK transport is enabled, so these deps
@@ -377,5 +377,102 @@ describe('draftFlowFromPrompt', () => {
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain('No CLI is signed in');
+  });
+});
+
+/// Revising is the same call as drafting with the current flow in the prompt,
+/// so these cover what's genuinely different: the id has to survive, and the
+/// current YAML has to actually reach the CLI.
+describe('reviseFlowFromPrompt', () => {
+  beforeEach(() => {
+    mockQuery.mockClear();
+  });
+
+  const CURRENT = [
+    'name: Original',
+    'input: user_prompt',
+    'steps:',
+    '  - id: plan',
+    '    model: { backend: claude, model: claude-sonnet-4-6 }',
+    '    role: planner',
+    '    inputs: [user_prompt]',
+    '    tools: [Read]',
+    '    output: plan.md',
+  ].join('\n');
+
+  it('rejects an empty instruction or an empty flow', async () => {
+    expect(
+      await reviseFlowFromPrompt({ yaml: CURRENT, instruction: '  ' }, claudeDeps()),
+    ).toMatchObject({ ok: false });
+    expect(
+      await reviseFlowFromPrompt({ yaml: '', instruction: 'add a step' }, claudeDeps()),
+    ).toMatchObject({ ok: false });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('keeps the caller\'s id even when the revision renames the flow', async () => {
+    // The id is the filename on disk. Re-slugifying from the new name would
+    // fork a second file on the next save instead of updating this flow.
+    mockQuery.mockReturnValue(claudeStream(validYaml('Renamed Entirely')));
+
+    const result = await reviseFlowFromPrompt(
+      { yaml: CURRENT, instruction: 'rename it', id: 'my-existing-flow' },
+      claudeDeps(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.id).toBe('my-existing-flow');
+      expect(result.flow.name).toBe('Renamed Entirely');
+    }
+  });
+
+  it('sends the current flow and the instruction to the CLI', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+    await reviseFlowFromPrompt(
+      { yaml: CURRENT, instruction: 'add a security review' },
+      claudeDeps(),
+    );
+
+    const prompt = mockQuery.mock.calls[0][0].prompt as string;
+    expect(prompt).toContain('id: plan');
+    expect(prompt).toContain('add a security review');
+    const system = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(system).toContain('REVISION RULES');
+  });
+
+  it('routes a non-Claude backend through runner.oneShot with the revise prompt', async () => {
+    const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('Revised') });
+    const deps: DraftDeps = {
+      settings: {
+        preferredBackend: 'codex',
+        disabledBackends: {},
+        backendPaths: {},
+      } as unknown as AppSettings,
+      runner: { oneShot } as unknown as DraftDeps['runner'],
+    };
+
+    const result = await reviseFlowFromPrompt(
+      { yaml: CURRENT, instruction: 'drop the plan step' },
+      deps,
+    );
+
+    expect(oneShot).toHaveBeenCalledTimes(1);
+    expect(oneShot.mock.calls[0][0].prompt).toContain('REVISION RULES');
+    expect(oneShot.mock.calls[0][0].prompt).toContain('drop the plan step');
+    expect(result.ok).toBe(true);
+  });
+
+  it('falls back to a name-derived id when the caller has none', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml('Fresh Draft')));
+
+    const result = await reviseFlowFromPrompt(
+      { yaml: CURRENT, instruction: 'tweak it' },
+      claudeDeps(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow.id).toBe('fresh-draft');
   });
 });

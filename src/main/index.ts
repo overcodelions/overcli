@@ -122,7 +122,7 @@ import {
 import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
-import { draftFlowFromPrompt } from './flows/drafter';
+import { draftFlowFromPrompt, reviseFlowFromPrompt } from './flows/drafter';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
@@ -932,6 +932,9 @@ function registerIpc(): void {
   ipcMain.handle('flows:listTemplates', () => FLOW_TEMPLATES);
   ipcMain.handle('flows:draftFromPrompt', (_e, args) =>
     draftFlowFromPrompt(args, { settings: Store.load().settings, runner: runner! }),
+  );
+  ipcMain.handle('flows:reviseFromPrompt', (_e, args) =>
+    reviseFlowFromPrompt(args, { settings: Store.load().settings, runner: runner! }),
   );
   ipcMain.handle('flows:startRun', (_e, args) =>
     flowRuntime ? flowRuntime.startRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
