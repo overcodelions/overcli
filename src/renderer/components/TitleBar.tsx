@@ -135,6 +135,15 @@ export function TitleBar() {
             setDetailMode('orchestrator');
           }}
         />
+        <NavButton
+          label="Workers"
+          active={detailMode === 'workers'}
+          onClick={() => {
+            setActiveRun(null);
+            closeFlowEditor();
+            setDetailMode('workers');
+          }}
+        />
       </div>
       <div className="flex-1" />
       {/* Local + Usage are passive dashboards, not action surfaces, so

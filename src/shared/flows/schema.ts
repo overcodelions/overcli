@@ -159,6 +159,11 @@ export interface Flow {
   /// installed flow arrives pre-tagged; hand-written flows get whatever the
   /// author typed. Used to group and filter the library.
   tags?: string[];
+  /// Retired from active duty: hidden from the library's main groups (a
+  /// collapsed Archived section holds it) and from every launch picker.
+  /// The file stays on disk and runs that reference it still resolve —
+  /// archiving is shelving, not deleting.
+  archived?: boolean;
   /// Resolved at load time — where this flow was read from.
   source: 'user' | 'project';
   /// Absolute path on disk. Re-saves write back to this path.
@@ -429,6 +434,11 @@ export interface FlowRun {
   /// memory of starting is otherwise alarming.
   scheduleId?: UUID;
   scheduleName?: string;
+  /// Set when a Worker's shift launched this run. Mirrors `scheduleId` —
+  /// routes the terminal state back to the worker engine and lets the UI
+  /// say which worker started work nobody watched.
+  workerId?: UUID;
+  workerName?: string;
   /// User-supplied name for THIS run, set from the sidebar / library row.
   /// Overrides the prompt-derived title everywhere a run is listed (see
   /// `flowRunTitle`). Absent until the user renames the run — a run is
@@ -449,11 +459,28 @@ export const MAX_RUN_TITLE_LENGTH = 200;
 export function flowRunTitle(run: FlowRun): string {
   const explicit = run.title?.trim();
   if (explicit) return explicit;
+  // A batch child's candidate headline was written to BE a title — far
+  // better than the self-contained (i.e. long) prompt underneath it.
+  const itemTitle = run.orchestrationItemTitle?.trim();
+  if (itemTitle) return itemTitle;
   const firstLine = run.userPrompt
     ?.split(/\r?\n/)
     .map((l) => l.trim())
     .find((l) => l.length > 0);
-  return firstLine || run.flowSnapshot.name;
+  if (!firstLine) return run.flowSnapshot.name;
+  return shortenPromptTitle(firstLine);
+}
+
+/// A prompt pasted as one long line is a terrible title. Cut it down to the
+/// first sentence when that's short enough, else the last word boundary
+/// before the cap — every surface that lists runs gets the same short form.
+const RUN_TITLE_MAX = 90;
+function shortenPromptTitle(line: string): string {
+  if (line.length <= RUN_TITLE_MAX) return line;
+  const sentence = line.split(/(?<=[.!?])\s+/)[0];
+  if (sentence.length <= RUN_TITLE_MAX) return sentence;
+  const cut = line.lastIndexOf(' ', RUN_TITLE_MAX);
+  return `${line.slice(0, cut > 40 ? cut : RUN_TITLE_MAX)}…`;
 }
 
 /// The project/workspace a run logically belongs to — i.e. where the user

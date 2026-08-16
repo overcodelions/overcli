@@ -64,9 +64,8 @@ export function SchedulesPane() {
   return (
     <div>
       <div className="flex items-center gap-3 mb-4">
-        <div className="text-xs text-ink-faint">
-          Runs a flow, or asks the orchestrator for a batch to approve, on a timer.
-        </div>
+        {/* What-a-schedule-is lives in the Flows tab's subtitle now, so this
+            row is just the action. */}
         <button
           disabled={!canCreate}
           onClick={() =>
@@ -166,7 +165,10 @@ function ScheduleRow({
   const awaiting = useMemo(
     () =>
       Object.values(orchestrations).filter(
-        (o) => o.origin?.scheduleId === schedule.id && isOrchestrationAwaitingApproval(o),
+        (o) =>
+          o.origin?.kind === 'schedule' &&
+          o.origin.scheduleId === schedule.id &&
+          isOrchestrationAwaitingApproval(o),
       ),
     [orchestrations, schedule.id],
   );
@@ -653,7 +655,7 @@ function ScheduleEditor() {
               className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
             >
               <option value="">Pick a flow…</option>
-              {flows.map((f) => (
+              {flows.filter((f) => !f.archived).map((f) => (
                 <option key={`${f.source}:${f.id}`} value={f.id}>
                   {f.name}
                 </option>

@@ -5,6 +5,13 @@
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
 import type { Schedule } from './flows/schedule';
+import type {
+  Worker,
+  WorkerContract,
+  WorkerJournalEntry,
+  WorkerScorecard,
+  WorkerTrustLevel,
+} from './flows/worker';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 
@@ -1617,6 +1624,10 @@ export interface IPCInvokeMap {
   /// End a watched run (the watch off-switch). Also marks any other run
   /// `archived` as a clean terminal.
   'flows:archiveRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
+  /// All-time run tallies per flow id, from the same summary log the Usage
+  /// page reads. Drives the library's most-used-first ordering — computed in
+  /// main so a renderer with only the 50 retained runs doesn't undercount.
+  'flows:runCounts': () => Record<string, { count: number; lastAt: number }>;
   /// List the registered watch sources for the watch-entry picker.
   'flows:listWatchSources': () => Array<{ id: string; displayName: string }>;
   /// Set (or clear) a per-participant model override on a live run. The
@@ -1747,6 +1758,59 @@ export interface IPCInvokeMap {
   /// Fire once, right now, without touching the cadence. The way to check a
   /// schedule does what you think before trusting it to run unattended.
   'schedules:runNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+
+  // ---- Workers (standing personas) --------------------------------------
+  /// Every hired worker, newest first, each with its computed next shift time
+  /// and its scorecard (both derived in main — the renderer never computes
+  /// them, so they can't disagree with what the engine will actually do).
+  'workers:list': () => Array<{
+    worker: Worker;
+    nextShiftAt: number | null;
+    scorecard: WorkerScorecard;
+  }>;
+  /// Hire (no `id`) or update (with `id`). Validates with the same
+  /// `validateWorker` the editor uses. Trust is not accepted here: hires
+  /// start on probation, and promotion goes through `workers:setTrust`.
+  'workers:save': (args: {
+    worker: Omit<Worker, 'id' | 'createdAt' | 'trust'> & { id?: UUID };
+  }) => { ok: true; worker: Worker } | { ok: false; error: string };
+  'workers:setEnabled': (args: { id: UUID; enabled: boolean }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// The explicit promote/demote act — the only way trust goes UP.
+  'workers:setTrust': (args: { id: UUID; trust: WorkerTrustLevel }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// Fire the worker. Its parked batches, launched runs, and journal all
+  /// survive — the persona is removed, not its output.
+  'workers:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Work one shift right now, out of band. Advances the shift number but
+  /// not the cadence.
+  'workers:workShiftNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// The worker's journal, newest first — its episodic memory, rendered as
+  /// the shift history in the Workers pane.
+  'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
+  /// One hire-drafter turn: a free-text job description in, a reviewed-not-
+  /// saved contract out — plus a drafted Flow when no existing flow fit.
+  'workers:draftFromPrompt': (args: { jobDescription: string }) =>
+    | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow }
+    | { ok: false; error: string };
+  /// One revision turn across a worker's two halves: the instruction is
+  /// routed to the job description (planning), the flow (execution), or
+  /// both. Nothing is saved — the editor shows both proposed halves and
+  /// only its Save commits them.
+  'workers:reviseFromPrompt': (args: {
+    jobDescription: string;
+    /// The worker's saved flow, by id.
+    flowId?: string;
+    /// An UNSAVED ride-along flow (hire-drafted, or already AI-revised),
+    /// passed whole because main can't resolve it from disk yet. Takes
+    /// precedence over `flowId` — it's the freshest state of the same flow.
+    flow?: Flow;
+    instruction: string;
+  }) =>
+    | { ok: true; jobDescription?: string; flow?: Flow; note: string }
+    | { ok: false; error: string };
 }
 
 /// One local subresource of an HTML preview. Stylesheets come back as
@@ -2176,14 +2240,42 @@ export type MainToRendererEvent =
       id: UUID;
     }
   | {
+      /// A worker changed — hired, edited, promoted/demoted, toggled, worked
+      /// a shift, or a verdict landed in its journal. Whole-record like
+      /// `scheduleUpdate`; `nextShiftAt` and the scorecard ride along because
+      /// both are derived in main (from the cadence and the journal) and
+      /// recomputing them in the renderer would let the two disagree.
+      type: 'workerUpdate';
+      worker: Worker;
+      nextShiftAt: number | null;
+      scorecard: WorkerScorecard;
+    }
+  | {
+      /// A worker was fired (deleted) from main.
+      type: 'workerDeleted';
+      id: UUID;
+    }
+  | {
       /// Live progress of the in-flight producer turn — the running
       /// assistant text and the tools it has invoked so far. Lets the
       /// Orchestrator's Ask pane stream the investigation like the chat
       /// interface instead of showing a blank spinner. Only one producer
-      /// turn runs at a time, so this carries no id.
+      /// turn runs at a time. `workerId` is set when the turn is a worker's
+      /// shift-planning pass — those stream to the Workers pane instead of
+      /// the Ask pane.
       type: 'orchestrationProducerProgress';
       text: string;
       tools: string[];
+      workerId?: UUID;
+    }
+  | {
+      /// A worker's shift lifecycle: `active: true` when the planning turn
+      /// starts (the row shows "working a shift"), `false` when the shift
+      /// settles either way. The streaming text/tools ride on
+      /// `orchestrationProducerProgress` with the same `workerId`.
+      type: 'workerShiftProgress';
+      workerId: UUID;
+      active: boolean;
     }
   /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
   /// conversation — consumed by the global UpdateToast.

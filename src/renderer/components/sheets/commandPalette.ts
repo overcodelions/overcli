@@ -15,6 +15,8 @@
 
 import type { Backend, Conversation, Project, UUID, Workspace } from '@shared/types';
 import type { Flow, FlowRun } from '@shared/flows/schema';
+import type { Worker } from '@shared/flows/worker';
+import { describeTrigger } from '@shared/flows/schedule';
 import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle } from '@shared/flows/schema';
 import { conversationPromptAt } from '../../conversationLookup';
 
@@ -22,6 +24,7 @@ export type PaletteKind =
   | 'chat'
   | 'agent'
   | 'run'
+  | 'worker'
   | 'flow'
   | 'project'
   | 'workspace'
@@ -42,7 +45,14 @@ export type PaletteStatus =
 /// the only scope that shows put-away things without a query.
 export type PaletteScope = 'all' | 'chats' | 'flows' | 'places' | 'actions' | 'archived';
 
-export type PaletteSection = 'active' | 'recent' | 'places' | 'flows' | 'actions' | 'archived';
+export type PaletteSection =
+  | 'active'
+  | 'recent'
+  | 'places'
+  | 'flows'
+  | 'workers'
+  | 'actions'
+  | 'archived';
 
 /// Where a row goes when the user hits ↵. The sheet resolves these against
 /// the stores; keeping them as data means the ranking layer never has to
@@ -51,6 +61,7 @@ export type PaletteTarget =
   | { type: 'conversation'; convId: UUID }
   | { type: 'run'; runId: string }
   | { type: 'flow'; flowId: string }
+  | { type: 'worker'; workerId: string }
   | { type: 'project'; projectId: UUID }
   | { type: 'workspace'; workspaceId: UUID }
   | { type: 'command'; commandId: string };
@@ -92,6 +103,9 @@ export interface PaletteBuildInput {
   workspaces: Workspace[];
   runs: FlowRun[];
   flows: Flow[];
+  /// Standing workers. Optional so older call sites (and tests) that predate
+  /// workers keep compiling; absent means none.
+  workers?: Worker[];
   commands: PaletteCommand[];
   /// Conversation ids currently streaming. Covers flow-run participants
   /// too, which is how a `done` run still reads as live while you're
@@ -210,6 +224,27 @@ export function buildPaletteItems(input: PaletteBuildInput): PaletteItem[] {
       keywords: compact(['flow pipeline', flow.id, flow.source, ...(flow.tags ?? [])]),
       monogram: flow.name,
       target: { type: 'flow', flowId: flow.id },
+    });
+  }
+
+  for (const worker of input.workers ?? []) {
+    out.push({
+      key: `worker:${worker.id}`,
+      kind: 'worker',
+      title: worker.name,
+      subtitle: `${worker.trust} worker · ${describeTrigger(worker.cadence)}`,
+      status: 'idle',
+      // A paused worker is shelved, which is what the archived lane means
+      // here — it stays findable without outranking the active roster.
+      archived: !worker.enabled,
+      recency: worker.lastShiftAt ?? 0,
+      keywords: compact([
+        'worker persona standing shift hire',
+        worker.trust,
+        worker.jobDescription.slice(0, 80),
+      ]),
+      monogram: worker.name,
+      target: { type: 'worker', workerId: worker.id },
     });
   }
 
@@ -338,6 +373,7 @@ const KIND_WEIGHT: Record<PaletteKind, number> = {
   project: 8,
   workspace: 8,
   flow: 6,
+  worker: 6,
   command: 4,
 };
 
@@ -361,7 +397,7 @@ const KEYWORD_WEIGHT = 0.7;
 
 const SCOPE_KINDS: Record<Exclude<PaletteScope, 'all' | 'archived'>, PaletteKind[]> = {
   chats: ['chat', 'agent'],
-  flows: ['run', 'flow'],
+  flows: ['run', 'flow', 'worker'],
   places: ['project', 'workspace'],
   actions: ['command'],
 };
@@ -420,6 +456,8 @@ export function sectionFor(item: PaletteItem): PaletteSection {
       return 'places';
     case 'flow':
       return 'flows';
+    case 'worker':
+      return 'workers';
     case 'command':
       return 'actions';
   }
@@ -430,17 +468,19 @@ export const SECTION_LABEL: Record<PaletteSection, string> = {
   recent: 'Recent',
   places: 'Projects & workspaces',
   flows: 'Flows',
+  workers: 'Workers',
   actions: 'Actions',
   archived: 'Archived',
 };
 
-const RESTING_ORDER: PaletteSection[] = ['active', 'recent', 'places', 'flows', 'actions', 'archived'];
+const RESTING_ORDER: PaletteSection[] = ['active', 'recent', 'places', 'flows', 'workers', 'actions', 'archived'];
 
 const CAP_RESTING: Record<PaletteSection, number> = {
   active: 8,
   recent: 8,
   places: 6,
   flows: 5,
+  workers: 4,
   actions: 6,
   archived: 6,
 };
@@ -450,6 +490,7 @@ const CAP_SEARCHING: Record<PaletteSection, number> = {
   recent: 10,
   places: 6,
   flows: 6,
+  workers: 5,
   actions: 6,
   archived: 6,
 };
