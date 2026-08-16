@@ -254,69 +254,152 @@ function WorkersEmptyState({
   onAddByHand: () => void;
 }) {
   return (
-    <div className="max-w-[660px] py-2">
-      <TrustLadderMark />
+    // The posting stays a narrow document — a column you read — and the width
+    // the pane actually has goes to the thing the width is FOR: a desk. Terms
+    // tell you what you are agreeing to; the specimen tells you what it is
+    // like, which no list of terms can.
+    <div className="flex flex-wrap items-start gap-x-12 gap-y-8 py-2">
+      <div className="min-w-[380px] max-w-[620px] flex-1">
+        <TrustLadderMark />
 
-      <div className="mt-7 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-        Open position
-      </div>
-      <h2
-        className="mt-2 text-[26px] leading-[1.25] text-ink"
-        style={{ fontFamily: SERIF }}
-      >
-        A worker is a job description
-        <br />
-        with a clock.
-      </h2>
-
-      <p className="mt-4 text-[13px] leading-relaxed text-ink-muted">
-        Write what you want done. It turns up on its own schedule, re-reads the
-        project and its own journal, decides what today&apos;s most valuable
-        version of that job is, and files the work for you to approve. Not a
-        saved prompt on a timer — a standing persona that plans each shift
-        itself.
-      </p>
-
-      <dl className="mt-7 border-t border-card-strong">
-        {TERMS.map((term) => (
-          <div
-            key={term.label}
-            className="flex gap-6 border-b border-card-strong py-2.5 text-[12px]"
-          >
-            <dt className="w-24 shrink-0 uppercase tracking-[0.12em] text-[10px] leading-5 text-ink-faint">
-              {term.label}
-            </dt>
-            <dd className="min-w-0 flex-1 leading-relaxed text-ink-muted">
-              {term.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
-
-      <div className="mt-7 flex items-center gap-4">
-        <button
-          disabled={!canHire}
-          onClick={onHire}
-          className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+        <div className="mt-7 text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+          Open position
+        </div>
+        <h2
+          className="mt-2 text-[26px] leading-[1.25] text-ink"
+          style={{ fontFamily: SERIF }}
         >
-          ✨ Hire a worker
-        </button>
-        <button
-          disabled={!canHire}
-          onClick={onAddByHand}
-          className="text-[12px] text-ink-faint hover:text-ink disabled:opacity-40"
-        >
-          or write the contract yourself
-        </button>
-      </div>
+          A worker is a job description
+          <br />
+          with a clock.
+        </h2>
 
-      {/* An empty screen has to say what to do next, and "hire" is not the
-          next thing when there is nowhere for a worker to work. */}
-      {!canHire && (
-        <p className="mt-3 text-[12px] text-amber-500">
-          Add a project or workspace first — a worker is hired onto one.
+        <p className="mt-4 text-[13px] leading-relaxed text-ink-muted">
+          Write what you want done. It turns up on its own schedule, re-reads
+          the project and its own journal, decides what today&apos;s most
+          valuable version of that job is, and files the work for you to
+          approve. Not a saved prompt on a timer — a standing persona that plans
+          each shift itself.
         </p>
-      )}
+
+        <dl className="mt-7 border-t border-card-strong">
+          {TERMS.map((term) => (
+            <div
+              key={term.label}
+              className="flex gap-6 border-b border-card-strong py-2.5 text-[12px]"
+            >
+              <dt className="w-24 shrink-0 uppercase tracking-[0.12em] text-[10px] leading-5 text-ink-faint">
+                {term.label}
+              </dt>
+              <dd className="min-w-0 flex-1 leading-relaxed text-ink-muted">
+                {term.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+
+        <div className="mt-7 flex items-center gap-4">
+          <button
+            disabled={!canHire}
+            onClick={onHire}
+            className="rounded-md bg-accent px-4 py-2 text-[13px] font-medium text-white hover:opacity-90 disabled:opacity-40"
+          >
+            ✨ Hire a worker
+          </button>
+          <button
+            disabled={!canHire}
+            onClick={onAddByHand}
+            className="text-[12px] text-ink-faint hover:text-ink disabled:opacity-40"
+          >
+            or write the contract yourself
+          </button>
+        </div>
+
+        {/* An empty screen has to say what to do next, and "hire" is not the
+          next thing when there is nowhere for a worker to work. */}
+        {!canHire && (
+          <p className="mt-3 text-[12px] text-amber-500">
+            Add a project or workspace first — a worker is hired onto one.
+          </p>
+        )}
+      </div>
+
+      <DeskSpecimen />
+    </div>
+  );
+}
+
+/// One errand, start to finish, at the size it really renders.
+///
+/// The terms can say "you can interrupt it"; only a transcript shows what that
+/// buys you — your words in your own phrasing, an answer that came back
+/// through the standing job description, and a file left behind that outlives
+/// the run. It is a specimen and says so, and it is drawn quiet on purpose:
+/// the ladder is this screen's one loud thing, and a second one would just be
+/// two.
+function DeskSpecimen() {
+  const tint = "#38bdf8";
+  return (
+    <div className="w-[340px] shrink-0">
+      <div className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+        A day at the desk
+      </div>
+
+      <div className="mt-3 rounded-xl border border-card-strong bg-card p-3">
+        <div className="flex items-center gap-2 text-[10px] text-ink-faint">
+          <span className="h-px flex-1 bg-card-strong" />
+          <span>Shift 12 · 2 done · 08:00</span>
+          <span className="h-px flex-1 bg-card-strong" />
+        </div>
+
+        <div className="mt-3 flex justify-end">
+          <div className="max-w-[85%] rounded-xl bg-accent/20 px-2.5 py-1.5 text-[11px] leading-snug text-ink">
+            why did the nightly build get slower this week?
+          </div>
+        </div>
+
+        <div
+          className="relative mt-2 overflow-hidden rounded-xl"
+          style={{
+            background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
+          }}
+        >
+          <div
+            className="absolute bottom-0 left-0 top-0 w-[2px]"
+            style={{ background: tint }}
+          />
+          <div className="px-3 py-2 pl-[11px]">
+            <div
+              className="mb-1 text-[9px] font-medium"
+              style={{ color: tint }}
+            >
+              Test Runner
+            </div>
+            <div className="text-[11px] leading-snug text-ink-muted">
+              Two things changed on Tuesday. The dependency install stopped
+              hitting the cache, and a new integration suite added 4m12s on its
+              own…
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-2 flex items-baseline gap-2 text-[10px]">
+          <span className="w-12 shrink-0 text-emerald-500">done</span>
+          <span className="min-w-0 flex-1 truncate text-ink">
+            Time the last 14 nightly builds
+          </span>
+          <span className="shrink-0 rounded border border-card-strong px-1 text-ink-faint">
+            report.md
+          </span>
+        </div>
+      </div>
+
+      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
+        A specimen. Your errand in your words, its answer through its own job
+        description, and the file it left behind — which outlives the run that
+        made it.
+      </p>
     </div>
   );
 }
