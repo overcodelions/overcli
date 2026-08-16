@@ -182,8 +182,23 @@ export const SCHEDULE_HISTORY_LIMIT = 20;
 /// `catchUp: 'skip'` would silently skip every single occurrence.
 export const SCHEDULE_GRACE_MS = 60_000;
 
+/// The slice of a Schedule the firing arithmetic actually reads. Widened to a
+/// structural type so the Worker engine (whose cadence is a ScheduleTrigger
+/// but whose record is not a Schedule) reuses `evaluateSchedule` instead of
+/// growing a second copy of the missed-while-asleep / due-mid-run logic.
+export interface ScheduleTiming {
+  enabled: boolean;
+  trigger: ScheduleTrigger;
+  onOverlap: 'skip' | 'queue' | 'replace';
+  catchUp: 'skip' | 'once';
+  createdAt: number;
+  anchorAt?: number;
+  lastFiredAt?: number;
+  pendingSince?: number;
+}
+
 /// The point a schedule measures its next occurrence from.
-export function scheduleAnchor(s: Schedule): number {
+export function scheduleAnchor(s: ScheduleTiming): number {
   return s.lastFiredAt ?? s.anchorAt ?? s.createdAt;
 }
 
@@ -327,7 +342,7 @@ export type ScheduleDecision =
   | { action: 'skip'; dueAt: number; nextAt: number; reason: string };
 
 export function evaluateSchedule(
-  s: Schedule,
+  s: ScheduleTiming,
   now: number,
   opts: { busy?: boolean } = {},
 ): ScheduleDecision {

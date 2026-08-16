@@ -32,7 +32,7 @@ interface FlowsState {
   /// Which segment of the Flows library is showing. Lives here rather than as
   /// local state in the pane so the title bar's schedule indicator can deep-
   /// link straight into Schedules from any tab.
-  librarySegment: 'flows' | 'schedules';
+  librarySegment: 'flows' | 'runs' | 'schedules';
   /// Editor target — drives FlowEditor render.
   editor: EditorTarget;
   /// Working copy of the flow being edited. Lifted out of the library so
@@ -73,7 +73,7 @@ interface FlowsActions {
     progress: { completed: number; total: number; message: string } | null,
   ): void;
   setActiveRun(id: string | null): void;
-  setLibrarySegment(segment: 'flows' | 'schedules'): void;
+  setLibrarySegment(segment: 'flows' | 'runs' | 'schedules'): void;
   openEditor(target: EditorTarget, blank?: Flow): void;
   closeEditor(): void;
   updateDraft(patch: Partial<Flow>): void;

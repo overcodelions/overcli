@@ -9,6 +9,7 @@ import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import {
   flowProjectPath,
+  flowRunActivityAt,
   flowRunOwnerPath,
   flowRunTitle as runTitle,
   resolveStepModel,
@@ -31,6 +32,7 @@ import { FlowRunLauncher } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
 import { SchedulesPane } from './SchedulesPane';
 import { useSchedulesStore } from '../../schedulesStore';
+import { useWorkersStore } from '../../workersStore';
 import { describeTrigger, untilLabel } from '@shared/flows/schedule';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
@@ -62,6 +64,15 @@ export function FlowsLibraryPane() {
   const saveSettings = useStore((s) => s.saveSettings);
   const schedules = useSchedulesStore((s) => s.schedules);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  const allRuns = useFlowsStore((s) => s.runs);
+  // The Runs tab's badge mirrors the schedule one: blocked-on-you outranks
+  // merely-working.
+  const runsBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
+    const t = triageRunCounts(allRuns);
+    if (t.needsYou > 0) return { count: t.needsYou, tone: 'waiting' };
+    if (t.running > 0) return { count: t.running, tone: 'running' };
+    return undefined;
+  }, [allRuns]);
   // A parked proposal outranks a running run on the tab: one is blocked on the
   // user, the other is just working and will notify when it's done.
   const scheduleBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
@@ -119,7 +130,7 @@ export function FlowsLibraryPane() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-7">
+      <div className="flex items-center gap-3 mb-2">
         <div className="text-2xl font-semibold">Flows</div>
         {/* A real segmented control, not two bare words. The track is what
             makes the inactive half legible as an option: without an enclosing
@@ -134,6 +145,12 @@ export function FlowsLibraryPane() {
             label="Library"
             active={segment === 'flows'}
             onClick={() => setSegment('flows')}
+          />
+          <SegmentTab
+            label="Runs"
+            active={segment === 'runs'}
+            onClick={() => setSegment('runs')}
+            badge={runsBadge}
           />
           <SegmentTab
             label="Schedules"
@@ -180,6 +197,16 @@ export function FlowsLibraryPane() {
           </>
         )}
       </div>
+      {/* One line on what this rung of the ladder is (chat → flows →
+          orchestrator → workers). Under the title, not beside it — beside a
+          2xl heading a sentence reads as misalignment, not a subtitle. */}
+      <div className="text-xs text-ink-muted mb-6">
+        {segment === 'schedules'
+          ? 'Flows on a timer — a saved run, or a batch proposal, firing on a cadence.'
+          : segment === 'runs'
+            ? 'What the flows have been doing — live, waiting on you, stalled, and finished.'
+            : 'Organized threads of work — one ask runs through a repeatable chain of roles, reviews, and artifacts.'}
+      </div>
 
       {justSaved && (
         <div
@@ -194,10 +221,12 @@ export function FlowsLibraryPane() {
 
       {segment === 'schedules' ? (
         <SchedulesPane />
+      ) : segment === 'runs' ? (
+        <RunsOverview standalone />
       ) : (
         <>
           <ScheduleStrip onOpen={showSchedules} />
-          <RunsOverview />
+          <RunsStrip onOpen={() => setSegment('runs')} />
 
           {!loaded ? (
             <div className="text-sm text-ink-muted">Loading flows…</div>
@@ -315,10 +344,71 @@ function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
 }
 
 
-/// Active + recent runs surfaced at the top of the library. Renders as
-/// rows (not grid cards) so timestamps + project + actions fit cleanly
-/// on each line and the layout reads top-to-bottom like a log.
-function RunsOverview() {
+/// A paused run this quiet isn't waiting for a decision — it's been left
+/// behind. Five days keeps a long weekend's worth of honest "I'll get to it"
+/// out of the stalled pile.
+const STALL_AFTER_DAYS = 5;
+const STALL_AFTER_MS = STALL_AFTER_DAYS * 24 * 60 * 60 * 1000;
+
+/// One triage, three consumers: the Runs tab badge, the library's one-line
+/// strip, and the overview's sections — so the counts can never disagree.
+function triageRunCounts(runs: Record<string, FlowRun>): {
+  running: number;
+  needsYou: number;
+  stalled: number;
+} {
+  const now = Date.now();
+  let running = 0;
+  let needsYou = 0;
+  let stalled = 0;
+  for (const r of Object.values(runs)) {
+    if (r.state.kind === 'running' || r.state.kind === 'watching') running++;
+    else if (r.state.kind === 'paused') {
+      if (now - flowRunActivityAt(r) <= STALL_AFTER_MS) needsYou++;
+      else stalled++;
+    }
+  }
+  return { running, needsYou, stalled };
+}
+
+/// The library's one-line teaser for the Runs tab — activity belongs to Runs
+/// now, so the library only says how much of it there is and where it went.
+function RunsStrip({ onOpen }: { onOpen: () => void }) {
+  const runs = useFlowsStore((s) => s.runs);
+  const t = useMemo(() => triageRunCounts(runs), [runs]);
+  if (t.running + t.needsYou + t.stalled === 0) return null;
+  return (
+    <button
+      onClick={onOpen}
+      className="w-full mb-5 flex items-center gap-3 text-left rounded-md border border-card px-3 py-1.5 hover:bg-card/40 transition-colors"
+    >
+      {t.running > 0 && (
+        <span className="text-[11px] text-sky-700 dark:text-sky-300 flex items-center">
+          <RunningDot />
+          {t.running} running
+        </span>
+      )}
+      {t.needsYou > 0 && (
+        <span className="flex items-center gap-1 text-[11px] text-violet-700 dark:text-violet-300">
+          <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-violet-500 dark:bg-violet-400" />
+          {t.needsYou} need{t.needsYou === 1 ? 's' : ''} you
+        </span>
+      )}
+      {t.stalled > 0 && (
+        <span className="text-[11px] text-ink-faint">{t.stalled} stalled</span>
+      )}
+      <span className="ml-auto text-[11px] text-ink-faint whitespace-nowrap">Runs →</span>
+    </button>
+  );
+}
+
+/// The Runs segment: every run triaged by what it wants from the user —
+/// Running (nothing — just visibility), Needs you (a decision), Stalled
+/// (collapsed, sweepable), Recent (collapsed history). Renders as rows (not
+/// grid cards) so timestamps + project + actions fit cleanly on each line
+/// and the layout reads top-to-bottom like a log. `standalone` renders the
+/// empty state instead of vanishing — as its own tab it can't just be blank.
+function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
   const runs = useFlowsStore((s) => s.runs);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
@@ -326,19 +416,44 @@ function RunsOverview() {
     () => Object.values(runs).sort((a, b) => b.createdAt - a.createdAt),
     [runs],
   );
-  const active = sorted.filter(
+  // "Active" used to be one undifferentiated pile, and with standing workers
+  // and schedules feeding it, it became an untriaged inbox — the one live run
+  // buried under sixteen paused ones from three weeks ago. Split by what each
+  // run wants from the user: nothing (running), a decision (paused recently),
+  // or an admission that it's been abandoned (paused and quiet for days).
+  const now = Date.now();
+  const running = sorted.filter(
     (r) =>
       r.state.kind === 'running' ||
-      r.state.kind === 'paused' ||
       // A watching run is an ongoing commitment (it's polling), so it belongs
-      // with the active set, not buried in recent.
+      // with the live set, not buried in recent.
       r.state.kind === 'watching',
   );
+  const paused = sorted.filter((r) => r.state.kind === 'paused');
+  const needsYou = paused.filter((r) => now - flowRunActivityAt(r) <= STALL_AFTER_MS);
+  const stalled = paused.filter((r) => now - flowRunActivityAt(r) > STALL_AFTER_MS);
   const recent = sorted.filter(
     (r) =>
       r.state.kind === 'done' || r.state.kind === 'aborted' || r.state.kind === 'archived',
   );
   const [showRecent, setShowRecent] = useState(false);
+  const [showStalled, setShowStalled] = useState(false);
+  const [sweeping, setSweeping] = useState(false);
+
+  // The sweep: archive the whole stalled tail in one act. Archiving never
+  // touches worktrees (only explicit delete does), so there is nothing to
+  // guard — an archived run stays in Recent and can still be reopened.
+  async function archiveStalled(): Promise<void> {
+    if (sweeping) return;
+    setSweeping(true);
+    try {
+      for (const run of stalled) {
+        await window.overcli.invoke('flows:archiveRun', { runId: run.id });
+      }
+    } finally {
+      setSweeping(false);
+    }
+  }
 
   // Resolve project / workspace display names for the run rows. Cheap
   // map by path; falls back to the path basename if no match.
@@ -349,18 +464,67 @@ function RunsOverview() {
     return m;
   }, [projects, workspaces]);
 
-  if (active.length === 0 && recent.length === 0) return null;
+  if (running.length === 0 && paused.length === 0 && recent.length === 0) {
+    if (!standalone) return null;
+    return (
+      <div className="rounded-xl bg-card p-6 text-sm text-ink-muted">
+        Nothing has run yet. Launch a flow from the Library, let a schedule fire, or work a
+        worker&apos;s shift — every run lands here, sorted by what it needs from you.
+      </div>
+    );
+  }
 
   return (
     <div className="mb-6">
-      {active.length > 0 && (
+      {running.length > 0 && (
         <>
-          <SectionHeading title="Active" count={active.length} accent />
+          <SectionHeading title="Running" count={running.length} accent />
           <div className="space-y-1.5 mb-4">
-            {active.map((run) => (
+            {running.map((run) => (
               <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
             ))}
           </div>
+        </>
+      )}
+      {needsYou.length > 0 && (
+        <>
+          <SectionHeading title="Needs you" count={needsYou.length} waiting />
+          <div className="space-y-1.5 mb-4">
+            {needsYou.map((run) => (
+              <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
+            ))}
+          </div>
+        </>
+      )}
+      {stalled.length > 0 && (
+        <>
+          <div className="flex items-center gap-2 mb-2">
+            <button
+              onClick={() => setShowStalled((v) => !v)}
+              className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-ink-faint hover:text-ink"
+            >
+              <span>{showStalled ? '▼' : '▶'}</span>
+              <span>Stalled</span>
+              <span className="text-ink-faint normal-case tracking-normal">
+                · {stalled.length} paused, quiet for {STALL_AFTER_DAYS}+ days
+              </span>
+            </button>
+            <button
+              onClick={() => void archiveStalled()}
+              disabled={sweeping}
+              title="Archive every stalled run. They stay under Recent and can be reopened — worktrees are untouched."
+              className="text-[11px] px-2 py-0.5 rounded border border-card-strong text-ink-faint hover:text-ink hover:bg-white/5 disabled:opacity-40"
+            >
+              {sweeping ? 'Archiving…' : 'Archive all'}
+            </button>
+          </div>
+          {showStalled && (
+            <div className="space-y-1.5 mb-4">
+              {stalled.map((run) => (
+                <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
+              ))}
+            </div>
+          )}
         </>
       )}
       {recent.length > 0 && (
@@ -673,11 +837,35 @@ function FlowLibraryList({
   const [drafting, setDrafting] = useState(false);
   const openEditor = useFlowsStore((s) => s.openEditor);
 
-  const tagCounts = useMemo(() => flowTagCounts(flows), [flows]);
-  const groups = useMemo(
-    () => groupFlows(flows, { starred: starredFlows, installed: installedFlows, query, tags }),
-    [flows, starredFlows, installedFlows, query, tags],
+  // Archived flows sit out of every group and land in one collapsed section
+  // at the bottom — shelved, not gone.
+  const liveFlows = useMemo(() => flows.filter((f) => !f.archived), [flows]);
+  const archivedFlows = useMemo(() => flows.filter((f) => f.archived), [flows]);
+  const [showArchived, setShowArchived] = useState(false);
+
+  // All-time run tallies, so most-used flows float and dusty ones sink.
+  const [runCounts, setRunCounts] = useState<Record<string, { count: number; lastAt: number }>>(
+    {},
   );
+  useEffect(() => {
+    void window.overcli.invoke('flows:runCounts').then(setRunCounts);
+  }, []);
+
+  const tagCounts = useMemo(() => flowTagCounts(liveFlows), [liveFlows]);
+  const groups = useMemo(() => {
+    const byUsage = (a: Flow, b: Flow) => {
+      const ua = runCounts[a.id]?.count ?? 0;
+      const ub = runCounts[b.id]?.count ?? 0;
+      if (ua !== ub) return ub - ua;
+      return a.name.localeCompare(b.name);
+    };
+    return groupFlows(liveFlows, {
+      starred: starredFlows,
+      installed: installedFlows,
+      query,
+      tags,
+    }).map((g) => ({ ...g, flows: [...g.flows].sort(byUsage) }));
+  }, [liveFlows, starredFlows, installedFlows, query, tags, runCounts]);
   const matchCount = groups.reduce((n, g) => n + g.flows.length, 0);
   const filtering = query.trim().length > 0 || tags.size > 0;
   const searching = query.trim().length > 0;
@@ -811,6 +999,32 @@ function FlowLibraryList({
         ))
       )}
 
+      {archivedFlows.length > 0 && (
+        <div className="mb-6">
+          <button
+            onClick={() => setShowArchived((v) => !v)}
+            className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-ink-faint hover:text-ink mb-2"
+          >
+            <span>{showArchived ? '▼' : '▶'}</span>
+            <span>Archived</span>
+            <span className="text-ink-faint normal-case tracking-normal">
+              · {archivedFlows.length} shelved — hidden from pickers, unarchive any time
+            </span>
+          </button>
+          {showArchived && (
+            <div className="space-y-3">
+              {archivedFlows.map((flow) => (
+                <FlowRow
+                  key={`${flow.source}:${flow.id}`}
+                  flow={flow}
+                  projectPaths={projectPaths}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Registry results for the same query, inline. Only while searching:
           unfiltered, this would be a second full library competing with
           the user's own. */}
@@ -892,17 +1106,24 @@ function SectionHeading({
   title,
   count,
   accent,
+  waiting,
 }: {
   title: string;
   count?: number;
   accent?: boolean;
+  /// Violet — the app-wide tone for "blocked on the user".
+  waiting?: boolean;
 }) {
   return (
     <div className="flex items-center gap-2 mb-2">
       <span
         className={
           'text-[11px] uppercase tracking-wider ' +
-          (accent ? 'text-accent' : 'text-ink-faint')
+          (accent
+            ? 'text-accent'
+            : waiting
+              ? 'text-violet-600 dark:text-violet-400'
+              : 'text-ink-faint')
         }
       >
         {title}
@@ -988,6 +1209,22 @@ function FlowRow({
     }
   }
 
+  /// Shelve/unshelve. Persisted in the flow's own YAML (an `archived: true`
+  /// key), so it survives restarts and syncs with the file like every other
+  /// property.
+  async function handleArchiveToggle() {
+    const result = await window.overcli.invoke('flows:save', {
+      flow: { ...flow, archived: !flow.archived ? true : undefined },
+      target: flow.source,
+      projectPath: flowProjectPath(flow) ?? undefined,
+    });
+    if (result.ok) {
+      await reload(projectPaths);
+    } else {
+      alert(result.error);
+    }
+  }
+
   async function commitRename() {
     const next = renameValue ?? '';
     setRenameValue(null);
@@ -1050,6 +1287,7 @@ function FlowRow({
                   {flow.name}
                 </div>
                 <SourceBadge source={flow.source} />
+                <WorkerUsageBadge flowId={flow.id} />
                 <span className="text-[11px] font-medium text-accent opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
                   ✎ Edit
                 </span>
@@ -1124,6 +1362,8 @@ function FlowRow({
           <RowActionsMenu
             onEdit={() => openEditor({ kind: 'editing', flowId: flow.id })}
             onRename={() => setRenameValue(flow.name)}
+            archived={!!flow.archived}
+            onArchive={handleArchiveToggle}
             onDelete={handleDelete}
           />
         </div>
@@ -1138,10 +1378,14 @@ function FlowRow({
 function RowActionsMenu({
   onEdit,
   onRename,
+  archived,
+  onArchive,
   onDelete,
 }: {
   onEdit: () => void;
   onRename: () => void;
+  archived?: boolean;
+  onArchive?: () => void | Promise<void>;
   onDelete: () => void | Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -1190,6 +1434,22 @@ function RowActionsMenu({
           >
             Rename
           </button>
+          {onArchive && (
+            <button
+              onClick={() => {
+                setOpen(false);
+                void onArchive();
+              }}
+              title={
+                archived
+                  ? 'Bring it back into the library and the pickers'
+                  : 'Shelve it: hidden from the library and every launch picker, file kept'
+              }
+              className="w-full text-left text-xs px-3 py-1.5 text-ink-muted hover:bg-card-strong hover:text-ink"
+            >
+              {archived ? 'Unarchive' : 'Archive'}
+            </button>
+          )}
           {!confirming ? (
             <button
               onClick={() => setConfirming(true)}
@@ -1227,6 +1487,25 @@ function StepChip({ id, model }: { id: string; model: string }) {
   return (
     <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 text-ink-muted">
       {id} <span className="text-ink-faint">·</span> {model}
+    </span>
+  );
+}
+
+/// Marks a flow that's on a worker's contract. The link matters here for two
+/// reasons: it explains why Delete will refuse (main guards referenced flows),
+/// and it says who is quietly running this flow while nobody watches.
+function WorkerUsageBadge({ flowId }: { flowId: string }) {
+  const workers = useWorkersStore((s) => s.workers);
+  const names = Object.values(workers)
+    .filter((w) => w.flowIds.includes(flowId))
+    .map((w) => w.name);
+  if (names.length === 0) return null;
+  return (
+    <span
+      title={`On ${names.join(', ')}'${names.length === 1 && !names[0].endsWith('s') ? 's' : ''} contract — the flow can't be deleted while a worker runs it.`}
+      className="text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider bg-violet-500/20 text-violet-700 dark:text-violet-300 whitespace-nowrap"
+    >
+      worker · {names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`}
     </span>
   );
 }

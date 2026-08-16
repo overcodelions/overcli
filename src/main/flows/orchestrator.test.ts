@@ -33,6 +33,8 @@ function makeHarness(opts: { producerReply?: string } = {}) {
     flowId: string;
     runIn?: string;
     baseBranch?: string;
+    workerId?: string;
+    workerName?: string;
   }> = [];
 
   const emitted: any[] = [];
@@ -59,6 +61,8 @@ function makeHarness(opts: { producerReply?: string } = {}) {
         flowId: args.flowId,
         runIn: args.runIn,
         baseBranch: args.baseBranch,
+        workerId: args.workerId,
+        workerName: args.workerName,
       });
       return { ok: true, runId };
     },
@@ -630,5 +634,92 @@ describe('OrchestratorImpl parked proposals', () => {
     const after = h.engine.list()[0];
     expect(after.items.every((i) => i.status === 'cancelled')).toBe(true);
     expect(after.completedAt).toBeDefined();
+  });
+});
+
+describe('OrchestratorImpl worker batches', () => {
+  const CANDIDATES = [
+    { id: 'a', title: 'Fix the flaky test', prompt: 'do a', suggestedFlowId: 'contract-alt' },
+    { id: 'b', title: 'Trim the bundle', prompt: 'do b', suggestedFlowId: 'rogue-flow' },
+    { id: 'c', title: 'Rename the module', prompt: 'do c' },
+    { id: 'd', title: 'Document the API', prompt: 'do d' },
+  ];
+  const REPLY = `plan prose\n<candidates>${JSON.stringify(CANDIDATES)}</candidates>`;
+
+  function parkAsWorker(
+    h: ReturnType<typeof makeHarness>,
+    over: Record<string, unknown> = {},
+  ) {
+    return h.engine.parkProposal({
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'Scout' },
+      projectPath: '/proj',
+      prompt: 'shift plan',
+      flowId: 'contract-main',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+      title: '[Shift 1] Scout',
+      ...over,
+    });
+  }
+
+  it('drops journaled rejections case-insensitively and reports the count', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await parkAsWorker(h, { excludeTitles: ['  FIX THE FLAKY TEST '] });
+    expect(res).toMatchObject({ ok: true, count: 3, excluded: 1 });
+    const o = h.engine.list()[0];
+    expect(o.items.map((i) => i.candidate.id)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('hard-caps recorded items at maxItems, taking the best-first prefix', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await parkAsWorker(h, { maxItems: 2 });
+    // The cap trim is NOT "previously rejected" — excluded must stay 0.
+    expect(res).toMatchObject({ ok: true, count: 2, excluded: 0 });
+    expect(h.engine.list()[0].items.map((i) => i.candidate.id)).toEqual(['a', 'b']);
+  });
+
+  it('honours a suggested flow on the contract and clamps one off it', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, { allowedFlowIds: ['contract-main', 'contract-alt'] });
+    const flows = h.engine.list()[0].items.map((i) => i.flowId);
+    // a's suggestion is on the contract → honoured; b's rogue suggestion and
+    // the unsuggested rest → the primary contract flow.
+    expect(flows).toEqual(['contract-alt', 'contract-main', 'contract-main', 'contract-main']);
+  });
+
+  it('records the worker origin and stamps workerId onto auto-launched child runs', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, { autoApprove: { maxItems: 1 } });
+    const o = h.engine.list()[0];
+    expect(o.origin).toEqual({ kind: 'worker', workerId: 'w1', workerName: 'Scout' });
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0]).toMatchObject({ workerId: 'w1', workerName: 'Scout' });
+  });
+
+  it('runs the planning turn on the heartbeat model override', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, { model: 'tiny-heartbeat' });
+    expect(h.oneShotCalls[0].model).toBe('tiny-heartbeat');
+  });
+
+  it('never stamps a worker on a schedule batch child run', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await h.engine.parkProposal({
+      scheduleId: 's1',
+      scheduleName: 'Morning',
+      projectPath: '/proj',
+      prompt: 'seed',
+      flowId: 'flow-a',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+      autoApprove: { maxItems: 1 },
+    });
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0].workerId).toBeUndefined();
+    expect(h.engine.list()[0].origin).toEqual({
+      kind: 'schedule',
+      scheduleId: 's1',
+      scheduleName: 'Morning',
+    });
   });
 });

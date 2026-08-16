@@ -30,6 +30,9 @@ export interface RunSummary {
   wallClockMs: number;
   /// ms epoch when the run first reached `done`/`archived`.
   terminalAt: number;
+  /// Set when a Worker shift launched the run — the key the per-worker
+  /// budget rollup groups by.
+  workerId?: string;
 }
 
 const COMPACT_BYTES = 1024 * 1024;
@@ -56,8 +59,12 @@ function ensureIndex(): Set<string> {
 }
 
 export function summarizeRun(run: FlowRun): RunSummary | null {
-  const isDone = run.state.kind === 'done' || run.state.kind === 'archived';
-  if (!isDone) return null;
+  // Aborted runs count too: their tokens were spent all the same, and the
+  // per-worker budget exists precisely for the worker whose runs keep
+  // failing — a meter that only counts successes never stops that one.
+  const isTerminal =
+    run.state.kind === 'done' || run.state.kind === 'archived' || run.state.kind === 'aborted';
+  if (!isTerminal) return null;
   const flowId = run.flowId || 'unknown';
   const flowName = run.flowSnapshot?.name || flowId;
   let turns = 0;
@@ -85,13 +92,14 @@ export function summarizeRun(run: FlowRun): RunSummary | null {
     id: run.id,
     flowId,
     flowName,
-    completed: true,
+    completed: run.state.kind !== 'aborted',
     turns,
     inputTokens,
     outputTokens,
     costUSD,
     wallClockMs,
     terminalAt,
+    workerId: run.workerId,
   };
 }
 
@@ -120,6 +128,19 @@ export function loadRunSummaries(): RunSummary[] {
   const byId = new Map<string, RunSummary>();
   for (const s of all) byId.set(s.id, s);
   return Array.from(byId.values());
+}
+
+/// Total cost of a worker's runs that reached a terminal state at or after
+/// `sinceMs` — the monthly budget rollup. Reads the same all-time log the
+/// Usage page trusts, so the number can't disagree with what the user sees
+/// there. (The shift-planner turn itself isn't in this log — one-shots don't
+/// produce a FlowRun — so the ceiling is enforced on the expensive half.)
+export function workerSpendSince(workerId: string, sinceMs: number): number {
+  let total = 0;
+  for (const s of loadRunSummaries()) {
+    if (s.workerId === workerId && s.terminalAt >= sinceMs) total += s.costUSD;
+  }
+  return total;
 }
 
 function loadRunSummariesRaw(): RunSummary[] {

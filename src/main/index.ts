@@ -113,7 +113,11 @@ import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
+import { WorkerEngine } from './flows/workerEngine';
+import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
 import { flushRuns } from './flows/runsStore';
+import { loadRunSummaries } from './flows/runSummaryLog';
+import { flowDeletionBlocker } from './flows/flowGuards';
 import {
   listRecentPrompts,
   recordRecentPrompt,
@@ -163,6 +167,7 @@ let runner: RunnerManager | null = null;
 let flowRuntime: FlowRuntime | null = null;
 let orchestrator: OrchestratorImpl | null = null;
 let scheduler: SchedulerEngine | null = null;
+let workerEngine: WorkerEngine | null = null;
 let symbolLookup: SymbolLookupManager | null = null;
 
 function createWindow(): void {
@@ -257,6 +262,11 @@ function registerIpc(): void {
   // runtime first; nothing changes for renderer-facing behavior.
   const flowAwareEmit = (event: MainToRendererEvent) => {
     if (flowRuntime) flowRuntime.observeEvent(event);
+    // The worker engine folds worker-batch orchestration updates into each
+    // worker's journal. Tapped here (not via setRunObserver) because the
+    // verdicts it cares about — approve/reject — are batch transitions, not
+    // run transitions. It ignores every other event type.
+    if (workerEngine) workerEngine.observeEvent(event);
     emitToRenderer(event);
   };
   runner = new RunnerManager(flowAwareEmit, () => Store.load().settings);
@@ -304,6 +314,18 @@ function registerIpc(): void {
     scheduler?.onRunUpdate(run);
   });
   scheduler.start();
+  // Workers park their shifts through the orchestrator exactly like scheduled
+  // `orchestrate` targets do, so the engine is one more parkProposal caller —
+  // built after the orchestrator for the same reason the scheduler is.
+  workerEngine = new WorkerEngine({
+    parker: orchestrator,
+    isGitRepo: (projectPath) =>
+      currentBranch(projectPath).isRepo ||
+      Store.load().workspaces.some((w) => w.rootPath === projectPath),
+    emit: flowAwareEmit,
+    notify: showDesktopNotification,
+  });
+  workerEngine.start();
   // Symbol lookup resolves its backend per call rather than capturing one:
   // the user can change the preferred backend in Settings mid-session, and
   // a lookup is short-lived enough that there's nothing to migrate.
@@ -926,7 +948,24 @@ function registerIpc(): void {
     loadAllFlows({ projectPaths: args.projectPaths }),
   );
   ipcMain.handle('flows:save', (_e, args) => saveFlow(args));
-  ipcMain.handle('flows:delete', (_e, args) => deleteFlow(args));
+  ipcMain.handle('flows:runCounts', () => {
+    const counts: Record<string, { count: number; lastAt: number }> = {};
+    for (const s of loadRunSummaries()) {
+      const c = counts[s.flowId] ?? (counts[s.flowId] = { count: 0, lastAt: 0 });
+      c.count += 1;
+      c.lastAt = Math.max(c.lastAt, s.terminalAt);
+    }
+    return counts;
+  });
+  ipcMain.handle('flows:delete', (_e, args) => {
+    const blocker = flowDeletionBlocker(
+      args.flowId,
+      workerEngine?.list().map((r) => r.worker) ?? [],
+      scheduler?.list() ?? [],
+    );
+    if (blocker) return { ok: false, error: blocker } as const;
+    return deleteFlow(args);
+  });
   ipcMain.handle('flows:validate', (_e, args) => validateFlowYaml(args));
   ipcMain.handle('flows:toolCatalog', (_e, args) => listToolCatalog(args));
   ipcMain.handle('flows:listTemplates', () => FLOW_TEMPLATES);
@@ -1048,6 +1087,82 @@ function registerIpc(): void {
     scheduler
       ? scheduler.runNow(id)
       : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+  );
+
+  // Workers: standing personas that plan their own shifts.
+  ipcMain.handle('workers:list', () => (workerEngine ? workerEngine.list() : []));
+  ipcMain.handle('workers:save', (_e, { worker }) =>
+    workerEngine
+      ? workerEngine.save(worker)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:setEnabled', (_e, { id, enabled }) =>
+    workerEngine
+      ? workerEngine.setEnabled(id, enabled)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:setTrust', (_e, { id, trust }) =>
+    workerEngine
+      ? workerEngine.setTrust(id, trust)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:delete', (_e, { id }) =>
+    workerEngine
+      ? workerEngine.remove(id)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:workShiftNow', (_e, { id }) =>
+    workerEngine
+      ? workerEngine.workShiftNow(id)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:journal', (_e, { id }) =>
+    workerEngine ? workerEngine.journalFor(id) : [],
+  );
+  ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription }) => {
+    const store = Store.load();
+    return draftWorkerFromPrompt(
+      {
+        jobDescription,
+        flows: loadAllFlows({
+          projectPaths: store.projects.map((p) => p.path),
+        }).map((f) => ({ id: f.id, name: f.name, description: f.description })),
+        // Workspaces first: a job that names one should land on the whole
+        // workspace, not one member repo that happens to share the name.
+        projects: [
+          ...store.workspaces.map((w) => ({
+            name: w.name,
+            path: w.rootPath,
+            kind: 'workspace' as const,
+          })),
+          ...store.projects.map((p) => ({
+            name: p.name,
+            path: p.path,
+            kind: 'project' as const,
+          })),
+        ],
+      },
+      { settings: store.settings, runner: runner! },
+    );
+  });
+  ipcMain.handle(
+    'workers:reviseFromPrompt',
+    (_e, { jobDescription, flowId, flow: unsavedFlow, instruction }) => {
+      const store = Store.load();
+      // An unsaved ride-along flow (hire-drafted, or already revised once)
+      // is the freshest state and can't be found on disk — prefer it.
+      const flow =
+        unsavedFlow ??
+        (flowId
+          ? loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }).find(
+              (f) => f.id === flowId,
+            )
+          : undefined);
+      return reviseWorkerFromPrompt(
+        { jobDescription, instruction, flow },
+        { settings: store.settings, runner: runner! },
+      );
+    },
   );
 }
 
@@ -1884,9 +1999,10 @@ app.on('before-quit', (event) => {
   runner?.killAll();
   symbolLookup?.dispose();
   closeAllTreeWatchers();
-  // Drop the pending timer so a quit can't fire a schedule into a runtime
-  // that's already tearing its subprocesses down.
+  // Drop the pending timers so a quit can't fire a schedule or a worker
+  // shift into a runtime that's already tearing its subprocesses down.
   scheduler?.dispose();
+  workerEngine?.dispose();
   ollamaServer.stop();
   // Store writes are debounced now (see store.save). Take the freshest
   // snapshot synchronously so a quit inside the debounce window can't drop

@@ -160,6 +160,31 @@ describe('flowRunTitle', () => {
   it('falls back to the flow name when the prompt is empty', () => {
     expect(flowRunTitle(makeRun({ userPrompt: '   \n  ' }))).toBe('Test Flow');
   });
+
+  it('prefers the batch candidate headline over the raw prompt', () => {
+    const run = makeRun({
+      orchestrationItemTitle: 'Fix the flaky login test',
+      userPrompt: 'A very long self-contained prompt that should never be the title.',
+    });
+    expect(flowRunTitle(run)).toBe('Fix the flaky login test');
+  });
+
+  it('shortens a long one-line prompt at its first sentence', () => {
+    const run = makeRun({
+      userPrompt:
+        'Replace the leftover user-visible branding in the settings screen. All the strings are in i18n files and should be swapped one by one with careful review of every key.',
+    });
+    expect(flowRunTitle(run)).toBe(
+      'Replace the leftover user-visible branding in the settings screen.',
+    );
+  });
+
+  it('cuts a sentence-less prompt at a word boundary with an ellipsis', () => {
+    const long = 'word '.repeat(40).trim();
+    const title = flowRunTitle(makeRun({ userPrompt: long }));
+    expect(title.length).toBeLessThanOrEqual(91);
+    expect(title.endsWith('…')).toBe(true);
+  });
 });
 
 // ─── flowProjectPath ─────────────────────────────────────────────────────────

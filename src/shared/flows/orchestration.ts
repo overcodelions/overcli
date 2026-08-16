@@ -118,16 +118,23 @@ export interface Orchestration {
     prompt: string;
     reply: string;
   };
-  /// Set when a schedule produced this batch rather than the user asking for
-  /// it directly. Such a batch normally arrives with every item `proposed` and
-  /// does nothing until approved; a schedule with `autoApprove` set instead
-  /// arrives with its first N items already queued and the rest still
-  /// `proposed` — see shared/flows/schedule.ts for the bound that N enforces.
-  origin?: {
-    kind: 'schedule';
-    scheduleId: UUID;
-    scheduleName: string;
-  };
+  /// Set when something other than the user produced this batch. A schedule
+  /// batch normally arrives with every item `proposed` and does nothing until
+  /// approved; `autoApprove` instead queues its first N items and parks the
+  /// rest — see shared/flows/schedule.ts for the bound that N enforces. A
+  /// worker batch is one shift's output: the worker's trust level decides the
+  /// auto-launch prefix (see shared/flows/worker.ts, workerAutoApproveCap).
+  origin?:
+    | {
+        kind: 'schedule';
+        scheduleId: UUID;
+        scheduleName: string;
+      }
+    | {
+        kind: 'worker';
+        workerId: UUID;
+        workerName: string;
+      };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).
   completedAt?: number;
