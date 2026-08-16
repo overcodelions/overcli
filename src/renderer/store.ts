@@ -37,7 +37,7 @@ import {
   LogLevel,
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
-import { flowStarKey } from '@shared/flows/schema';
+import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
@@ -271,7 +271,7 @@ interface StoreState {
   saveWorkspaces(): Promise<void>;
   saveColosseums(): Promise<void>;
   saveSettings(next: AppSettings): Promise<void>;
-  toggleFlowStar(flow: { source: 'user' | 'project'; id: string }): Promise<void>;
+  toggleFlowStar(flow: { source: Flow['source']; id: string }): Promise<void>;
 
   // Project / workspace mutations
   addProject(project: Project): Promise<void>;
@@ -3380,7 +3380,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }
     } else if (event.type === 'workerShiftProgress') {
       void import('./workersStore').then(({ useWorkersStore }) => {
-        useWorkersStore.getState().setShiftActive(event.workerId, event.active);
+        useWorkersStore.getState().setShiftActive(event.workerId, event.active, event.task);
       });
     } else if (event.type === 'scheduleUpdate') {
       void import('./schedulesStore').then(({ useSchedulesStore }) => {

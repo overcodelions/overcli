@@ -6,6 +6,7 @@ import { useThemeEffect } from './useThemeEffect';
 import { useShortcuts } from './useShortcuts';
 import { useRunningReconcile } from './useRunningReconcile';
 import { useFileScope } from './fileScope';
+import { installNavHistory, readLocation, useNavHistory } from './navHistory';
 import { Sidebar } from './components/Sidebar';
 import { ConversationPane } from './components/ConversationPane';
 import { StatsPage } from './components/StatsPage';
@@ -22,6 +23,7 @@ import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
 import { SubagentDrawer } from './components/SubagentDrawer';
 import { FileEditorPane } from './components/FileEditorPane';
+import { useWorkersStore } from './workersStore';
 import { UpdateToast } from './components/UpdateToast';
 
 const SIDEBAR_MIN = 200;
@@ -57,7 +59,11 @@ export function App() {
   //     editor mount, so file-link clicks would otherwise fall on the
   //     floor — wire them to this side pane instead).
   const sideFileVisible =
-    !!openFilePath && (!!subagentDrawerParentId || detailMode === 'flows');
+    !!openFilePath &&
+    (!!subagentDrawerParentId || detailMode === 'flows' || detailMode === 'workers');
+  const workerFilesRoot = useWorkersStore(
+    (s) => (s.selectedWorkerId ? (s.filesRoot[s.selectedWorkerId] ?? null) : null),
+  );
   const [sideFileWidth, setSideFileWidth] = useState(SIDE_FILE_DEFAULT);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
@@ -106,8 +112,16 @@ export function App() {
   }, [settings.sidebarWidth]);
 
   useEffect(() => {
-    void init();
+    // Reset the back/forward history once the startup view restore has
+    // settled — the store writes init() makes are the app arriving at the
+    // last-used screen, not the user navigating to it, and leaving them in
+    // the stack would make the first Back press jump somewhere they never
+    // visited this session.
+    void init().then(() => useNavHistory.getState().reset(readLocation()));
   }, [init]);
+
+  // Back/forward across views (⌘←/⌘→, and the title-bar arrows).
+  useEffect(() => installNavHistory(), []);
 
   // Hydrate flow runs on app startup so the sidebar's per-project
   // "Flows" sections populate immediately. Without this, runs only
@@ -369,9 +383,17 @@ export function App() {
                   returns null and relative paths fail to resolve. Pass
                   the active run's projectPath as an explicit root when
                   we're viewing a flow. */}
+              {/* Scope the editor to the thing being browsed. A worker's
+                  files live under userData beside every other worker's, so
+                  without an explicit root the pane resolves nothing and the
+                  user can see their way out of the directory they opened. */}
               <FileEditorPane
                 rootPathOverride={
-                  detailMode === 'flows' && activeFlowRun ? activeFlowRun.projectPath : null
+                  detailMode === 'flows' && activeFlowRun
+                    ? activeFlowRun.projectPath
+                    : detailMode === 'workers'
+                      ? workerFilesRoot
+                      : null
                 }
               />
             </div>

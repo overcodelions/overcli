@@ -19,7 +19,14 @@
 import { randomUUID } from 'node:crypto';
 import os from 'node:os';
 
-import type { AppSettings, Backend, MainToRendererEvent, Project, UUID } from '../../shared/types';
+import type {
+  AppSettings,
+  Attachment,
+  Backend,
+  MainToRendererEvent,
+  Project,
+  UUID,
+} from '../../shared/types';
 import type { FlowRun } from '../../shared/flows/schema';
 import type {
   Candidate,
@@ -100,24 +107,35 @@ function producerSystemPrompt(): string {
   ].join('\n');
 }
 
-/// Fold a refinement turn's prior context into the next producer prompt.
-/// The producer is a one-shot (no persistent session), so we replay the
-/// last exchange as context rather than relying on conversation memory.
+/// Fold prior context into the next producer prompt. The producer is a
+/// one-shot with no persistent session, so the thread has to be replayed —
+/// `priorTurns` carries as many exchanges as the caller wants remembered
+/// (a worker's errand thread passes several, so "no, the other one" resolves
+/// against the whole conversation rather than only the last thing said).
 function buildProducerPrompt(args: {
   message: string;
   priorPrompt?: string;
   priorReply?: string;
+  priorTurns?: Array<{ prompt: string; reply: string }>;
 }): string {
   const parts = [producerSystemPrompt(), '', '---', ''];
-  if (args.priorPrompt && args.priorReply) {
+  const turns =
+    args.priorTurns && args.priorTurns.length > 0
+      ? args.priorTurns
+      : args.priorPrompt && args.priorReply
+        ? [{ prompt: args.priorPrompt, reply: args.priorReply }]
+        : [];
+  if (turns.length > 0) {
     parts.push(
-      'CONTEXT — this is a refinement. Earlier in this session:',
+      turns.length > 1
+        ? 'CONTEXT — this is a continuing conversation. Earlier, oldest first:'
+        : 'CONTEXT — this is a refinement. Earlier in this session:',
       '',
-      `User asked: ${args.priorPrompt}`,
-      '',
-      `You replied (summary + candidates):`,
-      args.priorReply,
-      '',
+    );
+    for (const turn of turns) {
+      parts.push(`User asked: ${turn.prompt}`, '', 'You replied:', turn.reply, '');
+    }
+    parts.push(
       '---',
       '',
       `Now the user refines their ask. Re-emit the FULL updated <candidates> block reflecting`,
@@ -167,6 +185,10 @@ export class OrchestratorImpl {
     projectPath: string;
     priorPrompt?: string;
     priorReply?: string;
+    /// The whole thread so far, oldest first, when the caller keeps one.
+    priorTurns?: Array<{ prompt: string; reply: string }>;
+    /// Files the user attached to the ask.
+    attachments?: Attachment[];
     /// Override the producer's model (a worker's cheap heartbeat model).
     /// The backend is still picked by health — this only swaps the model id.
     model?: string;
@@ -215,6 +237,7 @@ export class OrchestratorImpl {
       backend,
       model,
       prompt,
+      attachments: args.attachments,
       cwd,
       // A producer that searches two issue trackers and diffs three repos is
       // doing dozens of MCP round-trips; a flat 5-minute wall clock killed
@@ -258,6 +281,12 @@ export class OrchestratorImpl {
     baseBranch?: string;
     maxConcurrent: number;
     producer?: { prompt: string; reply: string };
+    /// Provenance, when something other than the user pressed Launch. A worker
+    /// running the flow it just drafted passes its own origin here so the
+    /// batch journals and scores through `syncOrchestration` exactly like a
+    /// shift — work that skipped that fold would be invisible to the worker's
+    /// performance review.
+    origin?: Orchestration['origin'];
     items: Array<{ candidate: Candidate; flowId: string; baseBranch?: string }>;
   }): Promise<{ ok: true; orchestrationId: UUID } | { ok: false; error: string }> {
     const projectPath = args.projectPath?.trim();
@@ -284,6 +313,7 @@ export class OrchestratorImpl {
       baseBranch,
       maxConcurrent: cap,
       producer: args.producer,
+      origin: args.origin,
       createdAt: Date.now(),
       items: items.map<OrchestrationItem>((i) => ({
         candidate: i.candidate,
@@ -346,6 +376,15 @@ export class OrchestratorImpl {
     /// arbitrary flow it hallucinated — under autoApprove that would be an
     /// unattended launch into machinery nobody vetted for this worker.
     allowedFlowIds?: string[];
+    /// Prior turn of the same thread, when this park is a follow-up. Handed
+    /// to the producer so "no, the other spec" resolves against what was just
+    /// said instead of starting cold.
+    priorPrompt?: string;
+    priorReply?: string;
+    /// The whole thread so far, oldest first, when the caller keeps one.
+    priorTurns?: Array<{ prompt: string; reply: string }>;
+    /// Files the user attached to the ask.
+    attachments?: Attachment[];
     /// Candidate titles to drop, case-insensitively — a worker's journaled
     /// rejections. The producer prompt asks the model not to re-propose them,
     /// but this filter is the guarantee: a rejected idea cannot come back
@@ -362,6 +401,10 @@ export class OrchestratorImpl {
       message: args.prompt,
       projectPath,
       model: args.model,
+      priorPrompt: args.priorPrompt,
+      priorReply: args.priorReply,
+      priorTurns: args.priorTurns,
+      attachments: args.attachments,
       progressWorkerId: args.origin?.kind === 'worker' ? args.origin.workerId : undefined,
     });
     if (!produced.ok) return { ok: false, error: produced.error };

@@ -43,6 +43,9 @@ import {
 } from '@shared/flows/schema';
 import { modelSpeed, friendlyModelLabel, PREMIUM_MODELS } from '@shared/modelCatalog';
 import { FlowMonogram } from './FlowMonogram';
+import { useWorkersStore } from '../../workersStore';
+import { useOrchestratorStore } from '../../orchestratorStore';
+import { orchestrationForRun } from '../workers/workerDeskSelectors';
 
 // Bounds for the worktree file-browser tree (same feel as ExplorerPane).
 const TREE_MIN = 200;
@@ -51,6 +54,14 @@ const TREE_MAX = 520;
 export function FlowRunPane({ runId }: { runId: string }) {
   const run = useFlowsStore((s) => s.runs[runId]);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  // A worker's runs are kept out of the Flows sidebar on purpose, so a run
+  // opened from a desk has no row to return to — the breadcrumb is the only
+  // way back, and pointing it at a library this run isn't in was a dead end.
+  const worker = useWorkersStore((s) => (run?.workerId ? s.workers[run.workerId] : undefined));
+  const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+  const setDetailMode = useStore((s) => s.setDetailMode);
   const applyRunUpdate = useFlowsStore((s) => s.applyRunUpdate);
   const removeRun = useFlowsStore((s) => s.removeRun);
   const openSheet = useStore((s) => s.openSheet);
@@ -119,6 +130,17 @@ export function FlowRunPane({ runId }: { runId: string }) {
     );
   }
 
+  // Back to the turn that launched this run, on the right day and expanded —
+  // not merely to the worker, which would leave you hunting for it again.
+  const backToWorker = () => {
+    if (!worker) return;
+    const batch = orchestrationForRun(orchestrations, run.id);
+    if (batch) openWorkerActivity(worker.id, batch.id, batch.createdAt);
+    else selectWorker(worker.id);
+    setActiveRun(null);
+    setDetailMode('workers');
+  };
+
   const participants = run.flowSnapshot.participants ?? [];
   const activeStepId = focusStepId ?? defaultStepId ?? run.flowSnapshot.steps[0]?.id ?? null;
   const activeStep = run.flowSnapshot.steps.find((s) => s.id === activeStepId) ?? null;
@@ -163,12 +185,22 @@ export function FlowRunPane({ runId }: { runId: string }) {
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 mb-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0 flex-1 basis-64">
             <div className="flex items-center gap-1.5 text-xs text-ink-faint flex-shrink-0">
-              <button
-                onClick={() => setActiveRun(null)}
-                className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
-              >
-                Flows
-              </button>
+              {worker ? (
+                <button
+                  onClick={backToWorker}
+                  title={`Back to ${worker.name}'s desk`}
+                  className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+                >
+                  ← {worker.name}
+                </button>
+              ) : (
+                <button
+                  onClick={() => setActiveRun(null)}
+                  className="hover:text-ink px-1.5 py-0.5 rounded hover:bg-white/5"
+                >
+                  Flows
+                </button>
+              )}
               <span className="text-ink-faint">/</span>
             </div>
             <RunTitle run={run} />

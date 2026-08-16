@@ -4,6 +4,8 @@ import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
+import { navigateBack, navigateForward, navigateToTab, useNavHistory } from '../navHistory';
+import { formatShortcutDef, SHORTCUTS } from '../shortcuts';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import { untilLabel } from '@shared/flows/schedule';
 
@@ -106,43 +108,57 @@ export function TitleBar() {
           <line x1="6" y1="3" x2="6" y2="13" stroke="currentColor" />
         </svg>
       </button>
+      <HistoryArrows />
       <div className="flex items-center gap-1 no-drag">
-        <NavButton label="Chat" active={detailMode === 'conversation'} onClick={() => setDetailMode('conversation')} />
+        {/* Each tab returns you to where you last were inside it, and only
+            falls back to its default landing spot the first time you open it
+            this session (or if what you were looking at has been deleted).
+            Leaving a flow run to check Workers and coming back to the library
+            instead of the run reads as the app losing your place. */}
+        <NavButton
+          label="Chat"
+          active={detailMode === 'conversation'}
+          onClick={() => navigateToTab('conversation', () => setDetailMode('conversation'))}
+        />
         <NavButton
           label="Flows"
           active={detailMode === 'flows'}
-          onClick={() => {
-            // Clicking Flows in the title bar always lands on the
-            // library — never the run detail, the editor, or the
-            // Schedules segment. The user's mental model is "Flows tab =
-            // the list of flows"; jumping them back into a half-edited
-            // draft or a finished run from a previous session breaks
-            // that expectation.
-            setActiveRun(null);
-            closeFlowEditor();
-            setLibrarySegment('flows');
-            setDetailMode('flows');
-          }}
+          onClick={() =>
+            navigateToTab('flows', () => {
+              // First visit of the session lands on the library — never the
+              // run detail, the editor, or the Schedules segment. The user's
+              // mental model is "Flows tab = the list of flows"; opening on a
+              // half-edited draft or a run that finished overnight breaks it.
+              setActiveRun(null);
+              closeFlowEditor();
+              setLibrarySegment('flows');
+              setDetailMode('flows');
+            })
+          }
         />
         <NavButton
           label="Orchestrator"
           active={detailMode === 'orchestrator'}
-          onClick={() => {
-            // Like Flows, clicking the tab should land on the Orchestrator's
-            // own surface, not a leftover run detail from another tab.
-            setActiveRun(null);
-            closeFlowEditor();
-            setDetailMode('orchestrator');
-          }}
+          onClick={() =>
+            navigateToTab('orchestrator', () => {
+              // Like Flows, land on the Orchestrator's own surface, not a
+              // leftover run detail from another tab.
+              setActiveRun(null);
+              closeFlowEditor();
+              setDetailMode('orchestrator');
+            })
+          }
         />
         <NavButton
           label="Workers"
           active={detailMode === 'workers'}
-          onClick={() => {
-            setActiveRun(null);
-            closeFlowEditor();
-            setDetailMode('workers');
-          }}
+          onClick={() =>
+            navigateToTab('workers', () => {
+              setActiveRun(null);
+              closeFlowEditor();
+              setDetailMode('workers');
+            })
+          }
         />
       </div>
       <div className="flex-1" />
@@ -238,6 +254,76 @@ function ScheduleIndicator({
     >
       <span aria-hidden className={'inline-block w-1.5 h-1.5 rounded-full ' + dot} />
       {status.label}
+    </button>
+  );
+}
+
+/// Browser-style back/forward pair, sitting between the sidebar toggle and
+/// the tabs — the same slot a browser puts them in, which is the whole
+/// reason they're recognisable without a label.
+///
+/// They stay mounted (rather than appearing once there's history) so the
+/// tabs don't shift sideways the first time you navigate; an exhausted
+/// direction is dimmed and inert instead.
+function HistoryArrows() {
+  const canBack = useNavHistory((s) => s.back.length > 0);
+  const canForward = useNavHistory((s) => s.forward.length > 0);
+  const backHint = shortcutHint('nav.back');
+  const forwardHint = shortcutHint('nav.forward');
+  return (
+    <div className="flex items-center no-drag mr-2">
+      <HistoryArrow
+        dir="back"
+        enabled={canBack}
+        title={`Back${backHint}`}
+        onClick={navigateBack}
+      />
+      <HistoryArrow
+        dir="forward"
+        enabled={canForward}
+        title={`Forward${forwardHint}`}
+        onClick={navigateForward}
+      />
+    </div>
+  );
+}
+
+function shortcutHint(id: string): string {
+  const def = SHORTCUTS.find((s) => s.id === id);
+  return def ? ` (${formatShortcutDef(def)})` : '';
+}
+
+function HistoryArrow({
+  dir,
+  enabled,
+  title,
+  onClick,
+}: {
+  dir: 'back' | 'forward';
+  enabled: boolean;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={!enabled}
+      title={title}
+      aria-label={title}
+      className={
+        'p-1 rounded ' +
+        (enabled
+          ? 'text-ink-muted hover:text-ink hover:bg-card-strong'
+          : 'text-ink-muted/30 cursor-default')
+      }
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" strokeLinecap="round" strokeLinejoin="round">
+        <path
+          d={dir === 'back' ? 'M10 3 5 8l5 5' : 'M6 3l5 5-5 5'}
+          stroke="currentColor"
+          strokeWidth="1.6"
+        />
+      </svg>
     </button>
   );
 }

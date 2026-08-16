@@ -8,6 +8,7 @@ import type { Schedule } from './flows/schedule';
 import type {
   Worker,
   WorkerContract,
+  WorkerErrandResult,
   WorkerJournalEntry,
   WorkerScorecard,
   WorkerTrustLevel,
@@ -1534,14 +1535,16 @@ export interface IPCInvokeMap {
   'flows:list': (args: { projectPaths?: string[] }) => Flow[];
   'flows:save': (args: {
     flow: Flow;
-    target: 'user' | 'project';
+    /// `generated` writes to the worker-drafted bucket, which the library
+    /// keeps out of its main groups — see Flow['source'].
+    target: Flow['source'];
     /// Required when target === 'project'. The flow file is written to
     /// <projectPath>/.overcli/flows/<flow.id>.yaml.
     projectPath?: string;
   }) => { ok: true; filePath: string } | { ok: false; error: string };
   'flows:delete': (args: {
     flowId: string;
-    source: 'user' | 'project';
+    source: Flow['source'];
     projectPath?: string;
   }) => { ok: true } | { ok: false; error: string };
   'flows:validate': (args: { yaml: string; id?: string }) =>
@@ -1787,6 +1790,48 @@ export interface IPCInvokeMap {
   /// Work one shift right now, out of band. Advances the shift number but
   /// not the cadence.
   'workers:workShiftNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
+  /// Hand a worker a one-off instruction, planned through its standing job
+  /// description without advancing its scheduled cadence.
+  'workers:runErrand': (args: { id: UUID; instruction: string; attachments?: Attachment[] }) =>
+    | { ok: true; result: WorkerErrandResult }
+    | { ok: false; error: string };
+  /// Everything in the worker's own directory, newest first. Deliverables the
+  /// engine filed there plus anything the worker wrote for itself.
+  /// Persist the roster's reading order, top first. The full list, not a
+  /// delta — see `WorkerEngine.reorder`.
+  'workers:reorder': (args: { ids: UUID[] }) => { ok: true };
+  'workers:files': (args: { id: UUID }) => {
+    /// The worker's directory. The renderer scopes the file editor to this so
+    /// opening a worker's file can't expose its neighbours — every worker's
+    /// directory sits next to every other one under userData.
+    root: string;
+    files: Array<{ name: string; path: string; bytes: number; modifiedAt: number }>;
+  };
+  /// One file's contents. Refuses paths outside the worker's directory and
+  /// files too large to preview.
+  'workers:file': (args: { id: UUID; name: string }) =>
+    | { ok: true; body: string }
+    | { ok: false; error: string };
+  /// Open the worker's directory in the OS file manager.
+  /// The on-disk copies of one finished item's output, addressed by the same
+  /// facts that filed them. The desk uses this to link a plan row straight at
+  /// the files rather than reproducing main's naming rule in the renderer.
+  'workers:deliverables': (args: {
+    id: UUID;
+    task: 'shift' | 'errand';
+    /// The batch's ledger title — `[Shift 3] Warden` / `[Errand] …`.
+    label: string;
+    /// The candidate's title.
+    title: string;
+    /// When the item finished, which is the stamp the filing used.
+    at: number;
+  }) => Array<{ name: string; path: string; bytes: number; modifiedAt: number }>;
+  /// Delete one job's output — a folder and its contents, or a loose file.
+  /// `name` is relative to the worker's own root and is validated there.
+  'workers:deleteFile': (args: { id: UUID; name: string }) =>
+    | { ok: true; removed: string }
+    | { ok: false; error: string };
+  'workers:revealFiles': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
   /// The worker's journal, newest first — its episodic memory, rendered as
   /// the shift history in the Workers pane.
   'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
@@ -2276,6 +2321,11 @@ export type MainToRendererEvent =
       type: 'workerShiftProgress';
       workerId: UUID;
       active: boolean;
+      /// Which entry point is running. Both a cadence shift and a typed errand
+      /// stream through this event, and telling the user "working a shift"
+      /// while they watch their own errand plan is simply wrong — main knows
+      /// which it is, so it says so rather than making the UI guess.
+      task?: 'shift' | 'errand';
     }
   /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
   /// conversation — consumed by the global UpdateToast.
