@@ -324,69 +324,118 @@ function WorkersEmptyState({
         )}
       </div>
 
-      <DeskSpecimen />
+      <DayRota />
     </div>
   );
 }
 
-/// One errand, start to finish, at the size it really renders.
+/// One Tuesday, as a rota.
 ///
-/// The terms can say "you can interrupt it"; only a transcript shows what that
-/// buys you — your words in your own phrasing, an answer that came back
-/// through the standing job description, and a file left behind that outlives
-/// the run. It is a specimen and says so, and it is drawn quiet on purpose:
-/// the ladder is this screen's one loud thing, and a second one would just be
-/// two.
-function DeskSpecimen() {
-  const tint = "#38bdf8";
+/// The posting can only describe the arrangement one worker at a time. What a
+/// wide surface can show — and the reason this panel exists rather than a
+/// second card of prose — is a DAY: several of them on their own clocks, and
+/// you appearing once, in the middle, to ask a question. That is the shape of
+/// the thing being sold, and no list of terms renders it.
+///
+/// A rota is also the right artifact. It is what this world already keeps, it
+/// reads as a document beside the posting rather than as marketing, and it has
+/// somewhere honest to put the errand: one row among the scheduled ones,
+/// opened, because that is exactly how it behaves on the desk.
+function DayRota() {
   return (
-    <div className="w-[340px] shrink-0">
-      <div className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
-        A day at the desk
+    <div className="min-w-[340px] max-w-[460px] flex-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+          A Tuesday
+        </span>
+        <span className="text-[10px] text-ink-faint">
+          · three hires, one interruption
+        </span>
       </div>
 
-      <div className="mt-3 rounded-xl border border-card-strong bg-card p-3">
-        <div className="flex items-center gap-2 text-[10px] text-ink-faint">
-          <span className="h-px flex-1 bg-card-strong" />
-          <span>Shift 12 · 2 done · 08:00</span>
-          <span className="h-px flex-1 bg-card-strong" />
-        </div>
+      <div className="mt-3 border-t border-card-strong">
+        {ROTA.map((entry) =>
+          entry.kind === "errand" ? (
+            <ErrandRotaRow key={entry.at} entry={entry} />
+          ) : (
+            <div
+              key={entry.at}
+              className="flex items-baseline gap-3 border-b border-card-strong py-2 text-[11px]"
+            >
+              <span className="w-11 shrink-0 tabular-nums text-ink-faint">
+                {entry.at}
+              </span>
+              <span
+                className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
+                style={{ background: entry.tint }}
+              />
+              <span className="w-28 shrink-0 truncate text-ink">
+                {entry.who}
+              </span>
+              <span className="min-w-0 flex-1 text-ink-muted">
+                {entry.what}
+              </span>
+            </div>
+          ),
+        )}
+      </div>
 
-        <div className="mt-3 flex justify-end">
-          <div className="max-w-[85%] rounded-xl bg-accent/20 px-2.5 py-1.5 text-[11px] leading-snug text-ink">
-            why did the nightly build get slower this week?
-          </div>
-        </div>
+      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
+        Every line but one was on a clock you set weeks ago. The only thing you
+        did that day was ask a question — and it was answered by the worker
+        whose job it already was.
+      </p>
+    </div>
+  );
+}
 
+/// The interruption, opened. On the desk an errand renders as your words, the
+/// reply on its trust-tinted rail, and what it filed; the rota shows exactly
+/// that rather than inventing a smaller form for it.
+function ErrandRotaRow({ entry }: { entry: RotaEntry }) {
+  return (
+    <div className="border-b border-card-strong py-2">
+      <div className="flex items-baseline gap-3 text-[11px]">
+        <span className="w-11 shrink-0 tabular-nums text-ink-faint">
+          {entry.at}
+        </span>
+        <span
+          className="mt-[4px] h-1.5 w-1.5 shrink-0 rotate-45"
+          style={{ background: "var(--c-accent)" }}
+        />
+        <span className="w-28 shrink-0 text-ink">You</span>
+        <span className="min-w-0 flex-1 text-ink">{entry.what}</span>
+      </div>
+
+      <div className="ml-[56px] mt-2">
         <div
-          className="relative mt-2 overflow-hidden rounded-xl"
+          className="relative overflow-hidden rounded-lg"
           style={{
-            background: `color-mix(in srgb, ${tint} 5%, transparent)`,
-            border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
+            background: `color-mix(in srgb, ${entry.tint} 5%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${entry.tint} 18%, transparent)`,
           }}
         >
           <div
             className="absolute bottom-0 left-0 top-0 w-[2px]"
-            style={{ background: tint }}
+            style={{ background: entry.tint }}
           />
           <div className="px-3 py-2 pl-[11px]">
             <div
               className="mb-1 text-[9px] font-medium"
-              style={{ color: tint }}
+              style={{ color: entry.tint }}
             >
-              Test Runner
+              {entry.who}
             </div>
             <div className="text-[11px] leading-snug text-ink-muted">
-              Two things changed on Tuesday. The dependency install stopped
+              Two things changed on Tuesday: the dependency install stopped
               hitting the cache, and a new integration suite added 4m12s on its
-              own…
+              own.
             </div>
           </div>
         </div>
-
-        <div className="mt-2 flex items-baseline gap-2 text-[10px]">
-          <span className="w-12 shrink-0 text-emerald-500">done</span>
-          <span className="min-w-0 flex-1 truncate text-ink">
+        <div className="mt-1.5 flex items-baseline gap-2 text-[10px]">
+          <span className="w-11 shrink-0 text-emerald-500">done</span>
+          <span className="min-w-0 flex-1 truncate text-ink-muted">
             Time the last 14 nightly builds
           </span>
           <span className="shrink-0 rounded border border-card-strong px-1 text-ink-faint">
@@ -394,15 +443,53 @@ function DeskSpecimen() {
           </span>
         </div>
       </div>
-
-      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
-        A specimen. Your errand in your words, its answer through its own job
-        description, and the file it left behind — which outlives the run that
-        made it.
-      </p>
     </div>
   );
 }
+
+interface RotaEntry {
+  at: string;
+  who: string;
+  what: string;
+  tint: string;
+  kind?: "errand";
+}
+
+/// Colours are the identity palette, so the three names read as three people
+/// here for the same reason they do on the calendar.
+const ROTA: RotaEntry[] = [
+  {
+    at: "06:45",
+    who: "Chief of Staff",
+    what: "Filed your morning brief",
+    tint: "#a78bfa",
+  },
+  {
+    at: "08:00",
+    who: "Fielder",
+    what: "Started its hourly pass",
+    tint: "#38bdf8",
+  },
+  {
+    at: "11:04",
+    who: "Test Runner",
+    what: "why did the nightly build get slower this week?",
+    tint: "#34d399",
+    kind: "errand",
+  },
+  {
+    at: "17:00",
+    who: "Fielder",
+    what: "Last pass — 2 proposals waiting",
+    tint: "#38bdf8",
+  },
+  {
+    at: "19:00",
+    who: "Test Runner",
+    what: "Suite green, 1,821 passed",
+    tint: "#34d399",
+  },
+];
 
 const SERIF = 'ui-serif, Georgia, Cambria, "Times New Roman", serif';
 
