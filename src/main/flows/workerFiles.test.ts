@@ -1,0 +1,213 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+let userDataDir = '';
+const { mockGetPath } = vi.hoisted(() => ({
+  mockGetPath: vi.fn(() => userDataDir),
+}));
+
+vi.mock('electron', () => ({
+  app: { getPath: mockGetPath },
+}));
+
+import {
+  deleteWorkerFile,
+  deliverableFiles,
+  ensureWorkerFilesDir,
+  deliverableName,
+  fileWorkerDeliverable,
+  listWorkerFiles,
+  workerFilesDir,
+} from './workerFiles';
+
+const WORKER = 'worker-1';
+// 2026-08-16 14:31 local — the stamp is local time by design.
+const AT = new Date(2026, 7, 16, 14, 31, 2).getTime();
+
+beforeEach(() => {
+  userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-worker-files-'));
+});
+
+afterEach(() => {
+  fs.rmSync(userDataDir, { recursive: true, force: true });
+});
+
+describe('deliverableName', () => {
+  it('leads with the date so the directory sorts chronologically', () => {
+    expect(
+      deliverableName({ task: 'errand', label: '[Errand] x', title: 'Why is CI slow', at: AT }),
+    ).toBe('2026-08-16-1431-errand-why-is-ci-slow');
+  });
+
+  it('keeps a shift’s number and drops the worker’s own name', () => {
+    expect(
+      deliverableName({ task: 'shift', label: '[Shift 7] Warden', title: 'Add tests', at: AT }),
+    ).toBe('2026-08-16-1431-shift-7-add-tests');
+  });
+
+  it('cuts a long subject at a word boundary, never mid-word', () => {
+    const name = deliverableName({
+      task: 'errand',
+      label: '[Errand] x',
+      title: 'Generate and report ZiftProcessor test coverage across every module',
+      at: AT,
+    });
+    // The old hard slice cut this at 40 chars — "…-ziftprocessor-test-c",
+    // which reads as a typo rather than an abbreviation.
+    expect(name).toBe('2026-08-16-1431-errand-generate-and-report-ziftprocessor-test-coverage');
+    expect(name.endsWith('-')).toBe(false);
+  });
+
+  it('keeps a subject that fits whole', () => {
+    expect(
+      deliverableName({
+        task: 'errand',
+        label: '[Errand] x',
+        title: 'Generate and report ZiftProcessor test coverage',
+        at: AT,
+      }),
+    ).toBe('2026-08-16-1431-errand-generate-and-report-ziftprocessor-test-coverage');
+  });
+});
+
+describe('fileWorkerDeliverable', () => {
+  const job = { workerId: WORKER, task: 'errand' as const, label: '[Errand] x', title: 'Coverage', at: AT };
+
+  it('files one artifact as a file and several as a folder', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'one' }] });
+    fileWorkerDeliverable({
+      ...job,
+      title: 'Other',
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'raw_test_output.md', body: 'b' },
+      ],
+    });
+    const names = listWorkerFiles(WORKER).map((f) => f.name);
+    expect(names).toContain('2026-08-16-1431-errand-coverage.md');
+    expect(names).toContain('2026-08-16-1431-errand-other/report.md');
+    expect(names).toContain('2026-08-16-1431-errand-other/raw_test_output.md');
+  });
+
+  it('never overwrites — the journal fold re-files on every update', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'first' }] });
+    const second = fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'second' }] });
+    expect(second.written).toBe(false);
+    const file = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage.md');
+    expect(fs.readFileSync(file, 'utf-8')).toBe('first');
+  });
+
+  it('keeps two jobs that finish in the same minute apart', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'r.md', body: 'a' }] });
+    fileWorkerDeliverable({ ...job, title: 'Something else', artifacts: [{ name: 'r.md', body: 'b' }] });
+    const names = fs.readdirSync(workerFilesDir(WORKER)).sort();
+    expect(names).toEqual([
+      '2026-08-16-1431-errand-coverage.md',
+      '2026-08-16-1431-errand-something-else.md',
+    ]);
+  });
+
+  it('reuses the folder a job is already filed under when the name was truncated', () => {
+    // Stand in for a job filed before the slug was cut at a word boundary.
+    const legacy = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-cover');
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'report.md'), 'a');
+
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'notes.md', body: 'b' },
+      ],
+    });
+
+    const dirs = fs.readdirSync(workerFilesDir(WORKER));
+    // One job, one folder: a second name for the same work would show the
+    // same errand twice in the Files tab.
+    expect(dirs).toEqual(['2026-08-16-1431-errand-cover']);
+    expect(fs.readdirSync(legacy).sort()).toEqual(['notes.md', 'report.md']);
+  });
+});
+
+describe('deliverableFiles', () => {
+  const job = { workerId: WORKER, task: 'errand' as const, label: '[Errand] x', title: 'Coverage', at: AT };
+
+  it('finds every file of a multi-artifact job', () => {
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'verification.md', body: 'b' },
+      ],
+    });
+    const found = deliverableFiles(job);
+    expect(found.map((f) => f.name)).toEqual([
+      '2026-08-16-1431-errand-coverage/report.md',
+      '2026-08-16-1431-errand-coverage/verification.md',
+    ]);
+    expect(found.every((f) => fs.existsSync(f.path))).toBe(true);
+  });
+
+  it('finds a single-artifact job filed as one file', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'a' }] });
+    expect(deliverableFiles(job).map((f) => f.name)).toEqual([
+      '2026-08-16-1431-errand-coverage.md',
+    ]);
+  });
+
+  it('finds a job filed under an older, shorter name', () => {
+    const legacy = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-cover');
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'report.md'), 'a');
+    expect(deliverableFiles(job)).toHaveLength(1);
+  });
+
+  it('returns nothing when the job was never filed, rather than a dead link', () => {
+    expect(deliverableFiles({ ...job, at: AT + 60 * 60_000 })).toEqual([]);
+  });
+});
+
+describe('deleteWorkerFile', () => {
+  const job = { workerId: WORKER, task: 'errand' as const, label: '[Errand] x', title: 'Coverage', at: AT };
+
+  it('deletes a whole job folder', () => {
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'raw.md', body: 'b' },
+      ],
+    });
+    const res = deleteWorkerFile(WORKER, '2026-08-16-1431-errand-coverage');
+    expect(res.ok).toBe(true);
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('deletes a loose file', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'a' }] });
+    expect(deleteWorkerFile(WORKER, '2026-08-16-1431-errand-coverage.md').ok).toBe(true);
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('refuses to climb out of the worker’s directory', () => {
+    const sibling = path.join(userDataDir, 'worker-files', 'worker-2');
+    fs.mkdirSync(sibling, { recursive: true });
+    fs.writeFileSync(path.join(sibling, 'secret.md'), 'x');
+
+    const res = deleteWorkerFile(WORKER, '../worker-2');
+    expect(res).toEqual({ ok: false, error: 'That path is outside the worker’s files.' });
+    expect(fs.existsSync(path.join(sibling, 'secret.md'))).toBe(true);
+  });
+
+  it('refuses to delete the worker’s own root', () => {
+    ensureWorkerFilesDir(WORKER);
+    expect(deleteWorkerFile(WORKER, '.').ok).toBe(false);
+    expect(fs.existsSync(workerFilesDir(WORKER))).toBe(true);
+  });
+
+  it('says so when the job is already gone', () => {
+    expect(deleteWorkerFile(WORKER, 'never-existed')).toEqual({ ok: false, error: 'Already gone.' });
+  });
+});

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
 import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
-import { flowRunActivityAt, flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
+import { flowRunActivityAt, flowRunOwnerPath, isWorkerRun, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
 import { backendColor } from '../theme';
 import {
@@ -13,6 +13,8 @@ import {
 } from '../conversationLookup';
 import { type ActiveCandidate, selectActiveEntries } from '../activeSection';
 import { useFlowsStore } from '../flowsStore';
+import { useOrchestratorStore } from '../orchestratorStore';
+import { useWorkersStore } from '../workersStore';
 import {
   ActiveFlowRow,
   FlowRunsSection,
@@ -22,6 +24,8 @@ import {
   runIsLive as flowRunIsLive,
 } from './flows/FlowRunSidebarRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
+import { WorkersSidebar } from './workers/WorkersSidebar';
+import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
 
 export function Sidebar() {
   const projects = useStore((s) => s.projects);
@@ -51,6 +55,7 @@ export function Sidebar() {
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
+  const workers = useWorkersStore((s) => s.workers);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const lastSelectedAt = useStore((s) => s.lastSelectedAt);
   const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
@@ -104,7 +109,6 @@ export function Sidebar() {
     }
     return set;
   }, [flowRuns, query]);
-
   const allGroupIds = useMemo(
     () => [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
     [projects, workspaces],
@@ -157,7 +161,6 @@ export function Sidebar() {
         );
       });
   }, [projectsById, query, workspaces, flowMatchPaths]);
-
   const activeEntries = useMemo(
     () =>
       selectActiveEntries(
@@ -291,6 +294,14 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
+        {/* The Workers tab gets its own navigator. Workers are a fleet, not a
+            branch of one project — a worker hired against a workspace root
+            launches runs that land in member repos — so nesting each one under
+            a project group made the tree lie about where its work lives. */}
+        {detailMode === 'workers' ? (
+          <WorkersSidebar query={query} />
+        ) : (
+        <>
         {!query && showActiveSection && activeEntries.length > 0 && (
           <>
             <SidebarSectionTitle label="Active" />
@@ -395,6 +406,8 @@ export function Sidebar() {
         )}
 
         <ArchivedGroup />
+        </>
+        )}
       </nav>
 
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
@@ -545,6 +558,7 @@ export function collectActiveCandidates(
 
   for (const run of Object.values(flowRuns)) {
     if (run.state.kind === 'archived') continue;
+    if (isWorkerRun(run)) continue;
     const owner = resolveFlowOwner(flowRunOwnerPath(run), projects, workspaces);
     out.push({
       entry: {
@@ -731,6 +745,9 @@ function ProjectGroup({
   const openSheet = useStore((s) => s.openSheet);
   const workspaces = useStore((s) => s.workspaces);
   const runners = useRunningMap();
+  const workers = useWorkersStore((s) => s.workers);
+  const shiftProgress = useWorkersStore((s) => s.shiftProgress);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   // `true`/`false` once probed, `undefined` while still unknown. Agents
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
@@ -756,6 +773,17 @@ function ProjectGroup({
     [project.conversations, selectedId, runners],
   );
   const flowRuns = useFlowsStore((s) => s.runs);
+  const deskLive = useMemo(
+    () =>
+      anyDeskLive(
+        workersForPath(workers, project.path),
+        flowRuns,
+        orchestrations,
+        runners,
+        shiftProgress,
+      ),
+    [flowRuns, orchestrations, project.path, runners, shiftProgress, workers],
+  );
   const deletableFlowCount = useMemo(
     () =>
       Object.values(flowRuns).filter(
@@ -814,6 +842,7 @@ function ProjectGroup({
         >
           <ProjectIcon />
           <span className="text-xs font-medium truncate">{projectLabel(project)}</span>
+          {deskLive && <RunningIndicator activityLabel="A worker is working" />}
         </button>
         <button
           onClick={onNewConversation}
@@ -1202,6 +1231,9 @@ function WorkspaceGroup({
 }) {
   const openSheet = useStore((s) => s.openSheet);
   const runners = useRunningMap();
+  const workers = useWorkersStore((s) => s.workers);
+  const shiftProgress = useWorkersStore((s) => s.shiftProgress);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   // See the matching note in ProjectGroup — memoized so an unrelated store
   // change doesn't re-walk the whole conversation list.
   const { convs, plain, agents } = useMemo(() => {
@@ -1220,6 +1252,17 @@ function WorkspaceGroup({
     [workspace.conversations, selectedId, runners],
   );
   const flowRuns = useFlowsStore((s) => s.runs);
+  const deskLive = useMemo(
+    () =>
+      anyDeskLive(
+        workersForPath(workers, workspace.rootPath),
+        flowRuns,
+        orchestrations,
+        runners,
+        shiftProgress,
+      ),
+    [flowRuns, orchestrations, runners, shiftProgress, workers, workspace.rootPath],
+  );
   const deletableFlowCount = useMemo(
     () =>
       Object.values(flowRuns).filter(
@@ -1253,6 +1296,7 @@ function WorkspaceGroup({
           <span className={'text-[9px] text-ink-faint ' + (expanded ? 'rotate-90' : '') + ' transition-transform flex-shrink-0'}>▸</span>
           <WorkspaceIcon />
           <span className="text-xs font-medium truncate">{workspace.name}</span>
+          {deskLive && <RunningIndicator activityLabel="A worker is working" />}
         </button>
         <button
           onClick={onNewConversation}

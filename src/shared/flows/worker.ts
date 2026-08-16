@@ -37,6 +37,45 @@ export interface Worker {
   anchorAt?: number;
   lastShiftAt?: number;
   shiftCount?: number;
+  /// Where this worker sits on the roster, low first. Absent means "wherever
+  /// hire order puts it" — a roster nobody has arranged still reads newest
+  /// first, and arranging one worker must not renumber the rest into an order
+  /// the user never chose. See `sortRoster`.
+  order?: number;
+}
+
+/// The roster, in the order it should be read: whatever the user arranged
+/// first, then the unarranged by hire date, newest first.
+///
+/// Seniority is not the same question as recency. "Who did I hire last" is
+/// what the list answered before, and it is the wrong answer for a roster you
+/// look at every morning — the worker that runs your day belongs at the top,
+/// whenever you hired it.
+export function sortRoster<T extends Pick<Worker, 'order' | 'createdAt'>>(workers: T[]): T[] {
+  return workers.slice().sort((a, b) => {
+    const ao = a.order ?? Number.MAX_SAFE_INTEGER;
+    const bo = b.order ?? Number.MAX_SAFE_INTEGER;
+    if (ao !== bo) return ao - bo;
+    return b.createdAt - a.createdAt;
+  });
+}
+
+/// The roster with one worker moved one place. Returns the ids in their new
+/// order, which is what `workers:reorder` persists — every worker gets an
+/// explicit position, so a later hire lands at the bottom instead of silently
+/// jumping the queue.
+export function moveInRoster<T extends Pick<Worker, 'id' | 'order' | 'createdAt'>>(
+  workers: T[],
+  id: string,
+  direction: -1 | 1,
+): string[] {
+  const ordered = sortRoster(workers);
+  const from = ordered.findIndex((w) => w.id === id);
+  const to = from + direction;
+  if (from === -1 || to < 0 || to >= ordered.length) return ordered.map((w) => w.id);
+  const next = ordered.slice();
+  [next[from], next[to]] = [next[to], next[from]];
+  return next.map((w) => w.id);
 }
 
 // ---- Journal ------------------------------------------------------------
@@ -52,6 +91,10 @@ export type WorkerJournalKind =
   | 'rejected'
   | 'completed'
   | 'failed'
+  /// A one-off instruction the user handed this worker (an "errand"), planned
+  /// through its standing job description. It does not advance cadence or the
+  /// shift number; its note records both the ask and the worker's response.
+  | 'errand'
   /// A trust demotion landed. Its own kind (not a 'shift' note) because the
   /// rejection streak must treat it as a terminator — the rejections that
   /// caused a demotion are spent, and must not count toward the next one.
@@ -128,6 +171,21 @@ export interface WorkerScorecard {
   /// Spend divided by completed items; null until something completed.
   costPerCompletedUSD: number | null;
   rejectionStreak: number;
+}
+
+/// What one errand turn produced. Returned to the renderer so a desk can show
+/// the outcome inline, including the case where the worker launched nothing.
+export interface WorkerErrandResult {
+  orchestrationId: string;
+  /// Candidates recorded after the orchestrator's exclusion and item caps.
+  count: number;
+  /// Candidates which launched immediately under the worker's trust cap.
+  queued: number;
+  /// Zero candidates may mean a refusal, an answered question, or simply
+  /// nothing useful to do. `reply` contains the worker's own explanation.
+  launchedNothing: boolean;
+  /// Planning prose with the machine candidate payload removed and bounded.
+  reply: string;
 }
 
 export function computeWorkerScorecard(
@@ -325,4 +383,35 @@ function coerceCadence(raw: unknown): ScheduleTrigger {
     return { kind: 'daily', time, days: days && days.length > 0 ? days : undefined };
   }
   return DEFAULT_CADENCE;
+}
+
+// ---- What the worker calls an errand ------------------------------------
+
+/// The worker's own name for the errand it was just handed.
+///
+/// An errand arrives as whatever you typed — "can you give me a report of the
+/// test coverage in ziftprocessors" — which is the right thing to show in the
+/// message you sent, and the wrong thing to use as a label everywhere else: it
+/// is long, it leads with politeness rather than subject, and three related
+/// errands read as three near-identical rows. The worker has just understood
+/// the ask well enough to plan against it, so it is the one that should name
+/// it. Lives in shared because main writes it into the journal and the
+/// renderer reads it off the reply for the desk and sidebar.
+export function parseWorkerSubject(reply: string): string | null {
+  const match = /<subject>([\s\S]*?)<\/subject>/i.exec(reply);
+  const line = match?.[1]?.trim().split('\n')[0]?.trim();
+  if (!line) return null;
+  const cleaned = line.replace(/^["'`]+|["'`]+$/g, '').trim();
+  if (!cleaned) return null;
+  return cleaned.length > WORKER_SUBJECT_MAX
+    ? `${cleaned.slice(0, WORKER_SUBJECT_MAX - 1)}…`
+    : cleaned;
+}
+
+/// A title, not a sentence — long enough for a verb and an object, short
+/// enough for a 200px sidebar row.
+export const WORKER_SUBJECT_MAX = 60;
+
+export function stripWorkerSubject(reply: string): string {
+  return reply.replace(/<subject>[\s\S]*?<\/subject>/gi, '').trim();
 }

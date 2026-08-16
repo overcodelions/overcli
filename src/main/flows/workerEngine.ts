@@ -24,7 +24,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { MainToRendererEvent, UUID } from '../../shared/types';
+import type { Attachment, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import {
   evaluateSchedule,
@@ -37,9 +37,12 @@ import {
   computeWorkerScorecard,
   demotedTrust,
   rejectionStreak,
+  parseWorkerSubject,
+  stripWorkerSubject,
   validateWorker,
   workerAutoApproveCap,
   type Worker,
+  type WorkerErrandResult,
   type WorkerJournalEntry,
   type WorkerScorecard,
   type WorkerTrustLevel,
@@ -52,6 +55,7 @@ import {
   workerRejectedTitles,
 } from './workerJournal';
 import { workerSpendSince } from './runSummaryLog';
+import { fileWorkerDeliverable, workerFilesDir } from './workerFiles';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
 /// a minute so sleep/clock-steps can't strand a timer.
@@ -61,6 +65,13 @@ const MAX_TIMER_MS = 60_000;
 /// filter in parkProposal uses the full list; the prompt excerpt only has to
 /// be big enough to steer the model away from re-treading old ground.
 const PROMPT_REJECTED_LIMIT = 30;
+
+/// How many past errand exchanges ride along as conversation context, and how
+/// much of each reply. Enough that a follow-up three turns later still lands;
+/// bounded so the thread can't crowd out the job description and journal that
+/// make the worker a persona rather than a chat window.
+const ERRAND_THREAD_TURNS = 6;
+const ERRAND_THREAD_REPLY_CHARS = 2000;
 
 /// The slice of the orchestrator a worker shift drives. `parkProposal` runs
 /// the producer turn and records the batch; `get`/`list` let the engine fold
@@ -80,6 +91,10 @@ export interface WorkerParker {
     maxItems?: number;
     excludeTitles?: string[];
     allowedFlowIds?: string[];
+    priorPrompt?: string;
+    priorReply?: string;
+    priorTurns?: Array<{ prompt: string; reply: string }>;
+    attachments?: Attachment[];
   }): Promise<
     | { ok: true; orchestrationId: UUID; count: number; queued: number; excluded: number }
     | { ok: false; error: string }
@@ -111,6 +126,28 @@ export interface WorkerEngineDeps {
   };
   /// Run spend for a worker since `sinceMs`, from the run-summary log.
   spend?: (workerId: string, sinceMs: number) => number;
+  /// Draft a read-only flow for one errand, file it in the generated bucket,
+  /// and launch it — the third triage path, for asks that need real
+  /// investigation and fit none of the worker's flows.
+  ///
+  /// One dep rather than three because it spans the drafter, flow storage and
+  /// the orchestrator, none of which the engine should reach into itself; and
+  /// it is optional so the engine still runs (declining path 3 honestly) in a
+  /// build where flow drafting isn't wired.
+  generatedFlow?: (args: {
+    worker: Worker;
+    errand: string;
+    /// The `<flow_request>` body: what the flow must do, in the worker's words.
+    request: string;
+    runIn: 'cwd' | 'worktree';
+  }) => Promise<
+    { ok: true; orchestrationId: UUID; flowId: string } | { ok: false; error: string }
+  >;
+  /// A finished run's final artifact, so the engine can file it under the
+  /// worker. The engine has no handle on the runtime, and it needs one here
+  /// because run artifacts are pruned with the run — copying the deliverable
+  /// out at completion is the only thing that outlives that.
+  deliverablesFor?: (runId: UUID) => Array<{ name: string; body: string }>;
 }
 
 export class WorkerEngine {
@@ -122,6 +159,14 @@ export class WorkerEngine {
   /// worker — a producer turn can take minutes, and a second one against the
   /// same journal would propose the same things twice.
   private firing = new Set<UUID>();
+  /// One promise chain per worker, so errands sent while the worker is mid-turn
+  /// WAIT rather than bounce. A worker can only hold one planning turn at a
+  /// time — they share a journal, a budget gate and cadence bookkeeping — but
+  /// that is a reason to make you wait, not a reason to refuse something you
+  /// typed. Shifts keep the old behaviour and skip when busy: a missed shift
+  /// comes round again on the next tick, and a queue of them would mean a
+  /// worker that fell behind catching up all night.
+  private queue = new Map<UUID, Promise<unknown>>();
 
   private readonly now: () => number;
   private readonly timers: NonNullable<WorkerEngineDeps['timers']>;
@@ -193,6 +238,20 @@ export class WorkerEngine {
   /// Hire (no `id`) or update (with `id`). Every hire starts on probation —
   /// trust is not part of the application form. Edits keep the existing trust
   /// (promotion/demotion go through `setTrust`, an explicit act).
+  /// Write the roster's order. Takes the full list of ids so the result is
+  /// what the user sees rather than a delta — every id present gets an
+  /// explicit position, and anything omitted keeps whatever it had.
+  reorder(ids: string[]): { ok: true } {
+    ids.forEach((id, index) => {
+      const w = this.workers.get(id);
+      if (!w || w.order === index) return;
+      w.order = index;
+      saveWorker(w);
+      this.emitWorker(w);
+    });
+    return { ok: true };
+  }
+
   save(
     input: Omit<Worker, 'id' | 'createdAt' | 'trust'> & { id?: UUID; trust?: WorkerTrustLevel },
   ): { ok: true; worker: Worker } | { ok: false; error: string } {
@@ -286,7 +345,30 @@ export class WorkerEngine {
     if (this.firing.has(id)) return { ok: false, error: 'A shift is already starting.' };
     const res = await this.fire(w, { manual: true });
     this.arm();
-    return res;
+    return res.ok ? { ok: true } : res;
+  }
+
+  /// Hand this worker a one-off instruction. An errand is planned through the
+  /// standing job description rather than re-running the usual shift, and it
+  /// deliberately leaves cadence and shift numbering alone.
+  async runErrand(
+    id: UUID,
+    instruction: string,
+    attachments?: Attachment[],
+  ): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    const errand = instruction.trim();
+    if (!errand) return { ok: false, error: 'Type what you want this worker to do.' };
+    // Behind whatever this worker is already doing, and behind any errand sent
+    // before it — a desk you can leave a note on, in the order the notes were
+    // left. `this.workers.get` is re-read inside, because the wait can be
+    // minutes and the worker may have been edited meanwhile.
+    const res = await this.fire(w, { manual: true, errand, attachments });
+    this.arm();
+    if (!res.ok) return res;
+    if (!res.errand) return { ok: false, error: 'The errand produced no result.' };
+    return { ok: true, result: res.errand };
   }
 
   // ---- EVENTS -----------------------------------------------------------
@@ -381,23 +463,47 @@ export class WorkerEngine {
     }
   }
 
+  /// Run `task` after everything already queued for this worker. The chain
+  /// continues through failures — one errand that threw must not strand every
+  /// errand behind it.
+  private enqueue<T>(id: UUID, task: () => Promise<T>): Promise<T> {
+    const prior = this.queue.get(id) ?? Promise.resolve();
+    const next = prior.then(task, task);
+    // Stored separately from what the caller awaits: the caller wants the
+    // rejection, the chain must not carry it forward as an unhandled one.
+    this.queue.set(
+      id,
+      next.catch(() => undefined),
+    );
+    return next;
+  }
+
+  /// Every turn a worker takes goes through here, one at a time. The queue is
+  /// what makes an errand sent mid-shift WAIT instead of bouncing off the
+  /// `firing` guard — that guard stays as the scheduler's "is this worker
+  /// busy" signal (a scheduled shift still SKIPS rather than piling up), but
+  /// nothing a person typed is refused for being second in line.
   private async fire(
     w: Worker,
-    opts: { manual?: boolean },
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (this.firing.has(w.id)) return { ok: false, error: 'A shift is already starting.' };
-    this.firing.add(w.id);
-    try {
-      return await this.fireInner(w, opts);
-    } finally {
-      this.firing.delete(w.id);
-    }
+    opts: { manual?: boolean; errand?: string; attachments?: Attachment[] },
+  ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
+    return this.enqueue(w.id, async () => {
+      // The wait can be minutes; the worker may have been edited meanwhile.
+      const fresh = this.workers.get(w.id) ?? w;
+      if (this.firing.has(fresh.id)) return { ok: false, error: 'A shift is already starting.' };
+      this.firing.add(fresh.id);
+      try {
+        return await this.fireInner(fresh, opts);
+      } finally {
+        this.firing.delete(fresh.id);
+      }
+    });
   }
 
   private async fireInner(
     w: Worker,
-    opts: { manual?: boolean },
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    opts: { manual?: boolean; errand?: string; attachments?: Attachment[] },
+  ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
 
     // Budget gate. Enforced per calendar month against the run-summary log —
@@ -423,6 +529,10 @@ export class WorkerEngine {
       return { ok: true };
     }
 
+    // Errands share the firing guard and budget gate, but they are not shifts:
+    // never stamp cadence bookkeeping before their planning turn.
+    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments);
+
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
     const sequence = (w.shiftCount ?? 0) + 1;
@@ -437,12 +547,12 @@ export class WorkerEngine {
     // The planning turn can run for minutes; tell the renderer the shift is
     // live so the row shows work happening instead of nothing. Cleared in
     // the finally so a thrown park can't leave a row spinning forever.
-    this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: true });
+    this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: true, task: 'shift' });
     let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
     try {
       res = await this.parkShift(w, sequence, runIn, autoCap, rejected);
     } finally {
-      this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: false });
+      this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: false, task: 'shift' });
     }
 
     // The planning turn ran for a while — the user may have edited the
@@ -490,7 +600,7 @@ export class WorkerEngine {
     rejected: string[],
   ): ReturnType<WorkerParker['parkProposal']> {
     return this.deps.parker.parkProposal({
-      origin: { kind: 'worker', workerId: w.id, workerName: w.name },
+      origin: { kind: 'worker', workerId: w.id, workerName: w.name, task: 'shift' },
       projectPath: w.projectPath,
       prompt: this.buildShiftPrompt(w, sequence, rejected),
       flowId: w.flowIds[0],
@@ -508,6 +618,151 @@ export class WorkerEngine {
     });
   }
 
+  private async fireErrand(
+    w: Worker,
+    errand: string,
+    attachments?: Attachment[],
+  ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
+    const at = this.now();
+    const rejected = this.journal.rejectedTitles(w.id);
+    const runIn = this.effectiveRunIn(w);
+    const autoCap = workerAutoApproveCap(w);
+    // Calculate before awaiting the planner: tests and fast callers can share
+    // a frozen clock, and journal append is intentionally idempotent.
+    const entryId = this.errandEntryId(w.id, at);
+    const priorTurns = this.priorErrandTurns(w.id);
+
+    this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: true, task: 'errand' });
+    let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
+    try {
+      res = await this.deps.parker.parkProposal({
+        origin: {
+          kind: 'worker',
+          workerId: w.id,
+          workerName: w.name,
+          task: 'errand',
+          errand,
+        },
+        projectPath: w.projectPath,
+        prompt: this.buildErrandPrompt(w, errand, rejected),
+        ...(priorTurns.length > 0 ? { priorTurns } : {}),
+        attachments,
+        flowId: w.flowIds[0],
+        runIn,
+        maxConcurrent: Math.min(w.caps.maxItemsPerShift, 4),
+        title: `[Errand] ${errandLabel(errand)}`,
+        autoApprove: autoCap > 0 ? { maxItems: autoCap } : undefined,
+        model: w.heartbeatModel,
+        maxItems: w.caps.maxItemsPerShift,
+        excludeTitles: rejected,
+        allowedFlowIds: w.flowIds,
+      });
+    } finally {
+      this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: false, task: 'errand' });
+    }
+
+    const fresh = this.workers.get(w.id) ?? w;
+    if (!res.ok) {
+      this.journal.append({
+        id: entryId,
+        workerId: w.id,
+        kind: 'errand',
+        at,
+        title: errandLabel(errand),
+        note: `Failed: ${res.error}`,
+      });
+      this.emitWorker(fresh);
+      this.deps.notify({ title: `${fresh.name}'s errand failed`, body: res.error });
+      return { ok: false, error: res.error };
+    }
+
+    const batch = this.deps.parker.get(res.orchestrationId);
+    const rawReply = batch?.producer?.reply ?? '';
+    const reply = errandReply(rawReply);
+    // What the worker decided to call this. Falls back to the raw ask, which
+    // is what every errand was called before — a worker that skips the tag
+    // must not end up with an unnamed row.
+    const subject = parseWorkerSubject(rawReply) ?? errandLabel(errand);
+    // Path 3: the worker judged the errand too big for a prose answer and
+    // found nothing on its contract that fits, so it asked for machinery. Only
+    // honored when it proposed nothing — a turn that did both is confused, and
+    // the candidates it did produce are the safer half to act on.
+    const request = res.count === 0 ? parseFlowRequest(rawReply) : null;
+    if (request && this.deps.generatedFlow) {
+      const built = await this.deps.generatedFlow({ worker: w, errand, request, runIn });
+      if (built.ok) {
+        this.journal.append({
+          id: entryId,
+          workerId: w.id,
+          kind: 'errand',
+          at,
+          title: subject,
+          note: `Drafted a flow to answer this — ${built.flowId}. ${reply}`.trim(),
+          orchestrationId: built.orchestrationId,
+        });
+        this.emitWorker(fresh);
+        this.deps.notify({
+          title: `${fresh.name} is investigating`,
+          body: `Built a flow to answer "${subject}".`,
+        });
+        return {
+          ok: true,
+          errand: {
+            orchestrationId: built.orchestrationId,
+            count: 1,
+            queued: 1,
+            launchedNothing: false,
+            reply,
+          },
+        };
+      }
+      // Drafting or launching failed. Fall through and report the errand as
+      // the empty batch it actually is, with the failure in the note — a
+      // silent downgrade to "nothing launched" would hide a broken drafter.
+      this.journal.append({
+        id: entryId,
+        workerId: w.id,
+        kind: 'errand',
+        at,
+        title: subject,
+        note: `Wanted a flow to answer this, but building it failed: ${built.error}`,
+        orchestrationId: res.orchestrationId,
+      });
+      this.emitWorker(fresh);
+      this.deps.notify({ title: `${fresh.name} could not build a flow`, body: built.error });
+      return { ok: false, error: built.error };
+    }
+    const launchedNothing = res.count === 0;
+    this.journal.append({
+      id: entryId,
+      workerId: w.id,
+      kind: 'errand',
+      at,
+      title: subject,
+      note: launchedNothing
+        ? `Nothing launched — ${reply || 'the worker proposed nothing.'}`
+        : describeShift(res.count, res.queued, res.excluded),
+      orchestrationId: res.orchestrationId,
+    });
+    this.emitWorker(fresh);
+    this.deps.notify({
+      title: `${fresh.name} finished an errand`,
+      body: launchedNothing
+        ? reply || 'Nothing proposed.'
+        : describeShiftNotification(res.count, res.queued, res.excluded),
+    });
+    return {
+      ok: true,
+      errand: {
+        orchestrationId: res.orchestrationId,
+        count: res.count,
+        queued: res.queued,
+        launchedNothing,
+        reply,
+      },
+    };
+  }
+
   /// The planning turn's user request (the producer system prompt rides in
   /// front of it — see orchestrator.propose). Rebuilt from the journal every
   /// shift: this is the difference between a worker and a saved prompt.
@@ -521,6 +776,7 @@ export class WorkerEngine {
       '',
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       digest || '(first shift — no journal yet)',
+      ...this.filesBlock(w),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -536,6 +792,100 @@ export class WorkerEngine {
       'Skip anything your journal shows was already done or is still in flight. If nothing worth',
       'doing has appeared since your last shift, say so and emit an empty candidates list —',
       'an honest empty shift beats makework.',
+    );
+    return parts.join('\n');
+  }
+
+  /// The user's one-off ask, bounded by the worker's standing job rather than
+  /// treated as a free-standing prompt.
+
+  /// The worker's own directory, stated in every planning turn. A worker with
+  /// nowhere to put anything can only ever answer in prose that scrolls away;
+  /// with a directory it can leave a baseline for its next shift to diff
+  /// against, keep a tally across weeks, and file the report it was asked for.
+  private filesBlock(w: Worker): string[] {
+    const dir = workerFilesDir(w.id);
+    return [
+      '',
+      'YOUR FILES',
+      `You have a directory of your own at: ${dir}`,
+      'It persists between shifts and errands, and nobody else writes to it. Read',
+      'what you left there before deciding what to do, and write anything a future',
+      'shift will need — a baseline to compare against, a running tally, notes on',
+      'what you already checked. Use ordinary absolute paths; it is outside the',
+      'project, so nothing you put there touches the repository. Create it if it',
+      'does not exist yet.',
+    ];
+  }
+
+  private buildErrandPrompt(w: Worker, errand: string, rejected: string[]): string {
+    const parts = [
+      `You are "${w.name}", a standing worker on this project. Your manager has handed you a ONE-OFF ERRAND — not your usual shift.`,
+      '',
+      'YOUR JOB DESCRIPTION',
+      w.jobDescription,
+      '',
+      'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
+      this.journal.digest(w.id) || '(no journal yet)',
+      ...this.filesBlock(w),
+    ];
+    if (rejected.length > 0) {
+      parts.push(
+        '',
+        'REJECTED BEFORE — do NOT propose these again, or anything that is essentially the same ask:',
+        ...rejected.slice(0, PROMPT_REJECTED_LIMIT).map((t) => `  - ${t}`),
+      );
+    }
+    parts.push(
+      '',
+      'THE ERRAND',
+      errand,
+      '',
+      'TRIAGE THIS ERRAND. Your job is to get your manager the answer or the outcome',
+      'they asked for, by the CHEAPEST means that actually works. Pick exactly one:',
+      '',
+      '1. ANSWER IT NOW. If you can settle the errand from what you can already see —',
+      '   a question about this project, a lookup you can do with the tools you have —',
+      '   just answer it in prose. Emit an empty candidates list. An answered question',
+      '   is a finished errand, not a failure. Do not manufacture work to look busy.',
+      '',
+      '2. USE YOUR EXISTING FLOWS. If the errand is work of a kind you already have a',
+      `   flow for, propose at most ${w.caps.maxItemsPerShift} candidates, best first,`,
+      '   each a self-contained ask. This is the normal path for work in your remit.',
+      '',
+      '3. ASK FOR A NEW FLOW. If answering properly needs real investigation — several',
+      '   steps, reading a lot of the codebase, correlating things you cannot hold in',
+      '   one turn — and none of your flows fits, do NOT guess and do NOT force it into',
+      '   the wrong flow. Emit an empty candidates list and end your reply with a block:',
+      '',
+      '     <flow_request>',
+      '     One paragraph describing the flow needed to answer this errand: what each',
+      '     step should do, in order, and what the final step must output. Write it as',
+      '     an instruction to a flow designer, not as prose for a human.',
+      '     </flow_request>',
+      '',
+      '   A flow requested this way is built to ANSWER, so it must not CHANGE anything.',
+      '   It may do whatever it takes to find out: read files, search, query tools, and',
+      '   RUN things whose only effect is telling you something — the test suite, a',
+      '   build, a linter, a type-check, a read-only query. Running a command is not',
+      '   the line; changing the project is. Never request a flow that edits files,',
+      '   commits, pushes, or writes to an external system. If the errand truly needs',
+      '   changes made, that is path 2 or it is out of scope.',
+      '',
+      'NAME THE ERRAND. Whatever path you take, START your reply with one line:',
+      '',
+      '     <subject>What this errand is, as a title</subject>',
+      '',
+      'Six words or so, in your own words, naming the WORK — "Report ZiftProcessor',
+      'test coverage", not "can you give me a report of the test coverage". It is what',
+      'this errand will be called in your journal and on your desk from now on, so it',
+      'has to distinguish this ask from the three like it you did last week. No',
+      'trailing punctuation, no restating your manager\u2019s phrasing back at them.',
+      '',
+      'Whichever path you take, it must still be YOUR job. If the errand clearly falls',
+      'outside your job description, take none of them: emit an empty candidates list,',
+      'no flow request, and say in your own words what you understood the ask to be,',
+      'why it is not yours, and who or what should do it instead.',
     );
     return parts.join('\n');
   }
@@ -599,6 +949,22 @@ export class WorkerEngine {
             at: item.finishedAt ?? now,
             runId: item.runId,
           }) || changed;
+        // Copy the answer somewhere it will outlive the run. Idempotent by
+        // filename, which matters because this fold re-runs on every update
+        // and at startup.
+        if (item.runId && this.deps.deliverablesFor) {
+          const artifacts = this.deps.deliverablesFor(item.runId);
+          if (artifacts.length > 0) {
+            fileWorkerDeliverable({
+              workerId: w.id,
+              task: o.origin.task === 'errand' ? 'errand' : 'shift',
+              label: o.title,
+              title: c.title,
+              at: item.finishedAt ?? now,
+              artifacts,
+            });
+          }
+        }
       }
       if (item.status === 'failed') {
         changed =
@@ -668,6 +1034,46 @@ export class WorkerEngine {
     return this.deps.isGitRepo(w.projectPath) ? 'worktree' : 'cwd';
   }
 
+  /// The clock alone is not enough: two errands can run under a frozen clock
+  /// in a test or after a timestamp collision. The ordinal keeps append ids
+  /// deterministic while preserving both entries.
+  /// The errand thread for this worker, oldest first, bounded.
+  ///
+  /// An errand is not a one-off: you send one, read the answer, and say "no,
+  /// the other spec" or "now do staging". The producer is a one-shot with no
+  /// session, so the conversation only exists if it is replayed — and replaying
+  /// just the last exchange loses the thing two turns back that the follow-up
+  /// actually refers to.
+  ///
+  /// Read off the batches rather than a separate transcript: an errand batch
+  /// already stores the instruction that made it and the reply it produced,
+  /// which is exactly one turn.
+  private priorErrandTurns(workerId: string): Array<{ prompt: string; reply: string }> {
+    return this.deps.parker
+      .list()
+      .filter(
+        (o) =>
+          o.origin?.kind === 'worker' &&
+          o.origin.workerId === workerId &&
+          o.origin.task === 'errand' &&
+          !!o.producer?.reply,
+      )
+      .sort((a, b) => a.createdAt - b.createdAt)
+      .slice(-ERRAND_THREAD_TURNS)
+      .map((o) => ({
+        prompt:
+          (o.origin?.kind === 'worker' ? o.origin.errand : undefined) ?? o.producer!.prompt,
+        // Bound each replayed reply: a thread of six full investigations would
+        // crowd out the job description and journal that make it a worker.
+        reply: o.producer!.reply.slice(0, ERRAND_THREAD_REPLY_CHARS),
+      }));
+  }
+
+  private errandEntryId(workerId: string, at: number): string {
+    const n = this.journal.load(workerId).filter((e) => e.kind === 'errand').length;
+    return `errand-${workerId}-${at}-${n}`;
+  }
+
   private snapshot(w: Worker): {
     worker: Worker;
     nextShiftAt: number | null;
@@ -734,4 +1140,26 @@ function describeShiftNotification(count: number, queued: number, excluded: numb
   if (queued === 0) return `${count} proposal${count === 1 ? '' : 's'} waiting for your review.`;
   if (held === 0) return `${queued} run${queued === 1 ? '' : 's'} launched under its trust cap.`;
   return `${queued} launched, ${held} waiting for your review.`;
+}
+
+function errandLabel(errand: string): string {
+  const first = errand.trim().split('\n')[0]?.trim() ?? '';
+  return first.length > 80 ? `${first.slice(0, 79)}…` : first || 'Errand';
+}
+
+/// The `<flow_request>` block a triage turn emits when the errand needs real
+/// investigation and none of the worker's existing flows fit. Absent on the
+/// other two paths (answered in prose, or routed to existing flows).
+export function parseFlowRequest(reply: string): string | null {
+  const match = /<flow_request>([\s\S]*?)<\/flow_request>/i.exec(reply);
+  const body = match?.[1]?.trim();
+  return body ? body : null;
+}
+
+function errandReply(reply: string): string {
+  const prose = stripWorkerSubject(reply)
+    .replace(/<candidates>[\s\S]*$/i, '')
+    .replace(/<flow_request>[\s\S]*?<\/flow_request>/gi, '')
+    .trim();
+  return prose.length > 600 ? `${prose.slice(0, 599)}…` : prose;
 }

@@ -977,6 +977,10 @@ export class RunnerManager {
     model: string;
     prompt: string;
     cwd: string;
+    /// Images/documents to send alongside the prompt. `send` has always
+    /// supported these; oneShot simply never offered them, which is why a
+    /// worker errand could not take a screenshot.
+    attachments?: Attachment[];
     timeoutMs?: number;
     /// Idle watchdog, in ms. When set, the turn also fails if it produces no
     /// streamed output for this long — and, crucially, that budget RESETS on
@@ -1053,6 +1057,7 @@ export class RunnerManager {
       const sent = this.send({
         conversationId,
         prompt: args.prompt,
+        attachments: args.attachments,
         backend: args.backend,
         cwd: args.cwd,
         model: args.model,

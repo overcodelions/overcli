@@ -23,6 +23,12 @@ export interface ComposerProps {
   /// caller so each variant can show the appropriate set.
   footer?: React.ReactNode;
   placeholder?: string;
+  /// Shown instead of `placeholder` while `disabled`. Defaults to the
+  /// onboarding hint, which is right for the welcome page (disabled means "no
+  /// CLI installed") and wrong everywhere else — a worker desk disables its
+  /// composer while the worker is mid-turn, and telling the user to install a
+  /// CLI at that moment is nonsense.
+  disabledPlaceholder?: string;
   autoFocus?: boolean;
   /// Monotonic value that, when changed, re-runs the autoFocus effect.
   /// Lets a parent re-grab focus on a user action (e.g. "+ new
@@ -178,6 +184,7 @@ export function Composer({
   variant = 'compact',
   footer,
   placeholder,
+  disabledPlaceholder,
   autoFocus,
   focusSignal,
   rootPath,
@@ -721,7 +728,7 @@ export function Composer({
         spellCheck={false}
         placeholder={
           disabled
-            ? 'Install a CLI above to get started'
+            ? (disabledPlaceholder ?? 'Install a CLI above to get started')
             : (easterPlaceholder ?? placeholder ?? 'Message...')
         }
         rows={variant === 'welcome' ? 3 : 2}

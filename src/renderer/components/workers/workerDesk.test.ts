@@ -1,0 +1,604 @@
+import { describe, expect, it } from 'vitest';
+
+import type { Orchestration } from '@shared/flows/orchestration';
+import type { FlowRun } from '@shared/flows/schema';
+import type { Worker } from '@shared/flows/worker';
+import {
+  activityOnDay,
+  adjacentDeskDay,
+  anyDeskLive,
+  deskDayLabel,
+  deskDays,
+  initialDeskDay,
+  startOfDay,
+  describeActivity,
+  recentWorkerActivity,
+  relativeTime,
+  fileDate,
+  groupIntoJobs,
+  groupWorkerFiles,
+  workerFileLabel,
+  runDeliverable,
+  toWorkerActivity,
+  workerActivity,
+  orchestrationForRun,
+  orchestrationTask,
+  deskMatchesQuery,
+  summarizeDesk,
+  workerDeskOrchestrations,
+  workerDeskRuns,
+  type WorkerActivity,
+  sidebarActivity,
+  workerRunsForSidebar,
+  workersForPath,
+} from './workerDeskSelectors';
+
+function worker(id = 'worker-1', overrides: Partial<Worker> = {}): Worker {
+  return {
+    id,
+    name: id === 'worker-1' ? 'Spec Hygiene' : 'Docs Gardener',
+    jobDescription: 'Keep project checks healthy and useful.',
+    projectPath: '/workspace',
+    cadence: { kind: 'daily', time: '09:00' },
+    trust: 'probation',
+    caps: { maxItemsPerShift: 3, runIn: 'worktree' },
+    budgetUSDPerMonth: 10,
+    heartbeatModel: 'model',
+    flowIds: ['flow'],
+    enabled: true,
+    createdAt: 1,
+    ...overrides,
+  };
+}
+
+// `Record<string, unknown>` rather than `Partial<FlowRun>`: these cases only
+// care about a run's `state.kind`, and `Partial<FlowRun>` would demand every
+// companion field of each state variant (currentStepId, watch, success, …).
+function run(id: string, overrides: Record<string, unknown> = {}): FlowRun {
+  return {
+    id,
+    flowId: 'flow',
+    flowSnapshot: { id: 'flow', name: 'Maintenance', steps: [], participants: [] },
+    projectPath: '/member-repo',
+    sourceProjectPath: '/workspace',
+    userPrompt: 'Fix flaky CI spec',
+    conversationIds: {},
+    artifacts: {},
+    state: { kind: 'done' },
+    createdAt: 1,
+    attempts: [],
+    ...overrides,
+  } as unknown as FlowRun;
+}
+
+function batch(
+  id: string,
+  workerId = 'worker-1',
+  statuses: Array<string> = ['proposed'],
+  extra: { task?: 'shift' | 'errand'; title?: string; reply?: string } = {},
+): Orchestration {
+  return {
+    id,
+    title: extra.title ?? `[Shift ${id}] Spec Hygiene`,
+    projectPath: '/workspace',
+    maxConcurrent: 1,
+    origin: { kind: 'worker', workerId, workerName: 'Spec Hygiene', task: extra.task },
+    ...(extra.reply ? { producer: { prompt: 'p', reply: extra.reply } } : {}),
+    createdAt: Number(id.replace(/\D/g, '')) || 1,
+    items: statuses.map((status, index) => ({
+      candidate: { id: `${id}-${index}`, title: `Candidate ${index}`, prompt: 'p' },
+      flowId: 'flow',
+      status: status as any,
+    })),
+  };
+}
+
+describe('worker desk selectors', () => {
+  it('claims worker runs by identity and sorts them newest first', () => {
+    const runs = {
+      old: run('old', { workerId: 'worker-1', createdAt: 1 }),
+      new: run('new', { workerId: 'worker-1', createdAt: 2, projectPath: '/another-member' }),
+      other: run('other', { workerId: 'worker-2', createdAt: 3 }),
+    };
+    expect(workerDeskRuns(runs, 'worker-1').map((item) => item.id)).toEqual(['new', 'old']);
+  });
+
+  it('selects a worker’s batches and splits awaiting proposals', () => {
+    const batches = {
+      older: batch('1'),
+      latest: batch('2', 'worker-1', ['proposed', 'queued']),
+      other: batch('3', 'worker-2'),
+    };
+    const result = workerDeskOrchestrations(batches, 'worker-1');
+    expect(result.mine.map((item) => item.id)).toEqual(['2', '1']);
+    expect(result.awaiting.map((item) => item.id)).toEqual(['2', '1']);
+  });
+
+  it('summarizes live work, proposal review, and completed work', () => {
+    const runs = [
+      run('running', { state: { kind: 'running' } }),
+      run('paused', { state: { kind: 'paused' } }),
+      run('watching', { state: { kind: 'watching' } }),
+      run('done', { state: { kind: 'done' } }),
+    ];
+    expect(summarizeDesk(runs, [batch('1', 'worker-1', ['proposed', 'proposed'])], {}, false)).toEqual({
+      running: 3,
+      needReview: 2,
+      done: 1,
+      live: true,
+    });
+    expect(summarizeDesk([], [], {}, true).live).toBe(true);
+  });
+
+  it('formats desk summaries and search matches', () => {
+    const w = worker();
+    expect(deskMatchesQuery(w, [run('r')], 'spec hygiene')).toBe(true);
+    expect(deskMatchesQuery(w, [run('r')], 'flaky')).toBe(true);
+    expect(deskMatchesQuery(w, [], '')).toBe(true);
+  });
+
+  it('finds workers where hired and reports group liveness', () => {
+    const first = worker();
+    const second = worker('worker-2', { projectPath: '/project' });
+    expect(workersForPath({ [first.id]: first, [second.id]: second }, '/workspace')).toEqual([first]);
+    expect(
+      anyDeskLive([first, second], { r: run('r', { workerId: 'worker-2', state: { kind: 'running' } }) }, {}, {}, {}),
+    ).toBe(true);
+    expect(anyDeskLive([first], {}, {}, {}, { 'worker-1': {} })).toBe(true);
+    expect(anyDeskLive([first], {}, {}, {}, {})).toBe(false);
+  });
+});
+
+describe('worker activity', () => {
+  it('reads task off the origin and treats pre-errand batches as shifts', () => {
+    expect(toWorkerActivity(batch('1', 'worker-1', [], { task: 'errand' })).task).toBe('errand');
+    // Batches written before errands existed carry no `task`.
+    expect(toWorkerActivity(batch('2')).task).toBe('shift');
+  });
+
+  it('strips the ledger prefix and the candidates payload', () => {
+    const activity = toWorkerActivity(
+      batch('1', 'worker-1', [], {
+        task: 'errand',
+        title: '[Errand] Repair the flaky spec',
+        reply: 'Not my job.\n<candidates>[]</candidates>',
+      }),
+    );
+    expect(activity.title).toBe('Repair the flaky spec');
+    expect(activity.reply).toBe('Not my job.');
+    expect(activity.launchedNothing).toBe(true);
+  });
+
+  it('counts item statuses and describes them', () => {
+    const activity = toWorkerActivity(
+      batch('1', 'worker-1', ['proposed', 'running', 'done', 'failed']),
+    );
+    expect(activity).toMatchObject({ proposed: 1, running: 1, done: 1, failed: 1 });
+    expect(describeActivity(activity)).toBe('1 need review · 1 running · 1 done · 1 failed');
+    expect(describeActivity(toWorkerActivity(batch('2', 'worker-1', [])))).toBe('nothing launched');
+  });
+
+  it('merges shifts and errands newest first, bounded', () => {
+    const batches = {
+      a: batch('1'),
+      b: batch('2', 'worker-1', ['queued'], { task: 'errand' }),
+      c: batch('3'),
+    };
+    expect(workerActivity(batches, 'worker-1').map((item) => item.orchestration.id)).toEqual([
+      '3',
+      '2',
+      '1',
+    ]);
+    expect(workerActivity(batches, 'worker-1', 2)).toHaveLength(2);
+  });
+
+  it('merges every worker for the sidebar and drops fired workers', () => {
+    const batches = { a: batch('1', 'worker-1'), b: batch('2', 'worker-2') };
+    const roster = { 'worker-1': worker('worker-1') };
+    const recent = recentWorkerActivity(batches, roster);
+    // worker-2 was fired; its batch survives on disk but has no row to open.
+    expect(recent.map((item) => item.workerId)).toEqual(['worker-1']);
+    expect(recent[0].workerName).toBe('Spec Hygiene');
+  });
+
+  it('formats relative time against an injected clock', () => {
+    const now = 10_000_000;
+    expect(relativeTime(now, now)).toBe('just now');
+    expect(relativeTime(now - 5 * 60_000, now)).toBe('5m ago');
+    expect(relativeTime(now - 3 * 60 * 60_000, now)).toBe('3h ago');
+    expect(relativeTime(now - 2 * 24 * 60 * 60_000, now)).toBe('2d ago');
+  });
+});
+
+describe('errand thread', () => {
+  it('titles a shift by its number and an errand by what was typed', () => {
+    // A shift's ledger title is "[Shift 3] <worker>", so stripping the prefix
+    // used to leave the worker's name — every shift row read identically.
+    expect(toWorkerActivity(batch('3', 'worker-1', [], { title: '[Shift 3] Warden' })).title).toBe(
+      'Shift 3',
+    );
+    const errand = batch('4', 'worker-1', [], {
+      task: 'errand',
+      title: '[Errand] fallback title',
+    });
+    (errand.origin as any).errand = 'why did CI get slower\nsecond line';
+    expect(toWorkerActivity(errand).title).toBe('why did CI get slower');
+  });
+
+});
+
+describe('legacy errand detection', () => {
+  it('reads the task off a pre-`task` batch title instead of assuming shift', () => {
+    // The regression the user hit: errands sent before `origin.task` existed
+    // rendered as "shift · Shift" and vanished from the thread entirely.
+    const legacy = batch('1', 'worker-1', [], { title: '[Errand] what was my most recent email' });
+    delete (legacy.origin as any).task;
+    expect(orchestrationTask(legacy)).toBe('errand');
+    expect(toWorkerActivity(legacy).title).toBe('what was my most recent email');
+    expect(toWorkerActivity(legacy).ask).toBe('what was my most recent email');
+
+    const shift = batch('2', 'worker-1', [], { title: '[Shift 2] Warden' });
+    delete (shift.origin as any).task;
+    expect(orchestrationTask(shift)).toBe('shift');
+  });
+});
+
+describe('errand deliverable', () => {
+  function withArtifacts(steps: string[], artifacts: Record<string, unknown>): FlowRun {
+    return run('r', {
+      flowSnapshot: { id: 'f', name: 'F', participants: [], steps: steps.map((o, i) => ({ id: `s${i}`, output: o })) },
+      artifacts,
+    });
+  }
+
+  it('takes the last step that actually produced something', () => {
+    // The flow author's last declared output is the deliverable — not merely
+    // the newest write, which on a rebound step can be an earlier artifact.
+    const r = withArtifacts(['raw.md', 'report.md'], {
+      'raw.md': { name: 'raw.md', kind: 'markdown', body: 'raw', producedAt: 99 },
+      'report.md': { name: 'report.md', kind: 'markdown', body: 'the answer', producedAt: 2 },
+    });
+    expect(runDeliverable(r)?.name).toBe('report.md');
+  });
+
+  it('falls back down the steps when the last one never ran', () => {
+    const r = withArtifacts(['raw.md', 'report.md'], {
+      'raw.md': { name: 'raw.md', kind: 'markdown', body: 'raw', producedAt: 1 },
+    });
+    expect(runDeliverable(r)?.name).toBe('raw.md');
+  });
+
+  it('returns null when the run produced nothing', () => {
+    expect(runDeliverable(withArtifacts(['report.md'], {}))).toBeNull();
+  });
+});
+
+describe('worker files', () => {
+  const files = [
+    { name: '2026-08-16-1031-errand-why-is-ci-slow.md', path: `/root/2026-08-16-1031-errand-why-is-ci-slow.md`, bytes: 10, modifiedAt: 5 },
+    { name: '2026-08-16-0645-shift-3-missing-coverage.md', path: `/root/2026-08-16-0645-shift-3-missing-coverage.md`, bytes: 10, modifiedAt: 9 },
+    { name: 'baseline.json', path: `/root/baseline.json`, bytes: 10, modifiedAt: 7 },
+    // Written before the date prefix existed — must still group correctly.
+    { name: 'errand-run-the-tests-summary.md', path: `/root/errand-run-the-tests-summary.md`, bytes: 10, modifiedAt: 1 },
+  ];
+
+  const names = (group: { jobs: Array<{ files: Array<{ name: string }> }> }) =>
+    group.jobs.flatMap((job) => job.files.map((f) => f.name));
+
+  it('splits deliverables from the worker’s own notes, newest first', () => {
+    const groups = groupWorkerFiles(files);
+    expect(groups.map((g) => g.key)).toEqual(['errand', 'shift', 'notes']);
+    // Within a group, most recent first — not the order the directory listed.
+    expect(names(groups[0])).toEqual([
+      '2026-08-16-1031-errand-why-is-ci-slow.md',
+      'errand-run-the-tests-summary.md',
+    ]);
+    expect(names(groups[2])).toEqual(['baseline.json']);
+  });
+
+  it('drops groups with nothing in them', () => {
+    expect(groupWorkerFiles([files[2]]).map((g) => g.key)).toEqual(['notes']);
+    expect(groupWorkerFiles([])).toEqual([]);
+  });
+
+  it('searches across every group', () => {
+    const groups = groupWorkerFiles(files, 'TESTS');
+    expect(groups).toHaveLength(1);
+    expect(names(groups[0])).toEqual(['errand-run-the-tests-summary.md']);
+  });
+});
+
+describe('groupIntoJobs', () => {
+  const folderFiles = [
+    { name: '2026-08-16-1431-errand-coverage/report.md', path: '/r/a/report.md', bytes: 9, modifiedAt: 20 },
+    { name: '2026-08-16-1431-errand-coverage/raw_test_output.md', path: '/r/a/raw.md', bytes: 10, modifiedAt: 22 },
+    { name: '2026-08-16-1431-errand-coverage/verification.md', path: '/r/a/ver.md', bytes: 5, modifiedAt: 21 },
+    { name: '2026-08-15-0900-errand-why-slow.md', path: '/r/b.md', bytes: 4, modifiedAt: 30 },
+  ];
+
+  it('folds a run’s directory into one job', () => {
+    const jobs = groupIntoJobs(folderFiles);
+    const folder = jobs.find((j) => j.folder);
+    expect(folder?.files).toHaveLength(3);
+    // Inside a job, name order — a report and the raw output it cites read as
+    // a set, and recency between siblings written in the same second is noise.
+    expect(folder?.files.map((f) => f.name.split('/')[1])).toEqual([
+      'raw_test_output.md',
+      'report.md',
+      'verification.md',
+    ]);
+  });
+
+  it('dates a job by its newest file', () => {
+    const folder = groupIntoJobs(folderFiles).find((j) => j.folder);
+    expect(folder?.at).toBe(22);
+  });
+
+  it('leaves a single-file run loose rather than in a folder of one', () => {
+    const loose = groupIntoJobs(folderFiles).find((j) => !j.folder);
+    expect(loose?.folder).toBe(false);
+    expect(loose?.files).toHaveLength(1);
+  });
+
+  it('orders jobs newest first across both shapes', () => {
+    expect(groupIntoJobs(folderFiles).map((j) => j.at)).toEqual([30, 22]);
+  });
+
+  it('labels a job by its folder, without the date or kind word', () => {
+    const folder = groupIntoJobs(folderFiles).find((j) => j.folder);
+    expect(folder?.label).toBe('coverage');
+  });
+});
+
+describe('worker file names', () => {
+  it('strips the date and kind for display but keeps a findable filename', () => {
+    expect(workerFileLabel('2026-08-16-0645-shift-3-missing-coverage.md')).toBe(
+      '3-missing-coverage.md',
+    );
+    expect(workerFileLabel('2026-08-16-1031-errand-why-is-ci-slow.md')).toBe('why-is-ci-slow.md');
+    // Legacy names have no date to strip.
+    expect(workerFileLabel('errand-run-the-tests.md')).toBe('run-the-tests.md');
+  });
+
+  it('shows an absolute date, dropping the year only within this one', () => {
+    const now = new Date(2026, 7, 16, 12, 0).getTime();
+    expect(fileDate(new Date(2026, 7, 16, 6, 45).getTime(), now)).toBe('Aug 16, 06:45');
+    expect(fileDate(new Date(2025, 10, 2, 9, 5).getTime(), now)).toBe('Nov 2 2025');
+  });
+});
+
+describe('the desk’s day', () => {
+  const MON = new Date(2026, 7, 17, 9, 0).getTime();
+  const MON_LATER = new Date(2026, 7, 17, 16, 30).getTime();
+  const SUN = new Date(2026, 7, 16, 11, 0).getTime();
+  const THU = new Date(2026, 7, 13, 11, 0).getTime();
+
+  const items = [{ at: MON }, { at: MON_LATER }, { at: SUN }, { at: THU }];
+
+  it('lists only days with work, newest first', () => {
+    expect(deskDays(items)).toEqual([
+      { at: startOfDay(MON), count: 2 },
+      { at: startOfDay(SUN), count: 1 },
+      { at: startOfDay(THU), count: 1 },
+    ]);
+  });
+
+  it('takes one day’s turns', () => {
+    expect(activityOnDay(items, startOfDay(MON))).toEqual([{ at: MON }, { at: MON_LATER }]);
+  });
+
+  it('steps back to the previous day that had work, skipping the silence', () => {
+    const days = deskDays(items);
+    // Sunday → Thursday: Fri and Sat had nothing, and stepping through empty
+    // days one at a time is not navigation.
+    expect(adjacentDeskDay(days, startOfDay(SUN), -1)).toBe(startOfDay(THU));
+  });
+
+  it('steps forward to the nearest later day, not the newest', () => {
+    const days = deskDays(items);
+    expect(adjacentDeskDay(days, startOfDay(THU), 1)).toBe(startOfDay(SUN));
+  });
+
+  it('returns null at either end, which is what disables the arrow', () => {
+    const days = deskDays(items);
+    expect(adjacentDeskDay(days, startOfDay(THU), -1)).toBeNull();
+    expect(adjacentDeskDay(days, startOfDay(MON), 1)).toBeNull();
+  });
+
+  it('walks back from a day with no work of its own', () => {
+    const days = deskDays(items);
+    const friday = startOfDay(new Date(2026, 7, 14, 12, 0).getTime());
+    expect(adjacentDeskDay(days, friday, -1)).toBe(startOfDay(THU));
+  });
+
+  it('opens on today, whatever the worker last did', () => {
+    expect(initialDeskDay(MON)).toBe(startOfDay(MON));
+  });
+
+  it('names the near days in words and the rest by date', () => {
+    const dayMs = 24 * 60 * 60_000;
+    expect(deskDayLabel(startOfDay(MON), MON)).toBe('Today');
+    expect(deskDayLabel(startOfDay(MON - dayMs), MON)).toBe('Yesterday');
+    expect(deskDayLabel(startOfDay(THU), MON)).toMatch(/Aug 13/);
+  });
+});
+
+describe('orchestrationForRun', () => {
+  const batch = {
+    id: 'o1',
+    title: '[Shift 2] Innovator',
+    createdAt: 5,
+    items: [
+      { candidate: { id: 'c1', title: 'a' }, status: 'done', runId: 'run-a' },
+      { candidate: { id: 'c2', title: 'b' }, status: 'failed', runId: 'run-b' },
+    ],
+  } as unknown as Orchestration;
+
+  it('finds the batch a run belongs to', () => {
+    expect(orchestrationForRun({ o1: batch }, 'run-b')?.id).toBe('o1');
+  });
+
+  it('returns null for a run no batch owns', () => {
+    expect(orchestrationForRun({ o1: batch }, 'run-z')).toBeNull();
+  });
+});
+
+describe('sidebarActivity', () => {
+  const NOW = new Date(2026, 7, 17, 15, 0).getTime();
+  const at = (t: number) => ({ at: t } as unknown as WorkerActivity);
+  const todayEarly = new Date(2026, 7, 17, 9, 0).getTime();
+  const todayLate = new Date(2026, 7, 17, 14, 0).getTime();
+  const yesterday = new Date(2026, 7, 16, 14, 0).getTime();
+
+  it('shows today’s turns, newest first, capped', () => {
+    const items = [at(todayLate), at(todayEarly), at(yesterday)];
+    expect(sidebarActivity(items, NOW, 4).map((i) => i.at)).toEqual([todayLate, todayEarly]);
+    expect(sidebarActivity(items, NOW, 1).map((i) => i.at)).toEqual([todayLate]);
+  });
+
+  it('keeps one stale line when nothing happened today', () => {
+    // A worker that worked yesterday must not read like one that has never
+    // worked at all — the sidebar's job includes "what did each one do last".
+    expect(sidebarActivity([at(yesterday)], NOW, 4).map((i) => i.at)).toEqual([yesterday]);
+  });
+
+  it('shows nothing for a worker that has never worked', () => {
+    expect(sidebarActivity([], NOW, 4)).toEqual([]);
+  });
+});
+
+describe('workerRunsForSidebar', () => {
+  const NOW = new Date(2026, 7, 17, 15, 0).getTime();
+  const todayAt = new Date(2026, 7, 17, 9, 0).getTime();
+  const yesterday = new Date(2026, 7, 16, 9, 0).getTime();
+  const run = (id: string, createdAt: number, kind = 'done') =>
+    ({
+      id,
+      workerId: 'w1',
+      createdAt,
+      updatedAt: createdAt,
+      flowSnapshot: { name: 'f', steps: [] },
+      // flowRunActivityAt folds over this; a real FlowRun always has one.
+      attempts: [],
+      state: { kind },
+    }) as unknown as FlowRun;
+
+  const runs = {
+    a: run('a', todayAt),
+    b: run('b', todayAt + 1),
+    c: run('c', todayAt + 2),
+  } as unknown as Record<string, FlowRun>;
+
+  it('takes only that worker’s runs, newest first', () => {
+    const mixed = {
+      ...runs,
+      other: { ...run('other', todayAt + 3), workerId: 'w2' },
+      // No worker at all: that run belongs to a project's Flows group.
+      loose: { ...run('loose', todayAt + 4), workerId: undefined },
+    } as unknown as Record<string, FlowRun>;
+    expect(workerRunsForSidebar(mixed, 'w1', '', 10, null, NOW).map((r) => r.id)).toEqual([
+      'c',
+      'b',
+      'a',
+    ]);
+  });
+
+  it('narrows on the sidebar query', () => {
+    const named = {
+      a: { ...run('a', todayAt), flowSnapshot: { name: 'audit', steps: [] } },
+      b: run('b', todayAt + 1),
+    } as unknown as Record<string, FlowRun>;
+    expect(workerRunsForSidebar(named, 'w1', 'audit', 10, null, NOW).map((r) => r.id)).toEqual([
+      'a',
+    ]);
+  });
+
+  it('caps the group so an hourly worker can’t bury the roster', () => {
+    expect(workerRunsForSidebar(runs, 'w1', '', 1, null, NOW).map((r) => r.id)).toEqual(['c']);
+  });
+
+  it('pins the run you are looking at even when it falls past the cap', () => {
+    expect(workerRunsForSidebar(runs, 'w1', '', 1, 'a', NOW).map((r) => r.id)).toEqual(['c', 'a']);
+  });
+
+  it('does not duplicate a pinned run already inside the cap', () => {
+    expect(workerRunsForSidebar(runs, 'w1', '', 2, 'c', NOW).map((r) => r.id)).toEqual(['c', 'b']);
+  });
+
+  it('ignores an active run belonging to someone else', () => {
+    expect(workerRunsForSidebar(runs, 'w1', '', 1, 'zzz', NOW).map((r) => r.id)).toEqual(['c']);
+  });
+
+  it('drops runs that merely finished on an earlier day', () => {
+    const stale = { old: run('old', yesterday), c: runs.c } as unknown as Record<string, FlowRun>;
+    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id)).toEqual(['c']);
+  });
+
+  it('keeps a paused or running run whatever day it started', () => {
+    const stale = {
+      paused: run('paused', yesterday, 'paused'),
+      watching: run('watching', yesterday, 'watching'),
+      done: run('done', yesterday),
+    } as unknown as Record<string, FlowRun>;
+    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id).sort()).toEqual([
+      'paused',
+      'watching',
+    ]);
+  });
+
+  it('keeps one line when nothing ran today and nothing is outstanding', () => {
+    const stale = {
+      older: run('older', yesterday - 1000),
+      newer: run('newer', yesterday),
+    } as unknown as Record<string, FlowRun>;
+    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id)).toEqual(['newer']);
+  });
+});
+
+describe('what an errand is called', () => {
+  const batch = (reply: string, errand = 'can you give me a report of the coverage') =>
+    ({
+      id: 'o1',
+      title: `[Errand] ${errand}`,
+      createdAt: 1,
+      items: [],
+      producer: { reply },
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'W', task: 'errand', errand },
+    }) as unknown as Orchestration;
+
+  it('uses the worker’s own subject as the label', () => {
+    const activity = toWorkerActivity(batch('<subject>Report coverage</subject>\n\nHere you go.'));
+    expect(activity.title).toBe('Report coverage');
+  });
+
+  it('keeps your words as the message, whatever the worker called it', () => {
+    const activity = toWorkerActivity(batch('<subject>Report coverage</subject>\n\nHere.'));
+    expect(activity.ask).toBe('can you give me a report of the coverage');
+  });
+
+  it('falls back to what you typed when the worker named nothing', () => {
+    // Every errand that predates the subject block lands here.
+    expect(toWorkerActivity(batch('Here you go.')).title).toBe(
+      'can you give me a report of the coverage',
+    );
+  });
+
+  it('keeps the subject out of the prose', () => {
+    expect(toWorkerActivity(batch('<subject>Report coverage</subject>\n\nHere.')).reply).toBe(
+      'Here.',
+    );
+  });
+
+  it('leaves a shift’s numbering alone and gives it no ask', () => {
+    const shift = {
+      id: 'o2',
+      title: '[Shift 4] Warden',
+      createdAt: 1,
+      items: [],
+      origin: { kind: 'worker', workerId: 'w1', workerName: 'W', task: 'shift' },
+    } as unknown as Orchestration;
+    const activity = toWorkerActivity(shift);
+    expect(activity.title).toBe('Shift 4');
+    expect(activity.ask).toBe('');
+  });
+});

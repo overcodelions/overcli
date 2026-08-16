@@ -66,6 +66,22 @@ const order = (projects: Project[], runs: FlowRun[], runners: any, selection: an
   ).map((c) => (c.entry.kind === 'flow' ? c.entry.run.id : c.entry.conv.id));
 
 describe('collectActiveCandidates', () => {
+  it('never puts a worker run in the Active pool', () => {
+    const userRun = run('user-run');
+    const workerRun = run('worker-run', { workerId: 'worker-1' } as Partial<FlowRun>);
+    expect(order([project('a', [])], [userRun, workerRun], {}, {})).toEqual(['user-run']);
+  });
+
+  it('does not let excluded worker runs change the Active floor', () => {
+    const projects = [project('a', [conv('chat', { lastPromptAt: NOW - MIN })])];
+    const userRuns = [run('user-run', { createdAt: NOW - 2 * MIN })];
+    const workerRuns = [
+      run('worker-1', { workerId: 'worker-1' } as Partial<FlowRun>),
+      run('worker-2', { workerId: 'worker-2' } as Partial<FlowRun>),
+    ];
+    expect(order(projects, [...userRuns, ...workerRuns], {}, {})).toEqual(order(projects, userRuns, {}, {}));
+  });
+
   it('does not move a row when you open it', () => {
     // The reported bug: clicking a row in the Active section sent it to the
     // top, so the list reshuffled under the pointer. Opening earns the row a

@@ -280,7 +280,7 @@ function friendlyModelLabel(backend: string, model: string): string {
 export function parseFlowYaml(args: {
   yaml: string;
   id: string;
-  source: 'user' | 'project';
+  source: Flow['source'];
   filePath: string;
 }): Flow | null {
   let doc: unknown;

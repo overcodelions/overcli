@@ -1,6 +1,7 @@
 import { useStore } from './store';
 import { isMac } from './platform';
 import { findContainerPath, findOwnerProject } from './conversationLookup';
+import { navigateBack, navigateForward } from './navHistory';
 
 export type ShortcutGroup = 'Navigation' | 'View' | 'Conversation' | 'App' | 'Editor';
 
@@ -97,6 +98,48 @@ export const SHORTCUTS: ShortcutDef[] = [
       const root = resolveFileFinderRoot();
       if (root) useStore.getState().openSheet({ type: 'fileFinder', rootPath: root });
     },
+  },
+  // Back/forward through the views you've visited. `mod` covers both Cmd
+  // and Ctrl, so the arrow bindings are Ctrl+←/→ as well as ⌘←/→.
+  //
+  // The arrows yield inside text fields, where ⌘←/Ctrl+← already means
+  // "jump to the start of the line" — the composer is where the cursor
+  // almost always is, and stealing that would break typing. Browsers make
+  // the same trade. The bracket bindings exist precisely to cover that
+  // case: they mean nothing to a text field, so they work everywhere.
+  {
+    id: 'nav.back',
+    keys: [{ key: 'ArrowLeft', mod: true }],
+    label: 'Back to the previous view (or ⌘[ / Ctrl+[ while typing)',
+    group: 'Navigation',
+    skipInInput: true,
+    run: () => navigateBack(),
+  },
+  {
+    id: 'nav.forward',
+    keys: [{ key: 'ArrowRight', mod: true }],
+    label: 'Forward to the next view (or ⌘] / Ctrl+] while typing)',
+    group: 'Navigation',
+    skipInInput: true,
+    run: () => navigateForward(),
+  },
+  {
+    id: 'nav.backAlt',
+    keys: [{ key: '[', mod: true }],
+    label: 'Back to the previous view',
+    group: 'Navigation',
+    skipInInput: false,
+    hidden: true,
+    run: () => navigateBack(),
+  },
+  {
+    id: 'nav.forwardAlt',
+    keys: [{ key: ']', mod: true }],
+    label: 'Forward to the next view',
+    group: 'Navigation',
+    skipInInput: false,
+    hidden: true,
+    run: () => navigateForward(),
   },
   {
     id: 'sidebar.toggle',

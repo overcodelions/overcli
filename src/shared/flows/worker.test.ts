@@ -3,8 +3,13 @@ import {
   computeWorkerScorecard,
   demotedTrust,
   describeWorker,
+  moveInRoster,
   parseWorkerContract,
+  parseWorkerSubject,
+  sortRoster,
   rejectionStreak,
+  stripWorkerSubject,
+  WORKER_SUBJECT_MAX,
   validateWorker,
   workerAutoApproveCap,
   type Worker,
@@ -132,6 +137,21 @@ describe('trust ladder helpers', () => {
     expect(rejectionStreak([e('proposed'), e('completed'), e('rejected')])).toBe(1);
     // A demotion spends the streak — older rejections don't count again.
     expect(rejectionStreak([e('rejected'), e('demoted'), e('rejected'), e('rejected')])).toBe(1);
+    // An errand records a request, not a verdict, so it does not reset the
+    // rejection streak that drives trust demotion.
+    expect(rejectionStreak([e('rejected'), e('errand'), e('rejected')])).toBe(2);
+  });
+
+  it('keeps errand entries out of worker scorecard totals', () => {
+    const card = computeWorkerScorecard([{ kind: 'errand' }], 0);
+    expect(card).toMatchObject({
+      proposed: 0,
+      approved: 0,
+      rejected: 0,
+      completed: 0,
+      failed: 0,
+      rejectionStreak: 0,
+    });
   });
 
   it('computes a scorecard from journal entries and spend', () => {
@@ -236,5 +256,78 @@ describe('parseWorkerContract', () => {
     ).toBeUndefined();
     // Without a known list, every suggestion is dropped rather than trusted.
     expect(parseWorkerContract(block('/repos/unifyr'), opts)!.projectPath).toBeUndefined();
+  });
+});
+
+describe('parseWorkerSubject', () => {
+  it('takes the worker’s own name for the errand', () => {
+    expect(parseWorkerSubject('<subject>Report ZiftProcessor test coverage</subject>\n\nHere…')).toBe(
+      'Report ZiftProcessor test coverage',
+    );
+  });
+
+  it('is absent when the worker did not name it', () => {
+    expect(parseWorkerSubject('I had a look and here is what I found.')).toBeNull();
+    expect(parseWorkerSubject('<subject>   </subject>')).toBeNull();
+  });
+
+  it('takes one line only, and drops quoting the model adds', () => {
+    expect(parseWorkerSubject('<subject>"Run the suite"\nand more</subject>')).toBe(
+      'Run the suite',
+    );
+  });
+
+  it('truncates a subject that is a sentence rather than a title', () => {
+    const long = 'x'.repeat(WORKER_SUBJECT_MAX + 20);
+    const parsed = parseWorkerSubject(`<subject>${long}</subject>`);
+    expect(parsed).toHaveLength(WORKER_SUBJECT_MAX);
+    expect(parsed?.endsWith('…')).toBe(true);
+  });
+
+  it('strips the block from the prose, since the label renders separately', () => {
+    expect(stripWorkerSubject('<subject>A title</subject>\n\nThe answer.')).toBe('The answer.');
+  });
+});
+
+describe('sortRoster', () => {
+  const w = (id: string, createdAt: number, order?: number) =>
+    ({ id, createdAt, order }) as unknown as Worker;
+
+  it('reads arranged workers first, then the rest newest-hired first', () => {
+    const roster = [w('new', 30), w('chief', 10, 0), w('old', 20)];
+    expect(sortRoster(roster).map((x) => x.id)).toEqual(['chief', 'new', 'old']);
+  });
+
+  it('leaves an unarranged roster in hire order', () => {
+    expect(sortRoster([w('a', 1), w('b', 3), w('c', 2)]).map((x) => x.id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('moveInRoster', () => {
+  const w = (id: string, createdAt: number, order?: number) =>
+    ({ id, createdAt, order }) as unknown as Worker;
+  const roster = [w('a', 30), w('b', 20), w('c', 10)];
+
+  it('swaps a worker with the one above it', () => {
+    expect(moveInRoster(roster, 'b', -1)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('swaps a worker with the one below it', () => {
+    expect(moveInRoster(roster, 'a', 1)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('refuses to move off either end', () => {
+    expect(moveInRoster(roster, 'a', -1)).toEqual(['a', 'b', 'c']);
+    expect(moveInRoster(roster, 'c', 1)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('returns every id, so the saved order is explicit rather than a delta', () => {
+    // Otherwise the next hire would land wherever hire-date sorting put it,
+    // silently jumping a queue the user arranged by hand.
+    expect(moveInRoster(roster, 'c', -1)).toHaveLength(3);
+  });
+
+  it('is a no-op for an id that is not on the roster', () => {
+    expect(moveInRoster(roster, 'gone', -1)).toEqual(['a', 'b', 'c']);
   });
 });

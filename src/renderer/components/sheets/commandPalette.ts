@@ -17,7 +17,7 @@ import type { Backend, Conversation, Project, UUID, Workspace } from '@shared/ty
 import type { Flow, FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 import { describeTrigger } from '@shared/flows/schedule';
-import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle } from '@shared/flows/schema';
+import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle, isSelectableFlow } from '@shared/flows/schema';
 import { conversationPromptAt } from '../../conversationLookup';
 
 export type PaletteKind =
@@ -210,7 +210,7 @@ export function buildPaletteItems(input: PaletteBuildInput): PaletteItem[] {
     });
   }
 
-  for (const flow of input.flows) {
+  for (const flow of input.flows.filter(isSelectableFlow)) {
     out.push({
       key: `flow:${flow.source}:${flow.id}`,
       kind: 'flow',

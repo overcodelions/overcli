@@ -38,8 +38,12 @@ export function FlowEditor() {
   // from. Defaulting to 'user' meant Save on a project flow quietly forked a
   // user copy — and made an id rename leave the original file behind under
   // its old name instead of moving it.
+  // Opening a worker-drafted flow in the builder is adoption: it saves as a
+  // normal user flow, which also lifts it out of the generated bucket the
+  // library hides. There is no "save it back as generated" — the point of that
+  // bucket is that nobody hand-maintains what's in it.
   const [target, setTarget] = useState<'user' | 'project'>(
-    editor.kind === 'editing' ? draft?.source ?? 'user' : 'user',
+    editor.kind === 'editing' && draft?.source === 'project' ? 'project' : 'user',
   );
   const [selectedProject, setSelectedProject] = useState<string>(
     (draft ? flowProjectPath(draft) : undefined) ?? projects[0]?.path ?? '',
