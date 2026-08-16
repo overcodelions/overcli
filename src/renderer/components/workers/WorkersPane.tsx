@@ -447,6 +447,25 @@ function ErrandRotaRow({ entry }: { entry: RotaEntry }) {
   );
 }
 
+/// The sidebar's errand mark, at rota size: an errand is speech, and speech
+/// came from you.
+function ErrandGlyph() {
+  return (
+    <svg
+      viewBox="0 0 12 12"
+      aria-hidden
+      className="mt-[1px] h-2.5 w-2.5 shrink-0 text-accent"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M2 2.6h8a1 1 0 0 1 1 1v3.6a1 1 0 0 1-1 1H5.4L3 10.4V8.2H2a1 1 0 0 1-1-1V3.6a1 1 0 0 1 1-1Z" />
+    </svg>
+  );
+}
+
 interface RotaEntry {
   at: string;
   who: string;
