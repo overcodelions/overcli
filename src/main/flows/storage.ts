@@ -17,11 +17,19 @@ import type { Flow } from '../../shared/flows/schema';
 import { SLUG_RE, validateFlow } from '../../shared/flows/validation';
 
 const USER_FLOWS_DIRNAME = 'flows';
+/// Worker-drafted flows live beside the user's, not among them: same load
+/// path (a run has to resolve them), separate directory so "delete everything
+/// a worker invented" stays a one-directory operation.
+const GENERATED_FLOWS_DIRNAME = 'flows-generated';
 const PROJECT_FLOWS_DIRNAME = path.join('.overcli', 'flows');
 const YAML_EXT = '.yaml';
 
 function userFlowsDir(): string {
   return path.join(app.getPath('userData'), USER_FLOWS_DIRNAME);
+}
+
+function generatedFlowsDir(): string {
+  return path.join(app.getPath('userData'), GENERATED_FLOWS_DIRNAME);
 }
 
 function projectFlowsDir(projectPath: string): string {
@@ -41,7 +49,7 @@ function readDirSafe(dir: string): string[] {
   }
 }
 
-function loadFlowsFromDir(dir: string, source: 'user' | 'project'): Flow[] {
+function loadFlowsFromDir(dir: string, source: Flow['source']): Flow[] {
   const out: Flow[] = [];
   for (const name of readDirSafe(dir)) {
     if (!name.endsWith(YAML_EXT)) continue;
@@ -64,14 +72,16 @@ function loadFlowsFromDir(dir: string, source: 'user' | 'project'): Flow[] {
 /// Resolve the on-disk path a flow would live at, given target + id.
 /// Project-local saves require a projectPath; user saves ignore it.
 function resolveSavePath(args: {
-  target: 'user' | 'project';
+  target: Flow['source'];
   flowId: string;
   projectPath?: string;
 }): string {
   const dir =
     args.target === 'user'
       ? userFlowsDir()
-      : projectFlowsDir(args.projectPath ?? '');
+      : args.target === 'generated'
+        ? generatedFlowsDir()
+        : projectFlowsDir(args.projectPath ?? '');
   return path.join(dir, `${args.flowId}${YAML_EXT}`);
 }
 
@@ -80,9 +90,11 @@ function resolveSavePath(args: {
 /// first one wins (the caller's list is responsibility-ordered); when a
 /// project flow shares an id with a user flow, the project wins.
 export function loadAllFlows(args: { projectPaths?: string[] } = {}): Flow[] {
-  const userFlows = loadFlowsFromDir(userFlowsDir(), 'user');
   const byId = new Map<string, Flow>();
-  for (const f of userFlows) byId.set(f.id, f);
+  // Generated first so a user or project flow of the same id always wins:
+  // promoting a worker's draft must shadow the original, not race it.
+  for (const f of loadFlowsFromDir(generatedFlowsDir(), 'generated')) byId.set(f.id, f);
+  for (const f of loadFlowsFromDir(userFlowsDir(), 'user')) byId.set(f.id, f);
   for (const projectPath of args.projectPaths ?? []) {
     const projFlows = loadFlowsFromDir(projectFlowsDir(projectPath), 'project');
     for (const f of projFlows) byId.set(f.id, f); // project overrides user
@@ -94,7 +106,7 @@ export function loadAllFlows(args: { projectPaths?: string[] } = {}): Flow[] {
 /// error object the renderer can surface inline.
 export function saveFlow(args: {
   flow: Flow;
-  target: 'user' | 'project';
+  target: Flow['source'];
   projectPath?: string;
 }): { ok: true; filePath: string } | { ok: false; error: string } {
   const v = validateFlow(args.flow);
@@ -148,7 +160,7 @@ function forgetInstalledFlow(filename: string): void {
 /// remove one). The `projectPath` is required when source === 'project'.
 export function deleteFlow(args: {
   flowId: string;
-  source: 'user' | 'project';
+  source: Flow['source'];
   projectPath?: string;
 }): { ok: true } | { ok: false; error: string } {
   if (args.source === 'project' && !args.projectPath) {
@@ -161,7 +173,11 @@ export function deleteFlow(args: {
     return { ok: false, error: `Invalid flow id "${args.flowId}".` };
   }
   const dir =
-    args.source === 'user' ? userFlowsDir() : projectFlowsDir(args.projectPath ?? '');
+    args.source === 'user'
+      ? userFlowsDir()
+      : args.source === 'generated'
+        ? generatedFlowsDir()
+        : projectFlowsDir(args.projectPath ?? '');
   const filePath = resolveSavePath({
     target: args.source,
     flowId: args.flowId,

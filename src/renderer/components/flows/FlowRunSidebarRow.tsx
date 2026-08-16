@@ -10,9 +10,15 @@ import { useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
+import { useWorkersStore } from '../../workersStore';
 import { useRunningMap } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
-import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle as runTitle } from '@shared/flows/schema';
+import {
+  flowRunActivityAt,
+  flowRunOwnerPath,
+  flowRunTitle as runTitle,
+  isWorkerRun,
+} from '@shared/flows/schema';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
@@ -52,8 +58,8 @@ export function runIsActive(
 interface FlowRunsSectionProps {
   /// Filesystem path used to match flow runs to this container. For
   /// projects: the project's repo path. For workspaces: the workspace's
-  /// symlink root. Runs whose `projectPath` equals this string surface
-  /// here.
+  /// symlink root. User-originated runs whose logical owner equals this path
+  /// surface here; worker-originated runs render at their worker's desk.
   path: string;
   /// Lowercased sidebar search query. When non-empty, only runs whose
   /// title/flow name match are shown — so a search narrows the Flows
@@ -75,13 +81,29 @@ export function flowRunMatchesQuery(run: FlowRun, query: string): boolean {
   );
 }
 
+/// The runs the Flows section shows for one project/workspace. Worker runs
+/// render under their worker's desk instead, so each machine-started run has
+/// one home in the sidebar.
+export function flowRunsForPath(
+  runs: Record<string, FlowRun>,
+  path: string,
+  query: string,
+): FlowRun[] {
+  return Object.values(runs)
+    .filter(
+      (run) =>
+        !isWorkerRun(run) &&
+        flowRunOwnerPath(run) === path &&
+        flowRunMatchesQuery(run, query),
+    )
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
 export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   const runs = useFlowsStore((s) => s.runs);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const runners = useRunningMap();
-  const matches = Object.values(runs)
-    .filter((r) => flowRunOwnerPath(r) === path && flowRunMatchesQuery(r, query))
-    .sort((a, b) => b.createdAt - a.createdAt);
+  const matches = flowRunsForPath(runs, path, query);
   if (matches.length === 0) return null;
   return (
     <>
@@ -199,7 +221,7 @@ export function resolveOwner(
   return { kind: 'unknown', name: tail };
 }
 
-function FlowRunRow({
+export function FlowRunRow({
   run,
   selected,
   isLive,
@@ -231,10 +253,25 @@ function FlowRunRow({
     setRenameValue(null);
     void renameRun(run.id, next);
   }
-  // Only show as selected when the user is actually viewing the flows
-  // pane — otherwise the selection feels stale (highlighted even when
+  // A worker's run lives on the Workers tab, next to the worker that launched
+  // it — the Flows library deliberately doesn't list it, so sending a click
+  // there would land on a pane with no row for what you just opened.
+  const openRun = () => {
+    if (run.workerId) {
+      // Order matters: selectWorker clears the active run (picking a worker
+      // means "show me the desk"), so it has to happen BEFORE we point at
+      // this one.
+      useWorkersStore.getState().selectWorker(run.workerId);
+      setDetailMode('workers');
+    }
+    setActiveRun(run.id);
+    if (!run.workerId) setDetailMode('flows');
+  };
+
+  // Only show as selected when the user is actually viewing the pane this run
+  // opens in — otherwise the selection feels stale (highlighted even when
   // the user navigated to Chat / Local / etc).
-  const visiblySelected = selected && detailMode === 'flows';
+  const visiblySelected = selected && detailMode === (run.workerId ? 'workers' : 'flows');
   return (
     <div
       className={
@@ -296,10 +333,7 @@ function FlowRunRow({
       ) : (
         <>
           <button
-            onClick={() => {
-              setActiveRun(run.id);
-              setDetailMode('flows');
-            }}
+            onClick={openRun}
             onDoubleClick={() => setRenameValue(run.title ?? '')}
             className="flex items-center gap-2 flex-1 min-w-0 text-left px-2 py-1"
           >

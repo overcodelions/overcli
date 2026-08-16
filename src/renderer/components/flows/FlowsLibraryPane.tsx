@@ -838,10 +838,24 @@ function FlowLibraryList({
   const openEditor = useFlowsStore((s) => s.openEditor);
 
   // Archived flows sit out of every group and land in one collapsed section
-  // at the bottom — shelved, not gone.
-  const liveFlows = useMemo(() => flows.filter((f) => !f.archived), [flows]);
-  const archivedFlows = useMemo(() => flows.filter((f) => f.archived), [flows]);
+  // at the bottom — shelved, not gone. Worker-generated flows get the same
+  // treatment for a different reason: a worker answering questions all week
+  // can mint dozens, and burying the handful the user actually wrote under
+  // them is exactly the clutter the separate bucket exists to prevent.
+  const liveFlows = useMemo(
+    () => flows.filter((f) => !f.archived && f.source !== 'generated'),
+    [flows],
+  );
+  const archivedFlows = useMemo(
+    () => flows.filter((f) => f.archived && f.source !== 'generated'),
+    [flows],
+  );
+  const generatedFlows = useMemo(
+    () => flows.filter((f) => f.source === 'generated' && !f.archived),
+    [flows],
+  );
   const [showArchived, setShowArchived] = useState(false);
+  const [showGenerated, setShowGenerated] = useState(false);
 
   // All-time run tallies, so most-used flows float and dusty ones sink.
   const [runCounts, setRunCounts] = useState<Record<string, { count: number; lastAt: number }>>(
@@ -997,6 +1011,33 @@ function FlowLibraryList({
             </div>
           </div>
         ))
+      )}
+
+      {generatedFlows.length > 0 && (
+        <div className="mb-6">
+          <button
+            onClick={() => setShowGenerated((v) => !v)}
+            className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-ink-faint hover:text-ink mb-2"
+          >
+            <span>{showGenerated ? '▼' : '▶'}</span>
+            <span>Generated</span>
+            <span className="text-ink-faint normal-case tracking-normal">
+              · {generatedFlows.length} drafted by a worker to answer an errand — edit one to
+              adopt it as your own
+            </span>
+          </button>
+          {showGenerated && (
+            <div className="space-y-3">
+              {generatedFlows.map((flow) => (
+                <FlowRow
+                  key={`${flow.source}:${flow.id}`}
+                  flow={flow}
+                  projectPaths={projectPaths}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {archivedFlows.length > 0 && (
@@ -1510,11 +1551,13 @@ function WorkerUsageBadge({ flowId }: { flowId: string }) {
   );
 }
 
-function SourceBadge({ source }: { source: 'user' | 'project' }) {
+function SourceBadge({ source }: { source: Flow['source'] }) {
   const cls =
     source === 'project'
       ? 'bg-emerald-500/20 text-emerald-700 dark:text-emerald-300'
-      : 'bg-sky-500/20 text-sky-700 dark:text-sky-300';
+      : source === 'generated'
+        ? 'bg-violet-500/20 text-violet-700 dark:text-violet-300'
+        : 'bg-sky-500/20 text-sky-700 dark:text-sky-300';
   return (
     <span className={`text-[10px] px-1.5 py-0.5 rounded uppercase tracking-wider ${cls}`}>
       {source}

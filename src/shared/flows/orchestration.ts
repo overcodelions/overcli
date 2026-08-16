@@ -134,6 +134,19 @@ export interface Orchestration {
         kind: 'worker';
         workerId: UUID;
         workerName: string;
+        /// Which of a worker's two entry points produced this batch: its
+        /// standing cadence (`shift`) or a one-off instruction the user typed
+        /// (`errand`). Recorded rather than parsed back out of the batch title,
+        /// which is display text. Absent on batches written before errands
+        /// existed — read those as `shift`, which is what they were.
+        task?: 'shift' | 'errand';
+        /// The raw instruction the user typed, for `task: 'errand'`. Kept
+        /// because `producer.prompt` is the assembled planning prompt — job
+        /// description, journal, rejections and all — which is the wrong thing
+        /// to show back to the person who typed one sentence. This is what a
+        /// worker's thread renders as your message, and what the activity row
+        /// is titled with.
+        errand?: string;
       };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).

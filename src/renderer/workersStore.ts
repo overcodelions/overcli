@@ -7,12 +7,16 @@
 
 import { create } from 'zustand';
 
-import type { UUID } from '@shared/types';
+import { useFlowsStore } from './flowsStore';
+
+import type { Attachment, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
+import { moveInRoster } from '@shared/flows/worker';
 import type {
   Worker,
   WorkerCaps,
   WorkerContract,
+  WorkerErrandResult,
   WorkerJournalEntry,
   WorkerScorecard,
   WorkerTrustLevel,
@@ -42,7 +46,26 @@ interface WorkersState {
   /// Live shift state per worker: present while a planning turn is running,
   /// carrying its streamed text and tool invocations. Cleared when the shift
   /// settles — driven entirely by main's events, never inferred here.
-  shiftProgress: Record<string, { text: string; tools: string[] }>;
+  shiftProgress: Record<string, { text: string; tools: string[]; task: 'shift' | 'errand' }>;
+  /// Per-worker errand state. Desk composers are independent of the global
+  /// editor busy flag and retain a no-launch result until dismissed.
+  errandBusy: Record<string, boolean>;
+  /// The errand currently in flight, per worker. The timeline is derived from
+  /// orchestration batches, and a batch does not exist until the planning turn
+  /// finishes — which can be minutes. Without this the message you just sent
+  /// simply isn't on screen until the reply lands. Chat solves the same problem
+  /// with an optimistic `localUser` event; this is that, scoped to a desk.
+  /// A LIST, not one record: errands queue behind whatever the worker is
+  /// doing, so two sent in a row are both in flight from your side and both
+  /// have to be on screen. One overwriting the other looked like the first
+  /// message vanished.
+  errandSending: Record<string, Array<{ id: string; text: string; at: number }>>;
+  /// Each worker's own directory, learned when its Files tab loads. The file
+  /// editor is scoped to it so opening one worker's file cannot walk up into
+  /// the others — they are all siblings under userData.
+  filesRoot: Record<string, string>;
+  errandError: Record<string, string>;
+  errandResult: Record<string, WorkerErrandResult>;
   draft: WorkerDraft | null;
   /// A flow riding along with the draft: hire-drafted (new), or AI-revised
   /// (an existing flow with unsaved changes). Persisted only when the worker
@@ -50,6 +73,27 @@ interface WorkersState {
   draftedFlow: Flow | null;
   /// The hire drafter's prose read on the job, shown above the editor.
   hireSummary: string | null;
+  /// Which worker the Workers pane is showing. The Workers sidebar is the
+  /// roster and this is its selection — the same master/detail split the Chat
+  /// and Flows tabs use, so a worker's shifts, errands and replies have a full
+  /// pane to render in instead of expanding inside a sidebar row.
+  selectedWorkerId: string | null;
+  /// The Workers pane shows one of two things: the selected worker's desk, or
+  /// the roster calendar. It is a peer of the selection rather than part of it
+  /// — the calendar is about every worker at once, so it has no worker to be
+  /// the selection of, and picking anyone from it must land you on their desk.
+  view: 'worker' | 'calendar';
+  /// One turn to open when the desk mounts, set by arriving from somewhere
+  /// that already knows which turn you meant — clicking a past shift on the
+  /// calendar. The desk shows one DAY, so a link into it has to carry the
+  /// day too; `at` is what puts the desk on the right date instead of on
+  /// today, where the turn isn't.
+  deskFocus: { workerId: string; orchestrationId: string; at: number } | null;
+  /// Render the Workers tab as if nobody had been hired, without firing
+  /// anyone. Session-only and never persisted: it exists so the empty state
+  /// can be LOOKED at — the one screen you cannot reach once the feature is
+  /// working, and therefore the one that rots. Gated behind the debug setting.
+  previewEmpty: boolean;
   busy: boolean;
   error: string | null;
 }
@@ -57,7 +101,7 @@ interface WorkersState {
 interface WorkersActions {
   reload(): Promise<void>;
   applyUpdate(worker: Worker, nextShiftAt: number | null, scorecard: WorkerScorecard): void;
-  setShiftActive(id: string, active: boolean): void;
+  setShiftActive(id: string, active: boolean, task?: 'shift' | 'errand'): void;
   applyShiftProgress(id: string, text: string, tools: string[]): void;
   removeLocal(id: string): void;
   openEditor(draft: WorkerDraft, extras?: { draftedFlow?: Flow; hireSummary?: string }): void;
@@ -71,6 +115,14 @@ interface WorkersActions {
   setTrust(id: string, trust: WorkerTrustLevel): Promise<void>;
   remove(id: string): Promise<void>;
   workShiftNow(id: string): Promise<void>;
+  selectWorker(id: string | null): void;
+  showCalendar(): void;
+  setPreviewEmpty(on: boolean): void;
+  openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
+  moveWorker(id: string, direction: -1 | 1): Promise<void>;
+  setFilesRoot(id: string, root: string): void;
+  runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
+  clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
   clearError(): void;
 }
@@ -131,9 +183,18 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   scorecards: {},
   journals: {},
   shiftProgress: {},
+  errandBusy: {},
+  errandSending: {},
+  filesRoot: {},
+  errandError: {},
+  errandResult: {},
   draft: null,
   draftedFlow: null,
   hireSummary: null,
+  selectedWorkerId: null,
+  view: 'worker',
+  deskFocus: null,
+  previewEmpty: false,
   busy: false,
   error: null,
 
@@ -158,17 +219,28 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     }));
   },
 
-  setShiftActive(id, active) {
+  setShiftActive(id, active, task = 'shift') {
     set((s) => {
       const shiftProgress = { ...s.shiftProgress };
-      if (active) shiftProgress[id] = shiftProgress[id] ?? { text: '', tools: [] };
+      // Keep any text already streamed for this worker, but let the newly
+      // announced task win — it is the authoritative label for what is running.
+      if (active) {
+        const prior = shiftProgress[id];
+        shiftProgress[id] = { text: prior?.text ?? '', tools: prior?.tools ?? [], task };
+      }
       else delete shiftProgress[id];
       return { shiftProgress };
     });
   },
 
   applyShiftProgress(id, text, tools) {
-    set((s) => ({ shiftProgress: { ...s.shiftProgress, [id]: { text, tools } } }));
+    set((s) => ({
+      shiftProgress: {
+        ...s.shiftProgress,
+        // `task` is set by setShiftActive, which always precedes streamed text.
+        [id]: { task: s.shiftProgress[id]?.task ?? 'shift', text, tools },
+      },
+    }));
   },
 
   removeLocal(id) {
@@ -178,13 +250,79 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const scorecards = { ...s.scorecards };
       const journals = { ...s.journals };
       const shiftProgress = { ...s.shiftProgress };
+      const errandBusy = { ...s.errandBusy };
+      const errandSending = { ...s.errandSending };
+      const errandError = { ...s.errandError };
+      const errandResult = { ...s.errandResult };
       delete workers[id];
       delete nextShiftAt[id];
       delete scorecards[id];
       delete journals[id];
       delete shiftProgress[id];
-      return { workers, nextShiftAt, scorecards, journals, shiftProgress };
+      delete errandBusy[id];
+      delete errandSending[id];
+      delete errandError[id];
+      delete errandResult[id];
+      return {
+        workers,
+        nextShiftAt,
+        scorecards,
+        journals,
+        shiftProgress,
+        errandBusy,
+        errandSending,
+        errandError,
+        errandResult,
+        // Firing the selected worker must clear the selection, or the pane
+        // holds an id nothing resolves and renders blank.
+        selectedWorkerId: s.selectedWorkerId === id ? null : s.selectedWorkerId,
+      };
     });
+  },
+
+  selectWorker(id) {
+    // Picking a worker outright is a fresh arrival: it clears any turn a
+    // previous link asked for, so the desk opens on today as it should — and
+    // any run filling the pane, since the Workers tab renders a worker's run
+    // in place of its desk and you just asked for the desk.
+    useFlowsStore.getState().setActiveRun(null);
+    set({ selectedWorkerId: id, view: 'worker', deskFocus: null });
+  },
+
+  showCalendar() {
+    set({ view: 'calendar' });
+  },
+
+  setPreviewEmpty(on) {
+    set({ previewEmpty: on });
+  },
+
+  async moveWorker(id, direction) {
+    const ids = moveInRoster(Object.values(get().workers), id, direction);
+    // Applied locally first: the roster is what the user is looking at, and a
+    // row that waits for a round trip before moving reads as a dead button.
+    set((s) => {
+      const workers = { ...s.workers };
+      ids.forEach((wid, index) => {
+        const worker = workers[wid];
+        if (worker) workers[wid] = { ...worker, order: index };
+      });
+      return { workers };
+    });
+    await window.overcli.invoke('workers:reorder', { ids });
+  },
+
+  openWorkerActivity(workerId, orchestrationId, at) {
+    useFlowsStore.getState().setActiveRun(null);
+    set({
+      selectedWorkerId: workerId,
+      view: 'worker',
+      deskFocus: { workerId, orchestrationId, at },
+    });
+  },
+
+  setFilesRoot(id, root) {
+    set((s) => ({ filesRoot: { ...s.filesRoot, [id]: root } }));
   },
 
   openEditor(draft, extras) {
@@ -273,6 +411,51 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     } finally {
       set({ busy: false });
     }
+  },
+
+  async runErrand(id, instruction, attachments) {
+    const sendId = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    set((s) => ({
+      errandBusy: { ...s.errandBusy, [id]: true },
+      errandError: { ...s.errandError, [id]: '' },
+      errandSending: {
+        ...s.errandSending,
+        [id]: [...(s.errandSending[id] ?? []), { id: sendId, text: instruction, at: Date.now() }],
+      },
+    }));
+    try {
+      const res = await window.overcli.invoke('workers:runErrand', {
+        id,
+        instruction,
+        attachments,
+      });
+      if (!res.ok) {
+        set((s) => ({ errandError: { ...s.errandError, [id]: res.error } }));
+        return false;
+      }
+      set((s) => ({ errandResult: { ...s.errandResult, [id]: res.result } }));
+      return true;
+    } finally {
+      set((s) => {
+        // Drop only THIS one. Anything still queued behind it stays on screen
+        // until its own turn finishes.
+        const rest = (s.errandSending[id] ?? []).filter((e) => e.id !== sendId);
+        const errandSending = { ...s.errandSending };
+        if (rest.length > 0) errandSending[id] = rest;
+        else delete errandSending[id];
+        return { errandBusy: { ...s.errandBusy, [id]: rest.length > 0 }, errandSending };
+      });
+    }
+  },
+
+  clearErrand(id) {
+    set((s) => {
+      const errandError = { ...s.errandError };
+      const errandResult = { ...s.errandResult };
+      delete errandError[id];
+      delete errandResult[id];
+      return { errandError, errandResult };
+    });
   },
 
   async loadJournal(id) {
