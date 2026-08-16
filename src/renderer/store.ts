@@ -116,7 +116,8 @@ export type DetailMode =
   | 'local'
   | 'explorer'
   | 'flows'
-  | 'orchestrator';
+  | 'orchestrator'
+  | 'workers';
 
 export interface OpenFileHighlight {
   startLine: number;
@@ -3365,8 +3366,21 @@ export const useStore = create<StoreState>((set, get) => ({
         useOrchestratorStore.getState().removeOrchestration(event.id);
       });
     } else if (event.type === 'orchestrationProducerProgress') {
-      void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
-        useOrchestratorStore.getState().applyProducerProgress(event.text, event.tools);
+      // Worker shift-planning turns stream to the Workers pane; only the
+      // user's own Ask-pane turns feed the orchestrator's producer view.
+      if (event.workerId) {
+        const workerId = event.workerId;
+        void import('./workersStore').then(({ useWorkersStore }) => {
+          useWorkersStore.getState().applyShiftProgress(workerId, event.text, event.tools);
+        });
+      } else {
+        void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
+          useOrchestratorStore.getState().applyProducerProgress(event.text, event.tools);
+        });
+      }
+    } else if (event.type === 'workerShiftProgress') {
+      void import('./workersStore').then(({ useWorkersStore }) => {
+        useWorkersStore.getState().setShiftActive(event.workerId, event.active);
       });
     } else if (event.type === 'scheduleUpdate') {
       void import('./schedulesStore').then(({ useSchedulesStore }) => {
@@ -3375,6 +3389,14 @@ export const useStore = create<StoreState>((set, get) => ({
     } else if (event.type === 'scheduleDeleted') {
       void import('./schedulesStore').then(({ useSchedulesStore }) => {
         useSchedulesStore.getState().removeLocal(event.id);
+      });
+    } else if (event.type === 'workerUpdate') {
+      void import('./workersStore').then(({ useWorkersStore }) => {
+        useWorkersStore.getState().applyUpdate(event.worker, event.nextShiftAt, event.scorecard);
+      });
+    } else if (event.type === 'workerDeleted') {
+      void import('./workersStore').then(({ useWorkersStore }) => {
+        useWorkersStore.getState().removeLocal(event.id);
       });
     }
   },

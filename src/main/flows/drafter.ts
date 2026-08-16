@@ -338,6 +338,29 @@ async function runDrafter(
   mode: DraftMode,
   userMessage: string,
 ): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
+  return oneShotDraftText(deps, {
+    buildSystemPrompt: (backend) => systemPrompt(backend, mode),
+    userMessage,
+    verb: mode === 'revise' ? 'edit' : 'draft',
+  });
+}
+
+/// The transport half of drafting, exported for other NL→structured-config
+/// drafters (the worker hire drafter): pick the user's healthy preferred CLI,
+/// run one hidden text-only turn with the caller's system prompt, return raw
+/// text. Same backend selection and transports as flow drafting, so a second
+/// drafter can never drift from the first.
+export async function oneShotDraftText(
+  deps: DraftDeps,
+  args: {
+    buildSystemPrompt: (backend: Backend) => string;
+    userMessage: string;
+    /// Verb for the no-CLI error: "No CLI is signed in to <verb> with."
+    verb: string;
+  },
+): Promise<
+  { ok: true; text: string; label: string; backend: Backend } | { ok: false; error: string }
+> {
   // Health is resolved up front rather than probed inside the predicate:
   // probing executes a CLI, so it's async now (it used to block the main
   // thread) and `pickDrafterBackend` can't await mid-predicate.
@@ -351,12 +374,13 @@ async function runDrafter(
     return {
       ok: false,
       error:
-        `No CLI is signed in to ${mode === 'revise' ? 'edit' : 'draft'} with. ` +
+        `No CLI is signed in to ${args.verb} with. ` +
         'Set up Claude, Codex, Gemini, or Copilot in Settings first.',
     };
   }
   const model = drafterModelFor(backend);
   const label = backendLabel(backend);
+  const sys = args.buildSystemPrompt(backend);
 
   // Only reach for the in-process Agent SDK when the user has opted into the
   // experimental SDK transport. By default Claude drafts through the runner
@@ -366,10 +390,10 @@ async function runDrafter(
   const useClaudeSdk =
     backend === 'claude' && deps.settings.claudeTransport === 'sdk';
   const text = useClaudeSdk
-    ? await draftViaClaudeSdk(userMessage, model, mode, deps.settings.backendPaths.claude)
-    : await draftViaRunner(deps.runner, backend, model, mode, userMessage);
+    ? await draftViaClaudeSdk(args.userMessage, model, sys, deps.settings.backendPaths.claude)
+    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage);
   if (!text.ok) return text;
-  return { ok: true, text: text.text, label };
+  return { ok: true, text: text.text, label, backend };
 }
 
 /// Direct SDK path for Claude: a pure-text generation with the claude_code
@@ -377,7 +401,7 @@ async function runDrafter(
 async function draftViaClaudeSdk(
   userMessage: string,
   model: string,
-  mode: DraftMode,
+  systemPromptText: string,
   claudeBinOverride?: string,
 ): Promise<OneShotResult> {
   const executable = claudeSdkExecutablePath(claudeBinOverride);
@@ -389,7 +413,7 @@ async function draftViaClaudeSdk(
         // Pure custom system prompt — we don't want the claude_code preset
         // injecting its project-context bits into a pure text-generation
         // task. The schema + example carries everything the model needs.
-        systemPrompt: systemPrompt('claude', mode),
+        systemPrompt: systemPromptText,
         model,
         cwd: os.homedir(),
         permissionMode: 'bypassPermissions',
@@ -425,10 +449,10 @@ async function draftViaRunner(
   runner: RunnerManager,
   backend: Backend,
   model: string,
-  mode: DraftMode,
+  systemPromptText: string,
   userMessage: string,
 ): Promise<OneShotResult> {
-  const prompt = `${systemPrompt(backend, mode)}\n\n---\n\n${userMessage}\n\nReply with YAML only.`;
+  const prompt = `${systemPromptText}\n\n---\n\n${userMessage}`;
   return runner.oneShot({ backend, model, prompt, cwd: os.homedir() });
 }
 

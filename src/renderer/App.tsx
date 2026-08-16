@@ -14,6 +14,7 @@ import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
+import { WorkersPane } from './components/workers/WorkersPane';
 import { useFlowsStore } from './flowsStore';
 import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
@@ -131,6 +132,11 @@ export function App() {
     // thought to go looking.
     void import('./schedulesStore').then(({ useSchedulesStore }) => {
       void useSchedulesStore.getState().reload();
+    });
+    // Workers hydrate at startup for the same reason: a shift can fire (and a
+    // scorecard change) before the user ever opens the Workers tab.
+    void import('./workersStore').then(({ useWorkersStore }) => {
+      void useWorkersStore.getState().reload();
     });
   }, []);
 
@@ -320,6 +326,8 @@ export function App() {
             <FlowsLibraryPane />
           ) : detailMode === 'orchestrator' ? (
             <OrchestratorPane />
+          ) : detailMode === 'workers' ? (
+            <WorkersPane />
           ) : selectedConversationId ? (
             <ConversationPane />
           ) : (

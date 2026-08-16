@@ -113,6 +113,10 @@ export interface FlowRuntimeStartArgs {
   /// found in the sidebar can say who started it — nobody was watching when
   /// it did.
   scheduleName?: string;
+  /// Set when a Worker shift launched this run. Stored on the FlowRun so the
+  /// worker engine can route the terminal state and roll up cost.
+  workerId?: UUID;
+  workerName?: string;
   /// Explicit run title, set at launch instead of derived from the prompt.
   /// Only the scheduler uses it: a scheduled prompt never changes, so the
   /// prompt-derived title would be identical for every occurrence.
@@ -789,6 +793,8 @@ export class FlowRuntimeImpl {
       orchestrationItemTitle: args.orchestrationItemTitle,
       scheduleId: args.scheduleId,
       scheduleName: args.scheduleName,
+      workerId: args.workerId,
+      workerName: args.workerName,
       title: args.title,
     };
     this.runs.set(runId, run);

@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { UUID } from '@shared/types';
 import { useStore } from '../../store';
 import { useFlowsStore } from '../../flowsStore';
+import { draftFromWorker, useWorkersStore } from '../../workersStore';
 import { useRunningMap } from '../../runnersStore';
 import { findContainerPath } from '../../conversationLookup';
 import { backendColor } from '../../theme';
@@ -58,6 +59,7 @@ export function QuickSwitcherSheet() {
 
   const runs = useFlowsStore((s) => s.runs);
   const flows = useFlowsStore((s) => s.flows);
+  const workers = useWorkersStore((s) => s.workers);
   const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const openEditor = useFlowsStore((s) => s.openEditor);
@@ -102,12 +104,13 @@ export function QuickSwitcherSheet() {
         workspaces,
         runs: Object.values(runs),
         flows,
+        workers: Object.values(workers),
         commands,
         runningIds,
         lastSelectedAt,
         lastOpenedAtByRun,
       }),
-    [projects, workspaces, runs, flows, commands, runningIds, lastSelectedAt, lastOpenedAtByRun],
+    [projects, workspaces, runs, flows, workers, commands, runningIds, lastSelectedAt, lastOpenedAtByRun],
   );
 
   const groups = useMemo(
@@ -169,6 +172,12 @@ export function QuickSwitcherSheet() {
           openEditor({ kind: 'editing', flowId: target.flowId });
           setDetailMode('flows');
           return;
+        case 'worker': {
+          const w = useWorkersStore.getState().workers[target.workerId];
+          if (w) useWorkersStore.getState().openEditor(draftFromWorker(w));
+          setDetailMode('workers');
+          return;
+        }
         case 'project':
           startNewConversation(target.projectId);
           return;
@@ -494,7 +503,7 @@ function Highlighted({ text, positions }: { text: string; positions: number[] })
 /// monogram so the same flow looks the same everywhere; chats carry their
 /// backend's color; places and actions get a neutral glyph tile.
 function KindTile({ item }: { item: PaletteItem }) {
-  if (item.kind === 'run' || item.kind === 'flow') {
+  if (item.kind === 'run' || item.kind === 'flow' || item.kind === 'worker') {
     return (
       <div className={item.archived ? 'opacity-50' : undefined}>
         <FlowMonogram name={item.monogram ?? item.title} size="md" live={item.status === 'running'} />
@@ -528,6 +537,7 @@ function KindTile({ item }: { item: PaletteItem }) {
 const KIND_LABEL: Record<PaletteKind, string> = {
   chat: 'chat',
   agent: 'agent',
+  worker: 'worker',
   run: 'run',
   flow: 'flow',
   project: 'project',
@@ -777,6 +787,13 @@ function usePaletteCommands({ showDebug }: { showDebug: boolean }): PaletteComma
         title: 'Orchestrator',
         keywords: ['tasks', 'board', 'plan'],
         run: () => state().setDetailMode('orchestrator'),
+      },
+      {
+        id: 'view.workers',
+        title: 'Workers',
+        subtitle: 'Standing personas that plan their own shifts',
+        keywords: ['worker', 'persona', 'hire', 'standing', 'shift'],
+        run: () => state().setDetailMode('workers'),
       },
       {
         id: 'view.local',

@@ -105,8 +105,14 @@ export function saveRun(run: FlowRun): void {
   writeChains.set(run.id, next);
   // Mirror terminal runs into the all-time summary log so their totals
   // outlive the LRU eviction of <userData>/flow-runs/<id>.json. The
-  // append is idempotent — same id never lands twice.
-  if (run.state.kind === 'done' || run.state.kind === 'archived') {
+  // append is idempotent — same id never lands twice. Aborted runs are
+  // terminal too: their spend was real (and the worker budget gate reads
+  // this log — a run that failed expensively must still count).
+  if (
+    run.state.kind === 'done' ||
+    run.state.kind === 'archived' ||
+    run.state.kind === 'aborted'
+  ) {
     appendRunSummary(run);
   }
 }
