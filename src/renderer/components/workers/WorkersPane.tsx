@@ -258,7 +258,7 @@ function WorkersEmptyState({
     // the pane actually has goes to the thing the width is FOR: a desk. Terms
     // tell you what you are agreeing to; the specimen tells you what it is
     // like, which no list of terms can.
-    <div className="flex flex-wrap items-start gap-x-12 gap-y-8 py-2">
+    <div className="flex flex-wrap items-start gap-x-10 gap-y-10 py-2">
       <div className="min-w-[380px] max-w-[620px] flex-1">
         <TrustLadderMark />
 
@@ -325,22 +325,26 @@ function WorkersEmptyState({
       </div>
 
       <DayRota />
+      <ErrandBlock />
     </div>
   );
 }
 
-/// One Tuesday, as a rota.
+/// One Tuesday, as a rota — the half of the story that happens without you.
 ///
 /// The posting can only describe the arrangement one worker at a time. What a
-/// wide surface can show — and the reason this panel exists rather than a
-/// second card of prose — is a DAY: several of them on their own clocks, and
-/// you appearing once, in the middle, to ask a question. That is the shape of
-/// the thing being sold, and no list of terms renders it.
+/// wide surface can show is a DAY: several of them on their own clocks, none
+/// of it prompted. That is the shape of the thing being sold, and no list of
+/// terms renders it.
 ///
-/// A rota is also the right artifact. It is what this world already keeps, it
-/// reads as a document beside the posting rather than as marketing, and it has
-/// somewhere honest to put the errand: one row among the scheduled ones,
-/// opened, because that is exactly how it behaves on the desk.
+/// A rota is also the right artifact: it is what this world already keeps, and
+/// it reads as a document beside the posting rather than as marketing.
+///
+/// The errand used to sit inside this list as an opened row, which buried it —
+/// a footnote to a schedule. It is now its own block, because it is the other
+/// half of the story rather than a detail of this one, and the two panels make
+/// the point by contrast: a rota has times and no you; a desk has you and no
+/// times.
 function DayRota() {
   return (
     <div className="min-w-[340px] max-w-[460px] flex-1">
@@ -349,82 +353,105 @@ function DayRota() {
           A Tuesday
         </span>
         <span className="text-[10px] text-ink-faint">
-          · three hires, one interruption
+          · nobody asked for any of it
         </span>
       </div>
 
       <div className="mt-3 border-t border-card-strong">
-        {ROTA.map((entry) =>
-          entry.kind === "errand" ? (
-            <ErrandRotaRow key={entry.at} entry={entry} />
-          ) : (
-            <div
-              key={entry.at}
-              className="flex items-baseline gap-3 border-b border-card-strong py-2 text-[11px]"
-            >
-              <span className="w-11 shrink-0 tabular-nums text-ink-faint">
-                {entry.at}
-              </span>
-              <span
-                className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ background: entry.tint }}
-              />
-              <span className="w-28 shrink-0 truncate text-ink">
-                {entry.who}
-              </span>
-              <span className="min-w-0 flex-1 text-ink-muted">
-                {entry.what}
-              </span>
-            </div>
-          ),
-        )}
+        {ROTA.map((entry) => (
+          <div
+            key={entry.at}
+            className="flex items-baseline gap-3 border-b border-card-strong py-2 text-[11px]"
+          >
+            <span className="w-11 shrink-0 tabular-nums text-ink-faint">
+              {entry.at}
+            </span>
+            <span
+              className="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{ background: entry.tint }}
+            />
+            <span className="w-28 shrink-0 truncate text-ink">{entry.who}</span>
+            <span className="min-w-0 flex-1 text-ink-muted">{entry.what}</span>
+          </div>
+        ))}
       </div>
 
       <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
-        Every line but one was on a clock you set weeks ago. The only thing you
-        did that day was ask a question — and it was answered by the worker
-        whose job it already was.
+        Three hires, one day, no prompting. Each one re-read the project and its
+        own journal that morning and decided what today&apos;s version of its
+        job was.
       </p>
     </div>
   );
 }
 
-/// The interruption, opened. On the desk an errand renders as your words, the
-/// reply on its trust-tinted rail, and what it filed; the rota shows exactly
-/// that rather than inventing a smaller form for it.
-function ErrandRotaRow({ entry }: { entry: RotaEntry }) {
+/// The sidebar's errand mark, small: an errand is speech, and speech came
+/// from you.
+function ErrandGlyph() {
   return (
-    <div className="border-b border-card-strong py-2">
-      <div className="flex items-baseline gap-3 text-[11px]">
-        <span className="w-11 shrink-0 tabular-nums text-ink-faint">
-          {entry.at}
+    <svg
+      viewBox="0 0 12 12"
+      aria-hidden
+      className="h-2.5 w-2.5 shrink-0 text-accent"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M2 2.6h8a1 1 0 0 1 1 1v3.6a1 1 0 0 1-1 1H5.4L3 10.4V8.2H2a1 1 0 0 1-1-1V3.6a1 1 0 0 1 1-1Z" />
+    </svg>
+  );
+}
+
+/// The other half: work that happens BECAUSE of you.
+///
+/// Deliberately shaped as a conversation rather than a list — the rota has a
+/// time column and no you in it, this has you and no times. Set beside each
+/// other, the two panels say the thing the terms cannot: it runs without you,
+/// and it is still yours to interrupt.
+function ErrandBlock() {
+  const tint = "#34d399";
+  return (
+    <div className="min-w-[300px] max-w-[380px] flex-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-[10px] uppercase tracking-[0.18em] text-ink-faint">
+          An errand
         </span>
-        <span
-          className="mt-[4px] h-1.5 w-1.5 shrink-0 rotate-45"
-          style={{ background: "var(--c-accent)" }}
-        />
-        <span className="w-28 shrink-0 text-ink">You</span>
-        <span className="min-w-0 flex-1 text-ink">{entry.what}</span>
+        <span className="text-[10px] text-ink-faint">
+          · 11:04, the same Tuesday
+        </span>
       </div>
 
-      <div className="ml-[56px] mt-2">
+      <div className="mt-3 rounded-xl border border-card-strong bg-card p-3">
+        <div className="mb-2 flex items-center gap-1.5 text-[10px] text-ink-faint">
+          <ErrandGlyph />
+          <span>You, to Test Runner</span>
+        </div>
+
+        <div className="flex justify-end">
+          <div className="max-w-[88%] rounded-xl bg-accent/20 px-2.5 py-1.5 text-[11px] leading-snug text-ink">
+            dig into why the nightly build got slower this week
+          </div>
+        </div>
+
         <div
-          className="relative overflow-hidden rounded-lg"
+          className="relative mt-2 overflow-hidden rounded-xl"
           style={{
-            background: `color-mix(in srgb, ${entry.tint} 5%, transparent)`,
-            border: `1px solid color-mix(in srgb, ${entry.tint} 18%, transparent)`,
+            background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
           }}
         >
           <div
             className="absolute bottom-0 left-0 top-0 w-[2px]"
-            style={{ background: entry.tint }}
+            style={{ background: tint }}
           />
           <div className="px-3 py-2 pl-[11px]">
             <div
               className="mb-1 text-[9px] font-medium"
-              style={{ color: entry.tint }}
+              style={{ color: tint }}
             >
-              {entry.who}
+              Test Runner
             </div>
             <div className="text-[11px] leading-snug text-ink-muted">
               Two things changed on Tuesday: the dependency install stopped
@@ -433,7 +460,8 @@ function ErrandRotaRow({ entry }: { entry: RotaEntry }) {
             </div>
           </div>
         </div>
-        <div className="mt-1.5 flex items-baseline gap-2 text-[10px]">
+
+        <div className="mt-2 flex items-baseline gap-2 text-[10px]">
           <span className="w-11 shrink-0 text-emerald-500">done</span>
           <span className="min-w-0 flex-1 truncate text-ink-muted">
             Time the last 14 nightly builds
@@ -443,26 +471,13 @@ function ErrandRotaRow({ entry }: { entry: RotaEntry }) {
           </span>
         </div>
       </div>
-    </div>
-  );
-}
 
-/// The sidebar's errand mark, at rota size: an errand is speech, and speech
-/// came from you.
-function ErrandGlyph() {
-  return (
-    <svg
-      viewBox="0 0 12 12"
-      aria-hidden
-      className="mt-[1px] h-2.5 w-2.5 shrink-0 text-accent"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M2 2.6h8a1 1 0 0 1 1 1v3.6a1 1 0 0 1-1 1H5.4L3 10.4V8.2H2a1 1 0 0 1-1-1V3.6a1 1 0 0 1 1-1Z" />
-    </svg>
+      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
+        You asked the one whose job it already was. It planned the answer
+        through the same job description and journal, ran the work, and filed
+        what it made — where you can still find it next month.
+      </p>
+    </div>
   );
 }
 
