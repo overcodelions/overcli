@@ -81,6 +81,9 @@ afterEach(() => {
     scorecards: {},
     journals: {},
     shiftProgress: {},
+    errandBusy: {},
+    errandError: {},
+    errandResult: {},
     draft: null,
     draftedFlow: null,
     hireSummary: null,
@@ -118,25 +121,110 @@ describe('workersStore mirror', () => {
     const s = useWorkersStore.getState();
     s.applyUpdate(makeWorker(), 1, makeScorecard());
     s.setShiftActive('worker-1', true);
+    useWorkersStore.setState({
+      errandBusy: { 'worker-1': true },
+      errandError: { 'worker-1': 'nope' },
+      errandResult: {
+        'worker-1': {
+          orchestrationId: 'orch-1',
+          count: 0,
+          queued: 0,
+          launchedNothing: true,
+          reply: 'Nothing to do.',
+        },
+      },
+    });
     s.removeLocal('worker-1');
     const after = useWorkersStore.getState();
     expect(after.workers['worker-1']).toBeUndefined();
     expect(after.nextShiftAt['worker-1']).toBeUndefined();
     expect(after.scorecards['worker-1']).toBeUndefined();
     expect(after.shiftProgress['worker-1']).toBeUndefined();
+    expect(after.errandBusy['worker-1']).toBeUndefined();
+    expect(after.errandError['worker-1']).toBeUndefined();
+    expect(after.errandResult['worker-1']).toBeUndefined();
   });
 
   it('shift progress tracks active/clear and streamed text', () => {
     const s = useWorkersStore.getState();
     s.setShiftActive('worker-1', true);
-    expect(useWorkersStore.getState().shiftProgress['worker-1']).toEqual({ text: '', tools: [] });
+    expect(useWorkersStore.getState().shiftProgress['worker-1']).toEqual({
+      text: '',
+      tools: [],
+      task: 'shift',
+    });
     s.applyShiftProgress('worker-1', 'investigating…', ['Read']);
     expect(useWorkersStore.getState().shiftProgress['worker-1']).toEqual({
       text: 'investigating…',
       tools: ['Read'],
+      task: 'shift',
     });
     s.setShiftActive('worker-1', false);
     expect(useWorkersStore.getState().shiftProgress['worker-1']).toBeUndefined();
+  });
+
+  it('labels a live turn by the entry point that started it', () => {
+    // The user watched their own errand being planned under the banner
+    // "Working a shift". Main knows which it is, so it says so.
+    const s = useWorkersStore.getState();
+    s.setShiftActive('worker-1', true, 'errand');
+    expect(useWorkersStore.getState().shiftProgress['worker-1']?.task).toBe('errand');
+    // Streamed text must not reset the label back to the default.
+    s.applyShiftProgress('worker-1', 'checking…', []);
+    expect(useWorkersStore.getState().shiftProgress['worker-1']?.task).toBe('errand');
+  });
+});
+
+describe('workersStore errands', () => {
+  it('dismisses both an errand reply and an errand error for the same worker', () => {
+    useWorkersStore.setState({
+      errandError: { 'worker-1': 'Monthly budget spent.' },
+      errandResult: {
+        'worker-1': {
+          orchestrationId: 'orch-1',
+          count: 0,
+          queued: 0,
+          launchedNothing: true,
+          reply: 'Nothing suitable to launch.',
+        },
+      },
+    });
+
+    useWorkersStore.getState().clearErrand('worker-1');
+
+    expect(useWorkersStore.getState().errandError['worker-1']).toBeUndefined();
+    expect(useWorkersStore.getState().errandResult['worker-1']).toBeUndefined();
+  });
+
+  it('tracks per-worker busy/result/error state and can dismiss it', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      result: {
+        orchestrationId: 'orch-1',
+        count: 2,
+        queued: 1,
+        launchedNothing: false,
+        reply: 'Planned.',
+      },
+    });
+    const task = useWorkersStore.getState().runErrand('worker-1', 'Investigate this.');
+    expect(useWorkersStore.getState().errandBusy['worker-1']).toBe(true);
+    await expect(task).resolves.toBe(true);
+    expect(useWorkersStore.getState().errandBusy['worker-1']).toBe(false);
+    expect(useWorkersStore.getState().errandResult['worker-1']).toMatchObject({ count: 2, queued: 1 });
+    expect(mockInvoke).toHaveBeenCalledWith('workers:runErrand', {
+      id: 'worker-1',
+      instruction: 'Investigate this.',
+    });
+
+    useWorkersStore.getState().clearErrand('worker-1');
+    expect(useWorkersStore.getState().errandResult['worker-1']).toBeUndefined();
+
+    mockInvoke.mockResolvedValueOnce({ ok: false, error: 'Monthly budget spent.' });
+    await expect(useWorkersStore.getState().runErrand('worker-1', 'Try again.')).resolves.toBe(false);
+    expect(useWorkersStore.getState().errandError['worker-1']).toBe('Monthly budget spent.');
+    useWorkersStore.getState().clearErrand('worker-1');
+    expect(useWorkersStore.getState().errandError['worker-1']).toBeUndefined();
   });
 });
 

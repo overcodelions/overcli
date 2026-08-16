@@ -4,6 +4,8 @@
 // registers every IPC handler the renderer invokes. Main-process state
 // lives here — the Store, the RunnerManager, health probes, stats.
 
+import { randomUUID } from 'node:crypto';
+
 import {
   app,
   BrowserWindow,
@@ -109,6 +111,14 @@ import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
+import {
+  ensureWorkerFilesDir,
+  listWorkerFiles,
+  readWorkerFile,
+  workerFilesDir,
+  deleteWorkerFile,
+  deliverableFiles,
+} from './flows/workerFiles';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
@@ -324,6 +334,69 @@ function registerIpc(): void {
       Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
+    // Triage path 3: the errand needs real investigation and no flow on the
+    // worker's contract fits. Draft one, file it in the generated bucket (kept
+    // out of the library's groups and every picker), and launch it through the
+    // orchestrator with the worker's own origin so the run journals and scores
+    // like any other work it does.
+    // A run's artifacts die with the run (MAX_RETAINED_RUNS). Hand the engine
+    // a way to read the deliverable so it can file a copy under the worker.
+    deliverablesFor: (runId) => {
+      const run = flowRuntime?.getRun(runId);
+      if (!run) return [];
+      // Step order, so the answer is last and its supporting material reads in
+      // the order it was produced.
+      const seen = new Set<string>();
+      const out: Array<{ name: string; body: string }> = [];
+      for (const step of run.flowSnapshot?.steps ?? []) {
+        const art = run.artifacts?.[step.output];
+        if (!art || seen.has(art.name)) continue;
+        seen.add(art.name);
+        out.push({ name: art.name, body: art.body });
+      }
+      return out;
+    },
+    generatedFlow: async ({ worker, errand, request, runIn }) => {
+      const drafted = await draftFlowFromPrompt(
+        {
+          description:
+            `${request}\n\nThis flow exists to ANSWER a question, so it must not change ` +
+            `anything — but it may do whatever it takes to find the answer. Give its ` +
+            `steps the tools to read files, search, query services, and run commands ` +
+            `whose only effect is reporting: the test suite, a build, a linter, a ` +
+            `type-check. Running a command is fine; changing the project is not — no ` +
+            `edits, no writes, no commits, no pushes. The final step must output a ` +
+            `written answer.`,
+        },
+        { settings: Store.load().settings, runner: runner! },
+      );
+      if (!drafted.ok) return drafted;
+      // A distinct id per errand: these are single-use, and reusing one would
+      // have a later errand silently overwrite the flow an earlier run is
+      // still executing.
+      const flow = {
+        ...drafted.flow,
+        id: `generated-${randomUUID().slice(0, 8)}`,
+        source: 'generated' as const,
+      };
+      const saved = saveFlow({ flow, target: 'generated' });
+      if (!saved.ok) return saved;
+      const launched = await orchestrator!.startBatch({
+        title: `[Errand] ${errand.split('\n')[0]?.trim().slice(0, 80) || 'Investigation'}`,
+        projectPath: worker.projectPath,
+        runIn,
+        maxConcurrent: 1,
+        origin: { kind: 'worker', workerId: worker.id, workerName: worker.name, task: 'errand' },
+        items: [
+          {
+            candidate: { id: flow.id, title: flow.name, prompt: errand },
+            flowId: flow.id,
+          },
+        ],
+      });
+      if (!launched.ok) return launched;
+      return { ok: true, orchestrationId: launched.orchestrationId, flowId: flow.id };
+    },
   });
   workerEngine.start();
   // Symbol lookup resolves its backend per call rather than capturing one:
@@ -1116,6 +1189,31 @@ function registerIpc(): void {
       ? workerEngine.workShiftNow(id)
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
+  ipcMain.handle('workers:runErrand', (_e, { id, instruction, attachments }) =>
+    workerEngine
+      ? workerEngine.runErrand(id, instruction, attachments)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
+  ipcMain.handle('workers:reorder', (_e, { ids }) =>
+    workerEngine ? workerEngine.reorder(ids) : ({ ok: true } as const),
+  );
+  ipcMain.handle('workers:files', (_e, { id }) => ({
+    root: workerFilesDir(id),
+    files: listWorkerFiles(id),
+  }));
+  ipcMain.handle('workers:file', (_e, { id, name }) => readWorkerFile(id, name));
+  ipcMain.handle('workers:deleteFile', (_e, { id, name }) => deleteWorkerFile(id, name));
+  ipcMain.handle('workers:deliverables', (_e, { id, task, label, title, at }) =>
+    deliverableFiles({ workerId: id, task, label, title, at }),
+  );
+  ipcMain.handle('workers:revealFiles', (_e, { id }) => {
+    try {
+      shell.openPath(ensureWorkerFilesDir(id));
+      return { ok: true } as const;
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+    }
+  });
   ipcMain.handle('workers:journal', (_e, { id }) =>
     workerEngine ? workerEngine.journalFor(id) : [],
   );
@@ -1575,6 +1673,22 @@ function registeredRoots(): string[] {
       if (run.worktreePath) roots.add(run.worktreePath);
       for (const w of run.workspaceWorktrees ?? []) {
         if (w.worktreePath) roots.add(w.worktreePath);
+      }
+    }
+  }
+  // Each worker's own directory. It lives under userData rather than in a
+  // project, so nothing above registers it and the file viewer rejected every
+  // deliverable a worker filed — the Files tab could list them and not open
+  // one. Registered PER WORKER, never by the shared parent: the editor is
+  // already scoped to one worker's root, and registering `worker-files/`
+  // itself would make every colleague's directory legal to read through a
+  // path that merely resolves inside it.
+  if (workerEngine) {
+    for (const row of workerEngine.list()) {
+      try {
+        roots.add(workerFilesDir(row.worker.id));
+      } catch {
+        // An id that isn't path-safe can't have a directory to register.
       }
     }
   }

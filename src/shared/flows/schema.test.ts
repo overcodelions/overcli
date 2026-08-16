@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   flowProjectPath,
+  isWorkerRun,
   flowRunTitle,
   resolveStepModel,
   resolveStepParticipant,
@@ -184,6 +185,13 @@ describe('flowRunTitle', () => {
     const title = flowRunTitle(makeRun({ userPrompt: long }));
     expect(title.length).toBeLessThanOrEqual(91);
     expect(title.endsWith('…')).toBe(true);
+  });
+});
+
+describe('isWorkerRun', () => {
+  it('classifies only runs attributed to a worker', () => {
+    expect(isWorkerRun({ workerId: 'worker-1' })).toBe(true);
+    expect(isWorkerRun({ workerId: undefined })).toBe(false);
   });
 });
 

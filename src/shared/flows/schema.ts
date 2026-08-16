@@ -165,7 +165,14 @@ export interface Flow {
   /// archiving is shelving, not deleting.
   archived?: boolean;
   /// Resolved at load time — where this flow was read from.
-  source: 'user' | 'project';
+  ///
+  /// `generated` is machinery a worker drafted to answer one errand, not
+  /// something the user authored. It loads and runs exactly like the others —
+  /// a run must be able to resolve it — but it is kept out of the library's
+  /// main groups and every launch picker, because a worker answering questions
+  /// all week would otherwise bury the handful of flows the user actually
+  /// wrote. Promote one to `user` and it becomes an ordinary flow.
+  source: 'user' | 'project' | 'generated';
   /// Absolute path on disk. Re-saves write back to this path.
   filePath: string;
 }
@@ -495,6 +502,13 @@ export function flowRunOwnerPath(run: FlowRun): string {
   return run.sourceProjectPath ?? run.projectPath;
 }
 
+/// True when a Worker's shift or errand launched this run rather than the
+/// user. A worker run belongs to that worker's desk, never to the generic
+/// Flows list or the top-of-sidebar Active pool.
+export function isWorkerRun(run: Pick<FlowRun, 'workerId'>): boolean {
+  return !!run.workerId;
+}
+
 /// Latest meaningful timestamp for a run: the most recent of its creation
 /// and any step attempt's end (or start, while still running). Used to
 /// keep recently-finished runs in the sidebar's "Active" set for a grace
@@ -584,6 +598,15 @@ export function resolveStepParticipant(
 /// Stable identity for "the user starred this specific flow". Must
 /// combine `source` and `id` because the same id can exist in both the
 /// user and project layers (`storage.ts:81-89` — project wins).
+/// Whether a flow belongs in a launch picker. Archived flows are shelved by
+/// the user; `generated` ones are a worker's single-use drafts, and offering
+/// dozens of them beside the handful the user wrote is the same clutter the
+/// separate bucket avoids in the library. Both stay runnable — an existing run
+/// resolves them fine; they just aren't offered.
+export function isSelectableFlow(flow: Pick<Flow, 'archived' | 'source'>): boolean {
+  return !flow.archived && flow.source !== 'generated';
+}
+
 export function flowStarKey(flow: Pick<Flow, 'source' | 'id'>): string {
   return `${flow.source}:${flow.id}`;
 }

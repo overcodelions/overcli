@@ -27,6 +27,7 @@ import {
 } from '@shared/flows/schedule';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
 import { useOrchestratorStore } from '../../orchestratorStore';
+import { isSelectableFlow } from '@shared/flows/schema';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { Orchestration } from '@shared/flows/orchestration';
 
@@ -655,7 +656,7 @@ function ScheduleEditor() {
               className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
             >
               <option value="">Pick a flow…</option>
-              {flows.filter((f) => !f.archived).map((f) => (
+              {flows.filter(isSelectableFlow).map((f) => (
                 <option key={`${f.source}:${f.id}`} value={f.id}>
                   {f.name}
                 </option>
