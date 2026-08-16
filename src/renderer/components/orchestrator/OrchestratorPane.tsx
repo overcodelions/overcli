@@ -322,7 +322,16 @@ function PageHeader({
   const projectTargets = targets.filter((t) => t.kind === 'project');
   return (
     <header className={'flex-none flex items-center gap-3 pt-5 pb-4 ' + IDLE_PAD}>
-      <h1 className="text-2xl font-semibold text-ink m-0">Orchestrator</h1>
+      <div>
+        <h1 className="text-2xl font-semibold text-ink m-0">Orchestrator</h1>
+        {/* The rung between Flows and Workers on the ladder this app climbs:
+            chat → flows → orchestrator → workers. One line, under the title —
+            mt-2 to match the 8px the Flows and Workers headers leave here. */}
+        <div className="text-xs text-ink-muted mt-2">
+          One ask fanned out into many flow runs — investigate, propose, launch in parallel,
+          review.
+        </div>
+      </div>
       <div className="flex-1" />
       {/* "About", not a "?" glyph: the Flows tab already spends this exact
           button on this exact job, and a second idiom for "explain this page"
@@ -1330,6 +1339,9 @@ function BatchLedger({
             {proposed.length === 1 ? 'ask' : 'asks'} proposed
             {batch.origin?.kind === 'schedule' && (
               <span className="text-ink-muted"> by {batch.origin.scheduleName}</span>
+            )}
+            {batch.origin?.kind === 'worker' && (
+              <span className="text-ink-muted"> by {batch.origin.workerName} (worker)</span>
             )}
             .{' '}
             {alreadyLaunched > 0

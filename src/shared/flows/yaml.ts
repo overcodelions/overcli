@@ -35,6 +35,7 @@ interface YamlFlow {
   participants?: unknown;
   steps?: unknown;
   tags?: unknown;
+  archived?: unknown;
 }
 
 interface YamlStep {
@@ -320,6 +321,7 @@ export function parseFlowYaml(args: {
     participants,
     steps,
     tags: parseTags(y.tags),
+    archived: y.archived === true ? true : undefined,
     source: args.source,
     filePath: args.filePath,
   };
@@ -397,6 +399,7 @@ export function serializeFlow(flow: Flow): string {
   };
   if (flow.description) doc.description = flow.description;
   if (flow.tags && flow.tags.length > 0) doc.tags = flow.tags;
+  if (flow.archived) doc.archived = true;
   doc.input = flow.input;
   if (flow.defaultPrompt && flow.defaultPrompt.trim()) {
     doc.default_prompt = flow.defaultPrompt;

@@ -52,6 +52,8 @@ export interface FlowLauncher {
     orchestrationItemTitle?: string;
     scheduleId?: UUID;
     scheduleName?: string;
+    workerId?: UUID;
+    workerName?: string;
     title?: string;
   }): Promise<{ ok: true; runId: UUID } | { ok: false; error: string }>;
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
@@ -165,6 +167,13 @@ export class OrchestratorImpl {
     projectPath: string;
     priorPrompt?: string;
     priorReply?: string;
+    /// Override the producer's model (a worker's cheap heartbeat model).
+    /// The backend is still picked by health — this only swaps the model id.
+    model?: string;
+    /// Attribute this turn's streamed progress to a worker's shift. The
+    /// renderer routes attributed progress to the Workers pane instead of
+    /// the Orchestrator's Ask pane.
+    progressWorkerId?: UUID;
   }): Promise<
     { ok: true; reply: string; candidates: Candidate[] } | { ok: false; error: string }
   > {
@@ -187,7 +196,7 @@ export class OrchestratorImpl {
           'No CLI is signed in to investigate with. Set up Claude, Codex, Gemini, or Copilot in Settings first.',
       };
     }
-    const model = drafterModelFor(backend);
+    const model = args.model?.trim() || drafterModelFor(backend);
     // Run in the project so MCP servers scoped to that repo (and the model's
     // own file tools) resolve; fall back to home if no project path given.
     const cwd = args.projectPath?.trim() || os.homedir();
@@ -226,7 +235,12 @@ export class OrchestratorImpl {
         // Strip the candidates block from the live view — it's noise until
         // parsed into rows.
         const text = snap.text.replace(/<candidates>[\s\S]*$/i, '').trim();
-        this.emit({ type: 'orchestrationProducerProgress', text, tools: snap.tools });
+        this.emit({
+          type: 'orchestrationProducerProgress',
+          text,
+          tools: snap.tools,
+          workerId: args.progressWorkerId,
+        });
       },
     });
     if (!result.ok) return { ok: false, error: result.error };
@@ -304,8 +318,11 @@ export class OrchestratorImpl {
   /// `proposed`, so an unexpectedly large morning degrades into a normal
   /// parked batch instead of a dozen unsupervised worktrees.
   async parkProposal(args: {
-    scheduleId: UUID;
-    scheduleName: string;
+    scheduleId?: UUID;
+    scheduleName?: string;
+    /// Explicit provenance. When absent, built from scheduleId/scheduleName —
+    /// the worker engine passes its own `{ kind: 'worker', … }` here.
+    origin?: Orchestration['origin'];
     projectPath: string;
     prompt: string;
     flowId: string;
@@ -317,15 +334,52 @@ export class OrchestratorImpl {
     title?: string;
     /// Set to dispatch without waiting for approval, up to `maxItems`.
     autoApprove?: { maxItems: number };
+    /// Producer model override (a worker's heartbeat model).
+    model?: string;
+    /// Hard cap on recorded items per firing (a worker's items-per-shift
+    /// cap). Distinct from `autoApprove.maxItems`, which bounds only the
+    /// auto-launched prefix — this bounds the whole batch.
+    maxItems?: number;
+    /// When set, a candidate's `suggestedFlowId` is honored only if it's in
+    /// this list; anything else falls back to `flowId`. A worker's planner
+    /// may route items among the flows on its contract, never to an
+    /// arbitrary flow it hallucinated — under autoApprove that would be an
+    /// unattended launch into machinery nobody vetted for this worker.
+    allowedFlowIds?: string[];
+    /// Candidate titles to drop, case-insensitively — a worker's journaled
+    /// rejections. The producer prompt asks the model not to re-propose them,
+    /// but this filter is the guarantee: a rejected idea cannot come back
+    /// even when the model ignores the instruction.
+    excludeTitles?: string[];
   }): Promise<
-    | { ok: true; orchestrationId: UUID; count: number; queued: number }
+    | { ok: true; orchestrationId: UUID; count: number; queued: number; excluded: number }
     | { ok: false; error: string }
   > {
     const projectPath = args.projectPath?.trim();
     if (!projectPath) return { ok: false, error: 'Schedule has no project.' };
 
-    const produced = await this.propose({ message: args.prompt, projectPath });
+    const produced = await this.propose({
+      message: args.prompt,
+      projectPath,
+      model: args.model,
+      progressWorkerId: args.origin?.kind === 'worker' ? args.origin.workerId : undefined,
+    });
     if (!produced.ok) return { ok: false, error: produced.error };
+
+    const excluded = new Set(
+      (args.excludeTitles ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean),
+    );
+    let kept = excluded.size
+      ? produced.candidates.filter((c) => !excluded.has(c.title.trim().toLowerCase()))
+      : produced.candidates;
+    // Counted BEFORE the maxItems trim: `excluded` is reported to the user
+    // as "dropped as previously rejected", and the cap trim is not that.
+    const excludedCount = produced.candidates.length - kept.length;
+    // Hard bound on how many items one firing may record at all (a worker's
+    // items-per-shift cap). Producer order is best-first, so take the prefix.
+    if (args.maxItems !== undefined) {
+      kept = kept.slice(0, Math.max(1, Math.floor(args.maxItems)));
+    }
 
     // Clamped here as well as validated at save time: a schedule persisted by
     // an older build, or hand-edited on disk, must not be able to talk this
@@ -335,22 +389,28 @@ export class OrchestratorImpl {
       : 0;
     const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
     const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
+    const origin: Orchestration['origin'] =
+      args.origin ??
+      (args.scheduleId && args.scheduleName
+        ? { kind: 'schedule', scheduleId: args.scheduleId, scheduleName: args.scheduleName }
+        : undefined);
     const orchestration: Orchestration = {
       id: randomUUID(),
-      title: args.title?.trim() || args.scheduleName,
+      title: args.title?.trim() || args.scheduleName || 'Batch',
       projectPath,
       runIn,
       baseBranch,
       maxConcurrent:
         runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1)),
       producer: { prompt: args.prompt, reply: produced.reply },
-      origin: { kind: 'schedule', scheduleId: args.scheduleId, scheduleName: args.scheduleName },
+      origin,
       createdAt: Date.now(),
-      items: produced.candidates.map<OrchestrationItem>((candidate, index) => ({
+      items: kept.map<OrchestrationItem>((candidate, index) => ({
         candidate,
-        // The producer may name a flow per candidate; the schedule's flow is
-        // the fallback, since there was nobody around to pick one.
-        flowId: candidate.suggestedFlowId?.trim() || args.flowId,
+        // The producer may name a flow per candidate; the caller's flow is
+        // the fallback, since there was nobody around to pick one. With
+        // `allowedFlowIds` set, an off-list suggestion falls back too.
+        flowId: resolveItemFlowId(candidate.suggestedFlowId, args.flowId, args.allowedFlowIds),
         baseBranch: runIn === 'cwd' ? undefined : baseBranch,
         // Producer order is the only ranking available at 8am — it triages
         // best-first by construction — so the cap takes a prefix of it.
@@ -373,6 +433,7 @@ export class OrchestratorImpl {
       orchestrationId: orchestration.id,
       count: orchestration.items.length,
       queued,
+      excluded: excludedCount,
     };
   }
 
@@ -455,6 +516,12 @@ export class OrchestratorImpl {
           baseBranch: runIn === 'cwd' ? undefined : (next.baseBranch ?? o.baseBranch),
           parentOrchestrationId: o.id,
           orchestrationItemTitle: next.candidate.title,
+          // Stamp the worker on child runs of a worker's batch — the run
+          // summary's `workerId` is what the monthly budget rollup groups by,
+          // and nothing can reconstruct the tag after launch.
+          ...(o.origin?.kind === 'worker'
+            ? { workerId: o.origin.workerId, workerName: o.origin.workerName }
+            : {}),
         });
       } catch (err) {
         // startRun should return {ok:false}, but guard against an unexpected
@@ -668,4 +735,15 @@ export class OrchestratorImpl {
     saveOrchestration(o);
     this.emit({ type: 'orchestrationUpdate', orchestration: structuredClone(o) });
   }
+}
+
+function resolveItemFlowId(
+  suggested: string | undefined,
+  fallback: string,
+  allowed: string[] | undefined,
+): string {
+  const s = suggested?.trim();
+  if (!s) return fallback;
+  if (allowed && !allowed.includes(s)) return fallback;
+  return s;
 }
