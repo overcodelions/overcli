@@ -89,6 +89,11 @@ interface WorkersState {
   /// day too; `at` is what puts the desk on the right date instead of on
   /// today, where the turn isn't.
   deskFocus: { workerId: string; orchestrationId: string; at: number } | null;
+  /// Render the Workers tab as if nobody had been hired, without firing
+  /// anyone. Session-only and never persisted: it exists so the empty state
+  /// can be LOOKED at — the one screen you cannot reach once the feature is
+  /// working, and therefore the one that rots. Gated behind the debug setting.
+  previewEmpty: boolean;
   busy: boolean;
   error: string | null;
 }
@@ -112,6 +117,7 @@ interface WorkersActions {
   workShiftNow(id: string): Promise<void>;
   selectWorker(id: string | null): void;
   showCalendar(): void;
+  setPreviewEmpty(on: boolean): void;
   openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
   moveWorker(id: string, direction: -1 | 1): Promise<void>;
   setFilesRoot(id: string, root: string): void;
@@ -188,6 +194,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   selectedWorkerId: null,
   view: 'worker',
   deskFocus: null,
+  previewEmpty: false,
   busy: false,
   error: null,
 
@@ -284,6 +291,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   showCalendar() {
     set({ view: 'calendar' });
+  },
+
+  setPreviewEmpty(on) {
+    set({ previewEmpty: on });
   },
 
   async moveWorker(id, direction) {

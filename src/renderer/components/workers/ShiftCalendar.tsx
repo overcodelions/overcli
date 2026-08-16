@@ -25,7 +25,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { useWorkersStore } from '../../workersStore';
 import { describeTrigger } from '@shared/flows/schedule';
-import type { WorkerTrustLevel } from '@shared/flows/worker';
+import type { Worker, WorkerTrustLevel } from '@shared/flows/worker';
 import { TRUST_LABEL } from './WorkerRowParts';
 import { WorkerAvatar } from './WorkerAvatar';
 import {
@@ -49,6 +49,10 @@ import {
   type PlacedEntry,
 } from './workerCalendar';
 
+/// Stable identity, so the preview toggle can hand the calendar an empty
+/// roster without a fresh object re-running every memo each render.
+const EMPTY_ROSTER: Record<string, Worker> = {};
+
 const DAYS = 7;
 /// Pixels per hour. A 30-minute block is half of this, and it has to hold a
 /// worker's name on ONE line — two stacked lines at this size clipped the name
@@ -71,7 +75,7 @@ const DAY_RULE = 'color-mix(in srgb, var(--c-ink) 6%, transparent)';
 const TODAY_TINT = 'color-mix(in srgb, var(--c-accent) 5%, transparent)';
 
 export function ShiftCalendar() {
-  const workers = useWorkersStore((s) => s.workers);
+  const workers = useWorkersStore((s) => (s.previewEmpty ? EMPTY_ROSTER : s.workers));
   const nextShiftAt = useWorkersStore((s) => s.nextShiftAt);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);

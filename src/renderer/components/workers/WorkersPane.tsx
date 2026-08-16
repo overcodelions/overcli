@@ -79,6 +79,8 @@ export function WorkersPane() {
   const clearError = useWorkersStore((s) => s.clearError);
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const setPreviewEmpty = useWorkersStore((s) => s.setPreviewEmpty);
+  const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const view = useWorkersStore((s) => s.view);
   const activeRun = useFlowsStore((s) => (s.activeRunId ? s.runs[s.activeRunId] : undefined));
   const [hiring, setHiring] = useState(false);
@@ -92,12 +94,18 @@ export function WorkersPane() {
     }
   }, []);
 
-  const rows = useMemo(() => sortRoster(Object.values(workers)), [workers]);
+  const previewEmpty = useWorkersStore((s) => s.previewEmpty);
+  const rows = useMemo(
+    () => (previewEmpty ? [] : sortRoster(Object.values(workers))),
+    [workers, previewEmpty],
+  );
 
   // The Workers sidebar is the roster; this pane is the detail half. Landing
   // on an empty pane when a roster exists reads as a broken tab, so the first
   // worker stands in until the user picks one.
-  const selected = (selectedWorkerId && workers[selectedWorkerId]) || rows[0] || null;
+  const selected = previewEmpty
+    ? null
+    : (selectedWorkerId && workers[selectedWorkerId]) || rows[0] || null;
   useEffect(() => {
     if (!selectedWorkerId && rows.length > 0) selectWorker(rows[0].id);
   }, [rows, selectWorker, selectedWorkerId]);
@@ -132,6 +140,23 @@ export function WorkersPane() {
       <div className="shrink-0 px-6 pt-6">
       <div className="flex items-center gap-3 mb-2">
         <div className="text-2xl font-semibold">Workers</div>
+        {/* Only with Debug on. The empty state is the screen you can never
+            reach again once you have hired anyone, so it needs a way to be
+            looked at that is not "fire everybody". */}
+        {showDebug && (
+          <button
+            onClick={() => setPreviewEmpty(!previewEmpty)}
+            title="Render this tab as if nobody had been hired. Nothing is changed."
+            className={
+              'rounded-md border px-2 py-1 text-[11px] ' +
+              (previewEmpty
+                ? 'border-amber-400/50 text-amber-500'
+                : 'border-card-strong text-ink-faint hover:text-ink')
+            }
+          >
+            {previewEmpty ? 'Previewing empty' : 'Preview empty'}
+          </button>
+        )}
         <button
           disabled={!canHire}
           onClick={() => openEditor(newWorkerDraft(defaultProjectPath))}
