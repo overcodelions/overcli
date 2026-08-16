@@ -19,6 +19,7 @@ import {
   deliverableName,
   fileWorkerDeliverable,
   listWorkerFiles,
+  readWorkerFile,
   workerFilesDir,
 } from './workerFiles';
 
@@ -51,12 +52,12 @@ describe('deliverableName', () => {
     const name = deliverableName({
       task: 'errand',
       label: '[Errand] x',
-      title: 'Generate and report ZiftProcessor test coverage across every module',
+      title: 'Generate and report parser test coverage across every module',
       at: AT,
     });
-    // The old hard slice cut this at 40 chars — "…-ziftprocessor-test-c",
+    // The old hard slice cut this at 40 chars — "…-report-parser-test-c",
     // which reads as a typo rather than an abbreviation.
-    expect(name).toBe('2026-08-16-1431-errand-generate-and-report-ziftprocessor-test-coverage');
+    expect(name).toBe('2026-08-16-1431-errand-generate-and-report-parser-test-coverage-across');
     expect(name.endsWith('-')).toBe(false);
   });
 
@@ -65,10 +66,10 @@ describe('deliverableName', () => {
       deliverableName({
         task: 'errand',
         label: '[Errand] x',
-        title: 'Generate and report ZiftProcessor test coverage',
+        title: 'Generate and report parser test coverage',
         at: AT,
       }),
-    ).toBe('2026-08-16-1431-errand-generate-and-report-ziftprocessor-test-coverage');
+    ).toBe('2026-08-16-1431-errand-generate-and-report-parser-test-coverage');
   });
 });
 
@@ -209,5 +210,44 @@ describe('deleteWorkerFile', () => {
 
   it('says so when the job is already gone', () => {
     expect(deleteWorkerFile(WORKER, 'never-existed')).toEqual({ ok: false, error: 'Already gone.' });
+  });
+});
+
+describe('a symlink inside the worker’s own directory', () => {
+  // The worker writes here itself — its flow steps are handed this path and a
+  // shell — so a link out of it is something it can create, deliberately or by
+  // copying one in. Lexical containment (`path.resolve` + startsWith) passes
+  // such a path; only a realpath check catches it.
+  let outside = '';
+
+  beforeEach(() => {
+    outside = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-outside-'));
+    fs.writeFileSync(path.join(outside, 'private.md'), 'not the worker’s');
+    fs.symlinkSync(outside, path.join(ensureWorkerFilesDir(WORKER), 'escape'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(outside, { recursive: true, force: true });
+  });
+
+  it('refuses to read through it', () => {
+    expect(readWorkerFile(WORKER, 'escape/private.md')).toEqual({
+      ok: false,
+      error: 'That path is outside the worker’s files.',
+    });
+  });
+
+  it('refuses to delete through it', () => {
+    expect(deleteWorkerFile(WORKER, 'escape/private.md')).toEqual({
+      ok: false,
+      error: 'That path is outside the worker’s files.',
+    });
+    expect(fs.existsSync(path.join(outside, 'private.md'))).toBe(true);
+  });
+
+  it('still lets the link itself be removed, without touching its target', () => {
+    expect(deleteWorkerFile(WORKER, 'escape').ok).toBe(true);
+    expect(fs.existsSync(path.join(workerFilesDir(WORKER), 'escape'))).toBe(false);
+    expect(fs.existsSync(path.join(outside, 'private.md'))).toBe(true);
   });
 });

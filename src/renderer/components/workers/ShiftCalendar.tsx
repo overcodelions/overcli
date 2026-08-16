@@ -138,6 +138,15 @@ export function ShiftCalendar() {
         </div>
       </div>
 
+      {/* A grid of seven empty columns is a confusing way to say "you have
+          not hired anyone" — the roster's absence is the fact, not the week's
+          emptiness. */}
+      {roster.length === 0 && (
+        <div className="mb-2 rounded-lg border border-dashed border-card-strong px-4 py-3 text-center text-xs text-ink-muted">
+          Nobody works here yet. Hire a worker and its shifts will lay themselves out here.
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-card-strong">
         {/* Day headers sit outside the scroller so the dates stay put while
             the hours move under them. */}

@@ -101,16 +101,50 @@ export function listWorkerFiles(workerId: string): WorkerFileEntry[] {
   return out.sort((a, b) => b.modifiedAt - a.modifiedAt);
 }
 
-/// Read one file back. `name` is caller-supplied and therefore hostile: resolve
-/// it and require the result to stay inside the worker's own directory, so a
-/// `../../` can't read the user's home.
+/// The absolute path `name` refers to, or null if it leaves the worker's own
+/// directory. `name` is caller-supplied and therefore hostile.
+///
+/// Containment is checked against REAL paths, not lexical ones. `path.resolve`
+/// alone answers `../../` correctly and answers a SYMLINK wrongly — and the
+/// worker itself can create one, because its own flow steps are handed this
+/// directory and a shell. A link named `notes` pointing at `~/.ssh` would pass
+/// a lexical check and then be read (or deleted through) as if it were the
+/// worker's own file.
+///
+/// The target's PARENT is realpath'd rather than the target: a symlink in the
+/// middle of the path is a way out and must be caught, but a symlink as the
+/// final component is a file in this directory — reading it is refused by the
+/// `isFile` check below, and deleting it unlinks the link itself, not whatever
+/// it points at.
+function containedPath(root: string, name: string): string | null {
+  const realRoot = realOrSelf(root);
+  const target = path.resolve(realRoot, name);
+  if (target === realRoot) return null;
+  const full = path.join(realOrSelf(path.dirname(target)), path.basename(target));
+  return full.startsWith(realRoot + path.sep) ? full : null;
+}
+
+/// A path's real form, or the path itself when it does not exist. A directory
+/// that isn't there yet cannot be a symlink to anywhere, so the lexical form is
+/// sound — and returning null instead would report "outside the worker's
+/// files" for a worker that has simply never filed anything.
+function realOrSelf(target: string): string {
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    return target;
+  }
+}
+
+/// Read one file back, refusing anything that resolves outside the worker's
+/// own directory.
 export function readWorkerFile(
   workerId: string,
   name: string,
 ): { ok: true; body: string } | { ok: false; error: string } {
   const root = workerFilesDir(workerId);
-  const full = path.resolve(root, name);
-  if (full !== root && !full.startsWith(root + path.sep)) {
+  const full = containedPath(root, name);
+  if (!full) {
     return { ok: false, error: 'That path is outside the worker’s files.' };
   }
   try {
@@ -281,7 +315,7 @@ function timestamp(at: number): string {
 
 /// A filename-safe subject, cut at a WORD boundary.
 ///
-/// A hard slice mid-word produced `…-ziftprocessor-test-c`, which reads as a
+/// A hard slice mid-word produced `…-payments-parser-test-c`, which reads as a
 /// typo rather than an abbreviation and is worse than the shorter honest form.
 /// The cut stays a pure truncation of the same cleaned string — see
 /// `existingJobStem`, which relies on an older, shorter name still being a
@@ -356,18 +390,16 @@ export function deliverableFiles(args: {
 
 /// Delete one job — a folder and everything in it, or a single loose file.
 ///
-/// `name` is caller-supplied and therefore hostile: the same containment check
-/// the reader uses applies, plus a refusal to delete the worker's ROOT. A
-/// `..` that resolved to the parent would otherwise take out every worker's
-/// files, and a bare `.` would empty this one's.
+/// Same containment rule as the reader, which also refuses the worker's own
+/// root: a `..` that resolved to the parent would otherwise take out every
+/// worker's files, and a bare `.` would empty this one's.
 export function deleteWorkerFile(
   workerId: string,
   name: string,
 ): { ok: true; removed: string } | { ok: false; error: string } {
   const root = workerFilesDir(workerId);
-  const full = path.resolve(root, name);
-  if (full === root) return { ok: false, error: 'That is the worker’s whole directory.' };
-  if (!full.startsWith(root + path.sep)) {
+  const full = containedPath(root, name);
+  if (!full) {
     return { ok: false, error: 'That path is outside the worker’s files.' };
   }
   try {

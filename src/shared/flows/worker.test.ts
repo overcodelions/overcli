@@ -261,8 +261,8 @@ describe('parseWorkerContract', () => {
 
 describe('parseWorkerSubject', () => {
   it('takes the worker’s own name for the errand', () => {
-    expect(parseWorkerSubject('<subject>Report ZiftProcessor test coverage</subject>\n\nHere…')).toBe(
-      'Report ZiftProcessor test coverage',
+    expect(parseWorkerSubject('<subject>Report parser test coverage</subject>\n\nHere…')).toBe(
+      'Report parser test coverage',
     );
   });
 

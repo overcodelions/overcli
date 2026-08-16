@@ -390,7 +390,7 @@ function coerceCadence(raw: unknown): ScheduleTrigger {
 /// The worker's own name for the errand it was just handed.
 ///
 /// An errand arrives as whatever you typed — "can you give me a report of the
-/// test coverage in ziftprocessors" — which is the right thing to show in the
+/// test coverage in the parser" — which is the right thing to show in the
 /// message you sent, and the wrong thing to use as a label everywhere else: it
 /// is long, it leads with politeness rather than subject, and three related
 /// errands read as three near-identical rows. The worker has just understood

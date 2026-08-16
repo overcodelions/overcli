@@ -876,7 +876,7 @@ export class WorkerEngine {
       '',
       '     <subject>What this errand is, as a title</subject>',
       '',
-      'Six words or so, in your own words, naming the WORK — "Report ZiftProcessor',
+      'Six words or so, in your own words, naming the WORK — "Report the parser',
       'test coverage", not "can you give me a report of the test coverage". It is what',
       'this errand will be called in your journal and on your desk from now on, so it',
       'has to distinguish this ask from the three like it you did last week. No',

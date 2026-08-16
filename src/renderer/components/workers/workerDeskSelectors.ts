@@ -113,9 +113,9 @@ export interface WorkerActivity {
 /// The shift NUMBER is the only distinguishing thing in it, so keep that and
 /// drop the name.
 ///
-/// An errand is named by the WORKER, off its own reply — "Report ZiftProcessor
+/// An errand is named by the WORKER, off its own reply — "Report the parser
 /// test coverage" rather than "can you give me a report of the test coverage in
-/// ziftprocessors". What you typed is still shown verbatim, in the message
+/// the parser". What you typed is still shown verbatim, in the message
 /// bubble where your words belong; a label is a different job, and the worker
 /// has just read the ask closely enough to write one. Anything from before the
 /// worker was asked for a subject falls back to what you typed.
