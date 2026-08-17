@@ -8,7 +8,12 @@ import {
   ThemePreference,
   BackendHealth,
 } from '@shared/types';
-import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
+import {
+  PREMIUM_MODELS,
+  friendlyModelLabel,
+  latestAtTier,
+  type ModelSpeed,
+} from '@shared/modelCatalog';
 import { Group, SheetActionButton } from './settingsChrome';
 import { StoragePane } from './StoragePane';
 import { ConversationsPane } from './ConversationsPane';
@@ -32,6 +37,16 @@ type Section =
 // re-render (each render would otherwise create fresh arrays).
 const ALL_BACKENDS_LIST: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 const CLI_BACKENDS: Exclude<Backend, 'ollama'>[] = ['claude', 'codex', 'gemini', 'copilot'];
+
+// Tiers a flow actually spends, in the order the drafter reasons about them:
+// the expensive end first, since that's the row a cost-conscious user comes
+// here to change.
+const FLOW_MODEL_TIERS: { tier: ModelSpeed; label: string; help: string }[] = [
+  { tier: 'frontier', label: 'Frontier', help: 'The most capable, most expensive tier. Only used when a step explicitly asks for it.' },
+  { tier: 'thinking', label: 'Thinking', help: 'Planning steps and the reviews that judge them.' },
+  { tier: 'standard', label: 'Standard', help: 'Rebound critics and other mid-weight steps.' },
+  { tier: 'fast', label: 'Fast', help: 'Implementers, test writers, extraction, formatting.' },
+];
 
 /// Redesigned to match the Mac app's sectioned layout — a narrow nav rail
 /// on the left, a scrollable content pane on the right, and a single
@@ -640,8 +655,75 @@ function FlowsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<Ap
           onChange={(v) => patch({ defaultFlowRunIn: v ? 'worktree' : 'cwd' })}
         />
       </Group>
+      <FlowModelDefaultsPane local={local} patch={patch} />
       <FlowsRegistriesPane />
     </div>
+  );
+}
+
+/// Which model each speed tier means when a flow is generated or started
+/// from a template. A flow spends several models at once, so the useful
+/// thing to pin isn't "the default model" (that's Settings → Models, for
+/// conversations) but the tier mapping the drafter reasons in.
+///
+/// Auto reads the catalog, so a tier left alone keeps up with new models on
+/// its own. Pinning is for disagreeing with the catalog — e.g. codex's only
+/// standard-tier model is a generation behind, so a codex user may prefer
+/// GPT-5.6 Luna there.
+function FlowModelDefaultsPane({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const backends = CLI_BACKENDS.filter((b) => local.disabledBackends[b] !== true);
+  const defaults = local.flowModelDefaults ?? {};
+
+  function setTier(backend: Exclude<Backend, 'ollama'>, tier: ModelSpeed, model: string) {
+    const forBackend = { ...(defaults[backend] ?? {}) };
+    // An empty select value means auto — drop the key rather than storing a
+    // blank, so `tierDefault` sees a genuinely unset tier.
+    if (model) forBackend[tier] = model;
+    else delete forBackend[tier];
+    patch({ flowModelDefaults: { ...defaults, [backend]: forBackend } });
+  }
+
+  return (
+    <Group
+      title="Model defaults for flows"
+      description="Which model each speed tier means when a flow is AI-generated or started from a template. Auto follows the catalog, so these keep up with new models on their own."
+    >
+      {backends.length === 0 && (
+        <div className="text-xs text-ink-faint">Enable a CLI backend to set flow model defaults.</div>
+      )}
+      {backends.map((b) => (
+        <div key={b} className="space-y-2">
+          <div className="text-xs font-medium text-ink-muted">{b}</div>
+          {FLOW_MODEL_TIERS.map(({ tier, label, help }) => {
+            const auto = latestAtTier(b, tier);
+            return (
+              <Row key={tier} label={label} help={help}>
+                <select
+                  value={defaults[b]?.[tier] ?? ''}
+                  onChange={(e) => setTier(b, tier, e.target.value)}
+                  className="field px-2 py-1 text-xs font-mono"
+                >
+                  <option value="">
+                    {auto ? `Auto — ${friendlyModelLabel(b, auto)}` : 'Auto — none at this tier'}
+                  </option>
+                  {PREMIUM_MODELS[b].map((m) => (
+                    <option key={m} value={m}>
+                      {friendlyModelLabel(b, m)}
+                    </option>
+                  ))}
+                </select>
+              </Row>
+            );
+          })}
+        </div>
+      ))}
+    </Group>
   );
 }
 

@@ -65,7 +65,11 @@ export function NewFlowPicker({ onClose }: { onClose: () => void }) {
     const healthyBackends = (Object.keys(backendHealth) as Backend[]).filter(
       (b) => backendHealth[b]?.kind === 'ready',
     );
-    const rebound = resolveTemplateForUser(parsed, { healthyBackends, ollamaModels });
+    const rebound = resolveTemplateForUser(parsed, {
+      healthyBackends,
+      ollamaModels,
+      modelDefaults: settings.flowModelDefaults,
+    });
     openEditor({ kind: 'new' }, freshFlow(rebound, t.id));
     onClose();
   }

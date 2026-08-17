@@ -476,3 +476,122 @@ describe('reviseFlowFromPrompt', () => {
     if (result.ok) expect(result.flow.id).toBe('fresh-draft');
   });
 });
+
+// ─── tier snapping ────────────────────────────────────────────────────────────
+
+/// A drafted flow whose models are all real catalog ids but a generation
+/// behind — the failure canonicalization and `liftMissingModel` both miss,
+/// because nothing here is misspelled or retired.
+function staleYaml(): string {
+  return [
+    '```yaml',
+    'name: Stale Models',
+    'input: user_prompt',
+    'steps:',
+    '  - id: plan',
+    '    model: { backend: claude, model: claude-opus-4-8 }',
+    '    role: planner',
+    '    inputs: [user_prompt]',
+    '    tools: [Read]',
+    '    rebound:',
+    '      critic: { backend: claude, model: claude-sonnet-4-6 }',
+    '      mode: review',
+    '      max_iters: 2',
+    '    output: plan.md',
+    '  - id: build',
+    '    model: { backend: claude, model: claude-haiku-4-5 }',
+    '    role: implementer',
+    '    inputs: [plan.md]',
+    '    tools: [Read, Edit]',
+    '    output: build.md',
+    '```',
+  ].join('\n');
+}
+
+function depsWithDefaults(flowModelDefaults: AppSettings['flowModelDefaults']): DraftDeps {
+  return {
+    settings: {
+      preferredBackend: 'claude',
+      disabledBackends: {},
+      backendPaths: {},
+      claudeTransport: 'sdk',
+      flowModelDefaults,
+    } as unknown as AppSettings,
+    runner: {} as DraftDeps['runner'],
+  };
+}
+
+describe('drafted models snap to their tier default', () => {
+  beforeEach(() => {
+    mockQuery.mockClear();
+  });
+
+  it('rewrites stale-but-valid ids without changing the tier the drafter chose', async () => {
+    mockQuery.mockReturnValue(claudeStream(staleYaml()));
+
+    const result = await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-5' });
+    expect(result.flow.steps[0].rebound?.critic).toEqual({
+      backend: 'claude',
+      model: 'claude-sonnet-5',
+    });
+    // The implementer was on the fast tier and stays there — snapping fixes
+    // which model a tier names, not the drafter's cost judgement.
+    expect(result.flow.steps[1].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5' });
+  });
+
+  it('snaps participants too, so the editor and the run agree', async () => {
+    mockQuery.mockReturnValue(claudeStream(staleYaml()));
+
+    const result = await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flow.participants.map((p) => p.model)).not.toContain('claude-opus-4-8');
+    expect(result.flow.participants.map((p) => p.model)).not.toContain('claude-haiku-4-5');
+  });
+
+  it("honours the user's pin over the catalog", async () => {
+    mockQuery.mockReturnValue(claudeStream(staleYaml()));
+
+    const result = await draftFlowFromPrompt(
+      { description: 'Make a flow' },
+      depsWithDefaults({ claude: { fast: 'claude-haiku-4-5', thinking: 'claude-fable-5' } }),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-fable-5' });
+    expect(result.flow.steps[1].model).toEqual({ backend: 'claude', model: 'claude-haiku-4-5' });
+  });
+
+  it('tells the drafter the same models it will be snapped to', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+    await draftFlowFromPrompt(
+      { description: 'Make a flow' },
+      depsWithDefaults({ claude: { fast: 'claude-haiku-4-5' } }),
+    );
+
+    const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(sys).toContain('implementers + test-writers: { backend: claude, model: claude-haiku-4-5 }');
+  });
+
+  it('leaves a revision alone — an explicit model choice is the point', async () => {
+    // Revise is told to preserve existing model picks, so snapping here would
+    // undo "put the planner on Opus 4.8" using the user's own setting.
+    mockQuery.mockReturnValue(claudeStream(staleYaml()));
+
+    const result = await reviseFlowFromPrompt(
+      { yaml: 'name: x', instruction: 'keep the models', id: 'stale-models' },
+      claudeDeps(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-4-8' });
+  });
+});
