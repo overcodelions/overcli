@@ -456,6 +456,42 @@ describe('OrchestratorImpl parked proposals', () => {
     expect(o.completedAt).toBeUndefined();
   });
 
+  // The Orchestrator ledger was drowning in "0/0 done" headers: every firing
+  // whose producer answered in prose left a record with no runs in it, no
+  // completedAt to make it clearable, and nothing to show if you opened it.
+  it('records nothing when a schedule\'s producer proposed nothing', async () => {
+    const h = makeHarness({ producerReply: 'Nothing worth doing today.' });
+    const res = await park(h);
+
+    expect(res).toMatchObject({ ok: true, count: 0 });
+    expect(h.engine.list()).toHaveLength(0);
+  });
+
+  // …but the same empty turn from a worker IS that worker's desk conversation,
+  // prose reply and all, so the record has to survive. The ledger hides it
+  // (see ledgerBatches); the engine must not delete it.
+  it('keeps an empty worker batch — it carries the errand reply', async () => {
+    const h = makeHarness({ producerReply: 'Ran the suite: all green, nothing to fix.' });
+    const res = await h.engine.parkProposal({
+      origin: {
+        kind: 'worker',
+        workerId: 'w1',
+        workerName: 'Warden',
+        task: 'errand',
+        errand: 'how did the tests go?',
+      },
+      projectPath: '/proj',
+      prompt: 'how did the tests go?',
+      flowId: 'default-flow',
+      runIn: 'worktree',
+      maxConcurrent: 2,
+    });
+
+    expect(res).toMatchObject({ ok: true, count: 0 });
+    const kept = h.engine.get((res as { orchestrationId: string }).orchestrationId);
+    expect(kept?.producer?.reply).toMatch(/all green/);
+  });
+
   it('launches the first N and parks the rest when the schedule opted in', async () => {
     const h = makeHarness({ producerReply: REPLY });
     const res = await h.engine.parkProposal({

@@ -34,7 +34,11 @@ import type {
   OrchestrationItem,
   RunIn,
 } from '../../shared/flows/orchestration';
-import { isOrchestrationComplete, parseCandidates } from '../../shared/flows/orchestration';
+import {
+  isOrchestrationComplete,
+  isResidueOrchestration,
+  parseCandidates,
+} from '../../shared/flows/orchestration';
 import { SCHEDULE_AUTO_APPROVE_MAX } from '../../shared/flows/schedule';
 import { pickDrafterBackend, drafterModelFor } from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
@@ -166,6 +170,14 @@ export class OrchestratorImpl {
     // runs on restart — see orchestrationsStore.loadAllOrchestrations), so
     // what comes back has nothing left to pump.
     for (const o of loadAllOrchestrations()) {
+      // Residue from earlier builds, which persisted every item-less batch:
+      // nothing shows it, nothing can clear it, so boot is the moment to be
+      // rid of it. Worker batches are never residue — see
+      // isResidueOrchestration.
+      if (isResidueOrchestration(o)) {
+        deleteOrchestration(o.id);
+        continue;
+      }
       this.batches.set(o.id, o);
       for (const item of o.items) {
         // Map items whose child run can still finish. Only `paused` runs are
@@ -464,8 +476,18 @@ export class OrchestratorImpl {
             : undefined,
       })),
     };
-    this.batches.set(orchestration.id, orchestration);
-    this.persistAndEmit(orchestration);
+    // A producer that proposed nothing has produced no batch worth keeping,
+    // unless a worker asked — then the empty record is that worker's desk turn
+    // and carries its prose answer (see isResidueOrchestration). Skipping the
+    // record here is what stops a schedule that fires all day from filling the
+    // ledger with rows the user can neither read nor clear. The caller still
+    // gets an id and an honest `count: 0`; it just won't resolve through
+    // `get`, which is already null-tolerant.
+    const residue = isResidueOrchestration(orchestration);
+    if (!residue) {
+      this.batches.set(orchestration.id, orchestration);
+      this.persistAndEmit(orchestration);
+    }
     const queued = orchestration.items.filter((i) => i.status === 'queued').length;
     // Without `autoApprove` there is deliberately no `pump` — that's what
     // approval is for. With it, the queued prefix goes now and the parked

@@ -32,7 +32,7 @@ import { Markdown } from '../Markdown';
 import { ResizableDivider } from '../ResizableDivider';
 import { SegmentButton } from '../flows/FlowLaunch';
 import type { Flow } from '@shared/flows/schema';
-import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
+import { isOrchestrationAwaitingApproval, ledgerBatches } from '@shared/flows/orchestration';
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 
 /// A launch target the batch can run against: a single project or a whole
@@ -85,18 +85,11 @@ export function OrchestratorPane() {
     return m;
   }, [flows]);
 
-  const batches = useMemo(
-    () =>
-      Object.values(s.orchestrations).sort(
-        // A parked batch is the one thing here that's blocked on the user, so
-        // it sorts above everything regardless of age — a proposal from this
-        // morning shouldn't sit below a batch that finished an hour ago.
-        (a, b) =>
-          Number(isOrchestrationAwaitingApproval(b)) -
-            Number(isOrchestrationAwaitingApproval(a)) || b.createdAt - a.createdAt,
-      ),
-    [s.orchestrations],
-  );
+  // Newest first, item-less batches dropped — see `ledgerBatches`. Both rules
+  // are there for the same reason: with a roster of workers on it, this page is
+  // a feed, and a feed has to be in one order and free of empty rows to be
+  // readable at all. Parked batches are found through the runs bar's filter.
+  const batches = useMemo(() => ledgerBatches(s.orchestrations), [s.orchestrations]);
 
   // The composer draft lives here rather than in the Ask pane: the idle
   // stage's empty state offers one-click starters too, and both need to write
