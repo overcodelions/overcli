@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isOrchestrationComplete,
+  isResidueOrchestration,
+  ledgerBatches,
   parseCandidates,
   type Orchestration,
 } from './orchestration';
@@ -109,5 +111,82 @@ describe('isOrchestrationComplete', () => {
       ],
     };
     expect(isOrchestrationComplete(o)).toBe(false);
+  });
+});
+
+
+describe('ledgerBatches', () => {
+  const batch = (
+    id: string,
+    createdAt: number,
+    items: Orchestration['items'],
+    origin?: Orchestration['origin'],
+  ): Orchestration => ({
+    id,
+    title: id,
+    projectPath: '/p',
+    maxConcurrent: 2,
+    items,
+    origin,
+    createdAt,
+  });
+  const item = (status: Orchestration['items'][number]['status']) => ({
+    candidate: { id: 'a', title: 'a', prompt: 'a' },
+    flowId: 'f',
+    status,
+  });
+
+  it('orders newest first, with no exception for a parked batch', () => {
+    const parked = batch('old-parked', 10, [item('proposed')]);
+    const fresh = batch('new-done', 20, [item('done')]);
+    expect(ledgerBatches({ a: parked, b: fresh }).map((o) => o.id)).toEqual([
+      'new-done',
+      'old-parked',
+    ]);
+  });
+
+  it('drops item-less batches — a worker answering in prose is not a run', () => {
+    const errand = batch('errand', 30, [], {
+      kind: 'worker',
+      workerId: 'w1',
+      workerName: 'Warden',
+      task: 'errand',
+    });
+    const real = batch('real', 20, [item('running')]);
+    expect(ledgerBatches({ a: errand, b: real }).map((o) => o.id)).toEqual(['real']);
+  });
+});
+
+describe('isResidueOrchestration', () => {
+  const empty = (origin?: Orchestration['origin']): Orchestration => ({
+    id: 'x',
+    title: 'x',
+    projectPath: '/p',
+    maxConcurrent: 1,
+    items: [],
+    origin,
+    createdAt: 0,
+  });
+
+  it('is true for an item-less schedule or manual batch', () => {
+    expect(isResidueOrchestration(empty())).toBe(true);
+    expect(
+      isResidueOrchestration(
+        empty({ kind: 'schedule', scheduleId: 's1', scheduleName: 'Morning triage' }),
+      ),
+    ).toBe(true);
+  });
+
+  // Deleting this record would eat the worker's reply along with it.
+  it('is false for an item-less worker batch — that record is a desk turn', () => {
+    expect(
+      isResidueOrchestration(empty({ kind: 'worker', workerId: 'w1', workerName: 'Warden' })),
+    ).toBe(false);
+  });
+
+  it('is false whenever there are items at all', () => {
+    const o = empty();
+    o.items = [{ candidate: { id: 'a', title: 'a', prompt: 'a' }, flowId: 'f', status: 'done' }];
+    expect(isResidueOrchestration(o)).toBe(false);
   });
 });
