@@ -6,6 +6,9 @@ import {
   liftMissingModel,
   modelSpeed,
   modelTierLabel,
+  latestAtTier,
+  snapToTierDefault,
+  tierDefault,
   PREMIUM_MODELS,
 } from './modelCatalog';
 
@@ -218,7 +221,7 @@ describe('modelSpeed', () => {
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],
     ['gpt-5.6-sol', 'thinking'],
-    ['gpt-5.6-terra', 'fast'],
+    ['gpt-5.6-terra', 'standard'],
     ['gpt-5.6-luna', 'fast'],
     ['gpt-5.5', 'thinking'],
     ['gpt-5.4', 'standard'],
@@ -278,5 +281,113 @@ describe('modelTierLabel', () => {
 
   it('ollama → Local', () => {
     expect(modelTierLabel('ollama')).toBe('Local');
+  });
+});
+
+
+// ─── latestAtTier / tierDefault / snapToTierDefault ───────────────────────────
+
+describe('latestAtTier', () => {
+  it('resolves each backend to its current model per tier', () => {
+    expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5');
+    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5');
+    expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5');
+    expect(latestAtTier('codex', 'thinking')).toBe('gpt-5.6-sol');
+    expect(latestAtTier('codex', 'fast')).toBe('gpt-5.6-luna');
+    expect(latestAtTier('gemini', 'standard')).toBe('gemini-3.7-flash');
+  });
+
+  it('returns undefined for a tier the backend has no model at', () => {
+    // Claude ships no middle-tier model; callers degrade rather than guess.
+    expect(latestAtTier('claude', 'standard')).toBeUndefined();
+    expect(latestAtTier('codex', 'frontier')).toBeUndefined();
+  });
+
+  it('keeps the leading family rather than jumping to a newer sibling line', () => {
+    // Copilot's fast tier lists Haiku 4.5 ahead of Sonnet 4.6 because fast
+    // means cheap, not newest. A plain version sort would pick Sonnet and
+    // quietly raise the cost of every fast step.
+    expect(latestAtTier('copilot', 'fast')).toBe('claude-haiku-4.5');
+  });
+
+  it('does not promote a tier onto a newer model from another tier', () => {
+    // gpt-5.6-sol is newer than terra but sits at the thinking tier — the
+    // standard default must not climb into it.
+    expect(latestAtTier('codex', 'standard')).toBe('gpt-5.6-terra');
+    expect(latestAtTier('codex', 'thinking')).toBe('gpt-5.6-sol');
+  });
+
+  it('picks the newest version within the leading family', () => {
+    // Both Flash-Lite ids sit at the fast tier; the default tracks the
+    // higher version rather than trusting where it lands in the list.
+    expect(latestAtTier('gemini', 'fast')).toBe('gemini-3.5-flash-lite');
+    expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5');
+  });
+});
+
+describe('tierDefault', () => {
+  it('falls back to auto when no override is set', () => {
+    expect(tierDefault('claude', 'thinking')).toBe('claude-opus-5');
+    expect(tierDefault('claude', 'thinking', {})).toBe('claude-opus-5');
+    expect(tierDefault('claude', 'thinking', { claude: {} })).toBe('claude-opus-5');
+  });
+
+  it("honours the user's pin", () => {
+    expect(tierDefault('codex', 'standard', { codex: { standard: 'gpt-5.4' } })).toBe('gpt-5.4');
+  });
+
+  it('accepts a pin from a different tier — an expensive choice is still a choice', () => {
+    expect(tierDefault('claude', 'fast', { claude: { fast: 'claude-opus-5' } })).toBe(
+      'claude-opus-5',
+    );
+  });
+
+  it('canonicalizes a dotted pin', () => {
+    expect(tierDefault('claude', 'fast', { claude: { fast: 'claude-sonnet-5' } })).toBe(
+      'claude-sonnet-5',
+    );
+    expect(tierDefault('copilot', 'fast', { copilot: { fast: 'claude-haiku-4-5' } })).toBe(
+      'claude-haiku-4.5',
+    );
+  });
+
+  it('ignores a pin we no longer ship rather than poisoning every flow', () => {
+    expect(tierDefault('claude', 'thinking', { claude: { thinking: 'claude-opus-4-1' } })).toBe(
+      'claude-opus-5',
+    );
+    expect(tierDefault('claude', 'fast', { claude: { fast: '  ' } })).toBe('claude-sonnet-5');
+  });
+});
+
+describe('snapToTierDefault', () => {
+  it('moves a stale-but-supported id onto its tier default', () => {
+    // The exact pair that shipped in a drafted flow: both ids validate, both
+    // are a generation behind.
+    expect(snapToTierDefault('codex', 'gpt-5.4-mini')).toBe('gpt-5.6-luna');
+    expect(snapToTierDefault('claude', 'claude-opus-4-8')).toBe('claude-opus-5');
+  });
+
+  it('leaves a current id alone', () => {
+    expect(snapToTierDefault('claude', 'claude-opus-5')).toBe('claude-opus-5');
+    expect(snapToTierDefault('claude', 'claude-fable-5')).toBe('claude-fable-5');
+  });
+
+  it('respects the tier the drafter chose rather than upgrading everything', () => {
+    // A fast step stays fast — snapping fixes the id, not the intent.
+    expect(snapToTierDefault('claude', 'claude-haiku-4-5')).toBe('claude-sonnet-5');
+    expect(modelSpeed(snapToTierDefault('claude', 'claude-haiku-4-5'))).toBe('fast');
+  });
+
+  it('routes through the pin when one is set', () => {
+    expect(snapToTierDefault('claude', 'claude-sonnet-4-6', { claude: { fast: 'claude-haiku-4-5' } })).toBe(
+      'claude-haiku-4-5',
+    );
+  });
+
+  it('leaves an unknown id alone so validation can reject it', () => {
+    // Silently turning a typo into a working model would hide a real
+    // drafting error.
+    expect(snapToTierDefault('claude', 'claude-opus-9')).toBe('claude-opus-9');
+    expect(snapToTierDefault('claude', 'totally-made-up')).toBe('totally-made-up');
   });
 });
