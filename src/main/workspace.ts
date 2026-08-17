@@ -137,6 +137,105 @@ export function coordinatorRootPath(coordinatorId: string): string {
   return path.join(app.getPath('userData'), 'coordinators', coordinatorId);
 }
 
+/// Files an agent wrote at a synthetic root — the loose output a run left
+/// behind that belongs to no repository.
+///
+/// A workspace or coordinator root is a folder of symlinks plus the three
+/// context files, and nothing else is ours: every REGULAR file directly
+/// inside it was put there by the run. That is not a rare case — Overcli's
+/// own flows tell steps to write a dashboard or a report "alongside the run
+/// artifacts", which lands exactly here, and a coordinator root is deleted
+/// with its run. Anything not copied out of one is lost.
+///
+/// Only the top level is walked. A subdirectory at a workspace root is a
+/// project checkout the agent cloned or a scratch tree, not a deliverable,
+/// and recursing would file a build output tree under a worker.
+export interface LooseRootFile {
+  name: string;
+  path: string;
+  bytes: number;
+  modifiedAt: number;
+}
+
+/// Enough for "the report, its data, and a couple of images"; a run that
+/// littered a hundred files at the root is scratch, not a deliverable.
+const MAX_LOOSE_FILES = 20;
+/// Big enough for a self-contained HTML page with inlined images, small
+/// enough that a stray database dump is not silently copied into userData.
+const MAX_LOOSE_FILE_BYTES = 16 * 1024 * 1024;
+
+export function looseSyntheticRootFiles(
+  rootPath: string,
+  opts?: { since?: number },
+): LooseRootFile[] {
+  if (!isSyntheticRootPath(rootPath)) return [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(rootPath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const since = opts?.since ?? 0;
+  const out: LooseRootFile[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue; // symlinks and dirs are ours, or are checkouts
+    if (entry.name.startsWith('.')) continue;
+    if ((CONTEXT_FILES as readonly string[]).includes(entry.name)) continue;
+    const full = path.join(rootPath, entry.name);
+    try {
+      const stat = fs.lstatSync(full);
+      if (!stat.isFile()) continue;
+      // A workspace root outlives any one run, so without this an old run's
+      // leftovers would be filed again under whatever ran most recently.
+      if (stat.mtimeMs < since) continue;
+      if (stat.size > MAX_LOOSE_FILE_BYTES) continue;
+      out.push({ name: entry.name, path: full, bytes: stat.size, modifiedAt: stat.mtimeMs });
+    } catch {
+      // Raced with a delete, or unreadable — not a deliverable either way.
+    }
+  }
+  return out.sort((a, b) => a.modifiedAt - b.modifiedAt).slice(-MAX_LOOSE_FILES);
+}
+
+/// True for a root Overcli itself created under userData — a workspace or
+/// coordinator symlink farm, and only at the depth we create them. The check
+/// is what makes the sweep above safe to run blind: a real project checkout
+/// never matches, so no source file can be swept up as agent output.
+export function isSyntheticRootPath(candidate: string): boolean {
+  if (!candidate) return false;
+  let userData: string;
+  try {
+    userData = app.getPath('userData');
+  } catch {
+    return false;
+  }
+  const resolved = path.resolve(candidate);
+  for (const bucket of ['workspaces', 'coordinators']) {
+    if (!samePath(path.dirname(resolved), path.join(userData, bucket))) continue;
+    return ID_RE.test(path.basename(resolved));
+  }
+  return false;
+}
+
+/// Two paths naming the same directory. Compared case-insensitively off
+/// Linux because the stored path and `app.getPath` disagree in practice —
+/// a run records `…/Application Support/overcli/coordinators/<id>` while
+/// userData reports `…/Overcli` — and on a case-insensitive volume those
+/// are one directory. Symlinks are resolved first where the path exists,
+/// so a userData under a linked home still matches.
+function samePath(a: string, b: string): boolean {
+  const real = (p: string) => {
+    let out = path.resolve(p);
+    try {
+      out = fs.realpathSync.native(out);
+    } catch {
+      // Not created yet — the lexical form is the best answer available.
+    }
+    return process.platform === 'linux' ? out : out.toLowerCase();
+  };
+  return real(a) === real(b);
+}
+
 /// Resolve the symlinks directly under `cwd` to their absolute target
 /// dirs. Used to expand a coordinator-style cwd (a folder of symlinks
 /// pointing at each member worktree) into a list of writable roots a

@@ -3,7 +3,13 @@ import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { FlowArtifact, FlowRun } from '@shared/flows/schema';
 import { flowRunActivityAt, isWorkerRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
-import { parseWorkerSubject, stripWorkerSubject } from '@shared/flows/worker';
+import {
+  WORKER_AUTO_RENDER_NEWEST,
+  WORKER_AUTO_RENDER_OFF,
+  isRenderableOutput,
+  parseWorkerSubject,
+  stripWorkerSubject,
+} from '@shared/flows/worker';
 import { flowRunMatchesQuery, runIsLive } from '../flows/FlowRunSidebarRow';
 
 /// Runs are claimed by worker identity, not by owner path: a workspace worker
@@ -308,6 +314,47 @@ export interface WorkerFileGroup {
   label: string;
   blurb: string;
   jobs: WorkerFileJob[];
+}
+
+/// The renderable outputs this worker actually produces, newest first, one
+/// row per distinct filename.
+///
+/// Read off what it has FILED rather than off its flows' declared step
+/// outputs, because those two disagree exactly where it matters: a step that
+/// renders a page writes `dashboard.html` to disk and declares
+/// `dashboard_receipt.md`, so the flow definition names the note and never
+/// names the page. What is on disk is what the worker makes.
+///
+/// Distinct by name because a daily report is the SAME output filed under a
+/// new job every morning — a list with thirty `dashboard.html` rows in it is
+/// a list of runs, not a list of things this worker makes, and the setting
+/// this feeds is choosing the latter.
+export function workerRenderableOutputs(files: WorkerFile[]): WorkerFile[] {
+  const newestByName = new Map<string, WorkerFile>();
+  for (const file of files) {
+    const base = file.name.split('/').pop() ?? file.name;
+    if (!isRenderableOutput(base)) continue;
+    const seen = newestByName.get(base);
+    if (!seen || file.modifiedAt > seen.modifiedAt) newestByName.set(base, file);
+  }
+  return [...newestByName.values()].sort((a, b) => b.modifiedAt - a.modifiedAt);
+}
+
+/// The one file to open when this worker is selected, or null for none.
+///
+/// `off` opens nothing. A pinned filename opens the newest copy of THAT
+/// output and nothing else — a worker pinned to `dashboard.html` should show
+/// yesterday's dashboard when today's run has not landed yet, not silently
+/// substitute whatever else it happened to write this morning. Anything else
+/// (including the absent default) means the newest renderable file it has.
+export function workerAutoRenderTarget(
+  files: WorkerFile[],
+  setting: string | undefined,
+): WorkerFile | null {
+  if (setting === WORKER_AUTO_RENDER_OFF) return null;
+  const outputs = workerRenderableOutputs(files);
+  if (!setting || setting === WORKER_AUTO_RENDER_NEWEST) return outputs[0] ?? null;
+  return outputs.find((f) => (f.name.split('/').pop() ?? f.name) === setting) ?? null;
 }
 
 /// Group a worker's directory into the three things that are actually in it.

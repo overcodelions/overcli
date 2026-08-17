@@ -124,6 +124,7 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
+import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
 import { flushRuns } from './flows/runsStore';
 import { loadRunSummaries } from './flows/runSummaryLog';
@@ -143,6 +144,7 @@ import {
   ensureCoordinatorSymlinkRoot,
   rebindCoordinatorRootToProjects,
   removeCoordinatorSymlinkRoot,
+  looseSyntheticRootFiles,
 } from './workspace';
 import { openTerminalAt, openTerminalIn, runInTerminal } from './terminal';
 import {
@@ -347,12 +349,22 @@ function registerIpc(): void {
       // Step order, so the answer is last and its supporting material reads in
       // the order it was produced.
       const seen = new Set<string>();
-      const out: Array<{ name: string; body: string }> = [];
+      const out: Array<{ name: string; body?: string; sourcePath?: string }> = [];
       for (const step of run.flowSnapshot?.steps ?? []) {
         const art = run.artifacts?.[step.output];
         if (!art || seen.has(art.name)) continue;
         seen.add(art.name);
         out.push({ name: art.name, body: art.body });
+      }
+      // Plus whatever the run WROTE rather than recorded. A step told to
+      // render a dashboard or a chart writes a real file into its working
+      // root and hands back a receipt — the receipt is the artifact, so
+      // filing artifacts alone kept the note and dropped the thing it
+      // described, which then died with the run's coordinator root.
+      for (const file of looseSyntheticRootFiles(run.projectPath, { since: run.createdAt })) {
+        if (seen.has(file.name)) continue;
+        seen.add(file.name);
+        out.push({ name: file.name, sourcePath: file.path });
       }
       return out;
     },
@@ -734,8 +746,10 @@ function registerIpc(): void {
         { isReadable: isReadablePath },
       ),
   );
-  ipcMain.handle('preview:publishDocument', (_e, args: { html: string }) =>
-    publishPreviewDocument(args?.html ?? ''),
+  ipcMain.handle(
+    'preview:publishDocument',
+    (_e, args: { html: string; policy?: 'bundle' | 'document' }) =>
+      publishPreviewDocument(args?.html ?? '', args?.policy === 'document' ? 'document' : 'bundle'),
   );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
@@ -1174,6 +1188,11 @@ function registerIpc(): void {
       ? workerEngine.setEnabled(id, enabled)
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
+  ipcMain.handle('workers:setAutoRender', (_e, { id, autoRender }) =>
+    workerEngine
+      ? workerEngine.setAutoRender(id, autoRender)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
   ipcMain.handle('workers:setTrust', (_e, { id, trust }) =>
     workerEngine
       ? workerEngine.setTrust(id, trust)
@@ -1196,6 +1215,19 @@ function registerIpc(): void {
   );
   ipcMain.handle('workers:reorder', (_e, { ids }) =>
     workerEngine ? workerEngine.reorder(ids) : ({ ok: true } as const),
+  );
+  ipcMain.handle('workers:treasury', () =>
+    workerEngine
+      ? workerEngine.treasury()
+      : {
+          treasury: { monthlyUSD: DEFAULT_TREASURY_USD },
+          allocation: allocateTreasury([], () => 0, DEFAULT_TREASURY_USD),
+        },
+  );
+  ipcMain.handle('workers:setTreasury', (_e, { monthlyUSD }) =>
+    workerEngine
+      ? workerEngine.setTreasury(monthlyUSD)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:files', (_e, { id }) => ({
     root: workerFilesDir(id),

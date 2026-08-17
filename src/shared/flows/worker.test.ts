@@ -4,6 +4,7 @@ import {
   demotedTrust,
   describeWorker,
   moveInRoster,
+  placeInRoster,
   parseWorkerContract,
   parseWorkerSubject,
   sortRoster,
@@ -300,6 +301,38 @@ describe('sortRoster', () => {
 
   it('leaves an unarranged roster in hire order', () => {
     expect(sortRoster([w('a', 1), w('b', 3), w('c', 2)]).map((x) => x.id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('placeInRoster', () => {
+  const w = (id: string, createdAt: number, order?: number) =>
+    ({ id, createdAt, order }) as unknown as Worker;
+  // Hire dates descending, so the unarranged order is a, b, c, d.
+  const roster = [w('a', 40), w('b', 30), w('c', 20), w('d', 10)];
+
+  it('drops into the gap the indicator was drawn in, above and below', () => {
+    expect(placeInRoster(roster, 'd', 0)).toEqual(['d', 'a', 'b', 'c']);
+    expect(placeInRoster(roster, 'a', 4)).toEqual(['b', 'c', 'd', 'a']);
+  });
+
+  it('resolves the gap against the list as it was drawn, not as it will be', () => {
+    // Gap 3 is between c and d. Dragging `a` there must land it after c —
+    // the naive splice (which forgets `a` leaves a hole above the gap) puts
+    // it between b and c instead.
+    expect(placeInRoster(roster, 'a', 3)).toEqual(['b', 'c', 'a', 'd']);
+    // Dragging upward needs no correction: gap 1 is below a, above b.
+    expect(placeInRoster(roster, 'c', 1)).toEqual(['a', 'c', 'b', 'd']);
+  });
+
+  it('is a no-op for the gaps either side of the dragged row', () => {
+    expect(placeInRoster(roster, 'b', 1)).toEqual(['a', 'b', 'c', 'd']);
+    expect(placeInRoster(roster, 'b', 2)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('clamps a gap past either end and ignores an unknown id', () => {
+    expect(placeInRoster(roster, 'b', 99)).toEqual(['a', 'c', 'd', 'b']);
+    expect(placeInRoster(roster, 'b', -3)).toEqual(['b', 'a', 'c', 'd']);
+    expect(placeInRoster(roster, 'nobody', 0)).toEqual(['a', 'b', 'c', 'd']);
   });
 });
 

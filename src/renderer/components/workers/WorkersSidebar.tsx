@@ -32,6 +32,7 @@ import { useRunningMap } from "../../runnersStore";
 import { useStore } from "../../store";
 import { newWorkerDraft, useWorkersStore } from "../../workersStore";
 import { sortRoster, type Worker } from "@shared/flows/worker";
+import type { TreasuryAllocation } from "@shared/flows/treasury";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { TRUST_LABEL } from "./WorkerRowParts";
 import {
@@ -74,6 +75,8 @@ export function WorkersSidebar({ query }: { query: string }) {
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const view = useWorkersStore((s) => s.view);
   const showCalendar = useWorkersStore((s) => s.showCalendar);
+  const showFunds = useWorkersStore((s) => s.showFunds);
+  const allocation = useWorkersStore((s) => s.allocation);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const runs = useFlowsStore((s) => s.runs);
   const projects = useStore((s) => s.projects);
@@ -113,6 +116,46 @@ export function WorkersSidebar({ query }: { query: string }) {
           Shift calendar
         </span>
       </button>
+
+      {/* Under the calendar, above the names: the pot the whole roster draws
+          from. It sits here because the roster below it IS the funding queue —
+          the money and the order it is paid in should not be two screens
+          apart. The bar is the sidebar's whole report; the numbers live on the
+          pane it opens. */}
+      {allocation && (
+        <button
+          onClick={showFunds}
+          title={`$${allocation.spentUSD.toFixed(2)} of $${allocation.poolUSD.toFixed(0)} spent this month`}
+          className={
+            "sidebar-row mb-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+            "hover:bg-card-strong hover:text-ink hover:border-card " +
+            "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+            (view === "funds"
+              ? "sidebar-row-selected text-ink"
+              : "text-ink-muted")
+          }
+        >
+          <PotIcon />
+          <span className="truncate text-[13px] leading-tight">Funds</span>
+          <span className="ml-auto flex items-center gap-1.5">
+            {starvedCount(allocation) > 0 && (
+              <span
+                aria-hidden
+                title={`${starvedCount(allocation)} worker(s) unfunded`}
+                className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+              />
+            )}
+            <span className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-card-strong">
+              <span
+                className="block h-full bg-accent"
+                style={{
+                  width: `${Math.min(100, allocation.poolUSD > 0 ? (allocation.spentUSD / allocation.poolUSD) * 100 : 0)}%`,
+                }}
+              />
+            </span>
+          </span>
+        </button>
+      )}
 
       <div className="mt-1 flex items-center gap-1.5 px-2">
         <span className="text-[10px] uppercase tracking-wider text-ink-faint">
@@ -154,6 +197,32 @@ export function WorkersSidebar({ query }: { query: string }) {
         ))
       )}
     </>
+  );
+}
+
+function starvedCount(allocation: TreasuryAllocation): number {
+  return allocation.byWorker.filter((f) => f.blocked === "pool").length;
+}
+
+/// A pot, drawn as a pot: a rim wider than the body, and a level inside it.
+/// The obvious glyph here was a dollar sign, which reads as "billing" — this
+/// is a container with an amount in it, which is the actual idea.
+function PotIcon() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden
+      className="h-3.5 w-3.5 shrink-0 text-ink-faint"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M2.4 4.3h9.2l-1 6.4a1.4 1.4 0 0 1-1.4 1.2H4.8a1.4 1.4 0 0 1-1.4-1.2z" />
+      <path d="M1.6 4.3h10.8" />
+      <path d="M4 8.4h6" opacity="0.55" />
+    </svg>
   );
 }
 
@@ -338,14 +407,16 @@ function RosterRow({
           row — the same treatment the project rows give their own controls.
           Absolutely positioned so revealing it can't reflow the name. */}
       <div className="absolute right-1 top-1 hidden items-center gap-0.5 group-hover/row:flex">
+        {/* Position is priority and priority is funding, so these say what
+            they cost rather than which way the row travels. */}
         <MoveButton
-          label="Move up"
+          label="Move up — funded before the workers below it"
           glyph="▲"
           disabled={!canMoveUp}
           onClick={() => void moveWorker(worker.id, -1)}
         />
         <MoveButton
-          label="Move down"
+          label="Move down — funded after the workers above it"
           glyph="▼"
           disabled={!canMoveDown}
           onClick={() => void moveWorker(worker.id, 1)}

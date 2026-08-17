@@ -3396,6 +3396,10 @@ export const useStore = create<StoreState>((set, get) => ({
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().applyUpdate(event.worker, event.nextShiftAt, event.scorecard);
       });
+    } else if (event.type === 'treasuryUpdate') {
+      void import('./workersStore').then(({ useWorkersStore }) => {
+        useWorkersStore.getState().applyTreasury(event.treasury, event.allocation);
+      });
     } else if (event.type === 'workerDeleted') {
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().removeLocal(event.id);

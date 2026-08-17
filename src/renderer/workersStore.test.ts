@@ -14,6 +14,7 @@ import {
   useWorkersStore,
 } from './workersStore';
 import type { Worker, WorkerScorecard } from '@shared/flows/worker';
+import { allocateTreasury } from '@shared/flows/treasury';
 import type { Flow } from '@shared/flows/schema';
 
 function makeWorker(overrides: Partial<Worker> = {}): Worker {
@@ -87,22 +88,86 @@ afterEach(() => {
     draft: null,
     draftedFlow: null,
     hireSummary: null,
+    treasury: null,
+    allocation: null,
+    view: 'worker',
     busy: false,
     error: null,
   });
 });
 
+/// `reload` fans out over two channels, so a per-call queue would depend on
+/// the order Promise.all happens to resolve them in. Answer by channel.
+function mockChannels(rows: unknown[], treasury: unknown): void {
+  mockInvoke.mockImplementation(async (channel: string) =>
+    channel === 'workers:treasury' ? treasury : rows,
+  );
+}
+
 describe('workersStore mirror', () => {
-  it('reload lands workers, nextShiftAt, and scorecards keyed by id', async () => {
-    mockInvoke.mockResolvedValueOnce([
-      { worker: makeWorker(), nextShiftAt: 123, scorecard: makeScorecard({ proposed: 2 }) },
-    ]);
+  it('reload lands workers, nextShiftAt, scorecards and the treasury keyed by id', async () => {
+    mockChannels(
+      [{ worker: makeWorker(), nextShiftAt: 123, scorecard: makeScorecard({ proposed: 2 }) }],
+      {
+        treasury: { monthlyUSD: 40 },
+        allocation: allocateTreasury([makeWorker()], () => 0, 40),
+      },
+    );
     await useWorkersStore.getState().reload();
     const s = useWorkersStore.getState();
     expect(s.loaded).toBe(true);
     expect(s.workers['worker-1'].name).toBe('Scout');
     expect(s.nextShiftAt['worker-1']).toBe(123);
     expect(s.scorecards['worker-1'].proposed).toBe(2);
+    expect(s.treasury).toEqual({ monthlyUSD: 40 });
+    expect(s.allocation?.byWorker[0]).toMatchObject({ workerId: 'worker-1', availableUSD: 20 });
+  });
+
+  it('moveWorker re-prices the roster locally so the money moves with the row', async () => {
+    const first = makeWorker({ id: 'a', name: 'A', order: 0, budgetUSDPerMonth: 10 });
+    const second = makeWorker({ id: 'b', name: 'B', order: 1, budgetUSDPerMonth: 10 });
+    mockInvoke.mockResolvedValue({ ok: true });
+    useWorkersStore.setState({
+      workers: { a: first, b: second },
+      treasury: { monthlyUSD: 10 },
+      // Only the top of the roster is funded — $10 between two $10 caps.
+      allocation: allocateTreasury([first, second], () => 0, 10),
+    });
+
+    await useWorkersStore.getState().moveWorker('b', -1);
+
+    const alloc = useWorkersStore.getState().allocation!;
+    expect(alloc.byWorker.map((f) => f.workerId)).toEqual(['b', 'a']);
+    // Not waiting on main's echo: B is funded the moment it is on top.
+    expect(alloc.byWorker.map((f) => f.availableUSD)).toEqual([10, 0]);
+    expect(mockInvoke).toHaveBeenCalledWith('workers:reorder', { ids: ['b', 'a'] });
+  });
+
+  it('dropWorker lands a row at an arbitrary slot and re-prices from there', async () => {
+    const a = makeWorker({ id: 'a', name: 'A', order: 0, budgetUSDPerMonth: 10 });
+    const b = makeWorker({ id: 'b', name: 'B', order: 1, budgetUSDPerMonth: 10 });
+    const c = makeWorker({ id: 'c', name: 'C', order: 2, budgetUSDPerMonth: 10 });
+    mockInvoke.mockResolvedValue({ ok: true });
+    useWorkersStore.setState({
+      workers: { a, b, c },
+      treasury: { monthlyUSD: 10 },
+      allocation: allocateTreasury([a, b, c], () => 0, 10),
+    });
+
+    // Dropped in the gap above A — the whole point of dragging over nudging:
+    // last to first without passing through every slot between.
+    await useWorkersStore.getState().dropWorker('c', 0);
+
+    const alloc = useWorkersStore.getState().allocation!;
+    expect(alloc.byWorker.map((f) => f.workerId)).toEqual(['c', 'a', 'b']);
+    expect(alloc.byWorker.map((f) => f.availableUSD)).toEqual([10, 0, 0]);
+    expect(mockInvoke).toHaveBeenCalledWith('workers:reorder', { ids: ['c', 'a', 'b'] });
+  });
+
+  it('surfaces a rejected pot instead of pretending it landed', async () => {
+    mockInvoke.mockResolvedValue({ ok: false, error: 'The monthly pool has to be more than zero.' });
+    await expect(useWorkersStore.getState().setTreasury(0)).resolves.toBe(false);
+    expect(useWorkersStore.getState().error).toContain('more than zero');
   });
 
   it('applyUpdate patches one worker without touching the rest', () => {
