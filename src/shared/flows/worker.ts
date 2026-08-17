@@ -405,7 +405,10 @@ export function parseWorkerContract(
 /// bounded enough to never surprise anyone with a 2am shift.
 const DEFAULT_CADENCE: ScheduleTrigger = { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] };
 
-function coerceCadence(raw: unknown): ScheduleTrigger {
+/// Coerce a loosely-typed cadence into one the scheduler can fire. Shared
+/// with the worker share format, which reads cadences written by hand or by
+/// another install rather than by the editor.
+export function coerceCadence(raw: unknown): ScheduleTrigger {
   if (!raw || typeof raw !== 'object') return DEFAULT_CADENCE;
   const c = raw as Record<string, unknown>;
   const days = Array.isArray(c.days)

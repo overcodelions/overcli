@@ -5,6 +5,7 @@ import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 import {
   activityOnDay,
+  deskTimeline,
   adjacentDeskDay,
   anyDeskLive,
   deskDayLabel,
@@ -29,6 +30,7 @@ import {
   workerDeskRuns,
   type WorkerActivity,
   sidebarActivity,
+  sidebarShifts,
   workerRunsForSidebar,
   workersForPath,
   workerAutoRenderTarget,
@@ -389,6 +391,14 @@ describe('the desk’s day', () => {
     expect(activityOnDay(items, startOfDay(MON))).toEqual([{ at: MON }, { at: MON_LATER }]);
   });
 
+  it('reads down like a chat, whatever order the ledger arrived in', () => {
+    // How the store actually holds them: hydrated newest-first on load, then
+    // whatever landed this session spread onto the end as it happened. Reversing
+    // that put the turn you had just sent above everything else.
+    const store = [{ at: MON_LATER }, { at: SUN }, { at: THU }, { at: MON }];
+    expect(deskTimeline(store, startOfDay(MON))).toEqual([{ at: MON }, { at: MON_LATER }]);
+  });
+
   it('steps back to the previous day that had work, skipping the silence', () => {
     const days = deskDays(items);
     // Sunday → Thursday: Fri and Sat had nothing, and stepping through empty
@@ -466,6 +476,43 @@ describe('sidebarActivity', () => {
 
   it('shows nothing for a worker that has never worked', () => {
     expect(sidebarActivity([], NOW, 4)).toEqual([]);
+  });
+});
+
+describe('sidebarShifts', () => {
+  // Newest first, the order the sidebar hands them over in.
+  const shift = (id: string, proposed = 0, running = 0) =>
+    ({ orchestration: { id }, proposed, running } as unknown as WorkerActivity);
+  const ids = (items: WorkerActivity[]) => items.map((i) => i.orchestration.id);
+
+  it('keeps only the newest when every shift came up empty', () => {
+    // The case that motivated this: a clock firing hourly, finding nothing,
+    // and spending four rows to say so.
+    const shifts = [shift('s8'), shift('s7'), shift('s6'), shift('s5')];
+    expect(ids(sidebarShifts(shifts, 4))).toEqual(['s8']);
+  });
+
+  it('keeps older shifts that still owe you a decision', () => {
+    const shifts = [shift('s8'), shift('s7', 3), shift('s6'), shift('s5', 0, 1)];
+    expect(ids(sidebarShifts(shifts, 4))).toEqual(['s8', 's7', 's5']);
+  });
+
+  it('keeps the newest shift even when it launched nothing', () => {
+    // "When did this one last wake up" is a question the roster answers even
+    // when the answer is "and it found nothing".
+    expect(ids(sidebarShifts([shift('s8'), shift('s7', 2)], 4))).toEqual([
+      's8',
+      's7',
+    ]);
+  });
+
+  it('caps an implausible pile of unreviewed shifts', () => {
+    const shifts = ['a', 'b', 'c', 'd', 'e'].map((id) => shift(id, 1));
+    expect(ids(sidebarShifts(shifts, 4))).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('shows nothing for a worker with no shifts today', () => {
+    expect(sidebarShifts([], 4)).toEqual([]);
   });
 });
 

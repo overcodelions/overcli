@@ -42,16 +42,20 @@ import {
   summarizeDesk,
   workerActivity,
   sidebarActivity,
+  sidebarShifts,
   workerDeskOrchestrations,
   workerDeskRuns,
   workerRunsForSidebar,
   type WorkerActivity,
 } from "./workerDeskSelectors";
 
-/// How many of TODAY's turns hang under a worker's row (see sidebarActivity).
-/// Four: a busy morning is visible without one worker pushing the rest of the
-/// roster off screen.
-const NESTED_ACTIVITY = 4;
+/// How many of TODAY's errands hang under a worker's row. Four: a busy morning
+/// is visible without one worker pushing the rest of the roster off screen.
+const NESTED_ERRANDS = 4;
+/// And how many of its shifts — see sidebarShifts, which keeps the newest plus
+/// whatever still owes you a decision. The cap is only a backstop for a worker
+/// holding an implausible pile of unreviewed shifts.
+const NESTED_SHIFTS = 4;
 /// How deep we look for those turns before the day filter runs.
 const ACTIVITY_SCAN = 40;
 /// And how many of its RUNS. A worker's runs are kept out of every project's
@@ -293,23 +297,34 @@ function RosterRow({
     () => summarizeDesk(claimedRuns, batches.awaiting, runners, !!shift),
     [batches.awaiting, claimedRuns, runners, shift],
   );
+  // Today's turns, uncapped here on purpose: errands and shifts thin out by
+  // different rules below, and a shared cap let an hourly clock spend the whole
+  // budget before the errand you sent got a row.
   const recent = useMemo(
     () =>
       sidebarActivity(
         workerActivity(orchestrations, worker.id, ACTIVITY_SCAN),
         Date.now(),
-        NESTED_ACTIVITY,
+        ACTIVITY_SCAN,
       ),
     [orchestrations, worker.id],
   );
   const sending = useWorkersStore((s) => s.errandSending[worker.id]);
-  const errands = useMemo(
+  const todaysErrands = useMemo(
     () => recent.filter((item) => item.task === "errand"),
     [recent],
   );
-  const shifts = useMemo(
+  const errands = useMemo(
+    () => todaysErrands.slice(0, NESTED_ERRANDS),
+    [todaysErrands],
+  );
+  const todaysShifts = useMemo(
     () => recent.filter((item) => item.task === "shift"),
     [recent],
+  );
+  const shifts = useMemo(
+    () => sidebarShifts(todaysShifts, NESTED_SHIFTS),
+    [todaysShifts],
   );
   const openTurn = (orchestrationId: string, at: number) =>
     openWorkerActivity(worker.id, orchestrationId, at);
@@ -436,7 +451,10 @@ function RosterRow({
           myRuns.length > 0) && (
           <div className="ml-[13px] border-l border-card pl-2">
             {(sending?.length || errands.length > 0) && (
-              <GroupLabel text="Errands" />
+              <GroupLabel
+                text="Errands"
+                hidden={todaysErrands.length - errands.length}
+              />
             )}
             {/* The errand you just sent, before any batch exists to represent it
               — the planning turn can take minutes, and a sidebar that shows
@@ -463,7 +481,14 @@ function RosterRow({
               />
             ))}
 
-            {shifts.length > 0 && <GroupLabel text="Shifts" />}
+            {/* The count says what was folded away, because a group that quietly
+              drops eleven shifts reads as a worker that only ran one. */}
+            {shifts.length > 0 && (
+              <GroupLabel
+                text="Shifts"
+                hidden={todaysShifts.length - shifts.length}
+              />
+            )}
             {shifts.map((item) => (
               <TurnRow
                 key={item.orchestration.id}
@@ -565,10 +590,13 @@ function MoveButton({
   );
 }
 
-function GroupLabel({ text }: { text: string }) {
+function GroupLabel({ text, hidden = 0 }: { text: string; hidden?: number }) {
   return (
     <div className="px-1.5 pt-1 text-[10px] uppercase tracking-wider text-ink-faint">
       {text}
+      {hidden > 0 && (
+        <span className="normal-case tracking-normal"> · {hidden} more</span>
+      )}
     </div>
   );
 }

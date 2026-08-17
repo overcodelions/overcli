@@ -68,7 +68,11 @@ function hireSystemPrompt(
     `  "heartbeatModel": "model id for the cheap shift-planning turn — default "${hints.fast}"",`,
     '  "flowId": "id of an EXISTING flow from the list below that fits the launched work",',
     '  "flowRequest": "ONLY when no existing flow fits: describe the flow this worker needs,',
-    '                  as a flow-drafting instruction (steps, reviews, deliverable)",',
+    '                  as a flow-drafting instruction (steps, reviews, deliverable). Carry the',
+    '                  user\'s OWN WORDS about the deliverable through verbatim — the audience,',
+    '                  the tone, the format, what it must show. A flow designer downstream reads',
+    '                  this field and never meets the user, so a detail you summarize away is a',
+    '                  detail the flow will not have",',
     '  "projectPath": "ONLY when the job clearly names or implies one of the projects listed',
     '                  below: its exact path. Omit when unsure — the user picks the default."',
     '}',
@@ -134,12 +138,36 @@ export async function draftWorkerFromPrompt(
 
   if (!flowRequest) return { ok: true, contract, summary };
 
-  const drafted = await draftFlowFromPrompt({ description: flowRequest }, deps);
+  const drafted = await draftFlowFromPrompt(
+    { description: flowDraftDescription(flowRequest, contract.jobDescription) },
+    deps,
+  );
   if (!drafted.ok) {
     // The contract is still reviewable — the user can pick a flow by hand.
     return { ok: true, contract, summary };
   }
   return { ok: true, contract, summary, draftedFlow: drafted.flow };
+}
+
+/// What the flow designer is actually handed. `flowRequest` is the hire
+/// drafter's PARAPHRASE of the job, and the designer never meets the user —
+/// so the job description rides along verbatim and outranks it. Requirements
+/// about the deliverable (its audience, its tone, what it must show) are
+/// exactly the kind of detail a paraphrase drops, and dropping them here is
+/// unrecoverable: the flow gets designed without them.
+function flowDraftDescription(flowRequest: string, jobDescription: string): string {
+  const original = jobDescription.trim();
+  // flowRequestFromJob already embeds the whole job description — don't
+  // repeat it back at the designer twice.
+  if (!original || flowRequest.includes(original)) return flowRequest;
+  return [
+    flowRequest,
+    '',
+    "THE USER'S OWN DESCRIPTION OF THE JOB (authoritative — the text above is a paraphrase of",
+    'it). Where the two disagree, or where this names something the paraphrase left out — an',
+    'audience, a tone, a format, something a deliverable must show — follow THIS:',
+    original,
+  ].join('\n');
 }
 
 function flowRequestFromJob(contract: WorkerContract): string {

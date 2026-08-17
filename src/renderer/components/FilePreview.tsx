@@ -7,6 +7,7 @@ import type {
 } from '@shared/types';
 import { detectFilePreviewKind } from '../filePreview';
 import { collectHtmlAssetRefs, inlineHtmlAssets } from '../htmlPreview';
+import { previewLinkScriptTag, targetExternalLinks } from '../previewLinks';
 import { buildReactPreviewDocument, type PreviewBackground } from '../reactPreview';
 import {
   applyMermaidDiagrams,
@@ -190,7 +191,7 @@ export function FilePreview({
   return (
     <iframe
       title={`${path} preview`}
-      sandbox=""
+      sandbox="allow-popups"
       srcDoc={srcDoc}
       className="block w-full h-full border-0 bg-transparent"
     />
@@ -244,7 +245,7 @@ function HtmlPreview({ path, document: html }: { path: string; document: string 
   return (
     <iframe
       title={`${path} preview`}
-      sandbox="allow-scripts"
+      sandbox="allow-scripts allow-popups"
       src={frameUrl}
       className="block w-full h-full border-0 bg-transparent"
     />
@@ -463,7 +464,7 @@ function ReactPreview({ path, content, rootPath }: { path: string; content: stri
         <>
           <iframe
             title={`${path} preview`}
-            sandbox="allow-scripts"
+            sandbox="allow-scripts allow-popups"
             src={frameUrl}
             className="block w-full flex-1 min-h-0 border-0 bg-transparent"
           />
@@ -758,11 +759,15 @@ function formatBytes(bytes: number): string {
 }
 
 function buildHtmlDocument(filePath: string, content: string): string {
-  const baseTag = `<base href="${escapeAttr(toFileDirectoryHref(filePath))}">`;
-  if (/<base[\s>]/i.test(content)) return content;
-  if (/<head[\s>]/i.test(content)) return content.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${baseTag}`);
+  // A page that declares its own <base> keeps it; the link script goes in
+  // either way, since that's the page's only way out to the browser.
+  const baseTag = /<base[\s>]/i.test(content)
+    ? ''
+    : `<base href="${escapeAttr(toFileDirectoryHref(filePath))}">`;
+  const head = `${baseTag}${previewLinkScriptTag()}`;
+  if (/<head[\s>]/i.test(content)) return content.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${head}`);
   if (/<html[\s>]/i.test(content)) {
-    return content.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${baseTag}</head>`);
+    return content.replace(/<html(\s[^>]*)?>/i, (m) => `${m}<head>${head}</head>`);
   }
   return [
     '<!DOCTYPE html>',
@@ -770,7 +775,7 @@ function buildHtmlDocument(filePath: string, content: string): string {
     '<head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
-    baseTag,
+    head,
     '<style>html,body{margin:0;padding:0;}</style>',
     '</head>',
     '<body>',
@@ -806,7 +811,7 @@ function buildMarkdownDocument(
     `<style>${markdownPreviewStyles(dark)}</style>`,
     '</head>',
     '<body>',
-    `<article class="md">${html}</article>`,
+    `<article class="md">${targetExternalLinks(html)}</article>`,
     '</body>',
     '</html>',
   ].join('');

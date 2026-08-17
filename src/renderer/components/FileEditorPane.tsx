@@ -26,6 +26,7 @@ import { dirName, fileName, tabLabels } from '../tabLabels';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
+import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
 
 // Feature flag: route the editable file view through CodeMirror 6.
 // The old layered textarea+pre `Editor` lower in this file has a known
@@ -88,7 +89,12 @@ export const FileEditorPane = memo(function FileEditorPane({
   const detailMode = useStore((s) => s.detailMode);
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const flowRuns = useFlowsStore((s) => s.runs);
-  const flowRun = detailMode === 'flows' && activeRunId ? flowRuns[activeRunId] : undefined;
+  // A run opened from a worker renders that same run pane in the Workers
+  // tab, and its files need the same member/base mapping — gating on
+  // 'flows' alone left them diffing against whichever conversation
+  // happened to be selected underneath, in that project's repo.
+  const flowRun =
+    flowRunPaneIsOnScreen(detailMode) && activeRunId ? flowRuns[activeRunId] : undefined;
 
   // Workspace-member resolution: when the convId belongs to a workspace
   // conversation, the lookup runs by convId. For flow runs whose

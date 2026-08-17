@@ -41,7 +41,7 @@ import { PREMIUM_MODELS, friendlyModelLabel, isSupportedPremiumModel, modelSpeed
 import { workspaceSymlinkNames } from '../../shared/workspaceNames';
 import { preflightRun, formatPreflight, type PreflightResult } from './preflight';
 import { filterNoiseFromDiff, isNoisyPath } from './diffFilter';
-import { clearAttachments, writeAttachment } from './attachments';
+import { clearAttachments, ensureAttachmentDir, writeAttachment } from './attachments';
 import type {
   Flow,
   FlowArtifact,
@@ -1131,6 +1131,7 @@ export class FlowRuntimeImpl {
       displayText: `Finalizing ${prior.output} before continuing…`,
       backend: participant.backend,
       cwd: run.projectPath,
+      allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
       reviewBackend: null,
@@ -1608,6 +1609,7 @@ export class FlowRuntimeImpl {
       convId,
       backend: participant.backend,
       cwd: run.projectPath,
+      allowedDirs: this.runAllowedDirs(run),
       model: detectModel,
       prompt,
       displayText: `Watching ${w.binding || 'follow-ups'} — checking for new comments…`,
@@ -1650,6 +1652,7 @@ export class FlowRuntimeImpl {
       convId,
       backend: participant.backend,
       cwd: run.projectPath,
+      allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, w.participantId),
       prompt,
       displayText: `Answering on ${w.binding || 'the watched item'}…`,
@@ -1676,6 +1679,7 @@ export class FlowRuntimeImpl {
     convId: UUID;
     backend: Backend;
     cwd: string;
+    allowedDirs: string[];
     model: string;
     prompt: string;
     displayText: string;
@@ -1686,6 +1690,7 @@ export class FlowRuntimeImpl {
       displayText: args.displayText,
       backend: args.backend,
       cwd: args.cwd,
+      allowedDirs: args.allowedDirs,
       model: args.model,
       permissionMode: 'bypassPermissions',
       reviewBackend: null,
@@ -1978,6 +1983,7 @@ export class FlowRuntimeImpl {
       attachments,
       backend: stepModel.backend,
       cwd: run.projectPath,
+      allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
       reviewBackend: step.rebound?.critic.backend ?? null,
@@ -2201,6 +2207,26 @@ export class FlowRuntimeImpl {
       return measure('__single__', run.projectPath, run.baselineCommit);
     }
     return null;
+  }
+
+  /// Extra directories every send in this run needs in scope. Inputs over
+  /// INLINE_THRESHOLD_BYTES are handed to the model as absolute paths under
+  /// userData instead of inline text (see `buildStepPrompt`), and nothing
+  /// about the run's cwd covers that location — without this the model gets
+  /// a path it is structurally unable to read, which reads to it as a
+  /// missing input rather than a misconfiguration.
+  ///
+  /// Returned for every send in the run, not just the ones that actually
+  /// attached something, so the allowed set never changes mid-conversation.
+  private runAllowedDirs(run: FlowRun): string[] {
+    try {
+      return [ensureAttachmentDir(run.id)];
+    } catch (err) {
+      // Can't create the dir — attachment writes will fail too and
+      // `buildStepPrompt` falls back to inlining, so the step still runs.
+      log('warn', 'flows.attachmentDir', `attachment dir unavailable for run ${run.id}`, err);
+      return [];
+    }
   }
 
   private buildStepPrompt(run: FlowRun, step: FlowStep): string {

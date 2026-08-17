@@ -173,8 +173,17 @@ export function QuickSwitcherSheet() {
           setDetailMode('flows');
           return;
         case 'worker': {
-          const w = useWorkersStore.getState().workers[target.workerId];
-          if (w) useWorkersStore.getState().openEditor(draftFromWorker(w));
+          const workers = useWorkersStore.getState();
+          const w = workers.workers[target.workerId];
+          if (!w) return;
+          // ↵ means "show me this worker" — its desk, the same arrival as
+          // clicking the row in the roster. Opening the edit form instead was
+          // wrong twice over: it answered a question the user hadn't asked,
+          // and it left the roster pointed at whoever was selected before, so
+          // closing the editor landed on the wrong worker.
+          workers.openWorkerDesk(w.id);
+          // ⌘↵ still edits, selecting first for the same reason.
+          if (alternate) workers.openEditor(draftFromWorker(w));
           setDetailMode('workers');
           return;
         }
@@ -657,6 +666,9 @@ function Footer({
       hints.push(['⌘R', 'rename']);
     } else if (target.type === 'flow') {
       hints.push(['↵', 'run flow']);
+      hints.push(['⌘↵', 'edit']);
+    } else if (target.type === 'worker') {
+      hints.push(['↵', 'open desk']);
       hints.push(['⌘↵', 'edit']);
     } else if (target.type === 'project' || target.type === 'workspace') {
       hints.push(['↵', 'new chat here']);

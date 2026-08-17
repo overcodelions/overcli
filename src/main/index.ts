@@ -111,6 +111,7 @@ import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
+import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import {
   ensureWorkerFilesDir,
   listWorkerFiles,
@@ -1246,6 +1247,63 @@ function registerIpc(): void {
       return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
     }
   });
+  // Sharing a worker. The file is the JOB — see workerShare.ts for what is
+  // deliberately left behind, and why an import lands in the hire editor
+  // rather than on the roster.
+  ipcMain.handle('workers:share', (_e, { id }) => {
+    const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
+    if (!worker) return { ok: false, error: 'No such worker.' } as const;
+    const store = Store.load();
+    const share = buildWorkerShare({
+      worker,
+      library: loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
+    });
+    return {
+      ok: true,
+      yaml: share.yaml,
+      filename: share.filename,
+      missingFlowIds: share.missingFlowIds,
+    } as const;
+  });
+  ipcMain.handle('workers:shareToFile', async (_e, { id }) => {
+    const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
+    if (!worker) return { ok: false, error: 'No such worker.' } as const;
+    const store = Store.load();
+    const share = buildWorkerShare({
+      worker,
+      library: loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
+    });
+    if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: `Share ${worker.name}`,
+      defaultPath: share.filename,
+      filters: [{ name: 'Worker', extensions: ['yaml', 'yml'] }],
+    });
+    if (res.canceled || !res.filePath) return { ok: true, filePath: null } as const;
+    try {
+      fs.writeFileSync(res.filePath, share.yaml, 'utf-8');
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+    }
+    return { ok: true, filePath: res.filePath } as const;
+  });
+  ipcMain.handle('workers:import', (_e, { yaml }) => receiveWorkerYaml(yaml));
+  ipcMain.handle('workers:importFromFile', async () => {
+    if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
+    const res = await dialog.showOpenDialog(mainWindow, {
+      title: 'Import a worker',
+      properties: ['openFile'],
+      filters: [{ name: 'Worker', extensions: ['yaml', 'yml'] }],
+    });
+    if (res.canceled || res.filePaths.length === 0) return { ok: true, canceled: true } as const;
+    let body: string;
+    try {
+      body = fs.readFileSync(res.filePaths[0], 'utf-8');
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+    }
+    return receiveWorkerYaml(body);
+  });
   ipcMain.handle('workers:journal', (_e, { id }) =>
     workerEngine ? workerEngine.journalFor(id) : [],
   );
@@ -1598,6 +1656,32 @@ function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHin
   } catch (err: any) {
     return { ok: false, error: err?.message ?? 'Could not read package preview scripts.' };
   }
+}
+
+/// Take a worker share file: install the flows it carries that this library
+/// is missing, and hand back the worker for the hire editor. Nothing is
+/// hired here — see src/main/flows/workerShare.ts.
+function receiveWorkerYaml(yaml: string) {
+  const store = Store.load();
+  const library = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) });
+  const res = importWorkerYaml({
+    yaml: typeof yaml === 'string' ? yaml : '',
+    existingFlowIds: library.map((f) => f.id),
+    // User-global, like any other flow you install from a registry: the
+    // importer has not told us which project this worker will watch yet, so
+    // there is no project directory to write it into.
+    saveFlow: (flow) => {
+      const saved = saveFlow({ flow, target: 'user' });
+      return saved.ok ? ({ ok: true } as const) : ({ ok: false, error: saved.error } as const);
+    },
+  });
+  if (!res.ok) return { ok: false, error: res.error } as const;
+  return {
+    ok: true,
+    worker: res.result.bundle.worker,
+    notes: res.result.notes,
+    summary: describeImport(res.result.notes),
+  } as const;
 }
 
 function findNearestPackageRoot(start: string): string | null {
