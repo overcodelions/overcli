@@ -6,6 +6,8 @@ vi.mock('./workersStore', () => ({
   saveWorker: vi.fn(),
   loadAllWorkers: vi.fn(() => []),
   deleteWorker: vi.fn(),
+  loadTreasury: vi.fn(() => null),
+  saveTreasury: vi.fn(),
 }));
 vi.mock('./workerJournal', () => ({
   appendWorkerJournalEntry: vi.fn(() => true),
@@ -15,6 +17,7 @@ vi.mock('./workerJournal', () => ({
 }));
 vi.mock('./runSummaryLog', () => ({
   workerSpendSince: vi.fn(() => 0),
+  workerSpendByWorkerSince: vi.fn(() => new Map<string, number>()),
 }));
 
 import {
@@ -25,6 +28,7 @@ import {
 } from './workerEngine';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
+import type { Treasury } from '../../shared/flows/treasury';
 
 function local(y: number, mo: number, d: number, h = 0, min = 0): number {
   return new Date(y, mo - 1, d, h, min, 0, 0).getTime();
@@ -35,6 +39,11 @@ function makeHarness(
     seed?: Worker[];
     startAt?: number;
     spend?: number;
+    /// The monthly pool. Left unset, the engine seeds it from the sum of the
+    /// seeded workers' caps — the same migration a real install gets, so a
+    /// test that says nothing about funding behaves as it did before there
+    /// was a treasury.
+    pool?: number;
     generatedFlow?: WorkerEngineDeps['generatedFlow'];
   } = {},
 ) {
@@ -46,6 +55,7 @@ function makeHarness(
   const journal: WorkerJournalEntry[] = [];
   const orchestrations = new Map<string, Orchestration>();
   let spend = opts.spend ?? 0;
+  let treasury: Treasury | null = opts.pool != null ? { monthlyUSD: opts.pool } : null;
   let parkResult: Awaited<ReturnType<WorkerParker['parkProposal']>> = {
     ok: true,
     orchestrationId: 'orch-1',
@@ -110,6 +120,20 @@ function makeHarness(
           .join('\n'),
     },
     spend: () => spend,
+    // The harness models one spend figure for everybody; the engine wants it
+    // per worker, for every id it might ask about — seeded or hired mid-test.
+    spendAll: () =>
+      new Map(
+        [...new Set([...(opts.seed ?? []).map((w) => w.id), ...saved.map((w) => w.id)])].map(
+          (id) => [id, spend] as const,
+        ),
+      ),
+    treasuryStore: {
+      load: () => treasury,
+      save: (t) => {
+        treasury = t;
+      },
+    },
     generatedFlow: opts.generatedFlow,
   });
 
@@ -145,6 +169,7 @@ function makeHarness(
     setSpend: (s: number) => {
       spend = s;
     },
+    treasury: () => treasury,
     setParkResult: (r: typeof parkResult) => {
       parkResult = r;
     },
@@ -258,6 +283,120 @@ describe('WorkerEngine shifts', () => {
     const res = await h.engine.workShiftNow('worker-1');
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toContain('budget');
+  });
+
+  it('skips a worker the pot no longer reaches, and says so as a POOL problem', async () => {
+    // Two workers, $10 of caps each, but only $10 in the pot: the first is
+    // fully funded and the second gets nothing — even though neither has
+    // spent a cent of its own budget.
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', name: 'First', order: 0 }),
+        seedWorker({ id: 'worker-2', name: 'Second', order: 1 }),
+      ],
+      pool: 10,
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    // A tick walks the roster one worker at a time, awaiting each; a
+    // multi-worker roster needs more than one drain to get to the end of it.
+    await h.flush();
+    await h.flush();
+
+    expect(h.parked.map((p) => p.origin)).toHaveLength(1);
+    expect(h.parked[0].title).toContain('First');
+    const skipped = h.journal.find((e) => e.workerId === 'worker-2' && e.note);
+    expect(skipped?.id).toContain('shift-pool-worker-2');
+    // Not its own budget's fault, and the note has to say what to do.
+    expect(skipped?.note).toContain('pool');
+    expect(skipped?.note).toMatch(/move it up|pause/i);
+  });
+
+  it('notifies once for the whole roster when the pot runs dry, not once per worker', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', name: 'First', order: 0 }),
+        seedWorker({ id: 'worker-2', name: 'Second', order: 1 }),
+        seedWorker({ id: 'worker-3', name: 'Third', order: 2 }),
+      ],
+      // One dollar between three $20 workers.
+      pool: 1,
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    await h.flush();
+    await h.flush();
+
+    // The top of the roster gets the last dollar and works — funding is
+    // checked before a turn, not metered during one, so the pot's final
+    // dollar buys a whole shift. That tolerance is deliberate; it belongs to
+    // whoever is FIRST, which is the guarantee priority is supposed to give.
+    expect(h.parked).toHaveLength(1);
+    expect(h.parked[0].title).toContain('First');
+
+    const poolNotices = h.notifications.filter((n) => n.title.includes('pool'));
+    expect(poolNotices).toHaveLength(1);
+    expect(poolNotices[0].body).toContain('2 workers');
+    // Each starved worker still journals its own reason — the desk has to
+    // answer for itself even when the notification speaks for the roster.
+    expect(h.journal.filter((e) => e.id.startsWith('shift-pool-'))).toHaveLength(2);
+  });
+
+  it('refuses a manual shift with the pool explanation, and runs it once the pot goes up', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', name: 'First', order: 0 }),
+        seedWorker({ id: 'worker-2', name: 'Second', order: 1 }),
+      ],
+      pool: 10,
+    });
+    h.engine.start();
+
+    const refused = await h.engine.workShiftNow('worker-2');
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) expect(refused.error).toContain('pool');
+
+    expect(h.engine.setTreasury(40)).toEqual({ ok: true });
+    expect(h.treasury()).toEqual({ monthlyUSD: 40 });
+    await expect(h.engine.workShiftNow('worker-2')).resolves.toEqual({ ok: true });
+    expect(h.parked).toHaveLength(1);
+  });
+
+  it('rejects a pot of zero and pushes the whole allocation on every change', async () => {
+    const h = makeHarness({ seed: [seedWorker()], pool: 40 });
+    h.engine.start();
+
+    expect(h.engine.setTreasury(0)).toMatchObject({ ok: false });
+    expect(h.treasury()).toEqual({ monthlyUSD: 40 });
+
+    h.emitted.length = 0;
+    h.engine.reorder(['worker-1']);
+    expect(h.emitted.some((e) => e.type === 'treasuryUpdate')).toBe(true);
+
+    h.emitted.length = 0;
+    expect(h.engine.setTreasury(75)).toEqual({ ok: true });
+    const pushed = h.emitted.find((e) => e.type === 'treasuryUpdate');
+    expect(pushed.treasury).toEqual({ monthlyUSD: 75 });
+    expect(pushed.allocation.byWorker[0]).toMatchObject({
+      workerId: 'worker-1',
+      priority: 1,
+      availableUSD: 20,
+    });
+  });
+
+  it('seeds an upgrading install with the caps it already had, so nothing changes on day one', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', budgetUSDPerMonth: 20, order: 0 }),
+        seedWorker({ id: 'worker-2', budgetUSDPerMonth: 30, order: 1 }),
+      ],
+    });
+    h.engine.start();
+
+    expect(h.treasury()).toEqual({ monthlyUSD: 50 });
+    // Both still fully funded to their own caps, exactly as before the pot.
+    const { allocation } = h.engine.treasury();
+    expect(allocation.byWorker.map((f) => f.availableUSD)).toEqual([20, 30]);
   });
 
   it('journals a missed shift instead of replaying it after a long sleep', async () => {
@@ -463,6 +602,28 @@ describe('WorkerEngine hiring and trust', () => {
     const res = h.engine.save({ ...seedWorker(), name: 'Scout II' });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.worker.trust).toBe('trusted');
+  });
+
+  it('remembers which output to render, and survives an edit that never mentions it', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.setAutoRender('worker-1', 'dashboard.html')).toEqual({ ok: true });
+    expect(h.engine.get('worker-1')?.autoRender).toBe('dashboard.html');
+    // The contract editor sends a draft with no `autoRender` key at all —
+    // renaming a worker must not silently unpin its report.
+    const res = h.engine.save({ ...seedWorker(), name: 'Scout II' });
+    expect(res.ok).toBe(true);
+    expect(h.engine.get('worker-1')?.autoRender).toBe('dashboard.html');
+  });
+
+  it('refuses an empty auto-render choice and an unknown worker', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.setAutoRender('worker-1', '  ')).toEqual({
+      ok: false,
+      error: 'Pick what to render.',
+    });
+    expect(h.engine.setAutoRender('nobody', 'off').ok).toBe(false);
   });
 
   it('flips a cwd worker back to worktrees on demotion', () => {

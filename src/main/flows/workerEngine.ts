@@ -13,9 +13,12 @@
 //   2. It does not launch unattended beyond `workerAutoApproveCap` — zero on
 //      probation. Trust is earned by explicit promotion and lost automatically
 //      after WORKER_DEMOTE_REJECTION_STREAK consecutive rejections.
-//   3. It does not run past its budget. Once the month's run spend crosses
-//      `budgetUSDPerMonth`, shifts skip (journaled, once a day) until the
-//      month rolls over.
+//   3. It does not run past its funding. Two ceilings, both checked before a
+//      turn starts: the worker's own `budgetUSDPerMonth` cap, and its slice of
+//      the shared monthly treasury, which is drawn in ROSTER ORDER — a worker
+//      may spend only what is left after everyone above it is funded to its
+//      cap (see src/shared/flows/treasury.ts). Either way shifts skip
+//      (journaled, once a day) until the month rolls over.
 //
 // Verdict capture is a projection: every `orchestrationUpdate` for a batch
 // with `origin.kind === 'worker'` is folded into the journal with
@@ -34,6 +37,7 @@ import {
 } from '../../shared/flows/schedule';
 import {
   WORKER_DEMOTE_REJECTION_STREAK,
+  WORKER_AUTO_RENDER_NEWEST,
   computeWorkerScorecard,
   demotedTrust,
   rejectionStreak,
@@ -47,14 +51,30 @@ import {
   type WorkerScorecard,
   type WorkerTrustLevel,
 } from '../../shared/flows/worker';
-import { deleteWorker, loadAllWorkers, saveWorker } from './workersStore';
+import {
+  DEFAULT_TREASURY_USD,
+  allocateTreasury,
+  describeFundingBlock,
+  fundingFor,
+  seedTreasury,
+  validateTreasury,
+  type Treasury,
+  type TreasuryAllocation,
+} from '../../shared/flows/treasury';
+import {
+  deleteWorker,
+  loadAllWorkers,
+  loadTreasury,
+  saveTreasury,
+  saveWorker,
+} from './workersStore';
 import {
   appendWorkerJournalEntry,
   digestWorkerJournal,
   loadWorkerJournal,
   workerRejectedTitles,
 } from './workerJournal';
-import { workerSpendSince } from './runSummaryLog';
+import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
 import { fileWorkerDeliverable, workerFilesDir } from './workerFiles';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
@@ -72,6 +92,9 @@ const PROMPT_REJECTED_LIMIT = 30;
 /// make the worker a persona rather than a chat window.
 const ERRAND_THREAD_TURNS = 6;
 const ERRAND_THREAD_REPLY_CHARS = 2000;
+/// A filename, or one of the two keywords. Long enough for any name the
+/// filer produces, short enough that the field can't be used as storage.
+const WORKER_AUTO_RENDER_MAX = 200;
 
 /// The slice of the orchestrator a worker shift drives. `parkProposal` runs
 /// the producer turn and records the batch; `get`/`list` let the engine fold
@@ -126,6 +149,14 @@ export interface WorkerEngineDeps {
   };
   /// Run spend for a worker since `sinceMs`, from the run-summary log.
   spend?: (workerId: string, sinceMs: number) => number;
+  /// The same rollup for the whole roster in one pass. The treasury has to
+  /// price every worker to answer for any one of them, so it never uses
+  /// `spend` — that would re-read the log once per head.
+  spendAll?: (sinceMs: number) => Map<string, number>;
+  treasuryStore?: {
+    load: () => Treasury | null;
+    save: (t: Treasury) => void;
+  };
   /// Draft a read-only flow for one errand, file it in the generated bucket,
   /// and launch it — the third triage path, for asks that need real
   /// investigation and fit none of the worker's flows.
@@ -147,7 +178,10 @@ export interface WorkerEngineDeps {
   /// worker. The engine has no handle on the runtime, and it needs one here
   /// because run artifacts are pruned with the run — copying the deliverable
   /// out at completion is the only thing that outlives that.
-  deliverablesFor?: (runId: UUID) => Array<{ name: string; body: string }>;
+  ///
+  /// Entries carry either the recorded output (`body`) or a path to a file
+  /// the run wrote itself (`sourcePath`), which is copied instead of read.
+  deliverablesFor?: (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }>;
 }
 
 export class WorkerEngine {
@@ -173,6 +207,17 @@ export class WorkerEngine {
   private readonly store: NonNullable<WorkerEngineDeps['store']>;
   private readonly journal: NonNullable<WorkerEngineDeps['journal']>;
   private readonly spend: NonNullable<WorkerEngineDeps['spend']>;
+  private readonly spendAll: NonNullable<WorkerEngineDeps['spendAll']>;
+  private readonly treasuryStore: NonNullable<WorkerEngineDeps['treasuryStore']>;
+  /// Replaced in `start()` by the persisted pool, or by a seed seeded from the
+  /// existing caps. The literal here only covers the window before that.
+  private pool: Treasury = { monthlyUSD: DEFAULT_TREASURY_USD };
+  /// The day the pool-exhausted notification last went out. One notice for the
+  /// whole roster, not one per starved worker — the pool running dry is a
+  /// single fact about your month, and six copies of it is how a user learns
+  /// to ignore notifications. Not persisted: a restart re-notifying once is
+  /// better than a stale key suppressing the only warning.
+  private poolNoticeDay: string | null = null;
 
   constructor(private deps: WorkerEngineDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -189,12 +234,21 @@ export class WorkerEngine {
       digest: digestWorkerJournal,
     };
     this.spend = deps.spend ?? workerSpendSince;
+    this.spendAll = deps.spendAll ?? workerSpendByWorkerSince;
+    this.treasuryStore = deps.treasuryStore ?? { load: loadTreasury, save: saveTreasury };
   }
 
   /// Load persisted workers, reconcile batches that settled while the app was
   /// closed into the journal, and arm the timer. Called once at wiring time.
   start(): void {
     for (const w of this.store.loadAll()) this.workers.set(w.id, w);
+    // An install that predates the treasury gets a pool equal to what it was
+    // already committed to — the sum of its caps. Written back immediately so
+    // the seed is a decision on disk rather than one recomputed (differently)
+    // after the next hire.
+    const stored = this.treasuryStore.load();
+    this.pool = stored ?? seedTreasury([...this.workers.values()]);
+    if (!stored) this.treasuryStore.save(this.pool);
     // Batches settle on load (running → failed, queued → cancelled) without
     // emitting, so fold every worker batch's current state in now — appends
     // are idempotent, so this re-fold costs nothing when nothing changed.
@@ -233,6 +287,23 @@ export class WorkerEngine {
     return nextOccurrenceAfter(timing.trigger, scheduleAnchor(timing));
   }
 
+  /// The pool and the funding waterfall it produces, priced against this
+  /// month's spend. Derived on every call for the same reason the scorecard
+  /// is: a cached allocation and the run-summary log would eventually
+  /// disagree, and the one that gates spending has to be the true one.
+  treasury(): { treasury: Treasury; allocation: TreasuryAllocation } {
+    return { treasury: { ...this.pool }, allocation: this.allocate(this.now()) };
+  }
+
+  private allocate(now: number): TreasuryAllocation {
+    const spend = this.spendAll(monthStart(now));
+    return allocateTreasury(
+      [...this.workers.values()],
+      (id) => spend.get(id) ?? 0,
+      this.pool.monthlyUSD,
+    );
+  }
+
   // ---- WRITES -----------------------------------------------------------
 
   /// Hire (no `id`) or update (with `id`). Every hire starts on probation —
@@ -249,6 +320,24 @@ export class WorkerEngine {
       saveWorker(w);
       this.emitWorker(w);
     });
+    // Order IS the funding queue, so a reorder re-prices everyone — including
+    // the workers that did not move, which is the whole point of moving one.
+    this.emitTreasury();
+    return { ok: true };
+  }
+
+  /// Set the monthly pool. The only number in this feature the user types
+  /// that is not about one worker.
+  setTreasury(monthlyUSD: number): { ok: true } | { ok: false; error: string } {
+    const invalid = validateTreasury(monthlyUSD);
+    if (invalid) return { ok: false, error: invalid };
+    if (this.pool.monthlyUSD === monthlyUSD) return { ok: true };
+    this.pool = { monthlyUSD };
+    this.treasuryStore.save(this.pool);
+    // Raising the pool can un-starve a worker that has been skipping shifts,
+    // and its next cadence slot should not have to arrive before it notices.
+    this.poolNoticeDay = null;
+    this.emitTreasury();
     return { ok: true };
   }
 
@@ -310,6 +399,24 @@ export class WorkerEngine {
     return { ok: true };
   }
 
+  /// Pick which of the worker's own outputs opens when you select it.
+  ///
+  /// Its own act rather than a field on `save`, for the same reason pausing
+  /// is: this is a preference about looking at the worker, and routing it
+  /// through the contract editor would make "show me the dashboard" a
+  /// re-validation of the job description, the cadence and the budget.
+  setAutoRender(id: UUID, autoRender: string): { ok: true } | { ok: false; error: string } {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    const next = (autoRender ?? '').trim();
+    if (!next) return { ok: false, error: 'Pick what to render.' };
+    if (next.length > WORKER_AUTO_RENDER_MAX) return { ok: false, error: 'That name is too long.' };
+    if ((w.autoRender ?? WORKER_AUTO_RENDER_NEWEST) === next) return { ok: true };
+    w.autoRender = next;
+    this.persistAndEmit(w);
+    return { ok: true };
+  }
+
   /// The explicit promote/demote act. Demoting below autonomous flips a cwd
   /// worker back to worktrees — the working copy is an autonomous privilege.
   setTrust(id: UUID, trust: WorkerTrustLevel): { ok: true } | { ok: false; error: string } {
@@ -333,6 +440,8 @@ export class WorkerEngine {
     this.workers.delete(id);
     this.store.remove(id);
     this.deps.emit({ type: 'workerDeleted', id });
+    // Firing someone releases whatever it was still holding to everyone below.
+    this.emitTreasury();
     this.arm();
     return { ok: true };
   }
@@ -506,24 +615,46 @@ export class WorkerEngine {
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
 
-    // Budget gate. Enforced per calendar month against the run-summary log —
-    // the same numbers the Usage page shows.
-    const spent = this.spend(w.id, monthStart(now));
-    if (spent >= w.budgetUSDPerMonth) {
-      const message = `Monthly budget spent ($${spent.toFixed(2)} of $${w.budgetUSDPerMonth.toFixed(2)}) — idle until next month.`;
+    // Funding gate. Both ceilings at once, priced per calendar month against
+    // the run-summary log — the same numbers the Usage page shows. A worker
+    // stops at its own cap, and it also stops when the shared pool has been
+    // claimed by everyone above it on the roster.
+    const allocation = this.allocate(now);
+    const funding = fundingFor(allocation, w.id);
+    if (funding && !funding.funded) {
+      const message = describeFundingBlock(funding, allocation);
       if (opts.manual) return { ok: false, error: message };
       // Journaled at most once a day, so an every-15-minutes cadence doesn't
-      // write 96 identical lines. The cadence still advances: an exhausted
-      // worker waits for the month, it doesn't pile up missed occurrences.
+      // write 96 identical lines. Keyed by WHICH ceiling stopped it, so a
+      // worker squeezed out by the pool in the morning and stopped by its own
+      // cap that afternoon leaves both facts on its desk rather than one.
+      // The cadence still advances: a defunded worker waits for the month, it
+      // doesn't pile up missed occurrences.
       const wrote = this.journal.append({
-        id: `shift-budget-${w.id}-${dayKey(now)}`,
+        id: `shift-${funding.blocked}-${w.id}-${dayKey(now)}`,
         workerId: w.id,
         kind: 'shift',
         at: now,
         title: '',
         note: message,
       });
-      if (wrote) this.deps.notify({ title: `${w.name} is out of budget`, body: message });
+      // One notification per day for the pool no matter how many workers it
+      // starves; per worker for a cap, which is one worker's own business.
+      if (funding.blocked === 'pool') {
+        if (this.poolNoticeDay !== dayKey(now)) {
+          this.poolNoticeDay = dayKey(now);
+          const starved = allocation.byWorker.filter((f) => f.blocked === 'pool');
+          this.deps.notify({
+            title: 'The monthly worker pool is spent',
+            body:
+              starved.length === 1
+                ? `${w.name} has no funds left this month. Raise the pool or reprioritize the roster.`
+                : `${starved.length} workers have no funds left this month, starting with ${w.name}. Raise the pool or reprioritize the roster.`,
+          });
+        }
+      } else if (wrote) {
+        this.deps.notify({ title: `${w.name} is out of budget`, body: message });
+      }
       w.lastShiftAt = now;
       this.persistAndEmit(w);
       return { ok: true };
@@ -990,7 +1121,13 @@ export class WorkerEngine {
     }
 
     if (newestRejectedId) this.maybeDemote(w, newestRejectedId);
-    if (changed) this.emitWorker(w);
+    if (changed) {
+      this.emitWorker(w);
+      // Gated on `changed` rather than fired per update: a finished run is
+      // when cost lands in the log, and re-reading that log on every
+      // streaming batch update would be a disk read per event.
+      this.emitTreasury();
+    }
   }
 
   /// Auto-demotion: three consecutive rejections cost one trust level. Keyed
@@ -1096,6 +1233,18 @@ export class WorkerEngine {
   private persistAndEmit(w: Worker): void {
     this.store.save(w);
     this.emitWorker(w);
+    // Anything worth persisting about a worker — a cap edit, a pause, a shift
+    // that just spent money — changes what everyone below it can draw.
+    this.emitTreasury();
+  }
+
+  private emitTreasury(): void {
+    const snap = this.treasury();
+    this.deps.emit({
+      type: 'treasuryUpdate',
+      treasury: snap.treasury,
+      allocation: snap.allocation,
+    });
   }
 
   private emitWorker(w: Worker): void {

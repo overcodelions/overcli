@@ -181,7 +181,12 @@ export function fileWorkerDeliverable(args: {
   /// the earlier ones are what it was built from — a report that cites
   /// `raw_test_output.md` is not much use with that file deleted alongside the
   /// run, so the whole set comes across together.
-  artifacts: Array<{ name: string; body: string }>;
+  ///
+  /// An entry is either a step's recorded output (`body`) or a real file the
+  /// run wrote to disk (`sourcePath`), which is copied rather than read: the
+  /// run may well have produced a PNG or a PDF, and round-tripping those
+  /// through a UTF-8 string would file a corrupted copy.
+  artifacts: Array<{ name: string; body?: string; sourcePath?: string }>;
 }): { written: boolean; name: string } {
   if (args.artifacts.length === 0) return { written: false, name: '' };
   const dir = ensureWorkerFilesDir(args.workerId);
@@ -193,7 +198,7 @@ export function fileWorkerDeliverable(args: {
   if (args.artifacts.length === 1) {
     const only = args.artifacts[0];
     const name = `${stem}${extensionOf(only.name)}`;
-    return writeOnce(path.join(dir, name), only.body, name);
+    return fileOnce(path.join(dir, name), only, name);
   }
 
   const folder = path.join(dir, stem);
@@ -206,7 +211,7 @@ export function fileWorkerDeliverable(args: {
       log('error', 'worker-files', `could not create ${stem}`, err);
       return { written: false, name: stem };
     }
-    if (writeOnce(path.join(folder, base), artifact.body, base).written) wroteAny = true;
+    if (fileOnce(path.join(folder, base), artifact, base).written) wroteAny = true;
   }
   return { written: wroteAny, name: stem };
 }
@@ -263,6 +268,29 @@ function writeOnce(full: string, body: string, name: string): { written: boolean
     log('error', 'worker-files', `could not file ${name}`, err);
     return { written: false, name };
   }
+}
+
+/// One artifact, filed however it exists: recorded text gets written, a file
+/// on disk gets copied byte for byte. Same never-overwrite rule as
+/// `writeOnce` — and a `sourcePath` that has already been cleaned up (the
+/// coordinator root is deleted with its run) is not an error, just nothing
+/// left to copy.
+function fileOnce(
+  full: string,
+  artifact: { body?: string; sourcePath?: string },
+  name: string,
+): { written: boolean; name: string } {
+  if (artifact.sourcePath) {
+    try {
+      if (fs.existsSync(full)) return { written: false, name };
+      fs.copyFileSync(artifact.sourcePath, full);
+      return { written: true, name };
+    } catch (err) {
+      log('error', 'worker-files', `could not copy ${name}`, err);
+      return { written: false, name };
+    }
+  }
+  return writeOnce(full, artifact.body ?? '', name);
 }
 
 /// An artifact's own name becomes a filename, so it has to be a safe basename.
