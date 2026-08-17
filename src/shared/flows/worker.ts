@@ -42,6 +42,35 @@ export interface Worker {
   /// first, and arranging one worker must not renumber the rest into an order
   /// the user never chose. See `sortRoster`.
   order?: number;
+  /// Which of its own outputs to render when you open this worker.
+  ///
+  /// A worker whose job is to produce a page — a dashboard, a report — is
+  /// one you open to LOOK at something, and making you click down through
+  /// Files → the job folder → the file to reach it every morning is three
+  /// clicks charged for the thing the worker exists to do. Absent means
+  /// `'newest'`. See `WORKER_AUTO_RENDER_*` and `isRenderableOutput`.
+  autoRender?: string;
+}
+
+/// Show the most recent renderable file this worker has filed. The default,
+/// because it needs no setup and is right for the case that prompted this:
+/// a daily report whose filename is the same every day and whose job folder
+/// is a different one every day.
+export const WORKER_AUTO_RENDER_NEWEST = 'newest';
+/// Open nothing. For a worker whose output is prose you read in the desk.
+export const WORKER_AUTO_RENDER_OFF = 'off';
+
+/// Files worth opening as a PAGE rather than as text.
+///
+/// Deliberately not markdown: every job a worker files has several .md
+/// artifacts (the brief, the review, the receipts), so treating those as
+/// renderable would mean picking one arbitrarily and rendering it in front
+/// of you every time you clicked the worker. An .html or a component is
+/// unambiguous — nothing writes one by accident.
+const RENDERABLE_OUTPUT = /\.(?:html?|tsx|jsx)$/i;
+
+export function isRenderableOutput(name: string): boolean {
+  return RENDERABLE_OUTPUT.test(name);
 }
 
 /// The roster, in the order it should be read: whatever the user arranged
@@ -75,6 +104,30 @@ export function moveInRoster<T extends Pick<Worker, 'id' | 'order' | 'createdAt'
   if (from === -1 || to < 0 || to >= ordered.length) return ordered.map((w) => w.id);
   const next = ordered.slice();
   [next[from], next[to]] = [next[to], next[from]];
+  return next.map((w) => w.id);
+}
+
+/// The roster with one worker dropped at an arbitrary slot. `insertBefore` is
+/// a GAP index into the current order — 0 is above everyone, `length` is below
+/// everyone — which is what a drop indicator drawn between two rows actually
+/// means. Returns ids in their new order, like `moveInRoster`.
+///
+/// The gap is resolved against the list BEFORE the drag is removed from it,
+/// because that is the list the user was looking at when they aimed. Pulling
+/// the row out first would shift every gap below it up by one and land the
+/// drop a row short of where it was dropped.
+export function placeInRoster<T extends Pick<Worker, 'id' | 'order' | 'createdAt'>>(
+  workers: T[],
+  id: string,
+  insertBefore: number,
+): string[] {
+  const ordered = sortRoster(workers);
+  const from = ordered.findIndex((w) => w.id === id);
+  if (from === -1) return ordered.map((w) => w.id);
+  const next = ordered.slice();
+  const [moved] = next.splice(from, 1);
+  const target = insertBefore > from ? insertBefore - 1 : insertBefore;
+  next.splice(Math.max(0, Math.min(target, next.length)), 0, moved);
   return next.map((w) => w.id);
 }
 

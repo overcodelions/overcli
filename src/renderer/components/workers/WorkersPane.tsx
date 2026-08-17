@@ -25,6 +25,8 @@ import {
   WORKER_MIN_INTERVAL_MINUTES,
   sortRoster,
   stripWorkerSubject,
+  WORKER_AUTO_RENDER_NEWEST,
+  WORKER_AUTO_RENDER_OFF,
   validateWorker,
   workerAutoApproveCap,
   type Worker,
@@ -32,6 +34,7 @@ import {
   type WorkerScorecard,
   type WorkerTrustLevel,
 } from "@shared/flows/worker";
+import { describeFundingBlock, fundingFor } from "@shared/flows/treasury";
 import { isSelectableFlow } from "@shared/flows/schema";
 import {
   describeTrigger,
@@ -50,6 +53,7 @@ import { FlowRunPane } from "../flows/FlowRunPane";
 import { WorkerErrandComposer } from "./WorkerDesk";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
+import { FundsPane } from "./FundsPane";
 import {
   activityOnDay,
   adjacentDeskDay,
@@ -64,6 +68,8 @@ import {
   startOfDay,
   toWorkerActivity,
   workerActivity,
+  workerAutoRenderTarget,
+  workerRenderableOutputs,
   type WorkerFileJob,
   type DeskDay,
   type WorkerFile,
@@ -203,6 +209,8 @@ export function WorkersPane() {
         <div className="px-6 text-sm text-ink-muted">Loading workers…</div>
       ) : view === "calendar" ? (
         <ShiftCalendar />
+      ) : view === "funds" ? (
+        <FundsPane />
       ) : rows.length === 0 ? (
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
           <WorkersEmptyState
@@ -685,6 +693,45 @@ function WorkerRow({
     setFocusId(null);
   }, [sendingAt]);
 
+  // The worker's directory, read once when you open it. Two things want it:
+  // the Files tab lists it, and the thing below renders one of them without
+  // being asked.
+  const [files, setFiles] = useState<WorkerFile[] | null>(null);
+  const setFilesRoot = useWorkersStore((s) => s.setFilesRoot);
+  useEffect(() => {
+    let live = true;
+    void window.overcli.invoke("workers:files", { id: worker.id }).then((res) => {
+      if (!live) return;
+      setFilesRoot(worker.id, res.root);
+      setFiles(res.files);
+    });
+    return () => {
+      live = false;
+    };
+  }, [worker.id, setFilesRoot]);
+
+  // Open the worker's report the moment you open the worker.
+  //
+  // A worker hired to produce a page is one you come to LOOK at something,
+  // and its report was three clicks down (Files → today's job folder → the
+  // file) every single morning, in a folder whose name changes daily.
+  //
+  // Once per arrival, and once more whenever the choice itself changes —
+  // picking a different output in Settings should show you the thing you
+  // picked, since what you see IS the setting. Tracked by the setting rather
+  // than by a fired/not-fired flag so closing the pane and staying put leaves
+  // it closed: the automatic act is arriving, not looking.
+  const openFile = useStore((s) => s.openFile);
+  const renderedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!files) return;
+    const setting = worker.autoRender ?? WORKER_AUTO_RENDER_NEWEST;
+    if (renderedFor.current === setting) return;
+    renderedFor.current = setting;
+    const target = workerAutoRenderTarget(files, worker.autoRender);
+    if (target) openFile(target.path, undefined, "preview");
+  }, [files, worker.autoRender, openFile]);
+
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const mine = useMemo(
     () =>
@@ -822,14 +869,23 @@ function WorkerRow({
             <WorkerShiftPane worker={worker} nextShiftAt={nextShiftAt} />
           )}
           {tab === "files" && (
-            <WorkerFiles workerId={worker.id} workerName={worker.name} />
+            <WorkerFiles
+              workerId={worker.id}
+              workerName={worker.name}
+              files={files}
+              setFiles={setFiles}
+            />
           )}
           {tab === "journal" && <JournalList workerId={worker.id} />}
           {tab === "stats" && (
             <WorkerStats worker={worker} scorecard={scorecard} />
           )}
           {tab === "settings" && (
-            <WorkerSettings worker={worker} projectLabel={projectLabel} />
+            <WorkerSettings
+              worker={worker}
+              projectLabel={projectLabel}
+              files={files ?? []}
+            />
           )}
         </div>
       )}
@@ -846,6 +902,9 @@ function WorkerStats({
   worker: Worker;
   scorecard?: WorkerScorecard;
 }) {
+  const allocation = useWorkersStore((s) => s.allocation);
+  const showFunds = useWorkersStore((s) => s.showFunds);
+  const funding = fundingFor(allocation, worker.id);
   if (!scorecard) {
     return (
       <div className="mt-4 text-sm text-ink-muted">
@@ -904,8 +963,19 @@ function WorkerStats({
       </div>
 
       <div>
-        <div className="text-[11px] uppercase tracking-wider text-ink-faint">
-          Budget
+        <div className="flex items-baseline gap-2">
+          <div className="text-[11px] uppercase tracking-wider text-ink-faint">
+            Budget
+          </div>
+          {funding && (
+            <button
+              onClick={showFunds}
+              className="text-[11px] text-ink-faint hover:text-ink hover:underline focus:outline-none"
+              title="The pot every worker draws from, and the order it is paid in"
+            >
+              priority {funding.priority} of {allocation?.byWorker.length}
+            </button>
+          )}
         </div>
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-card-strong">
           <div
@@ -920,6 +990,19 @@ function WorkerStats({
             ? "Out of budget — shifts idle until the month rolls over."
             : "Shifts stop when it runs out, and resume next month."}
         </div>
+        {/* The cap is only half the ceiling. What this worker can actually
+            draw also depends on who is above it in the funding order, and
+            that is the half a per-worker page could never show. */}
+        {funding && funding.blocked !== "cap" && (
+          <div
+            className={
+              "mt-1.5 text-xs " +
+              (funding.blocked === "pool" ? "text-amber-500" : "text-ink-muted")
+            }
+          >
+            {allocation && describeFundingBlock(funding, allocation)}
+          </div>
+        )}
       </div>
 
       {scorecard.rejectionStreak > 0 && (
@@ -950,9 +1033,11 @@ function WorkerStats({
 function WorkerSettings({
   worker,
   projectLabel,
+  files,
 }: {
   worker: Worker;
   projectLabel?: string;
+  files: WorkerFile[];
 }) {
   const setEnabled = useWorkersStore((s) => s.setEnabled);
   const remove = useWorkersStore((s) => s.remove);
@@ -1066,6 +1151,8 @@ function WorkerSettings({
           </dl>
         </div>
 
+        <AutoRenderSetting worker={worker} files={files} />
+
         <div>
           <div className="text-[11px] uppercase tracking-wider text-ink-faint">
             Employment
@@ -1133,6 +1220,64 @@ function WorkerSettings({
 
       <div className="min-w-0">
         <TrustLadder worker={worker} />
+      </div>
+    </div>
+  );
+}
+
+/// What this worker shows you when you open it.
+///
+/// The options are the outputs it has actually FILED, not a free-text box and
+/// not its flows' declared step outputs — those name the receipt and never
+/// name the page, because a step that renders a dashboard writes the file and
+/// declares the note. A worker that has never written a page says so and
+/// offers nothing to pick, which is the honest form of this control: there is
+/// no output to auto-render, so there is no choice to make.
+function AutoRenderSetting({ worker, files }: { worker: Worker; files: WorkerFile[] }) {
+  const setAutoRender = useWorkersStore((s) => s.setAutoRender);
+  const outputs = useMemo(() => workerRenderableOutputs(files), [files]);
+  const value = worker.autoRender ?? WORKER_AUTO_RENDER_NEWEST;
+  // A pinned name whose file has since been deleted would otherwise leave the
+  // select showing an unrelated option while the worker is still pinned to it.
+  const names = outputs.map((f) => baseName(f.name));
+  const missing =
+    value !== WORKER_AUTO_RENDER_NEWEST &&
+    value !== WORKER_AUTO_RENDER_OFF &&
+    !names.includes(value);
+
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wider text-ink-faint">
+        On arrival
+      </div>
+      <div className="mt-2 flex items-center justify-between gap-4 py-1.5">
+        <div className="min-w-0">
+          <div className="text-sm text-ink">Render its report</div>
+          <div className="text-xs text-ink-muted">
+            {outputs.length === 0
+              ? "This worker has not written a page yet. Anything it files as .html or a component shows up here."
+              : "Opens in the preview beside the desk the moment you select this worker."}
+          </div>
+        </div>
+        <select
+          value={value}
+          onChange={(e) => void setAutoRender(worker.id, e.target.value)}
+          aria-label="What to render when this worker is opened"
+          className="field shrink-0 px-2 py-1 text-xs"
+        >
+          <option value={WORKER_AUTO_RENDER_NEWEST}>
+            {outputs.length === 0
+              ? "Newest report"
+              : `Newest report (${baseName(outputs[0].name)})`}
+          </option>
+          {names.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+          {missing && <option value={value}>{value} — not filed any more</option>}
+          <option value={WORKER_AUTO_RENDER_OFF}>Nothing</option>
+        </select>
       </div>
     </div>
   );
@@ -1249,25 +1394,19 @@ function TrustLadder({ worker }: { worker: Worker }) {
 function WorkerFiles({
   workerId,
   workerName,
+  files,
+  setFiles,
 }: {
   workerId: string;
   workerName: string;
+  /// Read once by the pane that owns the worker — the tab renders the same
+  /// list the auto-render picks from, so the two can never disagree about
+  /// what is in the directory.
+  files: WorkerFile[] | null;
+  setFiles: React.Dispatch<React.SetStateAction<WorkerFile[] | null>>;
 }) {
-  const [files, setFiles] = useState<WorkerFile[] | null>(null);
   const [query, setQuery] = useState("");
   const openFile = useStore((s) => s.openFile);
-  const setFilesRoot = useWorkersStore((s) => s.setFilesRoot);
-
-  useEffect(() => {
-    setFiles(null);
-    setQuery("");
-    void window.overcli
-      .invoke("workers:files", { id: workerId })
-      .then((res) => {
-        setFilesRoot(workerId, res.root);
-        setFiles(res.files);
-      });
-  }, [workerId]);
 
   const groups = useMemo(
     () => groupWorkerFiles(files ?? [], query),
@@ -3049,9 +3188,11 @@ function WorkerHelpRail({
           The budget
         </div>
         <div className="text-[11px] text-ink-faint leading-relaxed">
-          Run costs roll up against the monthly budget; when it&apos;s spent the
-          worker idles until the month turns. The heartbeat model only plans
-          shifts — keep it cheap and the idle cost is pennies.
+          Two ceilings. A worker&apos;s own cap, and the pot the whole roster
+          draws from — paid down the roster in order, so a worker only spends
+          what is left after everyone above it is funded. Either one empty and
+          it idles until the month turns. The heartbeat model only plans shifts
+          — keep it cheap and the idle cost is pennies.
         </div>
       </div>
     </div>

@@ -185,12 +185,67 @@ export function FilePreview({
   if (kind === 'csv') return <CsvPreview content={content} tsv={path.toLowerCase().endsWith('.tsv')} />;
   if (kind === 'json') return <JsonPreview content={content} />;
   if (kind === 'react') return <ReactPreview path={path} content={content} rootPath={rootPath} />;
+  if (kind === 'html') return <HtmlPreview path={path} document={srcDoc} />;
 
   return (
     <iframe
       title={`${path} preview`}
       sandbox=""
       srcDoc={srcDoc}
+      className="block w-full h-full border-0 bg-transparent"
+    />
+  );
+}
+
+/// A .html file renders the way it would in a browser — scripts and all.
+///
+/// It used to go into a `sandbox=""` srcDoc frame, which is two separate
+/// refusals of the same thing: the empty sandbox blocks script outright, and
+/// a srcDoc document inherits the app's `script-src 'self'` anyway. Every
+/// page that builds its own DOM therefore painted an empty frame — including
+/// the CDN React + Babel + Tailwind page Overcli's own dashboard flows
+/// instruct agents to write, so the app refused to display the file it had
+/// just asked for.
+///
+/// So it takes the same route the compiled-component preview does: main
+/// serves the document over `overcli-preview://` with its own policy and we
+/// point a scripts-enabled frame at it. The frame is still not same-origin,
+/// so the page can run but cannot reach the app around it.
+function HtmlPreview({ path, document: html }: { path: string; document: string }) {
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Republishing reloads the frame, which for a CDN page means re-fetching
+  // React and Tailwind — so editing a file with the preview open waits for a
+  // pause rather than doing that on every keystroke.
+  const debouncedHtml = useDebounced(html, 400);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    window.overcli
+      .invoke('preview:publishDocument', { html: debouncedHtml, policy: 'document' })
+      .then((res) => {
+        if (cancelled) return;
+        setFrameUrl(res.ok ? res.url : null);
+        setError(res.ok ? null : res.error);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setFrameUrl(null);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedHtml]);
+
+  if (error) return <div className="p-4 text-xs text-red-300">{error}</div>;
+  if (!frameUrl) return <div className="p-4 text-xs text-ink-faint">Loading preview…</div>;
+  return (
+    <iframe
+      title={`${path} preview`}
+      sandbox="allow-scripts"
+      src={frameUrl}
       className="block w-full h-full border-0 bg-transparent"
     />
   );

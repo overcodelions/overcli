@@ -143,6 +143,20 @@ export function workerSpendSince(workerId: string, sinceMs: number): number {
   return total;
 }
 
+/// The same rollup for EVERY worker at once, in one pass.
+///
+/// The treasury has to price the whole roster before it can tell any single
+/// worker whether it may spend, and calling `workerSpendSince` per worker
+/// would re-read and re-dedupe the entire log once per head.
+export function workerSpendByWorkerSince(sinceMs: number): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const s of loadRunSummaries()) {
+    if (!s.workerId || s.terminalAt < sinceMs) continue;
+    out.set(s.workerId, (out.get(s.workerId) ?? 0) + s.costUSD);
+  }
+  return out;
+}
+
 function loadRunSummariesRaw(): RunSummary[] {
   const p = filePath();
   if (!fs.existsSync(p)) return [];

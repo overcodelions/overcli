@@ -13,6 +13,7 @@ import type {
   WorkerScorecard,
   WorkerTrustLevel,
 } from './flows/worker';
+import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 
@@ -1250,7 +1251,11 @@ export interface IPCInvokeMap {
   /// `overcli-preview://` URL for it. The renderer's own CSP forbids the
   /// inline script a compiled component needs, and a srcDoc frame inherits
   /// that CSP — a document served over its own scheme does not.
-  'preview:publishDocument': (args: { html: string }) =>
+  /// `policy` picks the document's CSP: `bundle` (the default) for a
+  /// component Overcli compiled and inlined itself, `document` for a
+  /// hand-written .html file, which is nearly always a CDN page and renders
+  /// blank without remote script.
+  'preview:publishDocument': (args: { html: string; policy?: 'bundle' | 'document' }) =>
     | { ok: true; url: string }
     | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
@@ -1780,6 +1785,11 @@ export interface IPCInvokeMap {
   'workers:setEnabled': (args: { id: UUID; enabled: boolean }) =>
     | { ok: true }
     | { ok: false; error: string };
+  /// Which of the worker's own outputs renders when you open it: `newest`,
+  /// `off`, or the filename of one of the outputs it actually produces.
+  'workers:setAutoRender': (args: { id: UUID; autoRender: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
   /// The explicit promote/demote act — the only way trust goes UP.
   'workers:setTrust': (args: { id: UUID; trust: WorkerTrustLevel }) =>
     | { ok: true }
@@ -1798,8 +1808,18 @@ export interface IPCInvokeMap {
   /// Everything in the worker's own directory, newest first. Deliverables the
   /// engine filed there plus anything the worker wrote for itself.
   /// Persist the roster's reading order, top first. The full list, not a
-  /// delta — see `WorkerEngine.reorder`.
+  /// delta — see `WorkerEngine.reorder`. This is also the FUNDING order: the
+  /// treasury pays workers down this list (see `workers:treasury`).
   'workers:reorder': (args: { ids: UUID[] }) => { ok: true };
+  /// The monthly pool and the waterfall it produces across the roster. Both
+  /// come from main because the allocation is priced against the run-summary
+  /// log, and a renderer-side copy of that arithmetic could tell the user a
+  /// worker was funded that the engine then refused to run.
+  'workers:treasury': () => { treasury: Treasury; allocation: TreasuryAllocation };
+  /// Set the monthly pool every worker draws from.
+  'workers:setTreasury': (args: { monthlyUSD: number }) =>
+    | { ok: true }
+    | { ok: false; error: string };
   'workers:files': (args: { id: UUID }) => {
     /// The worker's directory. The renderer scopes the file editor to this so
     /// opening a worker's file can't expose its neighbours — every worker's
@@ -2299,6 +2319,19 @@ export type MainToRendererEvent =
       /// A worker was fired (deleted) from main.
       type: 'workerDeleted';
       id: UUID;
+    }
+  | {
+      /// The pool, or anything that changes who it reaches: a reorder, a cap
+      /// edit, a pause, a hire, a firing, or a run whose cost just landed.
+      ///
+      /// One event carrying the WHOLE allocation rather than a funding field
+      /// on `workerUpdate`, because funding is not a property of a worker —
+      /// one worker spending a dollar changes what every worker below it may
+      /// draw, and N per-worker events would render a roster that briefly
+      /// doesn't add up.
+      type: 'treasuryUpdate';
+      treasury: Treasury;
+      allocation: TreasuryAllocation;
     }
   | {
       /// Live progress of the in-flight producer turn — the running

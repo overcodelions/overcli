@@ -31,6 +31,8 @@ import {
   sidebarActivity,
   workerRunsForSidebar,
   workersForPath,
+  workerAutoRenderTarget,
+  workerRenderableOutputs,
 } from './workerDeskSelectors';
 
 function worker(id = 'worker-1', overrides: Partial<Worker> = {}): Worker {
@@ -600,5 +602,55 @@ describe('what an errand is called', () => {
     const activity = toWorkerActivity(shift);
     expect(activity.title).toBe('Shift 4');
     expect(activity.ask).toBe('');
+  });
+});
+
+describe('what a worker renders when you open it', () => {
+  // Three mornings of the same daily job, each filed into its own folder,
+  // plus the notes the worker keeps for itself.
+  const files = [
+    { name: '2026-08-17-0630-shift-3-morning-brief/dashboard.html', path: '/w/3/dashboard.html', bytes: 25_000, modifiedAt: 300 },
+    { name: '2026-08-17-0630-shift-3-morning-brief/brief.md', path: '/w/3/brief.md', bytes: 5_000, modifiedAt: 299 },
+    { name: '2026-08-16-1749-shift-2-morning-brief/dashboard.html', path: '/w/2/dashboard.html', bytes: 24_000, modifiedAt: 200 },
+    { name: '2026-08-16-1749-shift-2-morning-brief/review.md', path: '/w/2/review.md', bytes: 7_000, modifiedAt: 199 },
+    { name: 'baseline.json', path: '/w/baseline.json', bytes: 100, modifiedAt: 250 },
+  ];
+
+  it('lists each output once, not once per run that produced it', () => {
+    expect(workerRenderableOutputs(files).map((f) => f.path)).toEqual(['/w/3/dashboard.html']);
+  });
+
+  it('opens the newest report by default', () => {
+    expect(workerAutoRenderTarget(files, undefined)?.path).toBe('/w/3/dashboard.html');
+    expect(workerAutoRenderTarget(files, 'newest')?.path).toBe('/w/3/dashboard.html');
+  });
+
+  it('opens nothing when the worker is set to off', () => {
+    expect(workerAutoRenderTarget(files, 'off')).toBeNull();
+  });
+
+  it('never picks a markdown artifact — every job has several', () => {
+    const proseOnly = files.filter((f) => f.name.endsWith('.md') || f.name.endsWith('.json'));
+    expect(workerRenderableOutputs(proseOnly)).toEqual([]);
+    expect(workerAutoRenderTarget(proseOnly, undefined)).toBeNull();
+  });
+
+  it('follows a pinned name to its newest copy, across job folders', () => {
+    const withChart = [
+      ...files,
+      { name: '2026-08-16-1749-shift-2-morning-brief/chart.tsx', path: '/w/2/chart.tsx', bytes: 900, modifiedAt: 198 },
+    ];
+    expect(workerAutoRenderTarget(withChart, 'chart.tsx')?.path).toBe('/w/2/chart.tsx');
+    expect(workerAutoRenderTarget(withChart, 'dashboard.html')?.path).toBe('/w/3/dashboard.html');
+  });
+
+  it('opens nothing rather than something else when the pinned output is gone', () => {
+    // Substituting the newest report here would render a page the user never
+    // asked for and label it as the thing they pinned.
+    expect(workerAutoRenderTarget(files, 'chart.tsx')).toBeNull();
+  });
+
+  it('has nothing to open for a worker that only ever writes prose', () => {
+    expect(workerAutoRenderTarget([], undefined)).toBeNull();
   });
 });
