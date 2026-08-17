@@ -85,18 +85,51 @@ export function isUnsupportedBinaryFile(filePath: string | null | undefined): bo
   return UNSUPPORTED_BINARY_EXTENSIONS.has(ext);
 }
 
-/// Opening a file lands on File (the editor), always. Previewable types
-/// used to default to Preview, which meant a README or a .tsx opened as a
-/// rendered page when what you nearly always want is the source — and with
-/// tabs it meant a strip of files each opening in a different mode. Preview
-/// stays one click away in the header, and callers that genuinely mean it
-/// (or mean Diff) still ask for the mode explicitly.
+/// The extension a remembered view mode is keyed by, or '' for a file that
+/// has none. Per-extension rather than per-file: the point is that having
+/// previewed one README you get the next one rendered too.
+export function fileExtensionKey(filePath: string | null | undefined): string {
+  if (!filePath) return '';
+  const name = filePath.split(/[/\\]/).pop()?.toLowerCase() ?? '';
+  return name.includes('.') ? name.split('.').pop() ?? '' : '';
+}
+
+/// Types that open rendered. Markdown and React components are the two you
+/// read far more often than you edit — a doc is written once and consulted
+/// repeatedly, and a component is judged by how it looks. Every other
+/// previewable type (html, csv, json, images) still opens as source, because
+/// for those the text is usually the point.
+const RENDER_FIRST_KINDS = new Set<FilePreviewKind>(['markdown', 'react']);
+
+export function rendersByDefault(filePath: string | null | undefined): boolean {
+  const kind = detectFilePreviewKind(filePath);
+  return kind != null && RENDER_FIRST_KINDS.has(kind);
+}
+
+/// Which mode a newly opened tab lands in, in precedence order.
+///
+/// A caller that names a mode always wins. After that, a `path:line` jump
+/// forces the editor, because Preview cannot show you line 42. Then the
+/// remembered mode for this extension, if you have set one. Otherwise markdown
+/// and React components render and everything else opens as source.
+///
+/// History worth knowing: previewable types defaulted to Preview originally,
+/// which #126 changed to always-File on the grounds that you usually want the
+/// source and that a mixed tab strip is confusing. That went too far for the
+/// two types people genuinely read more than they edit, so those come back —
+/// but the remembered mode means one click still switches it back for good,
+/// which is what the old all-or-nothing default lacked.
 export function defaultFileViewMode(
   filePath: string,
-  _hasHighlight: boolean,
+  hasHighlight: boolean,
   requestedMode?: FileViewMode,
+  rememberedMode?: FileViewMode,
 ): FileViewMode {
   if (requestedMode === 'preview' && !canPreviewFile(filePath)) return 'edit';
   if (requestedMode) return requestedMode;
-  return 'edit';
+  if (hasHighlight) return 'edit';
+  if (rememberedMode) {
+    return rememberedMode === 'preview' && canPreviewFile(filePath) ? 'preview' : 'edit';
+  }
+  return rendersByDefault(filePath) ? 'preview' : 'edit';
 }
