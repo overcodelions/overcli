@@ -9,7 +9,12 @@
 // is a reasoning task that small local models handle poorly.
 
 import type { Backend } from '../types';
-import { PREMIUM_MODELS, modelSpeed, type ModelSpeed } from '../modelCatalog';
+import {
+  PREMIUM_MODELS,
+  tierDefault,
+  type FlowModelDefaults,
+  type ModelSpeed,
+} from '../modelCatalog';
 
 /// Fallback order when the preferred backend isn't usable. Claude first
 /// (most common entry point), then the rest in coverage order. Matches
@@ -52,11 +57,17 @@ export function drafterModelFor(backend: Backend): string {
 /// edge case; gemini gained a real middle tier once Flash / Flash-Lite
 /// split its catalog. `thinking` still degrades upward (to the strongest available)
 /// because that line asks for the best reasoning model.
+///
+/// Each tier resolves through `tierDefault`, so a model the user pinned in
+/// Settings → Flows is the one the drafter is told to use — the hint and the
+/// post-draft snap can't disagree about what a tier means.
 export function drafterModelHints(
   backend: Backend,
+  defaults?: FlowModelDefaults,
 ): { thinking: string; standard: string; fast: string } {
-  const models = PREMIUM_MODELS[backend as Exclude<Backend, 'ollama'>] ?? [];
-  const atTier = (tier: ModelSpeed) => models.find((m) => modelSpeed(m) === tier);
+  const premium = backend as Exclude<Backend, 'ollama'>;
+  const models = PREMIUM_MODELS[premium] ?? [];
+  const atTier = (tier: ModelSpeed) => tierDefault(premium, tier, defaults);
   const thinking = atTier('thinking') ?? models[0] ?? '';
   const standard = atTier('standard') ?? atTier('fast') ?? thinking;
   const fast = atTier('fast') ?? standard;

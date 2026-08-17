@@ -75,13 +75,13 @@ describe('drafterModelHints', () => {
       standard: 'claude-sonnet-5',
       fast: 'claude-sonnet-5',
     });
-    // codex: sol is the first thinking model, terra the first fast model
-    // (both precede the legacy gpt-5.x entries); gpt-5.4 is the sole
-    // 'standard' pick.
+    // codex: the GPT-5.6 family covers all three tiers on its own — sol
+    // reasons, terra is the middle tier, luna is the cheap one — so no
+    // tier has to degrade into a neighbour or into a legacy gpt-5.x id.
     expect(drafterModelHints('codex')).toEqual({
       thinking: 'gpt-5.6-sol',
-      standard: 'gpt-5.4',
-      fast: 'gpt-5.6-terra',
+      standard: 'gpt-5.6-terra',
+      fast: 'gpt-5.6-luna',
     });
   });
 
@@ -102,5 +102,34 @@ describe('drafterModelHints', () => {
     const hints = drafterModelHints('copilot');
     expect(hints.thinking).toBe('gpt-5.5');
     expect(hints.standard).toBe(hints.fast);
+  });
+});
+
+describe('drafterModelHints — user pins', () => {
+  it('hands the drafter the model the user pinned', () => {
+    expect(drafterModelHints('codex', { codex: { standard: 'gpt-5.4' } })).toEqual({
+      thinking: 'gpt-5.6-sol',
+      standard: 'gpt-5.4',
+      fast: 'gpt-5.6-luna',
+    });
+  });
+
+  it('a pin on one backend does not leak into another', () => {
+    const hints = drafterModelHints('claude', { codex: { fast: 'gpt-5.4-mini' } });
+    expect(hints.fast).toBe('claude-sonnet-5');
+  });
+
+  it('degrades a pinned-but-retired model back to auto', () => {
+    expect(drafterModelHints('claude', { claude: { thinking: 'claude-opus-4-1' } }).thinking).toBe(
+      'claude-opus-5',
+    );
+  });
+
+  it('still degrades a tier the backend lacks, pin or no pin', () => {
+    // Claude has no standard-tier model; the hint degrades downward to fast
+    // so critic loops stay cheap.
+    const hints = drafterModelHints('claude', {});
+    expect(hints.standard).toBe(hints.fast);
+    expect(hints.standard).toBe('claude-sonnet-5');
   });
 });

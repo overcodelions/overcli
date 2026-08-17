@@ -53,7 +53,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     expect(buildParticipant.model).toBe('qwen2.5-coder:32b');
   });
 
-  it('codex-only user: thinking→gpt-5.6-sol, fast→gpt-5.6-terra', () => {
+  it('codex-only user: thinking→gpt-5.6-sol, fast→gpt-5.6-luna', () => {
     const flow = loadTemplate('build-feature');
     const resolved = resolveTemplateForUser(flow, {
       healthyBackends: ['codex'],
@@ -62,7 +62,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     const byStep = new Map(resolved.steps.map((s) => [s.id, s.participantId]));
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
     expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-5.6-sol');
-    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('gpt-5.6-terra');
+    expect(byParticipant.get(byStep.get('build')!)?.model).toBe('gpt-5.6-luna');
   });
 
   it('no healthy backends: leaves participants alone', () => {
@@ -103,5 +103,35 @@ describe('resolveTemplateForUser — friendly names updated', () => {
     // longer auto-picked because sonnet-5 precedes them among 'fast' models.
     expect(names).toContain('Claude Fable 5');
     expect(names).toContain('Claude Sonnet 5');
+  });
+});
+
+describe('resolveTemplateForUser — user pins', () => {
+  it('rebinds a template step onto the model the user pinned for its tier', () => {
+    const flow = loadTemplate('build-feature');
+    const resolved = resolveTemplateForUser(flow, {
+      healthyBackends: ['claude'],
+      ollamaModels: [],
+      modelDefaults: { claude: { fast: 'claude-haiku-4-5' } },
+    });
+    const fastModels = resolved.participants
+      .filter((p) => p.backend === 'claude' && p.model !== 'claude-fable-5')
+      .map((p) => p.model);
+    expect(fastModels.length).toBeGreaterThan(0);
+    expect(new Set(fastModels)).toEqual(new Set(['claude-haiku-4-5']));
+  });
+
+  it('matches the unpinned result when no defaults are given', () => {
+    const flow = loadTemplate('build-feature');
+    const withEmpty = resolveTemplateForUser(flow, {
+      healthyBackends: ['claude'],
+      ollamaModels: [],
+      modelDefaults: {},
+    });
+    const without = resolveTemplateForUser(flow, {
+      healthyBackends: ['claude'],
+      ollamaModels: [],
+    });
+    expect(withEmpty.participants).toEqual(without.participants);
   });
 });

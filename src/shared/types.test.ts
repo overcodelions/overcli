@@ -6,6 +6,7 @@ describe('DEFAULT_SETTINGS', () => {
     expect(DEFAULT_SETTINGS).toEqual({
       backendPaths: {},
       backendDefaultModels: {},
+      flowModelDefaults: {},
       disabledBackends: {},
       defaultPermissionMode: 'plan',
       defaultEffort: '',

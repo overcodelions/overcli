@@ -42,7 +42,7 @@ steps:
     inputs: [user_prompt]
     tools: [Read, Grep, Glob]
     rebound:
-      critic: { backend: claude, model: claude-sonnet-4-6 }
+      critic: { backend: claude, model: claude-sonnet-5 }
       mode: review
       max_iters: 3
     output: plan.md
@@ -75,7 +75,7 @@ steps:
     output: diff
 
   - id: push
-    model: { backend: claude, model: claude-sonnet-4-6 }
+    model: { backend: claude, model: claude-sonnet-5 }
     role: shipper
     inputs: [plan.md, diff, review.md]
     tools: [Bash]
@@ -90,7 +90,7 @@ description: |
 input: user_prompt
 steps:
   - id: read-diff
-    model: { backend: claude, model: claude-sonnet-4-6 }
+    model: { backend: claude, model: claude-sonnet-5 }
     role: researcher
     inputs: [user_prompt]
     tools: [Bash, Read, Grep, Glob]
@@ -111,7 +111,7 @@ description: |
 input: user_prompt
 steps:
   - id: survey
-    model: { backend: claude, model: claude-sonnet-4-6 }
+    model: { backend: claude, model: claude-sonnet-5 }
     role: researcher
     inputs: [user_prompt]
     tools: [Bash, Read, Grep, Glob]
@@ -183,7 +183,7 @@ steps:
     output: diff
 
   - id: verify
-    model: { backend: claude, model: claude-sonnet-4-6 }
+    model: { backend: claude, model: claude-sonnet-5 }
     role: reviewer
     inputs: [design.md, diff]
     tools: [Read, Grep, Glob]
