@@ -13,6 +13,7 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  clearWorkerFiles,
   deleteWorkerFile,
   deliverableFiles,
   ensureWorkerFilesDir,
@@ -313,5 +314,32 @@ describe('filing a file the run wrote itself', () => {
     const names = listWorkerFiles(WORKER).map((f) => f.name);
     expect(names.some((n) => n.endsWith('brief.md'))).toBe(true);
     expect(names.some((n) => n.endsWith('dashboard.html'))).toBe(false);
+  });
+});
+
+describe('clearWorkerFiles', () => {
+  it('empties the cabinet and leaves the neighbours alone', () => {
+    const mine = ensureWorkerFilesDir(WORKER);
+    fs.writeFileSync(path.join(mine, 'cursor.json'), '{"through":1}', 'utf-8');
+    fs.mkdirSync(path.join(mine, '2026-08-16-1431-shift-1'), { recursive: true });
+    const theirs = ensureWorkerFilesDir('worker-2');
+    fs.writeFileSync(path.join(theirs, 'keep.md'), 'theirs', 'utf-8');
+
+    expect(clearWorkerFiles(WORKER)).toEqual({ ok: true, removed: 2 });
+    expect(fs.existsSync(mine)).toBe(false);
+    expect(listWorkerFiles('worker-2').map((f) => f.name)).toEqual(['keep.md']);
+  });
+
+  it('recreates on demand, so the worker can keep working after a reset', () => {
+    const mine = ensureWorkerFilesDir(WORKER);
+    fs.writeFileSync(path.join(mine, 'tally.md'), 'x', 'utf-8');
+    clearWorkerFiles(WORKER);
+
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+    expect(fs.existsSync(ensureWorkerFilesDir(WORKER))).toBe(true);
+  });
+
+  it('succeeds for a worker that never wrote anything', () => {
+    expect(clearWorkerFiles(WORKER)).toEqual({ ok: true, removed: 0 });
   });
 });

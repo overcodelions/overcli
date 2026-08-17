@@ -1,4 +1,4 @@
-import { useRef, type RefObject } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 
 export interface ResizableDividerProps {
   width: number;
@@ -45,13 +45,42 @@ export function ResizableDivider({
   propsRef.current = { onChange, onCommit, minWidth, maxWidth, side, panel };
 
   const widthRef = useRef(width);
-  widthRef.current = width;
+  const draggingRef = useRef(false);
+  // Only re-sync from props BETWEEN gestures. Mid-drag the DOM is deliberately
+  // ahead of React (see `panel`), so a parent re-render landing between the
+  // last pointermove and pointerup would reset this to the pre-drag width and
+  // the commit on release would snap the pane back to where it started.
+  if (!draggingRef.current) widthRef.current = width;
+
+  // A divider can unmount mid-drag (the pane it sizes closes). The gesture's
+  // listeners go with its element, but the body classes would not — leaving a
+  // stuck resize cursor and, worse, every iframe in the app inert.
+  useEffect(
+    () => () => {
+      document.body.classList.remove('cursor-col-resize', 'select-none', 'dragging-divider');
+    },
+    [],
+  );
 
   const startDrag = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = widthRef.current;
-    document.body.classList.add('cursor-col-resize', 'select-none');
+    const handle = e.currentTarget;
+    const pointerId = e.pointerId;
+    draggingRef.current = true;
+    document.body.classList.add('cursor-col-resize', 'select-none', 'dragging-divider');
+    // Capture the pointer to the handle so every move for this gesture is
+    // delivered here regardless of what it passes over. Without it the panes
+    // that embed a sandboxed iframe (the file preview) swallow the drag the
+    // instant the pointer crosses into the frame — which is exactly what
+    // happens when you drag a right-hand pane's edge inward to narrow it.
+    try {
+      handle.setPointerCapture(pointerId);
+    } catch {
+      // Pointer already gone (a synthetic or cancelled gesture); the window
+      // listeners below still carry the common case.
+    }
 
     const onMove = (ev: PointerEvent) => {
       const p = propsRef.current;
@@ -64,17 +93,29 @@ export function ResizableDivider({
       else p.onChange(next);
     };
     const onUp = () => {
-      document.body.classList.remove('cursor-col-resize', 'select-none');
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+      draggingRef.current = false;
+      document.body.classList.remove('cursor-col-resize', 'select-none', 'dragging-divider');
+      handle.removeEventListener('pointermove', onMove);
+      handle.removeEventListener('pointerup', onUp);
+      handle.removeEventListener('pointercancel', onUp);
+      try {
+        handle.releasePointerCapture(pointerId);
+      } catch {
+        // Capture already released (pointercancel, window blur) — nothing owed.
+      }
       const p = propsRef.current;
       // The DOM has been ahead of React for the whole drag; this is where the
       // two are put back in step, at the one width that outlives the gesture.
       if (p.panel) p.onChange(widthRef.current);
       p.onCommit?.(widthRef.current);
     };
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    // Listeners go on the capturing handle, not the window: with capture
+    // active every event for this pointer is retargeted here, and a
+    // pointercancel (window blur, gesture stolen by the OS) has to end the
+    // drag too or the body keeps the resize cursor forever.
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
   };
 
   return (

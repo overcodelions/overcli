@@ -96,3 +96,62 @@ describe('workerJournal', () => {
     expect(loaded.some((entry) => entry.id === `entry-${second.WORKER_JOURNAL_MAX_ENTRIES + 9}`)).toBe(true);
   }, 15_000);
 });
+
+describe('clearWorkerJournal', () => {
+  it('drops one worker’s entries and keeps everybody else’s', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'a1', workerId: 'worker-1' }));
+    store.appendWorkerJournalEntry(makeEntry({ id: 'a2', workerId: 'worker-1' }));
+    store.appendWorkerJournalEntry(makeEntry({ id: 'b1', workerId: 'worker-2' }));
+
+    expect(store.clearWorkerJournal('worker-1')).toBe(2);
+    expect(store.loadWorkerJournal('worker-1')).toEqual([]);
+    expect(store.loadWorkerJournal('worker-2').map((e) => e.id)).toEqual(['b1']);
+  });
+
+  it('un-bans titles the worker had been told no about', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(
+      makeEntry({ id: 'r1', kind: 'rejected', title: 'Rewrite in Rust' }),
+    );
+    expect(store.workerRejectedTitles('worker-1')).toEqual(['rewrite in rust']);
+
+    store.clearWorkerJournal('worker-1');
+    expect(store.workerRejectedTitles('worker-1')).toEqual([]);
+  });
+
+  it('lets a cleared entry id be appended again', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'a1' }));
+    store.clearWorkerJournal('worker-1');
+
+    // The dedupe index is keyed by id alone, so a stale index here would
+    // silently swallow the first entry of the worker's new life.
+    expect(store.appendWorkerJournalEntry(makeEntry({ id: 'a1' }))).toBe(true);
+    expect(store.loadWorkerJournal('worker-1').map((e) => e.id)).toEqual(['a1']);
+  });
+
+  it('is a no-op for a worker with nothing on file', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'b1', workerId: 'worker-2' }));
+    expect(store.clearWorkerJournal('worker-1')).toBe(0);
+    expect(store.loadWorkerJournal('worker-2')).toHaveLength(1);
+  });
+});
+
+describe('a journal that cannot be rewritten', () => {
+  it('reports the failure instead of half-clearing', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'a1' }));
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {
+      throw new Error('EIO');
+    });
+    try {
+      expect(() => store.clearWorkerJournal('worker-1')).toThrow(/rewrite/i);
+    } finally {
+      spy.mockRestore();
+    }
+    // Still there, so nothing downstream may act as if it started over.
+    expect(store.loadWorkerJournal('worker-1')).toHaveLength(1);
+  });
+});
