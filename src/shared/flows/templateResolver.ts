@@ -16,7 +16,13 @@
 // design, haiku for the coding, and sonnet for the review".
 
 import type { Backend } from '../types';
-import { PREMIUM_MODELS, friendlyModelLabel, modelSpeed, type ModelSpeed } from '../modelCatalog';
+import {
+  friendlyModelLabel,
+  modelSpeed,
+  tierDefault,
+  type FlowModelDefaults,
+  type ModelSpeed,
+} from '../modelCatalog';
 import type { Flow, FlowParticipant } from './schema';
 
 export interface TemplateResolveContext {
@@ -26,6 +32,9 @@ export interface TemplateResolveContext {
   /// Installed ollama models, in detection order. Empty if ollama
   /// isn't running. The resolver picks the first one for fast steps.
   ollamaModels: string[];
+  /// The user's Settings → Flows tier pins. Omitted means every tier is
+  /// auto, which is what the resolver did before the setting existed.
+  modelDefaults?: FlowModelDefaults;
 }
 
 /// Preference order when the template-original backend isn't healthy.
@@ -50,8 +59,11 @@ function pickPremium(
   tier: ModelSpeed,
   preferredBackend: Backend,
   healthy: Backend[],
+  defaults?: FlowModelDefaults,
 ): { backend: Backend; model: string } | undefined {
   const order = collectBackendOrder(preferredBackend, healthy);
+  const firstAtTier = (b: Backend, t: ModelSpeed) =>
+    b === 'ollama' ? undefined : tierDefault(b as Exclude<Backend, 'ollama'>, t, defaults);
   // Exact-tier match.
   for (const b of order) {
     const m = firstAtTier(b, tier);
@@ -91,12 +103,6 @@ function collectBackendOrder(preferred: Backend, healthy: Backend[]): Backend[] 
   return order;
 }
 
-function firstAtTier(backend: Backend, tier: ModelSpeed): string | undefined {
-  if (backend === 'ollama') return undefined;
-  const models = PREMIUM_MODELS[backend as Exclude<Backend, 'ollama'>];
-  return models?.find((m) => modelSpeed(m) === tier);
-}
-
 /// Pick the replacement backend+model for a single template participant
 /// based on what's available. Returns `undefined` to mean "leave as-is"
 /// (no healthy backends, or the original was already a custom fit).
@@ -114,7 +120,7 @@ export function pickForParticipant(
   }
 
   // Otherwise pick a premium model at the intended tier.
-  const pick = pickPremium(tier, p.backend, ctx.healthyBackends);
+  const pick = pickPremium(tier, p.backend, ctx.healthyBackends, ctx.modelDefaults);
   if (pick) return pick;
 
   return undefined;

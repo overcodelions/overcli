@@ -29,7 +29,12 @@ import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 import type { AppSettings, Backend } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
 import { normalizeFlowTag } from '../../shared/flows/schema';
-import { canonicalizePremiumModel, liftMissingModel } from '../../shared/modelCatalog';
+import {
+  canonicalizePremiumModel,
+  liftMissingModel,
+  snapToTierDefault,
+  type FlowModelDefaults,
+} from '../../shared/modelCatalog';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { TAG_AXES } from '../../shared/flows/tagTaxonomy';
 import {
@@ -83,8 +88,12 @@ function backendLabel(backend: Backend): string {
 /// 'revise' rewrites an existing one the user hands us. Everything between —
 /// schema, roles, conventions, example — is identical, because a revision has
 /// to obey exactly the same contract the original draft did.
-function systemPrompt(backend: Backend, mode: DraftMode = 'draft'): string {
-  const hints = drafterModelHints(backend);
+function systemPrompt(
+  backend: Backend,
+  mode: DraftMode = 'draft',
+  modelDefaults?: FlowModelDefaults,
+): string {
+  const hints = drafterModelHints(backend, modelDefaults);
   const label = backendLabel(backend);
   return [
     ...(mode === 'revise'
@@ -221,7 +230,7 @@ function systemPrompt(backend: Backend, mode: DraftMode = 'draft'): string {
     '',
     'EXAMPLE — a step no preset covers:',
     '  - id: triage',
-    '    model: { backend: claude, model: claude-sonnet-4-6 }',
+    '    model: { backend: claude, model: claude-sonnet-5 }',
     '    role: custom',
     '    system_prompt: |',
     '      You are the TRIAGE step of a multi-stage automated flow.',
@@ -349,7 +358,9 @@ export async function draftFlowFromPrompt(
 
   const out = await runDrafter(deps, 'draft', `USER REQUEST:\n${desc}`);
   if (!out.ok) return out;
-  return finalizeDraft(out.text, out.label);
+  return finalizeDraft(out.text, out.label, {
+    snapModels: deps.settings.flowModelDefaults ?? {},
+  });
 }
 
 /// Revise a flow the user already has open in the builder. Same CLI, same
@@ -394,7 +405,7 @@ async function runDrafter(
   userMessage: string,
 ): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
   return oneShotDraftText(deps, {
-    buildSystemPrompt: (backend) => systemPrompt(backend, mode),
+    buildSystemPrompt: (backend) => systemPrompt(backend, mode, deps.settings.flowModelDefaults),
     userMessage,
     verb: mode === 'revise' ? 'edit' : 'draft',
   });
@@ -515,10 +526,16 @@ async function draftViaRunner(
 /// backend path. `label` names the CLI in any error message. `opts.id` pins
 /// the resulting flow's id (revisions of an existing flow keep theirs);
 /// without it the id is derived from the generated name.
+///
+/// `opts.snapModels` turns on tier snapping (see `repairModelIds`). It is set
+/// on the draft path and deliberately NOT on the revise path: "put the
+/// planner on Opus 4.8" is a legitimate instruction, and revise is already
+/// told to preserve existing model choices, so snapping there would overrule
+/// the user with their own setting.
 function finalizeDraft(
   raw: string,
   label: string,
-  opts: { id?: string } = {},
+  opts: { id?: string; snapModels?: FlowModelDefaults } = {},
 ): { ok: true; flow: Flow } | { ok: false; error: string } {
   const yaml = stripCodeFences(raw.trim());
   if (!yaml) return { ok: false, error: `${label} returned no content.` };
@@ -547,7 +564,7 @@ function finalizeDraft(
   // `claude-haiku-4.5` (dotted) on the `claude` backend, whose catalog id is
   // `claude-haiku-4-5` (dashed). The exact-match validator would reject these
   // as "not supported"; snap each premium ref to its canonical spelling first.
-  repairModelIds(parsed);
+  repairModelIds(parsed, opts.snapModels);
 
   // Reconcile role against the system prompt the model did (or didn't) write,
   // so a near-miss on the custom-prompt path doesn't ship a broken step.
@@ -603,14 +620,24 @@ function repairTags(flow: Flow): void {
 /// the next-highest in-family version we still ship. Walks participants,
 /// legacy step-level models, and rebound critics. Ollama and
 /// already-canonical refs pass through untouched. Mutates `flow` in place.
-function repairModelIds(flow: Flow): void {
+///
+/// When `snap` is passed, each ref is then rewritten to whatever its own
+/// speed tier currently resolves to. Canonicalize + lift only rescue ids we
+/// no longer ship; a drafting CLI's more common failure is naming a model
+/// that IS still in the catalog but a generation behind what the user has
+/// — `gpt-5.4-mini` for a fast step, `claude-opus-4-8` for a thinking one.
+/// Those pass every other check, so tier snapping is the only thing that
+/// catches them. The drafter still owns the tier decision; snapping only
+/// fixes which model that tier names.
+function repairModelIds(flow: Flow, snap?: FlowModelDefaults): void {
   // Canonicalize first (snaps a dotted alias onto its catalog spelling),
-  // then lift (rewrites a still-unsupported id to a newer in-family one).
-  const repair = (backend: FlowModelRef['backend'], model: string) =>
-    liftMissingModel(
-      backend as Exclude<typeof backend, 'ollama'>,
-      canonicalizePremiumModel(backend as Exclude<typeof backend, 'ollama'>, model),
-    );
+  // then lift (rewrites a still-unsupported id to a newer in-family one),
+  // then — if enabled — snap the survivor onto its tier's current default.
+  const repair = (backend: FlowModelRef['backend'], model: string) => {
+    const premium = backend as Exclude<typeof backend, 'ollama'>;
+    const lifted = liftMissingModel(premium, canonicalizePremiumModel(premium, model));
+    return snap ? snapToTierDefault(premium, lifted, snap) : lifted;
+  };
   const fix = (ref: FlowModelRef | undefined) => {
     if (!ref || ref.backend === 'ollama') return;
     ref.model = repair(ref.backend, ref.model);

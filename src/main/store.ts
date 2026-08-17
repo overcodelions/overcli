@@ -126,7 +126,23 @@ function sanitizeSettings(settings: AppSettings): AppSettings {
       delete backendDefaultModels[backend];
     }
   }
-  return { ...settings, backendDefaultModels };
+  // Same treatment for the per-tier flow pins. `tierDefault` already ignores
+  // an unsupported pin at read time, but dropping it here keeps the Settings
+  // select from rendering a value that isn't in its option list — a retired
+  // model would otherwise show as a blank row the user can't interpret.
+  const flowModelDefaults = { ...(settings.flowModelDefaults ?? {}) };
+  for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
+    const tiers = flowModelDefaults[backend];
+    if (!tiers) continue;
+    const kept = { ...tiers };
+    for (const [tier, model] of Object.entries(kept)) {
+      if (model && !isSupportedPremiumModel(backend, model)) {
+        delete kept[tier as keyof typeof kept];
+      }
+    }
+    flowModelDefaults[backend] = kept;
+  }
+  return { ...settings, backendDefaultModels, flowModelDefaults };
 }
 
 /// Persisted tab caps. The renderer enforces its own (MAX_TABS_PER_SCOPE

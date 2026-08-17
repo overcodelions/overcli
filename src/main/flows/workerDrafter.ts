@@ -8,6 +8,7 @@
 // contract, the user adjusts, and only the Hire click persists anything.
 
 import type { Backend } from '../../shared/types';
+import type { FlowModelDefaults } from '../../shared/modelCatalog';
 import type { Flow } from '../../shared/flows/schema';
 import { drafterModelHints } from '../../shared/flows/drafterBackend';
 import { describeTrigger } from '../../shared/flows/schedule';
@@ -40,8 +41,9 @@ function hireSystemPrompt(
   backend: Backend,
   flows: HireFlowOption[],
   projects: HireProjectOption[],
+  modelDefaults?: FlowModelDefaults,
 ): string {
-  const hints = drafterModelHints(backend);
+  const hints = drafterModelHints(backend, modelDefaults);
   const flowLines =
     flows.length > 0
       ? flows.map((f) => `  - id: "${f.id}" — ${f.name}${f.description ? `: ${f.description}` : ''}`)
@@ -113,7 +115,8 @@ export async function draftWorkerFromPrompt(
   if (!jobDescription) return { ok: false, error: 'Describe the job first.' };
 
   const out = await oneShotDraftText(deps, {
-    buildSystemPrompt: (backend) => hireSystemPrompt(backend, args.flows, args.projects),
+    buildSystemPrompt: (backend) =>
+      hireSystemPrompt(backend, args.flows, args.projects, deps.settings.flowModelDefaults),
     userMessage: `JOB DESCRIPTION:\n${jobDescription}`,
     verb: 'hire',
   });
@@ -121,7 +124,7 @@ export async function draftWorkerFromPrompt(
 
   const contract = parseWorkerContract(out.text, {
     knownFlowIds: args.flows.map((f) => f.id),
-    defaultHeartbeatModel: drafterModelHints(out.backend).fast,
+    defaultHeartbeatModel: drafterModelHints(out.backend, deps.settings.flowModelDefaults).fast,
     knownProjectPaths: args.projects.map((p) => p.path),
   });
   if (!contract) {

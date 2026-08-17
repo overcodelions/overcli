@@ -157,14 +157,20 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   'claude-sonnet-5': 'fast',
   'claude-sonnet-4-6': 'fast',
   'claude-haiku-4-5': 'fast',
-  // Codex (OpenAI). GPT-5.6 (sol/terra/luna) is the current generation:
-  // sol is the flagship reasoning model, terra the balanced everyday
-  // workhorse (Sonnet-5-class — hence 'fast', mirroring how Claude parks
-  // Sonnet at the fast tier), luna the cheapest of the family. terra
-  // precedes luna in PREMIUM_MODELS, so it's the default 'fast' codex
-  // model for per-tier template substitution.
+  // Codex (OpenAI). GPT-5.6 (sol/terra/luna) is the current generation and
+  // maps cleanly onto all three tiers on its own: sol is the flagship
+  // reasoning model, terra the balanced everyday workhorse, luna the
+  // cheapest of the family.
+  //
+  // terra sat at 'fast' for a while, mirroring how Claude parks Sonnet
+  // there. That left 'standard' with no GPT-5.6 model at all, so every
+  // codex critic loop defaulted to `gpt-5.4` — a whole generation back —
+  // while luna, the actually-cheap model, was never anyone's default.
+  // Filing terra as the middle tier and luna as the cheap one fixes both
+  // ends at once, and matches how reboundPresets already splits the family
+  // (luna = cheap, sol = smart).
   'gpt-5.6-sol': 'thinking',
-  'gpt-5.6-terra': 'fast',
+  'gpt-5.6-terra': 'standard',
   'gpt-5.6-luna': 'fast',
   'gpt-5.5': 'thinking',
   'gpt-5.4': 'standard',
@@ -291,4 +297,94 @@ export function modelTierLabel(backend: Backend): 'Premium' | 'Local' | 'Other' 
     return 'Premium';
   }
   return 'Other';
+}
+
+/// Per-tier model overrides for one backend. An absent (or blank) tier means
+/// "auto" — resolve it from the catalog via `latestAtTier`.
+export type ModelTierDefaults = Partial<Record<ModelSpeed, string>>;
+
+/// The user's flow model defaults, keyed by backend. Lives in AppSettings;
+/// consumed by the flow drafter, the template resolver, and the worker
+/// drafter so all three agree on which model a given tier means.
+export type FlowModelDefaults = Partial<
+  Record<Exclude<Backend, 'ollama'>, ModelTierDefaults>
+>;
+
+/// The catalog's own pick for a tier — what "auto" resolves to.
+///
+/// Takes the FIRST catalog entry at the tier (list order encodes intent:
+/// copilot parks Haiku ahead of Sonnet at the fast tier because fast means
+/// *cheap*, not *newest*), then lifts it to the highest version within that
+/// entry's own family AT THE SAME TIER. The lift is the self-maintaining
+/// part: appending `claude-sonnet-5-2` below `claude-sonnet-5` can't silently
+/// leave the default pinned to the older sibling, which is how codex's
+/// standard tier ended up on a last-generation model. Staying inside the
+/// family keeps the lift from crossing into a pricier line, and staying
+/// inside the tier keeps it from promoting a `standard` default onto a
+/// `thinking` model.
+///
+/// Returns undefined when the backend has no model at that tier at all.
+export function latestAtTier(
+  backend: Exclude<Backend, 'ollama'>,
+  tier: ModelSpeed,
+): string | undefined {
+  const models = PREMIUM_MODELS[backend];
+  if (!models) return undefined;
+  const atTier = models.filter((m) => modelSpeed(m) === tier);
+  const lead = atTier[0];
+  if (!lead) return undefined;
+  const leadParsed = parseModelVersion(lead);
+  if (!leadParsed) return lead;
+  let best = lead;
+  let bestVersion = leadParsed.version;
+  for (const id of atTier.slice(1)) {
+    const parsed = parseModelVersion(id);
+    if (!parsed || parsed.familyKey !== leadParsed.familyKey) continue;
+    if (compareModelVersion(parsed.version, bestVersion) > 0) {
+      best = id;
+      bestVersion = parsed.version;
+    }
+  }
+  return best;
+}
+
+/// The model a tier resolves to for a backend, honouring the user's
+/// Settings → Flows override when they've pinned one. An override that
+/// isn't a supported id (a stale pin left behind when we retire a model)
+/// falls back to auto rather than poisoning every flow the user drafts.
+///
+/// The override is deliberately NOT required to sit at the tier it's
+/// filed under — pinning `fast` to a thinking model is a legitimate (if
+/// expensive) choice, and second-guessing it would make the setting a lie.
+export function tierDefault(
+  backend: Exclude<Backend, 'ollama'>,
+  tier: ModelSpeed,
+  defaults?: FlowModelDefaults,
+): string | undefined {
+  const override = defaults?.[backend]?.[tier]?.trim();
+  if (override) {
+    const canon = canonicalizePremiumModel(backend, override);
+    if (isSupportedPremiumModel(backend, canon)) return canon;
+  }
+  return latestAtTier(backend, tier);
+}
+
+/// Rewrite a model id to whatever its own tier currently resolves to.
+///
+/// This is the enforcement half of the flow model defaults: a drafting CLI
+/// picks the *tier* well (planning deserves reasoning, formatting doesn't)
+/// but routinely names a stale id from its training data — `gpt-5.4-mini`
+/// where `gpt-5.6-luna` is current. Tier intent is the drafter's call; the
+/// specific id is ours.
+///
+/// Only ids we already ship are snapped. An unrecognised id is left alone so
+/// `liftMissingModel` and then validation can deal with it — silently turning
+/// a typo into a working model would hide a genuine drafting error.
+export function snapToTierDefault(
+  backend: Exclude<Backend, 'ollama'>,
+  model: string,
+  defaults?: FlowModelDefaults,
+): string {
+  if (!isSupportedPremiumModel(backend, model)) return model;
+  return tierDefault(backend, modelSpeed(model), defaults) ?? model;
 }
