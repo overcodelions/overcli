@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
+import { mermaidPlaceholderHtml } from '../mermaid';
 
 // hljs-produced <span class="hljs-...">, <code class="file-path" data-path="…">,
 // and standard markdown tags are the only HTML we generate. Everything else
@@ -14,7 +15,10 @@ const SANITIZE_CONFIG = {
     'span', 'strong', 'sub', 'sup', 'table', 'tbody', 'td', 'th', 'thead', 'tr',
     'ul',
   ],
-  ALLOWED_ATTR: ['href', 'title', 'alt', 'src', 'class', 'data-path', 'type', 'aria-label'],
+  ALLOWED_ATTR: [
+    'href', 'title', 'alt', 'src', 'class', 'data-path', 'data-mermaid-key', 'type',
+    'aria-label',
+  ],
   ALLOWED_URI_REGEXP: /^(?:https?|mailto|tel):/i,
 };
 
@@ -31,6 +35,11 @@ const FILE_PATH_RE = /^[a-zA-Z0-9_.\-/]+\.(?:ts|tsx|js|jsx|py|rs|go|swift|kt|jav
 interface RenderMarkdownOptions {
   enableFilePathLinks?: boolean;
   escapeRawHtml?: boolean;
+  /// Emit an empty keyed <div> for ```mermaid fences instead of a code block,
+  /// for a caller that will splice rendered SVG in afterwards (see
+  /// `applyMermaidDiagrams`). Off everywhere else, so a mermaid fence stays a
+  /// readable code block and this function stays sync and cacheable.
+  mermaidPlaceholders?: boolean;
 }
 
 /// Bounded cache of rendered HTML keyed by (options + source). marked +
@@ -48,8 +57,8 @@ export function renderMarkdownHtml(
   source: string,
   options: RenderMarkdownOptions = {},
 ): string {
-  const { enableFilePathLinks = true, escapeRawHtml = false } = options;
-  const cacheKey = `${enableFilePathLinks ? 1 : 0}${escapeRawHtml ? 1 : 0}\n${source ?? ''}`;
+  const { enableFilePathLinks = true, escapeRawHtml = false, mermaidPlaceholders = false } = options;
+  const cacheKey = `${enableFilePathLinks ? 1 : 0}${escapeRawHtml ? 1 : 0}${mermaidPlaceholders ? 1 : 0}\n${source ?? ''}`;
   const cached = MARKDOWN_HTML_CACHE.get(cacheKey);
   if (cached !== undefined) {
     // Refresh recency: delete + re-set moves it to the end of insertion order
@@ -58,7 +67,7 @@ export function renderMarkdownHtml(
     MARKDOWN_HTML_CACHE.set(cacheKey, cached);
     return cached;
   }
-  const html = renderMarkdownHtmlUncached(source, enableFilePathLinks, escapeRawHtml);
+  const html = renderMarkdownHtmlUncached(source, enableFilePathLinks, escapeRawHtml, mermaidPlaceholders);
   MARKDOWN_HTML_CACHE.set(cacheKey, html);
   if (MARKDOWN_HTML_CACHE.size > MARKDOWN_HTML_CACHE_MAX) {
     // Evict the oldest (first-inserted) entry.
@@ -72,6 +81,7 @@ function renderMarkdownHtmlUncached(
   source: string,
   enableFilePathLinks: boolean,
   escapeRawHtml: boolean,
+  mermaidPlaceholders: boolean,
 ): string {
   const renderer = new Renderer();
 
@@ -103,6 +113,11 @@ function renderMarkdownHtmlUncached(
 
   renderer.code = ({ text, lang }) => {
     const language = lang?.match(/\S+/)?.[0];
+
+    if (mermaidPlaceholders && language === 'mermaid' && text.trim()) {
+      return mermaidPlaceholderHtml(text);
+    }
+
     const escapedLanguage = language ? ` language-${escapeAttr(language)}` : '';
 
     const copyButton = `<button type="button" class="code-copy" aria-label="Copy code">copy</button>`;

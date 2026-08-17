@@ -8,6 +8,13 @@ import type {
 import { detectFilePreviewKind } from '../filePreview';
 import { collectHtmlAssetRefs, inlineHtmlAssets } from '../htmlPreview';
 import { buildReactPreviewDocument, type PreviewBackground } from '../reactPreview';
+import {
+  applyMermaidDiagrams,
+  extractMermaidBlocks,
+  renderMermaidDiagrams,
+  type MermaidBlock,
+  type MermaidDiagrams,
+} from '../mermaid';
 import { renderMarkdownHtml } from './Markdown';
 
 export function FilePreview({
@@ -63,11 +70,41 @@ export function FilePreview({
     };
   }, [path, refsKey, rootPath]);
 
+  // Mermaid fences render out-of-band: `renderMarkdownHtml` is sync and
+  // memoized on the source string, while mermaid.render() is async. The
+  // markdown pass leaves a keyed placeholder and we splice the SVG in once it
+  // resolves — until then each diagram shows its own source as a code block.
+  const mermaidBlocks = useMemo<MermaidBlock[]>(
+    () => (kind === 'markdown' ? extractMermaidBlocks(content) : []),
+    [content, kind],
+  );
+  const [mermaidDiagrams, setMermaidDiagrams] = useState<MermaidDiagrams>({});
+
+  useEffect(() => {
+    if (!mermaidBlocks.length) {
+      setMermaidDiagrams({});
+      return;
+    }
+    let cancelled = false;
+    renderMermaidDiagrams(mermaidBlocks, { dark })
+      .then((diagrams) => {
+        if (!cancelled) setMermaidDiagrams(diagrams);
+      })
+      .catch(() => {
+        if (!cancelled) setMermaidDiagrams({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [dark, mermaidBlocks]);
+
   const srcDoc = useMemo(() => {
     if (kind === 'html') return buildHtmlDocument(path, inlineHtmlAssets(content, assets));
-    if (kind === 'markdown') return buildMarkdownDocument(path, content, dark);
+    if (kind === 'markdown') {
+      return buildMarkdownDocument(path, content, dark, mermaidBlocks, mermaidDiagrams);
+    }
     return '';
-  }, [assets, content, dark, kind, path]);
+  }, [assets, content, dark, kind, mermaidBlocks, mermaidDiagrams, path]);
 
   if (!kind) {
     return <div className="p-4 text-xs text-ink-faint">Preview is not available for this file.</div>;
@@ -688,7 +725,22 @@ function buildHtmlDocument(filePath: string, content: string): string {
   ].join('');
 }
 
-function buildMarkdownDocument(filePath: string, content: string, dark: boolean): string {
+function buildMarkdownDocument(
+  filePath: string,
+  content: string,
+  dark: boolean,
+  mermaidBlocks: readonly MermaidBlock[],
+  mermaidDiagrams: MermaidDiagrams,
+): string {
+  const html = applyMermaidDiagrams(
+    renderMarkdownHtml(content, {
+      escapeRawHtml: true,
+      enableFilePathLinks: false,
+      mermaidPlaceholders: mermaidBlocks.length > 0,
+    }),
+    mermaidBlocks,
+    mermaidDiagrams,
+  );
   return [
     '<!DOCTYPE html>',
     '<html>',
@@ -699,7 +751,7 @@ function buildMarkdownDocument(filePath: string, content: string, dark: boolean)
     `<style>${markdownPreviewStyles(dark)}</style>`,
     '</head>',
     '<body>',
-    `<article class="md">${renderMarkdownHtml(content, { escapeRawHtml: true, enableFilePathLinks: false })}</article>`,
+    `<article class="md">${html}</article>`,
     '</body>',
     '</html>',
   ].join('');
@@ -811,6 +863,14 @@ function markdownPreviewStyles(dark: boolean): string {
     .md { margin-bottom: 0; }
     .md { margin-top: 0; }
     .md del { color: ${muted}; }
+    .md .mermaid-diagram { margin: 1rem 0; padding: 0; text-align: center; }
+    .md .mermaid-diagram svg { max-width: 100%; height: auto; }
+    .md .mermaid-diagram.is-pending, .md .mermaid-diagram.is-error { text-align: left; }
+    .md .mermaid-diagram figcaption {
+      color: ${muted};
+      font-size: 0.85em;
+      margin-bottom: 0.35rem;
+    }
   `;
 }
 

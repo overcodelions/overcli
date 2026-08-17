@@ -119,6 +119,7 @@ interface WorkersActions {
   showCalendar(): void;
   setPreviewEmpty(on: boolean): void;
   openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
+  clearDeskFocus(): void;
   moveWorker(id: string, direction: -1 | 1): Promise<void>;
   setFilesRoot(id: string, root: string): void;
   runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
@@ -291,6 +292,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   showCalendar() {
     set({ view: 'calendar' });
+  },
+
+  clearDeskFocus() {
+    if (get().deskFocus) set({ deskFocus: null });
   },
 
   setPreviewEmpty(on) {
