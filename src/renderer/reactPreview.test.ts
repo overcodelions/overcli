@@ -16,12 +16,16 @@ describe('buildReactPreviewDocument', () => {
     const doc = buildReactPreviewDocument(bundle, 'light');
     expect(doc).toContain('<div id="overcli-preview-root"></div>');
     expect(doc).toContain('<script>console.log("mounted")</script>');
-    expect(doc.indexOf('overcli-preview-root')).toBeLessThan(doc.indexOf('<script>'));
+    expect(doc.indexOf('overcli-preview-root')).toBeLessThan(doc.indexOf('<script>console.log'));
   });
 
   it('includes bundled and Tailwind css, Tailwind first so components can override', () => {
     const doc = buildReactPreviewDocument({ ...bundle, tailwindCss: '.p-4{padding:1rem}' }, 'light');
     expect(doc.indexOf('.p-4{padding:1rem}')).toBeLessThan(doc.indexOf('.card { color: red }'));
+  });
+
+  it('routes the component\'s links out to the browser', () => {
+    expect(buildReactPreviewDocument(bundle, 'light')).toContain("window.open(url.href, '_blank'");
   });
 
   it('omits empty style blocks', () => {
@@ -50,6 +54,9 @@ describe('buildReactPreviewDocument', () => {
       { ...bundle, css: '/* </style><script>alert(1)</script> */' },
       'light',
     );
-    expect(doc).not.toContain('</style><script>');
+    // A real </style> in the css would leave the rest of it as markup; the
+    // </style><script> the head legitimately contains is the link script.
+    expect(doc).not.toContain('</style><script>alert(1)');
+    expect(doc).toContain('<\\/style>');
   });
 });

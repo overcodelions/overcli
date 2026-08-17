@@ -497,6 +497,20 @@ export function activityOnDay<T extends { at: number }>(items: T[], day: number)
   return items.filter((item) => startOfDay(item.at) === day);
 }
 
+/// One day's turns in the order a chat reads: oldest at the top, the newest
+/// sitting just above the composer, so a reply lands under the thing you
+/// typed and the desk grows downwards like every other conversation.
+///
+/// Sorted by time, explicitly. The obvious version — reverse the ledger, which
+/// arrives newest-first — is only right until the session does anything: the
+/// store is a Record, live batches are spread onto the END of it as they
+/// happen, and reversing that order threw every turn you had sent this session
+/// to the TOP of the desk. You typed at the bottom and your answer appeared
+/// above the scroll.
+export function deskTimeline<T extends { at: number }>(items: T[], day: number): T[] {
+  return activityOnDay(items, day).sort((a, b) => a.at - b.at);
+}
+
 /// The next day with work on it, in the given direction. `-1` is older.
 /// Returns null at either end, which is what disables the arrow.
 export function adjacentDeskDay(days: DeskDay[], current: number, dir: -1 | 1): number | null {
@@ -609,4 +623,23 @@ export function sidebarActivity(
   const todays = items.filter((item) => startOfDay(item.at) === today);
   if (todays.length > 0) return todays.slice(0, limit);
   return items.slice(0, 1);
+}
+
+/// Which of today's shifts are worth a row. Errands are each a distinct thing
+/// you asked for, so they all get one; shifts are a clock, and a worker on an
+/// hourly cadence turns its corner of the roster into a column of identical
+/// "nothing launched" lines that push every other worker off screen.
+///
+/// So: the newest shift always, because "when did this one last wake up" is a
+/// question the roster has to answer even when the answer is "and it found
+/// nothing" — plus any older shift still holding work that is yours, since an
+/// empty shift running after a shift that proposed three candidates must not
+/// bury it. Everything else is history, and history lives on the desk.
+export function sidebarShifts(
+  shifts: WorkerActivity[],
+  limit: number,
+): WorkerActivity[] {
+  return shifts
+    .filter((s, i) => i === 0 || s.proposed > 0 || s.running > 0)
+    .slice(0, limit);
 }

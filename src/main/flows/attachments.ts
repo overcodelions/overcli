@@ -43,6 +43,23 @@ export interface WrittenAttachment {
   size: number;
 }
 
+/// Absolute path to `runId`'s attachment directory, created on demand.
+///
+/// Callers pass this to the backend as an extra allowed directory.
+/// Attachments live under userData, which no step's cwd covers, and the
+/// CLI checks its directory scope at launch rather than through the
+/// permission-prompt tool — so a step handed an out-of-scope path can
+/// neither read it nor ask for access, it just fails. We create the
+/// directory even for a run that hasn't attached anything yet: that
+/// keeps the allowed set identical on every turn of the run, which the
+/// SDK transport needs because it bakes the set in when the session
+/// starts and never re-reads it.
+export function ensureAttachmentDir(runId: string): string {
+  const dir = runDir(runId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /// Write `body` as an attachment for `runId/name`. Creates the run's
 /// attachment directory on demand. Returns the absolute path on disk.
 /// Failure is fatal at the caller's discretion — most callers fall back
@@ -52,8 +69,7 @@ export function writeAttachment(
   name: string,
   body: string,
 ): WrittenAttachment {
-  const dir = runDir(runId);
-  fs.mkdirSync(dir, { recursive: true });
+  const dir = ensureAttachmentDir(runId);
   const file = path.join(dir, safeFilename(name));
   fs.writeFileSync(file, body, 'utf-8');
   return { path: file, size: body.length };
