@@ -175,6 +175,39 @@ const DEFAULT_IDLE_TIMEOUT_MIN = 30;
 /// persisted in the store, so the next send respawns with `--resume` and the
 /// thread continues. The cost is one slower first turn, which is why the
 /// conservative cases below all decline.
+/// Whether `prewarm` should spawn anything for this conversation.
+///
+/// Split out from the method so the eligibility rules — the part that would
+/// actually cost something if wrong — are testable without spawning a CLI.
+///
+/// Only backends that keep a resident process across turns can be warmed:
+///   - claude on the 'cli' transport. The SDK transport runs `query()`
+///     in-process per turn, so there is no subprocess to start early.
+///   - codex in 'app-server' mode. `codex exec` respawns per turn by design,
+///     so a warm process would be killed unused. (The mode isn't known here
+///     — the caller probes it after this returns true.)
+/// gemini drives its own ACP session pool, copilot passes its prompt in argv
+/// so the process cannot exist before the prompt does, and ollama is HTTP
+/// with no process at all.
+export function canPrewarm(args: {
+  backend: Backend;
+  /// 'sdk' means Claude runs in-process; nothing to spawn.
+  claudeTransport?: 'cli' | 'sdk';
+  /// This conversation is pinned to the SDK transport after a broker failure.
+  claudeSdkFallback: boolean;
+  /// Any runtime already backing this conversation — subprocess, ollama
+  /// session, or gemini ACP session.
+  hasRuntime: boolean;
+  /// A real send is already mid-flight for this conversation.
+  sendPending: boolean;
+}): boolean {
+  if (args.hasRuntime || args.sendPending) return false;
+  if (args.backend === 'claude') {
+    return args.claudeTransport !== 'sdk' && !args.claudeSdkFallback;
+  }
+  return args.backend === 'codex';
+}
+
 export function shouldReapIdle(args: {
   /// Whether the backend still owes output for the current turn. Undefined
   /// for transports that don't track it — treated as "still working".
@@ -444,6 +477,12 @@ interface PermissionResponse {
 interface ActiveProcess {
   proc?: ChildProcessWithoutNullStreams;
   backend: Backend;
+  /// Spawned by `prewarm` and not yet used for a real turn. Such a process
+  /// holds no conversation state at all, which makes it the one runtime we
+  /// can always discard for free — see the reap's `canResume` and
+  /// `dropIfPrewarmed`. Cleared by the first `sendSubprocess` that lands
+  /// on it.
+  prewarmed?: boolean;
   sessionId?: string;
   launchModel: string;
   launchPermissionMode: PermissionMode;
@@ -831,11 +870,17 @@ export class RunnerManager {
       // transcript instead, and that lives on the manager (not the proc),
       // so it survives the teardown.
       const codexExec = active.backend === 'codex' && active.codexMode === 'exec';
+      // A never-used prewarm counts as resumable: `canResume` exists to stop
+      // us reaping history we can't get back, and a process that has never
+      // taken a turn has no history. Without this it would be the one runtime
+      // the reap could never collect — no sessionId ever arrives, because
+      // nothing ever ran on it.
+      const unusedPrewarm = !!active.prewarmed;
       if (
         !shouldReapIdle({
           turnInFlight: active.turnInFlight,
           hasPendingPrompts,
-          canResume: !!active.sessionId || codexExec,
+          canResume: !!active.sessionId || codexExec || unusedPrewarm,
           lastActivityAt: active.lastActivityAt,
           timeoutMinutes,
           now,
@@ -1312,6 +1357,9 @@ export class RunnerManager {
           assistantText: active.currentAssistantText,
         });
       }
+      // A real turn is landing — the process is no longer a discardable
+      // cache entry.
+      active.prewarmed = false;
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
@@ -1588,6 +1636,93 @@ export class RunnerManager {
     }
 
     return this.sendSubprocess(args, { syntheticFromCollab: false, userEventAlreadyEmitted });
+  }
+
+  /// Spawn a conversation's backend process before the turn that will use
+  /// it, so CLI startup happens off the critical path.
+  ///
+  /// Flow steps run strictly one after another and each participant gets its
+  /// own conversation, so the first step of every new participant pays a
+  /// cold start — node boot, config load, MCP server registration — while
+  /// the previous step is still generating and this process is mostly idle.
+  /// Warming there hides the whole cost.
+  ///
+  /// Fire-and-forget and best-effort by contract: it never throws, never
+  /// emits conversation events, and nothing may depend on it having run. The
+  /// worst case is one wasted process — if the eventual send disagrees on
+  /// model / permission mode / cwd, `sendSubprocess` respawns exactly as it
+  /// would have without the warm-up.
+  ///
+  /// Only backends that keep a resident process across turns are eligible:
+  ///   - claude on the 'cli' transport. The SDK transport runs `query()`
+  ///     in-process per turn, so there is no subprocess to start early.
+  ///   - codex in 'app-server' mode. `codex exec` respawns per turn by
+  ///     design, so a warm process would just be killed unused.
+  /// gemini (ACP, with its own session pool), copilot (its prompt rides in
+  /// argv, so the process cannot exist before the prompt does) and ollama
+  /// (HTTP, no process at all) are skipped.
+  prewarm(args: SendArgs): void {
+    const convId = args.conversationId;
+    // A runtime already here means there is nothing to warm — including a
+    // live prewarm, since `spawnFor` sets `procs` synchronously.
+    const eligible = canPrewarm({
+      backend: args.backend,
+      claudeTransport: args.claudeTransport,
+      claudeSdkFallback: this.claudeSdkFallbackConvs.has(convId),
+      hasRuntime:
+        this.procs.has(convId) ||
+        this.ollamaSessions.has(convId) ||
+        this.geminiAcpSessions.has(convId),
+      sendPending: this.claudeSendPending.has(convId),
+    });
+    if (!eligible) return;
+    // A model the send would reject is a spawn we'd throw away. `canPrewarm`
+    // has already narrowed the backend to claude / codex, so the premium
+    // catalog is the right check.
+    const premium = args.backend as Exclude<Backend, 'ollama'>;
+    if (args.model?.trim() && !isSupportedPremiumModel(premium, args.model)) return;
+
+    // Spawn with the prompt stripped. Claude and codex app-server both take
+    // the prompt over stdin after launch, so argv is identical either way and
+    // the eventual send won't see a param change. `spawnFor` stamps
+    // `currentUserPrompt` from this, and the empty string is already the
+    // "initial send" case `sendSubprocess` skips when it rolls prior turns.
+    const warmArgs: SendArgs = {
+      ...args,
+      prompt: '',
+      displayText: undefined,
+      attachments: undefined,
+    };
+
+    void (async () => {
+      try {
+        if (args.backend === 'codex') {
+          const binary = this.resolveBinary('codex');
+          // Same probe `spawnFor` would run on the real send — cached per
+          // binary, so paying it here just moves it off the critical path.
+          if (this.pickCodexMode(binary, this.buildEnv(binary)) !== 'app-server') return;
+        }
+        await this.prepareClaudeBroker(warmArgs);
+        // Re-check after the await, immediately before spawning. Nothing can
+        // interleave between this line and `spawnFor`'s own `procs.set`, so a
+        // real send that arrived during the await either already has its
+        // process here (we bail) or will find ours (it reuses it).
+        if (this.procs.has(convId)) return;
+        this.spawnFor(warmArgs).prewarmed = true;
+        log('info', 'runner.prewarm', `${args.backend} conv=${convId} warmed`);
+      } catch (err) {
+        log('warn', 'runner.prewarm', `${args.backend} conv=${convId} prewarm failed`, err);
+      }
+    })();
+  }
+
+  /// Tear down a conversation's process only if it is still an unused
+  /// prewarm. Used when the work that a warm-up was speculating on goes away
+  /// (a run aborted, a branch not taken), so the process doesn't linger to
+  /// the idle reap. A process that has taken a real turn is left alone —
+  /// this must never be a back door to killing a live session.
+  dropIfPrewarmed(conversationId: UUID): void {
+    if (this.procs.get(conversationId)?.prewarmed) this.killProc(conversationId);
   }
 
   stop(conversationId: UUID): void {
@@ -1872,6 +2007,9 @@ export class RunnerManager {
           assistantText: active.currentAssistantText,
         });
       }
+      // A real turn is landing — the process is no longer a discardable
+      // cache entry.
+      active.prewarmed = false;
       active.currentUserPrompt = args.prompt;
       active.currentAssistantText = '';
       active.currentToolActivity = [];
