@@ -1287,6 +1287,7 @@ export class FlowRuntimeImpl {
     }
     this.runs.delete(args.runId);
     for (const convId of Object.values(run.conversationIds)) {
+      this.dropPrewarmed(convId);
       this.convIdToRun.delete(convId);
     }
     this.stepBuffers.delete(args.runId);
@@ -1342,6 +1343,11 @@ export class FlowRuntimeImpl {
           // best-effort
         }
       }
+    }
+    // Nothing further will run, so any step we warmed ahead of is now a
+    // process nobody will ever send to.
+    for (const convId of Object.values(run.conversationIds)) {
+      this.dropPrewarmed(convId);
     }
     run.state = { kind: 'aborted' };
     // If the run was aborted mid-Continue (rare but possible), the banner's
@@ -1472,6 +1478,7 @@ export class FlowRuntimeImpl {
     // observeEvent doesn't keep resolving them to an archived run. A resume
     // re-registers the watcher conversation via watchTick.
     for (const cid of Object.values(run.conversationIds)) {
+      this.dropPrewarmed(cid);
       this.convIdToRun.delete(cid);
     }
     run.state = { kind: 'archived', watch };
@@ -2008,6 +2015,72 @@ export class FlowRuntimeImpl {
       this.handleStepFailure(runId, step, sendResult.error);
       return;
     }
+
+    // The step is now generating, which is the cheapest moment in the whole
+    // run to pay for the NEXT participant's cold start.
+    this.prewarmNextParticipant(run, step);
+  }
+
+  /// Release a conversation's process if it is still an unused prewarm.
+  /// Called wherever a run stops advancing: the step a warm-up was
+  /// speculating on may never arrive, and an unused process holds no state
+  /// worth keeping. Never touches a conversation that has actually run.
+  private dropPrewarmed(convId: UUID): void {
+    try {
+      this.runner.dropIfPrewarmed(convId);
+    } catch {
+      // best-effort
+    }
+  }
+
+  /// Start the next step's backend process while the current step is still
+  /// generating, so its first turn doesn't pay CLI startup on the critical
+  /// path. Steps run strictly in order, so "next" is simply the following
+  /// entry — and each participant keeps one conversation for the whole run,
+  /// so this only ever fires the first time a participant comes up.
+  ///
+  /// Deliberately narrow, because a warm-up that guesses wrong costs a
+  /// process:
+  ///   - A participant that already has a conversation is skipped. It either
+  ///     has a live process already or a session to resume, and prewarm
+  ///     spawns without a resume hint — warming it would risk handing the
+  ///     step a context-free session in exchange for nothing.
+  ///   - A `pause_before` step is skipped. The run is about to stop for a
+  ///     human, and "a while" is not a latency window worth holding a CLI
+  ///     open for.
+  ///
+  /// Everything the spawn needs — model, permission mode, cwd — is derived
+  /// from the flow snapshot and the run, so it is knowable now and matches
+  /// what `executeStep` will ask for. If the user retargets the participant
+  /// mid-run anyway, `sendSubprocess` sees the param change and respawns,
+  /// exactly as it would have without the warm-up.
+  private prewarmNextParticipant(run: FlowRun, step: FlowStep): void {
+    const idx = run.flowSnapshot.steps.findIndex((s) => s.id === step.id);
+    const next = idx >= 0 ? run.flowSnapshot.steps[idx + 1] : undefined;
+    if (!next || next.pauseBefore) return;
+    const participantId = stepParticipantKey(next);
+    if (run.conversationIds[participantId]) return;
+    const stepModel = resolveRunStepModel(run, next);
+    if (stepModel.backend === 'ollama') return;
+
+    // Mint the conversation now so `executeStep` finds the warm process
+    // under the same id instead of spawning a second one.
+    const convId = randomUUID();
+    run.conversationIds[participantId] = convId;
+    this.convIdToRun.set(convId, run.id);
+    this.runner.prewarm({
+      conversationId: convId,
+      prompt: '',
+      backend: stepModel.backend,
+      cwd: run.projectPath,
+      allowedDirs: this.runAllowedDirs(run),
+      model: stepModel.model,
+      permissionMode: this.resolvePermissionMode(run, next),
+      reviewBackend: null,
+      reviewMode: null,
+      reviewModel: null,
+      reviewPersona: null,
+    });
   }
 
   private onStepFinished(runId: UUID, stepId: string): void {

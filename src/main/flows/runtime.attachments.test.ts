@@ -89,6 +89,8 @@ describe('flow step sends', () => {
           sends.push(args);
           return { ok: true };
         },
+        prewarm: () => {},
+        dropIfPrewarmed: () => {},
       } as never,
       () => {},
       () => [],
