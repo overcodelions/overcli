@@ -158,6 +158,8 @@ interface StoreState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
+  /// Last view mode chosen per file extension. See uiSlice.
+  fileViewModeByExt: Record<string, FileViewMode>;
   /// Open editor tabs for the scope on screen, and the saved tabs for
   /// every other scope. See uiSlice + ./fileScope.ts.
   tabs: FileTab[];
@@ -3520,10 +3522,11 @@ export function backendSettingsChanged(prev: AppSettings, next: AppSettings): bo
 }
 
 /// Turn saved tabs from disk back into live tab objects. View mode and
-/// highlight are deliberately not persisted: a restored tab opens in its
-/// natural default (preview for a README, edit for code) with no line jump,
-/// because a line number captured days ago usually points somewhere else by
-/// now.
+/// highlight are deliberately not persisted: a restored tab opens in File with
+/// no line jump, because a line number captured days ago usually points
+/// somewhere else by now. A restored .md or .tsx still lands in Preview, since
+/// that is its natural default; the per-extension memory is session-scoped and
+/// so is empty at hydration time.
 export function hydrateFileTabs(
   persisted: PersistedFileTabs | undefined,
 ): Record<string, ScopeTabs> {

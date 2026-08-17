@@ -12,7 +12,12 @@
 // + persistence). Doing them in stages keeps each PR reviewable.
 
 import type { ActiveSheet, DetailMode, OpenFileHighlight } from './store';
-import { defaultFileViewMode, type FileViewMode } from './filePreview';
+import {
+  canPreviewFile,
+  defaultFileViewMode,
+  fileExtensionKey,
+  type FileViewMode,
+} from './filePreview';
 import { dropBuffer } from './fileBuffers';
 
 type SetFn<T> = (
@@ -58,6 +63,10 @@ export interface UiSliceState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
+  /// Last mode you chose per file extension, so previewing one README opens
+  /// the next one rendered. Session-scoped: it is not persisted, so a fresh
+  /// launch starts back at File for everything.
+  fileViewModeByExt: Record<string, FileViewMode>;
   /// Open tabs for the scope currently on screen, left to right.
   tabs: FileTab[];
   /// Which scope `tabs` belongs to. Owned by `switchFileScope`, driven by
@@ -161,6 +170,7 @@ export const uiSliceInitialState: UiSliceState = {
   openFilePath: null,
   openFileHighlight: null,
   openFileMode: 'edit',
+  fileViewModeByExt: {},
   tabs: [],
   fileScopeKey: null,
   fileTabsByScope: {},
@@ -269,10 +279,11 @@ function newTab(
   path: string,
   highlight: OpenFileHighlight | undefined,
   mode: FileViewMode | undefined,
+  rememberedByExt: Record<string, FileViewMode>,
 ): FileTab {
   return {
     path,
-    mode: defaultFileViewMode(path, !!highlight, mode),
+    mode: defaultFileViewMode(path, !!highlight, mode, rememberedByExt[fileExtensionKey(path)]),
     highlight: highlight ?? null,
   };
 }
@@ -287,20 +298,35 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
     },
     openFile(path, highlight, mode) {
       set(((s) => ({
-        ...focusTabState(s, newTab(path, highlight, mode)),
+        ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt)),
         fileEditorSide: 'inline',
       })) as (s: T) => Partial<T>);
     },
     openSideFile(path, highlight, mode) {
       set(((s) => ({
-        ...focusTabState(s, newTab(path, highlight, mode)),
+        ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt)),
         fileEditorSide: 'side',
       })) as (s: T) => Partial<T>);
     },
     setOpenFileMode(mode) {
       // No need to touch `tabs`: commitActiveTab folds the live mode back
       // into the active tab whenever we leave it.
-      set({ openFileMode: mode } as Partial<T>);
+      set(((s) => {
+        const patch = { openFileMode: mode } as Partial<T> & {
+          fileViewModeByExt?: Record<string, FileViewMode>;
+        };
+        // Only File and Preview are remembered. Diff is a one-off intent tied
+        // to a particular change, and defaulting the next file of that type to
+        // a diff it may not even have would be a worse guess than File.
+        const path = s.openFilePath;
+        if (mode !== 'diff' && path && canPreviewFile(path)) {
+          const ext = fileExtensionKey(path);
+          if (ext && s.fileViewModeByExt[ext] !== mode) {
+            patch.fileViewModeByExt = { ...s.fileViewModeByExt, [ext]: mode };
+          }
+        }
+        return patch;
+      }) as (s: T) => Partial<T>);
     },
     selectTab(path) {
       set(((s) => {
