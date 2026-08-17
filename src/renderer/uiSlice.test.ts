@@ -279,3 +279,86 @@ describe('tab scopes', () => {
     expect(state.openFilePath).toBe('/repo/a.ts');
   });
 });
+
+describe('remembered view mode per extension', () => {
+  it('opens markdown and components rendered without being asked', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/README.md');
+    expect(state.openFileMode).toBe('preview');
+
+    slice.openFile('/repo/src/Button.tsx');
+    expect(state.openFileMode).toBe('preview');
+
+    slice.openFile('/repo/src/main.ts');
+    expect(state.openFileMode).toBe('edit');
+  });
+
+  it('switching to File sticks for that extension', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/README.md');
+    slice.setOpenFileMode('edit');
+    expect(state.fileViewModeByExt.md).toBe('edit');
+
+    slice.openFile('/repo/docs/GUIDE.md');
+    expect(state.openFileMode).toBe('edit');
+  });
+
+  it('keeps the memory per extension rather than across all types', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/README.md');
+    slice.setOpenFileMode('edit');
+
+    // .tsx is untouched by the .md preference and still renders.
+    slice.openFile('/repo/src/Button.tsx');
+    expect(state.openFileMode).toBe('preview');
+    expect(state.fileViewModeByExt).toEqual({ md: 'edit' });
+  });
+
+  it('lets a preview be restored after switching to File', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/README.md');
+    slice.setOpenFileMode('edit');
+    slice.setOpenFileMode('preview');
+
+    slice.openFile('/repo/docs/GUIDE.md');
+    expect(state.openFileMode).toBe('preview');
+  });
+
+  it('does not remember diff', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/README.md');
+    slice.setOpenFileMode('diff');
+    expect(state.fileViewModeByExt.md).toBeUndefined();
+
+    // Falls back to the render-first default rather than to Diff.
+    slice.openFile('/repo/docs/GUIDE.md');
+    expect(state.openFileMode).toBe('preview');
+  });
+
+  it('does not remember a mode for a type that cannot be previewed', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/src/main.ts');
+    slice.setOpenFileMode('preview');
+    expect(state.fileViewModeByExt).toEqual({});
+  });
+
+  it('lets a line jump outrank the render-first default', () => {
+    const { state, slice } = makeStub();
+    // Jumping to README.md:42 wants the line, not the rendered page.
+    slice.openFile('/repo/docs/GUIDE.md', { startLine: 42, endLine: 42, requestId: 'r1' });
+    expect(state.openFileMode).toBe('edit');
+  });
+
+  it('lets an explicitly requested mode outrank both', () => {
+    const { state, slice } = makeStub();
+    slice.openFile('/repo/docs/GUIDE.md', undefined, 'edit');
+    expect(state.openFileMode).toBe('edit');
+  });
+
+  it('renders side-opened files too', () => {
+    const { state, slice } = makeStub();
+    slice.openSideFile('/repo/docs/GUIDE.md');
+    expect(state.openFileMode).toBe('preview');
+    expect(state.fileEditorSide).toBe('side');
+  });
+});
