@@ -57,7 +57,7 @@ import { FlowRuntimeImpl } from './runtime';
 describe('FlowRuntimeImpl.startRun', () => {
   it('stamps worker attribution onto the launched run', async () => {
     const runtime = new FlowRuntimeImpl(
-      { send: () => ({ ok: true }) } as never,
+      { send: () => ({ ok: true }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
       () => {},
       () => [],
       () => ({ backends: {} }) as never,
