@@ -17,6 +17,8 @@ import type { PortableWorker, WorkerImportNotes } from './flows/workerYaml';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
+// Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
+import type { FlowModelDefaults } from './modelCatalog';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -848,6 +850,14 @@ export interface InstalledRegistryFlow {
 export interface AppSettings {
   backendPaths: Partial<Record<Backend, string>>;
   backendDefaultModels: Partial<Record<Backend, string>>;
+  /// Which model each speed tier means when a flow is generated or a
+  /// template is resolved, per backend. Distinct from
+  /// `backendDefaultModels` (one model for new conversations): a flow
+  /// spends several models at once, and what it needs pinned is the
+  /// *tier* mapping — which model is "the thinking one", which is "the
+  /// fast one". An unset tier means auto: the newest catalog model at
+  /// that tier, so the default keeps up with the catalog on its own.
+  flowModelDefaults?: FlowModelDefaults;
   /// Backends hidden/disabled in the UI. Disabled backends are not used as
   /// defaults and are skipped by health probes.
   disabledBackends: Partial<Record<Backend, boolean>>;
@@ -2404,6 +2414,7 @@ export type MainToRendererEvent =
 export const DEFAULT_SETTINGS: AppSettings = {
   backendPaths: {},
   backendDefaultModels: {},
+  flowModelDefaults: {},
   disabledBackends: {},
   defaultPermissionMode: 'plan',
   defaultEffort: '',
