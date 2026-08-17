@@ -1,12 +1,12 @@
 /// Inlining for the HTML preview iframe.
 ///
-/// The iframe runs with `sandbox=""`, which puts the document on an opaque
-/// origin, and an opaque-origin document may not load `file://`
-/// subresources — so a sibling `styles.css` reached through `<base>` is
-/// silently blocked and the page renders unstyled. We instead collect the
-/// local refs a document mentions, have the main process read them (under
-/// the same registered-root guard as every other fs handler), and fold the
-/// bytes into the document itself before handing it to the iframe.
+/// The document is served over `overcli-preview://` into a sandboxed frame,
+/// which is an opaque origin under a policy that grants `default-src 'none'`
+/// — so a sibling `styles.css` reached through `<base href="file://…">` is
+/// blocked and the page renders unstyled. We instead collect the local refs
+/// a document mentions, have the main process read them (under the same
+/// registered-root guard as every other fs handler), and fold the bytes into
+/// the document itself before publishing it.
 
 import type { HtmlPreviewAsset } from '@shared/types';
 
@@ -37,8 +37,8 @@ export function collectHtmlAssetRefs(html: string): string[] {
 }
 
 /// Refs that point at a file on disk next to the document. Absolute URLs
-/// are left alone — the sandbox still lets the iframe fetch them, and
-/// rewriting them would be wrong anyway.
+/// are left alone — the preview policy lets the frame fetch https: assets,
+/// and rewriting them would be wrong anyway.
 export function isLocalAssetRef(ref: string): boolean {
   const trimmed = ref.trim();
   if (!trimmed) return false;

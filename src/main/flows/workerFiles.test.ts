@@ -251,3 +251,67 @@ describe('a symlink inside the worker’s own directory', () => {
     expect(fs.existsSync(path.join(outside, 'private.md'))).toBe(true);
   });
 });
+
+describe('filing a file the run wrote itself', () => {
+  it('copies it byte for byte instead of reading it as text', () => {
+    const src = path.join(userDataDir, 'dashboard.html');
+    // A PNG's header, which is exactly what a UTF-8 round trip destroys.
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]);
+    fs.writeFileSync(src, bytes);
+    const res = fileWorkerDeliverable({
+      workerId: WORKER,
+      task: 'shift',
+      label: '[Shift 3] Chief of Staff',
+      title: 'Morning briefing',
+      at: AT,
+      artifacts: [
+        { name: 'brief.md', body: '# brief' },
+        { name: 'dashboard.html', sourcePath: src },
+      ],
+    });
+    expect(res.written).toBe(true);
+    const filed = deliverableFiles({
+      workerId: WORKER,
+      task: 'shift',
+      label: '[Shift 3] Chief of Staff',
+      title: 'Morning briefing',
+      at: AT,
+    });
+    const dashboard = filed.find((f) => f.name.endsWith('dashboard.html'));
+    expect(dashboard).toBeTruthy();
+    expect(fs.readFileSync(dashboard!.path)).toEqual(bytes);
+  });
+
+  it('files a lone written file under the job name, keeping its extension', () => {
+    const src = path.join(userDataDir, 'dashboard.html');
+    fs.writeFileSync(src, '<html>hi</html>');
+    fileWorkerDeliverable({
+      workerId: WORKER,
+      task: 'errand',
+      label: '[Errand] dashboard',
+      title: 'Build the dashboard',
+      at: AT,
+      artifacts: [{ name: 'dashboard.html', sourcePath: src }],
+    });
+    const names = listWorkerFiles(WORKER).map((f) => f.name);
+    expect(names).toContain('2026-08-16-1431-errand-build-the-dashboard.html');
+  });
+
+  it('does not fail the whole filing when the source is already gone', () => {
+    const res = fileWorkerDeliverable({
+      workerId: WORKER,
+      task: 'shift',
+      label: '[Shift 1] Chief of Staff',
+      title: 'Morning briefing',
+      at: AT,
+      artifacts: [
+        { name: 'brief.md', body: '# brief' },
+        { name: 'dashboard.html', sourcePath: path.join(userDataDir, 'never-existed.html') },
+      ],
+    });
+    expect(res.written).toBe(true);
+    const names = listWorkerFiles(WORKER).map((f) => f.name);
+    expect(names.some((n) => n.endsWith('brief.md'))).toBe(true);
+    expect(names.some((n) => n.endsWith('dashboard.html'))).toBe(false);
+  });
+});

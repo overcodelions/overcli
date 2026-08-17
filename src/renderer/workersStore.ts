@@ -11,7 +11,13 @@ import { useFlowsStore } from './flowsStore';
 
 import type { Attachment, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
-import { moveInRoster } from '@shared/flows/worker';
+import { moveInRoster, placeInRoster } from '@shared/flows/worker';
+import {
+  allocateTreasury,
+  fundingFor,
+  type Treasury,
+  type TreasuryAllocation,
+} from '@shared/flows/treasury';
 import type {
   Worker,
   WorkerCaps,
@@ -78,11 +84,17 @@ interface WorkersState {
   /// and Flows tabs use, so a worker's shifts, errands and replies have a full
   /// pane to render in instead of expanding inside a sidebar row.
   selectedWorkerId: string | null;
-  /// The Workers pane shows one of two things: the selected worker's desk, or
-  /// the roster calendar. It is a peer of the selection rather than part of it
-  /// — the calendar is about every worker at once, so it has no worker to be
-  /// the selection of, and picking anyone from it must land you on their desk.
-  view: 'worker' | 'calendar';
+  /// The monthly pool, and the waterfall it produces across the roster. Both
+  /// are pushed by main; `allocation` is only ever re-derived here mid-drag,
+  /// so a reorder shows the money move before the round trip lands.
+  treasury: Treasury | null;
+  allocation: TreasuryAllocation | null;
+  /// The Workers pane shows one of three things: the selected worker's desk,
+  /// the roster calendar, or the funding waterfall. The last two are peers of
+  /// the selection rather than part of it — both are about every worker at
+  /// once, so neither has a worker to be the selection of, and picking anyone
+  /// from them must land you on their desk.
+  view: 'worker' | 'calendar' | 'funds';
   /// One turn to open when the desk mounts, set by arriving from somewhere
   /// that already knows which turn you meant — clicking a past shift on the
   /// calendar. The desk shows one DAY, so a link into it has to carry the
@@ -113,14 +125,22 @@ interface WorkersActions {
   save(): Promise<boolean>;
   setEnabled(id: string, enabled: boolean): Promise<void>;
   setTrust(id: string, trust: WorkerTrustLevel): Promise<void>;
+  /// Which of this worker's outputs renders when you open it.
+  setAutoRender(id: string, autoRender: string): Promise<void>;
   remove(id: string): Promise<void>;
   workShiftNow(id: string): Promise<void>;
   selectWorker(id: string | null): void;
   showCalendar(): void;
+  showFunds(): void;
+  applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
+  setTreasury(monthlyUSD: number): Promise<boolean>;
   setPreviewEmpty(on: boolean): void;
   openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
   clearDeskFocus(): void;
   moveWorker(id: string, direction: -1 | 1): Promise<void>;
+  /// Drop a worker at an arbitrary slot. `insertBefore` is a gap index into
+  /// the current order — what a drop indicator drawn between two rows means.
+  dropWorker(id: string, insertBefore: number): Promise<void>;
   setFilesRoot(id: string, root: string): void;
   runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
   clearErrand(id: string): void;
@@ -177,6 +197,36 @@ export function draftFromContract(
   };
 }
 
+/// Land a new roster order locally, then persist it.
+///
+/// Applied locally FIRST: the roster is what the user is looking at, and a row
+/// that waits for a round trip before moving reads as a dead control. The
+/// waterfall is re-run on the new order with the spend we were last pushed,
+/// because position is a funding decision now — a row that moved while its
+/// funded column stayed put reads as the reorder having done nothing.
+async function applyRosterOrder(
+  set: (fn: (s: WorkersState) => Partial<WorkersState>) => void,
+  ids: string[],
+): Promise<void> {
+  set((s) => {
+    const workers = { ...s.workers };
+    ids.forEach((wid, index) => {
+      const worker = workers[wid];
+      if (worker) workers[wid] = { ...worker, order: index };
+    });
+    const allocation =
+      s.allocation && s.treasury
+        ? allocateTreasury(
+            Object.values(workers),
+            (wid) => fundingFor(s.allocation, wid)?.spentUSD ?? 0,
+            s.treasury.monthlyUSD,
+          )
+        : s.allocation;
+    return { workers, allocation };
+  });
+  await window.overcli.invoke('workers:reorder', { ids });
+}
+
 export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) => ({
   loaded: false,
   workers: {},
@@ -193,6 +243,8 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   draftedFlow: null,
   hireSummary: null,
   selectedWorkerId: null,
+  treasury: null,
+  allocation: null,
   view: 'worker',
   deskFocus: null,
   previewEmpty: false,
@@ -200,7 +252,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   error: null,
 
   async reload() {
-    const rows = await window.overcli.invoke('workers:list');
+    const [rows, funds] = await Promise.all([
+      window.overcli.invoke('workers:list'),
+      window.overcli.invoke('workers:treasury'),
+    ]);
     const workers: Record<string, Worker> = {};
     const nextShiftAt: Record<string, number | null> = {};
     const scorecards: Record<string, WorkerScorecard> = {};
@@ -209,7 +264,27 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       nextShiftAt[row.worker.id] = row.nextShiftAt;
       scorecards[row.worker.id] = row.scorecard;
     }
-    set({ workers, nextShiftAt, scorecards, loaded: true });
+    set({
+      workers,
+      nextShiftAt,
+      scorecards,
+      treasury: funds.treasury,
+      allocation: funds.allocation,
+      loaded: true,
+    });
+  },
+
+  applyTreasury(treasury, allocation) {
+    set({ treasury, allocation });
+  },
+
+  async setTreasury(monthlyUSD) {
+    const res = await window.overcli.invoke('workers:setTreasury', { monthlyUSD });
+    if (!res.ok) {
+      set({ error: res.error });
+      return false;
+    }
+    return true;
   },
 
   applyUpdate(worker, nextShiftAt, scorecard) {
@@ -294,6 +369,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set({ view: 'calendar' });
   },
 
+  showFunds() {
+    set({ view: 'funds' });
+  },
+
   clearDeskFocus() {
     if (get().deskFocus) set({ deskFocus: null });
   },
@@ -303,18 +382,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async moveWorker(id, direction) {
-    const ids = moveInRoster(Object.values(get().workers), id, direction);
-    // Applied locally first: the roster is what the user is looking at, and a
-    // row that waits for a round trip before moving reads as a dead button.
-    set((s) => {
-      const workers = { ...s.workers };
-      ids.forEach((wid, index) => {
-        const worker = workers[wid];
-        if (worker) workers[wid] = { ...worker, order: index };
-      });
-      return { workers };
-    });
-    await window.overcli.invoke('workers:reorder', { ids });
+    await applyRosterOrder(set, moveInRoster(Object.values(get().workers), id, direction));
+  },
+
+  async dropWorker(id, insertBefore) {
+    await applyRosterOrder(set, placeInRoster(Object.values(get().workers), id, insertBefore));
   },
 
   openWorkerActivity(workerId, orchestrationId, at) {
@@ -400,6 +472,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   async setTrust(id, trust) {
     const res = await window.overcli.invoke('workers:setTrust', { id, trust });
+    if (!res.ok) set({ error: res.error });
+  },
+
+  async setAutoRender(id, autoRender) {
+    const res = await window.overcli.invoke('workers:setAutoRender', { id, autoRender });
     if (!res.ok) set({ error: res.error });
   },
 

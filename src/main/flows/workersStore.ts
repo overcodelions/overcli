@@ -6,6 +6,7 @@ import { app } from 'electron';
 import { log } from '../diagnostics';
 
 import type { Worker } from '../../shared/flows/worker';
+import type { Treasury } from '../../shared/flows/treasury';
 
 function dir(): string {
   return path.join(app.getPath('userData'), 'workers');
@@ -13,6 +14,13 @@ function dir(): string {
 
 function pathFor(id: string): string {
   return path.join(dir(), `${id}.json`);
+}
+
+/// The treasury sits beside the roster it funds rather than in the app store:
+/// it is worthless without these files, and a backup that took one without
+/// the other would restore a pool that funds nobody.
+function treasuryPath(): string {
+  return path.join(dir(), 'treasury.json');
 }
 
 function ensureDir(): void {
@@ -26,14 +34,17 @@ function ensureDir(): void {
 /// Persist atomically (temp file + rename) so a crash mid-write can't leave a
 /// half-written JSON that kills the next boot's load.
 export function saveWorker(w: Worker): void {
+  writeAtomic(pathFor(w.id), JSON.stringify(w), w.id);
+}
+
+function writeAtomic(target: string, body: string, label: string): void {
   ensureDir();
-  const target = pathFor(w.id);
   const tmp = `${target}.${process.pid}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(w), 'utf8');
+    fs.writeFileSync(tmp, body, 'utf8');
     fs.renameSync(tmp, target);
   } catch (err) {
-    log('warn', 'workers', `Failed to persist ${w.id}: ${String(err)}`);
+    log('warn', 'workers', `Failed to persist ${label}: ${String(err)}`);
     try {
       fs.rmSync(tmp, { force: true });
     } catch {
@@ -47,7 +58,12 @@ export function loadAllWorkers(): Worker[] {
   ensureDir();
   let names: string[] = [];
   try {
-    names = fs.readdirSync(dir()).filter((n) => n.endsWith('.json'));
+    // treasury.json shares the directory but is not a worker — excluded by
+    // name rather than left to the shape guard below, so a malformed pool
+    // file can never be mistaken for a corrupt worker.
+    names = fs
+      .readdirSync(dir())
+      .filter((n) => n.endsWith('.json') && n !== 'treasury.json');
   } catch {
     return [];
   }
@@ -63,6 +79,24 @@ export function loadAllWorkers(): Worker[] {
     }
   }
   return out.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/// The pool, or null on an install that has never had one — the engine seeds
+/// it from the existing per-worker caps in that case, so an upgrade changes
+/// nothing until the user says otherwise.
+export function loadTreasury(): Treasury | null {
+  try {
+    const raw = fs.readFileSync(treasuryPath(), 'utf8');
+    const parsed = JSON.parse(raw) as Treasury;
+    if (!parsed || !Number.isFinite(parsed.monthlyUSD) || parsed.monthlyUSD <= 0) return null;
+    return { monthlyUSD: parsed.monthlyUSD };
+  } catch {
+    return null;
+  }
+}
+
+export function saveTreasury(t: Treasury): void {
+  writeAtomic(treasuryPath(), JSON.stringify(t), 'treasury');
 }
 
 export function deleteWorker(id: string): void {
