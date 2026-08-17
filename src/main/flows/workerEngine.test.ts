@@ -14,6 +14,7 @@ vi.mock('./workerJournal', () => ({
   loadWorkerJournal: vi.fn(() => []),
   workerRejectedTitles: vi.fn(() => []),
   digestWorkerJournal: vi.fn(() => ''),
+  clearWorkerJournal: vi.fn(() => 0),
 }));
 vi.mock('./runSummaryLog', () => ({
   workerSpendSince: vi.fn(() => 0),
@@ -118,6 +119,13 @@ function makeHarness(
           .filter((e) => e.workerId === workerId)
           .map((e) => `${e.kind}: ${e.title || e.note || ''}`)
           .join('\n'),
+      clear: (workerId) => {
+        const before = journal.length;
+        for (let i = journal.length - 1; i >= 0; i--) {
+          if (journal[i].workerId === workerId) journal.splice(i, 1);
+        }
+        return before - journal.length;
+      },
     },
     spend: () => spend,
     // The harness models one spend figure for everybody; the engine wants it
@@ -936,5 +944,148 @@ describe('WorkerEngine errand threads', () => {
     );
     await h.engine.runErrand('worker-1', 'first thing i have asked');
     expect(h.parked[0].priorTurns).toBeUndefined();
+  });
+});
+
+describe('WorkerEngine shift clock', () => {
+  it('states the wall clock, and the previous shift once there is one', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    expect(h.parked[0].prompt).toContain(
+      `This shift started at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}.`,
+    );
+    expect(h.parked[0].prompt).toContain('never worked a shift before');
+
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+    expect(h.parked).toHaveLength(2);
+    // The window to catch up on is the FIRST shift's time, not this one's.
+    expect(h.parked[1].prompt).toContain(
+      `Your previous shift planned at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}`,
+    );
+  });
+
+  it('hands the worker its own cursor convention and the first-pass window', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+
+    expect(h.parked[0].prompt).toContain('cursor.json');
+    expect(h.parked[0].prompt).toContain('cover the last 90 days');
+    // Nothing verifies the mark, so the journal's own failure entries are the
+    // only check the worker has that its cursor is not ahead of its data.
+    expect(h.parked[0].prompt).toContain('resume from the one it replaced');
+  });
+
+  it('keeps the planning anchor across a cadence edit that clears lastShiftAt', async () => {
+    const seed = seedWorker();
+    const h = makeHarness({ seed: [seed] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    const firstShiftAt = local(2026, 3, 2, 9, 0);
+
+    // Editing the cadence re-anchors the schedule — which must not tell the
+    // worker it has never looked at the project.
+    const saved = h.engine.save({ ...seed, cadence: { kind: 'interval', everyMinutes: 60 } });
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) return;
+    expect(saved.worker.lastShiftAt).toBeUndefined();
+    expect(saved.worker.lastPlannedAt).toBe(firstShiftAt);
+
+    // The next shift under the new cadence still knows when the last one was.
+    await h.advanceTo(local(2026, 3, 2, 11, 0));
+    expect(h.parked.length).toBeGreaterThan(1);
+    expect(h.parked[1].prompt).toContain(
+      `Your previous shift planned at ${new Date(firstShiftAt).toISOString()}`,
+    );
+  });
+
+  it('does not let an errand move the anchor a shift has to catch up from', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+
+    h.setNow(local(2026, 3, 2, 14, 0));
+    await h.engine.runErrand('worker-1', 'How many open TODOs are there?');
+
+    h.setNow(local(2026, 3, 3, 9, 0));
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+    const last = h.parked[h.parked.length - 1];
+    expect(last.prompt).toContain(
+      `Your previous shift planned at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}`,
+    );
+  });
+});
+
+describe('WorkerEngine memory reset', () => {
+  it('forgets the journal and starts over at shift #1', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.journal.push({
+      id: 'other',
+      workerId: 'worker-2',
+      kind: 'rejected',
+      at: 1,
+      title: 'Someone else’s idea',
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    expect(h.journal.filter((e) => e.workerId === 'worker-1').length).toBeGreaterThan(0);
+
+    const res = h.engine.resetMemory('worker-1');
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.entries).toBeGreaterThan(0);
+    expect(res.files).toBe(0);
+    expect(h.journal.filter((e) => e.workerId === 'worker-1')).toEqual([]);
+    // Another worker's memory is not the caller's to wipe.
+    expect(h.journal.filter((e) => e.workerId === 'worker-2')).toHaveLength(1);
+
+    const w = h.engine.get('worker-1')!;
+    expect(w.shiftCount).toBeUndefined();
+    expect(w.lastPlannedAt).toBeUndefined();
+    // Trust and budget are standing decisions about the worker, not memories.
+    expect(w.trust).toBe('probation');
+    expect(w.budgetUSDPerMonth).toBe(seedWorker().budgetUSDPerMonth);
+
+    // Next shift is #1 again, with nothing to catch up on.
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+    const last = h.parked[h.parked.length - 1];
+    expect(last.prompt).toContain('This is your shift #1.');
+    expect(last.prompt).toContain('never worked a shift before');
+  });
+
+  it('does not fire the moment the reset lands', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    expect(h.parked).toHaveLength(1);
+
+    // Reset at 23:00 — the daily 09:00 slot is long past, and a cleared
+    // anchor would read as "due since this morning".
+    h.setNow(local(2026, 3, 2, 23, 0));
+    expect(h.engine.resetMemory('worker-1').ok).toBe(true);
+    await h.flush();
+    expect(h.parked).toHaveLength(1);
+  });
+
+  it('refuses while a planning turn is in flight', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    const release = h.holdPark();
+    const shift = h.engine.workShiftNow('worker-1');
+    await h.flush();
+
+    const res = h.engine.resetMemory('worker-1');
+    expect(res).toEqual({ ok: false, error: 'This worker is mid-shift. Wait for it to finish, then reset.' });
+
+    release();
+    await shift;
+  });
+
+  it('reports an unknown worker rather than clearing nothing quietly', () => {
+    const h = makeHarness();
+    h.engine.start();
+    expect(h.engine.resetMemory('nobody')).toEqual({ ok: false, error: 'Worker not found.' });
   });
 });

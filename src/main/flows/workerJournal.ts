@@ -103,6 +103,46 @@ function loadWorkerJournalRaw(): WorkerJournalEntry[] {
   return out;
 }
 
+/// Forget everything this worker has done. The journal is one shared file, so
+/// this is a filtered rewrite: every OTHER worker's entries survive verbatim.
+/// Returns how many entries were dropped, and THROWS if the rewrite could not
+/// land: a caller that resets shift numbering on the strength of a clear that
+/// silently failed would leave the worker's next shift #1 colliding with the
+/// old one's journal id, and idempotent append would drop it on the floor.
+///
+/// This is the whole of a worker's episodic memory, so it is also what bans
+/// re-proposing a rejected title (`workerRejectedTitles`) and what feeds the
+/// demotion streak. A reset therefore un-bans old rejections by design — the
+/// caller is asking the worker to start fresh, not to keep its grudges. Trust
+/// level lives on the worker record and is deliberately left alone: it was the
+/// user's explicit act, not a memory.
+export function clearWorkerJournal(workerId: string): number {
+  const loaded = loadWorkerJournalRaw();
+  const kept = loaded.filter((entry) => entry.workerId !== workerId);
+  const dropped = loaded.length - kept.length;
+  if (dropped === 0) return 0;
+  if (!rewrite(kept)) throw new Error('Could not rewrite the worker journal.');
+  // The append-dedupe index is keyed by entry id with no worker dimension, so
+  // it cannot be filtered in place — drop it and let the next append reload.
+  journalIds = null;
+  return dropped;
+}
+
+/// Atomic whole-file replacement, shared by compaction and reset. Returns
+/// whether the swap landed — a failed rewrite must leave the index alone.
+function rewrite(entries: WorkerJournalEntry[]): boolean {
+  const p = filePath();
+  const tmp = p + '.tmp';
+  try {
+    fs.writeFileSync(tmp, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf-8');
+    fs.renameSync(tmp, p);
+    return true;
+  } catch (err) {
+    log('warn', 'flows.rewriteWorkerJournal', 'failed to rewrite journal', err);
+    return false;
+  }
+}
+
 function maybeCompact(loaded: WorkerJournalEntry[]): void {
   const p = filePath();
   let size = 0;
@@ -120,11 +160,5 @@ function maybeCompact(loaded: WorkerJournalEntry[]): void {
   const compacted = Array.from(byId.values())
     .sort((a, b) => a.at - b.at)
     .slice(-WORKER_JOURNAL_MAX_ENTRIES);
-  const tmp = p + '.tmp';
-  try {
-    fs.writeFileSync(tmp, compacted.map((entry) => JSON.stringify(entry)).join('\n') + '\n', 'utf-8');
-    fs.renameSync(tmp, p);
-  } catch (err) {
-    log('warn', 'flows.compactWorkerJournal', 'failed to compact', err);
-  }
+  rewrite(compacted);
 }

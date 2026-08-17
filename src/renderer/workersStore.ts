@@ -154,6 +154,10 @@ interface WorkersActions {
   runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
   clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
+  /// Start this worker over: journal gone, shift numbering back to #1, and
+  /// with `files` its own directory emptied too. Resolves to what was thrown
+  /// away so the caller can say it out loud, or null if the reset failed.
+  resetMemory(id: string, files: boolean): Promise<{ entries: number; files: number } | null>;
   /// This worker as a share file. Read on demand rather than held in state:
   /// it is a rendering of the worker plus its flows, and a copy kept here
   /// would go stale the moment either is edited.
@@ -604,6 +608,19 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   async loadJournal(id) {
     const entries = await window.overcli.invoke('workers:journal', { id });
     set((s) => ({ journals: { ...s.journals, [id]: entries } }));
+  },
+
+  async resetMemory(id, files) {
+    const res = await window.overcli.invoke('workers:resetMemory', { id, files });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    // The pane renders the journal from this map, so an emptied journal has to
+    // be emptied here too — the worker event that follows carries the record,
+    // not its history.
+    set((s) => ({ journals: { ...s.journals, [id]: [] } }));
+    return { entries: res.entries, files: res.files };
   },
 
   async shareYaml(id) {

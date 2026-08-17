@@ -33,8 +33,13 @@ const SUBAGENT_DRAWER_MIN = 320;
 const SUBAGENT_DRAWER_MAX = 820;
 const SUBAGENT_DRAWER_DEFAULT = 480;
 const SIDE_FILE_MIN = 420;
-const SIDE_FILE_MAX = 1000;
 const SIDE_FILE_DEFAULT = 640;
+/// The narrowest the main column may be squeezed to when a side pane is
+/// dragged wide. The side file pane's ceiling is derived from the window
+/// rather than fixed (see `sideFileMax`): a fixed 1000px cap stopped the
+/// preview mid-screen on a 27" display, where the whole point of the extra
+/// pixels is that a rendered document can have them.
+const MAIN_MIN = 480;
 
 export function App() {
   // Keeps the file editor's open tabs pointed at the right scope
@@ -66,6 +71,7 @@ export function App() {
     (s) => (s.selectedWorkerId ? (s.filesRoot[s.selectedWorkerId] ?? null) : null),
   );
   const [sideFileWidth, setSideFileWidth] = useState(SIDE_FILE_DEFAULT);
+  const windowWidth = useWindowWidth();
   // The three resizable panels, handed to their dividers so a drag can move
   // them directly. A width is pure layout: making it React state mid-gesture
   // re-renders the whole tab (roster, transcript, rendered markdown) once per
@@ -316,6 +322,22 @@ export function App() {
   const onboarding = projects.length === 0 && !anyBackendReady(backendHealth);
   const showSidebar = sidebarVisible && !onboarding;
 
+  // What's left for the preview once everything it shares the row with has
+  // taken its share. Recomputed on window resize so a maximised window can
+  // give the pane the space it just gained.
+  const sideFileMax = Math.max(
+    SIDE_FILE_MIN,
+    windowWidth -
+      (showSidebar ? sidebarWidth : 0) -
+      (subagentDrawerParentId && drawerConvId ? subagentDrawerWidth : 0) -
+      MAIN_MIN,
+  );
+  // Shrinking the window can strand the pane above its new ceiling; the
+  // divider only clamps mid-drag, so pull it back in here.
+  useEffect(() => {
+    setSideFileWidth((w) => Math.min(w, sideFileMax));
+  }, [sideFileMax]);
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
       <TitleBar />
@@ -385,7 +407,7 @@ export function App() {
               width={sideFileWidth}
               onChange={setSideFileWidth}
               minWidth={SIDE_FILE_MIN}
-              maxWidth={SIDE_FILE_MAX}
+              maxWidth={sideFileMax}
               side="right"
             />
             <div
@@ -421,6 +443,18 @@ export function App() {
       <UpdateToast />
     </div>
   );
+}
+
+/// Window width as state, so panel ceilings derived from it re-derive when
+/// the user resizes or maximises rather than being frozen at mount width.
+function useWindowWidth(): number {
+  const [width, setWidth] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return width;
 }
 
 function clampWidth(w: number, min: number, max: number): number {
