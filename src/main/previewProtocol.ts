@@ -26,8 +26,10 @@ const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 
 /// What a published document is allowed to do. Both policies replace the
 /// app's own rather than extending it, and neither grants same-origin — the
-/// frame that renders them is `sandbox="allow-scripts"`, so a preview can
-/// never reach the app's storage, its IPC bridge, or the file system.
+/// frame that renders them is `sandbox="allow-scripts allow-popups"`, so a
+/// preview can never reach the app's storage, its IPC bridge, or the file
+/// system. Its popups are all denied by main's window-open handler, which
+/// bounces plain web URLs to the user's browser instead.
 ///
 ///   - `bundle`: a component Overcli compiled itself. Everything it needs is
 ///     already inlined, so no remote script is allowed at all.

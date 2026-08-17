@@ -55,12 +55,12 @@ import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
 import { FundsPane } from "./FundsPane";
 import {
-  activityOnDay,
   adjacentDeskDay,
   describeActivity,
   orchestrationTask,
   deskDayLabel,
   deskDays,
+  deskTimeline,
   initialDeskDay,
   relativeTime,
   fileDate,
@@ -90,6 +90,7 @@ export function WorkersPane() {
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const setPreviewEmpty = useWorkersStore((s) => s.setPreviewEmpty);
+  const importFromFile = useWorkersStore((s) => s.importFromFile);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const view = useWorkersStore((s) => s.view);
   const activeRun = useFlowsStore((s) =>
@@ -132,6 +133,12 @@ export function WorkersPane() {
   const defaultProjectPath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
   const canHire = defaultProjectPath !== "";
 
+  // The editor wins over everything below it: it is the one screen on this
+  // tab the user asked for outright. A worker's run outranking it meant that
+  // pressing Edit — or picking the worker in ⌘K — while its run filled the
+  // pane changed nothing on screen at all.
+  if (draft) return <WorkerEditor />;
+
   // A run this worker launched is shown HERE, not on the Flows tab. Sending
   // you to Flows swapped the whole left sidebar for the project tree — you
   // lost the roster, the tab moved under you, and the run you arrived at is
@@ -141,7 +148,6 @@ export function WorkersPane() {
     return <FlowRunPane key={activeRun.id} runId={activeRun.id} />;
   }
 
-  if (draft) return <WorkerEditor />;
   if (hiring)
     return (
       <HireWorker
@@ -175,10 +181,27 @@ export function WorkersPane() {
               {previewEmpty ? "Previewing empty" : "Preview empty"}
             </button>
           )}
+          {/* The other way a worker arrives: somebody else's file. Beside
+              "Add by hand" because that is what it is — a hire you did not
+              have to describe, landing in the same editor for the same
+              confirmation. */}
+          <button
+            disabled={!canHire}
+            onClick={() =>
+              void importFromFile({
+                projectPath: defaultProjectPath,
+                projectPaths: projects.map((p) => p.path),
+              })
+            }
+            title="Hire from a worker YAML someone shared with you"
+            className="ml-auto text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
+          >
+            Import…
+          </button>
           <button
             disabled={!canHire}
             onClick={() => openEditor(newWorkerDraft(defaultProjectPath))}
-            className="ml-auto text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
+            className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
           >
             Add by hand
           </button>
@@ -217,6 +240,12 @@ export function WorkersPane() {
             canHire={canHire}
             onHire={() => setHiring(true)}
             onAddByHand={() => openEditor(newWorkerDraft(defaultProjectPath))}
+            onImport={() =>
+              void importFromFile({
+                projectPath: defaultProjectPath,
+                projectPaths: projects.map((p) => p.path),
+              })
+            }
           />
         </div>
       ) : selected ? (
@@ -256,10 +285,12 @@ function WorkersEmptyState({
   canHire,
   onHire,
   onAddByHand,
+  onImport,
 }: {
   canHire: boolean;
   onHire: () => void;
   onAddByHand: () => void;
+  onImport: () => void;
 }) {
   return (
     // The posting stays a narrow document — a column you read — and the width
@@ -320,6 +351,15 @@ function WorkersEmptyState({
             className="text-[12px] text-ink-faint hover:text-ink disabled:opacity-40"
           >
             or write the contract yourself
+          </button>
+          {/* The third way to fill a vacancy, and the fastest one for anyone
+              joining a team that already runs workers: take theirs. */}
+          <button
+            disabled={!canHire}
+            onClick={onImport}
+            className="text-[12px] text-ink-faint hover:text-ink disabled:opacity-40"
+          >
+            or import one
           </button>
         </div>
 
@@ -747,10 +787,7 @@ function WorkerRow({
   const activity = useMemo(() => mine.map(toWorkerActivity), [mine]);
   const days = useMemo(() => deskDays(activity), [activity]);
   // Oldest first: a transcript reads down, and the composer is at the bottom.
-  const dayItems = useMemo(
-    () => activityOnDay(activity, day).slice().reverse(),
-    [activity, day],
-  );
+  const dayItems = useMemo(() => deskTimeline(activity, day), [activity, day]);
   const timelineCount = dayItems.length;
 
   // Park the transcript at the newest message when you arrive, and keep it
@@ -1218,9 +1255,114 @@ function WorkerSettings({
         </div>
       </div>
 
-      <div className="min-w-0">
+      <div className="min-w-0 space-y-4">
         <TrustLadder worker={worker} />
+        <ShareCard worker={worker} />
       </div>
+    </div>
+  );
+}
+
+/// The worker as a file another team can hire from.
+///
+/// It sits under the trust ladder because it is the same subject read the
+/// other way round: the ladder is what THIS install has decided to let the
+/// worker do, and the share file is everything that is true about the worker
+/// with those decisions removed. Showing the YAML rather than only offering a
+/// download is the point — you are about to hand someone a description of a
+/// thing that will run on their machine, so you should be able to read it
+/// first, and see for yourself that the trust level and the project path are
+/// not in it.
+function ShareCard({ worker }: { worker: Worker }) {
+  const shareYaml = useWorkersStore((s) => s.shareYaml);
+  const shareToFile = useWorkersStore((s) => s.shareToFile);
+  const [open, setOpen] = useState(false);
+  const [share, setShare] = useState<{ yaml: string; missingFlowIds: string[] } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [savedTo, setSavedTo] = useState<string | null>(null);
+
+  // Re-read whenever the card is open and the worker changes: the YAML is a
+  // rendering of the contract above it, and one that lagged an edit would be
+  // a file that says something the screen no longer does.
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    void shareYaml(worker.id).then((res) => {
+      if (live) setShare(res);
+    });
+    return () => {
+      live = false;
+    };
+  }, [open, worker, shareYaml]);
+
+  return (
+    <div className="rounded-xl border border-card-strong p-3">
+      <div className="flex items-center gap-2">
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">Share</div>
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="ml-auto text-[11px] text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
+        >
+          {open ? "Hide the file" : "Show the file"}
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-ink-muted">
+        The job, as YAML — its cadence, its caps, and the flows it launches,
+        embedded whole. Its trust, its history and this project's path stay
+        here. Whoever imports it hires it themselves, on probation.
+      </p>
+
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        <button
+          onClick={() => {
+            void shareToFile(worker.id).then((filePath) => {
+              if (filePath) setSavedTo(filePath);
+            });
+          }}
+          className="rounded-md border border-accent/50 px-2.5 py-1 text-[11px] text-accent hover:bg-accent/10"
+        >
+          Save file…
+        </button>
+        <button
+          onClick={() => {
+            void shareYaml(worker.id).then((res) => {
+              if (!res) return;
+              setShare(res);
+              void navigator.clipboard.writeText(res.yaml);
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+          className="rounded-md border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
+        >
+          {copied ? "Copied" : "Copy YAML"}
+        </button>
+      </div>
+
+      {savedTo && (
+        <div className="mt-2 truncate text-[10px] text-ink-faint" title={savedTo}>
+          Saved to {savedTo}
+        </div>
+      )}
+
+      {/* A flow the worker names but the library no longer has cannot be
+          embedded, so the file would arrive short of the machinery it
+          promises. Said here rather than on the recipient's screen: it is
+          this install's problem to fix. */}
+      {share && share.missingFlowIds.length > 0 && (
+        <div className="mt-2 text-[10px] text-amber-400">
+          {share.missingFlowIds.join(", ")}{" "}
+          {share.missingFlowIds.length === 1 ? "is" : "are"} not in your library,
+          so {share.missingFlowIds.length === 1 ? "it travels" : "they travel"} as
+          a name only.
+        </div>
+      )}
+
+      {open && (
+        <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-card-strong/50 p-2 text-[10px] leading-relaxed text-ink-muted">
+          {share ? share.yaml : "Reading…"}
+        </pre>
+      )}
     </div>
   );
 }
@@ -2924,7 +3066,7 @@ function WorkerEditor() {
           </button>
           <button
             disabled={!!problem || busy}
-            onClick={() => void save()}
+            onClick={() => void save(projects.map((p) => p.path))}
             className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
           >
             {busy ? "Saving…" : draft.id ? "Save changes" : "Hire"}
@@ -3384,6 +3526,25 @@ function WorkerAiRevise() {
 
 // ---- Cadence picker ------------------------------------------------------
 
+type ActiveWindow = { start: string; end: string };
+
+/// Either end of the active-hours window can be typed first, and a half-typed
+/// window survives until both boxes are empty again — clearing one box must not
+/// throw away what was typed in the other. Typing into an empty window fills
+/// the other end with the placeholder so one keystroke leaves a usable window.
+function editWindow(
+  window: ActiveWindow | undefined,
+  field: "start" | "end",
+  value: string,
+): ActiveWindow | undefined {
+  const other = field === "start" ? (window?.end ?? "") : (window?.start ?? "");
+  if (!value && !other) return undefined;
+  const filled = other || (field === "start" ? "18:00" : "08:00");
+  return field === "start"
+    ? { start: value, end: filled }
+    : { start: filled, end: value };
+}
+
 function CadenceField({
   cadence,
   onChange,
@@ -3455,31 +3616,26 @@ function CadenceField({
             <input
               value={cadence.window?.start ?? ""}
               placeholder="08:00"
-              onChange={(e) => {
-                const start = e.target.value;
+              onChange={(e) =>
                 onChange({
                   ...cadence,
-                  window: start
-                    ? { start, end: cadence.window?.end ?? "18:00" }
-                    : undefined,
-                });
-              }}
+                  window: editWindow(cadence.window, "start", e.target.value),
+                })
+              }
               className="w-24 bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
             />
           </Field>
-          <Field label="Until">
+          <Field label="Until" hint="optional">
             <input
               value={cadence.window?.end ?? ""}
               placeholder="18:00"
-              disabled={!cadence.window}
               onChange={(e) =>
-                cadence.window &&
                 onChange({
                   ...cadence,
-                  window: { ...cadence.window, end: e.target.value },
+                  window: editWindow(cadence.window, "end", e.target.value),
                 })
               }
-              className="w-24 bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink disabled:opacity-40"
+              className="w-24 bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
             />
           </Field>
         </div>

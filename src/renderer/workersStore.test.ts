@@ -9,10 +9,13 @@ const mockInvoke = vi.fn();
 
 import {
   draftFromContract,
+  draftFromPortable,
   draftFromWorker,
   newWorkerDraft,
   useWorkersStore,
 } from './workersStore';
+import { useFlowsStore } from './flowsStore';
+import type { PortableWorker } from '@shared/flows/workerYaml';
 import type { Worker, WorkerScorecard } from '@shared/flows/worker';
 import { allocateTreasury } from '@shared/flows/treasury';
 import type { Flow } from '@shared/flows/schema';
@@ -121,6 +124,27 @@ describe('workersStore mirror', () => {
     expect(s.scorecards['worker-1'].proposed).toBe(2);
     expect(s.treasury).toEqual({ monthlyUSD: 40 });
     expect(s.allocation?.byWorker[0]).toMatchObject({ workerId: 'worker-1', availableUSD: 20 });
+  });
+
+  it('openWorkerDesk arrives on the desk, dropping a draft and run that would cover it', () => {
+    const worker = makeWorker({ id: 'b', name: 'B' });
+    useFlowsStore.setState({ activeRunId: 'run-1' });
+    useWorkersStore.setState({
+      workers: { 'worker-1': makeWorker(), b: worker },
+      selectedWorkerId: 'worker-1',
+      view: 'funds',
+      draft: draftFromWorker(makeWorker()),
+      deskFocus: { workerId: 'worker-1', orchestrationId: 'orch-1', at: 5 },
+    });
+
+    useWorkersStore.getState().openWorkerDesk('b');
+
+    const s = useWorkersStore.getState();
+    expect(s.selectedWorkerId).toBe('b');
+    expect(s.view).toBe('worker');
+    expect(s.draft).toBeNull();
+    expect(s.deskFocus).toBeNull();
+    expect(useFlowsStore.getState().activeRunId).toBeNull();
   });
 
   it('moveWorker re-prices the roster locally so the money moves with the row', async () => {
@@ -301,13 +325,14 @@ describe('workersStore save', () => {
     });
     mockInvoke
       .mockResolvedValueOnce({ ok: true }) // flows:save
+      .mockResolvedValueOnce([]) // flows:list
       .mockResolvedValueOnce({ ok: true, worker: makeWorker() }); // workers:save
-    const ok = await useWorkersStore.getState().save();
+    const ok = await useWorkersStore.getState().save(['/repo']);
     expect(ok).toBe(true);
     expect(mockInvoke.mock.calls[0][0]).toBe('flows:save');
     expect(mockInvoke.mock.calls[0][1]).toMatchObject({ target: 'user' });
-    expect(mockInvoke.mock.calls[1][0]).toBe('workers:save');
-    expect(mockInvoke.mock.calls[1][1].worker.flowIds).toEqual(['drafted-flow']);
+    expect(mockInvoke.mock.calls[2][0]).toBe('workers:save');
+    expect(mockInvoke.mock.calls[2][1].worker.flowIds).toEqual(['drafted-flow']);
     // Editor closed, ride-along cleared.
     expect(useWorkersStore.getState().draft).toBeNull();
     expect(useWorkersStore.getState().draftedFlow).toBeNull();
@@ -320,9 +345,25 @@ describe('workersStore save', () => {
     });
     mockInvoke
       .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce({ ok: true, worker: makeWorker() });
-    await useWorkersStore.getState().save();
-    expect(mockInvoke.mock.calls[1][1].worker.flowIds).toEqual(['drafted-flow']);
+    await useWorkersStore.getState().save(['/repo']);
+    expect(mockInvoke.mock.calls[2][1].worker.flowIds).toEqual(['drafted-flow']);
+  });
+
+  it('reloads the flow library so panes see the revised flow, not its old self', async () => {
+    useFlowsStore.setState({ flows: [makeFlow({ name: 'Drafted Flow' })] });
+    useWorkersStore.setState({
+      draft: { ...newWorkerDraft('/repo'), flowIds: ['drafted-flow'] },
+      draftedFlow: makeFlow({ name: 'Revised Flow' }),
+    });
+    mockInvoke
+      .mockResolvedValueOnce({ ok: true }) // flows:save
+      .mockResolvedValueOnce([makeFlow({ name: 'Revised Flow' })]) // flows:list
+      .mockResolvedValueOnce({ ok: true, worker: makeWorker() }); // workers:save
+    await useWorkersStore.getState().save(['/repo']);
+    expect(mockInvoke.mock.calls[1]).toEqual(['flows:list', { projectPaths: ['/repo'] }]);
+    expect(useFlowsStore.getState().flows.map((f) => f.name)).toEqual(['Revised Flow']);
   });
 
   it('a failed flow save blocks the worker save and surfaces the error', async () => {
@@ -331,7 +372,7 @@ describe('workersStore save', () => {
       draftedFlow: makeFlow(),
     });
     mockInvoke.mockResolvedValueOnce({ ok: false, error: 'disk full' });
-    const ok = await useWorkersStore.getState().save();
+    const ok = await useWorkersStore.getState().save(['/repo']);
     expect(ok).toBe(false);
     expect(mockInvoke).toHaveBeenCalledTimes(1);
     expect(useWorkersStore.getState().error).toBe('disk full');
@@ -360,6 +401,43 @@ describe('draft factories', () => {
     expect(w.flowIds).toEqual(['fix-it']);
   });
 
+  it('draftFromPortable keeps only the flows this library can supply', () => {
+    const shared: PortableWorker = {
+      name: 'Release Nanny',
+      jobDescription: 'Watch the release branch and report what is not green.',
+      cadence: { kind: 'daily', time: '08:00' },
+      caps: { maxItemsPerShift: 2, runIn: 'worktree' },
+      budgetUSDPerMonth: 12,
+      heartbeatModel: 'cheap',
+      flowIds: ['here', 'gone'],
+    };
+    const d = draftFromPortable(shared, '/repo', ['here', 'unrelated']);
+    expect(d).toMatchObject({
+      name: 'Release Nanny',
+      projectPath: '/repo',
+      flowIds: ['here'],
+      enabled: true,
+    });
+    // Nothing about the sender's employment came along.
+    expect('id' in d).toBe(false);
+    expect(d.caps.runIn).toBe('worktree');
+  });
+
+  it('draftFromPortable does not share nested references with the file it read', () => {
+    const shared: PortableWorker = {
+      name: 'N',
+      jobDescription: 'Twenty characters of job description, at least.',
+      cadence: { kind: 'daily', time: '08:00', days: [1, 2] },
+      caps: { maxItemsPerShift: 2, runIn: 'worktree' },
+      budgetUSDPerMonth: 12,
+      heartbeatModel: 'cheap',
+      flowIds: ['here'],
+    };
+    const d = draftFromPortable(shared, '/repo', ['here']);
+    (d.cadence as { days: number[] }).days.push(6);
+    expect(shared.cadence).toEqual({ kind: 'daily', time: '08:00', days: [1, 2] });
+  });
+
   it('draftFromContract starts on worktree with the given project and flow', () => {
     const d = draftFromContract(
       {
@@ -379,5 +457,94 @@ describe('draft factories', () => {
       caps: { maxItemsPerShift: 2, runIn: 'worktree' },
       enabled: true,
     });
+  });
+});
+
+describe('sharing a worker', () => {
+  it('shareYaml hands back the document and the flows it could not embed', async () => {
+    mockInvoke.mockResolvedValue({
+      ok: true,
+      yaml: 'kind: worker\n',
+      filename: 'w.worker.yaml',
+      missingFlowIds: ['gone'],
+    });
+    const res = await useWorkersStore.getState().shareYaml('worker-1');
+    expect(res).toEqual({ yaml: 'kind: worker\n', missingFlowIds: ['gone'] });
+    expect(useWorkersStore.getState().error).toBeNull();
+  });
+
+  it('shareYaml surfaces a failure instead of returning half a file', async () => {
+    mockInvoke.mockResolvedValue({ ok: false, error: 'No such worker.' });
+    expect(await useWorkersStore.getState().shareYaml('nope')).toBeNull();
+    expect(useWorkersStore.getState().error).toBe('No such worker.');
+  });
+
+  it('shareToFile treats a dismissed dialog as neither a path nor an error', async () => {
+    mockInvoke.mockResolvedValue({ ok: true, filePath: null });
+    expect(await useWorkersStore.getState().shareToFile('worker-1')).toBeNull();
+    expect(useWorkersStore.getState().error).toBeNull();
+  });
+
+  it('import opens the editor on the arriving worker, on this project', async () => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'workers:importFromFile') {
+        return {
+          ok: true,
+          worker: {
+            name: 'Release Nanny',
+            jobDescription: 'Watch the release branch and report what is not green.',
+            cadence: { kind: 'daily', time: '08:00' },
+            caps: { maxItemsPerShift: 2, runIn: 'worktree' },
+            budgetUSDPerMonth: 12,
+            heartbeatModel: 'cheap',
+            flowIds: ['nightly-review'],
+          },
+          notes: {
+            installedFlowIds: ['nightly-review'],
+            reusedFlowIds: [],
+            missingFlowIds: [],
+            failedFlowIds: [],
+          },
+          summary: 'Added 1 flow to your library (nightly-review).',
+        };
+      }
+      if (channel === 'flows:list') return [makeFlow({ id: 'nightly-review' })];
+      return [];
+    });
+
+    const opened = await useWorkersStore
+      .getState()
+      .importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
+    expect(opened).toBe(true);
+    const s = useWorkersStore.getState();
+    expect(s.draft).toMatchObject({
+      name: 'Release Nanny',
+      projectPath: '/repo',
+      flowIds: ['nightly-review'],
+    });
+    // The editor's flow picker has to know about the flow that just arrived.
+    expect(useFlowsStore.getState().flows.map((f) => f.id)).toContain('nightly-review');
+    expect(s.hireSummary).toContain('Imported Release Nanny.');
+    expect(s.hireSummary).toContain('nightly-review');
+  });
+
+  it('a dismissed import dialog opens no editor and reports no error', async () => {
+    mockInvoke.mockResolvedValue({ ok: true, canceled: true });
+    const opened = await useWorkersStore
+      .getState()
+      .importFromFile({ projectPath: '/repo', projectPaths: [] });
+    expect(opened).toBe(false);
+    expect(useWorkersStore.getState().draft).toBeNull();
+    expect(useWorkersStore.getState().error).toBeNull();
+  });
+
+  it('a file that will not parse leaves the roster alone and says why', async () => {
+    mockInvoke.mockResolvedValue({ ok: false, error: "That's a flow, not a worker." });
+    const opened = await useWorkersStore
+      .getState()
+      .importFromFile({ projectPath: '/repo', projectPaths: [] });
+    expect(opened).toBe(false);
+    expect(useWorkersStore.getState().draft).toBeNull();
+    expect(useWorkersStore.getState().error).toBe("That's a flow, not a worker.");
   });
 });

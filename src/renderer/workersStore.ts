@@ -27,6 +27,7 @@ import type {
   WorkerScorecard,
   WorkerTrustLevel,
 } from '@shared/flows/worker';
+import type { PortableWorker } from '@shared/flows/workerYaml';
 import type { ScheduleTrigger } from '@shared/flows/schedule';
 
 export interface WorkerDraft {
@@ -122,7 +123,10 @@ interface WorkersActions {
   /// Land an AI revision on the open draft: new job description text and/or
   /// a revised flow that will save alongside the worker.
   applyRevision(patch: { jobDescription?: string; flow?: Flow }): void;
-  save(): Promise<boolean>;
+  /// Commit the open draft. Takes the project paths because a ride-along
+  /// flow saves with it, and the flow library has to be reloaded from the
+  /// same set of projects afterwards.
+  save(projectPaths: string[]): Promise<boolean>;
   setEnabled(id: string, enabled: boolean): Promise<void>;
   setTrust(id: string, trust: WorkerTrustLevel): Promise<void>;
   /// Which of this worker's outputs renders when you open it.
@@ -130,6 +134,11 @@ interface WorkersActions {
   remove(id: string): Promise<void>;
   workShiftNow(id: string): Promise<void>;
   selectWorker(id: string | null): void;
+  /// Open a worker's desk from outside the roster — the command palette, a
+  /// link. The same arrival as clicking the row, plus dismissing any draft
+  /// left open: the editor renders over the desk, so a half-written edit from
+  /// earlier would swallow the worker just asked for.
+  openWorkerDesk(id: string): void;
   showCalendar(): void;
   showFunds(): void;
   applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
@@ -145,6 +154,20 @@ interface WorkersActions {
   runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
   clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
+  /// This worker as a share file. Read on demand rather than held in state:
+  /// it is a rendering of the worker plus its flows, and a copy kept here
+  /// would go stale the moment either is edited.
+  shareYaml(id: string): Promise<{ yaml: string; missingFlowIds: string[] } | null>;
+  /// Write that file wherever the user points the save dialog. Resolves to
+  /// the path written, or null if they dismissed it.
+  shareToFile(id: string): Promise<string | null>;
+  /// Take a worker file: installs the flows it carries and opens the hire
+  /// editor on it. Resolves false when the user dismissed the file dialog or
+  /// the file could not be read — the error is on the store either way.
+  /// `projectPath` is the project the arriving worker is offered; the caller
+  /// passes `projectPaths` too because the flow library it must re-read spans
+  /// every project, and only the caller knows them.
+  importFromFile(args: { projectPath: string; projectPaths: string[] }): Promise<boolean>;
   clearError(): void;
 }
 
@@ -193,6 +216,34 @@ export function draftFromContract(
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
     flowIds: flowId ? [flowId] : [],
+    enabled: true,
+  };
+}
+
+/// Fill a draft from an imported share file. Like `draftFromContract`, trust
+/// never appears — an imported worker starts on probation like any other hire,
+/// and main enforces it regardless.
+///
+/// `availableFlowIds` filters the worker's flows down to the ones this library
+/// can actually supply. A dangling id would be a worker that looks hired and
+/// can launch nothing; dropping it here means the editor's own "a worker needs
+/// at least one flow" rule stops the hire, with the import summary explaining
+/// which flow is missing.
+export function draftFromPortable(
+  worker: PortableWorker,
+  projectPath: string,
+  availableFlowIds: string[],
+): WorkerDraft {
+  const available = new Set(availableFlowIds);
+  return {
+    name: worker.name,
+    jobDescription: worker.jobDescription,
+    projectPath,
+    cadence: structuredClone(worker.cadence),
+    caps: { ...worker.caps },
+    budgetUSDPerMonth: worker.budgetUSDPerMonth,
+    heartbeatModel: worker.heartbeatModel,
+    flowIds: worker.flowIds.filter((id) => available.has(id)),
     enabled: true,
   };
 }
@@ -365,6 +416,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set({ selectedWorkerId: id, view: 'worker', deskFocus: null });
   },
 
+  openWorkerDesk(id) {
+    get().closeEditor();
+    get().selectWorker(id);
+  },
+
   showCalendar() {
     set({ view: 'calendar' });
   },
@@ -429,7 +485,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     }));
   },
 
-  async save() {
+  async save(projectPaths) {
     const { draft, draftedFlow } = get();
     if (!draft) return false;
     set({ busy: true, error: null });
@@ -449,6 +505,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           return false;
         }
         if (flowIds.length === 0) flowIds = [draftedFlow.id];
+        // `flows:save` writes the file; the library every flow-reading pane
+        // binds to is a renderer mirror that knows nothing about it. Without
+        // this the worker's Settings tab kept rendering the flow's
+        // pre-revision self until something else happened to reload.
+        await useFlowsStore.getState().reload(projectPaths);
       }
       const res = await window.overcli.invoke('workers:save', {
         worker: { ...draft, flowIds },
@@ -543,6 +604,46 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   async loadJournal(id) {
     const entries = await window.overcli.invoke('workers:journal', { id });
     set((s) => ({ journals: { ...s.journals, [id]: entries } }));
+  },
+
+  async shareYaml(id) {
+    const res = await window.overcli.invoke('workers:share', { id });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    return { yaml: res.yaml, missingFlowIds: res.missingFlowIds };
+  },
+
+  async shareToFile(id) {
+    const res = await window.overcli.invoke('workers:shareToFile', { id });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    return res.filePath;
+  },
+
+  async importFromFile({ projectPath, projectPaths }) {
+    set({ busy: true, error: null });
+    try {
+      const res = await window.overcli.invoke('workers:importFromFile');
+      if (!res.ok) {
+        set({ error: res.error });
+        return false;
+      }
+      if (res.canceled) return false;
+      // The flows arrived in main; the library the editor picks from has to
+      // learn about them before the draft references them.
+      await useFlowsStore.getState().reload(projectPaths);
+      const available = useFlowsStore.getState().flows.map((f) => f.id);
+      get().openEditor(draftFromPortable(res.worker, projectPath, available), {
+        hireSummary: [`Imported ${res.worker.name}.`, res.summary].filter(Boolean).join(' '),
+      });
+      return true;
+    } finally {
+      set({ busy: false });
+    }
   },
 
   clearError() {
