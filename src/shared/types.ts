@@ -13,6 +13,7 @@ import type {
   WorkerScorecard,
   WorkerTrustLevel,
 } from './flows/worker';
+import type { PortableWorker, WorkerImportNotes } from './flows/workerYaml';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
@@ -1855,6 +1856,31 @@ export interface IPCInvokeMap {
   /// The worker's journal, newest first — its episodic memory, rendered as
   /// the shift history in the Workers pane.
   'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
+  /// The worker as a shareable YAML document: the JOB, with the flows it
+  /// launches embedded whole, and none of the employment — no id, no trust,
+  /// no project path, no history. See src/shared/flows/workerYaml.ts.
+  /// `missingFlowIds` are flows this worker references that the library can
+  /// no longer supply, so the sender learns before the recipient does.
+  'workers:share': (args: { id: UUID }) =>
+    | { ok: true; yaml: string; filename: string; missingFlowIds: string[] }
+    | { ok: false; error: string };
+  /// The same document, written wherever the user points the save dialog.
+  /// `filePath: null` means they dismissed it — a cancel is not an error.
+  'workers:shareToFile': (args: { id: UUID }) =>
+    | { ok: true; filePath: string | null }
+    | { ok: false; error: string };
+  /// Read a share file: installs any flows the library is missing (never
+  /// overwriting one it already has) and returns the worker to open in the
+  /// hire editor. Hiring is still the user's click — this only prepares it.
+  'workers:import': (args: { yaml: string }) =>
+    | { ok: true; worker: PortableWorker; notes: WorkerImportNotes; summary: string }
+    | { ok: false; error: string };
+  /// The same, from a file the user picks. `canceled` when they dismiss the
+  /// dialog, which is neither a success to act on nor an error to show.
+  'workers:importFromFile': () =>
+    | { ok: true; canceled: true }
+    | { ok: true; canceled?: false; worker: PortableWorker; notes: WorkerImportNotes; summary: string }
+    | { ok: false; error: string };
   /// One hire-drafter turn: a free-text job description in, a reviewed-not-
   /// saved contract out — plus a drafted Flow when no existing flow fit.
   'workers:draftFromPrompt': (args: { jobDescription: string }) =>

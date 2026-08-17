@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, type RefObject } from 'react';
 
 export interface ResizableDividerProps {
   width: number;
@@ -14,6 +14,15 @@ export interface ResizableDividerProps {
   /// bigger (right pane — e.g. editor pane — being resized). Drives the
   /// sign of the delta applied to width.
   side: 'left' | 'right';
+  /// The element this handle sizes. When given, a drag writes the width
+  /// straight onto it and `onChange` is called once, on release.
+  ///
+  /// Without it the drag is a state update per pointermove, so the frame rate
+  /// of the resize is the render cost of whatever else the owner draws — fine
+  /// beside a chat whose rows are memoised, visibly choppy beside the Workers
+  /// tab, which re-renders a roster and a transcript full of rendered markdown
+  /// forty times a second for a number only one `style.width` consumes.
+  panel?: RefObject<HTMLElement | null>;
 }
 
 /// 4px-wide drag handle. Invisible at rest; the 8px-wide hover target
@@ -25,14 +34,15 @@ export function ResizableDivider({
   minWidth,
   maxWidth,
   side,
+  panel,
 }: ResizableDividerProps) {
   // Props in a ref so the window listeners registered on pointerdown stay
   // valid across parent re-renders — parents typically pass inline
   // `onCommit` closures, which would otherwise churn handler identity
   // mid-drag and the state update on the first pointermove would tear the
   // listeners right back down.
-  const propsRef = useRef({ onChange, onCommit, minWidth, maxWidth, side });
-  propsRef.current = { onChange, onCommit, minWidth, maxWidth, side };
+  const propsRef = useRef({ onChange, onCommit, minWidth, maxWidth, side, panel });
+  propsRef.current = { onChange, onCommit, minWidth, maxWidth, side, panel };
 
   const widthRef = useRef(width);
   widthRef.current = width;
@@ -49,13 +59,19 @@ export function ResizableDivider({
       const signed = p.side === 'left' ? dx : -dx;
       const next = Math.max(p.minWidth, Math.min(p.maxWidth, startWidth + signed));
       widthRef.current = next;
-      p.onChange(next);
+      const el = p.panel?.current;
+      if (el) el.style.width = `${next}px`;
+      else p.onChange(next);
     };
     const onUp = () => {
       document.body.classList.remove('cursor-col-resize', 'select-none');
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
-      propsRef.current.onCommit?.(widthRef.current);
+      const p = propsRef.current;
+      // The DOM has been ahead of React for the whole drag; this is where the
+      // two are put back in step, at the one width that outlives the gesture.
+      if (p.panel) p.onChange(widthRef.current);
+      p.onCommit?.(widthRef.current);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);

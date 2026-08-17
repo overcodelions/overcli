@@ -239,7 +239,7 @@ export function buildPaletteItems(input: PaletteBuildInput): PaletteItem[] {
       archived: !worker.enabled,
       recency: worker.lastShiftAt ?? 0,
       keywords: compact([
-        'worker persona standing shift hire',
+        'worker persona standing shift hire desk',
         worker.trust,
         worker.jobDescription.slice(0, 80),
       ]),

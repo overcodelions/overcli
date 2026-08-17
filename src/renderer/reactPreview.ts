@@ -5,12 +5,15 @@
 /// srcDoc, because a srcDoc frame inherits the app's `script-src 'self'`
 /// and the bundle would never run.
 ///
-/// The frame itself is `sandbox="allow-scripts"` and deliberately not
-/// `allow-same-origin`: the component executes on an opaque origin with no
-/// reach into Overcli's DOM, storage, or IPC. It is the user's own code,
-/// but it is also code an agent just wrote, and the isolation costs
+/// The frame itself is `sandbox="allow-scripts allow-popups"` and
+/// deliberately not `allow-same-origin`: the component executes on an opaque
+/// origin with no reach into Overcli's DOM, storage, or IPC. It is the user's
+/// own code, but it is also code an agent just wrote, and the isolation costs
 /// nothing — everything it needs is already inlined by the bundler.
+/// `allow-popups` is what lets a link in the component reach the user's
+/// browser, and grants the frame nothing else (see ./previewLinks).
 
+import { previewLinkScriptTag } from './previewLinks';
 import type { ReactPreviewBundleResult } from '@shared/types';
 
 type SuccessfulBundle = Extract<ReactPreviewBundleResult, { ok: true }>;
@@ -31,6 +34,7 @@ export function buildReactPreviewDocument(
     `<style>${shellStyles(dark)}</style>`,
     styleTag(bundle.tailwindCss),
     styleTag(bundle.css),
+    previewLinkScriptTag(),
     '</head>',
     '<body>',
     `<div id="${bundle.rootElementId}"></div>`,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { anyBackendReady, useStore } from './store';
 import { useConversation } from './hooks';
 import { findConversation } from './conversationLookup';
@@ -25,6 +25,7 @@ import { SubagentDrawer } from './components/SubagentDrawer';
 import { FileEditorPane } from './components/FileEditorPane';
 import { useWorkersStore } from './workersStore';
 import { UpdateToast } from './components/UpdateToast';
+import { fileEditorRootFor } from './fileEditorRoot';
 
 const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 520;
@@ -65,6 +66,14 @@ export function App() {
     (s) => (s.selectedWorkerId ? (s.filesRoot[s.selectedWorkerId] ?? null) : null),
   );
   const [sideFileWidth, setSideFileWidth] = useState(SIDE_FILE_DEFAULT);
+  // The three resizable panels, handed to their dividers so a drag can move
+  // them directly. A width is pure layout: making it React state mid-gesture
+  // re-renders the whole tab (roster, transcript, rendered markdown) once per
+  // pointer event, which is what made dragging the preview edge stutter on the
+  // Workers tab and not on Chat. State is set once, on release.
+  const sidebarPanel = useRef<HTMLDivElement>(null);
+  const drawerPanel = useRef<HTMLDivElement>(null);
+  const sideFilePanel = useRef<HTMLDivElement>(null);
   const selectedConversationId = useStore((s) => s.selectedConversationId);
   const selectConversation = useStore((s) => s.selectConversation);
   const selectedConv = useConversation(selectedConversationId);
@@ -314,12 +323,14 @@ export function App() {
         {showSidebar && (
           <>
             <div
+              ref={sidebarPanel}
               style={{ width: sidebarWidth }}
               className="flex-shrink-0 h-full overflow-hidden"
             >
               <Sidebar />
             </div>
             <ResizableDivider
+              panel={sidebarPanel}
               width={sidebarWidth}
               onChange={setSidebarWidth}
               onCommit={(w) => void saveSettings({ ...settings, sidebarWidth: w })}
@@ -351,6 +362,7 @@ export function App() {
         {subagentDrawerParentId && drawerConvId && (
           <>
             <ResizableDivider
+              panel={drawerPanel}
               width={subagentDrawerWidth}
               onChange={setSubagentDrawerWidth}
               minWidth={SUBAGENT_DRAWER_MIN}
@@ -358,6 +370,7 @@ export function App() {
               side="right"
             />
             <div
+              ref={drawerPanel}
               style={{ width: subagentDrawerWidth }}
               className="flex-shrink-0 h-full overflow-hidden"
             >
@@ -368,6 +381,7 @@ export function App() {
         {sideFileVisible && (
           <>
             <ResizableDivider
+              panel={sideFilePanel}
               width={sideFileWidth}
               onChange={setSideFileWidth}
               minWidth={SIDE_FILE_MIN}
@@ -375,6 +389,7 @@ export function App() {
               side="right"
             />
             <div
+              ref={sideFilePanel}
               style={{ width: sideFileWidth }}
               className="flex-shrink-0 h-full overflow-hidden border-l border-card"
             >
@@ -387,14 +402,16 @@ export function App() {
                   files live under userData beside every other worker's, so
                   without an explicit root the pane resolves nothing and the
                   user can see their way out of the directory they opened. */}
+              {/* A run opened from a worker is the same run pane, so it
+                  takes the same root — without this its files resolved
+                  against the selected conversation and git ran in that
+                  project instead of the run's. */}
               <FileEditorPane
-                rootPathOverride={
-                  detailMode === 'flows' && activeFlowRun
-                    ? activeFlowRun.projectPath
-                    : detailMode === 'workers'
-                      ? workerFilesRoot
-                      : null
-                }
+                rootPathOverride={fileEditorRootFor({
+                  detailMode,
+                  runProjectPath: activeFlowRun?.projectPath ?? null,
+                  workerFilesRoot,
+                })}
               />
             </div>
           </>

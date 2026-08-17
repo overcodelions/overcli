@@ -289,6 +289,18 @@ export function parseFlowYaml(args: {
   } catch {
     return null;
   }
+  return flowFromDoc(doc, args);
+}
+
+/// The same parse, one level in: a flow document that has already been read
+/// out of YAML. Split out because a flow can arrive embedded in another
+/// document rather than as a file of its own — a shared worker carries its
+/// flows inside it (see workerYaml.ts), and re-stringifying each one just to
+/// parse it back would be a round trip for nothing.
+export function flowFromDoc(
+  doc: unknown,
+  args: { id: string; source: Flow['source']; filePath: string },
+): Flow | null {
   if (!doc || typeof doc !== 'object') return null;
   const y = doc as YamlFlow;
   const stepsRaw = Array.isArray(y.steps) ? y.steps : [];
@@ -394,6 +406,12 @@ function serializeParticipant(p: FlowParticipant): Record<string, unknown> {
 /// Serialize a Flow back to YAML. The result is the canonical on-disk form
 /// used by `storage.ts` writes and by the builder's preview pane.
 export function serializeFlow(flow: Flow): string {
+  return yamlStringify(flowToDoc(flow), { lineWidth: 0, indent: 2 });
+}
+
+/// The canonical document a flow serializes to, before it becomes text.
+/// `serializeFlow` stringifies this; a worker share file nests it.
+export function flowToDoc(flow: Flow): Record<string, unknown> {
   const doc: Record<string, unknown> = {
     name: flow.name,
   };
@@ -410,5 +428,5 @@ export function serializeFlow(flow: Flow): string {
     doc.participants = flow.participants.map(serializeParticipant);
   }
   doc.steps = flow.steps.map(serializeStep);
-  return yamlStringify(doc, { lineWidth: 0, indent: 2 });
+  return doc;
 }

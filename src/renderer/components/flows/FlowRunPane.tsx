@@ -2209,6 +2209,29 @@ const ROLE_DESCRIPTIONS: Record<string, string> = {
   custom: 'Custom prompt',
 };
 
+/// Why the step at a `failure` pause actually failed, as the runtime
+/// recorded it — or undefined when there is nothing better than a guess.
+///
+/// A failure pause is NOT necessarily a rejecting reviewer. A step that
+/// emitted no `<output>` block, crashed, or tripped the silence watchdog
+/// lands in exactly the same state, and the banner used to tell every one of
+/// them "a reviewer that didn't approve", sending users hunting for a
+/// rejection that was never written. The runtime already stores the real
+/// reason on the attempt, so prefer it.
+///
+/// Last attempt wins: `on_fail.goto` can re-run a step several times, and the
+/// most recent failure is the one the user is looking at.
+export function pausedStepFailure(run: FlowRun): string | undefined {
+  if (run.state.kind !== 'paused' || run.state.reason !== 'failure') return undefined;
+  const stepId = run.state.nextStepId;
+  if (!stepId) return undefined;
+  for (let i = run.attempts.length - 1; i >= 0; i -= 1) {
+    const a = run.attempts[i];
+    if (a.stepId === stepId && a.errorMessage) return a.errorMessage;
+  }
+  return undefined;
+}
+
 function PauseBanner({ run }: { run: FlowRun }) {
   // Local "click was just received" guard. The main process emits
   // pendingContinue asynchronously, so without this the banner can sit
@@ -2238,6 +2261,8 @@ function PauseBanner({ run }: { run: FlowRun }) {
     ? run.flowSnapshot.steps.find((s) => s.id === nextStepId)
     : null;
   const nextModel = nextStep ? resolveRunStepModel(run, nextStep) : null;
+
+  const failureMessage = pausedStepFailure(run);
 
   const inFlight = continuing || clicked;
   const priorOutput = run.pendingContinue?.priorOutput;
@@ -2293,8 +2318,21 @@ function PauseBanner({ run }: { run: FlowRun }) {
             ) : reason === 'failure' ? (
               <>
                 <span className="font-semibold">{nextStep?.id ?? 'This step'}</span> didn't
-                pass — a reviewer that didn't approve, or a step whose failure policy is to
-                pause. Redirect the participant below and <span className="font-semibold">Re-run
+                pass
+                {failureMessage ? (
+                  <>
+                    :{' '}
+                    <span className="font-medium text-amber-800 dark:text-amber-100">
+                      {failureMessage}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    {' '}— a reviewer that didn't approve, or a step whose failure policy is
+                    to pause
+                  </>
+                )}
+                . Redirect the participant below and <span className="font-semibold">Re-run
                 step</span> to try again, or <span className="font-semibold">Override</span> to
                 accept this step's current result and roll forward to the next step.
               </>
