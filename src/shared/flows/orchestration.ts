@@ -260,3 +260,39 @@ export function isOrchestrationComplete(o: Orchestration): boolean {
 export function isOrchestrationAwaitingApproval(o: Orchestration): boolean {
   return o.items.some((it) => it.status === 'proposed');
 }
+
+/// True when a batch has anything the run ledger can show. An item-less batch
+/// launched nothing, so its ledger entry is a bare header with a "0/0 done"
+/// count and no rows under it — and a roster of workers answering errands in
+/// prose mints those faster than anyone clears them. The Orchestrator drops
+/// them from the list; `ledgerBatches` is that filter plus the page's order.
+export function hasLedgerRuns(o: Orchestration): boolean {
+  return o.items.length > 0;
+}
+
+/// Every batch worth a row in the Orchestrator ledger, newest first.
+///
+/// Creation order is the ONLY ordering here. Floating parked batches to the
+/// top reads well with five of them and badly with fifty: the list stops
+/// being a timeline, and "what did my workers just do" — the question the
+/// page is actually open for — can't be answered by looking at the top of it.
+/// A batch waiting on approval is reached through the "needs you" filter in
+/// the runs bar, which is exact where sort order was only suggestive.
+export function ledgerBatches(orchestrations: Record<string, Orchestration>): Orchestration[] {
+  return Object.values(orchestrations)
+    .filter(hasLedgerRuns)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/// An item-less batch that no surface anywhere will ever show again — pure
+/// residue, and the engine deletes it on sight rather than leave a record the
+/// user has no way to clear.
+///
+/// A worker's is the exception, and the reason this isn't just
+/// `items.length === 0`: an errand or shift that proposed nothing IS a turn on
+/// that worker's desk, its prose answer sitting in `producer.reply`. Hidden
+/// from the ledger, yes; deleted, never — that would silently eat half of
+/// every worker conversation.
+export function isResidueOrchestration(o: Orchestration): boolean {
+  return o.items.length === 0 && o.origin?.kind !== 'worker';
+}
