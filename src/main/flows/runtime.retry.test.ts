@@ -100,6 +100,10 @@ function run(withReviewArtifact = true): FlowRun {
 function harness() {
   const sends: Array<{ prompt: string; displayText?: string }> = [];
   const runner = {
+    // Look-ahead prewarming is fire-and-forget; these stubs keep the
+    // runtime's calls from throwing without affecting what's asserted.
+    prewarm: () => {},
+    dropIfPrewarmed: () => {},
     send: (args: { prompt: string; displayText?: string }) => {
       sends.push({ prompt: args.prompt, displayText: args.displayText });
       return { ok: true as const };

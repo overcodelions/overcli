@@ -87,7 +87,13 @@ const WORKSPACES = [
 ] as unknown as Workspace[];
 
 function harness() {
-  const runner = { send: () => ({ ok: true as const }) };
+  // prewarm/dropIfPrewarmed are fire-and-forget look-ahead hooks; stubbed
+  // so the runtime's calls don't throw.
+  const runner = {
+    send: () => ({ ok: true as const }),
+    prewarm: () => {},
+    dropIfPrewarmed: () => {},
+  };
   const emitted: MainToRendererEvent[] = [];
   const rt = new FlowRuntimeImpl(
     runner as never,

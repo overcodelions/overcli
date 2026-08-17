@@ -17,6 +17,7 @@ import {
   isStaleSessionError,
   makeIdleWatchdog,
   resumeSessionAfterParamChange,
+  canPrewarm,
   shouldReapIdle,
   shouldSkipIdleOnClose,
   staleRunningReason,
@@ -663,5 +664,82 @@ describe('makeIdleWatchdog', () => {
     wd.bump();
     vi.advanceTimersByTime(60_000);
     expect(onExpire).not.toHaveBeenCalled();
+  });
+});
+
+describe('canPrewarm', () => {
+  const base = {
+    backend: 'claude' as const,
+    claudeTransport: 'cli' as const,
+    claudeSdkFallback: false,
+    hasRuntime: false,
+    sendPending: false,
+  };
+
+  it('warms claude on the cli transport', () => {
+    expect(canPrewarm(base)).toBe(true);
+  });
+
+  it('warms codex', () => {
+    // The exec-vs-app-server split is probed by the caller; eligibility
+    // only rules the backend in.
+    expect(canPrewarm({ ...base, backend: 'codex' })).toBe(true);
+  });
+
+  it('skips the claude SDK transport — there is no subprocess to start', () => {
+    expect(canPrewarm({ ...base, claudeTransport: 'sdk' })).toBe(false);
+    expect(canPrewarm({ ...base, claudeSdkFallback: true })).toBe(false);
+  });
+
+  it.each(['gemini', 'copilot', 'ollama'] as const)(
+    'skips %s — no resident subprocess to warm',
+    (backend) => expect(canPrewarm({ ...base, backend })).toBe(false),
+  );
+
+  it('skips a conversation that already has a runtime', () => {
+    // Includes a prewarm already in flight: `spawnFor` registers the process
+    // synchronously, so a second warm-up would orphan the first.
+    expect(canPrewarm({ ...base, hasRuntime: true })).toBe(false);
+  });
+
+  it('skips a conversation with a real send in flight', () => {
+    // Losing this race would leave two processes with one map entry.
+    expect(canPrewarm({ ...base, sendPending: true })).toBe(false);
+  });
+
+  it('a runtime beats every other signal', () => {
+    expect(canPrewarm({ ...base, backend: 'codex', hasRuntime: true })).toBe(false);
+  });
+});
+
+describe('shouldReapIdle — unused prewarm', () => {
+  // The reap refuses to collect a process it cannot resume, which would make
+  // a never-used prewarm immortal: no turn ever runs on it, so no sessionId
+  // ever arrives. Callers pass `canResume: true` for one because there is no
+  // history to lose — this pins that reasoning.
+  it('collects an unused prewarm once idle', () => {
+    expect(
+      shouldReapIdle({
+        turnInFlight: false,
+        hasPendingPrompts: false,
+        canResume: true,
+        lastActivityAt: 0,
+        timeoutMinutes: 30,
+        now: 31 * 60_000,
+      }),
+    ).toBe(true);
+  });
+
+  it('still leaves a session-less, never-prewarmed process alone', () => {
+    expect(
+      shouldReapIdle({
+        turnInFlight: false,
+        hasPendingPrompts: false,
+        canResume: false,
+        lastActivityAt: 0,
+        timeoutMinutes: 30,
+        now: 31 * 60_000,
+      }),
+    ).toBe(false);
   });
 });
