@@ -1856,6 +1856,15 @@ export interface IPCInvokeMap {
   /// The worker's journal, newest first — its episodic memory, rendered as
   /// the shift history in the Workers pane.
   'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
+  /// Forget everything this worker remembers and restart it at shift #1: its
+  /// journal goes, and with it the ban on titles it was told no about, so it may
+  /// propose those again. `files` also empties its own directory — the baselines,
+  /// tallies and cursors it works from, plus deliverables that outlived their
+  /// runs — so it is opt-in and counted separately in the reply. Trust, budget
+  /// and the job description are the user's standing decisions and are untouched.
+  'workers:resetMemory': (args: { id: UUID; files?: boolean }) =>
+    | { ok: true; entries: number; files: number }
+    | { ok: false; error: string };
   /// The worker as a shareable YAML document: the JOB, with the flows it
   /// launches embedded whole, and none of the employment — no id, no trust,
   /// no project path, no history. See src/shared/flows/workerYaml.ts.

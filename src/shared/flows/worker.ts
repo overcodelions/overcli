@@ -37,6 +37,18 @@ export interface Worker {
   anchorAt?: number;
   lastShiftAt?: number;
   shiftCount?: number;
+  /// When a SHIFT last actually planned for this worker. Deliberately not
+  /// stamped by errands: an errand is a one-off ask that need not have touched
+  /// the data a shift pulls, and moving this anchor for one would make the next
+  /// shift skip a window nothing ever covered.
+  ///
+  /// Distinct from `lastShiftAt`, which is cadence bookkeeping the
+  /// scheduler clears whenever the trigger is edited or the worker is
+  /// re-enabled; clearing THAT must not make a worker forget when it last
+  /// looked at the project. This is the anchor a shift prompt states as "your
+  /// previous shift ran at", so a worker can pull only what is new since.
+  /// Cleared only by an explicit memory reset.
+  lastPlannedAt?: number;
   /// Where this worker sits on the roster, low first. Absent means "wherever
   /// hire order puts it" — a roster nobody has arranged still reads newest
   /// first, and arranging one worker must not renumber the rest into an order
@@ -166,6 +178,13 @@ export interface WorkerJournalEntry {
 }
 
 // ---- Caps and trust -----------------------------------------------------
+
+/// How far back a worker reaches on its FIRST pass at something, when it has
+/// no cursor of its own to resume from. Stated in the prompt rather than
+/// enforced in code — only the worker's own flow knows what "pull" means for
+/// its data source. Long enough that a first report has a trend in it, short
+/// enough that shift #1 doesn't cost more than the next fifty combined.
+export const WORKER_FIRST_RUN_WINDOW_DAYS = 90;
 
 export const WORKER_MAX_ITEMS_PER_SHIFT = 5;
 export const WORKER_MIN_JOB_DESCRIPTION = 20;

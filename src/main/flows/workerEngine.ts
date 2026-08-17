@@ -38,6 +38,7 @@ import {
 import {
   WORKER_DEMOTE_REJECTION_STREAK,
   WORKER_AUTO_RENDER_NEWEST,
+  WORKER_FIRST_RUN_WINDOW_DAYS,
   computeWorkerScorecard,
   demotedTrust,
   rejectionStreak,
@@ -70,12 +71,13 @@ import {
 } from './workersStore';
 import {
   appendWorkerJournalEntry,
+  clearWorkerJournal,
   digestWorkerJournal,
   loadWorkerJournal,
   workerRejectedTitles,
 } from './workerJournal';
 import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
-import { fileWorkerDeliverable, workerFilesDir } from './workerFiles';
+import { clearWorkerFiles, fileWorkerDeliverable, workerFilesDir } from './workerFiles';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
 /// a minute so sleep/clock-steps can't strand a timer.
@@ -146,6 +148,7 @@ export interface WorkerEngineDeps {
     load: (workerId: string) => WorkerJournalEntry[];
     rejectedTitles: (workerId: string) => string[];
     digest: (workerId: string) => string;
+    clear: (workerId: string) => number;
   };
   /// Run spend for a worker since `sinceMs`, from the run-summary log.
   spend?: (workerId: string, sinceMs: number) => number;
@@ -232,6 +235,7 @@ export class WorkerEngine {
       load: loadWorkerJournal,
       rejectedTitles: workerRejectedTitles,
       digest: digestWorkerJournal,
+      clear: clearWorkerJournal,
     };
     this.spend = deps.spend ?? workerSpendSince;
     this.spendAll = deps.spendAll ?? workerSpendByWorkerSince;
@@ -358,6 +362,10 @@ export class WorkerEngine {
       // its shift numbering or forget when it last worked.
       shiftCount: existing?.shiftCount,
       lastShiftAt: existing?.lastShiftAt,
+      // Survives even a cadence edit, which DOES clear `lastShiftAt` below:
+      // re-anchoring when the worker next runs is a scheduling decision, and
+      // it must not tell the worker it has never looked at the project.
+      lastPlannedAt: existing?.lastPlannedAt,
     };
     // A non-autonomous worker may not run in the working copy; repair rather
     // than reject, since trust wasn't the caller's to choose here.
@@ -444,6 +452,53 @@ export class WorkerEngine {
     this.emitTreasury();
     this.arm();
     return { ok: true };
+  }
+
+  /// Wipe what this worker remembers and start it over at shift #1 — the
+  /// counterpart to hiring a second one when the job description has moved on
+  /// far enough that the journal is now misleading rather than useful.
+  ///
+  /// `files` is separate because the two halves fail differently. The journal is
+  /// the worker's account of what it PROPOSED, and stale entries mostly cost a
+  /// duplicate proposal; its directory holds what it actually PRODUCED — the
+  /// baselines, tallies and cursors a long-running job is built on, plus filed
+  /// deliverables that outlived their runs. Clearing that is the destructive
+  /// half, so it is opt-in and reported separately.
+  ///
+  /// Trust and budget are untouched: both are the user's standing decisions
+  /// about this worker, not things the worker learned.
+  resetMemory(
+    id: UUID,
+    opts: { files?: boolean } = {},
+  ): { ok: true; entries: number; files: number } | { ok: false; error: string } {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    if (this.firing.has(id)) {
+      // A planning turn in flight is about to journal against the shift number
+      // we are resetting, so it would write the old life into the new one.
+      return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then reset.' };
+    }
+    let entries = 0;
+    try {
+      entries = this.journal.clear(id);
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+    let files = 0;
+    if (opts.files) {
+      const cleared = clearWorkerFiles(id);
+      if (!cleared.ok) return { ok: false, error: cleared.error };
+      files = cleared.removed;
+    }
+    w.shiftCount = undefined;
+    w.lastShiftAt = undefined;
+    w.lastPlannedAt = undefined;
+    // Re-anchor, or a worker whose cadence came due while it still had a
+    // memory would fire the instant the reset lands.
+    w.anchorAt = this.now();
+    this.persistAndEmit(w);
+    this.arm();
+    return { ok: true, entries, files };
   }
 
   /// Work one shift right now, out of band — the "will this do what I think"
@@ -669,6 +724,11 @@ export class WorkerEngine {
     const sequence = (w.shiftCount ?? 0) + 1;
     w.shiftCount = sequence;
     if (!opts.manual) w.lastShiftAt = now;
+    // Read before overwriting — the prompt states the PREVIOUS turn's time,
+    // which is the window a worker pulling data has to catch up on. A manual
+    // shift still counts as looking at the project, so it stamps too.
+    const previousPlannedAt = w.lastPlannedAt;
+    w.lastPlannedAt = now;
     this.persistAndEmit(w);
 
     const rejected = this.journal.rejectedTitles(w.id);
@@ -681,7 +741,7 @@ export class WorkerEngine {
     this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: true, task: 'shift' });
     let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
     try {
-      res = await this.parkShift(w, sequence, runIn, autoCap, rejected);
+      res = await this.parkShift(w, sequence, runIn, autoCap, rejected, previousPlannedAt);
     } finally {
       this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: false, task: 'shift' });
     }
@@ -729,11 +789,12 @@ export class WorkerEngine {
     runIn: 'cwd' | 'worktree',
     autoCap: number,
     rejected: string[],
+    previousPlannedAt?: number,
   ): ReturnType<WorkerParker['parkProposal']> {
     return this.deps.parker.parkProposal({
       origin: { kind: 'worker', workerId: w.id, workerName: w.name, task: 'shift' },
       projectPath: w.projectPath,
-      prompt: this.buildShiftPrompt(w, sequence, rejected),
+      prompt: this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt),
       flowId: w.flowIds[0],
       runIn,
       maxConcurrent: Math.min(w.caps.maxItemsPerShift, 4),
@@ -897,10 +958,17 @@ export class WorkerEngine {
   /// The planning turn's user request (the producer system prompt rides in
   /// front of it — see orchestrator.propose). Rebuilt from the journal every
   /// shift: this is the difference between a worker and a saved prompt.
-  private buildShiftPrompt(w: Worker, sequence: number, rejected: string[]): string {
+  private buildShiftPrompt(
+    w: Worker,
+    sequence: number,
+    rejected: string[],
+    previousPlannedAt?: number,
+  ): string {
     const digest = this.journal.digest(w.id);
     const parts = [
       `You are "${w.name}", a standing worker on this project. This is your shift #${sequence}.`,
+      '',
+      ...this.clockBlock(previousPlannedAt),
       '',
       'YOUR JOB DESCRIPTION',
       w.jobDescription,
@@ -930,6 +998,23 @@ export class WorkerEngine {
   /// The user's one-off ask, bounded by the worker's standing job rather than
   /// treated as a free-standing prompt.
 
+  /// When this shift is, and when the last one was. Without it a worker cannot
+  /// express "since last time" at all: the journal digest is day-granular, so a
+  /// worker on a 15-minute cadence sees the same date on every entry and cannot
+  /// tell its own shifts apart. Stated as full ISO timestamps because that is
+  /// what a query filter wants.
+  private clockBlock(previousPlannedAt?: number): string[] {
+    const nowISO = new Date(this.now()).toISOString();
+    return [
+      'THE CLOCK',
+      `This shift started at ${nowISO}.`,
+      previousPlannedAt !== undefined
+        ? `Your previous shift planned at ${new Date(previousPlannedAt).toISOString()} — that is the` +
+          ' window to catch up on for anything you track over time.'
+        : 'You have never worked a shift before, so nothing has been covered yet.',
+    ];
+  }
+
   /// The worker's own directory, stated in every planning turn. A worker with
   /// nowhere to put anything can only ever answer in prose that scrolls away;
   /// with a directory it can leave a baseline for its next shift to diff
@@ -946,6 +1031,17 @@ export class WorkerEngine {
       'what you already checked. Use ordinary absolute paths; it is outside the',
       'project, so nothing you put there touches the repository. Create it if it',
       'does not exist yet.',
+      '',
+      'PICKING UP WHERE YOU LEFT OFF',
+      'If your job means gathering the same kind of thing shift after shift, do not',
+      'gather it all again every time. Keep a cursor in `cursor.json` in that',
+      'directory: read it first and cover only what is new since the mark it holds;',
+      `if it is missing, this is your first pass — cover the last ${WORKER_FIRST_RUN_WINDOW_DAYS} days.`,
+      'Write the new mark LAST, only once the gathering actually succeeded, and keep',
+      'the mark it replaces beside it — a half-finished shift that moves the cursor',
+      'forward silently loses the window it skipped, which is worse than doing the',
+      'work twice. Your journal above is how you check: if it shows your last pass',
+      'failed, treat the mark as suspect and resume from the one it replaced.',
     ];
   }
 

@@ -1078,11 +1078,25 @@ function WorkerSettings({
 }) {
   const setEnabled = useWorkersStore((s) => s.setEnabled);
   const remove = useWorkersStore((s) => s.remove);
+  const resetMemory = useWorkersStore((s) => s.resetMemory);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const flows = useFlowsStore((s) => s.flows);
   const openFlowEditor = useFlowsStore((s) => s.openEditor);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const [confirmingFire, setConfirmingFire] = useState(false);
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  const [resetFiles, setResetFiles] = useState(false);
+  // What the last reset threw away, kept until the card unmounts. A reset is
+  // silent by nature — the journal it emptied is the thing that would have
+  // recorded it — so this line is the only acknowledgement there is.
+  const [resetDone, setResetDone] = useState<{ entries: number; files: number } | null>(null);
+
+  const startFresh = async () => {
+    const res = await resetMemory(worker.id, resetFiles);
+    setConfirmingReset(false);
+    setResetFiles(false);
+    if (res) setResetDone(res);
+  };
 
   return (
     <div className="mt-5 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_19rem]">
@@ -1223,6 +1237,76 @@ function WorkerSettings({
                 style={{ left: worker.enabled ? 16 : 2 }}
               />
             </button>
+          </div>
+          <div className="mt-2 border-t border-card-strong pt-3">
+            <div className="flex items-center justify-between">
+              <div className="min-w-0 pr-4">
+                <div className="text-sm text-ink">
+                  {worker.shiftCount
+                    ? `Remembers ${worker.shiftCount} ${worker.shiftCount === 1 ? "shift" : "shifts"}`
+                    : "Nothing remembered yet"}
+                </div>
+                <div className="text-xs text-ink-muted">
+                  {resetDone
+                    ? `Started fresh — forgot ${resetDone.entries} journal ${
+                        resetDone.entries === 1 ? "entry" : "entries"
+                      }${resetDone.files ? `, emptied ${resetDone.files} files` : ""}.`
+                    : "Its journal steers every shift. Wipe it to start over at shift #1."}
+                </div>
+              </div>
+              {confirmingReset ? null : (
+                <button
+                  onClick={() => {
+                    setResetDone(null);
+                    setConfirmingReset(true);
+                  }}
+                  className="shrink-0 text-[11px] text-ink-faint hover:text-accent"
+                >
+                  Start fresh
+                </button>
+              )}
+            </div>
+            {confirmingReset ? (
+              <div className="mt-2 rounded-md border border-card-strong bg-card-strong/40 p-2">
+                <div className="text-xs text-ink-muted">
+                  It forgets what it proposed and what you turned down, so it may
+                  offer those again. Trust and budget stay as they are.
+                </div>
+                <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-ink">
+                  <input
+                    type="checkbox"
+                    checked={resetFiles}
+                    onChange={(e) => setResetFiles(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    Also empty its files
+                    {files.length > 0 ? ` (${files.length})` : ""}
+                    <span className="block text-ink-faint">
+                      Deletes the baselines and tallies it works from, and the
+                      outputs it filed. Cannot be undone.
+                    </span>
+                  </span>
+                </label>
+                <div className="mt-2 flex gap-1">
+                  <button
+                    onClick={() => void startFresh()}
+                    className="rounded bg-red-500/80 px-2 py-0.5 text-[11px] text-white"
+                  >
+                    {resetFiles ? "Reset memory and files" : "Reset memory"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setConfirmingReset(false);
+                      setResetFiles(false);
+                    }}
+                    className="rounded border border-card-strong px-2 py-0.5 text-[11px]"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
           <div className="mt-2 flex items-center justify-between border-t border-card-strong pt-3">
             <div className="min-w-0 pr-4 text-xs text-ink-muted">

@@ -1307,6 +1307,11 @@ function registerIpc(): void {
   ipcMain.handle('workers:journal', (_e, { id }) =>
     workerEngine ? workerEngine.journalFor(id) : [],
   );
+  ipcMain.handle('workers:resetMemory', (_e, { id, files }) =>
+    workerEngine
+      ? workerEngine.resetMemory(id, { files })
+      : ({ ok: false, error: 'Workers are not running.' } as const),
+  );
   ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription }) => {
     const store = Store.load();
     return draftWorkerFromPrompt(
