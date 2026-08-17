@@ -654,11 +654,36 @@ function WorkerRow({
   // Arriving from the calendar names a turn, and that turn may be on any day.
   // Following it means moving the desk's date as well as opening the row —
   // otherwise the link lands on today and the thing you clicked isn't there.
+  const clearDeskFocus = useWorkersStore((s) => s.clearDeskFocus);
+  // Held locally so the turn stays highlighted and scrolled to after the store
+  // hands it over. The store's copy is CONSUMED: a focus is a one-time
+  // navigation, and leaving it set re-applied its day every time this pane
+  // remounted, so a worker you had reached from the calendar kept reopening on
+  // last week no matter what it did today.
+  const [focusId, setFocusId] = useState<string | null>(
+    focus?.workerId === worker.id ? focus.orchestrationId : null,
+  );
   useEffect(() => {
     if (focus?.workerId !== worker.id) return;
     setTab("desk");
     setDay(startOfDay(focus.at));
-  }, [focus, worker.id]);
+    setFocusId(focus.orchestrationId);
+    clearDeskFocus();
+  }, [focus, worker.id, clearDeskFocus]);
+
+  // Sending an errand snaps the desk back to today, because that is where the
+  // errand lands. Without this you could send from a day you had stepped back
+  // to — the composer is there on every day — and watch nothing happen: your
+  // message, the reply and the whole turn were filed on today, which is the
+  // one day you were not looking at.
+  const sendingAt = useWorkersStore(
+    (s) => s.errandSending[worker.id]?.[0]?.at ?? null,
+  );
+  useEffect(() => {
+    if (sendingAt == null) return;
+    setDay(startOfDay(sendingAt));
+    setFocusId(null);
+  }, [sendingAt]);
 
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const mine = useMemo(
@@ -781,9 +806,7 @@ function WorkerRow({
               day={day}
               days={days}
               onSet={setDay}
-              focusId={
-                focus?.workerId === worker.id ? focus.orchestrationId : null
-              }
+              focusId={focusId}
             />
           </div>
           <div className="shrink-0 border-t border-card px-6 py-3">
