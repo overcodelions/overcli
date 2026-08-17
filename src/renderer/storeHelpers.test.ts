@@ -90,11 +90,18 @@ describe('file tab persistence', () => {
     });
   });
 
-  it('restores every tab in the editor, not preview', () => {
-    // A restored README used to come back as a rendered page.
-    const hydrated = hydrateFileTabs({ 'conv:c1': { paths: ['/repo/README.md'] } });
-    expect(hydrated['conv:c1'].tabs[0].mode).toBe('edit');
-    expect(hydrated['conv:c1'].tabs[0].highlight).toBeNull();
+  it('restores each tab in its natural default mode, with no line jump', () => {
+    const hydrated = hydrateFileTabs({
+      'conv:c1': { paths: ['/repo/README.md', '/repo/Button.tsx', '/repo/main.ts'] },
+    });
+    const [readme, button, main] = hydrated['conv:c1'].tabs;
+    // Markdown and components render; source files open as source.
+    expect(readme.mode).toBe('preview');
+    expect(button.mode).toBe('preview');
+    expect(main.mode).toBe('edit');
+    // The per-extension memory is session-scoped, so there is none to apply
+    // at hydration, and a line number saved days ago is not worth restoring.
+    expect(readme.highlight).toBeNull();
   });
 
   it('repairs an activePath that is not in the list', () => {
