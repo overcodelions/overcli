@@ -421,6 +421,24 @@ export function deliverableFiles(args: {
 /// Same containment rule as the reader, which also refuses the worker's own
 /// root: a `..` that resolved to the parent would otherwise take out every
 /// worker's files, and a bare `.` would empty this one's.
+/// Empty the worker's filing cabinet — the second half of a memory reset.
+/// Removes the directory rather than walking it: `ensureWorkerFilesDir` recreates
+/// it on demand, and the worker's prompt already tells it to create the directory
+/// if it does not exist. Returns how many top-level entries were removed, so the
+/// caller can tell the user what it actually threw away.
+export function clearWorkerFiles(workerId: string): { ok: true; removed: number } | { ok: false; error: string } {
+  const root = workerFilesDir(workerId);
+  try {
+    if (!fs.existsSync(root)) return { ok: true, removed: 0 };
+    const removed = fs.readdirSync(root).length;
+    fs.rmSync(root, { recursive: true, force: true });
+    return { ok: true, removed };
+  } catch (err) {
+    log('error', 'worker-files', `could not clear files for ${workerId}`, err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function deleteWorkerFile(
   workerId: string,
   name: string,

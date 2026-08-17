@@ -718,3 +718,16 @@ body.konami-screen-ripple::after {
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--c-accent) 70%, transparent);
   }
 }
+
+/* A pane divider drag is a gesture on the parent document, but the file
+ * preview renders its content inside a sandboxed iframe. Once the pointer
+ * crosses into that iframe the frame's document owns the events and the
+ * parent stops hearing pointermove — so dragging the preview edge to the
+ * RIGHT (making it narrower) died a few pixels in, while dragging left
+ * over ordinary DOM worked fine.
+ *
+ * setPointerCapture in ResizableDivider is the real fix; this is the belt
+ * to its braces, and covers any other embedded frame a pane may pick up. */
+body.dragging-divider iframe {
+  pointer-events: none;
+}
