@@ -358,7 +358,7 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
         </Field>
       )}
 
-      {/* Permission + pause — both columns share a Field wrapper so the
+      {/* Permission + effect — both columns share a Field wrapper so the
           uppercase labels + input rows line up on the same baseline. */}
       <div className="grid grid-cols-2 gap-3 mt-3 pt-3 border-t border-card">
         <Field label="Permission mode">
@@ -386,6 +386,25 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
               : 'Auto resolves to Trust everything for autonomous runs. Drop to Ask/Allow edits if you want to intervene per action.'}
           </div>
         </Field>
+        <Field label="Effect boundary">
+          <select
+            value={step.effect ?? ''}
+            onChange={(e) =>
+              patch({ effect: (e.target.value || undefined) as FlowStep['effect'] })
+            }
+            className="w-full bg-card-strong rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">Auto-detect (legacy)</option>
+            <option value="local">Local — files, code, tests</option>
+            <option value="external">External — push, send, publish</option>
+          </select>
+          <div className="text-[11px] text-ink-faint mt-0.5">
+            Worker runs stop for approval before external effects; local work stays autonomous.
+          </div>
+        </Field>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 mt-3">
         <Field label="Pause before this step">
           <label className="flex items-center gap-2 text-xs cursor-pointer bg-card-strong rounded px-2 py-[7px]">
             <input
@@ -402,6 +421,19 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
               : step.pauseBefore
               ? 'Run will stop here so you can review the prior step before continuing.'
               : 'Runs automatically when the previous step finishes.'}
+          </div>
+        </Field>
+        <Field label="Verdict gate">
+          <label className="flex items-center gap-2 text-xs cursor-pointer bg-card-strong rounded px-2 py-[7px]">
+            <input
+              type="checkbox"
+              checked={step.verdictGate ?? false}
+              onChange={(e) => patch({ verdictGate: e.target.checked || undefined })}
+            />
+            <span>This step must approve before continuing</span>
+          </label>
+          <div className="text-[11px] text-ink-faint mt-0.5">
+            Reviewer presets gate automatically. Use this for custom reviewers only.
           </div>
         </Field>
       </div>

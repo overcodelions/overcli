@@ -28,6 +28,7 @@ import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import {
   probeBackendHealth,
+  healthyBackends,
   invalidateHealthCache,
   listInstalledReviewers,
   resolveBackendPath,
@@ -125,6 +126,7 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
+import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
 import { flushRuns } from './flows/runsStore';
@@ -337,6 +339,32 @@ function registerIpc(): void {
       Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
+    supervisorTurn: async ({ worker, prompt, cwd }) => {
+      const settings = Store.load().settings;
+      const healthy = await healthyBackends(settings.backendPaths);
+      const backend = pickDrafterBackend({
+        preferred: worker.heartbeatBackend ?? settings.preferredBackend,
+        isHealthy: (candidate) => healthy.has(candidate),
+        isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
+      });
+      if (!backend) {
+        return { ok: false, error: 'No signed-in model is available to answer the flow.' };
+      }
+      const model = resolveProducerModel(
+        backend,
+        worker.heartbeatModel,
+        settings.flowModelDefaults,
+      );
+      return runner!.oneShot({
+        backend,
+        model,
+        prompt,
+        cwd,
+        permissionMode: 'plan',
+        timeoutMs: 180_000,
+        idleTimeoutMs: 60_000,
+      });
+    },
     clearActivity: (workerId) => {
       let shifts = 0;
       let errands = 0;
@@ -430,6 +458,7 @@ function registerIpc(): void {
       return { ok: true, orchestrationId: launched.orchestrationId, flowId: flow.id };
     },
   });
+  flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
   workerEngine.start();
   // Symbol lookup resolves its backend per call rather than capturing one:
   // the user can change the preferred backend in Settings mid-session, and

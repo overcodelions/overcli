@@ -401,21 +401,25 @@ function RosterRow({
             </span>
           )}
         </span>
-        {summary.needReview > 0 && (
-          <span
-            className="shrink-0 rounded-full bg-violet-500 px-1.5 text-[10px] font-medium leading-4 text-white"
-            title={`${summary.needReview} waiting for your review`}
-          >
-            {summary.needReview}
-          </span>
-        )}
-        {/* Folded away, the count of what is underneath is the only thing
-            left saying this worker did anything today. */}
-        {!expanded && hidden > 0 && (
-          <span className="shrink-0 text-[10px] tabular-nums text-ink-faint">
-            {hidden}
-          </span>
-        )}
+        {/* The move controls sit absolutely at the row's right edge and only
+            appear on hover; without this the count ends up underneath them. */}
+        <span className="flex shrink-0 items-center gap-1.5 transition-[padding] duration-150 group-hover/row:pr-[34px]">
+          {summary.needReview > 0 && (
+            <span
+              className="shrink-0 rounded-full bg-violet-500 px-1.5 text-[10px] font-medium leading-4 text-white"
+              title={`${summary.needReview} waiting for your review`}
+            >
+              {summary.needReview}
+            </span>
+          )}
+          {/* Folded away, the count of what is underneath is the only thing
+              left saying this worker did anything today. */}
+          {!expanded && hidden > 0 && (
+            <span className="shrink-0 text-[10px] tabular-nums text-ink-faint">
+              {hidden}
+            </span>
+          )}
+        </span>
       </button>
 
       {/* Arranging the roster is a rare act, so it hides until you are on the
