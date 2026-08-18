@@ -2557,6 +2557,7 @@ const KIND_LABEL: Record<
   failed: { text: "failed", cls: "text-red-600" },
   errand: { text: "errand", cls: "text-sky-600" },
   demoted: { text: "demoted", cls: "text-amber-600" },
+  compacted: { text: "compacted", cls: "text-ink-faint" },
 };
 
 function JournalList({ workerId }: { workerId: string }) {

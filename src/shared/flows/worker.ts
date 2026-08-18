@@ -49,6 +49,8 @@ export interface Worker {
   /// previous shift ran at", so a worker can pull only what is new since.
   /// Cleared only by an explicit memory reset.
   lastPlannedAt?: number;
+  /// When compaction last ran for this worker. Absent means never.
+  lastCompactedAt?: number;
   /// Where this worker sits on the roster, low first. Absent means "wherever
   /// hire order puts it" — a roster nobody has arranged still reads newest
   /// first, and arranging one worker must not renumber the rest into an order
@@ -163,7 +165,11 @@ export type WorkerJournalKind =
   /// A trust demotion landed. Its own kind (not a 'shift' note) because the
   /// rejection streak must treat it as a terminator — the rejections that
   /// caused a demotion are spent, and must not count toward the next one.
-  | 'demoted';
+  | 'demoted'
+  /// A weekly compaction pass ran and archived some of this worker's older
+  /// filed work. Journal entries themselves are never folded — see
+  /// `WorkerEngine.compactIfDue`.
+  | 'compacted';
 
 export interface WorkerJournalEntry {
   id: string; // unique per entry, caller-supplied
