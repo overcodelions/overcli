@@ -7,6 +7,7 @@
 import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../parsers/claude';
 import { normalizeAllowedDirs } from '../permissionRules';
 import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
+import { TURBO_SYSTEM_PROMPT } from './turbo';
 
 interface ClaudeStreamState {
   /// Partial line carried from the previous chunk — claude emits
@@ -60,6 +61,16 @@ export const claudeBackend: BackendSpec = {
         a.push('--mcp-config', mcpConfigPath);
         a.push('--permission-prompt-tool', 'mcp__overcli__approve');
       }
+    }
+    // Turbo: don't inherit the user's global MCP config. Every spawn
+    // otherwise boots each configured server before the first token, and a
+    // coding conversation rarely touches any of them. With no `--mcp-config`
+    // this loads zero servers; in `auto` mode the broker config above is
+    // still passed, so strict keeps exactly that one and drops the rest —
+    // which is what makes the flag safe to set unconditionally here.
+    if (args.turbo) {
+      a.push('--strict-mcp-config');
+      a.push('--append-system-prompt', TURBO_SYSTEM_PROMPT);
     }
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);

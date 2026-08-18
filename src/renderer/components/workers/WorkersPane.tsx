@@ -1190,6 +1190,14 @@ function WorkerSettings({
                   : "a fresh worktree"}
               </dd>
             </div>
+            <div className="flex items-baseline justify-between py-1.5">
+              <dt className="text-xs text-ink-muted">External actions</dt>
+              <dd className="text-sm text-ink">
+                {worker.caps.allowExternalActions
+                  ? "allowed without approval"
+                  : "approval required"}
+              </dd>
+            </div>
             {/* The flows are the machinery this worker is allowed to launch —
                 the hard bound on what any errand can turn into. Reading the
                 contract without being able to open them means taking the
@@ -3415,6 +3423,31 @@ function WorkerEditor() {
                 ? `Trust: ${existing.trust} — change it from the roster with Promote/Demote.`
                 : "Hired on probation: every proposal parks for your approval, and rejected ones are never re-proposed. Promote from the roster once it has earned it."}
             </div>
+
+            <label className="flex items-start gap-2 rounded-lg border border-amber-400/30 bg-amber-400/5 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={draft.caps.allowExternalActions === true}
+                onChange={(e) =>
+                  patch({
+                    caps: {
+                      ...draft.caps,
+                      allowExternalActions: e.target.checked,
+                    },
+                  })
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block text-sm text-ink">
+                  Allow external actions without approval
+                </span>
+                <span className="block text-[11px] leading-relaxed text-ink-faint">
+                  Lets this worker push, publish, send messages, and update external services.
+                  Flow-authored review checkpoints still pause.
+                </span>
+              </span>
+            </label>
           </div>
 
           {(problem || error) && (

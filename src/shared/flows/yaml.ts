@@ -52,6 +52,7 @@ interface YamlStep {
   rebound?: unknown;
   on_fail?: unknown;
   pause_before?: unknown;
+  turbo?: unknown;
   output?: unknown;
 }
 
@@ -192,6 +193,7 @@ function parseStep(raw: unknown, idx: number): FlowStep {
     rebound: parseRebound(r.rebound),
     onFail: parseOnFail(r.on_fail),
     pauseBefore: asBoolean(r.pause_before),
+    turbo: asBoolean(r.turbo),
     output: asString(r.output),
   };
 }
@@ -394,6 +396,7 @@ function serializeStep(s: FlowStep): Record<string, unknown> {
   if (s.rebound) out.rebound = serializeRebound(s.rebound);
   if (s.onFail) out.on_fail = serializeOnFail(s.onFail);
   if (s.pauseBefore) out.pause_before = true;
+  if (s.turbo) out.turbo = true;
   out.output = s.output;
   return out;
 }

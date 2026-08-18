@@ -68,6 +68,7 @@ export interface FlowLauncher {
     scheduleName?: string;
     workerId?: UUID;
     workerName?: string;
+    allowExternalActions?: boolean;
     title?: string;
   }): Promise<{ ok: true; runId: UUID } | { ok: false; error: string }>;
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
@@ -599,7 +600,11 @@ export class OrchestratorImpl {
           // summary's `workerId` is what the monthly budget rollup groups by,
           // and nothing can reconstruct the tag after launch.
           ...(o.origin?.kind === 'worker'
-            ? { workerId: o.origin.workerId, workerName: o.origin.workerName }
+            ? {
+                workerId: o.origin.workerId,
+                workerName: o.origin.workerName,
+                allowExternalActions: o.origin.allowExternalActions,
+              }
             : {}),
         });
       } catch (err) {

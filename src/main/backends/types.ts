@@ -27,6 +27,9 @@ export interface BackendSendArgs {
   /// Surfaces MCP server startup/registration diagnostics on stderr, which the
   /// runner forwards to the Debug viewer. Honored by the claude backend.
   mcpDebug?: boolean;
+  /// Speed-over-capability launch mode. Honored by the claude backend:
+  /// forces `--effort low` and `--strict-mcp-config`.
+  turbo?: boolean;
 }
 
 /// Lookups the runner exposes to a spec. Lets a spec resolve per-conv

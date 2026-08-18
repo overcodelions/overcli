@@ -21,6 +21,16 @@ export function permissionTone(mode: PermissionMode): string | undefined {
   return undefined;
 }
 
+export function turboLabel(turbo: boolean | undefined): string {
+  return turbo ? 'Turbo on' : 'Turbo off';
+}
+
+/// Coloured only while turbo is in force, so the colour carries exactly one
+/// meaning: this conversation is running shallow right now.
+export function turboTone(turbo: boolean | undefined): string | undefined {
+  return turbo ? '#38bdf8' : undefined;
+}
+
 export function effortLabel(effort: EffortLevel): string {
   if (!effort) return 'Auto effort';
   return effort.charAt(0).toUpperCase() + effort.slice(1);

@@ -120,6 +120,11 @@ export interface FlowStep {
   /// Defaults applied by the runtime if absent — typically `acceptEdits`
   /// for steps with write/bash tools, `default` otherwise.
   permissionMode?: PermissionMode;
+  /// Trade depth for latency on this step: `--effort low` and no MCP
+  /// servers. Absent falls back to the global `turboMode` setting, so a
+  /// flow can opt individual steps in (or leave scaffolding steps fast and
+  /// review steps deep) without touching the app-wide toggle.
+  turbo?: boolean;
   /// What kind of side effect this step is allowed to produce. `local`
   /// covers edits and commands inside the run's cwd; `external` covers
   /// pushes, deploys, messages, tickets, PRs, and other writes outside it.
@@ -476,6 +481,10 @@ export interface FlowRun {
   /// say which worker started work nobody watched.
   workerId?: UUID;
   workerName?: string;
+  /// Snapshot of the owning Worker's explicit permission to perform pushes,
+  /// sends, publishes, and service updates without the runtime boundary.
+  /// Missing on historical runs is deliberately equivalent to false.
+  allowExternalActions?: boolean;
   /// User-supplied name for THIS run, set from the sidebar / library row.
   /// Overrides the prompt-derived title everywhere a run is listed (see
   /// `flowRunTitle`). Absent until the user renames the run — a run is
