@@ -47,6 +47,7 @@ function makeHarness(
     pool?: number;
     generatedFlow?: WorkerEngineDeps['generatedFlow'];
     clearActivity?: WorkerEngineDeps['clearActivity'];
+    supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -145,6 +146,7 @@ function makeHarness(
     },
     generatedFlow: opts.generatedFlow,
     clearActivity: opts.clearActivity,
+    supervisorTurn: opts.supervisorTurn,
   });
 
   async function flush(): Promise<void> {
@@ -196,6 +198,74 @@ function makeHarness(
     hasTimer: () => pending !== null,
   };
 }
+
+describe('WorkerEngine flow supervision', () => {
+  it('answers a child flow as the standing persona with journal context', async () => {
+    let prompt = '';
+    const h = makeHarness({
+      seed: [seedWorker()],
+      supervisorTurn: async (args) => {
+        prompt = args.prompt;
+        return { ok: true, text: '<worker_answer>Use Unknown.</worker_answer>' };
+      },
+    });
+    h.journal.push({
+      id: 'note-1',
+      workerId: 'worker-1',
+      kind: 'shift',
+      at: 1,
+      title: 'Prior decision',
+      note: 'Prefer explicit labels.',
+    });
+    h.engine.start();
+
+    const result = await h.engine.answerFlowQuestion({
+      workerId: 'worker-1',
+      workerName: 'Scout',
+      flowName: 'Write brief',
+      projectPath: '/repo',
+      userPrompt: 'Add missing submitter details.',
+      step: {
+        id: 'write-brief',
+        role: 'technical-writer',
+        inputs: ['user_prompt'],
+        output: 'brief.md',
+      },
+      question: 'Blank or Unknown?',
+      artifacts: [],
+    });
+
+    expect(result).toEqual({ kind: 'answer', answer: 'Use Unknown.' });
+    expect(prompt).toContain('Scout');
+    expect(prompt).toContain('Prior decision');
+    expect(prompt).toContain('Blank or Unknown?');
+    expect(prompt).toContain('Local file/code edits and tests are already authorized');
+  });
+
+  it('surfaces an explicit Worker escalation', async () => {
+    const h = makeHarness({
+      seed: [seedWorker()],
+      supervisorTurn: async () => ({
+        ok: true,
+        text: '<escalate>I need the private recipient list.</escalate>',
+      }),
+    });
+    h.engine.start();
+    const result = await h.engine.answerFlowQuestion({
+      workerId: 'worker-1',
+      flowName: 'Send brief',
+      projectPath: '/repo',
+      userPrompt: 'Send it.',
+      step: { id: 'send', role: 'custom', inputs: [], output: 'receipt.md' },
+      question: 'Who receives this?',
+      artifacts: [],
+    });
+    expect(result).toEqual({
+      kind: 'escalate',
+      reason: 'I need the private recipient list.',
+    });
+  });
+});
 
 function seedWorker(over: Partial<Worker> = {}): Worker {
   return {

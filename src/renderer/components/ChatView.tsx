@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { useStore } from '../store';
 import { useRunner } from '../runnersStore';
@@ -20,7 +20,25 @@ import { TaskNotification } from './TaskNotification';
 import { EasterEggBubble } from './EasterEggBubble';
 import { useConversation } from '../hooks';
 
-export function ChatView({ conversationId }: { conversationId: UUID }) {
+export function ChatView({
+  conversationId,
+  renderAfterEvent,
+  timelineFooter,
+  timelineContentKey,
+}: {
+  conversationId: UUID;
+  /// Optional conversation-owned content that belongs immediately after a
+  /// persisted event. Flow runs use this for a standing Worker's reply to a
+  /// participant question; keeping the hook generic avoids teaching the chat
+  /// renderer about FlowRun storage.
+  renderAfterEvent?: (event: StreamEvent) => ReactNode;
+  /// Fallback for timeline content whose originating event is unavailable
+  /// (for example, an older run whose CLI history has already been pruned).
+  timelineFooter?: ReactNode;
+  /// Changes when an inline/footer addition changes without the underlying
+  /// event array changing, so tail-follow still reveals the new content.
+  timelineContentKey?: string;
+}) {
   const runner = useRunner(conversationId);
   const showToolActivity = useStore((s) => s.showToolActivity);
   const events = runner?.events ?? [];
@@ -94,7 +112,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
       });
     });
     return () => cancelAnimationFrame(id);
-  }, [tailId, tailRevision, currentReveal?.id, isRunning]);
+  }, [tailId, tailRevision, currentReveal?.id, isRunning, timelineContentKey]);
 
   // Land at the absolute bottom on conv switch. `initialTopMostItemIndex`
   // alone is unreliable here: virtuoso renders with estimated row heights
@@ -149,6 +167,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
           <div className="text-xs text-ink-faint">Loading history…</div>
+          {timelineFooter && <div className="mt-3">{timelineFooter}</div>}
         </div>
       </div>
     );
@@ -159,6 +178,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
           <NewAgentIntro conversationId={conversationId} />
+          {timelineFooter && <div className="mt-3">{timelineFooter}</div>}
         </div>
       </div>
     );
@@ -261,6 +281,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
                 reviewerCompact={isIntermediate}
                 reviewerTint={reviewerTint}
               />
+              {renderAfterEvent?.(event)}
             </>
           );
           return (
@@ -283,6 +304,7 @@ export function ChatView({ conversationId }: { conversationId: UUID }) {
                 </div>
               )}
               {error && <SystemNotice text={error} />}
+              {timelineFooter}
             </div>
           ),
         }}

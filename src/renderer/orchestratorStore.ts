@@ -39,6 +39,12 @@ interface OrchestratorState {
   /// Which batch's ledger is expanded in the queue pane (null = the most
   /// recent / all).
   activeOrchestrationId: string | null;
+  /// A batch whose first parked ask should pop open the moment its ledger
+  /// renders. One-shot: the ledger clears it on read. Set when the user comes
+  /// in from somewhere that already knows which proposal they meant (a
+  /// worker's "Review & pick"), so they don't land on a page of batches and
+  /// have to find it again.
+  detailRequestId: string | null;
 
   // ---- draft (producer + mapping) ----
   /// Project the batch runs against — also the cwd the producer investigates
@@ -83,6 +89,8 @@ interface OrchestratorActions {
   applyProducerProgress(text: string, tools: string[]): void;
   removeOrchestration(id: string): void;
   setActiveOrchestration(id: string | null): void;
+  requestOrchestrationDetail(id: string): void;
+  clearOrchestrationDetailRequest(): void;
 
   setProjectPath(path: string | null): void;
   setDefaultFlow(flowId: string | null): void;
@@ -134,6 +142,7 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
   loaded: false,
   orchestrations: {},
   activeOrchestrationId: null,
+  detailRequestId: null,
 
   projectPath: null,
   turns: [],
@@ -177,12 +186,19 @@ export const useOrchestratorStore = create<OrchestratorStore>((set, get) => ({
       return {
         orchestrations: rest,
         activeOrchestrationId: s.activeOrchestrationId === id ? null : s.activeOrchestrationId,
+        detailRequestId: s.detailRequestId === id ? null : s.detailRequestId,
       };
     });
   },
 
   setActiveOrchestration(id) {
     set({ activeOrchestrationId: id });
+  },
+  requestOrchestrationDetail(id) {
+    set({ detailRequestId: id });
+  },
+  clearOrchestrationDetailRequest() {
+    set({ detailRequestId: null });
   },
 
   setProjectPath(path) {
