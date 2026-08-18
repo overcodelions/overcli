@@ -878,7 +878,13 @@ export class WorkerEngine {
     previousPlannedAt?: number,
   ): ReturnType<WorkerParker['parkProposal']> {
     return this.deps.parker.parkProposal({
-      origin: { kind: 'worker', workerId: w.id, workerName: w.name, task: 'shift' },
+      origin: {
+        kind: 'worker',
+        workerId: w.id,
+        workerName: w.name,
+        task: 'shift',
+        ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
+      },
       projectPath: w.projectPath,
       prompt: this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt),
       flowId: w.flowIds[0],
@@ -921,6 +927,7 @@ export class WorkerEngine {
           workerName: w.name,
           task: 'errand',
           errand,
+          ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
         },
         projectPath: w.projectPath,
         prompt: this.buildErrandPrompt(w, errand, rejected),

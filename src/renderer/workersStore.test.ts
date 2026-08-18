@@ -436,6 +436,11 @@ describe('workersStore save', () => {
 });
 
 describe('draft factories', () => {
+  it('keeps new and historical workers conservative by default', () => {
+    expect(newWorkerDraft('/repo').caps.allowExternalActions).toBe(false);
+    expect(draftFromWorker(makeWorker()).caps.allowExternalActions).not.toBe(true);
+  });
+
   it('draftFromWorker copies without sharing nested references', () => {
     const w = makeWorker({ cadence: { kind: 'daily', time: '09:00', days: [1, 2] } });
     const d = draftFromWorker(w);
@@ -450,7 +455,7 @@ describe('draft factories', () => {
       name: 'Release Nanny',
       jobDescription: 'Watch the release branch and report what is not green.',
       cadence: { kind: 'daily', time: '08:00' },
-      caps: { maxItemsPerShift: 2, runIn: 'worktree' },
+      caps: { maxItemsPerShift: 2, runIn: 'worktree', allowExternalActions: true },
       budgetUSDPerMonth: 12,
       heartbeatModel: 'cheap',
       flowIds: ['here', 'gone'],
@@ -465,6 +470,7 @@ describe('draft factories', () => {
     // Nothing about the sender's employment came along.
     expect('id' in d).toBe(false);
     expect(d.caps.runIn).toBe('worktree');
+    expect(d.caps.allowExternalActions).toBe(false);
   });
 
   it('draftFromPortable does not share nested references with the file it read', () => {

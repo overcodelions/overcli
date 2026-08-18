@@ -109,14 +109,28 @@ export function Sidebar() {
     }
     return set;
   }, [flowRuns, query]);
+  // Collapse-all acts on whatever the sidebar is currently SHOWING. On the
+  // Workers tab that is the roster, not the project tree — the button used to
+  // fold groups nobody could see, so it read as broken.
   const allGroupIds = useMemo(
-    () => [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
-    [projects, workspaces],
+    () =>
+      detailMode === 'workers'
+        ? Object.keys(workers)
+        : [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
+    [detailMode, workers, projects, workspaces],
   );
   const allCollapsed = allGroupIds.length > 0 && allGroupIds.every((id) => collapsed.has(id));
+  // Only the ids on screen move, so folding the roster does not silently
+  // reopen every project group you had closed on the Chat tab.
   const toggleAll = () => {
-    if (allCollapsed) setCollapsed(new Set());
-    else setCollapsed(new Set(allGroupIds));
+    setCollapsed((cur) => {
+      const next = new Set(cur);
+      for (const id of allGroupIds) {
+        if (allCollapsed) next.delete(id);
+        else next.add(id);
+      }
+      return next;
+    });
   };
 
   const visibleProjects = useMemo(() => {
@@ -299,7 +313,7 @@ export function Sidebar() {
             launches runs that land in member repos — so nesting each one under
             a project group made the tree lie about where its work lives. */}
         {detailMode === 'workers' ? (
-          <WorkersSidebar query={query} />
+          <WorkersSidebar query={query} collapsed={collapsed} onToggleCollapsed={toggle} />
         ) : (
         <>
         {!query && showActiveSection && activeEntries.length > 0 && (

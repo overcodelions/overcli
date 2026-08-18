@@ -121,6 +121,9 @@ export interface FlowRuntimeStartArgs {
   /// worker engine can route the terminal state and roll up cost.
   workerId?: UUID;
   workerName?: string;
+  /// Explicit Worker capability. Missing is false for launches produced by
+  /// older workers/orchestrations.
+  allowExternalActions?: boolean;
   /// Explicit run title, set at launch instead of derived from the prompt.
   /// Only the scheduler uses it: a scheduled prompt never changes, so the
   /// prompt-derived title would be identical for every occurrence.
@@ -412,7 +415,11 @@ export class FlowRuntimeImpl {
         const interruptedStep = run.flowSnapshot.steps.find(
           (step) => step.id === interruptedStepId,
         );
-        if (interruptedStep && resolveStepEffect(interruptedStep) === 'external') {
+        if (
+          interruptedStep &&
+          !run.allowExternalActions &&
+          resolveStepEffect(interruptedStep) === 'external'
+        ) {
           run.state = {
             kind: 'paused',
             nextStepId: interruptedStep.id,
@@ -899,8 +906,13 @@ export class FlowRuntimeImpl {
     }
 
     const firstStep = flow.steps[0];
+    // Preserve the historical first-step behavior: pause_before is an
+    // between-steps checkpoint, while the worker external boundary also
+    // applies before step one. The new capability only waives that boundary.
     const firstPauseReason =
-      args.workerId && resolveStepEffect(firstStep) === 'external'
+      args.workerId &&
+      !args.allowExternalActions &&
+      resolveStepEffect(firstStep) === 'external'
         ? ('externalAction' as const)
         : null;
     const run: FlowRun = {
@@ -931,6 +943,7 @@ export class FlowRuntimeImpl {
       scheduleName: args.scheduleName,
       workerId: args.workerId,
       workerName: args.workerName,
+      ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
       title: args.title,
     };
     this.runs.set(runId, run);
@@ -2215,6 +2228,7 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
+      turbo: step.turbo,
       reviewBackend: step.rebound?.critic.backend ?? null,
       reviewMode: step.rebound?.mode ?? null,
       reviewModel: step.rebound?.critic.model ?? null,
@@ -2320,6 +2334,7 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, next),
+      turbo: next.turbo,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -3147,10 +3162,12 @@ export function resolveStepEffect(
 }
 
 export function pauseReasonBeforeStep(
-  run: Pick<FlowRun, 'workerId'>,
+  run: Pick<FlowRun, 'workerId' | 'allowExternalActions'>,
   step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect' | 'pauseBefore'>,
 ): 'externalAction' | 'preStep' | null {
-  if (run.workerId && resolveStepEffect(step) === 'external') return 'externalAction';
+  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external') {
+    return 'externalAction';
+  }
   return step.pauseBefore ? 'preStep' : null;
 }
 

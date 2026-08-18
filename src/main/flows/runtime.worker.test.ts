@@ -158,6 +158,33 @@ describe('FlowRuntimeImpl.startRun', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it('starts an external first step when the worker explicitly allows external actions', async () => {
+    const send = vi.fn(() => ({ ok: true as const }));
+    const runtime = new FlowRuntimeImpl(
+      { send, prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+
+    const result = await runtime.startRun({
+      flowId: 'external-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Send the update.',
+      workerId: 'worker-1',
+      workerName: 'Scout',
+      allowExternalActions: true,
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    expect(runtime.getRun(result.runId)).toMatchObject({
+      allowExternalActions: true,
+      state: { kind: 'running', currentStepId: 'send-dm' },
+    });
+    expect(send).toHaveBeenCalledOnce();
+  });
+
   it('shows a flow question, lets the owning Worker answer, and resumes the step', async () => {
     const sends: Array<{ conversationId: string; prompt: string }> = [];
     const runtime = new FlowRuntimeImpl(

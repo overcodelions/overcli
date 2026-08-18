@@ -44,6 +44,34 @@ describe('claudeBackend.buildArgs', () => {
     expect(a).toContain('claude-sonnet');
   });
 
+  it('passes effort through verbatim — turbo pinning happens upstream', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, effortLevel: 'max' }, noMcpCtx);
+    expect(a[a.indexOf('--effort') + 1]).toBe('max');
+  });
+
+  it('turbo adds --strict-mcp-config so the global MCP config is ignored', () => {
+    expect(claudeBackend.buildArgs({ ...baseArgs, turbo: true }, noMcpCtx)).toContain(
+      '--strict-mcp-config',
+    );
+    expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--strict-mcp-config');
+  });
+
+  it('turbo appends the fewer-larger-tool-calls directive', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, turbo: true }, noMcpCtx);
+    const appended = a[a.indexOf('--append-system-prompt') + 1];
+    expect(appended).toMatch(/fewer, larger tool calls/i);
+    // The correctness caveat must survive any future edit to the wording.
+    expect(appended).toMatch(/never skip a check/i);
+    expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--append-system-prompt');
+  });
+
+  it('turbo keeps the permission broker config while dropping the rest', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, turbo: true }, withMcpCtx);
+    expect(a).toContain('--mcp-config');
+    expect(a).toContain('/tmp/mcp.json');
+    expect(a).toContain('--strict-mcp-config');
+  });
+
   it('skips --permission-mode when default', () => {
     const a = claudeBackend.buildArgs(baseArgs, noMcpCtx);
     expect(a).not.toContain('--permission-mode');

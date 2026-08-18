@@ -187,7 +187,7 @@ export function newWorkerDraft(projectPath: string): WorkerDraft {
     jobDescription: '',
     projectPath,
     cadence: { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] },
-    caps: { maxItemsPerShift: 3, runIn: 'worktree' },
+    caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: false },
     budgetUSDPerMonth: 10,
     heartbeatModel: '',
     flowIds: [],
@@ -223,7 +223,11 @@ export function draftFromContract(
     jobDescription: contract.jobDescription,
     projectPath,
     cadence: structuredClone(contract.cadence),
-    caps: { maxItemsPerShift: contract.maxItemsPerShift, runIn: 'worktree' },
+    caps: {
+      maxItemsPerShift: contract.maxItemsPerShift,
+      runIn: 'worktree',
+      allowExternalActions: false,
+    },
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
     heartbeatBackend: contract.heartbeatBackend,
@@ -252,7 +256,9 @@ export function draftFromPortable(
     jobDescription: worker.jobDescription,
     projectPath,
     cadence: structuredClone(worker.cadence),
-    caps: { ...worker.caps },
+    // External authority is local employment state, like trust and cwd
+    // access. A shared worker file cannot arrive pre-authorized.
+    caps: { ...worker.caps, allowExternalActions: false },
     budgetUSDPerMonth: worker.budgetUSDPerMonth,
     heartbeatModel: worker.heartbeatModel,
     heartbeatBackend: worker.heartbeatBackend,

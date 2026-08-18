@@ -15,6 +15,10 @@ export type WorkerTrustLevel = 'probation' | 'trusted' | 'autonomous';
 export interface WorkerCaps {
   maxItemsPerShift: number;
   runIn: 'worktree' | 'cwd';
+  /// Let worker-owned runs cross the runtime's push/message/service-update
+  /// boundary without a per-step approval. Optional so workers persisted by
+  /// older builds remain conservative: absent is always read as false.
+  allowExternalActions?: boolean;
 }
 
 export interface Worker {

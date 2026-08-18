@@ -428,6 +428,13 @@ export interface Conversation {
   /// has no --resume, each spawn writes a fresh file — we merge on load.
   codexRolloutPaths?: string[];
   effortLevel?: EffortLevel;
+  /// Trade depth for latency on this conversation: `--effort low`,
+  /// `--strict-mcp-config`, and a directive to consolidate tool calls.
+  /// Absent means off — there is deliberately no global default, because
+  /// turbo is a per-task judgement, not a mode to leave running.
+  /// Only honored on the `cli` Claude transport; the SDK transport builds
+  /// its options directly and never calls `claudeBackend.buildArgs`.
+  turbo?: boolean;
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
@@ -1056,6 +1063,7 @@ export interface IPCInvokeMap {
     permissionMode: PermissionMode;
     sessionId?: string;
     effortLevel?: EffortLevel;
+    turbo?: boolean;
     codexRolloutPaths?: string[];
     attachments?: Attachment[];
     /// Reviewer ("rebound") config for this turn. When `reviewBackend` is
