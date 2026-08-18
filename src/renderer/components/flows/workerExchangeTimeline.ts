@@ -42,7 +42,11 @@ function workerQuestionsInAssistantText(text: string): string[] {
     .map((match) => match[1]?.trim())
     .filter((question): question is string => !!question);
   if (tagged.length > 0) return tagged;
-  const cleaned = text.replace(/<[^>]+>/g, '').trim();
+  // Only support the legacy fallback for unmarked plain text. Removing tags
+  // with a regex would be incomplete sanitization and could also create a
+  // question that was never present as plain text in the transcript.
+  if (text.includes('<') || text.includes('>')) return [];
+  const cleaned = text.trim();
   return cleaned.endsWith('?') ? [cleaned] : [];
 }
 

@@ -231,6 +231,14 @@ describe('extractWorkerQuestion', () => {
     );
     expect(extractWorkerQuestion('I checked the inputs and found no answer.')).toBeNull();
   });
+
+  it('does not reinterpret tag-shaped text as a legacy plain-text question', () => {
+    expect(
+      extractWorkerQuestion(
+        '<scr<script>ipt>alert(1)</script>Which fallback should I use?</script>',
+      ),
+    ).toBeNull();
+  });
 });
 
 describe('worker run file boundary', () => {

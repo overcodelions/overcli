@@ -49,6 +49,21 @@ describe('matchWorkerExchangesToEvents', () => {
     expect(result.get('question-event')?.id).toBe('exchange-1');
   });
 
+  it('does not match tag-shaped text through the legacy plain-text fallback', () => {
+    const result = matchWorkerExchangesToEvents(
+      [
+        assistant(
+          'question-event',
+          100,
+          '<scr<script>ipt>alert(1)</script>Blue or green?</script>',
+        ),
+      ],
+      [exchange('exchange-1', 110, 'alert(1)Blue or green?')],
+    );
+
+    expect(result.size).toBe(0);
+  });
+
   it('pairs repeated questions one-to-one using the nearest timestamp', () => {
     const result = matchWorkerExchangesToEvents(
       [

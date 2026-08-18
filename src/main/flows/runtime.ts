@@ -3124,10 +3124,11 @@ export function buildWorkerAnswerBlock(question: string, answer: string): string
 export function extractWorkerQuestion(text: string): string | null {
   const tagged = text.match(/<worker_question\b[^>]*>([\s\S]*?)<\/worker_question\s*>/i)?.[1]?.trim();
   if (tagged) return tagged.slice(0, 4_000);
-  const cleaned = text
-    .replace(/<output\b[^>]*>[\s\S]*?<\/output\s*>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
+  // The compatibility fallback is deliberately plain text. Regex-based tag
+  // removal is not a sanitizer, so marked-up responses must use the explicit
+  // worker_question protocol above instead of being reinterpreted here.
+  if (text.includes('<') || text.includes('>')) return null;
+  const cleaned = text.trim();
   if (!cleaned.endsWith('?')) return null;
   const paragraphs = cleaned.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
   const last = paragraphs.at(-1) ?? '';
