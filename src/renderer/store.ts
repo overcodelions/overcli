@@ -2637,7 +2637,10 @@ export const useStore = create<StoreState>((set, get) => ({
       model: model ?? '',
       permissionMode: effectivePermissionMode,
       sessionId: conv.sessionId,
-      effortLevel: conv.effortLevel,
+      // An explicit empty string is Auto and must win over a fixed global
+      // default; undefined means this conversation predates the setting and
+      // should inherit it.
+      effortLevel: conv.effortLevel ?? get().settings.defaultEffort,
       codexRolloutPaths: conv.codexRolloutPaths,
       attachments: attachments.length ? attachments : undefined,
       reviewBackend: conv.reviewBackend ?? null,

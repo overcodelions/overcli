@@ -10,6 +10,7 @@ import { ExplorerPane } from './ExplorerPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
 import { RunningIndicator } from './RunningIndicator';
+import { ManualCommand } from './ManualCommand';
 import { useConversation } from '../hooks';
 import { Backend } from '@shared/types';
 import { backendName } from '../theme';
@@ -201,7 +202,7 @@ function BackendAuthBanner({
   onRefresh: () => void;
 }) {
   const [launching, setLaunching] = useState(false);
-  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [launchError, setLaunchError] = useState<{ text: string; command?: string } | null>(null);
   const [launched, setLaunched] = useState(false);
 
   useEffect(() => {
@@ -215,9 +216,9 @@ function BackendAuthBanner({
     : `You're signed out of ${backendName(backend)}. Sign in to send messages.`;
 
   return (
-    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 flex items-center gap-3">
+    <div className="mx-4 mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-200">
+      <div className="flex items-center gap-3">
       <span className="flex-1">{label}</span>
-      {launchError && <span className="text-amber-300/80">{launchError}</span>}
       <button
         onClick={async () => {
           setLaunching(true);
@@ -225,7 +226,7 @@ function BackendAuthBanner({
           try {
             const res = await window.overcli.invoke('auth:openCliLogin', backend);
             if (res.ok) setLaunched(true);
-            else setLaunchError(res.error);
+            else setLaunchError({ text: res.error, command: res.command });
           } finally {
             setLaunching(false);
           }
@@ -241,6 +242,13 @@ function BackendAuthBanner({
       >
         Refresh
       </button>
+      </div>
+      {launchError && (
+        <div className="mt-2">
+          <div className="text-amber-700/80 dark:text-amber-300/80">{launchError.text}</div>
+          {launchError.command && <ManualCommand command={launchError.command} />}
+        </div>
+      )}
     </div>
   );
 }

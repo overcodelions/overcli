@@ -51,6 +51,14 @@ export const codexBackend: BackendSpec = {
     const { sandbox, approval } = codexTransportPermissions(args.permissionMode);
     const a: string[] = [];
     if (args.model) a.push('-m', args.model);
+    // The app-server transport has a first-class `effort` turn field. Keep
+    // compatibility-mode `codex exec` aligned via the equivalent config
+    // override. An empty effort is Overcli's Auto mode: omit the override so
+    // Codex can use the selected model's default (or the user's config).
+    if (args.effortLevel) {
+      const effort = args.effortLevel === 'max' ? 'xhigh' : args.effortLevel;
+      a.push('-c', `model_reasoning_effort="${effort}"`);
+    }
     // --skip-git-repo-check lets codex run when cwd is a synthetic
     // workspace/coordinator root (a dir of symlinks that isn't itself a
     // git repo) or a worktree codex declines to treat as trusted.
@@ -166,4 +174,3 @@ export function codexExecSnapshotText(state: unknown): string {
   const s = state as CodexStreamState;
   return extractCodexExecSnapshot(s.accumulator).text;
 }
-

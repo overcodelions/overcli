@@ -100,6 +100,7 @@ import {
 } from './skillsCatalog';
 import {
   OLLAMA_CATALOG,
+  brewManagesOllama,
   detectHardware,
   detectOllama,
   deleteModel,
@@ -108,6 +109,7 @@ import {
   pullModel,
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
+import { auditOllama, updateOllama } from './ollamaSecurity';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
@@ -1026,7 +1028,13 @@ function registerIpc(): void {
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
   ipcMain.handle('ollama:catalog', () => OLLAMA_CATALOG);
-  ipcMain.handle('ollama:install', () => installOllama((url) => shell.openExternal(url)));
+  ipcMain.handle(
+    'ollama:install',
+    () =>
+      installOllama((url) => {
+        void shell.openExternal(url);
+      }),
+  );
   ipcMain.handle('ollama:startServer', () => ollamaServer.start());
   ipcMain.handle('ollama:stopServer', () => ollamaServer.stop());
   ipcMain.handle('ollama:serverStatus', () => ({
@@ -1063,6 +1071,43 @@ function registerIpc(): void {
   ipcMain.handle('ollama:deleteSession', (_e, sessionId: string) => {
     deleteOllamaSession(sessionId);
   });
+  ipcMain.handle('ollama:securityAudit', async (_e, args?: { force?: boolean }) => {
+    // Always re-derive via detectOllama() rather than trusting a path from
+    // the renderer — the binary path here is spawned via spawnSync, and this
+    // module has no business executing a path it did not find itself.
+    const det = await detectOllama();
+    return auditOllama({
+      serverVersion: det.version,
+      binaryPath: det.binaryPath,
+      serverRunning: det.running,
+      serverManaged: ollamaServer.isManaged(),
+      force: args?.force,
+    });
+  });
+
+  ipcMain.handle(
+    'ollama:applyFix',
+    async (_e, { fixId }: { fixId: 'update-ollama' | 'restart-loopback' }) => {
+      if (fixId === 'update-ollama') {
+        // detectOllama() only fills installHint when Ollama is MISSING, so ask
+        // Homebrew directly — a Mac that has brew but installed Ollama from
+        // the .dmg must not be told to run `brew upgrade`.
+        return updateOllama((url) => {
+          void shell.openExternal(url);
+        }, brewManagesOllama());
+      }
+      if (!ollamaServer.isManaged()) {
+        return {
+          ok: false,
+          message: 'That server was started outside overcli — quit it, then start the server here.',
+        };
+      }
+      ollamaServer.stop();
+      await new Promise((r) => setTimeout(r, 1200));
+      const res = await ollamaServer.start();
+      return { ok: res.ok, message: `Restarted bound to 127.0.0.1 only. ${res.message}` };
+    },
+  );
   ipcMain.handle('diagnostics:list', () => listSilentLog());
   ipcMain.handle('diagnostics:clear', () => clearSilentLog());
   ipcMain.handle('diagnostics:log', (_e, args) => {
@@ -1123,6 +1168,11 @@ function registerIpc(): void {
   );
   ipcMain.handle('flows:rerunFromStep', (_e, args) =>
     flowRuntime ? flowRuntime.rerunFromStep(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:checkoutRunLocally', (_e, args) =>
+    flowRuntime
+      ? flowRuntime.checkoutRunLocally(args)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:abortRun', (_e, args) =>
     flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
