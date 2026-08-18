@@ -297,13 +297,13 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           onPick={(v) => void setPermission(conversationId, v as PermissionMode)}
         />
 
-        {backend === 'claude' && (
+        {(backend === 'claude' || backend === 'codex') && (
           <IconPicker
             icon={<BrainIcon />}
-            label={effortLabel(conv.effortLevel ?? '')}
+            label={effortLabel(conv.effortLevel ?? settings.defaultEffort)}
             iconOnly={iconsOnly}
             items={([
-              { value: '', label: 'Default' },
+              { value: '', label: 'Auto (model default)' },
               { value: 'low', label: 'Low' },
               { value: 'medium', label: 'Medium' },
               { value: 'high', label: 'High' },

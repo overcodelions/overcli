@@ -20,6 +20,7 @@ import {
   canPrewarm,
   shouldReapIdle,
   shouldSkipIdleOnClose,
+  spawnFailureMessage,
   staleRunningReason,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
@@ -84,6 +85,30 @@ describe('shouldSkipIdleOnClose', () => {
     expect(
       shouldSkipIdleOnClose({ isCurrent: true, backend: 'codex', claudeSendPending: true }),
     ).toBe(false);
+  });
+});
+
+describe('spawnFailureMessage', () => {
+  const enoent = Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+
+  it('identifies a removed working directory instead of blaming the CLI', () => {
+    expect(
+      spawnFailureMessage(
+        { backend: 'claude', binary: '/usr/local/bin/claude', cwd: '/gone/worktree' },
+        enoent,
+        false,
+      ),
+    ).toContain('working directory no longer exists: `/gone/worktree`');
+  });
+
+  it('identifies a missing binary when the working directory still exists', () => {
+    expect(
+      spawnFailureMessage(
+        { backend: 'claude', binary: '/missing/claude', cwd: '/repo' },
+        enoent,
+        true,
+      ),
+    ).toContain('`/missing/claude` was not found');
   });
 });
 

@@ -22,7 +22,7 @@ export function permissionTone(mode: PermissionMode): string | undefined {
 }
 
 export function effortLabel(effort: EffortLevel): string {
-  if (!effort) return 'Effort';
+  if (!effort) return 'Auto effort';
   return effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 

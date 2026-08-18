@@ -3,6 +3,7 @@
 // orchestration is exercised manually by running a flow end-to-end.
 
 import { describe, expect, it } from 'vitest';
+import type { FlowRun } from '../../shared/flows/schema';
 
 import {
   buildWorkerRunBoundary,
@@ -17,9 +18,43 @@ import {
   stuckStepMessage,
   summarizeReviewRejection,
   pauseReasonBeforeStep,
+  rebindRunToLocalProject,
   resolveStepEffect,
   workerPromptWritesToPersistentRoot,
 } from './runtime';
+
+describe('rebindRunToLocalProject', () => {
+  it('moves a checked-out single-project flow off its deleted worktree cwd', () => {
+    const run = {
+      projectPath: '/worktrees/feature',
+      sourceProjectPath: '/repos/app',
+      worktreePath: '/worktrees/feature',
+    } as unknown as FlowRun;
+
+    expect(rebindRunToLocalProject(run)).toEqual({
+      oldProjectPath: '/worktrees/feature',
+      projectPath: '/repos/app',
+    });
+    expect(run).toMatchObject({
+      projectPath: '/repos/app',
+      sourceProjectPath: '/repos/app',
+      checkedOutLocally: true,
+    });
+    expect(run).not.toHaveProperty('worktreePath');
+  });
+
+  it('does not collapse a workspace coordinator run into one member project', () => {
+    const run = {
+      projectPath: '/coordinators/run',
+      sourceProjectPath: '/workspaces/ws',
+      worktreePath: '/worktrees/member',
+      workspaceWorktrees: [{ name: 'app' }],
+    } as unknown as FlowRun;
+
+    expect(rebindRunToLocalProject(run)).toBeNull();
+    expect(run.projectPath).toBe('/coordinators/run');
+  });
+});
 
 describe('extractOutput', () => {
   it('extracts a clean block', () => {
