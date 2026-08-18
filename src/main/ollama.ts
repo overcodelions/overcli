@@ -137,7 +137,7 @@ async function detectRunningServer(): Promise<{ running: boolean; models: Ollama
   return { running: true, models, version: versionResp?.version };
 }
 
-function brewAvailable(): boolean {
+export function brewAvailable(): boolean {
   // Electron on macOS inherits a minimal PATH from Finder that often
   // excludes /opt/homebrew/bin and /usr/local/bin, so a bare `brew`
   // lookup misses real installs. Check common locations explicitly.
@@ -403,6 +403,12 @@ export class OllamaServerManager {
     return this.status;
   }
 
+  /// True when the running server is the child overcli spawned — the only
+  /// case where its environment is ours and restarting it is safe.
+  isManaged(): boolean {
+    return this.child != null && !this.child.killed;
+  }
+
   getLog(): ServerLogLine[] {
     return this.log.slice();
   }
@@ -454,9 +460,14 @@ export class OllamaServerManager {
     try {
       child = spawn(bin, ['serve'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        // Force loopback bind — overrides any inherited OLLAMA_HOST=0.0.0.0
-        // so the spawned server is never exposed beyond this machine.
-        env: { ...process.env, OLLAMA_HOST: `${OLLAMA_HOST}:${OLLAMA_PORT}` },
+        // Force loopback bind and a loopback-only origin allowlist, overriding
+        // any inherited OLLAMA_HOST=0.0.0.0 / OLLAMA_ORIGINS=* so the server we
+        // spawn is neither reachable from the LAN nor callable by a web page.
+        env: {
+          ...process.env,
+          OLLAMA_HOST: `${OLLAMA_HOST}:${OLLAMA_PORT}`,
+          OLLAMA_ORIGINS: `http://${OLLAMA_HOST}:${OLLAMA_PORT},http://localhost:${OLLAMA_PORT}`,
+        },
       }) as ServerChild;
     } catch (err: any) {
       this.setStatus('error');

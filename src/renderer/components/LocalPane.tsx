@@ -3,6 +3,7 @@ import {
   OllamaDetectionReport,
   OllamaHardwareReport,
   OllamaRecommendedModel,
+  OllamaSecurityReport,
   OllamaServerLogLine,
   OllamaServerStatus,
 } from '@shared/types';
@@ -20,6 +21,8 @@ export function LocalPane() {
   const [serverStatus, setServerStatus] = useState<OllamaServerStatus>('stopped');
   const [serverLog, setServerLog] = useState<OllamaServerLogLine[]>([]);
   const [installStatus, setInstallStatus] = useState<string | null>(null);
+  const [security, setSecurity] = useState<OllamaSecurityReport | null>(null);
+  const [fixStatus, setFixStatus] = useState<string | null>(null);
   const [pulls, setPulls] = useState<
     Record<string, { percent: number; message?: string; done?: boolean; error?: string }>
   >({});
@@ -30,18 +33,24 @@ export function LocalPane() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  const refresh = async () => {
-    const [det, hw, srv, cat] = await Promise.all([
+  const refresh = async (opts?: { forceSecurityAudit?: boolean }) => {
+    // 'ollama:securityAudit' re-derives the installed version/path itself in
+    // the main process rather than trusting whatever the renderer hands it —
+    // it feeds a binary path into spawnSync(), so it must never take that
+    // path from here.
+    const [det, hw, srv, cat, sec] = await Promise.all([
       window.overcli.invoke('ollama:detect'),
       window.overcli.invoke('ollama:hardware'),
       window.overcli.invoke('ollama:serverStatus'),
       window.overcli.invoke('ollama:catalog'),
+      window.overcli.invoke('ollama:securityAudit', { force: opts?.forceSecurityAudit }),
     ]);
     setDetection(det);
     setHardware(hw);
     setServerStatus(srv.status);
     setServerLog(srv.log);
     setCatalog(cat);
+    setSecurity(sec);
     setLoading(false);
   };
 
@@ -98,6 +107,17 @@ export function LocalPane() {
     [detection],
   );
 
+  const applyFix = async (fixId: 'update-ollama' | 'restart-loopback') => {
+    setFixStatus('Working…');
+    const res = await window.overcli.invoke('ollama:applyFix', { fixId });
+    setFixStatus(res.message);
+    // Good enough for restart-loopback, which finishes in ~1.2s. A brew
+    // upgrade takes far longer than 2s, so this forced re-audit will still
+    // see the old binary and re-cache it — the ↻ Refresh button (also
+    // forced) is the real escape hatch once the upgrade has actually landed.
+    setTimeout(() => void refresh({ forceSecurityAudit: true }), 2000);
+  };
+
   const install = async () => {
     setInstallStatus('Starting…');
     const res = await window.overcli.invoke('ollama:install');
@@ -150,7 +170,7 @@ export function LocalPane() {
         <div className="text-2xl font-semibold">Local models</div>
         <StatusPill detection={detection} serverStatus={serverStatus} />
         <button
-          onClick={() => void refresh()}
+          onClick={() => void refresh({ forceSecurityAudit: true })}
           className="text-xs text-ink-muted hover:text-ink ml-auto hover:bg-card px-2 py-1 rounded"
         >
           ↻ Refresh
@@ -206,6 +226,64 @@ export function LocalPane() {
 
         <LogViewer log={serverLog} />
       </Card>
+
+      {detection?.installed && security && (
+        <Card
+          title="Updates & security"
+          description="Checked against the latest stable Ollama release. Nothing is upgraded without your click."
+        >
+          <div className="flex items-center gap-3 text-xs mb-3">
+            <div className="text-ink-muted">
+              Installed {security.installedVersion ?? 'unknown'}
+              {security.versionSource === 'binary' && ' (server stopped)'} · latest{' '}
+              {security.latestVersion ?? 'unavailable'}
+            </div>
+            {security.updateAvailable ? (
+              <Pill tone="amber">update available</Pill>
+            ) : !security.latestVersion ? (
+              <Pill tone="amber">couldn't check</Pill>
+            ) : security.findings.length === 0 ? (
+              <Pill tone="green">up to date</Pill>
+            ) : null}
+            <button
+              onClick={() => void applyFix('update-ollama')}
+              disabled={!security.updateAvailable}
+              className="ml-auto text-xs px-3 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25 disabled:opacity-50"
+            >
+              Update Ollama
+            </button>
+          </div>
+          {security.findings.length === 0 ? (
+            <div className="text-xs text-ink-faint">No issues found.</div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {security.findings.map((f) => (
+                <div key={f.id} className="flex items-start gap-3 text-xs">
+                  <Pill tone={f.severity === 'medium' || f.severity === 'info' ? 'amber' : 'red'}>
+                    {f.severity}
+                  </Pill>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-ink">{f.title}</div>
+                    <div className="text-ink-faint">{f.detail}</div>
+                    {f.manualCommand && (
+                      <div className="font-mono text-[11px] text-ink-faint mt-1">{f.manualCommand}</div>
+                    )}
+                  </div>
+                  {f.fixId && (
+                    <button
+                      onClick={() => void applyFix(f.fixId!)}
+                      className="text-xs px-2 py-1 rounded bg-accent/15 text-accent hover:bg-accent/25"
+                    >
+                      {f.fixId === 'update-ollama' ? 'Update' : 'Restart on loopback'}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {fixStatus && <div className="text-[11px] text-ink-faint mt-2">{fixStatus}</div>}
+        </Card>
+      )}
 
       {/* Hardware card */}
       {hardware && (

@@ -801,6 +801,30 @@ export interface OllamaServerLogLine {
   timestamp: number;
 }
 
+export type OllamaSecuritySeverity = 'critical' | 'high' | 'medium' | 'info';
+
+export interface OllamaSecurityFinding {
+  id: string;
+  severity: OllamaSecuritySeverity;
+  title: string;
+  detail: string;
+  /// Present only when overcli can fix this itself via 'ollama:applyFix'.
+  fixId?: 'update-ollama' | 'restart-loopback';
+  /// Shown as copyable text when there is no automatic fix.
+  manualCommand?: string;
+  url?: string;
+}
+
+export interface OllamaSecurityReport {
+  installedVersion?: string;
+  latestVersion?: string;
+  /// Source of installedVersion: the running server, or the binary on disk.
+  versionSource: 'server' | 'binary' | 'unknown';
+  updateAvailable: boolean;
+  checkedAt: number;
+  findings: OllamaSecurityFinding[];
+}
+
 export type ThemePreference = 'light' | 'dark' | 'system';
 
 /// A source of installable flows. Exactly one of `indexUrl` / `dir` is set:
@@ -1542,6 +1566,8 @@ export interface IPCInvokeMap {
   'ollama:cancelPull': (args: { tag: string }) => void;
   'ollama:deleteModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:deleteSession': (sessionId: string) => void;
+  'ollama:securityAudit': (args?: { force?: boolean }) => OllamaSecurityReport;
+  'ollama:applyFix': (args: { fixId: 'update-ollama' | 'restart-loopback' }) => { ok: boolean; message: string };
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
   'diagnostics:log': (args: { level: LogLevel; scope: string; message: string }) => void;
