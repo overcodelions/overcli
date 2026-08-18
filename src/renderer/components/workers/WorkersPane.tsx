@@ -10,6 +10,28 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { Backend } from "@shared/types";
+import { PREMIUM_MODELS, friendlyModelLabel } from "@shared/modelCatalog";
+import { resolveProducerModel } from "@shared/flows/drafterBackend";
+
+/// CLIs a heartbeat turn can run on. Ollama is excluded for the same reason
+/// the drafter excludes it: planning a shift from a job description is a
+/// reasoning task small local models handle poorly.
+const HEARTBEAT_BACKENDS: Backend[] = ["claude", "codex", "gemini", "copilot"];
+
+/// The backend a worker's heartbeat will actually run on: its own pin when it
+/// has one, otherwise the user's default. Ollama can be the app-wide default
+/// but is never a heartbeat backend (planning a shift from a job description
+/// is a reasoning task small local models handle poorly), so it falls back to
+/// the head of the list.
+function heartbeatBackendOf(
+  pinned: Backend | undefined,
+  preferred: Backend | undefined,
+): Exclude<Backend, "ollama"> {
+  const b = pinned ?? preferred;
+  return b && b !== "ollama" ? b : "claude";
+}
+
 import { useStore } from "../../store";
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
@@ -922,6 +944,7 @@ function WorkerRow({
               worker={worker}
               projectLabel={projectLabel}
               files={files ?? []}
+              setFiles={setFiles}
             />
           )}
         </div>
@@ -1071,10 +1094,12 @@ function WorkerSettings({
   worker,
   projectLabel,
   files,
+  setFiles,
 }: {
   worker: Worker;
   projectLabel?: string;
   files: WorkerFile[];
+  setFiles: React.Dispatch<React.SetStateAction<WorkerFile[] | null>>;
 }) {
   const setEnabled = useWorkersStore((s) => s.setEnabled);
   const remove = useWorkersStore((s) => s.remove);
@@ -1085,17 +1110,24 @@ function WorkerSettings({
   const setDetailMode = useStore((s) => s.setDetailMode);
   const [confirmingFire, setConfirmingFire] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
-  const [resetFiles, setResetFiles] = useState(false);
   // What the last reset threw away, kept until the card unmounts. A reset is
   // silent by nature — the journal it emptied is the thing that would have
   // recorded it — so this line is the only acknowledgement there is.
-  const [resetDone, setResetDone] = useState<{ entries: number; files: number } | null>(null);
+  const [resetDone, setResetDone] = useState<{
+    entries: number;
+    files: number;
+    shifts: number;
+    errands: number;
+    runs: number;
+  } | null>(null);
 
   const startFresh = async () => {
-    const res = await resetMemory(worker.id, resetFiles);
+    const res = await resetMemory(worker.id);
     setConfirmingReset(false);
-    setResetFiles(false);
-    if (res) setResetDone(res);
+    if (res) {
+      setFiles([]);
+      setResetDone(res);
+    }
   };
 
   return (
@@ -1248,10 +1280,16 @@ function WorkerSettings({
                 </div>
                 <div className="text-xs text-ink-muted">
                   {resetDone
-                    ? `Started fresh — forgot ${resetDone.entries} journal ${
+                    ? `Started fresh — removed ${resetDone.shifts} ${
+                        resetDone.shifts === 1 ? "shift" : "shifts"
+                      }, ${resetDone.errands} ${resetDone.errands === 1 ? "errand" : "errands"}, ${
+                        resetDone.files
+                      } file${resetDone.files === 1 ? "" : "s"}, ${resetDone.runs} flow run${
+                        resetDone.runs === 1 ? "" : "s"
+                      }, and ${resetDone.entries} journal ${
                         resetDone.entries === 1 ? "entry" : "entries"
-                      }${resetDone.files ? `, emptied ${resetDone.files} files` : ""}.`
-                    : "Its journal steers every shift. Wipe it to start over at shift #1."}
+                      }.`
+                    : "Remove its history and files, then start over at shift #1."}
                 </div>
               </div>
               {confirmingReset ? null : (
@@ -1269,36 +1307,24 @@ function WorkerSettings({
             {confirmingReset ? (
               <div className="mt-2 rounded-md border border-card-strong bg-card-strong/40 p-2">
                 <div className="text-xs text-ink-muted">
-                  It forgets what it proposed and what you turned down, so it may
-                  offer those again. Trust and budget stay as they are.
+                  Permanently removes every shift and errand, their flow-run
+                  history, all files in this worker’s cabinet, and its journal.
+                  Running work is stopped. It may offer rejected ideas again.
                 </div>
-                <label className="mt-2 flex cursor-pointer items-start gap-2 text-xs text-ink">
-                  <input
-                    type="checkbox"
-                    checked={resetFiles}
-                    onChange={(e) => setResetFiles(e.target.checked)}
-                    className="mt-0.5"
-                  />
-                  <span>
-                    Also empty its files
-                    {files.length > 0 ? ` (${files.length})` : ""}
-                    <span className="block text-ink-faint">
-                      Deletes the baselines and tallies it works from, and the
-                      outputs it filed. Cannot be undone.
-                    </span>
-                  </span>
-                </label>
+                <div className="mt-1 text-xs text-ink-faint">
+                  Trust, budget, job description, and historical usage spend stay
+                  as they are. This cannot be undone{files.length ? ` (${files.length} files)` : ""}.
+                </div>
                 <div className="mt-2 flex gap-1">
                   <button
                     onClick={() => void startFresh()}
                     className="rounded bg-red-500/80 px-2 py-0.5 text-[11px] text-white"
                   >
-                    {resetFiles ? "Reset memory and files" : "Reset memory"}
+                    Reset worker
                   </button>
                   <button
                     onClick={() => {
                       setConfirmingReset(false);
-                      setResetFiles(false);
                     }}
                     className="rounded border border-card-strong px-2 py-0.5 text-[11px]"
                   >
@@ -2520,12 +2546,16 @@ function PlanItemRow({
 /// in the run pane, where the artifact it would accept is readable.
 const PAUSE_ACTION: Record<string, string> = {
   preStep: "continue",
+  externalAction: "approve & run",
+  needsInput: "answer & resume",
   failure: "re-run step",
   interrupted: "resume",
 };
 
 const PAUSE_HINT: Record<string, string> = {
   preStep: "Hand the prior step\u2019s output to the next step and keep going",
+  externalAction: "Approve the external effect, then run this step",
+  needsInput: "Open the run, read the Worker exchange, answer, and resume the step",
   failure:
     "Run the failed step again. To accept its result instead, open the run and Override.",
   interrupted:
@@ -3086,6 +3116,14 @@ function WorkerEditor() {
   const flows = useFlowsStore((s) => s.flows);
   const workers = useWorkersStore((s) => s.workers);
   const existing = draft.id ? workers[draft.id] : undefined;
+  const preferredBackend = useStore((s) => s.settings.preferredBackend);
+  const flowModelDefaults = useStore((s) => s.settings.flowModelDefaults);
+
+  // Which backend the model list belongs to. An unpinned worker plans on
+  // whatever backend is default, so that's the list to offer — otherwise the
+  // picker would show Claude models to someone whose shifts run on Codex.
+  const heartbeatBackend = heartbeatBackendOf(draft.heartbeatBackend, preferredBackend);
+  const heartbeatModels = PREMIUM_MODELS[heartbeatBackend];
 
   // Trust isn't editable here (hires start on probation; promotion is a
   // roster action), but validation needs it to judge the cwd rule.
@@ -3315,12 +3353,59 @@ function WorkerEditor() {
                 </div>
               </Field>
               <Field label="Heartbeat model" hint="plans shifts; keep it cheap">
-                <input
-                  value={draft.heartbeatModel}
-                  onChange={(e) => patch({ heartbeatModel: e.target.value })}
-                  placeholder="model id"
-                  className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
-                />
+                <div className="flex items-center gap-1">
+                  {/* The backend rides with the model. Left on "default", the
+                      shift runs on whatever backend is current and the model
+                      is translated to its matching tier — which is how workers
+                      hired before this field behave. */}
+                  <select
+                    value={draft.heartbeatBackend ?? ""}
+                    onChange={(e) => {
+                      const next = (e.target.value || undefined) as Backend | undefined;
+                      // Carry the model across with the backend. Leaving a
+                      // Claude id selected under Codex is precisely the
+                      // mismatch this pairing exists to prevent, and the user
+                      // shouldn't have to notice and fix it by hand.
+                      patch({
+                        heartbeatBackend: next,
+                        heartbeatModel: resolveProducerModel(
+                          heartbeatBackendOf(next, preferredBackend),
+                          draft.heartbeatModel,
+                          flowModelDefaults,
+                        ),
+                      });
+                    }}
+                    className="bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+                  >
+                    <option value="">default</option>
+                    {HEARTBEAT_BACKENDS.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={draft.heartbeatModel}
+                    onChange={(e) => patch({ heartbeatModel: e.target.value })}
+                    className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+                  >
+                    <option value="">(pick a model)</option>
+                    {heartbeatModels.map((m) => (
+                      <option key={m} value={m}>
+                        {friendlyModelLabel(heartbeatBackend, m)}
+                      </option>
+                    ))}
+                    {/* A worker carrying a model this backend doesn't ship —
+                        hired under another provider, or imported. Shown rather
+                        than dropped, so the field isn't mysteriously blank and
+                        the user can see what will be translated away. */}
+                    {draft.heartbeatModel && !heartbeatModels.includes(draft.heartbeatModel) && (
+                      <option value={draft.heartbeatModel}>
+                        {draft.heartbeatModel} — not on {heartbeatBackend}
+                      </option>
+                    )}
+                  </select>
+                </div>
               </Field>
             </div>
 

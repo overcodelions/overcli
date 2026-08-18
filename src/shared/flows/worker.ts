@@ -6,7 +6,7 @@
 // meter. The engine lives in src/main/flows/workerEngine.ts; this module is
 // the shared contract both main and renderer validate against.
 
-import type { UUID } from '../types';
+import type { Backend, UUID } from '../types';
 import type { ScheduleTrigger } from './schedule';
 import { SCHEDULE_AUTO_APPROVE_MAX, parseTimeOfDay } from './schedule';
 
@@ -27,6 +27,15 @@ export interface Worker {
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
+  /// The backend `heartbeatModel` was chosen for. Optional because workers
+  /// hired before this field existed only stored the bare id — those fall
+  /// back to the user's default backend, with the model translated to its
+  /// matching tier (`resolveProducerModel`).
+  ///
+  /// Flows have always stored the pair together (`FlowModelRef`); a worker
+  /// storing the model alone meant switching default providers silently
+  /// pinned every existing worker to a model its new backend rejects.
+  heartbeatBackend?: Backend;
   flowIds: string[];
   enabled: boolean;
   createdAt: number;
@@ -344,6 +353,10 @@ export interface WorkerContract {
   maxItemsPerShift: number;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
+  /// The backend the hire drafter picked `heartbeatModel` from. Not something
+  /// the model emits — the caller stamps it, since it knows which CLI it just
+  /// ran.
+  heartbeatBackend?: Backend;
   /// One of the flow ids the drafter was shown, when one fit.
   flowId?: string;
   /// Set when no existing flow fit: a description for the flow drafter to
@@ -365,6 +378,9 @@ export function parseWorkerContract(
   opts: {
     knownFlowIds: string[];
     defaultHeartbeatModel: string;
+    /// Backend `defaultHeartbeatModel` came from, stamped onto the contract so
+    /// the pair travels together from the moment of hire.
+    defaultHeartbeatBackend?: Backend;
     knownProjectPaths?: string[];
   },
 ): WorkerContract | null {
@@ -414,6 +430,7 @@ export function parseWorkerContract(
     maxItemsPerShift,
     budgetUSDPerMonth,
     heartbeatModel,
+    heartbeatBackend: opts.defaultHeartbeatBackend,
     flowId,
     flowRequest,
     projectPath,

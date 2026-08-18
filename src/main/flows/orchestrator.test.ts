@@ -734,8 +734,27 @@ describe('OrchestratorImpl worker batches', () => {
 
   it('runs the planning turn on the heartbeat model override', async () => {
     const h = makeHarness({ producerReply: REPLY });
-    await parkAsWorker(h, { model: 'tiny-heartbeat' });
-    expect(h.oneShotCalls[0].model).toBe('tiny-heartbeat');
+    await parkAsWorker(h, { model: 'claude-sonnet-5' });
+    expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5');
+  });
+
+  it('translates a heartbeat model the chosen backend cannot run', async () => {
+    // A worker hired under one default provider, run under another: the pin
+    // and the backend are resolved from different places and drift apart.
+    // Passing the stale id straight through killed the shift with "Model X is
+    // not supported for backend Y" — unattended, where nobody sees it.
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, { model: 'gpt-5.6-luna' });
+    expect(h.oneShotCalls[0].backend).toBe('claude');
+    expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5');
+  });
+
+  it('keeps an unrecognised heartbeat model on a cheap tier', () => {
+    // Never silently promote shift planning onto the flagship.
+    const h = makeHarness({ producerReply: REPLY });
+    return parkAsWorker(h, { model: 'tiny-heartbeat' }).then(() => {
+      expect(h.oneShotCalls[0].model).toBe('claude-sonnet-5');
+    });
   });
 
   it('never stamps a worker on a schedule batch child run', async () => {

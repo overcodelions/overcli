@@ -39,10 +39,12 @@ import {
   type FlowRun,
   type FlowStep,
   type FlowStepAttempt,
+  type FlowWorkerExchange,
   type WatchTickLogEntry,
 } from '@shared/flows/schema';
 import { modelSpeed, friendlyModelLabel, PREMIUM_MODELS } from '@shared/modelCatalog';
 import { FlowMonogram } from './FlowMonogram';
+import { matchWorkerExchangesToEvents } from './workerExchangeTimeline';
 import { useWorkersStore } from '../../workersStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { orchestrationForRun } from '../workers/workerDeskSelectors';
@@ -917,7 +919,7 @@ function InlineStepPipeline({
         const attempts = run.attempts.filter((a) => a.stepId === step.id);
         const last = attempts[attempts.length - 1];
         const done = last?.outcome === 'success';
-        const failed = last?.outcome && last.outcome !== 'success';
+        const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
         const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
         const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
         const isActive = step.id === activeStepId;
@@ -1088,9 +1090,44 @@ function ParticipantBody({
   // Without this call the chat panel only shows the artifact after an
   // app restart and the user can't see what the model actually said.
   const loadHistoryIfNeeded = useStore((s) => s.loadHistoryIfNeeded);
+  const participantRunner = useRunner(convId ?? '');
   useEffect(() => {
     if (convId) void loadHistoryIfNeeded(convId);
   }, [convId, loadHistoryIfNeeded]);
+
+  // A worker answer is part of the conversation that asked for it, not run
+  // metadata. Match each persisted exchange to its assistant question so the
+  // reply can render directly beneath that bubble. The small unmatched
+  // fallback preserves older runs whose CLI transcript has been pruned: their
+  // recorded answer still appears at the end of the chat instead of vanishing.
+  const participantExchanges = useMemo(
+    () =>
+      (run.workerExchanges ?? []).filter((exchange) => exchange.participantId === participant.id),
+    [run.workerExchanges, participant.id],
+  );
+  const exchangeByEventId = useMemo(
+    () => matchWorkerExchangesToEvents(participantRunner?.events ?? [], participantExchanges),
+    [participantRunner?.events, participantExchanges],
+  );
+  const matchedExchangeIds = useMemo(
+    () => new Set([...exchangeByEventId.values()].map((exchange) => exchange.id)),
+    [exchangeByEventId],
+  );
+  const unmatchedExchanges = useMemo(
+    () => participantExchanges.filter((exchange) => !matchedExchangeIds.has(exchange.id)),
+    [participantExchanges, matchedExchangeIds],
+  );
+  const exchangeContentKey = participantExchanges
+    .map((exchange) =>
+      [
+        exchange.id,
+        exchange.status,
+        exchange.answeredAt ?? '',
+        exchange.answer ?? '',
+        exchange.note ?? '',
+      ].join(':'),
+    )
+    .join('|');
 
   // A participant's conversation is shared across every step assigned to
   // it (see `executeStep` in runtime.ts). If the user is viewing a step
@@ -1155,7 +1192,33 @@ function ParticipantBody({
                 's, which shares this model. It'll run once you continue.
               </div>
             )}
-            <ChatView conversationId={convId} />
+            <ChatView
+              conversationId={convId}
+              renderAfterEvent={(event) => {
+                const exchange = exchangeByEventId.get(event.id);
+                return exchange ? (
+                  <WorkerExchangeBubble
+                    exchange={exchange}
+                    workerName={run.workerName ?? 'Worker'}
+                  />
+                ) : null;
+              }}
+              timelineFooter={
+                unmatchedExchanges.length > 0 ? (
+                  <div className="space-y-2">
+                    {unmatchedExchanges.map((exchange) => (
+                      <WorkerExchangeBubble
+                        key={exchange.id}
+                        exchange={exchange}
+                        workerName={run.workerName ?? 'Worker'}
+                        transcriptUnavailable
+                      />
+                    ))}
+                  </div>
+                ) : null
+              }
+              timelineContentKey={exchangeContentKey}
+            />
           </>
         ) : (
           <div className="flex-1 flex items-center justify-center p-6 text-center">
@@ -1173,6 +1236,44 @@ function ParticipantBody({
         )}
       </div>
       <HijackComposer run={run} participant={participant} convId={convId} />
+    </div>
+  );
+}
+
+function WorkerExchangeBubble({
+  exchange,
+  workerName,
+  transcriptUnavailable = false,
+}: {
+  exchange: FlowWorkerExchange;
+  workerName: string;
+  transcriptUnavailable?: boolean;
+}) {
+  const status =
+    exchange.status === 'asking'
+      ? `${workerName} is deciding…`
+      : exchange.status === 'answered'
+        ? 'Answered automatically · flow resumed'
+        : exchange.status === 'escalated'
+          ? 'Escalated — needs your input'
+          : 'Could not get an answer';
+  return (
+    <div className="mt-2 flex justify-end">
+      <div className="max-w-[78%] rounded-xl rounded-br-sm border border-lime-500/30 bg-lime-500/10 px-3 py-2 text-xs shadow-sm">
+        <div className="mb-1 text-right text-[10px] font-semibold uppercase tracking-wide text-lime-700 dark:text-lime-300">
+          {workerName}
+        </div>
+        {exchange.answer && <div className="whitespace-pre-wrap text-ink">{exchange.answer}</div>}
+        {exchange.note && (
+          <div className="mt-1 text-amber-600 dark:text-amber-300">{exchange.note}</div>
+        )}
+        <div className="mt-1 text-right text-[10px] text-ink-faint">{status}</div>
+        {transcriptUnavailable && (
+          <div className="mt-1 text-[10px] text-ink-faint">
+            Original question: {exchange.question}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2297,23 +2398,43 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 : 'Continuing…'
               : reason === 'preStep'
                 ? 'Paused before next step'
-                : reason === 'interrupted'
-                  ? 'Interrupted — resume to re-run this step'
-                  : 'Paused — step needs attention'}
+                : reason === 'externalAction'
+                  ? 'Approval required before external action'
+                  : reason === 'needsInput'
+                    ? 'Worker needs your input'
+                    : reason === 'interrupted'
+                      ? 'Interrupted — resume to re-run this step'
+                      : 'Paused — step needs attention'}
           </div>
           <div className="text-xs text-amber-700 dark:text-amber-100/80">
-            {inFlight ? (
+            {inFlight && priorOutput ? (
               <>
                 Your Continue was received. The prior step's participant is
                 re-emitting its <code className="text-amber-700 dark:text-amber-100">&lt;output&gt;</code> block
                 to reflect your changes, then the next step will start.
               </>
+            ) : inFlight ? (
+              <>Your approval or resume was received. The step is starting now.</>
             ) : reason === 'interrupted' ? (
               <>
                 This run was still working on a step when the app last closed, so it
                 couldn't continue on its own. Earlier steps' results are kept — resume to
                 re-run <span className="font-semibold">{nextStep?.id ?? 'this step'}</span> from
                 the start and roll forward.
+              </>
+            ) : reason === 'externalAction' ? (
+              <>
+                <span className="font-semibold">{nextStep?.id ?? 'This step'}</span> can change
+                something outside the local run — such as pushing code, sending a message,
+                publishing, or updating a service. Local work remains autonomous; approve this
+                boundary to let the external action run.
+              </>
+            ) : reason === 'needsInput' ? (
+              <>
+                The flow asked{' '}
+                <span className="font-semibold">{run.workerName ?? 'its Worker'}</span>, but the
+                decision needs information only you can provide. Read the question in the
+                participant chat, reply there, then resume this step.
               </>
             ) : reason === 'failure' ? (
               <>
@@ -2381,9 +2502,13 @@ function PauseBanner({ run }: { run: FlowRun }) {
             )}
             {inFlight
               ? 'Continuing…'
-              : reason === 'interrupted' || reason === 'failure'
-                ? 'Re-run step →'
-                : 'Continue →'}
+              : reason === 'externalAction'
+                ? 'Approve & run →'
+                : reason === 'needsInput'
+                  ? 'Resume step →'
+                  : reason === 'interrupted' || reason === 'failure'
+                    ? 'Re-run step →'
+                    : 'Continue →'}
           </button>
         </div>
       </div>

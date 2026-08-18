@@ -4,9 +4,9 @@
 // WorktreeDiffSheet / WorkspaceAgentReviewSheet directly. Instead this
 // reads the worktree coordinates straight off the FlowRun and drives the
 // same git IPC primitives (git:run / worktreeStatus / mergeAgent /
-// rebaseAgent / pushBranch / openPR) so the user can review the diff and
-// pull the work back into their local repo — the agent-worktree workflow,
-// for flows.
+// rebaseAgent / pushBranch / checkoutAgentLocally / openPR) so the user can
+// review the diff and pull the work back into their local repo — the
+// agent-worktree workflow, for flows.
 //
 // Two shapes:
 //   - Single-project worktree run → one two-pane diff + action header.
@@ -385,6 +385,46 @@ function WorktreeReviewPane({
     setWorking(false);
   };
 
+  const runCheckoutLocally = async () => {
+    const dirty = status?.mainTreeDirtyFiles ?? 0;
+    const stashNote =
+      dirty > 0
+        ? ` Your ${dirty} uncommitted project file${dirty === 1 ? '' : 's'} will be stashed (recover with \`git stash pop\`).`
+        : '';
+    if (
+      !window.confirm(
+        `Check out ${branchName} locally? The flow worktree will be removed and your main project repo switched to this feature branch; ${baseBranch} will remain unchanged.${stashNote} Uncommitted worktree changes will be auto-committed first.`,
+      )
+    )
+      return;
+    setWorking(true);
+    setActionError(null);
+    setActionMessage(null);
+    const res = await window.overcli.invoke('git:checkoutAgentLocally', {
+      projectPath,
+      worktreePath,
+      branchName,
+      commitSubject: description.subject,
+      commitBody: description.body,
+    });
+    if (res.ok) {
+      onClose();
+    } else {
+      setActionError(res.error);
+      setWorking(false);
+    }
+  };
+
+  const checkoutLocallyHelp = (() => {
+    if (loading) return 'Loading project branch state…';
+    const dirty = status?.mainTreeDirtyFiles ?? 0;
+    const stashHint =
+      dirty > 0
+        ? ` Your ${dirty} dirty project file${dirty === 1 ? '' : 's'} will be stashed first.`
+        : '';
+    return `Remove the worktree and switch the project repo to ${branchName}. ${baseBranch} remains unchanged.${stashHint}`;
+  })();
+
   const runOpenPR = async () => {
     setWorking(true);
     setActionError(null);
@@ -457,6 +497,12 @@ function WorktreeReviewPane({
             disabled={loading || working || !status || status.remoteKind === 'none'}
             label={working ? 'Working…' : 'Push branch'}
             title={pushHelp}
+          />
+          <ActionButton
+            onClick={() => void runCheckoutLocally()}
+            disabled={loading || working || !status}
+            label={working ? 'Working…' : 'Check out locally'}
+            title={checkoutLocallyHelp}
           />
           {status?.remoteKind === 'github' && (
             <ActionButton

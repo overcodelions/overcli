@@ -27,7 +27,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import type { Attachment, MainToRendererEvent, UUID } from '../../shared/types';
+import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import {
   evaluateSchedule,
@@ -78,6 +78,7 @@ import {
 } from './workerJournal';
 import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
 import { clearWorkerFiles, fileWorkerDeliverable, workerFilesDir } from './workerFiles';
+import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
 /// a minute so sleep/clock-steps can't strand a timer.
@@ -113,6 +114,8 @@ export interface WorkerParker {
     title?: string;
     autoApprove?: { maxItems: number };
     model?: string;
+    /// Backend `model` was chosen for, when the worker recorded one.
+    backend?: Backend;
     maxItems?: number;
     excludeTitles?: string[];
     allowedFlowIds?: string[];
@@ -185,6 +188,19 @@ export interface WorkerEngineDeps {
   /// Entries carry either the recorded output (`body`) or a path to a file
   /// the run wrote itself (`sourcePath`), which is copied instead of read.
   deliverablesFor?: (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }>;
+  /// Permanently remove this worker's shift/errand ledgers and their child
+  /// flow runs. Main wires this across the orchestrator + runtime; keeping it
+  /// as one dependency lets the worker reset stay the single owner of what
+  /// "start fresh" means without coupling this engine to either store.
+  clearActivity?: (workerId: UUID) => { shifts: number; errands: number; runs: number };
+  /// One read-only model turn used when a participant asks its standing
+  /// Worker for a decision. Main owns backend selection and RunnerManager;
+  /// the engine owns persona, journal context, and answer/escalation policy.
+  supervisorTurn?: (args: {
+    worker: Worker;
+    prompt: string;
+    cwd: string;
+  }) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
 }
 
 export class WorkerEngine {
@@ -282,6 +298,33 @@ export class WorkerEngine {
 
   journalFor(id: UUID): WorkerJournalEntry[] {
     return this.journal.load(id);
+  }
+
+  /// Answer a question raised by one of this Worker's child flow steps.
+  /// Serialized through the same per-worker queue as shifts and errands so
+  /// the persona never takes two contradictory planning turns at once.
+  answerFlowQuestion(request: FlowWorkerQuestionRequest): Promise<FlowWorkerQuestionResult> {
+    return this.enqueue(request.workerId, async () => {
+      const worker = this.workers.get(request.workerId);
+      if (!worker) return { kind: 'error', error: 'The owning Worker no longer exists.' };
+      if (!this.deps.supervisorTurn) {
+        return { kind: 'error', error: 'Worker supervision is not available in this build.' };
+      }
+
+      const prompt = this.buildFlowQuestionPrompt(worker, request);
+      const result = await this.deps.supervisorTurn({
+        worker,
+        prompt,
+        cwd: request.projectPath || worker.projectPath,
+      });
+      if (!result.ok) return { kind: 'error', error: result.error };
+
+      const escalation = taggedBody(result.text, 'escalate');
+      if (escalation) return { kind: 'escalate', reason: escalation };
+      const answer = taggedBody(result.text, 'worker_answer') ?? result.text.trim();
+      if (!answer) return { kind: 'error', error: 'The Worker returned an empty answer.' };
+      return { kind: 'answer', answer };
+    });
   }
 
   nextShiftAt(id: UUID): number | null {
@@ -454,23 +497,18 @@ export class WorkerEngine {
     return { ok: true };
   }
 
-  /// Wipe what this worker remembers and start it over at shift #1 — the
-  /// counterpart to hiring a second one when the job description has moved on
-  /// far enough that the journal is now misleading rather than useful.
-  ///
-  /// `files` is separate because the two halves fail differently. The journal is
-  /// the worker's account of what it PROPOSED, and stale entries mostly cost a
-  /// duplicate proposal; its directory holds what it actually PRODUCED — the
-  /// baselines, tallies and cursors a long-running job is built on, plus filed
-  /// deliverables that outlived their runs. Clearing that is the destructive
-  /// half, so it is opt-in and reported separately.
+  /// Return this worker to the state it was in immediately after hiring: no
+  /// journal, files, shifts, errands, or child runs, and shift numbering back
+  /// at #1. "Start fresh" used to clear only the journal unless a second
+  /// checkbox was noticed, while leaving every activity row behind; that was a
+  /// memory reset wearing a clean-slate label.
   ///
   /// Trust and budget are untouched: both are the user's standing decisions
-  /// about this worker, not things the worker learned.
-  resetMemory(
-    id: UUID,
-    opts: { files?: boolean } = {},
-  ): { ok: true; entries: number; files: number } | { ok: false; error: string } {
+  /// about this worker, not things the worker learned. Historical spend also
+  /// remains in the usage ledger so resetting cannot mint a fresh allowance.
+  resetMemory(id: UUID):
+    | { ok: true; entries: number; files: number; shifts: number; errands: number; runs: number }
+    | { ok: false; error: string } {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
     if (this.firing.has(id)) {
@@ -478,17 +516,20 @@ export class WorkerEngine {
       // we are resetting, so it would write the old life into the new one.
       return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then reset.' };
     }
+    // Files are the only cleanup operation that can surface an I/O failure.
+    // Do it before mutating the worker record or its activity ledgers so a
+    // permissions error does not present a half-reset worker as clean.
+    const cleared = clearWorkerFiles(id);
+    if (!cleared.ok) return { ok: false, error: cleared.error };
+    const files = cleared.removed;
+
+    const activity = this.deps.clearActivity?.(id) ?? { shifts: 0, errands: 0, runs: 0 };
+
     let entries = 0;
     try {
       entries = this.journal.clear(id);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
-    }
-    let files = 0;
-    if (opts.files) {
-      const cleared = clearWorkerFiles(id);
-      if (!cleared.ok) return { ok: false, error: cleared.error };
-      files = cleared.removed;
     }
     w.shiftCount = undefined;
     w.lastShiftAt = undefined;
@@ -498,7 +539,7 @@ export class WorkerEngine {
     w.anchorAt = this.now();
     this.persistAndEmit(w);
     this.arm();
-    return { ok: true, entries, files };
+    return { ok: true, entries, files, ...activity };
   }
 
   /// Work one shift right now, out of band — the "will this do what I think"
@@ -801,6 +842,7 @@ export class WorkerEngine {
       title: `[Shift ${sequence}] ${w.name}`,
       autoApprove: autoCap > 0 ? { maxItems: autoCap } : undefined,
       model: w.heartbeatModel,
+      backend: w.heartbeatBackend,
       maxItems: w.caps.maxItemsPerShift,
       excludeTitles: rejected,
       // The planner may route a candidate to any flow ON THE CONTRACT, but a
@@ -845,6 +887,7 @@ export class WorkerEngine {
         title: `[Errand] ${errandLabel(errand)}`,
         autoApprove: autoCap > 0 ? { maxItems: autoCap } : undefined,
         model: w.heartbeatModel,
+        backend: w.heartbeatBackend,
         maxItems: w.caps.maxItemsPerShift,
         excludeTitles: rejected,
         allowedFlowIds: w.flowIds,
@@ -995,6 +1038,52 @@ export class WorkerEngine {
     return parts.join('\n');
   }
 
+  private buildFlowQuestionPrompt(worker: Worker, request: FlowWorkerQuestionRequest): string {
+    const artifacts = request.artifacts.length > 0
+      ? request.artifacts
+          .map(
+            (artifact) =>
+              `<artifact name="${artifact.name}" from="${artifact.producedByStepId}">\n` +
+              `${artifact.body}\n</artifact>`,
+          )
+          .join('\n\n')
+      : '(no earlier artifacts)';
+    return [
+      `You are "${worker.name}", the standing Worker who owns this flow run.`,
+      '',
+      'YOUR JOB DESCRIPTION',
+      worker.jobDescription,
+      '',
+      'YOUR JOURNAL (newest first)',
+      this.journal.digest(worker.id) || '(no journal yet)',
+      '',
+      'THE RUN',
+      `Flow: ${request.flowName}`,
+      request.runTitle ? `Run: ${request.runTitle}` : '',
+      `Original request: ${request.userPrompt}`,
+      `Current step: ${request.step.id} (${request.step.role})`,
+      request.step.systemPromptOverride
+        ? `Step instructions: ${request.step.systemPromptOverride}`
+        : '',
+      '',
+      'EARLIER ARTIFACTS',
+      artifacts,
+      '',
+      'THE FLOW IS ASKING YOU',
+      request.question,
+      '',
+      'Answer as the responsible owner. Make reasonable product, technical, and editorial',
+      'decisions yourself. Local file/code edits and tests are already authorized and are not a',
+      'reason to escalate. Do not perform any action in this turn; give the participant the',
+      'decision it needs. If the answer requires private human knowledge, credentials, or approval',
+      'for an external action, emit <escalate>one concise reason and what input is needed</escalate>.',
+      'Otherwise emit <worker_answer>your direct, actionable answer</worker_answer>.',
+      'Return exactly one of those tags and no commentary outside it.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
   /// The user's one-off ask, bounded by the worker's standing job rather than
   /// treated as a free-standing prompt.
 
@@ -1031,6 +1120,14 @@ export class WorkerEngine {
       'what you already checked. Use ordinary absolute paths; it is outside the',
       'project, so nothing you put there touches the repository. Create it if it',
       'does not exist yet.',
+      '',
+      'WHERE FLOW OUTPUTS GO',
+      'Every flow you launch runs in a disposable worktree/run root. Candidate',
+      'instructions must use relative output paths inside that run — never tell a',
+      `flow to create, edit, overwrite, move, or delete anything under the persistent`,
+      `project/workspace path ${w.projectPath}. It may read that source when needed.`,
+      'Overcli files completed loose reports into your private directory automatically;',
+      'publishing into the persistent workspace is not part of a worker shift or errand.',
       '',
       'PICKING UP WHERE YOU LEFT OFF',
       'If your job means gathering the same kind of thing shift after shift, do not',
@@ -1352,6 +1449,12 @@ export class WorkerEngine {
       scorecard: snap.scorecard,
     });
   }
+}
+
+function taggedBody(text: string, tag: string): string | null {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = text.match(new RegExp(`<${escaped}\\b[^>]*>([\\s\\S]*?)<\\/${escaped}\\s*>`, 'i'))?.[1];
+  return body?.trim() || null;
 }
 
 /// Start of the calendar month containing `now`, local time — budget months

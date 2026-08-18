@@ -103,6 +103,22 @@ steps:
     expect(flow?.steps[0].permissionMode).toBe('bypassPermissions');
   });
 
+  it('maps effect and verdict_gate metadata', () => {
+    const flow = parseInline(`
+name: Boundaries
+steps:
+  - id: send
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: custom
+    system_prompt: Send the message
+    effect: external
+    verdict_gate: false
+    output: receipt.md
+`);
+    expect(flow?.steps[0].effect).toBe('external');
+    expect(flow?.steps[0].verdictGate).toBe(false);
+  });
+
   it('maps pause_before to pauseBefore and defaults absent keys to false', () => {
     const flow = parseInline(`
 name: Pause
@@ -278,6 +294,8 @@ describe('serializeFlow', () => {
     expect(obj).not.toHaveProperty('tags');
     expect(obj.steps[0]).not.toHaveProperty('system_prompt');
     expect(obj.steps[0]).not.toHaveProperty('permission_mode');
+    expect(obj.steps[0]).not.toHaveProperty('effect');
+    expect(obj.steps[0]).not.toHaveProperty('verdict_gate');
     expect(obj.steps[0]).not.toHaveProperty('rebound');
     expect(obj.steps[0]).not.toHaveProperty('on_fail');
     expect(obj.steps[0]).not.toHaveProperty('pause_before');
@@ -291,6 +309,17 @@ describe('serializeFlow', () => {
     expect(obj.steps[0].pause_before).toBe(true);
   });
 
+  it('emits effect and verdict_gate when set', () => {
+    const flow = minimalFlow({
+      steps: [
+        { ...minimalFlow().steps[0], effect: 'external', verdictGate: true },
+      ],
+    });
+    const obj = parse(serializeFlow(flow));
+    expect(obj.steps[0].effect).toBe('external');
+    expect(obj.steps[0].verdict_gate).toBe(true);
+  });
+
   it('emits on_fail.action for an abort action', () => {
     const flow = minimalFlow({
       steps: [{ ...minimalFlow().steps[0], onFail: { action: 'abort' } }],
@@ -299,4 +328,3 @@ describe('serializeFlow', () => {
     expect(obj.steps[0].on_fail.action).toBe('abort');
   });
 });
-
