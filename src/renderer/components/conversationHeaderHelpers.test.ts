@@ -32,8 +32,8 @@ describe('permissionTone', () => {
 });
 
 describe('effortLabel', () => {
-  it('returns the placeholder when effort is empty', () => {
-    expect(effortLabel('')).toBe('Effort');
+  it('labels an empty override as automatic effort', () => {
+    expect(effortLabel('')).toBe('Auto effort');
   });
 
   it('title-cases the effort name', () => {

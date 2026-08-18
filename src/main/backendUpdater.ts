@@ -30,6 +30,7 @@ import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backen
 import { runInTerminal } from './terminal';
 import { Store } from './store';
 import { log } from './diagnostics';
+import { isOlder, parseSemver } from './semver';
 
 // Per-backend command that nudges the CLI's own updater and then exits.
 // Only backends whose updater runs NON-INTERACTIVELY and exits on its own
@@ -89,24 +90,6 @@ function primeBackend(backend: Backend, argv: string[]): boolean {
   });
   child.unref();
   return true;
-}
-
-/// Parse the first dotted version triple out of arbitrary CLI/registry text.
-function parseSemver(text: string): [number, number, number] | null {
-  const m = text.match(/(\d+)\.(\d+)\.(\d+)/);
-  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
-}
-
-/// True iff `a` is strictly older than `b`. Unparseable inputs → false, so we
-/// never trigger an update on garbage.
-function isOlder(a: string, b: string): boolean {
-  const pa = parseSemver(a);
-  const pb = parseSemver(b);
-  if (!pa || !pb) return false;
-  for (let i = 0; i < 3; i++) {
-    if (pa[i] !== pb[i]) return pa[i] < pb[i];
-  }
-  return false;
 }
 
 /// Run `<bin> --version` with stdin closed (so an interactive update prompt
@@ -225,7 +208,10 @@ async function updateCodexIfOutdated(now: number): Promise<void> {
   // Hidden update failed — almost always a global prefix that needs sudo, or
   // a non-npm install. Open a Terminal so the user can finish it themselves.
   log('warn', 'backendUpdater', 'hidden codex update failed; opening terminal for manual update');
-  runInTerminal(`npm install -g ${CODEX_NPM_PKG}@latest`);
+  const launched = await runInTerminal(`npm install -g ${CODEX_NPM_PKG}@latest`);
+  if (!launched.ok) {
+    log('warn', 'backendUpdater', `terminal fallback failed: ${launched.error}`);
+  }
 }
 
 /// Fire each due backend's updater once. Silent self-updaters run hidden;

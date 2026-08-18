@@ -398,6 +398,30 @@ export function shouldSkipIdleOnClose(args: {
   return args.backend === 'claude' && args.claudeSendPending;
 }
 
+/// Explain a child-process spawn failure using the actual missing resource.
+/// Node reports ENOENT for both a missing executable and a missing `cwd`; the
+/// latter was previously mislabeled as an uninstalled CLI and then followed
+/// by a second, opaque "status -2" close error.
+export function spawnFailureMessage(
+  args: { backend: Backend; binary: string; cwd: string },
+  err: NodeJS.ErrnoException,
+  cwdExists: boolean = fs.existsSync(args.cwd),
+): string {
+  if (err.code === 'ENOENT' && !cwdExists) {
+    return (
+      `Couldn't launch ${args.backend}: the working directory no longer exists: ` +
+      `\`${args.cwd}\`. It may have been a worktree that was removed or checked out locally.`
+    );
+  }
+  if (err.code === 'ENOENT') {
+    return (
+      `Couldn't launch ${args.backend}: \`${args.binary}\` was not found. ` +
+      `Make sure the CLI is installed and on your PATH — see the install steps in the README.`
+    );
+  }
+  return `Couldn't launch ${args.backend}: ${err.message}`;
+}
+
 /// True when CLI stderr indicates the cached --resume id no longer exists
 /// (history wiped, project moved, etc.). Substring-matched against the
 /// messages claude/codex/gemini emit for this case. Intentionally broad —
@@ -3226,16 +3250,22 @@ export class RunnerManager {
     // 'error' and often no 'close'. Without a listener Node rethrows it as
     // an uncaught exception that crashes the main process, and the turn
     // hangs forever. Surface a clean error and run the normal close cleanup.
+    let spawnFailed = false;
     proc.on('error', (err: NodeJS.ErrnoException) => {
-      const notFound = err.code === 'ENOENT';
-      const message = notFound
-        ? `Couldn't launch ${args.backend}: \`${binary}\` was not found. ` +
-          `Make sure the CLI is installed and on your PATH — see the install steps in the README.`
-        : `Couldn't launch ${args.backend}: ${err.message}`;
+      spawnFailed = true;
+      const message = spawnFailureMessage(
+        { backend: args.backend, binary, cwd: args.cwd },
+        err,
+      );
       this.emit({ type: 'error', conversationId: args.conversationId, message });
       this.handleActiveClose(args.conversationId, active, null);
     });
-    proc.on('close', (code) => this.handleActiveClose(args.conversationId, active, code));
+    proc.on('close', (code) => {
+      // A failed spawn emits both `error` and `close` on Node. The error
+      // handler already cleaned up and surfaced the useful cause; processing
+      // close too would overwrite it with "exited with status -2".
+      if (!spawnFailed) this.handleActiveClose(args.conversationId, active, code);
+    });
     return active;
   }
 

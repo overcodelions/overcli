@@ -160,6 +160,7 @@ export function FlowRunReviewSheet({ runId }: { runId: UUID }) {
     return (
       <WorktreeReviewPane
         title={run.flowSnapshot.name}
+        flowRunId={run.id}
         projectPath={run.sourceProjectPath}
         worktreePath={run.worktreePath}
         branchName={run.branchName}
@@ -215,6 +216,7 @@ function SheetShell({
 /// runs and for the drill-in view of a workspace member.
 function WorktreeReviewPane({
   title,
+  flowRunId,
   projectPath,
   worktreePath,
   branchName,
@@ -225,6 +227,10 @@ function WorktreeReviewPane({
   onClose,
 }: {
   title: string;
+  /// Present for a single-project flow run. Its checkout path also migrates
+  /// participant sessions and rebinds the persisted run cwd. Workspace
+  /// member panes omit it because their coordinator cwd does not change.
+  flowRunId?: UUID;
   projectPath: string;
   worktreePath: string;
   branchName: string;
@@ -400,13 +406,19 @@ function WorktreeReviewPane({
     setWorking(true);
     setActionError(null);
     setActionMessage(null);
-    const res = await window.overcli.invoke('git:checkoutAgentLocally', {
-      projectPath,
-      worktreePath,
-      branchName,
-      commitSubject: description.subject,
-      commitBody: description.body,
-    });
+    const res = flowRunId
+      ? await window.overcli.invoke('flows:checkoutRunLocally', {
+          runId: flowRunId,
+          commitSubject: description.subject,
+          commitBody: description.body,
+        })
+      : await window.overcli.invoke('git:checkoutAgentLocally', {
+          projectPath,
+          worktreePath,
+          branchName,
+          commitSubject: description.subject,
+          commitBody: description.body,
+        });
     if (res.ok) {
       onClose();
     } else {

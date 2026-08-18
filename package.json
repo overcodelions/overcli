@@ -94,7 +94,10 @@
       "notarize": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for — CLI logins and Ollama install/update — so you can watch them and answer any prompts."
+      }
     },
     "dmg": {
       "title": "Overcli ${version}",
