@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should-build: ${{ steps.decide.outputs.should-build }}
+      nightly-version: ${{ steps.version.outputs.nightly-version }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -34,6 +35,14 @@ jobs:
             echo "No commits in last 24h — skipping nightly."
             echo "should-build=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - id: version
+        shell: bash
+        run: |
+          BASE_VERSION=$(node -p "require('./package.json').version.split('-')[0]")
+          DATE=$(date -u +%Y%m%d)
+          SHA=$(git rev-parse --short "${GITHUB_SHA}")
+          echo "nightly-version=${BASE_VERSION}-nightly.${DATE}.${SHA}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.os }}
@@ -60,13 +69,10 @@ jobs:
       - name: Stamp nightly version
         shell: bash
         run: |
-          SHA=$(git rev-parse --short HEAD)
-          DATE=$(date -u +%Y%m%d)
           node -e "
             const fs = require('fs');
             const p = require('./package.json');
-            const base = p.version.split('-')[0];
-            p.version = base + '-nightly.' + '${DATE}' + '.' + '${SHA}';
+            p.version = '${{ needs.check.outputs.nightly-version }}';
             fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
             console.log('version =', p.version);
           "
@@ -127,7 +133,7 @@ jobs:
 
   release:
     name: Publish nightly release
-    needs: build
+    needs: [check, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write   # move/force-push the nightly tag and publish the release
@@ -169,20 +175,35 @@ jobs:
 
       - uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
-          tag_name: nightly
+          tag_name: v${{ needs.check.outputs.nightly-version }}
           name: Nightly
           prerelease: true
           body: |
             Auto-built nightly from commit `${{ github.sha }}`.
 
             **Stable download links** (always point at the latest nightly):
-            - macOS (Apple Silicon): [`Overcli-nightly-mac-arm64.dmg`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-mac-arm64.dmg)
-            - Windows (x64): [`Overcli-nightly-win-x64.exe`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-win-x64.exe)
-            - Windows (ARM64): [`Overcli-nightly-win-arm64.exe`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-win-arm64.exe)
-            - Linux (x64 AppImage): [`Overcli-nightly-linux-x64.AppImage`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-linux-x64.AppImage)
-            - Linux (ARM64 AppImage): [`Overcli-nightly-linux-arm64.AppImage`](https://github.com/${{ github.repository }}/releases/download/nightly/Overcli-nightly-linux-arm64.AppImage)
+            - macOS (Apple Silicon): [`Overcli-nightly-mac-arm64.dmg`](https://github.com/${{ github.repository }}/releases/download/v${{ needs.check.outputs.nightly-version }}/Overcli-nightly-mac-arm64.dmg)
+            - Windows (x64): [`Overcli-nightly-win-x64.exe`](https://github.com/${{ github.repository }}/releases/download/v${{ needs.check.outputs.nightly-version }}/Overcli-nightly-win-x64.exe)
+            - Windows (ARM64): [`Overcli-nightly-win-arm64.exe`](https://github.com/${{ github.repository }}/releases/download/v${{ needs.check.outputs.nightly-version }}/Overcli-nightly-win-arm64.exe)
+            - Linux (x64 AppImage): [`Overcli-nightly-linux-x64.AppImage`](https://github.com/${{ github.repository }}/releases/download/v${{ needs.check.outputs.nightly-version }}/Overcli-nightly-linux-x64.AppImage)
+            - Linux (ARM64 AppImage): [`Overcli-nightly-linux-arm64.AppImage`](https://github.com/${{ github.repository }}/releases/download/v${{ needs.check.outputs.nightly-version }}/Overcli-nightly-linux-arm64.AppImage)
 
             > Pre-release. Not notarized on macOS — Gatekeeper will warn on first launch.
           files: |
             artifacts/*
             stable/*
+
+      - name: Remove older nightly prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURRENT_TAG: v${{ needs.check.outputs.nightly-version }}
+        run: |
+          # The old migration release is stale; deleting the release leaves
+          # the movable bare `nightly` source tag untouched.
+          gh release delete nightly --repo "${{ github.repository }}" --yes 2>/dev/null || true
+          gh release list --repo "${{ github.repository }}" --limit 100 --json tagName,isDraft,isPrerelease --jq '.[] | select(.isPrerelease == true and .isDraft == false) | .tagName' \
+            | while read -r tag; do
+                if [[ "$tag" == v*-nightly.* && "$tag" != "$CURRENT_TAG" ]]; then
+                  gh release delete "$tag" --repo "${{ github.repository }}" --yes
+                fi
+              done
