@@ -53,6 +53,19 @@ describe('looseSyntheticRootFiles', () => {
     ]);
   });
 
+  it('finds a report written to a relative nested output path', () => {
+    const root = coordinatorRoot();
+    fs.mkdirSync(path.join(root, 'reports'), { recursive: true });
+    writeAt(
+      path.join(root, 'reports', 'weekly-competitive-intelligence.html'),
+      '<html>report</html>',
+      RUN_START + 1000,
+    );
+    expect(looseSyntheticRootFiles(root, { since: RUN_START }).map((f) => f.name)).toEqual([
+      'reports/weekly-competitive-intelligence.html',
+    ]);
+  });
+
   it('leaves the root’s own furniture alone', () => {
     const root = coordinatorRoot();
     writeAt(path.join(root, '.DS_Store'), 'x', RUN_START + 1000);
@@ -68,6 +81,20 @@ describe('looseSyntheticRootFiles', () => {
     const names = looseSyntheticRootFiles(root, { since: RUN_START }).map((f) => f.name);
     expect(names).toEqual(['report.md']);
     expect(names).not.toContain('gitrepo');
+  });
+
+  it('does not follow a nested directory symlink', () => {
+    const root = coordinatorRoot();
+    const outside = path.join(userDataDir, 'outside');
+    fs.mkdirSync(outside);
+    writeAt(path.join(outside, 'not-a-deliverable.md'), 'private', RUN_START + 1000);
+    fs.mkdirSync(path.join(root, 'reports'));
+    fs.symlinkSync(outside, path.join(root, 'reports', 'escape'), 'dir');
+    writeAt(path.join(root, 'reports', 'real.md'), 'report', RUN_START + 1000);
+
+    expect(looseSyntheticRootFiles(root, { since: RUN_START }).map((f) => f.name)).toEqual([
+      'reports/real.md',
+    ]);
   });
 
   it('ignores what an earlier run left in a workspace root that outlives it', () => {
