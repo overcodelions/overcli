@@ -13,6 +13,7 @@ vi.mock('electron', () => ({
 }));
 
 import {
+  archiveWorkerFiles,
   clearWorkerFiles,
   deleteWorkerFile,
   deliverableFiles,
@@ -130,6 +131,33 @@ describe('fileWorkerDeliverable', () => {
     // same errand twice in the Files tab.
     expect(dirs).toEqual(['2026-08-16-1431-errand-cover']);
     expect(fs.readdirSync(legacy).sort()).toEqual(['notes.md', 'report.md']);
+  });
+
+  it('does not re-create an archived job at the top level on a re-fold', () => {
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'verification.md', body: 'b' },
+      ],
+    });
+    const dir = workerFilesDir(WORKER);
+    const archived = path.join(dir, 'archive', '2026-08-16-1431-errand-coverage');
+    fs.mkdirSync(path.join(dir, 'archive'), { recursive: true });
+    fs.renameSync(path.join(dir, '2026-08-16-1431-errand-coverage'), archived);
+
+    // Simulates syncOrchestration re-folding a `done` item it has already
+    // filed once — idempotent by filename, and the archived copy counts.
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'verification.md', body: 'b' },
+      ],
+    });
+
+    expect(fs.readdirSync(dir).sort()).toEqual(['archive']);
+    expect(fs.readdirSync(archived).sort()).toEqual(['report.md', 'verification.md']);
   });
 });
 
@@ -314,6 +342,68 @@ describe('filing a file the run wrote itself', () => {
     const names = listWorkerFiles(WORKER).map((f) => f.name);
     expect(names.some((n) => n.endsWith('brief.md'))).toBe(true);
     expect(names.some((n) => n.endsWith('dashboard.html'))).toBe(false);
+  });
+});
+
+describe('archiveWorkerFiles', () => {
+  const cutoff = AT;
+  const oldMtime = new Date(cutoff - 60_000);
+
+  it('moves a filed deliverable older than the cutoff into archive/', () => {
+    const dir = ensureWorkerFilesDir(WORKER);
+    const file = path.join(dir, '2026-08-01-0900-shift-3-something.md');
+    fs.writeFileSync(file, 'x', 'utf-8');
+    fs.utimesSync(file, oldMtime, oldMtime);
+
+    expect(archiveWorkerFiles(WORKER, cutoff)).toEqual({ moved: 1 });
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'archive', '2026-08-01-0900-shift-3-something.md'))).toBe(
+      true,
+    );
+  });
+
+  it('leaves the worker’s own files at the top level regardless of age', () => {
+    const dir = ensureWorkerFilesDir(WORKER);
+    const baseline = path.join(dir, 'baseline.json');
+    const cursor = path.join(dir, 'cursor.json');
+    fs.writeFileSync(baseline, '{}', 'utf-8');
+    fs.writeFileSync(cursor, '{}', 'utf-8');
+    fs.utimesSync(baseline, oldMtime, oldMtime);
+    fs.utimesSync(cursor, oldMtime, oldMtime);
+
+    expect(archiveWorkerFiles(WORKER, cutoff)).toEqual({ moved: 0 });
+    expect(fs.existsSync(baseline)).toBe(true);
+    expect(fs.existsSync(cursor)).toBe(true);
+  });
+
+  it('keeps a deliverable link working after its job folder is archived', () => {
+    const job = {
+      workerId: WORKER,
+      task: 'errand' as const,
+      label: '[Errand] x',
+      title: 'Coverage',
+      at: AT,
+    };
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'a' },
+        { name: 'verification.md', body: 'b' },
+      ],
+    });
+    const dir = workerFilesDir(WORKER);
+    const folder = path.join(dir, '2026-08-16-1431-errand-coverage');
+    const oldFolderMtime = new Date(AT - 60_000);
+    fs.utimesSync(folder, oldFolderMtime, oldFolderMtime);
+
+    expect(archiveWorkerFiles(WORKER, AT)).toEqual({ moved: 1 });
+
+    const found = deliverableFiles(job);
+    expect(found.map((f) => f.name)).toEqual([
+      'archive/2026-08-16-1431-errand-coverage/report.md',
+      'archive/2026-08-16-1431-errand-coverage/verification.md',
+    ]);
+    expect(found.every((f) => fs.existsSync(f.path))).toBe(true);
   });
 });
 

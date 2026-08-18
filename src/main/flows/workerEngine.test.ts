@@ -20,6 +20,14 @@ vi.mock('./runSummaryLog', () => ({
   workerSpendSince: vi.fn(() => 0),
   workerSpendByWorkerSince: vi.fn(() => new Map<string, number>()),
 }));
+// Partial: only the archiving call is stubbed, so the weekly pass is
+// observable without touching the disk. `archiveWorkerFiles` has its own
+// tests; what is unproven here is that the engine calls it at all.
+const { archiveMock } = vi.hoisted(() => ({ archiveMock: vi.fn(() => ({ moved: 0 })) }));
+vi.mock('./workerFiles', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./workerFiles')>()),
+  archiveWorkerFiles: archiveMock,
+}));
 
 import {
   WorkerEngine,
@@ -30,6 +38,7 @@ import {
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
+import { compactionCutoff } from '../../shared/flows/workerCompaction';
 
 function local(y: number, mo: number, d: number, h = 0, min = 0): number {
   return new Date(y, mo - 1, d, h, min, 0, 0).getTime();
@@ -899,6 +908,83 @@ describe('WorkerEngine journal projection', () => {
     // Two rejections + one approval (newest, since sync stamps approvals at
     // `now`): no demotion.
     expect(h.engine.get('worker-1')?.trust).toBe('trusted');
+  });
+});
+
+describe('WorkerEngine weekly compaction', () => {
+  // Wednesday 08:00. The most recent compaction slot is Sunday 2026-03-01
+  // 03:00, so a worker last compacted before that is due; one compacted after
+  // it is not. The first tick lands a minute in (MAX_TIMER_MS), well before
+  // the 09:00 cadence, so nothing else the engine does is in the way.
+  const WED = local(2026, 3, 4, 8, 0);
+  const FIRST_TICK = local(2026, 3, 4, 8, 1);
+
+  it('archives older filed work and journals what moved', async () => {
+    archiveMock.mockClear().mockReturnValue({ moved: 3 });
+    const h = makeHarness({
+      startAt: WED,
+      seed: [seedWorker({ lastCompactedAt: local(2026, 2, 22, 3, 0) })],
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 4, 8, 2));
+
+    const stamped = h.engine.get('worker-1')?.lastCompactedAt;
+    expect(stamped).toBe(FIRST_TICK);
+    // The cutoff is derived from the pass's own clock, not from whenever the
+    // worker last compacted — a worker that missed a week must not archive
+    // two weeks' worth as though it were one.
+    expect(archiveMock).toHaveBeenCalledWith('worker-1', compactionCutoff(stamped!));
+    expect(h.journal.filter((e) => e.kind === 'compacted')).toEqual([
+      {
+        // `dayKey` does not zero-pad; it is only ever a dedupe key.
+        id: 'compacted-worker-1-2026-3-4',
+        workerId: 'worker-1',
+        kind: 'compacted',
+        at: FIRST_TICK,
+        title: '',
+        note: 'Weekly compaction: archived 3 older files.',
+      },
+    ]);
+  });
+
+  it('stamps the pass but writes no journal line when nothing was old enough', async () => {
+    archiveMock.mockClear().mockReturnValue({ moved: 0 });
+    const h = makeHarness({
+      startAt: WED,
+      seed: [seedWorker({ lastCompactedAt: local(2026, 2, 22, 3, 0) })],
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 4, 8, 2));
+
+    expect(archiveMock).toHaveBeenCalledTimes(1);
+    // Stamped anyway, or a worker with nothing to archive would be re-checked
+    // every minute for the rest of the week.
+    expect(h.engine.get('worker-1')?.lastCompactedAt).toBe(FIRST_TICK);
+    expect(h.journal.filter((e) => e.kind === 'compacted')).toEqual([]);
+  });
+
+  it('leaves a worker alone until the next weekly slot comes round', async () => {
+    archiveMock.mockClear().mockReturnValue({ moved: 3 });
+    const h = makeHarness({
+      startAt: WED,
+      // Monday, i.e. AFTER the Sunday 03:00 slot — already done this week.
+      seed: [seedWorker({ lastCompactedAt: local(2026, 3, 2, 3, 0) })],
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 4, 8, 2));
+
+    expect(archiveMock).not.toHaveBeenCalled();
+    expect(h.engine.get('worker-1')?.lastCompactedAt).toBe(local(2026, 3, 2, 3, 0));
+  });
+
+  it('compacts a worker that has never been compacted', async () => {
+    archiveMock.mockClear().mockReturnValue({ moved: 1 });
+    const h = makeHarness({ startAt: WED, seed: [seedWorker()] });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 4, 8, 2));
+
+    expect(archiveMock).toHaveBeenCalledWith('worker-1', compactionCutoff(FIRST_TICK));
+    expect(h.journal.filter((e) => e.kind === 'compacted')).toHaveLength(1);
   });
 });
 

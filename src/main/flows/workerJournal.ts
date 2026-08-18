@@ -128,7 +128,8 @@ export function clearWorkerJournal(workerId: string): number {
   return dropped;
 }
 
-/// Atomic whole-file replacement, shared by compaction and reset. Returns
+/// Atomic whole-file replacement, shared by the entry-cap compaction and
+/// reset. Returns
 /// whether the swap landed — a failed rewrite must leave the index alone.
 function rewrite(entries: WorkerJournalEntry[]): boolean {
   const p = filePath();
