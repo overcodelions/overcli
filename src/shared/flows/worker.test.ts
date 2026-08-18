@@ -364,3 +364,30 @@ describe('moveInRoster', () => {
     expect(moveInRoster(roster, 'gone', -1)).toEqual(['a', 'b', 'c']);
   });
 });
+
+describe('parseWorkerContract — heartbeat backend', () => {
+  const opts = {
+    knownFlowIds: ['fix-it'],
+    defaultHeartbeatModel: 'gpt-5.6-luna',
+    defaultHeartbeatBackend: 'codex' as const,
+  };
+
+  it('stamps the backend the hire actually ran on', () => {
+    // The model never emits this — the caller knows which CLI it just ran, so
+    // the pair is complete from the moment of hire.
+    const c = parseWorkerContract(
+      '<worker>{"name":"Scout","jobDescription":"Watch the release branch each morning."}</worker>',
+      opts,
+    );
+    expect(c?.heartbeatBackend).toBe('codex');
+    expect(c?.heartbeatModel).toBe('gpt-5.6-luna');
+  });
+
+  it('leaves it unset when the caller does not supply one', () => {
+    const c = parseWorkerContract(
+      '<worker>{"name":"Scout","jobDescription":"Watch the release branch each morning."}</worker>',
+      { knownFlowIds: ['fix-it'], defaultHeartbeatModel: 'cheap-model' },
+    );
+    expect(c?.heartbeatBackend).toBeUndefined();
+  });
+});

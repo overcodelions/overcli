@@ -78,4 +78,28 @@ describe('FlowRuntimeImpl.startRun', () => {
       workerName: 'Scout',
     });
   });
+
+  it('refuses a worker worktree run that names the persistent source as an output', async () => {
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+
+    const result = await runtime.startRun({
+      flowId: 'flow-1',
+      projectPath: '/tmp/project',
+      userPrompt: 'Create a corrected report named /tmp/project/report.html.',
+      runIn: 'worktree',
+      workerId: 'worker-1',
+      workerName: 'Scout',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('persistent project/workspace'),
+    });
+    expect(runtime.listRuns()).toEqual([]);
+  });
 });

@@ -36,6 +36,7 @@ import { Scalar, parse as yamlParse, stringify as yamlStringify } from 'yaml';
 import { flowFromDoc, flowToDoc } from './yaml';
 import type { Flow } from './schema';
 import type { ScheduleTrigger } from './schedule';
+import type { Backend } from '../types';
 import {
   WORKER_MAX_ITEMS_PER_SHIFT,
   WORKER_MIN_JOB_DESCRIPTION,
@@ -64,6 +65,7 @@ export interface PortableWorker {
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
+  heartbeatBackend?: Backend;
   flowIds: string[];
   autoRender?: string;
 }
@@ -125,6 +127,7 @@ export function serializeWorker(args: {
     | 'caps'
     | 'budgetUSDPerMonth'
     | 'heartbeatModel'
+    | 'heartbeatBackend'
     | 'flowIds'
   > & { autoRender?: string };
   flows: Flow[];
@@ -148,6 +151,10 @@ export function serializeWorker(args: {
   };
   doc.budget_usd_per_month = worker.budgetUSDPerMonth;
   doc.heartbeat_model = worker.heartbeatModel;
+  // Only written when known. An export without it stays importable by an
+  // older build, and the importer falls back to the same tier translation a
+  // pre-field worker gets.
+  if (worker.heartbeatBackend) doc.heartbeat_backend = worker.heartbeatBackend;
   if (worker.autoRender) doc.auto_render = worker.autoRender;
   doc.flows = [...worker.flowIds];
 
@@ -177,6 +184,16 @@ export function workerShareFilename(name: string): string {
 
 function asString(v: unknown, fallback = ''): string {
   return typeof v === 'string' ? v : fallback;
+}
+
+/// Accept only a real backend name from an imported file. Anything else is
+/// dropped rather than guessed at — a bogus backend would pin the worker to a
+/// CLI that doesn't exist, where the tier-translation fallback is the safer
+/// outcome.
+const BACKEND_NAMES: Backend[] = ['claude', 'codex', 'gemini', 'ollama', 'copilot'];
+function coerceBackend(raw: unknown): Backend | undefined {
+  const name = asString(raw).trim().toLowerCase();
+  return BACKEND_NAMES.find((b) => b === name);
 }
 
 function coerceCaps(raw: unknown): WorkerCaps {
@@ -284,6 +301,10 @@ export function parseWorkerYaml(yaml: string): WorkerYamlResult {
     caps: coerceCaps(y.caps),
     budgetUSDPerMonth: Number.isFinite(budget) && budget > 0 ? budget : 10,
     heartbeatModel: asString(y.heartbeat_model ?? y.heartbeatModel).trim(),
+    // Only accept a real backend name. A file that omits it (or carries junk)
+    // leaves the worker on the pre-field path: the importer's default backend
+    // with the model translated to its matching tier.
+    heartbeatBackend: coerceBackend(y.heartbeat_backend ?? y.heartbeatBackend),
     // A flow with no id in `flows:` still counts as one this worker carries —
     // an author who embedded a definition and forgot the list meant to ship it.
     flowIds: flowIds.length > 0 ? flowIds : flows.map((f) => f.id),

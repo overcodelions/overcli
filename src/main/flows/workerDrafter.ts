@@ -125,6 +125,9 @@ export async function draftWorkerFromPrompt(
   const contract = parseWorkerContract(out.text, {
     knownFlowIds: args.flows.map((f) => f.id),
     defaultHeartbeatModel: drafterModelHints(out.backend, deps.settings.flowModelDefaults).fast,
+    // Stamp the backend the hire actually ran on, so the model it just chose
+    // stays paired with the CLI it belongs to.
+    defaultHeartbeatBackend: out.backend,
     knownProjectPaths: args.projects.map((p) => p.path),
   });
   if (!contract) {
