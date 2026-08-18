@@ -100,7 +100,7 @@ import {
 } from './skillsCatalog';
 import {
   OLLAMA_CATALOG,
-  brewAvailable,
+  brewManagesOllama,
   detectHardware,
   detectOllama,
   deleteModel,
@@ -1028,7 +1028,13 @@ function registerIpc(): void {
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
   ipcMain.handle('ollama:catalog', () => OLLAMA_CATALOG);
-  ipcMain.handle('ollama:install', () => installOllama((url) => shell.openExternal(url)));
+  ipcMain.handle(
+    'ollama:install',
+    () =>
+      installOllama((url) => {
+        void shell.openExternal(url);
+      }),
+  );
   ipcMain.handle('ollama:startServer', () => ollamaServer.start());
   ipcMain.handle('ollama:stopServer', () => ollamaServer.stop());
   ipcMain.handle('ollama:serverStatus', () => ({
@@ -1084,9 +1090,11 @@ function registerIpc(): void {
     async (_e, { fixId }: { fixId: 'update-ollama' | 'restart-loopback' }) => {
       if (fixId === 'update-ollama') {
         // detectOllama() only fills installHint when Ollama is MISSING, so ask
-        // brewAvailable() directly — an installed non-Homebrew Mac must not be
-        // told to run `brew upgrade`.
-        return updateOllama((url) => shell.openExternal(url), brewAvailable());
+        // Homebrew directly — a Mac that has brew but installed Ollama from
+        // the .dmg must not be told to run `brew upgrade`.
+        return updateOllama((url) => {
+          void shell.openExternal(url);
+        }, brewManagesOllama());
       }
       if (!ollamaServer.isManaged()) {
         return {
@@ -1160,6 +1168,11 @@ function registerIpc(): void {
   );
   ipcMain.handle('flows:rerunFromStep', (_e, args) =>
     flowRuntime ? flowRuntime.rerunFromStep(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:checkoutRunLocally', (_e, args) =>
+    flowRuntime
+      ? flowRuntime.checkoutRunLocally(args)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:abortRun', (_e, args) =>
     flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),

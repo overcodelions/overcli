@@ -395,6 +395,12 @@ export interface FlowRun {
   /// to surface the worktree's branch + offer review/merge actions on a
   /// completed run.
   worktreePath?: string;
+  /// Set after a single-project flow worktree is brought into the main
+  /// project with "Check out locally". At that point `projectPath` has been
+  /// rebound to `sourceProjectPath` and `worktreePath` has been cleared, so
+  /// participant chat, history replay, re-runs, and watch turns all continue
+  /// from the real checkout instead of trying to spawn in a deleted tree.
+  checkedOutLocally?: boolean;
   branchName?: string;
   /// Branch the worktree(s) were forked from (single project AND every
   /// member of a workspace worktree run share one base). Persisted so the

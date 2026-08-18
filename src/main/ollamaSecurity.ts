@@ -337,16 +337,25 @@ export async function auditOllama(args: {
   };
 }
 
-/// Starts an update. On macOS with Homebrew we run `brew upgrade ollama` in a
-/// visible Terminal so the user can watch it work or fail; everywhere else we
-/// open the download page. We never swap the binary ourselves.
-export function updateOllama(
+/// Starts an update. When Homebrew is the thing that installed Ollama we run
+/// `brew upgrade ollama` in a visible Terminal so the user can watch it work
+/// or fail; everywhere else we open the download page. We never swap the
+/// binary ourselves.
+///
+/// `brewManaged` must mean "brew owns this Ollama", not merely "brew exists":
+/// running `brew upgrade ollama` against a .dmg install just prints
+/// `Error: ollama not installed` into a window the user has to decipher.
+export async function updateOllama(
   opener: (url: string) => void,
-  hasBrew: boolean,
-): { ok: boolean; message: string } {
-  if (process.platform === 'darwin' && hasBrew) {
-    runInTerminal('brew upgrade ollama');
-    return { ok: true, message: 'Opened Terminal running `brew upgrade ollama`.' };
+  brewManaged: boolean,
+): Promise<{ ok: boolean; message: string; command?: string }> {
+  if (process.platform === 'darwin' && brewManaged) {
+    const command = 'brew upgrade ollama';
+    const res = await runInTerminal(command);
+    if (res.ok) return { ok: true, message: `Opened Terminal running \`${command}\`.` };
+    // The launch failed. Say so instead of claiming a window opened, and hand
+    // back the command so the UI can offer it to copy.
+    return { ok: false, message: res.error, command: res.command ?? command };
   }
   opener(OLLAMA_DOWNLOAD_URL);
   return { ok: true, message: 'Opened the Ollama download page — install over your existing copy.' };

@@ -22,10 +22,11 @@
 // runner pipeline drives.
 
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { log } from '../diagnostics';
+import { migrateClaudeSessionCwd } from '../history';
 
 import type {
   AppSettings,
@@ -63,7 +64,9 @@ import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
 import {
   baseBranchExistsAsync,
+  checkoutAgentLocally as checkoutWorktreeLocally,
   createWorktreeAsync,
+  currentBranch,
   detectBaseBranchAsync,
   removeWorktreeAsync,
   runGit,
@@ -153,6 +156,39 @@ export type FlowWorkerQuestionResult =
   | { kind: 'answer'; answer: string }
   | { kind: 'escalate'; reason: string }
   | { kind: 'error'; error: string };
+
+/// Convert a single-project worktree run into an in-place run after its
+/// branch has been checked out in the source project. Kept as a small pure
+/// mutation so both the explicit checkout path and startup recovery use the
+/// exact same state transition.
+export function rebindRunToLocalProject(
+  run: FlowRun,
+): { oldProjectPath: string; projectPath: string } | null {
+  if (
+    !run.worktreePath ||
+    !run.sourceProjectPath ||
+    (run.workspaceWorktrees?.length ?? 0) > 0
+  ) {
+    return null;
+  }
+  const oldProjectPath = run.projectPath;
+  run.projectPath = run.sourceProjectPath;
+  delete run.worktreePath;
+  run.checkedOutLocally = true;
+  return { oldProjectPath, projectPath: run.projectPath };
+}
+
+function migrateRunClaudeSessions(run: FlowRun, fromCwd: string, toCwd: string): void {
+  const participants = new Map(
+    (run.flowSnapshot.participants ?? []).map((participant) => [participant.id, participant]),
+  );
+  for (const [participantId, sessionId] of Object.entries(
+    run.sessionIdsByParticipant ?? {},
+  )) {
+    if (participants.get(participantId)?.backend !== 'claude') continue;
+    migrateClaudeSessionCwd({ worktreePath: fromCwd, projectPath: toCwd, sessionId });
+  }
+}
 
 interface StepStreamBuffer {
   /// Accumulated assistant text — concatenated across every `assistant`
@@ -343,6 +379,30 @@ export class FlowRuntimeImpl {
     // paused. A paused run is resumable via `resumeRun`, which starts the
     // next step fresh — no live subprocess required.
     for (const run of loadAllRuns()) {
+      // `Check out locally` historically removed a flow worktree without
+      // updating the run record. On the next participant message the runner
+      // tried to spawn in that deleted cwd and surfaced macOS ENOENT as the
+      // opaque status -2. Recover those already-affected runs when the main
+      // project is now on the flow branch — the exact post-checkout shape.
+      if (
+        run.worktreePath &&
+        run.sourceProjectPath &&
+        run.branchName &&
+        !existsSync(run.worktreePath) &&
+        existsSync(run.sourceProjectPath) &&
+        currentBranch(run.sourceProjectPath).branch === run.branchName
+      ) {
+        const oldCwd = run.worktreePath;
+        migrateRunClaudeSessions(run, oldCwd, run.sourceProjectPath);
+        if (rebindRunToLocalProject(run)) {
+          saveRun(run);
+          log(
+            'info',
+            'flows.recoverLocalCheckout',
+            `rebound run ${run.id} from missing ${oldCwd} to ${run.projectPath}`,
+          );
+        }
+      }
       // Re-running an external step after a crash is still an external
       // effect and may duplicate a partially-completed send/push/update.
       // Restore it at the approval boundary, not under the generic one-click
@@ -933,6 +993,59 @@ export class FlowRuntimeImpl {
 
   getRun(runId: UUID): FlowRun | null {
     return this.runs.get(runId) ?? null;
+  }
+
+  /// Check out a single-project flow branch in its main project and keep the
+  /// flow conversation alive there. This must live in the runtime (rather
+  /// than being two renderer IPC calls) so git checkout, session migration,
+  /// run rebinding, persistence, and renderer notification form one action.
+  checkoutRunLocally(args: {
+    runId: UUID;
+    commitSubject: string;
+    commitBody?: string;
+  }):
+    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
+    | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if ((run.workspaceWorktrees?.length ?? 0) > 0) {
+      return {
+        ok: false,
+        error: 'Use the per-project checkout actions for a workspace flow.',
+      };
+    }
+    if (!run.worktreePath || !run.sourceProjectPath || !run.branchName) {
+      if (run.checkedOutLocally) {
+        return {
+          ok: true,
+          message: `Already checked out ${run.branchName ?? 'the flow branch'} in ${run.projectPath}.`,
+          stashed: false,
+          autoCommitted: false,
+        };
+      }
+      return { ok: false, error: 'This run no longer has a flow worktree to check out.' };
+    }
+
+    const oldCwd = run.worktreePath;
+    const result = checkoutWorktreeLocally({
+      projectPath: run.sourceProjectPath,
+      worktreePath: run.worktreePath,
+      branchName: run.branchName,
+      commitSubject: args.commitSubject,
+      commitBody: args.commitBody,
+    });
+    if (!result.ok) return result;
+
+    migrateRunClaudeSessions(run, oldCwd, run.sourceProjectPath);
+    if (!rebindRunToLocalProject(run)) {
+      return {
+        ok: false,
+        error: 'Checked out the branch, but could not rebind the flow run to the project.',
+      };
+    }
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return result;
   }
 
   resumeRun(args: FlowRuntimeResumeArgs): { ok: true } | { ok: false; error: string } {

@@ -427,14 +427,14 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
           </Row>
         ))}
       </Group>
-      <Group title="Reasoning effort" description="Only applies to Claude. Higher effort = deeper thinking, more tokens.">
+      <Group title="Reasoning effort" description="Applies to Claude and Codex. Auto uses the CLI/model default; higher effort means deeper thinking and more tokens.">
         <Row label="Default">
           <select
             value={local.defaultEffort}
             onChange={(e) => patch({ defaultEffort: e.target.value as EffortLevel })}
             className="field px-2 py-1 text-xs"
           >
-            <option value="">Let Claude decide</option>
+            <option value="">Auto (CLI/model default)</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
@@ -961,4 +961,3 @@ function FlowsRegistriesPane() {
     </div>
   );
 }
-

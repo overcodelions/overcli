@@ -40,6 +40,30 @@ describe('codexBackend.buildArgs', () => {
     expect(a).not.toContain('-m');
   });
 
+  it('passes a fixed reasoning effort through the exec compatibility transport', () => {
+    const a = codexBackend.buildArgs(
+      { ...baseArgs, effortLevel: 'high' },
+      noTranscriptCtx,
+    );
+    expect(a[a.indexOf('-c') + 1]).toBe('model_reasoning_effort="high"');
+  });
+
+  it('maps Overcli max effort to Codex xhigh', () => {
+    const a = codexBackend.buildArgs(
+      { ...baseArgs, effortLevel: 'max' },
+      noTranscriptCtx,
+    );
+    expect(a[a.indexOf('-c') + 1]).toBe('model_reasoning_effort="xhigh"');
+  });
+
+  it('omits the reasoning override in Auto mode', () => {
+    const a = codexBackend.buildArgs(
+      { ...baseArgs, effortLevel: '' },
+      noTranscriptCtx,
+    );
+    expect(a).not.toContain('-c');
+  });
+
   it('always forces approval=never on the exec transport', () => {
     for (const mode of ['default', 'plan', 'auto', 'acceptEdits', 'bypassPermissions'] as const) {
       const a = codexBackend.buildArgs({ ...baseArgs, permissionMode: mode }, noTranscriptCtx);

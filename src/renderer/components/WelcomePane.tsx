@@ -7,6 +7,7 @@ import { BranchCombobox } from './sheets/BranchCombobox';
 import { useProjectBranches } from './sheets/useProjectBranches';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
+import { CopyButton } from './ManualCommand';
 import {
   flowTagCounts,
   groupFlows,
@@ -259,7 +260,10 @@ export function WelcomePane() {
     for (const a of attachments) addAttachment(convId, a);
     void setPrimaryBackend(convId, backend);
     void setPermissionMode(convId, permissionMode);
-    if (effort) void setEffortLevel(convId, effort);
+    if (backend === 'claude' || backend === 'codex') {
+      // Empty is an intentional Auto override, not a missing selection.
+      void setEffortLevel(convId, effort);
+    }
     if (model) void setBackendModel(convId, backend, model);
     if (reviewPreset !== 'off') void setReviewPreset(convId, reviewPreset);
     setDraft(WELCOME_KEY, '');
@@ -403,7 +407,10 @@ export function WelcomePane() {
     // them without awaiting so the state is ready for `send` this tick.
     void setPrimaryBackend(conv.id, backend);
     void setPermissionMode(conv.id, permissionMode);
-    if (effort) void setEffortLevel(conv.id, effort);
+    if (backend === 'claude' || backend === 'codex') {
+      // Empty is an intentional Auto override, not a missing selection.
+      void setEffortLevel(conv.id, effort);
+    }
     if (model) void setBackendModel(conv.id, backend, model);
     // Apply rebound preset *after* setPrimaryBackend so the resolver
     // sees the right primary. Off is the harmless no-op default and
@@ -514,11 +521,11 @@ export function WelcomePane() {
                 }))}
                 onPick={(v) => setModel(v)}
               />
-              {backend === 'claude' && (
+              {(backend === 'claude' || backend === 'codex') && (
                 <Pill
                   label={effortLabel(effort)}
                   items={([
-                    { value: '' as EffortLevel, label: 'Default' },
+                    { value: '' as EffortLevel, label: 'Auto (model default)' },
                     { value: 'low' as EffortLevel, label: 'Low' },
                     { value: 'medium' as EffortLevel, label: 'Medium' },
                     { value: 'high' as EffortLevel, label: 'High' },
@@ -1573,24 +1580,6 @@ function joinNames(names: string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
 }
 
-function CopyButton({ value }: { value: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        void navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
-      }}
-      className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium text-ink-muted hover:text-ink hover:bg-card-strong"
-      title="Copy command"
-    >
-      {copied ? 'Copied' : 'Copy'}
-    </button>
-  );
-}
-
 function CliSetupGuide({ backendHealth }: { backendHealth: Record<string, BackendHealth> }) {
   const refreshBackendHealth = useStore((s) => s.refreshBackendHealth);
   const openSheet = useStore((s) => s.openSheet);
@@ -1770,10 +1759,11 @@ function CliSetupRow({ row, compact }: { row: CliSetupRowData; compact?: boolean
 function SignInButton({ backend, name }: { backend: Backend; name: string }) {
   const [launching, setLaunching] = useState(false);
   const [launched, setLaunched] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ text: string; command?: string } | null>(null);
   return (
     <>
-      {error && <span className="text-[10px] text-red-400 shrink-0">{error}</span>}
+      {error && <span className="text-[10px] text-red-400 shrink-0">{error.text}</span>}
+      {error?.command && <CopyButton value={error.command} />}
       <button
         onClick={async () => {
           setLaunching(true);
@@ -1781,7 +1771,7 @@ function SignInButton({ backend, name }: { backend: Backend; name: string }) {
           try {
             const res = await window.overcli.invoke('auth:openCliLogin', backend);
             if (res.ok) setLaunched(true);
-            else setError(res.error);
+            else setError({ text: res.error, command: res.command });
           } finally {
             setLaunching(false);
           }

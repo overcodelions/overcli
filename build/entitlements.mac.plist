@@ -17,6 +17,14 @@
   <true/>
   <key>com.apple.security.cs.allow-executable-page-protection-bypass</key>
   <true/>
+  <!-- We drive Terminal.app via AppleScript so backend logins, `brew install
+       ollama` and `brew upgrade ollama` run somewhere the user can watch them
+       and answer prompts. Under the hardened runtime the Apple Event is
+       refused outright without this entitlement — no prompt, no window, and
+       (before this) no error either. NSAppleEventsUsageDescription in
+       package.json's mac.extendInfo is the other half; TCC needs both. -->
+  <key>com.apple.security.automation.apple-events</key>
+  <true/>
   <!-- Network for the CLI's own API calls. -->
   <key>com.apple.security.network.client</key>
   <true/>

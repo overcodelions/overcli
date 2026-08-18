@@ -7,6 +7,7 @@ import {
   OllamaServerLogLine,
   OllamaServerStatus,
 } from '@shared/types';
+import { ManualCommand } from './ManualCommand';
 
 /// Top-level Ollama dashboard. Sibling to Chat/Usage. Handles the whole
 /// local-LLM lifecycle — install prompt, server start/stop with a live
@@ -20,9 +21,13 @@ export function LocalPane() {
   const [loading, setLoading] = useState(true);
   const [serverStatus, setServerStatus] = useState<OllamaServerStatus>('stopped');
   const [serverLog, setServerLog] = useState<OllamaServerLogLine[]>([]);
-  const [installStatus, setInstallStatus] = useState<string | null>(null);
+  // `command` is set when we couldn't run something for the user and they
+  // have to run it themselves — see ManualCommand.
+  const [installStatus, setInstallStatus] = useState<{ text: string; command?: string } | null>(
+    null,
+  );
   const [security, setSecurity] = useState<OllamaSecurityReport | null>(null);
-  const [fixStatus, setFixStatus] = useState<string | null>(null);
+  const [fixStatus, setFixStatus] = useState<{ text: string; command?: string } | null>(null);
   const [pulls, setPulls] = useState<
     Record<string, { percent: number; message?: string; done?: boolean; error?: string }>
   >({});
@@ -108,9 +113,9 @@ export function LocalPane() {
   );
 
   const applyFix = async (fixId: 'update-ollama' | 'restart-loopback') => {
-    setFixStatus('Working…');
+    setFixStatus({ text: 'Working…' });
     const res = await window.overcli.invoke('ollama:applyFix', { fixId });
-    setFixStatus(res.message);
+    setFixStatus({ text: res.message, command: res.command });
     // Good enough for restart-loopback, which finishes in ~1.2s. A brew
     // upgrade takes far longer than 2s, so this forced re-audit will still
     // see the old binary and re-cache it — the ↻ Refresh button (also
@@ -119,19 +124,23 @@ export function LocalPane() {
   };
 
   const install = async () => {
-    setInstallStatus('Starting…');
+    setInstallStatus({ text: 'Starting…' });
     const res = await window.overcli.invoke('ollama:install');
-    setInstallStatus(
-      res.started === 'brew'
-        ? res.detail ?? 'Opened Terminal with the install command.'
-        : 'Opened the Ollama download page in your browser.',
-    );
+    setInstallStatus({
+      text:
+        res.started === 'brew'
+          ? res.detail ?? 'Opened Terminal with the install command.'
+          : res.command
+            ? `${res.detail} Opened the Ollama download page instead.`
+            : 'Opened the Ollama download page in your browser.',
+      command: res.command,
+    });
     setTimeout(() => void refresh(), 1500);
   };
 
   const startServer = async () => {
     const res = await window.overcli.invoke('ollama:startServer');
-    setInstallStatus(res.message);
+    setInstallStatus({ text: res.message });
   };
 
   const stopServer = () => {
@@ -194,7 +203,10 @@ export function LocalPane() {
               )}
             </div>
             {installStatus && (
-              <div className="text-[11px] text-ink-faint mt-1">{installStatus}</div>
+              <div className="mt-1">
+                <div className="text-[11px] text-ink-faint">{installStatus.text}</div>
+                {installStatus.command && <ManualCommand command={installStatus.command} />}
+              </div>
             )}
           </div>
           <div className="flex flex-col items-end gap-1">
@@ -265,9 +277,7 @@ export function LocalPane() {
                   <div className="flex-1 min-w-0">
                     <div className="text-ink">{f.title}</div>
                     <div className="text-ink-faint">{f.detail}</div>
-                    {f.manualCommand && (
-                      <div className="font-mono text-[11px] text-ink-faint mt-1">{f.manualCommand}</div>
-                    )}
+                    {f.manualCommand && <ManualCommand command={f.manualCommand} />}
                   </div>
                   {f.fixId && (
                     <button
@@ -281,7 +291,12 @@ export function LocalPane() {
               ))}
             </div>
           )}
-          {fixStatus && <div className="text-[11px] text-ink-faint mt-2">{fixStatus}</div>}
+          {fixStatus && (
+            <div className="mt-2">
+              <div className="text-[11px] text-ink-faint">{fixStatus.text}</div>
+              {fixStatus.command && <ManualCommand command={fixStatus.command} />}
+            </div>
+          )}
         </Card>
       )}
 
@@ -294,6 +309,66 @@ export function LocalPane() {
             {hardware.gpu && <Fact label="GPU" value={hardware.gpu} />}
             <Fact label="Tier" value={hardware.recommendedTier} />
           </div>
+        </Card>
+      )}
+
+      {/* Installed models */}
+      {detection?.installed && detection.models.length > 0 && (
+        <Card
+          title="Installed models"
+          badge={
+            <Pill tone="green">
+              {detection.models.length} installed
+            </Pill>
+          }
+        >
+          <div className="flex flex-col gap-1 text-xs">
+            {detection.models.map((m) => {
+              const isConfirming = confirmDelete === m.name;
+              const isDeleting = deleting === m.name;
+              return (
+                <div
+                  key={m.name}
+                  className="flex items-center justify-between gap-3 py-1 px-2 rounded hover:bg-card-strong"
+                >
+                  <span className="font-mono text-ink flex-1 truncate">{m.name}</span>
+                  <span className="text-ink-faint">{formatBytes(m.sizeBytes)}</span>
+                  {isConfirming ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => void deleteModel(m.name)}
+                        disabled={isDeleting}
+                        className="text-[11px] px-2 py-0.5 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:opacity-50"
+                      >
+                        {isDeleting ? 'Removing…' : 'Confirm'}
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(null)}
+                        disabled={isDeleting}
+                        className="text-[11px] px-2 py-0.5 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-ink disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setDeleteError(null);
+                        setConfirmDelete(m.name);
+                      }}
+                      className="text-[11px] px-2 py-0.5 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-red-300"
+                      title="Remove this model from disk"
+                    >
+                      Remove
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {deleteError && (
+            <div className="text-xs text-red-300 mt-2">Error: {deleteError}</div>
+          )}
         </Card>
       )}
 
@@ -349,59 +424,6 @@ export function LocalPane() {
         </Card>
       )}
 
-      {/* Installed models */}
-      {detection?.installed && detection.models.length > 0 && (
-        <Card title="Installed models">
-          <div className="flex flex-col gap-1 text-xs">
-            {detection.models.map((m) => {
-              const isConfirming = confirmDelete === m.name;
-              const isDeleting = deleting === m.name;
-              return (
-                <div
-                  key={m.name}
-                  className="flex items-center justify-between gap-3 py-1 px-2 rounded hover:bg-card-strong"
-                >
-                  <span className="font-mono text-ink flex-1 truncate">{m.name}</span>
-                  <span className="text-ink-faint">{formatBytes(m.sizeBytes)}</span>
-                  {isConfirming ? (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => void deleteModel(m.name)}
-                        disabled={isDeleting}
-                        className="text-[11px] px-2 py-0.5 rounded bg-red-500/20 text-red-300 hover:bg-red-500/30 disabled:opacity-50"
-                      >
-                        {isDeleting ? 'Removing…' : 'Confirm'}
-                      </button>
-                      <button
-                        onClick={() => setConfirmDelete(null)}
-                        disabled={isDeleting}
-                        className="text-[11px] px-2 py-0.5 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-ink disabled:opacity-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setDeleteError(null);
-                        setConfirmDelete(m.name);
-                      }}
-                      className="text-[11px] px-2 py-0.5 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-red-300"
-                      title="Remove this model from disk"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          {deleteError && (
-            <div className="text-xs text-red-300 mt-2">Error: {deleteError}</div>
-          )}
-        </Card>
-      )}
-
       <div className="text-[11px] text-ink-faint leading-relaxed mt-4">
         overcli does not ship or redistribute any model weights. Each model you pull
         is downloaded directly from Ollama and subject to its own license. Review the
@@ -446,16 +468,26 @@ function Pill({ tone, children }: { tone: 'green' | 'amber' | 'red'; children: R
 function Card({
   title,
   description,
+  badge,
   children,
 }: {
   title?: string;
   description?: string;
+  /// Rendered beside the title. The section headings are deliberately faint,
+  /// so a card that reports state worth spotting at a glance pairs one with a
+  /// Pill rather than shouting in the heading itself.
+  badge?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <section className="mb-4">
-      {title && (
-        <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">{title}</div>
+      {(title || badge) && (
+        <div className="flex items-center gap-2 mb-1">
+          {title && (
+            <div className="text-[10px] uppercase tracking-wider text-ink-faint">{title}</div>
+          )}
+          {badge}
+        </div>
       )}
       {description && <div className="text-xs text-ink-faint mb-2">{description}</div>}
       <div className="rounded-lg bg-card border border-card p-4">{children}</div>

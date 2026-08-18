@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import { buildFindings } from './ollamaSecurity';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const runInTerminal = vi.hoisted(() => vi.fn());
+vi.mock('./terminal', () => ({ runInTerminal }));
+
+import { buildFindings, updateOllama } from './ollamaSecurity';
 
 const base = {
   env: {} as NodeJS.ProcessEnv,
@@ -74,5 +78,48 @@ describe('buildFindings', () => {
     });
     expect(external[0].fixId).toBeUndefined();
     expect(external[0].manualCommand).toBeTruthy();
+  });
+});
+
+describe('updateOllama', () => {
+  const realPlatform = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    runInTerminal.mockReset();
+  });
+
+  it('reports the launch failure instead of claiming a Terminal opened', async () => {
+    runInTerminal.mockResolvedValue({
+      ok: false,
+      error: 'macOS blocked overcli from controlling Terminal.',
+      command: 'brew upgrade ollama',
+    });
+    const res = await updateOllama(() => {}, true);
+    expect(res.ok).toBe(false);
+    expect(res.message).toContain('macOS blocked overcli');
+    expect(res.command).toBe('brew upgrade ollama');
+  });
+
+  it('still surfaces a copyable command when the launcher gave none', async () => {
+    runInTerminal.mockResolvedValue({ ok: false, error: 'osascript exited with code 1.' });
+    const res = await updateOllama(() => {}, true);
+    expect(res.command).toBe('brew upgrade ollama');
+  });
+
+  it('confirms the Terminal only when the launch succeeded', async () => {
+    runInTerminal.mockResolvedValue({ ok: true });
+    const res = await updateOllama(() => {}, true);
+    expect(res).toEqual({ ok: true, message: 'Opened Terminal running `brew upgrade ollama`.' });
+  });
+
+  it('sends a non-Homebrew install to the download page rather than `brew upgrade`', async () => {
+    const opener = vi.fn();
+    const res = await updateOllama(opener, false);
+    expect(runInTerminal).not.toHaveBeenCalled();
+    expect(opener).toHaveBeenCalledWith(expect.stringContaining('ollama'));
+    expect(res.ok).toBe(true);
   });
 });
