@@ -86,6 +86,7 @@ afterEach(() => {
     journals: {},
     shiftProgress: {},
     errandBusy: {},
+    errandSending: {},
     errandError: {},
     errandResult: {},
     draft: null,
@@ -261,6 +262,49 @@ describe('workersStore mirror', () => {
     // Streamed text must not reset the label back to the default.
     s.applyShiftProgress('worker-1', 'checking…', []);
     expect(useWorkersStore.getState().shiftProgress['worker-1']?.task).toBe('errand');
+  });
+});
+
+describe('workersStore reset', () => {
+  it('requests a full reset and clears local journal and errand residue', async () => {
+    useWorkersStore.setState({
+      journals: { 'worker-1': [{ id: 'j1' } as never] },
+      errandBusy: { 'worker-1': false },
+      errandSending: { 'worker-1': [{ id: 'send-1', text: 'old errand', at: 1 }] },
+      errandError: { 'worker-1': 'old error' },
+      errandResult: {
+        'worker-1': {
+          orchestrationId: 'orch-1',
+          count: 0,
+          queued: 0,
+          launchedNothing: true,
+          reply: 'old reply',
+        },
+      },
+    });
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      entries: 4,
+      files: 6,
+      shifts: 2,
+      errands: 1,
+      runs: 3,
+    });
+
+    await expect(useWorkersStore.getState().resetMemory('worker-1')).resolves.toEqual({
+      entries: 4,
+      files: 6,
+      shifts: 2,
+      errands: 1,
+      runs: 3,
+    });
+    expect(mockInvoke).toHaveBeenCalledWith('workers:resetMemory', { id: 'worker-1' });
+    const state = useWorkersStore.getState();
+    expect(state.journals['worker-1']).toEqual([]);
+    expect(state.errandBusy['worker-1']).toBeUndefined();
+    expect(state.errandSending['worker-1']).toBeUndefined();
+    expect(state.errandError['worker-1']).toBeUndefined();
+    expect(state.errandResult['worker-1']).toBeUndefined();
   });
 });
 

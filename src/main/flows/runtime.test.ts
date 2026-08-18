@@ -5,14 +5,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildWorkerRunBoundary,
   buildRetryFeedbackBlock,
   detectArtifactKind,
   extractOutput,
+  isGatingReviewStep,
   isGatingReviewerRole,
   isReviewApproved,
   stepParticipantKey,
   stuckStepMessage,
   summarizeReviewRejection,
+  workerPromptWritesToPersistentRoot,
 } from './runtime';
 
 describe('extractOutput', () => {
@@ -121,6 +124,101 @@ describe('isGatingReviewerRole', () => {
     ] as const) {
       expect(isGatingReviewerRole(role)).toBe(false);
     }
+  });
+});
+
+describe('isGatingReviewStep', () => {
+  it('gates a custom review with an explicit two-sided verdict contract', () => {
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride:
+          'End with APPROVED only if every check passes; otherwise end with CHANGES REQUESTED.',
+      }),
+    ).toBe(true);
+  });
+
+  it('gates custom reviews that use REJECTED or NOT APPROVED', () => {
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Return APPROVED or REJECTED.',
+      }),
+    ).toBe(true);
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Finish with APPROVED; use NOT APPROVED when incomplete.',
+      }),
+    ).toBe(true);
+  });
+
+  it('does not turn ordinary custom action steps into verdict gates', () => {
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Create the ticket and return its URL.',
+      }),
+    ).toBe(false);
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Describe whether the request was approved by the customer.',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('worker run file boundary', () => {
+  const source = '/Users/lionel/Library/Application Support/overcli/workspaces/ws-1';
+
+  it('rejects an absolute persistent-workspace output destination', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Create a copy named ${source}/report.html and verify it.`,
+        source,
+      ),
+    ).toBe(true);
+    expect(
+      workerPromptWritesToPersistentRoot(`Write the report to ${source}/report.html.`, source),
+    ).toBe(true);
+  });
+
+  it('allows reading persistent inputs and negated write instructions', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(`Read ${source}/prior.html, then write report.html.`, source),
+    ).toBe(false);
+    expect(
+      workerPromptWritesToPersistentRoot(`Do not modify ${source}/prior.html.`, source),
+    ).toBe(false);
+  });
+
+  it('places worker output in the disposable root and marks the source read-only', () => {
+    const block = buildWorkerRunBoundary({
+      workerId: 'worker-1',
+      projectPath: '/tmp/coordinators/run-1',
+      sourceProjectPath: source,
+    });
+    expect(block).toContain('Disposable run root (your cwd): /tmp/coordinators/run-1');
+    expect(block).toContain(`Persistent source project/workspace (READ-ONLY): ${source}`);
+    expect(block).toContain('relative filename');
+  });
+
+  it('adds no worker boundary to ordinary or in-place runs', () => {
+    expect(
+      buildWorkerRunBoundary({
+        workerId: undefined,
+        projectPath: '/tmp/project',
+        sourceProjectPath: '/tmp/source',
+      }),
+    ).toBe('');
+    expect(
+      buildWorkerRunBoundary({
+        workerId: 'worker-1',
+        projectPath: '/tmp/project',
+        sourceProjectPath: undefined,
+      }),
+    ).toBe('');
   });
 });
 
@@ -245,6 +343,8 @@ describe('buildRetryFeedbackBlock', () => {
     expect(block).toContain('REJECTED');
     expect(block).toContain('Rejected by step "review"');
     expect(block).toContain('Verdict: CHANGES REQUESTED');
+    expect(block).toContain("Repair the rejected attempt's own files in place");
+    expect(block).toContain('older successful files still are');
   });
 
   it('points at the feedback artifact when there is one', () => {

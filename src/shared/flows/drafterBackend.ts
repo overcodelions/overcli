@@ -11,6 +11,9 @@
 import type { Backend } from '../types';
 import {
   PREMIUM_MODELS,
+  canonicalizePremiumModel,
+  isSupportedPremiumModel,
+  modelSpeed,
   tierDefault,
   type FlowModelDefaults,
   type ModelSpeed,
@@ -72,4 +75,53 @@ export function drafterModelHints(
   const standard = atTier('standard') ?? atTier('fast') ?? thinking;
   const fast = atTier('fast') ?? standard;
   return { thinking, standard, fast };
+}
+
+/// Resolve the model a producer turn should run, given the backend that was
+/// actually picked and whatever model the caller pinned.
+///
+/// Worker heartbeat models are stored as a bare id with no backend, while the
+/// backend is re-resolved from `preferredBackend` + health on every run. Those
+/// two facts are fine in isolation and unsound together: switch the default
+/// provider and every worker hired under the old one is suddenly pinned to a
+/// model its backend has never heard of, and the turn dies with "Model X is
+/// not supported for backend Y" — unattended, on a cadence, where nobody sees
+/// it until the work stops arriving.
+///
+/// So an unsupported pin is TRANSLATED rather than obeyed or discarded. The
+/// pin's real content is its speed tier — a heartbeat is "the cheap
+/// shift-planning turn", and `claude-sonnet-5` says fast far more than it says
+/// Claude — so the same tier on the new backend is the honest reading of what
+/// the worker was configured to want. `claude-sonnet-5` → `gpt-5.6-luna`, not
+/// codex's flagship and not an error.
+///
+/// A pin the backend DOES support is passed through (canonicalized), and an
+/// empty pin falls back to that backend's strongest model, exactly as before.
+///
+/// Translation degrades DOWNWARD when the destination backend has no model at
+/// the tier, reusing `drafterModelHints`' ladder. Going upward would be a
+/// quiet cost increase on the one turn that is defined as cheap: Claude ships
+/// no 'standard' model, so an unrecognised heartbeat id resolving "up" landed
+/// on Opus — the flagship — for shift planning.
+export function resolveProducerModel(
+  backend: Backend,
+  pinned: string | undefined,
+  defaults?: FlowModelDefaults,
+): string {
+  const wanted = pinned?.trim();
+  if (!wanted) return drafterModelFor(backend);
+  // Local ollama ids are never in the premium catalog; there's nothing to
+  // validate them against and nothing to translate them to.
+  if (backend === 'ollama') return wanted;
+  const premium = backend as Exclude<Backend, 'ollama'>;
+  const canon = canonicalizePremiumModel(premium, wanted);
+  if (isSupportedPremiumModel(premium, canon)) return canon;
+  // `modelSpeed` falls back to 'standard' for an id from no catalog we know,
+  // which is the right neutral guess for a hand-typed or imported model.
+  const hints = drafterModelHints(backend, defaults);
+  const tier = modelSpeed(wanted);
+  // 'frontier' maps to the strongest reasoning model the backend has rather
+  // than nothing — but never auto-promotes a lower tier into it.
+  const translated = tier === 'frontier' ? hints.thinking : hints[tier];
+  return translated || drafterModelFor(backend);
 }

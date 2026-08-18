@@ -8,6 +8,10 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+vi.mock('electron', () => ({
+  app: { getPath: () => '/tmp/overcli-runtime-workspace-base-tests' },
+}));
+
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => [],
   saveRun: vi.fn(),
@@ -50,21 +54,24 @@ vi.mock('./preflight', () => ({
   formatPreflight: () => '',
 }));
 
-vi.mock('../workspace', () => ({
-  ensureCoordinatorSymlinkRoot: () => ({ ok: true, rootPath: '/tmp/coordinator-root' }),
-}));
-
-const { mockCreateWorktree, mockDetect, mockExists } = vi.hoisted(() => ({
+const { mockCreateWorktree, mockDetect, mockExists, mockRemoveCoordinator, mockRemoveWorktree } = vi.hoisted(() => ({
   mockCreateWorktree: vi.fn(),
   mockDetect: vi.fn(),
   mockExists: vi.fn(),
+  mockRemoveCoordinator: vi.fn(),
+  mockRemoveWorktree: vi.fn(),
+}));
+
+vi.mock('../workspace', () => ({
+  ensureCoordinatorSymlinkRoot: () => ({ ok: true, rootPath: '/tmp/coordinator-root' }),
+  removeCoordinatorSymlinkRoot: mockRemoveCoordinator,
 }));
 
 vi.mock('../git', () => ({
   baseBranchExistsAsync: mockExists,
   createWorktreeAsync: mockCreateWorktree,
   detectBaseBranchAsync: mockDetect,
-  removeWorktreeAsync: vi.fn(),
+  removeWorktreeAsync: mockRemoveWorktree,
   runGit: () => ({ stdout: '', stderr: '', exitCode: 0 }),
   runGitAsync: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
   worktreeNameTaken: () => false,
@@ -124,6 +131,8 @@ beforeEach(() => {
     worktreePath: `${args.projectPath}/wt`,
     branchName: `agent/${args.agentName}`,
   }));
+  mockRemoveCoordinator.mockReturnValue({ ok: true });
+  mockRemoveWorktree.mockResolvedValue({ ok: true });
 });
 
 describe('workspace worktree base branch', () => {
@@ -179,5 +188,20 @@ describe('workspace worktree base branch', () => {
       '/repos/has-the-branch': 'main',
       '/repos/never-had-it': 'master',
     });
+  });
+
+  it('removes the disposable coordinator root when the run is deleted', async () => {
+    const { rt } = harness();
+    const started = await rt.startRun({
+      flowId: 'test-flow',
+      projectPath: WS_ROOT,
+      userPrompt: 'write a cypress spec',
+      runIn: 'worktree',
+    } as never);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    expect(rt.deleteRun({ runId: started.runId, force: true })).toEqual({ ok: true });
+    await vi.waitFor(() => expect(mockRemoveCoordinator).toHaveBeenCalledWith(started.runId));
   });
 });

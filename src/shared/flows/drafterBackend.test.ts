@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Backend } from '../types';
-import { pickDrafterBackend, drafterModelFor, drafterModelHints } from './drafterBackend';
+import {
+  pickDrafterBackend,
+  drafterModelFor,
+  drafterModelHints,
+  resolveProducerModel,
+} from './drafterBackend';
+import { modelSpeed } from '../modelCatalog';
 
 const allHealthy = () => true;
 const allEnabled = () => true;
@@ -131,5 +137,71 @@ describe('drafterModelHints — user pins', () => {
     const hints = drafterModelHints('claude', {});
     expect(hints.standard).toBe(hints.fast);
     expect(hints.standard).toBe('claude-sonnet-5');
+  });
+});
+
+describe('resolveProducerModel', () => {
+  it('passes through a model the backend supports', () => {
+    expect(resolveProducerModel('codex', 'gpt-5.6-sol')).toBe('gpt-5.6-sol');
+    expect(resolveProducerModel('claude', 'claude-opus-5')).toBe('claude-opus-5');
+  });
+
+  it("falls back to the backend's strongest model when nothing is pinned", () => {
+    expect(resolveProducerModel('codex', undefined)).toBe('gpt-5.6-sol');
+    expect(resolveProducerModel('claude', '   ')).toBe('claude-opus-5');
+  });
+
+  it('translates a cross-backend pin to the same tier', () => {
+    // The reported failure: a worker hired while Claude was the default keeps
+    // planning after the user switches to Codex, instead of dying with
+    // "Model claude-sonnet-5 is not supported for backend codex".
+    expect(resolveProducerModel('codex', 'claude-sonnet-5')).toBe('gpt-5.6-luna');
+    // ...and the reverse direction, at the tier the pin actually named.
+    expect(resolveProducerModel('claude', 'gpt-5.6-sol')).toBe('claude-opus-5');
+  });
+
+  it('does not silently upgrade a cheap pin into an expensive model', () => {
+    // A heartbeat is "the cheap shift-planning turn"; translating it onto the
+    // flagship would quietly multiply the worker's monthly spend.
+    const translated = resolveProducerModel('codex', 'claude-haiku-4-5');
+    expect(translated).toBe('gpt-5.6-luna');
+    expect(modelSpeed(translated)).toBe('fast');
+  });
+
+  it('honours the tier pin the user set for the destination backend', () => {
+    expect(
+      resolveProducerModel('codex', 'claude-sonnet-5', { codex: { fast: 'gpt-5.4-mini' } }),
+    ).toBe('gpt-5.4-mini');
+  });
+
+  it('canonicalizes a dotted pin rather than treating it as foreign', () => {
+    // `claude-haiku-4.5` is the copilot spelling of a claude id; on copilot it
+    // is supported and must pass through untranslated.
+    expect(resolveProducerModel('copilot', 'claude-haiku-4-5')).toBe('claude-haiku-4.5');
+  });
+
+  it('sends an unrecognised id to the standard tier', () => {
+    // No catalog knows it, so `modelSpeed` returns 'standard' — a neutral
+    // guess is better than failing an unattended shift. The runner would have
+    // rejected the raw id anyway, so passing it through is not an option.
+    expect(resolveProducerModel('codex', 'some-imported-model')).toBe('gpt-5.6-terra');
+  });
+
+  it('degrades downward when the backend has no model at the tier', () => {
+    // Claude ships no 'standard' model. Resolving upward put shift planning
+    // on Opus — the flagship — for a turn defined as the cheap one.
+    const translated = resolveProducerModel('claude', 'some-imported-model');
+    expect(translated).toBe('claude-sonnet-5');
+    expect(modelSpeed(translated)).toBe('fast');
+  });
+
+  it('maps a frontier pin to the strongest model the backend has', () => {
+    expect(resolveProducerModel('codex', 'claude-fable-5')).toBe('gpt-5.6-sol');
+  });
+
+  it('leaves local ollama ids alone', () => {
+    // Local model names are never in the premium catalog; there is nothing to
+    // validate against and nothing to translate to.
+    expect(resolveProducerModel('ollama', 'qwen2.5-coder:32b')).toBe('qwen2.5-coder:32b');
   });
 });

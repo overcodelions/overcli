@@ -337,6 +337,25 @@ function registerIpc(): void {
       Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
+    clearActivity: (workerId) => {
+      let shifts = 0;
+      let errands = 0;
+      const batches = (orchestrator?.list() ?? []).filter(
+        (batch) => batch.origin?.kind === 'worker' && batch.origin.workerId === workerId,
+      );
+      for (const batch of batches) {
+        if (batch.origin?.kind === 'worker' && batch.origin.task === 'errand') errands += 1;
+        else shifts += 1; // pre-errand worker batches carry no task and are shifts
+        orchestrator?.delete({ id: batch.id });
+      }
+
+      const runs = (flowRuntime?.listRuns() ?? []).filter((run) => run.workerId === workerId);
+      for (const run of runs) {
+        const deleted = flowRuntime?.deleteRun({ runId: run.id, force: true });
+        if (deleted?.ok) emitToRenderer({ type: 'flowRunDeleted', runId: run.id });
+      }
+      return { shifts, errands, runs: runs.length };
+    },
     // Triage path 3: the errand needs real investigation and no flow on the
     // worker's contract fits. Draft one, file it in the generated bucket (kept
     // out of the library's groups and every picker), and launch it through the
@@ -1307,9 +1326,9 @@ function registerIpc(): void {
   ipcMain.handle('workers:journal', (_e, { id }) =>
     workerEngine ? workerEngine.journalFor(id) : [],
   );
-  ipcMain.handle('workers:resetMemory', (_e, { id, files }) =>
+  ipcMain.handle('workers:resetMemory', (_e, { id }) =>
     workerEngine
-      ? workerEngine.resetMemory(id, { files })
+      ? workerEngine.resetMemory(id)
       : ({ ok: false, error: 'Workers are not running.' } as const),
   );
   ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription }) => {
