@@ -15,6 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { app } from 'electron';
 
 function rootDir(): string {
@@ -70,7 +71,15 @@ export function writeAttachment(
   body: string,
 ): WrittenAttachment {
   const dir = ensureAttachmentDir(runId);
-  const file = path.join(dir, safeFilename(name));
+  // Content-address the filename rather than repeatedly overwriting one
+  // stable path. Flow participants keep a conversation across retries; if
+  // the next prompt points at the same path as an earlier diff, a model can
+  // reasonably assume it already read that attachment and continue using
+  // the old tool result from its context. A changed body now gets a changed
+  // path, making the fresh snapshot unambiguous while identical bodies
+  // naturally reuse the same file.
+  const digest = createHash('sha256').update(body).digest('hex').slice(0, 12);
+  const file = path.join(dir, `${safeFilename(name)}.${digest}`);
   fs.writeFileSync(file, body, 'utf-8');
   return { path: file, size: body.length };
 }
