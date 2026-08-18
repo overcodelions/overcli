@@ -2160,6 +2160,16 @@ export class FlowRuntimeImpl {
       costUSD: 0,
     });
 
+    // A participant can edit the worktree from hijack chat while the run is
+    // paused (most notably: the premium verifier fixes its own findings after
+    // exhausting on_fail retries). The stored diff artifact is a snapshot
+    // from the last normal producer-step boundary, so it is stale after that
+    // chat. Refresh diff inputs at CONSUMPTION time before building either
+    // the model prompt or its attachment. This makes "fix it, then re-run
+    // Verify" review the files that are actually on disk without forcing the
+    // user to re-run the implementation step first.
+    this.refreshDiffInputsFromWorktree(run, step);
+
     const prompt = this.buildStepPrompt(run, step);
     const attempt: FlowStepAttempt & { stepId: string } = {
       stepId: step.id,
@@ -2231,6 +2241,28 @@ export class FlowRuntimeImpl {
     // The step is now generating, which is the cheapest moment in the whole
     // run to pay for the NEXT participant's cold start.
     this.prewarmNextParticipant(run, step);
+  }
+
+  /// Replace each diff-kind artifact consumed by `step` with a fresh
+  /// cumulative worktree diff. Other artifact types remain historical
+  /// outputs: only a diff has an authoritative representation on disk that
+  /// can be safely regenerated after out-of-band edits such as hijack chat.
+  private refreshDiffInputsFromWorktree(run: FlowRun, step: FlowStep): void {
+    const refs = step.inputs.filter((ref) => ref !== FLOW_USER_PROMPT_REF);
+    const diffRefs = refs.filter((ref) => run.artifacts[ref]?.kind === 'diff');
+    if (diffRefs.length === 0) return;
+
+    const liveDiff = computeRunDiffForRun(run);
+    if (liveDiff === null) return;
+
+    const producedAt = Date.now();
+    for (const ref of diffRefs) {
+      const existing = run.artifacts[ref];
+      if (!existing || existing.body === liveDiff) continue;
+      const refreshed = { ...existing, body: liveDiff, producedAt };
+      run.artifacts[ref] = refreshed;
+      this.emit({ type: 'flowArtifactProduced', runId: run.id, artifact: refreshed });
+    }
   }
 
   /// Release a conversation's process if it is still an unused prewarm.
@@ -3404,15 +3436,21 @@ export function extractOutput(text: string, outputName: string): string | null {
 function computeRunDiffForRun(run: FlowRun): string | null {
   if (run.baselineCommitsByMember) {
     const blocks: string[] = [];
+    let measuredMember = false;
     for (const [name, info] of Object.entries(run.baselineCommitsByMember)) {
       const d = computeRunDiff(info.path, info.commit);
+      if (d === null) continue;
+      measuredMember = true;
       if (!d) continue;
       // Prefix each member's diff with a banner comment so a multi-repo
       // diff is readable when reviewed as one blob. `# ` keeps unified-
       // diff parsers happy — they treat unprefixed text as context.
       blocks.push(`# ${name}\n${d}`);
     }
-    if (blocks.length === 0) return null;
+    // An empty successful measurement is a real live value: hijack chat may
+    // have reverted the final change, and a re-run must clear the old diff
+    // rather than retain it. Null is reserved for "could not measure".
+    if (blocks.length === 0) return measuredMember ? '' : null;
     return blocks.join('\n');
   }
   if (run.baselineCommit) {
