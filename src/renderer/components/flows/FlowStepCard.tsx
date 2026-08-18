@@ -11,6 +11,7 @@ import { resolveStepModel, type FlowStep, type FlowToolDescriptor } from '@share
 import { ROLE_PROMPTS } from '@shared/flows/roles';
 import { PREMIUM_MODELS, friendlyModelLabel, modelSpeed, modelTierLabel } from '@shared/modelCatalog';
 import { reachableInputRefs, gotoCandidateStepIds } from '@shared/flows/validation';
+import { turboSummary, turboSupported } from '@shared/turbo';
 import { useFlowsStore } from '../../flowsStore';
 
 interface ModelChoice {
@@ -402,6 +403,23 @@ export function FlowStepCard({ index, step }: { index: number; step: FlowStep })
             Worker runs stop for approval before external effects; local work stays autonomous.
           </div>
         </Field>
+        {turboSupported(effective.backend) && (
+        <Field label="Turbo">
+          <select
+            value={step.turbo ? 'on' : 'off'}
+            onChange={(e) => patch({ turbo: e.target.value === 'on' || undefined })}
+            className="w-full bg-card-strong rounded px-2 py-1.5 text-sm"
+          >
+            <option value="off">Off — full depth</option>
+            <option value="on">On — {turboSummary(effective.backend)}</option>
+          </select>
+          <div className="text-[11px] text-ink-faint mt-0.5">
+            Turbo keeps this step's model and drops its thinking depth
+            {effective.backend === 'claude' ? ' and MCP servers' : ''}. Good for mechanical work;
+            leave it off for anything that plans, reviews, or gates.
+          </div>
+        </Field>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 mt-3">

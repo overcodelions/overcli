@@ -22,8 +22,6 @@ export function CommitButton({ conversationId }: { conversationId: UUID }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successSubject, setSuccessSubject] = useState<string | null>(null);
-  const [flashKey, setFlashKey] = useState(0);
-  const prevStatsRef = useRef<{ insertions: number; deletions: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   // Mirror `refreshGitStatus`'s resolution order so a single click commits
@@ -74,20 +72,6 @@ export function CommitButton({ conversationId }: { conversationId: UUID }) {
   const changes = gitStatus?.changes ?? [];
   const insertions = gitStatus?.insertions ?? 0;
   const deletions = gitStatus?.deletions ?? 0;
-
-  // Flash the +/- badge whenever the numbers change (other than on the
-  // initial probe). Bumping flashKey remounts the span so the CSS
-  // animation replays from the start.
-  useEffect(() => {
-    const prev = prevStatsRef.current;
-    if (!prev) {
-      prevStatsRef.current = { insertions, deletions };
-      return;
-    }
-    if (prev.insertions === insertions && prev.deletions === deletions) return;
-    prevStatsRef.current = { insertions, deletions };
-    setFlashKey((k) => k + 1);
-  }, [insertions, deletions]);
 
   useEffect(() => {
     if (!open) return;
@@ -181,18 +165,6 @@ export function CommitButton({ conversationId }: { conversationId: UUID }) {
         }
       >
         <CommitIcon />
-        {hasChanges && (
-          <span
-            key={flashKey}
-            className={
-              'flex items-center gap-1 text-[10px] font-mono leading-none ' +
-              (flashKey > 0 ? 'git-stats-flash' : '')
-            }
-          >
-            <span className="diff-add-ink">+{insertions}</span>
-            <span className="diff-remove-ink">−{deletions}</span>
-          </span>
-        )}
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 w-[340px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 p-3 text-xs flex flex-col gap-2">

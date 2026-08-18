@@ -119,6 +119,32 @@ steps:
     expect(flow?.steps[0].verdictGate).toBe(false);
   });
 
+  it('maps turbo and defaults absent to false', () => {
+    const flow = parseInline(`
+name: Turbo
+steps:
+  - id: mechanical
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: planner
+    turbo: true
+    output: a.md
+  - id: judged
+    model: { backend: claude, model: claude-sonnet-4-6 }
+    role: reviewer
+    output: b.md
+`);
+    expect(flow?.steps[0].turbo).toBe(true);
+    expect(flow?.steps[1].turbo).toBe(false);
+  });
+
+  it('emits turbo only when true, so off stays absent from the file', () => {
+    const on = minimalFlow({ steps: [{ ...minimalFlow().steps[0], turbo: true }] });
+    expect((parse(serializeFlow(on)) as any).steps[0].turbo).toBe(true);
+    const off = minimalFlow({ steps: [{ ...minimalFlow().steps[0], turbo: false }] });
+    expect(parse(serializeFlow(off)) as any).not.toHaveProperty('steps.0.turbo');
+    expect((parse(serializeFlow(off)) as any).steps[0]).not.toHaveProperty('turbo');
+  });
+
   it('maps pause_before to pauseBefore and defaults absent keys to false', () => {
     const flow = parseInline(`
 name: Pause

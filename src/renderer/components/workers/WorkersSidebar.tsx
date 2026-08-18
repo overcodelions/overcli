@@ -23,7 +23,7 @@
 // what the worker did on its own, so it is dimmer and numbered. The shape of
 // the line carries the distinction the tag used to spell out.
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { useFlowsStore } from "../../flowsStore";
 import { FlowRunRow, runIsLive } from "../flows/FlowRunSidebarRow";
@@ -63,17 +63,20 @@ const ACTIVITY_SCAN = 40;
 /// hourly cadence would otherwise bury the roster under its own history.
 const NESTED_RUNS = 4;
 
-export function WorkersSidebar({ query }: { query: string }) {
+export function WorkersSidebar({
+  query,
+  collapsed,
+  onToggleCollapsed,
+}: {
+  query: string;
   // Expanded unless the user says otherwise — the same model the project rows
   // use. Tracking only what was CLOSED means a worker hired tomorrow arrives
-  // open, rather than inheriting a default nobody chose.
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const toggleCollapsed = (id: string) =>
-    setCollapsed((cur) => {
-      const next = new Set(cur);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
+  // open, rather than inheriting a default nobody chose. The set lives in the
+  // Sidebar because the collapse-all button up in the search row folds this
+  // roster too, and two copies of that state meant the button did nothing.
+  collapsed: Set<string>;
+  onToggleCollapsed: (id: string) => void;
+}) {
   const workers = useWorkersStore((s) => s.workers);
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
@@ -196,7 +199,7 @@ export function WorkersSidebar({ query }: { query: string }) {
             // A search is a request to SEE things; honouring a collapse while
             // one is running would hide the row that matched it.
             expanded={query !== "" || !collapsed.has(worker.id)}
-            onToggleExpanded={() => toggleCollapsed(worker.id)}
+            onToggleExpanded={() => onToggleCollapsed(worker.id)}
           />
         ))
       )}

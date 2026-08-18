@@ -251,6 +251,14 @@ describe('worker effect boundary', () => {
     ).toBe('external');
     expect(pauseReasonBeforeStep({ workerId: undefined }, external)).toBeNull();
   });
+
+  it('lets an explicitly authorized worker cross external boundaries but keeps authored pauses', () => {
+    const run = { workerId: 'worker-1', allowExternalActions: true };
+    expect(pauseReasonBeforeStep(run, step('Update the Jira ticket.'))).toBeNull();
+    expect(
+      pauseReasonBeforeStep(run, step('Push the branch.', { pauseBefore: true })),
+    ).toBe('preStep');
+  });
 });
 
 describe('extractWorkerQuestion', () => {

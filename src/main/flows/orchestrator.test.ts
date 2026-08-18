@@ -35,6 +35,7 @@ function makeHarness(opts: { producerReply?: string } = {}) {
     baseBranch?: string;
     workerId?: string;
     workerName?: string;
+    allowExternalActions?: boolean;
   }> = [];
 
   const emitted: any[] = [];
@@ -63,6 +64,7 @@ function makeHarness(opts: { producerReply?: string } = {}) {
         baseBranch: args.baseBranch,
         workerId: args.workerId,
         workerName: args.workerName,
+        allowExternalActions: args.allowExternalActions,
       });
       return { ok: true, runId };
     },
@@ -725,11 +727,28 @@ describe('OrchestratorImpl worker batches', () => {
 
   it('records the worker origin and stamps workerId onto auto-launched child runs', async () => {
     const h = makeHarness({ producerReply: REPLY });
-    await parkAsWorker(h, { autoApprove: { maxItems: 1 } });
+    await parkAsWorker(h, {
+      autoApprove: { maxItems: 1 },
+      origin: {
+        kind: 'worker',
+        workerId: 'w1',
+        workerName: 'Scout',
+        allowExternalActions: true,
+      },
+    });
     const o = h.engine.list()[0];
-    expect(o.origin).toEqual({ kind: 'worker', workerId: 'w1', workerName: 'Scout' });
+    expect(o.origin).toEqual({
+      kind: 'worker',
+      workerId: 'w1',
+      workerName: 'Scout',
+      allowExternalActions: true,
+    });
     expect(h.started).toHaveLength(1);
-    expect(h.started[0]).toMatchObject({ workerId: 'w1', workerName: 'Scout' });
+    expect(h.started[0]).toMatchObject({
+      workerId: 'w1',
+      workerName: 'Scout',
+      allowExternalActions: true,
+    });
   });
 
   it('runs the planning turn on the heartbeat model override', async () => {
