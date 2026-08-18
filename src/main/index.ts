@@ -28,6 +28,7 @@ import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
 import {
   probeBackendHealth,
+  healthyBackends,
   invalidateHealthCache,
   listInstalledReviewers,
   resolveBackendPath,
@@ -99,6 +100,7 @@ import {
 } from './skillsCatalog';
 import {
   OLLAMA_CATALOG,
+  brewManagesOllama,
   detectHardware,
   detectOllama,
   deleteModel,
@@ -107,6 +109,7 @@ import {
   pullModel,
 } from './ollama';
 import { deleteOllamaSession } from './ollamaStore';
+import { auditOllama, updateOllama } from './ollamaSecurity';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
@@ -125,6 +128,7 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
+import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
 import { flushRuns } from './flows/runsStore';
@@ -337,6 +341,51 @@ function registerIpc(): void {
       Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
+    supervisorTurn: async ({ worker, prompt, cwd }) => {
+      const settings = Store.load().settings;
+      const healthy = await healthyBackends(settings.backendPaths);
+      const backend = pickDrafterBackend({
+        preferred: worker.heartbeatBackend ?? settings.preferredBackend,
+        isHealthy: (candidate) => healthy.has(candidate),
+        isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
+      });
+      if (!backend) {
+        return { ok: false, error: 'No signed-in model is available to answer the flow.' };
+      }
+      const model = resolveProducerModel(
+        backend,
+        worker.heartbeatModel,
+        settings.flowModelDefaults,
+      );
+      return runner!.oneShot({
+        backend,
+        model,
+        prompt,
+        cwd,
+        permissionMode: 'plan',
+        timeoutMs: 180_000,
+        idleTimeoutMs: 60_000,
+      });
+    },
+    clearActivity: (workerId) => {
+      let shifts = 0;
+      let errands = 0;
+      const batches = (orchestrator?.list() ?? []).filter(
+        (batch) => batch.origin?.kind === 'worker' && batch.origin.workerId === workerId,
+      );
+      for (const batch of batches) {
+        if (batch.origin?.kind === 'worker' && batch.origin.task === 'errand') errands += 1;
+        else shifts += 1; // pre-errand worker batches carry no task and are shifts
+        orchestrator?.delete({ id: batch.id });
+      }
+
+      const runs = (flowRuntime?.listRuns() ?? []).filter((run) => run.workerId === workerId);
+      for (const run of runs) {
+        const deleted = flowRuntime?.deleteRun({ runId: run.id, force: true });
+        if (deleted?.ok) emitToRenderer({ type: 'flowRunDeleted', runId: run.id });
+      }
+      return { shifts, errands, runs: runs.length };
+    },
     // Triage path 3: the errand needs real investigation and no flow on the
     // worker's contract fits. Draft one, file it in the generated bucket (kept
     // out of the library's groups and every picker), and launch it through the
@@ -411,6 +460,7 @@ function registerIpc(): void {
       return { ok: true, orchestrationId: launched.orchestrationId, flowId: flow.id };
     },
   });
+  flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
   workerEngine.start();
   // Symbol lookup resolves its backend per call rather than capturing one:
   // the user can change the preferred backend in Settings mid-session, and
@@ -978,7 +1028,13 @@ function registerIpc(): void {
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
   ipcMain.handle('ollama:catalog', () => OLLAMA_CATALOG);
-  ipcMain.handle('ollama:install', () => installOllama((url) => shell.openExternal(url)));
+  ipcMain.handle(
+    'ollama:install',
+    () =>
+      installOllama((url) => {
+        void shell.openExternal(url);
+      }),
+  );
   ipcMain.handle('ollama:startServer', () => ollamaServer.start());
   ipcMain.handle('ollama:stopServer', () => ollamaServer.stop());
   ipcMain.handle('ollama:serverStatus', () => ({
@@ -1015,6 +1071,43 @@ function registerIpc(): void {
   ipcMain.handle('ollama:deleteSession', (_e, sessionId: string) => {
     deleteOllamaSession(sessionId);
   });
+  ipcMain.handle('ollama:securityAudit', async (_e, args?: { force?: boolean }) => {
+    // Always re-derive via detectOllama() rather than trusting a path from
+    // the renderer — the binary path here is spawned via spawnSync, and this
+    // module has no business executing a path it did not find itself.
+    const det = await detectOllama();
+    return auditOllama({
+      serverVersion: det.version,
+      binaryPath: det.binaryPath,
+      serverRunning: det.running,
+      serverManaged: ollamaServer.isManaged(),
+      force: args?.force,
+    });
+  });
+
+  ipcMain.handle(
+    'ollama:applyFix',
+    async (_e, { fixId }: { fixId: 'update-ollama' | 'restart-loopback' }) => {
+      if (fixId === 'update-ollama') {
+        // detectOllama() only fills installHint when Ollama is MISSING, so ask
+        // Homebrew directly — a Mac that has brew but installed Ollama from
+        // the .dmg must not be told to run `brew upgrade`.
+        return updateOllama((url) => {
+          void shell.openExternal(url);
+        }, brewManagesOllama());
+      }
+      if (!ollamaServer.isManaged()) {
+        return {
+          ok: false,
+          message: 'That server was started outside overcli — quit it, then start the server here.',
+        };
+      }
+      ollamaServer.stop();
+      await new Promise((r) => setTimeout(r, 1200));
+      const res = await ollamaServer.start();
+      return { ok: res.ok, message: `Restarted bound to 127.0.0.1 only. ${res.message}` };
+    },
+  );
   ipcMain.handle('diagnostics:list', () => listSilentLog());
   ipcMain.handle('diagnostics:clear', () => clearSilentLog());
   ipcMain.handle('diagnostics:log', (_e, args) => {
@@ -1075,6 +1168,11 @@ function registerIpc(): void {
   );
   ipcMain.handle('flows:rerunFromStep', (_e, args) =>
     flowRuntime ? flowRuntime.rerunFromStep(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:checkoutRunLocally', (_e, args) =>
+    flowRuntime
+      ? flowRuntime.checkoutRunLocally(args)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:abortRun', (_e, args) =>
     flowRuntime ? flowRuntime.abortRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
@@ -1307,9 +1405,9 @@ function registerIpc(): void {
   ipcMain.handle('workers:journal', (_e, { id }) =>
     workerEngine ? workerEngine.journalFor(id) : [],
   );
-  ipcMain.handle('workers:resetMemory', (_e, { id, files }) =>
+  ipcMain.handle('workers:resetMemory', (_e, { id }) =>
     workerEngine
-      ? workerEngine.resetMemory(id, { files })
+      ? workerEngine.resetMemory(id)
       : ({ ok: false, error: 'Workers are not running.' } as const),
   );
   ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription }) => {

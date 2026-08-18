@@ -1,8 +1,9 @@
 // Ollama integration. overcli talks to a locally-installed Ollama server
 // (http://127.0.0.1:11434) — we don't bundle or redistribute weights.
 // Users pull models themselves via `ollama pull`, which means they accept
-// each model's license (Apache 2.0, Qwen Research, Meta CodeLlama, etc.)
-// directly. Our job is to detect, surface, and make that setup easy.
+// each model's license (Apache 2.0, Gemma Terms of Use, the Llama community
+// licenses, etc.) directly. Our job is to detect, surface, and make that
+// setup easy.
 
 import { spawn, spawnSync, ChildProcessByStdio } from 'node:child_process';
 import { Readable } from 'node:stream';
@@ -137,7 +138,7 @@ async function detectRunningServer(): Promise<{ running: boolean; models: Ollama
   return { running: true, models, version: versionResp?.version };
 }
 
-function brewAvailable(): boolean {
+export function brewAvailable(): boolean {
   // Electron on macOS inherits a minimal PATH from Finder that often
   // excludes /opt/homebrew/bin and /usr/local/bin, so a bare `brew`
   // lookup misses real installs. Check common locations explicitly.
@@ -233,94 +234,514 @@ function probeGpu(): string | undefined {
 }
 
 /// Curated catalog of coder-relevant Ollama tags with maker + country +
-/// license metadata. Ollama itself has no API to list the library and
-/// carries no origin info on model cards, so this list is hand-
-/// maintained. Licenses and sizes reflect the model card as of 2026-04;
-/// verify before shipping copy changes. Tags not in this catalog still
-/// work end-to-end — users can `ollama pull` anything — they just won't
-/// appear in the in-app browser.
+/// license metadata. Ollama has no API to list its library and carries no
+/// origin info on model cards, so this list is hand-maintained — the cost of
+/// that is it rots, and it had by roughly sixteen months before this refresh.
+///
+/// Last refreshed 2026-08-18 against ollama.com/library: every `tag` below was
+/// confirmed to exist, and `sizeGB` and `license` were read off the registry's
+/// own tag pages rather than recalled. `releasedAt` is the model's release
+/// month and drives the recency sort in `recommendationsForTier`.
+///
+/// Only locally-runnable tags belong here. Several current families
+/// (deepseek-v4, glm-5.x, kimi-k3, minimax-m3, mistral-large-3) publish
+/// `-cloud` tags only and are deliberately absent: this pane is about models
+/// that run on the user's own machine.
+///
+/// Tags not in this catalog still work end-to-end — users can `ollama pull`
+/// anything — but note `modelSupportsTools()` answers from this list, so a
+/// tool-capable model that is missing here gets no tools.
 export const OLLAMA_CATALOG: RecommendedModel[] = [
   // --- Alibaba Cloud (China) ---
   {
-    tag: 'qwen2.5-coder:3b',
-    displayName: 'Qwen2.5-Coder 3B',
-    sizeGB: 1.9,
-    license: 'Qwen Research',
+    tag: 'qwen3.8:27b',
+    displayName: 'Qwen3.8 27B',
+    sizeGB: 17.7,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-08',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.6:27b',
+    displayName: 'Qwen3.6 27B',
+    sizeGB: 17.4,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-05',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.6:35b',
+    displayName: 'Qwen3.6 35B',
+    sizeGB: 23.9,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-04',
+    note: 'Mixture-of-experts: 3B active params.',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.5:35b',
+    displayName: 'Qwen3.5 35B',
+    sizeGB: 23.9,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-03',
+    note: 'Mixture-of-experts: 3B active params.',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.5:27b',
+    displayName: 'Qwen3.5 27B',
+    sizeGB: 17.4,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-03',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.5:9b',
+    displayName: 'Qwen3.5 9B',
+    sizeGB: 6.6,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-03',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.5:4b',
+    displayName: 'Qwen3.5 4B',
+    sizeGB: 3.4,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-03',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.5:2b',
+    displayName: 'Qwen3.5 2B',
+    sizeGB: 2.7,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-03',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3.5:0.8b',
+    displayName: 'Qwen3.5 0.8B',
+    sizeGB: 1.0,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2026-03',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen3-coder:30b',
+    displayName: 'Qwen3-Coder 30B',
+    sizeGB: 18.6,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2025-10',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen2.5-coder:32b',
+    displayName: 'Qwen2.5-Coder 32B',
+    sizeGB: 19.9,
+    license: 'Apache 2.0',
     company: 'Alibaba Cloud',
     country: 'CN',
     releasedAt: '2024-11',
-    note: 'Non-commercial license — check terms before commercial use.',
     supportsTools: true,
   },
-  { tag: 'qwen2.5-coder:7b', displayName: 'Qwen2.5-Coder 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11', supportsTools: true },
-  { tag: 'qwen2.5-coder:14b', displayName: 'Qwen2.5-Coder 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11', supportsTools: true },
-  { tag: 'qwen2.5-coder:32b', displayName: 'Qwen2.5-Coder 32B', sizeGB: 20.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-11', supportsTools: true },
-  { tag: 'qwen2.5:7b', displayName: 'Qwen2.5 7B', sizeGB: 4.7, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09', supportsTools: true },
-  { tag: 'qwen2.5:14b', displayName: 'Qwen2.5 14B', sizeGB: 9.0, license: 'Apache 2.0', company: 'Alibaba Cloud', country: 'CN', releasedAt: '2024-09', supportsTools: true },
+  {
+    tag: 'qwen2.5-coder:14b',
+    displayName: 'Qwen2.5-Coder 14B',
+    sizeGB: 9.0,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2024-11',
+    supportsTools: true,
+  },
+  {
+    tag: 'qwen2.5-coder:7b',
+    displayName: 'Qwen2.5-Coder 7B',
+    sizeGB: 4.7,
+    license: 'Apache 2.0',
+    company: 'Alibaba Cloud',
+    country: 'CN',
+    releasedAt: '2024-11',
+    supportsTools: true,
+  },
 
   // --- DeepSeek (China) ---
   {
-    tag: 'deepseek-coder-v2:16b',
-    displayName: 'DeepSeek-Coder-V2 16B',
-    sizeGB: 8.9,
-    license: 'DeepSeek License',
+    tag: 'deepseek-r1:32b',
+    displayName: 'DeepSeek-R1 32B',
+    sizeGB: 19.9,
+    license: 'MIT',
     company: 'DeepSeek',
     country: 'CN',
-    releasedAt: '2024-07',
-    note: 'Permits commercial use; review license terms.',
+    releasedAt: '2025-01',
+    supportsTools: true,
   },
-  { tag: 'deepseek-r1:7b', displayName: 'DeepSeek-R1 7B', sizeGB: 4.7, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
-  { tag: 'deepseek-r1:14b', displayName: 'DeepSeek-R1 14B', sizeGB: 9.0, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
-  { tag: 'deepseek-r1:32b', displayName: 'DeepSeek-R1 32B', sizeGB: 20.0, license: 'MIT', company: 'DeepSeek', country: 'CN', releasedAt: '2025-01' },
-
-  // --- Meta (US) ---
-  { tag: 'llama4:scout', displayName: 'Llama 4 Scout', sizeGB: 65.0, license: 'Llama 4 License', company: 'Meta', country: 'US', releasedAt: '2025-04', note: 'Mixture-of-experts: 17B active × 16 experts (~109B total).', supportsTools: true },
-  { tag: 'llama3.3:70b', displayName: 'Llama 3.3 70B', sizeGB: 43.0, license: 'Llama 3.3 License', company: 'Meta', country: 'US', releasedAt: '2024-12', supportsTools: true },
-  { tag: 'llama3.2:3b', displayName: 'Llama 3.2 3B', sizeGB: 2.0, license: 'Llama 3.2 License', company: 'Meta', country: 'US', releasedAt: '2024-09', supportsTools: true },
-  { tag: 'llama3.1:8b', displayName: 'Llama 3.1 8B', sizeGB: 4.7, license: 'Llama 3.1 License', company: 'Meta', country: 'US', releasedAt: '2024-07', supportsTools: true },
-  { tag: 'codellama:7b', displayName: 'Code Llama 7B', sizeGB: 3.8, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
-  { tag: 'codellama:13b', displayName: 'Code Llama 13B', sizeGB: 7.4, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
-  { tag: 'codellama:34b', displayName: 'Code Llama 34B', sizeGB: 19.0, license: 'Llama 2 License', company: 'Meta', country: 'US', releasedAt: '2023-08' },
-
-  // --- Microsoft (US) ---
-  { tag: 'phi4:14b', displayName: 'Phi 4 14B', sizeGB: 9.1, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2025-01' },
-  { tag: 'phi4-mini:3.8b', displayName: 'Phi 4 Mini 3.8B', sizeGB: 2.5, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2025-02' },
-  { tag: 'phi3.5:3.8b', displayName: 'Phi 3.5 3.8B', sizeGB: 2.2, license: 'MIT', company: 'Microsoft', country: 'US', releasedAt: '2024-08' },
-
-  // --- Google (US) ---
-  { tag: 'gemma4:31b', displayName: 'Gemma 4 31B', sizeGB: 20.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', supportsTools: true },
-  { tag: 'gemma4:26b', displayName: 'Gemma 4 26B', sizeGB: 18.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Mixture-of-experts: 3.8B active params out of ~25B total.', supportsTools: true },
-  { tag: 'gemma4:e4b', displayName: 'Gemma 4 E4B', sizeGB: 9.6, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 4.5B effective params.', supportsTools: true },
-  { tag: 'gemma4:e2b', displayName: 'Gemma 4 E2B', sizeGB: 7.2, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2026-04', note: 'Edge-optimized variant — 2.3B effective params.' },
-  { tag: 'gemma3:27b', displayName: 'Gemma 3 27B', sizeGB: 17.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
-  { tag: 'gemma3:12b', displayName: 'Gemma 3 12B', sizeGB: 8.1, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
-  { tag: 'gemma3:4b', displayName: 'Gemma 3 4B', sizeGB: 3.3, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2025-03' },
-  { tag: 'gemma2:9b', displayName: 'Gemma 2 9B', sizeGB: 5.4, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-06' },
-  { tag: 'codegemma:7b', displayName: 'CodeGemma 7B', sizeGB: 5.0, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-04' },
-  { tag: 'codegemma:2b', displayName: 'CodeGemma 2B', sizeGB: 1.6, license: 'Gemma License', company: 'Google', country: 'US', releasedAt: '2024-04' },
-
-  // --- IBM (US) ---
-  { tag: 'granite-code:8b', displayName: 'Granite Code 8B', sizeGB: 4.6, license: 'Apache 2.0', company: 'IBM', country: 'US', releasedAt: '2024-05' },
-  { tag: 'granite-code:20b', displayName: 'Granite Code 20B', sizeGB: 12.0, license: 'Apache 2.0', company: 'IBM', country: 'US', releasedAt: '2024-05' },
-
-  // --- Mistral AI (France) ---
-  { tag: 'mistral:7b', displayName: 'Mistral 7B', sizeGB: 4.1, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-09', supportsTools: true },
-  { tag: 'mixtral:8x7b', displayName: 'Mixtral 8x7B', sizeGB: 26.0, license: 'Apache 2.0', company: 'Mistral AI', country: 'FR', releasedAt: '2023-12', supportsTools: true },
   {
-    tag: 'codestral:22b',
-    displayName: 'Codestral 22B',
-    sizeGB: 13.0,
-    license: 'Mistral AI Non-Production License',
-    company: 'Mistral AI',
-    country: 'FR',
-    releasedAt: '2024-05',
-    note: 'Non-commercial license — check terms before commercial use.',
+    tag: 'deepseek-r1:14b',
+    displayName: 'DeepSeek-R1 14B',
+    sizeGB: 9.0,
+    license: 'MIT',
+    company: 'DeepSeek',
+    country: 'CN',
+    releasedAt: '2025-01',
+    supportsTools: true,
+  },
+  {
+    tag: 'deepseek-r1:7b',
+    displayName: 'DeepSeek-R1 7B',
+    sizeGB: 4.7,
+    license: 'MIT',
+    company: 'DeepSeek',
+    country: 'CN',
+    releasedAt: '2025-01',
     supportsTools: true,
   },
 
-  // --- BigCode consortium (EU-led, multi-national) ---
-  { tag: 'starcoder2:7b', displayName: 'StarCoder2 7B', sizeGB: 4.0, license: 'BigCode OpenRAIL-M', company: 'BigCode', country: 'EU', releasedAt: '2024-02' },
-  { tag: 'starcoder2:15b', displayName: 'StarCoder2 15B', sizeGB: 9.0, license: 'BigCode OpenRAIL-M', company: 'BigCode', country: 'EU', releasedAt: '2024-02' },
+  // --- Z.ai / Zhipu (China) ---
+  {
+    tag: 'glm-4.7-flash:latest',
+    displayName: 'GLM 4.7 Flash 30B',
+    sizeGB: 19.0,
+    license: 'MIT',
+    company: 'Z.ai',
+    country: 'CN',
+    releasedAt: '2026-06',
+    note: 'Published without a size-suffixed tag; :latest is the only local build.',
+    supportsTools: true,
+  },
+
+  // --- Meta (US) ---
+  {
+    tag: 'llama4:scout',
+    displayName: 'Llama 4 Scout',
+    sizeGB: 67.4,
+    license: 'Llama 4 License',
+    company: 'Meta',
+    country: 'US',
+    releasedAt: '2025-04',
+    note: 'Mixture-of-experts: 17B active x 16 experts (~109B total).',
+    supportsTools: true,
+  },
+  {
+    tag: 'llama3.3:70b',
+    displayName: 'Llama 3.3 70B',
+    sizeGB: 42.5,
+    license: 'Llama 3.3 License',
+    company: 'Meta',
+    country: 'US',
+    releasedAt: '2024-12',
+    supportsTools: true,
+  },
+  {
+    tag: 'llama3.2:3b',
+    displayName: 'Llama 3.2 3B',
+    sizeGB: 2.0,
+    license: 'Llama 3.2 License',
+    company: 'Meta',
+    country: 'US',
+    releasedAt: '2024-09',
+    supportsTools: true,
+  },
+  {
+    tag: 'llama3.1:8b',
+    displayName: 'Llama 3.1 8B',
+    sizeGB: 4.9,
+    license: 'Llama 3.1 License',
+    company: 'Meta',
+    country: 'US',
+    releasedAt: '2024-07',
+    supportsTools: true,
+  },
+
+  // --- Google (US) ---
+  // Gemma 4 moved to Apache 2.0; Gemma 3 and earlier remain under Google's
+  // own Gemma Terms of Use. Both verified against the registry's license blob.
+  {
+    tag: 'gemma4:31b',
+    displayName: 'Gemma 4 31B',
+    sizeGB: 19.9,
+    license: 'Apache 2.0',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2026-04',
+    supportsTools: true,
+  },
+  {
+    tag: 'gemma4:26b',
+    displayName: 'Gemma 4 26B',
+    sizeGB: 18.0,
+    license: 'Apache 2.0',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2026-04',
+    note: 'Mixture-of-experts: 3.8B active params out of ~25B total.',
+    supportsTools: true,
+  },
+  {
+    tag: 'gemma4:12b',
+    displayName: 'Gemma 4 12B',
+    sizeGB: 7.6,
+    license: 'Apache 2.0',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2026-06',
+    supportsTools: true,
+  },
+  {
+    tag: 'gemma4:e4b',
+    displayName: 'Gemma 4 E4B',
+    sizeGB: 9.6,
+    license: 'Apache 2.0',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2026-04',
+    note: 'Edge-optimized variant — 4.5B effective params.',
+    supportsTools: true,
+  },
+  {
+    tag: 'gemma4:e2b',
+    displayName: 'Gemma 4 E2B',
+    sizeGB: 7.2,
+    license: 'Apache 2.0',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2026-04',
+    note: 'Edge-optimized variant — 2.3B effective params.',
+    supportsTools: true,
+  },
+  {
+    tag: 'gemma3:27b',
+    displayName: 'Gemma 3 27B',
+    sizeGB: 17.4,
+    license: 'Gemma Terms of Use',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2025-03',
+  },
+  {
+    tag: 'gemma3:12b',
+    displayName: 'Gemma 3 12B',
+    sizeGB: 8.2,
+    license: 'Gemma Terms of Use',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2025-03',
+  },
+  {
+    tag: 'gemma3:4b',
+    displayName: 'Gemma 3 4B',
+    sizeGB: 3.3,
+    license: 'Gemma Terms of Use',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2025-03',
+  },
+  {
+    tag: 'gemma3:1b',
+    displayName: 'Gemma 3 1B',
+    sizeGB: 0.8,
+    license: 'Gemma Terms of Use',
+    company: 'Google',
+    country: 'US',
+    releasedAt: '2025-03',
+  },
+
+  // --- OpenAI (US) ---
+  {
+    tag: 'gpt-oss:120b',
+    displayName: 'gpt-oss 120B',
+    sizeGB: 65.4,
+    license: 'Apache 2.0',
+    company: 'OpenAI',
+    country: 'US',
+    releasedAt: '2025-08',
+    supportsTools: true,
+  },
+  {
+    tag: 'gpt-oss:20b',
+    displayName: 'gpt-oss 20B',
+    sizeGB: 13.8,
+    license: 'Apache 2.0',
+    company: 'OpenAI',
+    country: 'US',
+    releasedAt: '2025-08',
+    supportsTools: true,
+  },
+
+  // --- Microsoft (US) ---
+  {
+    tag: 'phi4:14b',
+    displayName: 'Phi 4 14B',
+    sizeGB: 9.1,
+    license: 'MIT',
+    company: 'Microsoft',
+    country: 'US',
+    releasedAt: '2025-01',
+  },
+  {
+    tag: 'phi4-mini:3.8b',
+    displayName: 'Phi 4 Mini 3.8B',
+    sizeGB: 2.5,
+    license: 'MIT',
+    company: 'Microsoft',
+    country: 'US',
+    releasedAt: '2025-02',
+    supportsTools: true,
+  },
+
+  // --- IBM (US) ---
+  {
+    tag: 'granite4.1:30b',
+    displayName: 'Granite 4.1 30B',
+    sizeGB: 17.5,
+    license: 'Apache 2.0',
+    company: 'IBM',
+    country: 'US',
+    releasedAt: '2026-05',
+    supportsTools: true,
+  },
+  {
+    tag: 'granite4.1:8b',
+    displayName: 'Granite 4.1 8B',
+    sizeGB: 5.4,
+    license: 'Apache 2.0',
+    company: 'IBM',
+    country: 'US',
+    releasedAt: '2026-05',
+    supportsTools: true,
+  },
+  {
+    tag: 'granite4.1:3b',
+    displayName: 'Granite 4.1 3B',
+    sizeGB: 2.1,
+    license: 'Apache 2.0',
+    company: 'IBM',
+    country: 'US',
+    releasedAt: '2026-05',
+    supportsTools: true,
+  },
+
+  // --- NVIDIA (US) ---
+  {
+    tag: 'nemotron-3-nano:4b',
+    displayName: 'Nemotron 3 Nano 4B',
+    sizeGB: 2.8,
+    license: 'NVIDIA Open Model License',
+    company: 'NVIDIA',
+    country: 'US',
+    releasedAt: '2026-03',
+    supportsTools: true,
+  },
+
+  // --- Allen Institute for AI (US) ---
+  {
+    tag: 'olmo-3.1:32b',
+    displayName: 'OLMo 3.1 32B',
+    sizeGB: 19.5,
+    license: 'Apache 2.0',
+    company: 'Ai2',
+    country: 'US',
+    releasedAt: '2025-12',
+    note: 'Fully open: weights, data and training code all published.',
+    supportsTools: true,
+  },
+
+  // --- Liquid AI (US) ---
+  {
+    tag: 'lfm2.5:8b',
+    displayName: 'LFM2.5 8B',
+    sizeGB: 5.2,
+    license: 'LFM Open License v1.0',
+    company: 'Liquid AI',
+    country: 'US',
+    releasedAt: '2026-06',
+    supportsTools: true,
+  },
+
+  // --- Mistral AI (France) ---
+  {
+    tag: 'mistral-small3.2:24b',
+    displayName: 'Mistral Small 3.2 24B',
+    sizeGB: 15.2,
+    license: 'Apache 2.0',
+    company: 'Mistral AI',
+    country: 'FR',
+    releasedAt: '2025-06',
+    supportsTools: true,
+  },
+  {
+    tag: 'magistral:24b',
+    displayName: 'Magistral 24B',
+    sizeGB: 14.3,
+    license: 'Apache 2.0',
+    company: 'Mistral AI',
+    country: 'FR',
+    releasedAt: '2025-06',
+    supportsTools: true,
+  },
+  {
+    tag: 'ministral-3:14b',
+    displayName: 'Ministral 3 14B',
+    sizeGB: 9.1,
+    license: 'Apache 2.0',
+    company: 'Mistral AI',
+    country: 'FR',
+    releasedAt: '2025-12',
+    supportsTools: true,
+  },
+  {
+    tag: 'ministral-3:3b',
+    displayName: 'Ministral 3 3B',
+    sizeGB: 3.0,
+    license: 'Apache 2.0',
+    company: 'Mistral AI',
+    country: 'FR',
+    releasedAt: '2025-12',
+    supportsTools: true,
+  },
+
+  // --- Hugging Face (France) ---
+  {
+    tag: 'smollm2:1.7b',
+    displayName: 'SmolLM2 1.7B',
+    sizeGB: 1.8,
+    license: 'Apache 2.0',
+    company: 'Hugging Face',
+    country: 'FR',
+    releasedAt: '2024-11',
+    supportsTools: true,
+  },
+  {
+    tag: 'smollm2:360m',
+    displayName: 'SmolLM2 360M',
+    sizeGB: 0.73,
+    license: 'Apache 2.0',
+    company: 'Hugging Face',
+    country: 'FR',
+    releasedAt: '2024-11',
+    supportsTools: true,
+  },
 ];
 
 /// Approximate RAM headroom required to run a model comfortably. Ollama
@@ -366,13 +787,39 @@ function recommendationsForTier(tier: OllamaTier): RecommendedModel[] {
 /// running `brew install ollama` so the user sees progress and can spot
 /// failures — silent background installs leave people wondering if
 /// anything is happening. Everywhere else we open the download page.
-export async function installOllama(opener: (url: string) => void): Promise<{ started: 'brew' | 'browser'; detail?: string }> {
+export async function installOllama(
+  opener: (url: string) => void,
+): Promise<{ started: 'brew' | 'browser'; detail?: string; command?: string }> {
   if (process.platform === 'darwin' && brewAvailable()) {
-    runInTerminal('brew install ollama');
-    return { started: 'brew', detail: 'Opened Terminal running `brew install ollama`' };
+    const command = 'brew install ollama';
+    const res = await runInTerminal(command);
+    if (res.ok) return { started: 'brew', detail: `Opened Terminal running \`${command}\`` };
+    // Terminal wouldn't take the command (usually a blocked Apple Event).
+    // Fall back to the download page rather than reporting a phantom window.
+    opener(OLLAMA_DOWNLOAD_URL);
+    return { started: 'browser', detail: res.error, command: res.command ?? command };
   }
   opener(OLLAMA_DOWNLOAD_URL);
   return { started: 'browser', detail: OLLAMA_DOWNLOAD_URL };
+}
+
+/// True only when Homebrew is the package manager that owns the installed
+/// Ollama. `brewAvailable()` alone isn't enough: plenty of people have brew
+/// AND a .dmg-installed Ollama, and `brew upgrade ollama` fails for them.
+export function brewManagesOllama(): boolean {
+  if (process.platform !== 'darwin' || !brewAvailable()) return false;
+  const brew = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'].find((p) => {
+    try {
+      return fs.statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  });
+  const res = spawnSync(brew ?? 'brew', ['list', '--versions', 'ollama'], {
+    encoding: 'utf-8',
+    timeout: 10_000,
+  });
+  return !res.error && res.status === 0;
 }
 
 export interface ServerLogLine {
@@ -401,6 +848,12 @@ export class OllamaServerManager {
 
   getStatus(): ServerStatus {
     return this.status;
+  }
+
+  /// True when the running server is the child overcli spawned — the only
+  /// case where its environment is ours and restarting it is safe.
+  isManaged(): boolean {
+    return this.child != null && !this.child.killed;
   }
 
   getLog(): ServerLogLine[] {
@@ -454,9 +907,14 @@ export class OllamaServerManager {
     try {
       child = spawn(bin, ['serve'], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        // Force loopback bind — overrides any inherited OLLAMA_HOST=0.0.0.0
-        // so the spawned server is never exposed beyond this machine.
-        env: { ...process.env, OLLAMA_HOST: `${OLLAMA_HOST}:${OLLAMA_PORT}` },
+        // Force loopback bind and a loopback-only origin allowlist, overriding
+        // any inherited OLLAMA_HOST=0.0.0.0 / OLLAMA_ORIGINS=* so the server we
+        // spawn is neither reachable from the LAN nor callable by a web page.
+        env: {
+          ...process.env,
+          OLLAMA_HOST: `${OLLAMA_HOST}:${OLLAMA_PORT}`,
+          OLLAMA_ORIGINS: `http://${OLLAMA_HOST}:${OLLAMA_PORT},http://localhost:${OLLAMA_PORT}`,
+        },
       }) as ServerChild;
     } catch (err: any) {
       this.setStatus('error');

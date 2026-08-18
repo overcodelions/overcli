@@ -453,13 +453,14 @@ function deliverablesUnder(
 /// Empty the worker's filing cabinet — the second half of a memory reset.
 /// Removes the directory rather than walking it: `ensureWorkerFilesDir` recreates
 /// it on demand, and the worker's prompt already tells it to create the directory
-/// if it does not exist. Returns how many top-level entries were removed, so the
-/// caller can tell the user what it actually threw away.
+/// if it does not exist. Returns the same recursive file count the Files tab
+/// showed before the reset, so the confirmation does not call a folder holding
+/// five artifacts "one file".
 export function clearWorkerFiles(workerId: string): { ok: true; removed: number } | { ok: false; error: string } {
   const root = workerFilesDir(workerId);
   try {
     if (!fs.existsSync(root)) return { ok: true, removed: 0 };
-    const removed = fs.readdirSync(root).length;
+    const removed = listWorkerFiles(workerId).length;
     fs.rmSync(root, { recursive: true, force: true });
     return { ok: true, removed };
   } catch (err) {

@@ -3,17 +3,58 @@
 // orchestration is exercised manually by running a flow end-to-end.
 
 import { describe, expect, it } from 'vitest';
+import type { FlowRun } from '../../shared/flows/schema';
 
 import {
+  buildWorkerRunBoundary,
   buildRetryFeedbackBlock,
   detectArtifactKind,
   extractOutput,
+  extractWorkerQuestion,
+  isGatingReviewStep,
   isGatingReviewerRole,
   isReviewApproved,
   stepParticipantKey,
   stuckStepMessage,
   summarizeReviewRejection,
+  pauseReasonBeforeStep,
+  rebindRunToLocalProject,
+  resolveStepEffect,
+  workerPromptWritesToPersistentRoot,
 } from './runtime';
+
+describe('rebindRunToLocalProject', () => {
+  it('moves a checked-out single-project flow off its deleted worktree cwd', () => {
+    const run = {
+      projectPath: '/worktrees/feature',
+      sourceProjectPath: '/repos/app',
+      worktreePath: '/worktrees/feature',
+    } as unknown as FlowRun;
+
+    expect(rebindRunToLocalProject(run)).toEqual({
+      oldProjectPath: '/worktrees/feature',
+      projectPath: '/repos/app',
+    });
+    expect(run).toMatchObject({
+      projectPath: '/repos/app',
+      sourceProjectPath: '/repos/app',
+      checkedOutLocally: true,
+    });
+    expect(run).not.toHaveProperty('worktreePath');
+  });
+
+  it('does not collapse a workspace coordinator run into one member project', () => {
+    const run = {
+      projectPath: '/coordinators/run',
+      sourceProjectPath: '/workspaces/ws',
+      worktreePath: '/worktrees/member',
+      workspaceWorktrees: [{ name: 'app' }],
+    } as unknown as FlowRun;
+
+    expect(rebindRunToLocalProject(run)).toBeNull();
+    expect(run.projectPath).toBe('/coordinators/run');
+  });
+});
 
 describe('extractOutput', () => {
   it('extracts a clean block', () => {
@@ -121,6 +162,170 @@ describe('isGatingReviewerRole', () => {
     ] as const) {
       expect(isGatingReviewerRole(role)).toBe(false);
     }
+  });
+});
+
+describe('isGatingReviewStep', () => {
+  it('gates a custom review with an explicit two-sided verdict contract', () => {
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride:
+          'End with APPROVED only if every check passes; otherwise end with CHANGES REQUESTED.',
+        verdictGate: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps legacy custom reviewer loops gating', () => {
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Return APPROVED or REJECTED.',
+        onFail: { action: 'goto', target: 'build', maxRetries: 2 },
+      }),
+    ).toBe(true);
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Finish with APPROVED; use NOT APPROVED when incomplete.',
+        onFail: { action: 'goto', target: 'build', maxRetries: 2 },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not turn ordinary custom action steps into verdict gates', () => {
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Create the ticket and return its URL.',
+      }),
+    ).toBe(false);
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride: 'Describe whether the request was approved by the customer.',
+      }),
+    ).toBe(false);
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride:
+          'Send the Slack DM only after the prior reviewer says APPROVED. If it said NOT APPROVED, do not send.',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('worker effect boundary', () => {
+  const step = (systemPromptOverride: string, extra = {}) => ({
+    id: 'step',
+    role: 'custom' as const,
+    systemPromptOverride,
+    tools: ['Read'],
+    output: 'receipt.md',
+    ...extra,
+  });
+
+  it('allows local code edits, commands, tests, and builds without a pause', () => {
+    expect(resolveStepEffect(step('Edit the controller locally and run its tests.'))).toBe('local');
+    expect(resolveStepEffect(step('Run the build and write report.md.'))).toBe('local');
+    expect(resolveStepEffect(step('Edit the code and do not push the branch.'))).toBe('local');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, step('Edit local code.'))).toBeNull();
+  });
+
+  it('gates pushes, messages, and service mutations for worker runs', () => {
+    expect(resolveStepEffect(step('Push the branch and open a pull request.'))).toBe('external');
+    expect(resolveStepEffect(step('Send the final brief in a Slack DM.'))).toBe('external');
+    expect(resolveStepEffect(step('Create the approved ProductBoard insight.'))).toBe('external');
+    expect(
+      pauseReasonBeforeStep({ workerId: 'worker-1' }, step('Update the Jira ticket.')),
+    ).toBe('externalAction');
+  });
+
+  it('honors explicit metadata and leaves ordinary flows unchanged', () => {
+    const external = step('Write a local file.', { effect: 'external' as const });
+    expect(resolveStepEffect(external)).toBe('external');
+    expect(
+      resolveStepEffect(step('Push the branch.', { effect: 'local' as const })),
+    ).toBe('external');
+    expect(pauseReasonBeforeStep({ workerId: undefined }, external)).toBeNull();
+  });
+});
+
+describe('extractWorkerQuestion', () => {
+  it('extracts the explicit flow-to-worker protocol', () => {
+    expect(extractWorkerQuestion('<worker_question>Blank or Unknown?</worker_question>')).toBe(
+      'Blank or Unknown?',
+    );
+  });
+
+  it('accepts a direct final question but ignores ordinary prose', () => {
+    expect(extractWorkerQuestion('I checked the inputs.\n\nWhich fallback should I use?')).toBe(
+      'Which fallback should I use?',
+    );
+    expect(extractWorkerQuestion('I checked the inputs and found no answer.')).toBeNull();
+  });
+
+  it('does not reinterpret tag-shaped text as a legacy plain-text question', () => {
+    expect(
+      extractWorkerQuestion(
+        '<scr<script>ipt>alert(1)</script>Which fallback should I use?</script>',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('worker run file boundary', () => {
+  const source = '/Users/lionel/Library/Application Support/overcli/workspaces/ws-1';
+
+  it('rejects an absolute persistent-workspace output destination', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Create a copy named ${source}/report.html and verify it.`,
+        source,
+      ),
+    ).toBe(true);
+    expect(
+      workerPromptWritesToPersistentRoot(`Write the report to ${source}/report.html.`, source),
+    ).toBe(true);
+  });
+
+  it('allows reading persistent inputs and negated write instructions', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(`Read ${source}/prior.html, then write report.html.`, source),
+    ).toBe(false);
+    expect(
+      workerPromptWritesToPersistentRoot(`Do not modify ${source}/prior.html.`, source),
+    ).toBe(false);
+  });
+
+  it('places worker output in the disposable root and marks the source read-only', () => {
+    const block = buildWorkerRunBoundary({
+      workerId: 'worker-1',
+      projectPath: '/tmp/coordinators/run-1',
+      sourceProjectPath: source,
+    });
+    expect(block).toContain('Disposable run root (your cwd): /tmp/coordinators/run-1');
+    expect(block).toContain(`Persistent source project/workspace (READ-ONLY): ${source}`);
+    expect(block).toContain('relative filename');
+  });
+
+  it('adds no worker boundary to ordinary or in-place runs', () => {
+    expect(
+      buildWorkerRunBoundary({
+        workerId: undefined,
+        projectPath: '/tmp/project',
+        sourceProjectPath: '/tmp/source',
+      }),
+    ).toBe('');
+    expect(
+      buildWorkerRunBoundary({
+        workerId: 'worker-1',
+        projectPath: '/tmp/project',
+        sourceProjectPath: undefined,
+      }),
+    ).toBe('');
   });
 });
 
@@ -245,6 +450,8 @@ describe('buildRetryFeedbackBlock', () => {
     expect(block).toContain('REJECTED');
     expect(block).toContain('Rejected by step "review"');
     expect(block).toContain('Verdict: CHANGES REQUESTED');
+    expect(block).toContain("Repair the rejected attempt's own files in place");
+    expect(block).toContain('older successful files still are');
   });
 
   it('points at the feedback artifact when there is one', () => {

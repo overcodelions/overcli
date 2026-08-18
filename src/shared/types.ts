@@ -801,6 +801,30 @@ export interface OllamaServerLogLine {
   timestamp: number;
 }
 
+export type OllamaSecuritySeverity = 'critical' | 'high' | 'medium' | 'info';
+
+export interface OllamaSecurityFinding {
+  id: string;
+  severity: OllamaSecuritySeverity;
+  title: string;
+  detail: string;
+  /// Present only when overcli can fix this itself via 'ollama:applyFix'.
+  fixId?: 'update-ollama' | 'restart-loopback';
+  /// Shown as copyable text when there is no automatic fix.
+  manualCommand?: string;
+  url?: string;
+}
+
+export interface OllamaSecurityReport {
+  installedVersion?: string;
+  latestVersion?: string;
+  /// Source of installedVersion: the running server, or the binary on disk.
+  versionSource: 'server' | 'binary' | 'unknown';
+  updateAvailable: boolean;
+  checkedAt: number;
+  findings: OllamaSecurityFinding[];
+}
+
 export type ThemePreference = 'light' | 'dark' | 'system';
 
 /// A source of installable flows. Exactly one of `indexUrl` / `dir` is set:
@@ -1511,7 +1535,12 @@ export interface IPCInvokeMap {
   'workspace:removeCoordinatorSymlinkRoot': (
     coordinatorId: UUID,
   ) => { ok: true } | { ok: false; error: string };
-  'auth:openCliLogin': (backend: Backend) => { ok: true } | { ok: false; error: string };
+  /// `command` is present on failure when we know what the user should run
+  /// themselves — a blocked Apple Event means we opened a window but couldn't
+  /// type into it, so the UI offers the line to copy.
+  'auth:openCliLogin': (
+    backend: Backend,
+  ) => { ok: true } | { ok: false; error: string; command?: string };
   'terminal:popConversation': (args: {
     cwd: string;
     backend: Backend;
@@ -1519,7 +1548,7 @@ export interface IPCInvokeMap {
     /// The session's model. Without it the popped-out CLI resumes on its own
     /// default, silently dropping the model the conversation was running on.
     model?: string;
-  }) => { ok: true } | { ok: false; error: string };
+  }) => { ok: true } | { ok: false; error: string; command?: string };
   /// Open a terminal window sitting in a folder, nothing typed. Used by the
   /// file tree's per-folder terminal button.
   'terminal:openFolder': (args: { path: string }) => { ok: true } | { ok: false; error: string };
@@ -1534,7 +1563,7 @@ export interface IPCInvokeMap {
   'ollama:detect': () => OllamaDetectionReport;
   'ollama:hardware': () => OllamaHardwareReport;
   'ollama:catalog': () => OllamaRecommendedModel[];
-  'ollama:install': () => { started: 'brew' | 'browser'; detail?: string };
+  'ollama:install': () => { started: 'brew' | 'browser'; detail?: string; command?: string };
   'ollama:startServer': () => { ok: boolean; message: string };
   'ollama:stopServer': () => void;
   'ollama:serverStatus': () => { status: OllamaServerStatus; log: OllamaServerLogLine[] };
@@ -1542,6 +1571,10 @@ export interface IPCInvokeMap {
   'ollama:cancelPull': (args: { tag: string }) => void;
   'ollama:deleteModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:deleteSession': (sessionId: string) => void;
+  'ollama:securityAudit': (args?: { force?: boolean }) => OllamaSecurityReport;
+  'ollama:applyFix': (args: {
+    fixId: 'update-ollama' | 'restart-loopback';
+  }) => { ok: boolean; message: string; command?: string };
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
   'diagnostics:log': (args: { level: LogLevel; scope: string; message: string }) => void;
@@ -1625,6 +1658,16 @@ export interface IPCInvokeMap {
   /// (paused / done / aborted), never while a step is actively running.
   'flows:rerunFromStep': (args: { runId: UUID; stepId: string }) =>
     { ok: true } | { ok: false; error: string };
+  /// Bring a single-project flow worktree into the main project checkout,
+  /// then re-home every Claude participant session and persistently rebind
+  /// the run's cwd so post-completion chat can continue there.
+  'flows:checkoutRunLocally': (args: {
+    runId: UUID;
+    commitSubject: string;
+    commitBody?: string;
+  }) =>
+    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
+    | { ok: false; error: string };
   'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Put a completed run into the post-completion `watching` state — it
   /// stops doing work and periodically polls `binding` (via the named
@@ -1866,14 +1909,11 @@ export interface IPCInvokeMap {
   /// The worker's journal, newest first — its episodic memory, rendered as
   /// the shift history in the Workers pane.
   'workers:journal': (args: { id: UUID }) => WorkerJournalEntry[];
-  /// Forget everything this worker remembers and restart it at shift #1: its
-  /// journal goes, and with it the ban on titles it was told no about, so it may
-  /// propose those again. `files` also empties its own directory — the baselines,
-  /// tallies and cursors it works from, plus deliverables that outlived their
-  /// runs — so it is opt-in and counted separately in the reply. Trust, budget
-  /// and the job description are the user's standing decisions and are untouched.
-  'workers:resetMemory': (args: { id: UUID; files?: boolean }) =>
-    | { ok: true; entries: number; files: number }
+  /// Return this worker to a just-hired clean slate: remove its journal, files,
+  /// shift/errand ledgers and child flow runs, then restart numbering at shift
+  /// #1. Trust, budget, job description and historical usage spend remain.
+  'workers:resetMemory': (args: { id: UUID }) =>
+    | { ok: true; entries: number; files: number; shifts: number; errands: number; runs: number }
     | { ok: false; error: string };
   /// The worker as a shareable YAML document: the JOB, with the flows it
   /// launches embedded whole, and none of the employment — no id, no trust,

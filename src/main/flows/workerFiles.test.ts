@@ -415,7 +415,7 @@ describe('clearWorkerFiles', () => {
     const theirs = ensureWorkerFilesDir('worker-2');
     fs.writeFileSync(path.join(theirs, 'keep.md'), 'theirs', 'utf-8');
 
-    expect(clearWorkerFiles(WORKER)).toEqual({ ok: true, removed: 2 });
+    expect(clearWorkerFiles(WORKER)).toEqual({ ok: true, removed: 1 });
     expect(fs.existsSync(mine)).toBe(false);
     expect(listWorkerFiles('worker-2').map((f) => f.name)).toEqual(['keep.md']);
   });

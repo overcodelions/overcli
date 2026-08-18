@@ -236,3 +236,42 @@ describe('workerShareFilename', () => {
     expect(workerShareFilename('///')).toBe('worker.worker.yaml');
   });
 });
+
+describe('heartbeat backend travels with the model', () => {
+  it('writes heartbeat_backend when the worker records one', () => {
+    const yaml = shareOf(worker({ heartbeatBackend: 'codex' }));
+    expect(yaml).toContain('heartbeat_backend: codex');
+  });
+
+  it('omits it when unset, so the file stays importable by an older build', () => {
+    const yaml = shareOf();
+    expect(yaml).not.toContain('heartbeat_backend');
+  });
+
+  it('round-trips the pair', () => {
+    const yaml = shareOf(worker({ heartbeatBackend: 'gemini' }));
+    const res = parseWorkerYaml(yaml);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.bundle.worker.heartbeatBackend).toBe('gemini');
+    expect(res.bundle.worker.heartbeatModel).toBe('claude-sonnet-4-6');
+  });
+
+  it('leaves it unset for a file that predates the field', () => {
+    // The pre-field path: no backend recorded, so the importer runs the model
+    // through tier translation against whatever backend is default.
+    const res = parseWorkerYaml(shareOf());
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.bundle.worker.heartbeatBackend).toBeUndefined();
+  });
+
+  it('drops a backend name we do not ship', () => {
+    // A bogus value would pin the worker to a CLI that does not exist, where
+    // falling back to translation is the safer outcome.
+    const res = parseWorkerYaml(shareOf().replace('heartbeat_model:', 'heartbeat_backend: gpt4all\nheartbeat_model:'));
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.bundle.worker.heartbeatBackend).toBeUndefined();
+  });
+});

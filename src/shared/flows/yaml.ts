@@ -47,6 +47,8 @@ interface YamlStep {
   inputs?: unknown;
   tools?: unknown;
   permission_mode?: unknown;
+  effect?: unknown;
+  verdict_gate?: unknown;
   rebound?: unknown;
   on_fail?: unknown;
   pause_before?: unknown;
@@ -185,6 +187,8 @@ function parseStep(raw: unknown, idx: number): FlowStep {
       typeof r.permission_mode === 'string'
         ? (r.permission_mode as FlowStep['permissionMode'])
         : undefined,
+    effect: r.effect === 'local' || r.effect === 'external' ? r.effect : undefined,
+    verdictGate: typeof r.verdict_gate === 'boolean' ? r.verdict_gate : undefined,
     rebound: parseRebound(r.rebound),
     onFail: parseOnFail(r.on_fail),
     pauseBefore: asBoolean(r.pause_before),
@@ -385,6 +389,8 @@ function serializeStep(s: FlowStep): Record<string, unknown> {
   out.inputs = s.inputs;
   out.tools = s.tools;
   if (s.permissionMode) out.permission_mode = s.permissionMode;
+  if (s.effect) out.effect = s.effect;
+  if (s.verdictGate !== undefined) out.verdict_gate = s.verdictGate;
   if (s.rebound) out.rebound = serializeRebound(s.rebound);
   if (s.onFail) out.on_fail = serializeOnFail(s.onFail);
   if (s.pauseBefore) out.pause_before = true;

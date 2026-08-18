@@ -19,11 +19,13 @@ export const TRUST_LABEL: Record<WorkerTrustLevel, { text: string; cls: string }
 export function WorkerPendingProposal({ orchestration }: { orchestration: Orchestration }) {
   const setDetailMode = useStore((s) => s.setDetailMode);
   const setActiveOrchestration = useOrchestratorStore((s) => s.setActiveOrchestration);
+  const requestDetail = useOrchestratorStore((s) => s.requestOrchestrationDetail);
   const [busy, setBusy] = useState(false);
   const proposed = orchestration.items.filter((i) => i.status === 'proposed');
 
   function review(): void {
     setActiveOrchestration(orchestration.id);
+    requestDetail(orchestration.id);
     setDetailMode('orchestrator');
   }
 

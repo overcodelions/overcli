@@ -22,10 +22,11 @@
 // runner pipeline drives.
 
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { log } from '../diagnostics';
+import { migrateClaudeSessionCwd } from '../history';
 
 import type {
   AppSettings,
@@ -49,6 +50,7 @@ import type {
   FlowRun,
   FlowStep,
   FlowStepAttempt,
+  FlowWorkerExchange,
 } from '../../shared/flows/schema';
 import {
   FLOW_USER_PROMPT_REF,
@@ -62,7 +64,9 @@ import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
 import {
   baseBranchExistsAsync,
+  checkoutAgentLocally as checkoutWorktreeLocally,
   createWorktreeAsync,
+  currentBranch,
   detectBaseBranchAsync,
   removeWorktreeAsync,
   runGit,
@@ -70,7 +74,7 @@ import {
   worktreeNameTaken,
 } from '../git';
 import { branchSlugFromPrompt } from './branchName';
-import { ensureCoordinatorSymlinkRoot } from '../workspace';
+import { ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
 import { notifyWatch } from './watch/notify';
@@ -134,6 +138,56 @@ export interface FlowRuntimeResumeArgs {
 
 export interface FlowRuntimeDeleteArgs {
   runId: UUID;
+}
+
+export interface FlowWorkerQuestionRequest {
+  workerId: UUID;
+  workerName?: string;
+  flowName: string;
+  runTitle?: string;
+  projectPath: string;
+  userPrompt: string;
+  step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'inputs' | 'output'>;
+  question: string;
+  artifacts: Array<{ name: string; body: string; producedByStepId: string }>;
+}
+
+export type FlowWorkerQuestionResult =
+  | { kind: 'answer'; answer: string }
+  | { kind: 'escalate'; reason: string }
+  | { kind: 'error'; error: string };
+
+/// Convert a single-project worktree run into an in-place run after its
+/// branch has been checked out in the source project. Kept as a small pure
+/// mutation so both the explicit checkout path and startup recovery use the
+/// exact same state transition.
+export function rebindRunToLocalProject(
+  run: FlowRun,
+): { oldProjectPath: string; projectPath: string } | null {
+  if (
+    !run.worktreePath ||
+    !run.sourceProjectPath ||
+    (run.workspaceWorktrees?.length ?? 0) > 0
+  ) {
+    return null;
+  }
+  const oldProjectPath = run.projectPath;
+  run.projectPath = run.sourceProjectPath;
+  delete run.worktreePath;
+  run.checkedOutLocally = true;
+  return { oldProjectPath, projectPath: run.projectPath };
+}
+
+function migrateRunClaudeSessions(run: FlowRun, fromCwd: string, toCwd: string): void {
+  const participants = new Map(
+    (run.flowSnapshot.participants ?? []).map((participant) => [participant.id, participant]),
+  );
+  for (const [participantId, sessionId] of Object.entries(
+    run.sessionIdsByParticipant ?? {},
+  )) {
+    if (participants.get(participantId)?.backend !== 'claude') continue;
+    migrateClaudeSessionCwd({ worktreePath: fromCwd, projectPath: toCwd, sessionId });
+  }
 }
 
 interface StepStreamBuffer {
@@ -212,6 +266,18 @@ export class FlowRuntimeImpl {
   /// In-memory like `retryCounts`; a restart loses it, which at worst
   /// costs the retried step its feedback preamble.
   private retryFeedback = new Map<UUID, FlowRetryFeedback & { targetStepId: string }>();
+  /// A worker's answer owed to the participant that asked it a question.
+  /// It is injected into the next attempt's prompt and then consumed.
+  private workerAnswerFeedback = new Map<
+    UUID,
+    { stepId: string; exchangeId: UUID; question: string; answer: string }
+  >();
+  /// Wired after WorkerEngine is constructed. Kept optional so ordinary
+  /// flow runtimes and focused tests do not need a worker dependency.
+  private workerSupervisor:
+    | ((request: FlowWorkerQuestionRequest) => Promise<FlowWorkerQuestionResult>)
+    | null = null;
+  private static readonly MAX_WORKER_QUESTION_ROUNDS = 3;
 
   /// Worktree snapshot (a git tree-ish) captured after each diff-producing
   /// step, so the NEXT diff step can compute only what IT changed rather
@@ -313,6 +379,48 @@ export class FlowRuntimeImpl {
     // paused. A paused run is resumable via `resumeRun`, which starts the
     // next step fresh — no live subprocess required.
     for (const run of loadAllRuns()) {
+      // `Check out locally` historically removed a flow worktree without
+      // updating the run record. On the next participant message the runner
+      // tried to spawn in that deleted cwd and surfaced macOS ENOENT as the
+      // opaque status -2. Recover those already-affected runs when the main
+      // project is now on the flow branch — the exact post-checkout shape.
+      if (
+        run.worktreePath &&
+        run.sourceProjectPath &&
+        run.branchName &&
+        !existsSync(run.worktreePath) &&
+        existsSync(run.sourceProjectPath) &&
+        currentBranch(run.sourceProjectPath).branch === run.branchName
+      ) {
+        const oldCwd = run.worktreePath;
+        migrateRunClaudeSessions(run, oldCwd, run.sourceProjectPath);
+        if (rebindRunToLocalProject(run)) {
+          saveRun(run);
+          log(
+            'info',
+            'flows.recoverLocalCheckout',
+            `rebound run ${run.id} from missing ${oldCwd} to ${run.projectPath}`,
+          );
+        }
+      }
+      // Re-running an external step after a crash is still an external
+      // effect and may duplicate a partially-completed send/push/update.
+      // Restore it at the approval boundary, not under the generic one-click
+      // interrupted retry path.
+      if (run.workerId && run.state.kind === 'paused' && run.state.reason === 'interrupted') {
+        const interruptedStepId = run.state.nextStepId;
+        const interruptedStep = run.flowSnapshot.steps.find(
+          (step) => step.id === interruptedStepId,
+        );
+        if (interruptedStep && resolveStepEffect(interruptedStep) === 'external') {
+          run.state = {
+            kind: 'paused',
+            nextStepId: interruptedStep.id,
+            reason: 'externalAction',
+          };
+          saveRun(run);
+        }
+      }
       this.runs.set(run.id, run);
       // Seed conversation→run routing for restored non-terminal runs so
       // `observeEvent` can resolve their conversations again. Without this,
@@ -553,6 +661,27 @@ export class FlowRuntimeImpl {
     if (!flow) return { ok: false, error: `Flow "${args.flowId}" not found.` };
     if (flow.steps.length === 0) return { ok: false, error: 'Flow has no steps.' };
 
+    // A worker-owned worktree run must not smuggle an output back into the
+    // persistent source project/workspace by naming an absolute destination.
+    // The run gets an isolated cwd below; relative output belongs there and is
+    // filed into the worker's cabinet on completion. Refuse the launch before
+    // minting worktrees when the candidate itself still asks for a source-root
+    // write. (The per-step boundary in buildStepPrompt covers downstream steps
+    // that might otherwise derive such a destination from their artifacts.)
+    if (
+      args.workerId &&
+      args.runIn === 'worktree' &&
+      workerPromptWritesToPersistentRoot(args.userPrompt, args.projectPath)
+    ) {
+      return {
+        ok: false,
+        error:
+          'Worker flow refused: its prompt asks to write into the persistent project/workspace. ' +
+          'Use a relative output path so the file stays in the disposable run root and is filed ' +
+          "into the worker's cabinet after completion.",
+      };
+    }
+
     // Preflight: every backend healthy, every model reachable, the cwd
     // exists, every step has tools, etc. We bail before spinning up any
     // subprocess so the user sees a clear listed problem instead of a
@@ -769,6 +898,11 @@ export class FlowRuntimeImpl {
           : undefined;
     }
 
+    const firstStep = flow.steps[0];
+    const firstPauseReason =
+      args.workerId && resolveStepEffect(firstStep) === 'external'
+        ? ('externalAction' as const)
+        : null;
     const run: FlowRun = {
       id: runId,
       flowId: flow.id,
@@ -777,7 +911,9 @@ export class FlowRuntimeImpl {
       userPrompt: args.userPrompt,
       conversationIds: {},
       artifacts: {},
-      state: { kind: 'running', currentStepId: flow.steps[0].id },
+      state: firstPauseReason
+        ? { kind: 'paused', nextStepId: firstStep.id, reason: firstPauseReason }
+        : { kind: 'running', currentStepId: firstStep.id },
       createdAt: Date.now(),
       attempts: [],
       worktreePath: worktreeMeta?.worktreePath,
@@ -802,7 +938,8 @@ export class FlowRuntimeImpl {
       this.pendingAttachments.set(runId, args.attachments);
     }
     this.emitRunUpdate(run);
-    void this.executeStep(runId, flow.steps[0].id);
+    if (firstPauseReason) this.checkpoint(run);
+    else void this.executeStep(runId, firstStep.id);
     return { ok: true, runId };
   }
 
@@ -830,6 +967,7 @@ export class FlowRuntimeImpl {
       this.diffSnapshots.delete(victim.id);
       this.pendingAttachments.delete(victim.id);
       this.retryFeedback.delete(victim.id);
+      this.workerAnswerFeedback.delete(victim.id);
       // Sweep any retry counters keyed under this run's id.
       for (const key of this.retryCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.retryCounts.delete(key);
@@ -855,6 +993,59 @@ export class FlowRuntimeImpl {
 
   getRun(runId: UUID): FlowRun | null {
     return this.runs.get(runId) ?? null;
+  }
+
+  /// Check out a single-project flow branch in its main project and keep the
+  /// flow conversation alive there. This must live in the runtime (rather
+  /// than being two renderer IPC calls) so git checkout, session migration,
+  /// run rebinding, persistence, and renderer notification form one action.
+  checkoutRunLocally(args: {
+    runId: UUID;
+    commitSubject: string;
+    commitBody?: string;
+  }):
+    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
+    | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if ((run.workspaceWorktrees?.length ?? 0) > 0) {
+      return {
+        ok: false,
+        error: 'Use the per-project checkout actions for a workspace flow.',
+      };
+    }
+    if (!run.worktreePath || !run.sourceProjectPath || !run.branchName) {
+      if (run.checkedOutLocally) {
+        return {
+          ok: true,
+          message: `Already checked out ${run.branchName ?? 'the flow branch'} in ${run.projectPath}.`,
+          stashed: false,
+          autoCommitted: false,
+        };
+      }
+      return { ok: false, error: 'This run no longer has a flow worktree to check out.' };
+    }
+
+    const oldCwd = run.worktreePath;
+    const result = checkoutWorktreeLocally({
+      projectPath: run.sourceProjectPath,
+      worktreePath: run.worktreePath,
+      branchName: run.branchName,
+      commitSubject: args.commitSubject,
+      commitBody: args.commitBody,
+    });
+    if (!result.ok) return result;
+
+    migrateRunClaudeSessions(run, oldCwd, run.sourceProjectPath);
+    if (!rebindRunToLocalProject(run)) {
+      return {
+        ok: false,
+        error: 'Checked out the branch, but could not rebind the flow run to the project.',
+      };
+    }
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return result;
   }
 
   resumeRun(args: FlowRuntimeResumeArgs): { ok: true } | { ok: false; error: string } {
@@ -905,7 +1096,7 @@ export class FlowRuntimeImpl {
     // updated <output name="diff">" makes it interpret the request as
     // "go apply more file changes" — and with `acceptEdits` permission
     // it actually does, mutating the user's tree after they hit Continue.
-    if (pausedReason === 'preStep') {
+    if (pausedReason === 'preStep' || pausedReason === 'externalAction') {
       if (this.finalizingRuns.has(args.runId)) {
         // Continue already in flight — idempotent no-op.
         return { ok: true };
@@ -940,7 +1131,17 @@ export class FlowRuntimeImpl {
       }
     }
 
-    // No chat happened (or it's a failure pause) — advance directly.
+    // A same-step retry (failure/interruption/needs-input) consumes any chat
+    // that happened during this pause as conversation context. Clear the
+    // pre-step-finalize marker so it cannot leak into a later checkpoint on
+    // this participant and trigger an unrelated synthetic finalize turn.
+    if (pausedReason !== 'preStep' && pausedReason !== 'externalAction') {
+      for (const key of Array.from(this.pauseChatHappened)) {
+        if (key.startsWith(`${args.runId}:`)) this.pauseChatHappened.delete(key);
+      }
+    }
+
+    // No chat happened (or it's a same-step retry) — advance directly.
     this.advanceToStep(args.runId, nextStepId);
     return { ok: true };
   }
@@ -1218,6 +1419,13 @@ export class FlowRuntimeImpl {
           log('error', 'flows.deleteRun', `worktree remove threw for ${m.name}`, err);
         }
       }
+      // The coordinator is the disposable workspace-shaped cwd. Loose
+      // reports belong here alongside the member symlinks; removing only the
+      // member worktrees left those outputs and the symlink farm behind.
+      const removed = removeCoordinatorSymlinkRoot(run.id);
+      if (!removed.ok) {
+        log('warn', 'flows.deleteRun', `coordinator remove failed: ${removed.error}`);
+      }
       return;
     }
     // Single-project worktree run. `git worktree remove` must run from the
@@ -1294,6 +1502,7 @@ export class FlowRuntimeImpl {
     this.diffSnapshots.delete(args.runId);
     this.pendingAttachments.delete(args.runId);
     this.retryFeedback.delete(args.runId);
+    this.workerAnswerFeedback.delete(args.runId);
     this.watchTicking.delete(args.runId);
     this.watchPhase.delete(args.runId);
     this.watchBuffers.delete(args.runId);
@@ -1978,6 +2187,9 @@ export class FlowRuntimeImpl {
     if (this.retryFeedback.get(runId)?.targetStepId === step.id) {
       this.retryFeedback.delete(runId);
     }
+    if (this.workerAnswerFeedback.get(runId)?.stepId === step.id) {
+      this.workerAnswerFeedback.delete(runId);
+    }
     // Launch attachments ride along with the step(s) that consume the
     // user's prompt — typically just the first / planning step.
     const attachments = step.inputs.includes(FLOW_USER_PROMPT_REF)
@@ -2045,7 +2257,7 @@ export class FlowRuntimeImpl {
   ///     has a live process already or a session to resume, and prewarm
   ///     spawns without a resume hint — warming it would risk handing the
   ///     step a context-free session in exchange for nothing.
-  ///   - A `pause_before` step is skipped. The run is about to stop for a
+  ///   - A step with any pause boundary is skipped. The run is about to stop for a
   ///     human, and "a while" is not a latency window worth holding a CLI
   ///     open for.
   ///
@@ -2057,7 +2269,7 @@ export class FlowRuntimeImpl {
   private prewarmNextParticipant(run: FlowRun, step: FlowStep): void {
     const idx = run.flowSnapshot.steps.findIndex((s) => s.id === step.id);
     const next = idx >= 0 ? run.flowSnapshot.steps[idx + 1] : undefined;
-    if (!next || next.pauseBefore) return;
+    if (!next || pauseReasonBeforeStep(run, next)) return;
     const participantId = stepParticipantKey(next);
     if (run.conversationIds[participantId]) return;
     const stepModel = resolveRunStepModel(run, next);
@@ -2093,6 +2305,52 @@ export class FlowRuntimeImpl {
 
     const artifactBody = extractOutput(text, step.output);
     if (artifactBody === null) {
+      const question = run.workerId ? extractWorkerQuestion(text) : null;
+      if (question && this.workerSupervisor) {
+        const usageTotals = buf
+          ? {
+              usage: { ...buf.usage },
+              costUSD: buf.costUSD > 0 ? buf.costUSD : undefined,
+            }
+          : {};
+        this.finishAttempt(run, step.id, { outcome: 'question', ...usageTotals });
+        const exchange: FlowWorkerExchange = {
+          id: randomUUID(),
+          stepId: step.id,
+          participantId: stepParticipantKey(step),
+          askedAt: Date.now(),
+          question,
+          status: 'asking',
+        };
+        run.workerExchanges = [...(run.workerExchanges ?? []), exchange].slice(-50);
+        this.emitRunUpdate(run);
+        this.checkpoint(run);
+
+        let lastSuccess = -1;
+        for (let i = run.attempts.length - 1; i >= 0; i -= 1) {
+          const attempt = run.attempts[i];
+          if (attempt.stepId === step.id && attempt.outcome === 'success') {
+            lastSuccess = i;
+            break;
+          }
+        }
+        const rounds = run.attempts
+          .slice(lastSuccess + 1)
+          .filter((attempt) => attempt.stepId === step.id && attempt.outcome === 'question')
+          .length;
+        if (rounds > FlowRuntimeImpl.MAX_WORKER_QUESTION_ROUNDS) {
+          exchange.status = 'escalated';
+          exchange.answeredAt = Date.now();
+          exchange.note = `The flow asked more than ${FlowRuntimeImpl.MAX_WORKER_QUESTION_ROUNDS} follow-up questions.`;
+          run.state = { kind: 'paused', nextStepId: step.id, reason: 'needsInput' };
+          this.emitRunUpdate(run);
+          this.checkpoint(run);
+          return;
+        }
+
+        void this.resolveWorkerQuestion(run, step, exchange);
+        return;
+      }
       // No <output> block — treat as failure so onFail policy decides.
       this.finishAttempt(run, step.id, {
         outcome: 'error',
@@ -2157,13 +2415,13 @@ export class FlowRuntimeImpl {
     // advanceAfterStep below if there's another step) or `done`.
     this.checkpoint(run);
 
-    // Verdict gate: a reviewer-role step produced its artifact cleanly, but
-    // if the verdict isn't an approval the flow must NOT roll on to
+    // Verdict gate: a built-in or explicit custom review produced its
+    // artifact cleanly, but if the verdict isn't an approval the flow must NOT roll on to
     // downstream steps (tests/push) over disapproved work. Route it through
     // the normal `on_fail` policy — pause by default, or `goto` to loop
     // back to an earlier step the user wired up. The artifact itself is
     // already recorded above, so the user sees the rejecting review.
-    if (isGatingReviewerRole(step.role) && !isReviewApproved(body)) {
+    if (isGatingReviewStep(step) && !isReviewApproved(body)) {
       const gist = summarizeReviewRejection(body);
       this.handleStepFailure(
         runId,
@@ -2178,6 +2436,76 @@ export class FlowRuntimeImpl {
     this.advanceAfterStep(runId, step.id);
   }
 
+  private async resolveWorkerQuestion(
+    runAtAsk: FlowRun,
+    step: FlowStep,
+    exchangeAtAsk: FlowWorkerExchange,
+  ): Promise<void> {
+    const supervisor = this.workerSupervisor;
+    if (!supervisor || !runAtAsk.workerId) return;
+
+    let result: FlowWorkerQuestionResult;
+    try {
+      result = await supervisor({
+        workerId: runAtAsk.workerId,
+        workerName: runAtAsk.workerName,
+        flowName: runAtAsk.flowSnapshot.name,
+        runTitle: runAtAsk.title ?? runAtAsk.orchestrationItemTitle,
+        projectPath: runAtAsk.projectPath,
+        userPrompt: runAtAsk.userPrompt,
+        step: {
+          id: step.id,
+          role: step.role,
+          systemPromptOverride: step.systemPromptOverride,
+          inputs: step.inputs,
+          output: step.output,
+        },
+        question: exchangeAtAsk.question,
+        artifacts: Object.values(runAtAsk.artifacts).map((artifact) => ({
+          name: artifact.name,
+          body: artifact.body.slice(0, 20_000),
+          producedByStepId: artifact.producedByStepId,
+        })),
+      });
+    } catch (err) {
+      result = { kind: 'error', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // The user may have aborted/deleted the run while its Worker was thinking.
+    const run = this.runs.get(runAtAsk.id);
+    if (!run) return;
+    const exchange = run.workerExchanges?.find((x) => x.id === exchangeAtAsk.id);
+    if (!exchange || exchange.status !== 'asking') return;
+    if (run.state.kind !== 'running' || run.state.currentStepId !== step.id) return;
+
+    exchange.answeredAt = Date.now();
+    if (result.kind === 'answer' && result.answer.trim()) {
+      exchange.status = 'answered';
+      exchange.answer = result.answer.trim();
+      this.workerAnswerFeedback.set(run.id, {
+        stepId: step.id,
+        exchangeId: exchange.id,
+        question: exchange.question,
+        answer: exchange.answer,
+      });
+      this.emitRunUpdate(run);
+      this.checkpoint(run);
+      void this.executeStep(run.id, step.id);
+      return;
+    }
+
+    exchange.status = result.kind === 'escalate' ? 'escalated' : 'failed';
+    exchange.note =
+      result.kind === 'escalate'
+        ? result.reason
+        : result.kind === 'error'
+          ? result.error
+          : 'The Worker returned an empty answer.';
+    run.state = { kind: 'paused', nextStepId: step.id, reason: 'needsInput' };
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+  }
+
   private advanceAfterStep(runId: UUID, finishedStepId: string): void {
     const run = this.runs.get(runId);
     if (!run) return;
@@ -2189,9 +2517,13 @@ export class FlowRuntimeImpl {
       this.checkpoint(run); // terminal — save final state
       return;
     }
-    // pause_before on the next step → park; resumeRun picks it up.
-    if (next.pauseBefore) {
-      run.state = { kind: 'paused', nextStepId: next.id, reason: 'preStep' };
+    // Worker-owned runs always stop before effects outside the run cwd.
+    // This is independent of tool permissions: local edits/tests stay fully
+    // autonomous, while pushes/messages/ticket updates require one explicit
+    // approval. An authored pause_before remains an additional checkpoint.
+    const pauseReason = pauseReasonBeforeStep(run, next);
+    if (pauseReason) {
+      run.state = { kind: 'paused', nextStepId: next.id, reason: pauseReason };
       this.emitRunUpdate(run);
       this.checkpoint(run); // boundary — paused state is resumable across restart
       return;
@@ -2342,6 +2674,13 @@ export class FlowRuntimeImpl {
       if (art) rawInputs.push({ name: feedback.artifactName, body: art.body });
     }
     const retryBlock = feedback ? `${buildRetryFeedbackBlock(feedback)}\n\n---\n\n` : '';
+    const workerBoundary = buildWorkerRunBoundary(run);
+    const workerSupervision = buildWorkerSupervisionBoundary(run);
+    const workerAnswer = this.workerAnswerFeedback.get(run.id);
+    const workerAnswerBlock =
+      workerAnswer?.stepId === step.id
+        ? buildWorkerAnswerBlock(workerAnswer.question, workerAnswer.answer)
+        : '';
 
     const inputParts: InputPart[] = rawInputs.map((p) => {
       const isLarge = p.body.length > FlowRuntimeImpl.INLINE_THRESHOLD_BYTES;
@@ -2435,7 +2774,7 @@ export class FlowRuntimeImpl {
     const preamble = preambleNotes.length > 0 ? `\n\nNOTE: ${preambleNotes.join(' ')}` : '';
 
     return (
-      `${retryBlock}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
+      `${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
       `<output name="${step.output}">…</output>.`
     );
@@ -2583,6 +2922,15 @@ export class FlowRuntimeImpl {
     this.runObserver = cb;
   }
 
+  /// Attach the standing-worker decision loop after both engines exist.
+  /// The runtime remains usable without it; a missing supervisor simply
+  /// preserves the legacy missing-output failure behavior.
+  setWorkerSupervisor(
+    cb: (request: FlowWorkerQuestionRequest) => Promise<FlowWorkerQuestionResult>,
+  ): void {
+    this.workerSupervisor = cb;
+  }
+
   /// Push a worktree-preparation progress beat to the renderer during a
   /// launch, before the FlowRun exists. The launching pane (keyed on the
   /// same target `projectPath`) renders it under its spinner.
@@ -2709,6 +3057,198 @@ export function isGatingReviewerRole(role: FlowRolePreset): boolean {
   return GATING_REVIEWER_ROLES.has(role);
 }
 
+/// Custom steps are how AI-drafted flows express domain-specific reviews:
+/// they keep the specialist instructions in `systemPromptOverride` instead of
+/// using one of the generic reviewer presets. Treat one as a verdict gate when
+/// its prompt explicitly defines both sides of the approval contract. This is
+/// intentionally narrower than "custom + on_fail" — custom action steps also
+/// use failure policies for tool errors and must not be forced to emit an
+/// APPROVED verdict.
+export function isGatingReviewStep(
+  step: Pick<FlowStep, 'role' | 'systemPromptOverride' | 'verdictGate' | 'onFail'>,
+): boolean {
+  if (step.verdictGate !== undefined) return step.verdictGate;
+  if (isGatingReviewerRole(step.role)) return true;
+  if (step.role !== 'custom') return false;
+  const prompt = step.systemPromptOverride ?? '';
+  const definesApproval = /\bAPPROVED\b/i.test(prompt);
+  const definesRejection = /\b(?:CHANGES\s+REQUESTED|REJECTED|NOT\s+APPROVED)\b/i.test(prompt);
+  // Legacy custom reviewers predate verdict_gate. Their goto loop is the
+  // strongest structural signal that this output really is a gate. Requiring
+  // it prevents an action step that says "deliver only after APPROVED; report
+  // NOT APPROVED otherwise" from being classified as the reviewer itself.
+  return definesApproval && definesRejection && step.onFail?.action === 'goto';
+}
+
+/// Resolve the side-effect class for a step. New flows state it explicitly;
+/// old flows get a conservative compatibility inference so existing worker
+/// contracts gain the external approval boundary without being hand-edited.
+/// A clear external directive always wins over an erroneous `effect: local`:
+/// safety metadata can add a boundary, never waive an obvious one.
+export function resolveStepEffect(
+  step: Pick<
+    FlowStep,
+    'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect'
+  >,
+): 'local' | 'external' {
+  if (step.effect === 'external') return 'external';
+  if (step.role === 'shipper') return 'external';
+
+  const text = [step.id, step.output, step.systemPromptOverride ?? '', ...(step.tools ?? [])]
+    .join(' ')
+    .replace(/[_-]+/g, ' ');
+  const actionableText = text.replace(
+    /\b(?:do\s+not|don't|never|must\s+not)\s+(?:git\s+)?(?:push|deploy|publish|send|post|reply|respond|message|create|update|edit|delete|close|merge)\b[^.\n]*/gi,
+    '',
+  );
+  const directExternal =
+    /\bgit\s+push\b|\bpush\s+(?:the\s+)?(?:branch|code|changes|commit)|\bdeploy\b|\brelease\s+to\b|\bpublish\s+(?:the\s+)?(?:site|app|package|release|document)|\bmerge\s+(?:the\s+)?(?:branch|pull request|pr)\b/i;
+  const prWrite =
+    /\b(?:open|create|update|edit|close|merge)\b[^.\n]{0,80}\b(?:pull request|merge request|pr)\b|\b(?:pull request|merge request|pr)\b[^.\n]{0,80}\b(?:open|create|update|edit|close|merge)\b/i;
+  const messageWrite =
+    /\b(?:send|post|reply|respond|message|dm|deliver)\b[^.\n]{0,100}\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b|\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b[^.\n]{0,100}\b(?:send|post|reply|respond|message|deliver)\b/i;
+  const serviceWrite =
+    /\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b[^.\n]{0,110}\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm|record)\b|\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm)\b[^.\n]{0,110}\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b/i;
+  return directExternal.test(actionableText) || prWrite.test(actionableText) || messageWrite.test(actionableText) || serviceWrite.test(actionableText)
+    ? 'external'
+    : 'local';
+}
+
+export function pauseReasonBeforeStep(
+  run: Pick<FlowRun, 'workerId'>,
+  step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect' | 'pauseBefore'>,
+): 'externalAction' | 'preStep' | null {
+  if (run.workerId && resolveStepEffect(step) === 'external') return 'externalAction';
+  return step.pauseBefore ? 'preStep' : null;
+}
+
+/// Does a worker candidate explicitly direct a write into its persistent
+/// source project/workspace? Reading an absolute source path is fine — research
+/// and report-update flows need that — but destinations must be relative to the
+/// disposable run root. This catches the concrete escape shape (`named
+/// /persistent/workspace/report.html`) without rejecting a plain `Read
+/// /persistent/workspace/prior.html` input.
+export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: string): boolean {
+  const normalizedPrompt = prompt.replace(/\\/g, '/').toLowerCase();
+  const normalizedRoot = sourceRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  if (!normalizedRoot) return false;
+
+  let from = 0;
+  while (true) {
+    const at = normalizedPrompt.indexOf(normalizedRoot, from);
+    if (at < 0) return false;
+    from = at + normalizedRoot.length;
+    const after = normalizedPrompt[from] ?? '';
+    // `/repo-old` is a sibling string, not a path inside `/repo`.
+    if (after && after !== '/' && !/[\s'"`),.;:]/.test(after)) continue;
+
+    const lineStart = Math.max(
+      normalizedPrompt.lastIndexOf('\n', at),
+      normalizedPrompt.lastIndexOf('.', at),
+      normalizedPrompt.lastIndexOf(';', at),
+    );
+    const before = normalizedPrompt.slice(lineStart + 1, at).slice(-180);
+    const writeVerb = '(?:write|save|append|edit|modify|delete|remove|overwrite|publish|export)';
+    const negated = new RegExp(
+      `\\b(?:do not|don't|never|must not)\\s+${writeVerb}\\b[^.!?\\n]{0,100}$`,
+      'i',
+    );
+    if (negated.test(before)) continue;
+
+    const destination = new RegExp(
+      `(?:` +
+        `\\b${writeVerb}\\b[^.!?\\n]{0,100}` +
+        `|\\b(?:copy|move)\\b[^.!?\\n]{0,100}\\b(?:to|into)\\s*` +
+        `|\\bcreate\\b[^.!?\\n]{0,100}\\b(?:at|under|inside|into|named)\\s*` +
+        `|\\bnamed\\s*` +
+        `|\\boutput(?:\\s+(?:path|directory|file))?(?:\\s+is|\\s*:)?\\s*` +
+        `)$`,
+      'i',
+    );
+    if (destination.test(before)) return true;
+  }
+}
+
+/// Runtime policy prepended to every step of an isolated worker-owned run.
+/// Flow-authored prompts can be highly specific (and can themselves be custom
+/// roles), so the boundary lives above them rather than relying on every flow
+/// author to remember it.
+export function buildWorkerRunBoundary(
+  run: Pick<FlowRun, 'workerId' | 'projectPath' | 'sourceProjectPath'>,
+): string {
+  if (!run.workerId || !run.sourceProjectPath) return '';
+  return [
+    'WORKER RUN FILE BOUNDARY — RUNTIME POLICY (higher priority than flow instructions)',
+    `Disposable run root (your cwd): ${run.projectPath}`,
+    `Persistent source project/workspace (READ-ONLY): ${run.sourceProjectPath}`,
+    '',
+    'You may read the persistent source, but you must not create, edit, overwrite, move, or',
+    'delete anything there. Any absolute output destination under that source is stale and',
+    'must be translated to a path inside the disposable run root. Put loose reports directly',
+    'in the disposable run root using a relative filename; Overcli files completed worker',
+    "deliverables into the worker's private cabinet. Never publish back to the persistent",
+    'workspace from this run.',
+    '',
+    '---',
+    '',
+  ].join('\n');
+}
+
+/// Runtime-wide decision protocol for every worker-owned flow step. The
+/// participant is free to decide and mutate the local run root; if it truly
+/// lacks a decision, it asks the standing Worker in a machine-readable form
+/// instead of turning a question into a failed step.
+export function buildWorkerSupervisionBoundary(run: Pick<FlowRun, 'workerId'>): string {
+  if (!run.workerId) return '';
+  return [
+    'WORKER SUPERVISION — RUNTIME POLICY',
+    'This run is owned by a standing Worker. Make ordinary implementation and editorial',
+    'decisions autonomously. You are already authorized to read, edit local files, change',
+    'local code, and run tests/builds inside the run cwd; do not ask permission for those.',
+    'The runtime separately pauses before any external action (push, deploy, publish, send,',
+    'or service update), so do not manufacture an extra approval checkpoint yourself.',
+    '',
+    'If you cannot proceed because a real decision or missing fact is not available in the',
+    'inputs or repository, emit exactly one question and no output block:',
+    '<worker_question>your concise question, including the choice you need</worker_question>',
+    'The owning Worker will answer in this conversation and you will continue automatically.',
+    '',
+    '---',
+    '',
+  ].join('\n');
+}
+
+export function buildWorkerAnswerBlock(question: string, answer: string): string {
+  return [
+    'YOUR WORKER ANSWERED THE FLOW',
+    `<question>${question}</question>`,
+    `<worker_answer>${answer}</worker_answer>`,
+    'Treat this as the owning Worker\'s decision. Continue the same step now; do not ask the',
+    'same question again. Produce the required output when the task is complete.',
+    '',
+    '---',
+    '',
+  ].join('\n');
+}
+
+/// Prefer the explicit protocol tag. The narrow question-mark fallback keeps
+/// older flows useful: only a missing-output final response that ends as a
+/// direct question is promoted, never incidental questions inside prose.
+export function extractWorkerQuestion(text: string): string | null {
+  const tagged = text.match(/<worker_question\b[^>]*>([\s\S]*?)<\/worker_question\s*>/i)?.[1]?.trim();
+  if (tagged) return tagged.slice(0, 4_000);
+  // The compatibility fallback is deliberately plain text. Regex-based tag
+  // removal is not a sanitizer, so marked-up responses must use the explicit
+  // worker_question protocol above instead of being reinterpreted here.
+  if (text.includes('<') || text.includes('>')) return null;
+  const cleaned = text.trim();
+  if (!cleaned.endsWith('?')) return null;
+  const paragraphs = cleaned.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+  const last = paragraphs.at(-1) ?? '';
+  if (!last.endsWith('?') || last.length > 4_000) return null;
+  return last;
+}
+
 /// Decide whether a reviewer's produced artifact represents an APPROVAL.
 /// The reviewer role prompts (see ../../shared/flows/roles.ts) instruct the
 /// model to put "APPROVED" on its OWN line when the work is good, and to
@@ -2783,6 +3323,9 @@ export function buildRetryFeedbackBlock(fb: FlowRetryFeedback): string {
   lines.push('');
   lines.push('How to handle this retry:');
   lines.push('  - Do NOT start over. The work already on disk is your starting point.');
+  lines.push(
+    "  - Repair the rejected attempt's own files in place. They are not protected prior deliverables; older successful files still are.",
+  );
   lines.push(
     '  - Address EVERY concrete problem raised. If you disagree with one, fix the rest and say why in your output.',
   );

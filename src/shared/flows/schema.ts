@@ -120,6 +120,18 @@ export interface FlowStep {
   /// Defaults applied by the runtime if absent — typically `acceptEdits`
   /// for steps with write/bash tools, `default` otherwise.
   permissionMode?: PermissionMode;
+  /// What kind of side effect this step is allowed to produce. `local`
+  /// covers edits and commands inside the run's cwd; `external` covers
+  /// pushes, deploys, messages, tickets, PRs, and other writes outside it.
+  /// Worker-owned runs automatically pause before every external step.
+  /// Optional for compatibility with older flow files; the runtime applies
+  /// a conservative legacy inference when it is absent.
+  effect?: 'local' | 'external';
+  /// Whether this step's output is an approval verdict that gates the rest
+  /// of the flow. Built-in reviewer roles gate automatically. Custom roles
+  /// should set this explicitly so action/delivery prose that merely mentions
+  /// an earlier approval cannot be mistaken for a reviewer.
+  verdictGate?: boolean;
   rebound?: FlowReboundConfig;
   onFail?: FlowFailureAction;
   /// When true, the runtime pauses BEFORE entering this step. The just-
@@ -200,7 +212,7 @@ export interface FlowStepAttempt {
   /// - `reboundExhausted`: critic never approved within maxIters.
   /// - `error`: hard failure (subprocess crashed, output parse failed, …).
   /// - `aborted`: user aborted the run mid-step.
-  outcome?: 'success' | 'reboundExhausted' | 'error' | 'aborted';
+  outcome?: 'success' | 'question' | 'reboundExhausted' | 'error' | 'aborted';
   errorMessage?: string;
   reboundRounds?: number;
   /// Accumulated token usage for this attempt. Summed from `assistant`
@@ -315,6 +327,10 @@ export type FlowRunState =
   /// `reason`:
   /// - `preStep`: parked at a `pause_before` step; Continue finalizes the
   ///   prior step's artifact from any hijack chat, then advances.
+  /// - `externalAction`: a worker-owned run is waiting for approval before
+  ///   a push, message, publish, deploy, or external service mutation.
+  /// - `needsInput`: the owning Worker could not answer a flow question and
+  ///   escalated it to the user.
   /// - `failure`: a step failed (or a reviewer rejected) and the on-fail
   ///   policy left the run for the user to decide.
   /// - `interrupted`: the run was mid-step when the app last closed. On
@@ -322,7 +338,11 @@ export type FlowRunState =
   ///   with `nextStepId` pointing at the interrupted step, so Continue
   ///   re-runs that step from scratch instead of the run being abandoned as
   ///   `aborted`. Earlier steps' artifacts are intact and kept as inputs.
-  | { kind: 'paused'; nextStepId: string; reason: 'preStep' | 'failure' | 'interrupted' }
+  | {
+      kind: 'paused';
+      nextStepId: string;
+      reason: 'preStep' | 'externalAction' | 'needsInput' | 'failure' | 'interrupted';
+    }
   | { kind: 'done'; success: boolean }
   | { kind: 'aborted' }
   /// Post-completion stewardship tail — see WatchState. Reached from `done`
@@ -366,11 +386,21 @@ export interface FlowRun {
   /// Per-step attempts, in order. A step that ran twice via `on_fail.goto`
   /// has two entries.
   attempts: Array<{ stepId: string } & FlowStepAttempt>;
+  /// Visible worker↔flow handoffs. A participant may ask its owning Worker
+  /// for a decision instead of stopping for the user; the runtime records
+  /// both sides here so the exchange is inspectable in the run pane.
+  workerExchanges?: FlowWorkerExchange[];
   /// Set when the run was launched with `runIn: 'worktree'`. Absent for
   /// runs that share the project's main checkout. The renderer uses these
   /// to surface the worktree's branch + offer review/merge actions on a
   /// completed run.
   worktreePath?: string;
+  /// Set after a single-project flow worktree is brought into the main
+  /// project with "Check out locally". At that point `projectPath` has been
+  /// rebound to `sourceProjectPath` and `worktreePath` has been cleared, so
+  /// participant chat, history replay, re-runs, and watch turns all continue
+  /// from the real checkout instead of trying to spawn in a deleted tree.
+  checkedOutLocally?: boolean;
   branchName?: string;
   /// Branch the worktree(s) were forked from (single project AND every
   /// member of a workspace worktree run share one base). Persisted so the
@@ -451,6 +481,18 @@ export interface FlowRun {
   /// `flowRunTitle`). Absent until the user renames the run — a run is
   /// identified by what was asked of it until they say otherwise.
   title?: string;
+}
+
+export interface FlowWorkerExchange {
+  id: UUID;
+  stepId: string;
+  participantId: string;
+  askedAt: number;
+  question: string;
+  answeredAt?: number;
+  answer?: string;
+  status: 'asking' | 'answered' | 'escalated' | 'failed';
+  note?: string;
 }
 
 /// Maximum length of a user-supplied run title. Titles are display-only
