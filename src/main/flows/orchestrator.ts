@@ -40,7 +40,10 @@ import {
   parseCandidates,
 } from '../../shared/flows/orchestration';
 import { SCHEDULE_AUTO_APPROVE_MAX } from '../../shared/flows/schedule';
-import { pickDrafterBackend, drafterModelFor } from '../../shared/flows/drafterBackend';
+import {
+  pickDrafterBackend,
+  resolveProducerModel,
+} from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
 import type { RunnerManager } from '../runner';
 import {
@@ -202,8 +205,16 @@ export class OrchestratorImpl {
     /// Files the user attached to the ask.
     attachments?: Attachment[];
     /// Override the producer's model (a worker's cheap heartbeat model).
-    /// The backend is still picked by health — this only swaps the model id.
+    /// Paired with `backend` below when the caller knows it; on its own it is
+    /// translated to the chosen backend's equivalent tier rather than trusted
+    /// blindly — see `resolveProducerModel`.
     model?: string;
+    /// The backend `model` was chosen for. Preferred over the user's default
+    /// when it's healthy and enabled, so a worker pinned to Codex keeps
+    /// planning on Codex after the user switches their default to Claude.
+    /// Falls back to the usual health pick when it isn't usable, and the
+    /// model is translated to match whatever backend wins.
+    backend?: Backend;
     /// Attribute this turn's streamed progress to a worker's shift. The
     /// renderer routes attributed progress to the Workers pane instead of
     /// the Orchestrator's Ask pane.
@@ -219,7 +230,7 @@ export class OrchestratorImpl {
     // and can't happen inside a sync predicate.
     const healthy = await healthyBackends(settings.backendPaths);
     const backend = pickDrafterBackend({
-      preferred: settings.preferredBackend,
+      preferred: args.backend ?? settings.preferredBackend,
       isHealthy: (b: Backend) => healthy.has(b),
       isEnabled: (b: Backend) => settings.disabledBackends[b] !== true,
     });
@@ -230,7 +241,10 @@ export class OrchestratorImpl {
           'No CLI is signed in to investigate with. Set up Claude, Codex, Gemini, or Copilot in Settings first.',
       };
     }
-    const model = args.model?.trim() || drafterModelFor(backend);
+    // Never trust a pinned model against a backend it may not belong to: the
+    // pin and the backend are resolved from different places and can drift
+    // apart (a worker hired under one default provider, run under another).
+    const model = resolveProducerModel(backend, args.model, settings.flowModelDefaults);
     // Run in the project so MCP servers scoped to that repo (and the model's
     // own file tools) resolve; fall back to home if no project path given.
     const cwd = args.projectPath?.trim() || os.homedir();

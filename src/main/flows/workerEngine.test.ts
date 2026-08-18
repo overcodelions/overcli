@@ -46,6 +46,7 @@ function makeHarness(
     /// was a treasury.
     pool?: number;
     generatedFlow?: WorkerEngineDeps['generatedFlow'];
+    clearActivity?: WorkerEngineDeps['clearActivity'];
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -143,6 +144,7 @@ function makeHarness(
       },
     },
     generatedFlow: opts.generatedFlow,
+    clearActivity: opts.clearActivity,
   });
 
   async function flush(): Promise<void> {
@@ -1037,6 +1039,9 @@ describe('WorkerEngine memory reset', () => {
     if (!res.ok) return;
     expect(res.entries).toBeGreaterThan(0);
     expect(res.files).toBe(0);
+    expect(res.shifts).toBe(0);
+    expect(res.errands).toBe(0);
+    expect(res.runs).toBe(0);
     expect(h.journal.filter((e) => e.workerId === 'worker-1')).toEqual([]);
     // Another worker's memory is not the caller's to wipe.
     expect(h.journal.filter((e) => e.workerId === 'worker-2')).toHaveLength(1);
@@ -1053,6 +1058,30 @@ describe('WorkerEngine memory reset', () => {
     const last = h.parked[h.parked.length - 1];
     expect(last.prompt).toContain('This is your shift #1.');
     expect(last.prompt).toContain('never worked a shift before');
+  });
+
+  it('clears shift, errand, and child-run history as part of the same reset', () => {
+    const cleared: string[] = [];
+    const h = makeHarness({
+      seed: [seedWorker()],
+      clearActivity: (workerId) => {
+        cleared.push(workerId);
+        return { shifts: 3, errands: 2, runs: 4 };
+      },
+    });
+    h.engine.start();
+
+    const res = h.engine.resetMemory('worker-1');
+
+    expect(res).toEqual({
+      ok: true,
+      entries: 0,
+      files: 0,
+      shifts: 3,
+      errands: 2,
+      runs: 4,
+    });
+    expect(cleared).toEqual(['worker-1']);
   });
 
   it('does not fire the moment the reset lands', async () => {
