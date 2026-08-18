@@ -24,6 +24,7 @@ import {
   reviseFlowFromPrompt,
   type DraftDeps,
 } from './drafter';
+import { log } from '../diagnostics';
 
 export interface HireFlowOption {
   id: string;
@@ -60,23 +61,12 @@ function hireSystemPrompt(
     '<worker>',
     '{',
     '  "name": "short persona name, e.g. Scout",',
-    '  "jobDescription": "the job, rewritten to be self-contained and explicit — the worker plans',
-    '                     every shift from ONLY this text plus its own journal",',
-    '  "cadence": { "kind": "daily", "time": "09:00", "days": [1,2,3,4,5] }',
-    '             OR { "kind": "interval", "everyMinutes": 120, "days": [1,2,3,4,5],',
-    '                  "window": { "start": "08:00", "end": "18:00" } },',
-    `  "maxItemsPerShift": 1-${WORKER_MAX_ITEMS_PER_SHIFT},`,
-    '  "budgetUSDPerMonth": number,',
-    `  "heartbeatModel": "model id for the cheap shift-planning turn — default "${hints.fast}"",`,
-    '  "flowId": "id of an EXISTING flow from the list below that fits the launched work",',
-    '  "flowRequest": "ONLY when no existing flow fits: describe the flow this worker needs,',
-    '                  as a flow-drafting instruction (steps, reviews, deliverable). Carry the',
-    '                  user\'s OWN WORDS about the deliverable through verbatim — the audience,',
-    '                  the tone, the format, what it must show. A flow designer downstream reads',
-    '                  this field and never meets the user, so a detail you summarize away is a',
-    '                  detail the flow will not have",',
-    '  "projectPath": "ONLY when the job clearly names or implies one of the projects listed',
-    '                  below: its exact path. Omit when unsure — the user picks the default."',
+    '  "jobDescription": "the job, rewritten to be self-contained and explicit — the worker plans every shift from ONLY this text plus its own journal",',
+    '  "cadence": { "kind": "daily", "time": "09:00", "days": [1, 2, 3, 4, 5] },',
+    `  "maxItemsPerShift": ${Math.min(3, WORKER_MAX_ITEMS_PER_SHIFT)},`,
+    '  "budgetUSDPerMonth": 10,',
+    `  "heartbeatModel": "${hints.fast}",`,
+    '  "flowRequest": "Describe the flow needed for the worker\'s daily work."',
     '}',
     '</worker>',
     '',
@@ -95,6 +85,9 @@ function hireSystemPrompt(
     '  - Exactly one of flowId / flowRequest. Prefer an existing flow when one genuinely fits.',
     '  - Cadence: match the job. Morning triage → daily on weekdays. Monitoring → interval',
     '    with a waking-hours window. Never more often than every 15 minutes.',
+    '    Interval cadence uses everyMinutes, days, and an optional start/end window.',
+    `  - maxItemsPerShift is a number from 1 to ${WORKER_MAX_ITEMS_PER_SHIFT}.`,
+    '  - projectPath is optional and must be an exact path from the projects list when clear.',
     '  - Budget: modest by default ($5–$25/month) unless the description implies heavy work.',
     '  - Days use 0 = Sunday … 6 = Saturday.',
     '  - Do not invent fields. Do not write anything after </worker>.',
@@ -122,6 +115,19 @@ export async function draftWorkerFromPrompt(
   });
   if (!out.ok) return out;
 
+  const signedOutPatterns: Partial<Record<Backend, string[]>> = {
+    claude: ['not logged in', 'please run /login', 'claude auth login'],
+    copilot: ['not logged in', 'copilot login', 'authentication required'],
+    gemini: ['not logged in', '/auth', 'select an auth method'],
+    codex: ['not logged in', 'codex login', 'authentication required'],
+  };
+  const reply = out.text.toLowerCase();
+  const patterns = signedOutPatterns[out.backend] ?? [];
+  const hasWorkerBlock = /<worker>[\s\S]*<\/worker>/i.test(out.text);
+  if (!hasWorkerBlock && patterns.some((pattern) => reply.includes(pattern))) {
+    return { ok: false, error: `${out.label} is not signed in. Run the backend login command and try again.` };
+  }
+
   const contract = parseWorkerContract(out.text, {
     knownFlowIds: args.flows.map((f) => f.id),
     defaultHeartbeatModel: drafterModelHints(out.backend, deps.settings.flowModelDefaults).fast,
@@ -131,7 +137,9 @@ export async function draftWorkerFromPrompt(
     knownProjectPaths: args.projects.map((p) => p.path),
   });
   if (!contract) {
-    return { ok: false, error: `${out.label} returned no parseable worker contract.` };
+    const excerpt = out.text.replace(/\s+/g, ' ').trim().slice(0, 500);
+    log('warn', 'workers.hire', `Worker contract parse failed. Reply: ${excerpt}`);
+    return { ok: false, error: `${out.label} returned no parseable worker contract. Reply: ${excerpt}` };
   }
   // Keep the human half of the reply for the review screen; drop the block.
   const summary = out.text.replace(/<worker>[\s\S]*$/i, '').trim();

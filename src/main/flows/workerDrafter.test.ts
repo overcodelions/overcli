@@ -5,6 +5,7 @@ import type { AppSettings } from '../../shared/types';
 const { mockQuery } = vi.hoisted(() => ({
   mockQuery: vi.fn(),
 }));
+const { mockLog } = vi.hoisted(() => ({ mockLog: vi.fn() }));
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: mockQuery,
@@ -14,19 +15,20 @@ vi.mock('../health', () => ({
   probeBackendHealth: vi.fn(async () => ({ kind: 'ready' })),
   healthyBackends: vi.fn(async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama'])),
 }));
+vi.mock('../diagnostics', () => ({ log: mockLog }));
 
 import { draftWorkerFromPrompt } from './workerDrafter';
 import type { DraftDeps } from './drafter';
 
-function claudeDeps(): DraftDeps {
+function claudeDeps(backend: 'claude' | 'copilot' | 'gemini' | 'codex' = 'claude', reply = ''): DraftDeps {
   return {
     settings: {
-      preferredBackend: 'claude',
+      preferredBackend: backend,
       disabledBackends: {},
       backendPaths: {},
-      claudeTransport: 'sdk',
+      claudeTransport: backend === 'claude' ? 'sdk' : 'cli',
     } as unknown as AppSettings,
-    runner: {} as DraftDeps['runner'],
+    runner: { oneShot: vi.fn(async () => ({ ok: true, text: reply })) } as unknown as DraftDeps['runner'],
   };
 }
 
@@ -75,6 +77,7 @@ function hireReply(flowRequest?: string): string {
 describe('draftWorkerFromPrompt', () => {
   beforeEach(() => {
     mockQuery.mockReset();
+    mockLog.mockReset();
   });
 
   it("hands the flow designer the user's own words, not just the hire paraphrase", async () => {
@@ -146,5 +149,57 @@ describe('draftWorkerFromPrompt', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.draftedFlow).toBeUndefined();
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports Claude authentication output directly', async () => {
+    mockQuery.mockReturnValueOnce(claudeStream('Not logged in · Please run /login'));
+    const result = await draftWorkerFromPrompt({ jobDescription: JOB, flows: [], projects: [] }, claudeDeps());
+    expect(result).toEqual({ ok: false, error: expect.stringContaining('not signed in') });
+    expect(result).not.toEqual({ ok: false, error: expect.stringContaining('no parseable worker contract') });
+  });
+
+  it('does not mistake /auth in a valid worker contract for sign-out', async () => {
+    const deps = claudeDeps(
+      'gemini',
+      hireReply('Use /auth as the endpoint in the requested flow.'),
+    );
+    const result = await draftWorkerFromPrompt(
+      { jobDescription: JOB, flows: [], projects: [] },
+      deps,
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([
+    ['copilot', 'Copilot login required'],
+    ['gemini', 'Select an auth method at /auth'],
+    ['codex', 'Authentication required: run codex login'],
+  ] as const)('reports %s authentication output directly', async (backend, reply) => {
+    const result = await draftWorkerFromPrompt(
+      { jobDescription: JOB, flows: [], projects: [] },
+      claudeDeps(backend, reply),
+    );
+    expect(result).toEqual({ ok: false, error: expect.stringContaining('not signed in') });
+    expect(result).not.toEqual({ ok: false, error: expect.stringContaining('no parseable worker contract') });
+  });
+
+  it('logs and returns a normalized bounded excerpt for malformed output', async () => {
+    mockQuery.mockReturnValueOnce(claudeStream(`bad\n\t${'x'.repeat(600)}`));
+    const result = await draftWorkerFromPrompt({ jobDescription: JOB, flows: [], projects: [] }, claudeDeps());
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain(`Reply: bad ${'x'.repeat(496)}`);
+    expect(mockLog).toHaveBeenCalledWith('warn', 'workers.hire', expect.stringContaining('Reply: bad '));
+  });
+
+  it('puts a syntactically valid worker example in the system prompt', async () => {
+    mockQuery.mockReturnValueOnce(claudeStream(hireReply('existing-flow')));
+    await draftWorkerFromPrompt(
+      { jobDescription: JOB, flows: [{ id: 'existing-flow', name: 'Existing' }], projects: [] },
+      claudeDeps(),
+    );
+    const prompt = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    const block = prompt.match(/<worker>\n([\s\S]*?)\n<\/worker>/)?.[1];
+    expect(block).toBeTruthy();
+    expect(() => JSON.parse(block!)).not.toThrow();
   });
 });
