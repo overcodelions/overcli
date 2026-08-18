@@ -2546,12 +2546,16 @@ function PlanItemRow({
 /// in the run pane, where the artifact it would accept is readable.
 const PAUSE_ACTION: Record<string, string> = {
   preStep: "continue",
+  externalAction: "approve & run",
+  needsInput: "answer & resume",
   failure: "re-run step",
   interrupted: "resume",
 };
 
 const PAUSE_HINT: Record<string, string> = {
   preStep: "Hand the prior step\u2019s output to the next step and keep going",
+  externalAction: "Approve the external effect, then run this step",
+  needsInput: "Open the run, read the Worker exchange, answer, and resume the step",
   failure:
     "Run the failed step again. To accept its result instead, open the run and Override.",
   interrupted:

@@ -9,12 +9,15 @@ import {
   buildRetryFeedbackBlock,
   detectArtifactKind,
   extractOutput,
+  extractWorkerQuestion,
   isGatingReviewStep,
   isGatingReviewerRole,
   isReviewApproved,
   stepParticipantKey,
   stuckStepMessage,
   summarizeReviewRejection,
+  pauseReasonBeforeStep,
+  resolveStepEffect,
   workerPromptWritesToPersistentRoot,
 } from './runtime';
 
@@ -134,21 +137,24 @@ describe('isGatingReviewStep', () => {
         role: 'custom',
         systemPromptOverride:
           'End with APPROVED only if every check passes; otherwise end with CHANGES REQUESTED.',
+        verdictGate: true,
       }),
     ).toBe(true);
   });
 
-  it('gates custom reviews that use REJECTED or NOT APPROVED', () => {
+  it('keeps legacy custom reviewer loops gating', () => {
     expect(
       isGatingReviewStep({
         role: 'custom',
         systemPromptOverride: 'Return APPROVED or REJECTED.',
+        onFail: { action: 'goto', target: 'build', maxRetries: 2 },
       }),
     ).toBe(true);
     expect(
       isGatingReviewStep({
         role: 'custom',
         systemPromptOverride: 'Finish with APPROVED; use NOT APPROVED when incomplete.',
+        onFail: { action: 'goto', target: 'build', maxRetries: 2 },
       }),
     ).toBe(true);
   });
@@ -166,6 +172,72 @@ describe('isGatingReviewStep', () => {
         systemPromptOverride: 'Describe whether the request was approved by the customer.',
       }),
     ).toBe(false);
+    expect(
+      isGatingReviewStep({
+        role: 'custom',
+        systemPromptOverride:
+          'Send the Slack DM only after the prior reviewer says APPROVED. If it said NOT APPROVED, do not send.',
+      }),
+    ).toBe(false);
+  });
+});
+
+describe('worker effect boundary', () => {
+  const step = (systemPromptOverride: string, extra = {}) => ({
+    id: 'step',
+    role: 'custom' as const,
+    systemPromptOverride,
+    tools: ['Read'],
+    output: 'receipt.md',
+    ...extra,
+  });
+
+  it('allows local code edits, commands, tests, and builds without a pause', () => {
+    expect(resolveStepEffect(step('Edit the controller locally and run its tests.'))).toBe('local');
+    expect(resolveStepEffect(step('Run the build and write report.md.'))).toBe('local');
+    expect(resolveStepEffect(step('Edit the code and do not push the branch.'))).toBe('local');
+    expect(pauseReasonBeforeStep({ workerId: 'worker-1' }, step('Edit local code.'))).toBeNull();
+  });
+
+  it('gates pushes, messages, and service mutations for worker runs', () => {
+    expect(resolveStepEffect(step('Push the branch and open a pull request.'))).toBe('external');
+    expect(resolveStepEffect(step('Send the final brief in a Slack DM.'))).toBe('external');
+    expect(resolveStepEffect(step('Create the approved ProductBoard insight.'))).toBe('external');
+    expect(
+      pauseReasonBeforeStep({ workerId: 'worker-1' }, step('Update the Jira ticket.')),
+    ).toBe('externalAction');
+  });
+
+  it('honors explicit metadata and leaves ordinary flows unchanged', () => {
+    const external = step('Write a local file.', { effect: 'external' as const });
+    expect(resolveStepEffect(external)).toBe('external');
+    expect(
+      resolveStepEffect(step('Push the branch.', { effect: 'local' as const })),
+    ).toBe('external');
+    expect(pauseReasonBeforeStep({ workerId: undefined }, external)).toBeNull();
+  });
+});
+
+describe('extractWorkerQuestion', () => {
+  it('extracts the explicit flow-to-worker protocol', () => {
+    expect(extractWorkerQuestion('<worker_question>Blank or Unknown?</worker_question>')).toBe(
+      'Blank or Unknown?',
+    );
+  });
+
+  it('accepts a direct final question but ignores ordinary prose', () => {
+    expect(extractWorkerQuestion('I checked the inputs.\n\nWhich fallback should I use?')).toBe(
+      'Which fallback should I use?',
+    );
+    expect(extractWorkerQuestion('I checked the inputs and found no answer.')).toBeNull();
+  });
+
+  it('does not reinterpret tag-shaped text as a legacy plain-text question', () => {
+    expect(
+      extractWorkerQuestion(
+        '<scr<script>ipt>alert(1)</script>Which fallback should I use?</script>',
+      ),
+    ).toBeNull();
   });
 });
 

@@ -78,6 +78,7 @@ import {
 } from './workerJournal';
 import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
 import { clearWorkerFiles, fileWorkerDeliverable, workerFilesDir } from './workerFiles';
+import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
 /// a minute so sleep/clock-steps can't strand a timer.
@@ -192,6 +193,14 @@ export interface WorkerEngineDeps {
   /// as one dependency lets the worker reset stay the single owner of what
   /// "start fresh" means without coupling this engine to either store.
   clearActivity?: (workerId: UUID) => { shifts: number; errands: number; runs: number };
+  /// One read-only model turn used when a participant asks its standing
+  /// Worker for a decision. Main owns backend selection and RunnerManager;
+  /// the engine owns persona, journal context, and answer/escalation policy.
+  supervisorTurn?: (args: {
+    worker: Worker;
+    prompt: string;
+    cwd: string;
+  }) => Promise<{ ok: true; text: string } | { ok: false; error: string }>;
 }
 
 export class WorkerEngine {
@@ -289,6 +298,33 @@ export class WorkerEngine {
 
   journalFor(id: UUID): WorkerJournalEntry[] {
     return this.journal.load(id);
+  }
+
+  /// Answer a question raised by one of this Worker's child flow steps.
+  /// Serialized through the same per-worker queue as shifts and errands so
+  /// the persona never takes two contradictory planning turns at once.
+  answerFlowQuestion(request: FlowWorkerQuestionRequest): Promise<FlowWorkerQuestionResult> {
+    return this.enqueue(request.workerId, async () => {
+      const worker = this.workers.get(request.workerId);
+      if (!worker) return { kind: 'error', error: 'The owning Worker no longer exists.' };
+      if (!this.deps.supervisorTurn) {
+        return { kind: 'error', error: 'Worker supervision is not available in this build.' };
+      }
+
+      const prompt = this.buildFlowQuestionPrompt(worker, request);
+      const result = await this.deps.supervisorTurn({
+        worker,
+        prompt,
+        cwd: request.projectPath || worker.projectPath,
+      });
+      if (!result.ok) return { kind: 'error', error: result.error };
+
+      const escalation = taggedBody(result.text, 'escalate');
+      if (escalation) return { kind: 'escalate', reason: escalation };
+      const answer = taggedBody(result.text, 'worker_answer') ?? result.text.trim();
+      if (!answer) return { kind: 'error', error: 'The Worker returned an empty answer.' };
+      return { kind: 'answer', answer };
+    });
   }
 
   nextShiftAt(id: UUID): number | null {
@@ -1002,6 +1038,52 @@ export class WorkerEngine {
     return parts.join('\n');
   }
 
+  private buildFlowQuestionPrompt(worker: Worker, request: FlowWorkerQuestionRequest): string {
+    const artifacts = request.artifacts.length > 0
+      ? request.artifacts
+          .map(
+            (artifact) =>
+              `<artifact name="${artifact.name}" from="${artifact.producedByStepId}">\n` +
+              `${artifact.body}\n</artifact>`,
+          )
+          .join('\n\n')
+      : '(no earlier artifacts)';
+    return [
+      `You are "${worker.name}", the standing Worker who owns this flow run.`,
+      '',
+      'YOUR JOB DESCRIPTION',
+      worker.jobDescription,
+      '',
+      'YOUR JOURNAL (newest first)',
+      this.journal.digest(worker.id) || '(no journal yet)',
+      '',
+      'THE RUN',
+      `Flow: ${request.flowName}`,
+      request.runTitle ? `Run: ${request.runTitle}` : '',
+      `Original request: ${request.userPrompt}`,
+      `Current step: ${request.step.id} (${request.step.role})`,
+      request.step.systemPromptOverride
+        ? `Step instructions: ${request.step.systemPromptOverride}`
+        : '',
+      '',
+      'EARLIER ARTIFACTS',
+      artifacts,
+      '',
+      'THE FLOW IS ASKING YOU',
+      request.question,
+      '',
+      'Answer as the responsible owner. Make reasonable product, technical, and editorial',
+      'decisions yourself. Local file/code edits and tests are already authorized and are not a',
+      'reason to escalate. Do not perform any action in this turn; give the participant the',
+      'decision it needs. If the answer requires private human knowledge, credentials, or approval',
+      'for an external action, emit <escalate>one concise reason and what input is needed</escalate>.',
+      'Otherwise emit <worker_answer>your direct, actionable answer</worker_answer>.',
+      'Return exactly one of those tags and no commentary outside it.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  }
+
   /// The user's one-off ask, bounded by the worker's standing job rather than
   /// treated as a free-standing prompt.
 
@@ -1367,6 +1449,12 @@ export class WorkerEngine {
       scorecard: snap.scorecard,
     });
   }
+}
+
+function taggedBody(text: string, tag: string): string | null {
+  const escaped = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const body = text.match(new RegExp(`<${escaped}\\b[^>]*>([\\s\\S]*?)<\\/${escaped}\\s*>`, 'i'))?.[1];
+  return body?.trim() || null;
 }
 
 /// Start of the calendar month containing `now`, local time — budget months
