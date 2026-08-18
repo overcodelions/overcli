@@ -10,6 +10,10 @@
 // mocked out, and runtime.test.ts imports the module clean.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => [],
@@ -241,6 +245,51 @@ describe('on_fail.goto retry feedback', () => {
     expect(h.sends).toHaveLength(1);
     expect(h.sends[0]!.prompt).not.toContain('RETRY');
     expect(h.sends[0]!.displayText).not.toContain('Retry');
+  });
+
+  it('refreshes a diff from the worktree when Verify is re-run after hijack edits', async () => {
+    const projectPath = mkdtempSync(join(tmpdir(), 'overcli-live-diff-'));
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: projectPath, encoding: 'utf8' }).trim();
+      git('init');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      writeFileSync(join(projectPath, 'feature.ts'), 'export const value = 1;\n');
+      git('add', 'feature.ts');
+      git('commit', '-m', 'baseline');
+      const baselineCommit = git('rev-parse', 'HEAD');
+
+      const build = r.flowSnapshot.steps.find((s) => s.id === 'build')!;
+      const review = r.flowSnapshot.steps.find((s) => s.id === 'review')!;
+      build.output = 'diff';
+      review.inputs = ['diff'];
+      r.projectPath = projectPath;
+      r.baselineCommit = baselineCommit;
+      r.artifacts.diff = {
+        name: 'diff',
+        kind: 'diff',
+        body: 'STALE DIFF FROM BEFORE THE HIJACK FIX',
+        producedByStepId: 'build',
+        producedAt: 1,
+      };
+
+      // This edit represents the premium Verify participant fixing the
+      // files during hijack chat after its automatic retry budget ran out.
+      writeFileSync(join(projectPath, 'feature.ts'), 'export const value = 2;\n');
+      r.state = { kind: 'paused', nextStepId: 'review', reason: 'failure' };
+
+      const result = h.rt.rerunFromStep({ runId: RUN_ID, stepId: 'review' });
+      await flush();
+
+      expect(result).toEqual({ ok: true });
+      expect(h.sends).toHaveLength(1);
+      expect(h.sends[0]!.prompt).toContain('+export const value = 2;');
+      expect(h.sends[0]!.prompt).not.toContain('STALE DIFF FROM BEFORE THE HIJACK FIX');
+      expect(r.artifacts.diff.body).toContain('+export const value = 2;');
+    } finally {
+      rmSync(projectPath, { recursive: true, force: true });
+    }
   });
 
   it('does not leak a rejection onto a different step', async () => {

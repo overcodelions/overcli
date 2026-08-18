@@ -140,16 +140,17 @@ export function coordinatorRootPath(coordinatorId: string): string {
 /// Files an agent wrote at a synthetic root — the loose output a run left
 /// behind that belongs to no repository.
 ///
-/// A workspace or coordinator root is a folder of symlinks plus the three
-/// context files, and nothing else is ours: every REGULAR file directly
-/// inside it was put there by the run. That is not a rare case — Overcli's
-/// own flows tell steps to write a dashboard or a report "alongside the run
-/// artifacts", which lands exactly here, and a coordinator root is deleted
-/// with its run. Anything not copied out of one is lost.
+/// A workspace or coordinator root is a folder of project symlinks plus the
+/// three context files. Regular files and regular directories were put there
+/// by a run. Reports are usually loose top-level files, but flow prompts also
+/// commonly name a relative path such as `reports/weekly.html`; ignoring
+/// directories makes that visible in the run and then silently lose it when
+/// the disposable coordinator root is removed.
 ///
-/// Only the top level is walked. A subdirectory at a workspace root is a
-/// project checkout the agent cloned or a scratch tree, not a deliverable,
-/// and recursing would file a build output tree under a worker.
+/// Walk nested regular directories with hard depth/entry/file-count/size
+/// bounds. Symlinked project checkouts are never followed, and only files
+/// touched during this run are returned, so this cannot turn into a recursive
+/// copy of a member repository or an old workspace scratch tree.
 export interface LooseRootFile {
   name: string;
   path: string;
@@ -163,37 +164,57 @@ const MAX_LOOSE_FILES = 20;
 /// Big enough for a self-contained HTML page with inlined images, small
 /// enough that a stray database dump is not silently copied into userData.
 const MAX_LOOSE_FILE_BYTES = 16 * 1024 * 1024;
+const MAX_LOOSE_SCAN_DEPTH = 4;
+const MAX_LOOSE_SCAN_ENTRIES = 2_000;
 
 export function looseSyntheticRootFiles(
   rootPath: string,
   opts?: { since?: number },
 ): LooseRootFile[] {
   if (!isSyntheticRootPath(rootPath)) return [];
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(rootPath, { withFileTypes: true });
-  } catch {
-    return [];
-  }
   const since = opts?.since ?? 0;
   const out: LooseRootFile[] = [];
-  for (const entry of entries) {
-    if (!entry.isFile()) continue; // symlinks and dirs are ours, or are checkouts
-    if (entry.name.startsWith('.')) continue;
-    if ((CONTEXT_FILES as readonly string[]).includes(entry.name)) continue;
-    const full = path.join(rootPath, entry.name);
+  let scanned = 0;
+
+  const walk = (dir: string, relDir: string, depth: number): void => {
+    if (depth > MAX_LOOSE_SCAN_DEPTH || scanned >= MAX_LOOSE_SCAN_ENTRIES) return;
+    let entries: fs.Dirent[];
     try {
-      const stat = fs.lstatSync(full);
-      if (!stat.isFile()) continue;
-      // A workspace root outlives any one run, so without this an old run's
-      // leftovers would be filed again under whatever ran most recently.
-      if (stat.mtimeMs < since) continue;
-      if (stat.size > MAX_LOOSE_FILE_BYTES) continue;
-      out.push({ name: entry.name, path: full, bytes: stat.size, modifiedAt: stat.mtimeMs });
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      // Raced with a delete, or unreadable — not a deliverable either way.
+      return;
     }
-  }
+
+    for (const entry of entries) {
+      if (++scanned > MAX_LOOSE_SCAN_ENTRIES) return;
+      if (entry.name.startsWith('.')) continue;
+      if (!relDir && (CONTEXT_FILES as readonly string[]).includes(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+
+      // Dirent lets us reject a project checkout symlink before any stat or
+      // recursion can follow it.
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        walk(full, rel, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      try {
+        const stat = fs.lstatSync(full);
+        if (!stat.isFile()) continue;
+        // A workspace root outlives any one run, so without this an old run's
+        // leftovers would be filed again under whatever ran most recently.
+        if (stat.mtimeMs < since) continue;
+        if (stat.size > MAX_LOOSE_FILE_BYTES) continue;
+        out.push({ name: rel, path: full, bytes: stat.size, modifiedAt: stat.mtimeMs });
+      } catch {
+        // Raced with a delete, or unreadable — not a deliverable either way.
+      }
+    }
+  };
+
+  walk(rootPath, '', 0);
   return out.sort((a, b) => a.modifiedAt - b.modifiedAt).slice(-MAX_LOOSE_FILES);
 }
 
@@ -542,4 +563,3 @@ ${instructionsSection}`;
     }
   }
 }
-
