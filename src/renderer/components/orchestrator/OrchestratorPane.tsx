@@ -1187,6 +1187,13 @@ function QueuePane({
 }) {
   const full = width === undefined;
   const [filter, setFilter] = useState<RunFilter>(null);
+  // The Workers sidebar sets this before switching tabs; without a scroll the
+  // user lands on a page of batches and has to hunt for the one they clicked.
+  const activeId = useOrchestratorStore((s) => s.activeOrchestrationId);
+  const activeRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }, [activeId]);
   const tally = tallyOf(batches);
   const finished = batches.filter((b) => b.completedAt);
 
@@ -1246,12 +1253,21 @@ function QueuePane({
           ) : (
             <div className="space-y-4">
               {visible.map((b) => (
-                <BatchLedger
+                <div
                   key={b.id}
-                  batch={b}
-                  flowById={flowById}
-                  filter={isOrchestrationAwaitingApproval(b) ? null : filter}
-                />
+                  ref={b.id === activeId ? activeRef : undefined}
+                  className={
+                    b.id === activeId
+                      ? '-m-1 rounded-lg p-1 ring-1 ring-violet-400/40'
+                      : undefined
+                  }
+                >
+                  <BatchLedger
+                    batch={b}
+                    flowById={flowById}
+                    filter={isOrchestrationAwaitingApproval(b) ? null : filter}
+                  />
+                </div>
               ))}
             </div>
           )}
@@ -1289,6 +1305,21 @@ function BatchLedger({
   // decision in progress, and it's resolved the moment they hit Approve.
   const [declined, setDeclined] = useState<Set<string>>(() => new Set());
   const [approving, setApproving] = useState(false);
+  // Which item's details are open. Index into `batch.items`, so ←/→ in the
+  // modal can walk the batch without re-deriving the list.
+  const [detailIndex, setDetailIndex] = useState<number | null>(null);
+  const detailRequestId = useOrchestratorStore((s) => s.detailRequestId);
+  const clearDetailRequest = useOrchestratorStore((s) => s.clearOrchestrationDetailRequest);
+
+  // Someone arrived here already knowing which proposal they meant (a
+  // worker's "Review & pick"). Open its first parked ask and consume the
+  // request, so a later re-render doesn't reopen what they closed.
+  useEffect(() => {
+    if (detailRequestId !== batch.id) return;
+    const i = batch.items.findIndex((it) => it.status === 'proposed');
+    setDetailIndex(i >= 0 ? i : 0);
+    clearDetailRequest();
+  }, [detailRequestId, batch.id, batch.items, clearDetailRequest]);
   const proposed = batch.items.filter((i) => i.status === 'proposed');
   const keeping = proposed.filter((i) => !declined.has(i.candidate.id));
   // A schedule with `autoApprove` set launches its first N and parks the
@@ -1309,6 +1340,14 @@ function BatchLedger({
       setApproving(false);
     }
   }
+
+  const toggleKeep = (candidateId: string) =>
+    setDeclined((prev) => {
+      const next = new Set(prev);
+      if (next.has(candidateId)) next.delete(candidateId);
+      else next.add(candidateId);
+      return next;
+    });
 
   /// Decline every parked item without touching the ones already in flight.
   /// An empty approve list cancels exactly the `proposed` items, which is what
@@ -1405,19 +1444,37 @@ function BatchLedger({
               orchestrationId={batch.id}
               kept={it.status === 'proposed' ? !declined.has(it.candidate.id) : undefined}
               onToggleKeep={
-                it.status === 'proposed'
-                  ? () =>
-                      setDeclined((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(it.candidate.id)) next.delete(it.candidate.id);
-                        else next.add(it.candidate.id);
-                        return next;
-                      })
-                  : undefined
+                it.status === 'proposed' ? () => toggleKeep(it.candidate.id) : undefined
               }
+              onOpenDetail={() => setDetailIndex(i)}
             />
           ))}
       </div>
+      {detailIndex !== null && (
+        <ProposalDetailModal
+          batch={batch}
+          index={detailIndex}
+          flowById={flowById}
+          declined={declined}
+          onToggleKeep={toggleKeep}
+          onNavigate={(n) => setDetailIndex(Math.max(0, Math.min(batch.items.length - 1, n)))}
+          onClose={() => setDetailIndex(null)}
+          onApprove={() => {
+            setDetailIndex(null);
+            void approve();
+          }}
+          onDiscard={() => {
+            setDetailIndex(null);
+            void (alreadyLaunched > 0
+              ? discardParked()
+              : window.overcli.invoke('orchestrator:abort', { id: batch.id }));
+          }}
+          discardLabel={alreadyLaunched > 0 ? 'Discard the rest' : 'Discard all'}
+          approving={approving}
+          keepingCount={keeping.length}
+          proposedCount={proposed.length}
+        />
+      )}
     </div>
   );
 }
@@ -1669,12 +1726,205 @@ function statusRail(status: OrchestrationItem['status']): string {
   }
 }
 
+/// The full text of one ask, with the batch's launch controls on it. A ledger
+/// row can only fit a title, and a proposal you can't read is one you can't
+/// judge — so the prompt gets a surface of its own.
+function ProposalDetailModal({
+  batch,
+  index,
+  flowById,
+  declined,
+  onToggleKeep,
+  onNavigate,
+  onClose,
+  onApprove,
+  onDiscard,
+  discardLabel,
+  approving,
+  keepingCount,
+  proposedCount,
+}: {
+  batch: Orchestration;
+  index: number;
+  flowById: Map<string, Flow>;
+  declined: Set<string>;
+  onToggleKeep: (candidateId: string) => void;
+  onNavigate: (nextIndex: number) => void;
+  onClose: () => void;
+  onApprove: () => void;
+  onDiscard: () => void;
+  /// Mirrors the banner: "Discard the rest" when part of the batch is already
+  /// in flight, because only the parked items are cancelled.
+  discardLabel: string;
+  approving: boolean;
+  keepingCount: number;
+  proposedCount: number;
+}) {
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const setDetailMode = useStore((s) => s.setDetailMode);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+      else if (e.key === 'ArrowLeft' && index > 0) onNavigate(index - 1);
+      else if (e.key === 'ArrowRight' && index < batch.items.length - 1) onNavigate(index + 1);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [batch.items.length, index, onClose, onNavigate]);
+
+  const item = batch.items[index];
+  if (!item) return null;
+  const flow = flowById.get(item.flowId);
+  const isProposed = item.status === 'proposed';
+  const kept = !declined.has(item.candidate.id);
+
+  const openRun = () => {
+    if (!item.runId) return;
+    setActiveRun(item.runId);
+    setDetailMode('flows');
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-8"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        className="bg-surface-elevated rounded-lg shadow-2xl border border-card-strong w-full max-w-[760px] max-h-[82vh] overflow-hidden flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 px-5 py-3 border-b border-card">
+          <span className="text-[11px] uppercase tracking-wider text-ink-faint font-bold truncate">
+            {batch.title}
+            {batch.origin?.kind === 'worker' && ` · ${batch.origin.workerName}`}
+            {batch.origin?.kind === 'schedule' && ` · ${batch.origin.scheduleName}`}
+          </span>
+          <span className="ml-auto text-[11px] text-ink-faint tabular-nums">
+            {index + 1} of {batch.items.length}
+          </span>
+          <button
+            onClick={() => onNavigate(index - 1)}
+            disabled={index === 0}
+            title="Previous ask (←)"
+            className="text-xs text-ink-faint hover:text-ink px-1.5 py-1 rounded hover:bg-white/5 disabled:opacity-25"
+          >
+            ←
+          </button>
+          <button
+            onClick={() => onNavigate(index + 1)}
+            disabled={index >= batch.items.length - 1}
+            title="Next ask (→)"
+            className="text-xs text-ink-faint hover:text-ink px-1.5 py-1 rounded hover:bg-white/5 disabled:opacity-25"
+          >
+            →
+          </button>
+          <button
+            onClick={onClose}
+            className="text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
+          >
+            ✕
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+          <div className="flex items-start gap-3">
+            <span
+              className="mt-1.5 w-2 h-2 rounded-full flex-none"
+              style={{ background: statusRail(item.status) }}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-[15px] font-semibold text-ink leading-snug">
+                {item.candidate.title}
+              </div>
+              {item.candidate.note && (
+                <div className="text-xs text-ink-faint mt-1">{item.candidate.note}</div>
+              )}
+            </div>
+            <StatusLabel item={item} />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink-muted">
+            <span className="flex items-center gap-1.5">
+              {flow && (
+                <span
+                  className="w-2 h-2 rounded-full flex-none"
+                  style={{ background: backendColor(flow.participants?.[0]?.backend) }}
+                />
+              )}
+              {flow?.name ?? item.flowId}
+            </span>
+            {item.candidate.size && <span>size · {item.candidate.size}</span>}
+            {item.baseBranch && <span>base · {item.baseBranch}</span>}
+            {item.branchName && <span>branch · {item.branchName}</span>}
+            {item.note && <span className="text-ink-faint">{item.note}</span>}
+          </div>
+
+          <div>
+            <div className="text-[11px] uppercase tracking-wider text-ink-faint font-bold mb-1.5">
+              The ask
+            </div>
+            <div className="rounded-lg bg-card px-4 py-3 text-sm">
+              <Markdown source={item.candidate.prompt} />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 px-5 py-3 border-t border-card">
+          {isProposed ? (
+            <>
+              <label className="flex items-center gap-2 text-xs text-ink-muted cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={kept}
+                  onChange={() => onToggleKeep(item.candidate.id)}
+                />
+                Include this ask
+              </label>
+              <div className="flex-1" />
+              <button
+                onClick={onDiscard}
+                disabled={approving}
+                className="text-[11px] px-2.5 py-1 rounded-md border border-card-strong text-ink-muted hover:bg-white/5 disabled:opacity-40"
+              >
+                {discardLabel}
+              </button>
+              <button
+                onClick={onApprove}
+                disabled={approving || keepingCount === 0}
+                className="text-[11px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+              >
+                {approving ? 'Launching…' : `Launch ${keepingCount} of ${proposedCount}`}
+              </button>
+            </>
+          ) : (
+            <>
+              <div className="flex-1" />
+              <button
+                onClick={openRun}
+                disabled={!item.runId}
+                className="text-[11px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+              >
+                Open run →
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LedgerRow({
   item,
   flowById,
   orchestrationId,
   kept,
   onToggleKeep,
+  onOpenDetail,
 }: {
   item: OrchestrationItem;
   flowById: Map<string, Flow>;
@@ -1682,6 +1932,7 @@ function LedgerRow({
   /// Set only for a `proposed` item: whether it's still in the approval set.
   kept?: boolean;
   onToggleKeep?: () => void;
+  onOpenDetail: () => void;
 }) {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const setDetailMode = useStore((s) => s.setDetailMode);
@@ -1702,8 +1953,18 @@ function LedgerRow({
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpenDetail}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        onOpenDetail();
+      }}
+      title="Open details"
       className={
-        'relative grid items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors ' +
+        'relative grid cursor-pointer items-center gap-2.5 rounded-lg bg-card px-3.5 py-2 hover:bg-card-strong transition-colors ' +
+        'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
         (kept === false ? 'opacity-45' : '')
       }
       // The flow column flexes rather than sitting at a fixed 112px: the same
@@ -1725,18 +1986,14 @@ function LedgerRow({
             type="checkbox"
             checked={kept ?? true}
             onChange={onToggleKeep}
+            onClick={(e) => e.stopPropagation()}
             title="Include this ask when you launch the batch"
             className="flex-none"
           />
         )}
-        <button
-          className="text-left font-medium text-[13px] text-ink truncate hover:text-accent disabled:hover:text-ink"
-          onClick={openRun}
-          disabled={!item.runId}
-          title={item.candidate.prompt}
-        >
+        <span className="text-left font-medium text-[13px] text-ink truncate">
           {item.candidate.title}
-        </button>
+        </span>
       </div>
       <span
         className="text-xs text-ink-muted flex items-center gap-1.5 truncate"
@@ -1752,7 +2009,10 @@ function LedgerRow({
       </span>
       {retryable ? (
         <button
-          onClick={retry}
+          onClick={(e) => {
+            e.stopPropagation();
+            retry();
+          }}
           className="text-xs font-medium text-right text-ink-faint hover:text-accent whitespace-nowrap"
           title={item.note ? `${item.note} — click to retry` : 'Retry this item'}
         >
@@ -1760,7 +2020,10 @@ function LedgerRow({
         </button>
       ) : item.status === 'paused' ? (
         <button
-          onClick={openRun}
+          onClick={(e) => {
+            e.stopPropagation();
+            openRun();
+          }}
           className="text-xs font-medium text-right text-amber-400 hover:text-amber-300 whitespace-nowrap"
           title="Paused at a checkpoint — continue this run in the Flows tab"
         >
