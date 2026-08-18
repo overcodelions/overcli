@@ -155,6 +155,36 @@ describe('on_fail.goto retry feedback', () => {
     expect(prompt.indexOf('RETRY 1 of 2')).toBeLessThan(prompt.indexOf('INPUTS:'));
   });
 
+  it('sends an AI-drafted custom review back when its explicit verdict rejects', async () => {
+    const review = r.flowSnapshot.steps.find((s) => s.id === 'review')!;
+    review.role = 'custom';
+    review.systemPromptOverride =
+      'End with APPROVED only if every check passes; otherwise end with CHANGES REQUESTED.';
+    r.state = { kind: 'running', currentStepId: 'review' };
+    (h.rt as never as { stepBuffers: Map<UUID, unknown> }).stepBuffers.set(RUN_ID, {
+      assistantText:
+        '<output name="review.md">Verdict: CHANGES REQUESTED.\n\nThe report is not self-contained.</output>',
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+      },
+      costUSD: 0,
+    });
+
+    (h.rt as never as { onStepFinished: (a: UUID, b: string) => void }).onStepFinished(
+      RUN_ID,
+      'review',
+    );
+    await flush();
+
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]!.prompt).toContain('RETRY 1 of 2');
+    expect(h.sends[0]!.prompt).toContain('The report is not self-contained.');
+    expect(r.state).toEqual({ kind: 'running', currentStepId: 'build' });
+  });
+
   it('puts the rejecting review in front of the model even though build never declared it', async () => {
     await reject(h.rt, r);
 

@@ -70,7 +70,7 @@ import {
   worktreeNameTaken,
 } from '../git';
 import { branchSlugFromPrompt } from './branchName';
-import { ensureCoordinatorSymlinkRoot } from '../workspace';
+import { ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
 import { notifyWatch } from './watch/notify';
@@ -552,6 +552,27 @@ export class FlowRuntimeImpl {
     const flow = flows.find(f => f.id === args.flowId);
     if (!flow) return { ok: false, error: `Flow "${args.flowId}" not found.` };
     if (flow.steps.length === 0) return { ok: false, error: 'Flow has no steps.' };
+
+    // A worker-owned worktree run must not smuggle an output back into the
+    // persistent source project/workspace by naming an absolute destination.
+    // The run gets an isolated cwd below; relative output belongs there and is
+    // filed into the worker's cabinet on completion. Refuse the launch before
+    // minting worktrees when the candidate itself still asks for a source-root
+    // write. (The per-step boundary in buildStepPrompt covers downstream steps
+    // that might otherwise derive such a destination from their artifacts.)
+    if (
+      args.workerId &&
+      args.runIn === 'worktree' &&
+      workerPromptWritesToPersistentRoot(args.userPrompt, args.projectPath)
+    ) {
+      return {
+        ok: false,
+        error:
+          'Worker flow refused: its prompt asks to write into the persistent project/workspace. ' +
+          'Use a relative output path so the file stays in the disposable run root and is filed ' +
+          "into the worker's cabinet after completion.",
+      };
+    }
 
     // Preflight: every backend healthy, every model reachable, the cwd
     // exists, every step has tools, etc. We bail before spinning up any
@@ -1217,6 +1238,13 @@ export class FlowRuntimeImpl {
         } catch (err) {
           log('error', 'flows.deleteRun', `worktree remove threw for ${m.name}`, err);
         }
+      }
+      // The coordinator is the disposable workspace-shaped cwd. Loose
+      // reports belong here alongside the member symlinks; removing only the
+      // member worktrees left those outputs and the symlink farm behind.
+      const removed = removeCoordinatorSymlinkRoot(run.id);
+      if (!removed.ok) {
+        log('warn', 'flows.deleteRun', `coordinator remove failed: ${removed.error}`);
       }
       return;
     }
@@ -2157,13 +2185,13 @@ export class FlowRuntimeImpl {
     // advanceAfterStep below if there's another step) or `done`.
     this.checkpoint(run);
 
-    // Verdict gate: a reviewer-role step produced its artifact cleanly, but
-    // if the verdict isn't an approval the flow must NOT roll on to
+    // Verdict gate: a built-in or explicit custom review produced its
+    // artifact cleanly, but if the verdict isn't an approval the flow must NOT roll on to
     // downstream steps (tests/push) over disapproved work. Route it through
     // the normal `on_fail` policy — pause by default, or `goto` to loop
     // back to an earlier step the user wired up. The artifact itself is
     // already recorded above, so the user sees the rejecting review.
-    if (isGatingReviewerRole(step.role) && !isReviewApproved(body)) {
+    if (isGatingReviewStep(step) && !isReviewApproved(body)) {
       const gist = summarizeReviewRejection(body);
       this.handleStepFailure(
         runId,
@@ -2342,6 +2370,7 @@ export class FlowRuntimeImpl {
       if (art) rawInputs.push({ name: feedback.artifactName, body: art.body });
     }
     const retryBlock = feedback ? `${buildRetryFeedbackBlock(feedback)}\n\n---\n\n` : '';
+    const workerBoundary = buildWorkerRunBoundary(run);
 
     const inputParts: InputPart[] = rawInputs.map((p) => {
       const isLarge = p.body.length > FlowRuntimeImpl.INLINE_THRESHOLD_BYTES;
@@ -2435,7 +2464,7 @@ export class FlowRuntimeImpl {
     const preamble = preambleNotes.length > 0 ? `\n\nNOTE: ${preambleNotes.join(' ')}` : '';
 
     return (
-      `${retryBlock}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
+      `${retryBlock}${workerBoundary}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
       `<output name="${step.output}">…</output>.`
     );
@@ -2709,6 +2738,96 @@ export function isGatingReviewerRole(role: FlowRolePreset): boolean {
   return GATING_REVIEWER_ROLES.has(role);
 }
 
+/// Custom steps are how AI-drafted flows express domain-specific reviews:
+/// they keep the specialist instructions in `systemPromptOverride` instead of
+/// using one of the generic reviewer presets. Treat one as a verdict gate when
+/// its prompt explicitly defines both sides of the approval contract. This is
+/// intentionally narrower than "custom + on_fail" — custom action steps also
+/// use failure policies for tool errors and must not be forced to emit an
+/// APPROVED verdict.
+export function isGatingReviewStep(
+  step: Pick<FlowStep, 'role' | 'systemPromptOverride'>,
+): boolean {
+  if (isGatingReviewerRole(step.role)) return true;
+  if (step.role !== 'custom') return false;
+  const prompt = step.systemPromptOverride ?? '';
+  const definesApproval = /\bAPPROVED\b/i.test(prompt);
+  const definesRejection = /\b(?:CHANGES\s+REQUESTED|REJECTED|NOT\s+APPROVED)\b/i.test(prompt);
+  return definesApproval && definesRejection;
+}
+
+/// Does a worker candidate explicitly direct a write into its persistent
+/// source project/workspace? Reading an absolute source path is fine — research
+/// and report-update flows need that — but destinations must be relative to the
+/// disposable run root. This catches the concrete escape shape (`named
+/// /persistent/workspace/report.html`) without rejecting a plain `Read
+/// /persistent/workspace/prior.html` input.
+export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: string): boolean {
+  const normalizedPrompt = prompt.replace(/\\/g, '/').toLowerCase();
+  const normalizedRoot = sourceRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  if (!normalizedRoot) return false;
+
+  let from = 0;
+  while (true) {
+    const at = normalizedPrompt.indexOf(normalizedRoot, from);
+    if (at < 0) return false;
+    from = at + normalizedRoot.length;
+    const after = normalizedPrompt[from] ?? '';
+    // `/repo-old` is a sibling string, not a path inside `/repo`.
+    if (after && after !== '/' && !/[\s'"`),.;:]/.test(after)) continue;
+
+    const lineStart = Math.max(
+      normalizedPrompt.lastIndexOf('\n', at),
+      normalizedPrompt.lastIndexOf('.', at),
+      normalizedPrompt.lastIndexOf(';', at),
+    );
+    const before = normalizedPrompt.slice(lineStart + 1, at).slice(-180);
+    const writeVerb = '(?:write|save|append|edit|modify|delete|remove|overwrite|publish|export)';
+    const negated = new RegExp(
+      `\\b(?:do not|don't|never|must not)\\s+${writeVerb}\\b[^.!?\\n]{0,100}$`,
+      'i',
+    );
+    if (negated.test(before)) continue;
+
+    const destination = new RegExp(
+      `(?:` +
+        `\\b${writeVerb}\\b[^.!?\\n]{0,100}` +
+        `|\\b(?:copy|move)\\b[^.!?\\n]{0,100}\\b(?:to|into)\\s*` +
+        `|\\bcreate\\b[^.!?\\n]{0,100}\\b(?:at|under|inside|into|named)\\s*` +
+        `|\\bnamed\\s*` +
+        `|\\boutput(?:\\s+(?:path|directory|file))?(?:\\s+is|\\s*:)?\\s*` +
+        `)$`,
+      'i',
+    );
+    if (destination.test(before)) return true;
+  }
+}
+
+/// Runtime policy prepended to every step of an isolated worker-owned run.
+/// Flow-authored prompts can be highly specific (and can themselves be custom
+/// roles), so the boundary lives above them rather than relying on every flow
+/// author to remember it.
+export function buildWorkerRunBoundary(
+  run: Pick<FlowRun, 'workerId' | 'projectPath' | 'sourceProjectPath'>,
+): string {
+  if (!run.workerId || !run.sourceProjectPath) return '';
+  return [
+    'WORKER RUN FILE BOUNDARY — RUNTIME POLICY (higher priority than flow instructions)',
+    `Disposable run root (your cwd): ${run.projectPath}`,
+    `Persistent source project/workspace (READ-ONLY): ${run.sourceProjectPath}`,
+    '',
+    'You may read the persistent source, but you must not create, edit, overwrite, move, or',
+    'delete anything there. Any absolute output destination under that source is stale and',
+    'must be translated to a path inside the disposable run root. Put loose reports directly',
+    'in the disposable run root using a relative filename; Overcli files completed worker',
+    "deliverables into the worker's private cabinet. Never publish back to the persistent",
+    'workspace from this run.',
+    '',
+    '---',
+    '',
+  ].join('\n');
+}
+
 /// Decide whether a reviewer's produced artifact represents an APPROVAL.
 /// The reviewer role prompts (see ../../shared/flows/roles.ts) instruct the
 /// model to put "APPROVED" on its OWN line when the work is good, and to
@@ -2783,6 +2902,9 @@ export function buildRetryFeedbackBlock(fb: FlowRetryFeedback): string {
   lines.push('');
   lines.push('How to handle this retry:');
   lines.push('  - Do NOT start over. The work already on disk is your starting point.');
+  lines.push(
+    "  - Repair the rejected attempt's own files in place. They are not protected prior deliverables; older successful files still are.",
+  );
   lines.push(
     '  - Address EVERY concrete problem raised. If you disagree with one, fix the rest and say why in your output.',
   );

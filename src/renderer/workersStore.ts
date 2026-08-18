@@ -9,7 +9,7 @@ import { create } from 'zustand';
 
 import { useFlowsStore } from './flowsStore';
 
-import type { Attachment, UUID } from '@shared/types';
+import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
 import { moveInRoster, placeInRoster } from '@shared/flows/worker';
 import {
@@ -39,6 +39,7 @@ export interface WorkerDraft {
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
+  heartbeatBackend?: Backend;
   flowIds: string[];
   enabled: boolean;
 }
@@ -154,10 +155,15 @@ interface WorkersActions {
   runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
   clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
-  /// Start this worker over: journal gone, shift numbering back to #1, and
-  /// with `files` its own directory emptied too. Resolves to what was thrown
-  /// away so the caller can say it out loud, or null if the reset failed.
-  resetMemory(id: string, files: boolean): Promise<{ entries: number; files: number } | null>;
+  /// Return this worker to a just-hired clean slate. Resolves to what was
+  /// thrown away so the caller can say it out loud, or null on failure.
+  resetMemory(id: string): Promise<{
+    entries: number;
+    files: number;
+    shifts: number;
+    errands: number;
+    runs: number;
+  } | null>;
   /// This worker as a share file. Read on demand rather than held in state:
   /// it is a rendering of the worker plus its flows, and a copy kept here
   /// would go stale the moment either is edited.
@@ -199,6 +205,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     caps: { ...w.caps },
     budgetUSDPerMonth: w.budgetUSDPerMonth,
     heartbeatModel: w.heartbeatModel,
+    heartbeatBackend: w.heartbeatBackend,
     flowIds: [...w.flowIds],
     enabled: w.enabled,
   };
@@ -219,6 +226,7 @@ export function draftFromContract(
     caps: { maxItemsPerShift: contract.maxItemsPerShift, runIn: 'worktree' },
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
+    heartbeatBackend: contract.heartbeatBackend,
     flowIds: flowId ? [flowId] : [],
     enabled: true,
   };
@@ -247,6 +255,7 @@ export function draftFromPortable(
     caps: { ...worker.caps },
     budgetUSDPerMonth: worker.budgetUSDPerMonth,
     heartbeatModel: worker.heartbeatModel,
+    heartbeatBackend: worker.heartbeatBackend,
     flowIds: worker.flowIds.filter((id) => available.has(id)),
     enabled: true,
   };
@@ -610,17 +619,39 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set((s) => ({ journals: { ...s.journals, [id]: entries } }));
   },
 
-  async resetMemory(id, files) {
-    const res = await window.overcli.invoke('workers:resetMemory', { id, files });
+  async resetMemory(id) {
+    const res = await window.overcli.invoke('workers:resetMemory', { id });
     if (!res.ok) {
       set({ error: res.error });
       return null;
     }
-    // The pane renders the journal from this map, so an emptied journal has to
-    // be emptied here too — the worker event that follows carries the record,
-    // not its history.
-    set((s) => ({ journals: { ...s.journals, [id]: [] } }));
-    return { entries: res.entries, files: res.files };
+    // The pane renders this local state alongside the persisted ledgers. Clear
+    // it in the same turn so a no-launch errand reply or stale error does not
+    // survive an otherwise clean worker.
+    set((s) => {
+      const errandError = { ...s.errandError };
+      const errandResult = { ...s.errandResult };
+      const errandBusy = { ...s.errandBusy };
+      const errandSending = { ...s.errandSending };
+      delete errandError[id];
+      delete errandResult[id];
+      delete errandBusy[id];
+      delete errandSending[id];
+      return {
+        journals: { ...s.journals, [id]: [] },
+        errandError,
+        errandResult,
+        errandBusy,
+        errandSending,
+      };
+    });
+    return {
+      entries: res.entries,
+      files: res.files,
+      shifts: res.shifts,
+      errands: res.errands,
+      runs: res.runs,
+    };
   },
 
   async shareYaml(id) {
