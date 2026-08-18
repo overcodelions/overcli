@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { codexTransportPermissions } from '../permissionRules';
+import { TURBO_SYSTEM_PROMPT } from './turbo';
 import { extractCodexExecSnapshot } from '../streamSnapshot';
 import { resolveSymlinkWritableRoots } from '../workspace';
 import type { StreamEvent } from '../../shared/types';
@@ -79,12 +80,19 @@ export const codexBackend: BackendSpec = {
   },
 
   buildEnvelope(args: BackendSendArgs, ctx: BackendCtx): string {
+    // Codex has no `--append-system-prompt`, so turbo's directive rides in
+    // the prompt envelope instead. Effort is already handled upstream —
+    // `toBackendArgs` pins it to low, which `buildArgs` turns into
+    // `model_reasoning_effort`. Turbo does NOT touch codex MCP servers:
+    // `-c mcp_servers={}` does not clear them, and no verified override
+    // exists, so claiming it here would be a lie in the UI.
+    const turboPrefix = args.turbo ? `${TURBO_SYSTEM_PROMPT}\n\n` : '';
     const transcript = ctx.codexExecTranscriptFor(args.conversationId);
-    if (!transcript || transcript.length === 0) return args.prompt;
+    if (!transcript || transcript.length === 0) return `${turboPrefix}${args.prompt}`;
     const history = transcript
       .map((t) => `User: ${t.user}\n\nAssistant: ${t.assistant}`)
       .join('\n\n---\n\n');
-    return `Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
+    return `${turboPrefix}Prior turns in this conversation (for context only — do not repeat them):\n\n${history}\n\n---\n\nNew user message:\n\n${args.prompt}`;
   },
 
   makeParserState(opts?: MakeParserStateOpts): CodexStreamState {

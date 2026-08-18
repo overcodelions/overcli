@@ -27,6 +27,7 @@ import {
   resolvePreset,
 } from '@shared/reboundPresets';
 import { pathBasename } from '@shared/workspaceNames';
+import { turboSummary, turboSupported } from '@shared/turbo';
 import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation, useConversationRoot } from '../hooks';
@@ -38,6 +39,8 @@ import {
   isBackendEnabled,
   modeLabel,
   permissionTone,
+  turboLabel,
+  turboTone,
 } from './conversationHeaderHelpers';
 
 /// Full-featured header matching the Swift ConversationHeader:
@@ -64,6 +67,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     setPrimary,
     setPermission,
     setEffort,
+    setTurbo,
     setModel,
     setReviewBackend,
     setReviewMode,
@@ -93,6 +97,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       setPrimary: s.setPrimaryBackend,
       setPermission: s.setPermissionMode,
       setEffort: s.setEffortLevel,
+      setTurbo: s.setTurbo,
       setModel: s.setBackendModel,
       setReviewBackend: s.setReviewBackend,
       setReviewMode: s.setReviewMode,
@@ -111,6 +116,12 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     })),
   );
   const runnerIsRunning = useRunnerIsRunning(conversationId);
+  // Dirty-tree signal for the Diff button. The old header badge spelled
+  // out +N −M, but the ChangesBar above the composer already does that —
+  // here we only need "is there anything to look at", carried by colour.
+  const dirtyFileCount = useStore(
+    (s) => s.gitStatusByConv[conversationId]?.changes.length ?? 0,
+  );
   // Folder icon target: the conversation's root (worktree for agents,
   // project path for plain conversations). Resolved the same way
   // FileEditorPane does so the right-pane explorer roots match where
@@ -316,6 +327,20 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           />
         )}
 
+        {turboSupported(backend) && (
+          <IconPicker
+            icon={<BoltIcon />}
+            label={turboLabel(conv.turbo)}
+            tone={turboTone(conv.turbo)}
+            iconOnly={iconsOnly}
+            items={[
+              { value: 'off', label: 'Turbo off — full depth' },
+              { value: 'on', label: `Turbo on — ${turboSummary(backend)}` },
+            ]}
+            onPick={(v) => void setTurbo(conversationId, v === 'on')}
+          />
+        )}
+
         {!compact && (
           <ReboundPicker
             conv={conv}
@@ -400,18 +425,24 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
                 : isPlainWorkspaceConv
                   ? ({ type: 'workspaceDiff', convId: conversationId } as const)
                   : ({ type: 'projectDiff', convId: conversationId } as const);
-            const tooltip = conv.worktreePath
+            const baseTooltip = conv.worktreePath
               ? `View diff · rebase / merge / push / PR (${conv.branchName} → ${conv.baseBranch ?? 'main'})`
               : isCoordinator
                 ? 'Review each project and merge independently'
                 : isPlainWorkspaceConv
                   ? 'View working-tree diff vs HEAD across all workspace projects'
                   : 'View working-tree diff vs HEAD';
+            const tooltip = dirtyFileCount
+              ? `${baseTooltip} · ${dirtyFileCount} file${dirtyFileCount === 1 ? '' : 's'} changed`
+              : baseTooltip;
             return (
               <button
                 onClick={() => openSheet(targetSheet)}
                 className={
-                  'flex items-center rounded hover:bg-white/5 text-xs text-ink-muted hover:text-ink ' +
+                  'flex items-center rounded hover:bg-white/5 text-xs ' +
+                  // Green while the tree is dirty — the button itself is the
+                  // "there are changes" indicator now.
+                  (dirtyFileCount ? 'diff-add-ink ' : 'text-ink-muted hover:text-ink ') +
                   (iconsOnly ? 'px-1.5 py-1' : 'gap-1.5 px-2 py-1')
                 }
                 title={tooltip}
@@ -638,6 +669,14 @@ function ShieldIcon({ tone }: { tone?: string }) {
         stroke={tone ?? 'currentColor'}
         strokeWidth="1.2"
       />
+    </svg>
+  );
+}
+
+function BoltIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+      <path d="M9 1L3.5 9H7.5L7 15L12.5 7H8.5L9 1Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
     </svg>
   );
 }

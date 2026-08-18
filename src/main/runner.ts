@@ -89,6 +89,7 @@ import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
+import { TURBO_SYSTEM_PROMPT, resolveTurboEffort } from './backends/turbo';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
@@ -461,6 +462,9 @@ interface SendArgs {
   permissionMode: PermissionMode;
   sessionId?: string;
   effortLevel?: EffortLevel;
+  /// Per-send turbo override. Undefined defers to the global setting;
+  /// flow steps set it explicitly from `step.turbo`.
+  turbo?: boolean;
   codexRolloutPaths?: string[];
   attachments?: Attachment[];
   reviewBackend?: string | null;
@@ -509,6 +513,10 @@ interface ActiveProcess {
   prewarmed?: boolean;
   sessionId?: string;
   launchModel: string;
+  /// Resolved turbo at spawn time. Two steps sharing a participant share a
+  /// conversation, so a turbo step following a non-turbo one would silently
+  /// inherit the wrong launch args without this in the change check.
+  launchTurbo: boolean;
   launchPermissionMode: PermissionMode;
   stdoutBuffer: string;
   stderrBuffer: string;
@@ -1207,10 +1215,13 @@ export class RunnerManager {
       model: args.model,
       permissionMode: args.permissionMode,
       sessionId: args.sessionId,
-      effortLevel: args.effortLevel,
+      // Resolved here rather than in each spec so claude and codex stay in
+      // lockstep on what turbo means.
+      effortLevel: resolveTurboEffort(args.turbo, args.effortLevel),
       attachments: args.attachments,
       allowedDirs: args.allowedDirs,
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
+      turbo: args.turbo ?? false,
     };
   }
 
@@ -1423,6 +1434,7 @@ export class RunnerManager {
       lastActivityAt: Date.now(),
       sessionId: args.sessionId,
       launchModel: args.model,
+      launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
@@ -1987,6 +1999,7 @@ export class RunnerManager {
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchModel !== args.model ||
+          existing.launchTurbo !== (args.turbo ?? false) ||
           existing.cwd !== args.cwd);
       // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
       // per turn via turn/start params, so a permission-mode (or model/cwd) change
@@ -3202,6 +3215,7 @@ export class RunnerManager {
       backend: args.backend,
       sessionId: args.sessionId,
       launchModel: args.model,
+      launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
@@ -3801,6 +3815,7 @@ export class RunnerManager {
       lastActivityAt: Date.now(),
       sessionId: args.sessionId,
       launchModel: args.model,
+      launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
       stdoutBuffer: '',
       stderrBuffer: '',
@@ -3861,12 +3876,16 @@ export class RunnerManager {
   ): Promise<void> {
     try {
       const transport = codexTransportPermissions(args.permissionMode);
-      const result = await active.codexAppServer!.sendUserInput(args.prompt, {
+      // The app-server transport bypasses `buildEnvelope`, so turbo's
+      // directive has to be prepended here too or it would apply on the
+      // exec transport only.
+      const turboPrompt = args.turbo ? `${TURBO_SYSTEM_PROMPT}\n\n${args.prompt}` : args.prompt;
+      const result = await active.codexAppServer!.sendUserInput(turboPrompt, {
         cwd: args.cwd,
         model: args.model,
         sandbox: transport.sandbox as CodexAppServerSandboxMode,
         approval: transport.approval as CodexAppServerApprovalPolicy,
-        effortLevel: args.effortLevel,
+        effortLevel: resolveTurboEffort(args.turbo, args.effortLevel),
         attachments: args.attachments,
         // For coordinator-style cwds (a folder of symlinks into each
         // member worktree) workspace-write would otherwise sandbox out

@@ -28,6 +28,8 @@
 //   - `run_in: cwd`, which is downgraded to a worktree on import for the same
 //     reason: only an autonomous worker may touch the working copy, and an
 //     import is never autonomous.
+//   - external-action authority. Like trust, permission to push, send, or
+//     mutate a service belongs to this install and must be granted locally.
 //   - projectPath. It is a path on the sender's disk. The importer picks
 //     their own in the hire editor, which is also the confirmation step.
 

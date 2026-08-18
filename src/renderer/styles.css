@@ -489,17 +489,6 @@ html, body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Brief pulse applied to the commit-button +/- badge whenever the
- * insertions/deletions change. Makes new edits visible at a glance. */
-.git-stats-flash {
-  animation: git-stats-flash-pulse 900ms ease-out;
-  transform-origin: center;
-}
-@keyframes git-stats-flash-pulse {
-  0%, 100% { transform: scale(1); }
-  20% { transform: scale(1.25); }
-}
-
 /* Live flow monogram: breathe the letter's color between its resting tint
  * and a theme peak (near-white in dark, near-black in light) so a running
  * flow reads as alive without flashing or dimming the tile. Only the 50%

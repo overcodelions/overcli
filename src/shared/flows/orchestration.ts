@@ -134,6 +134,9 @@ export interface Orchestration {
         kind: 'worker';
         workerId: UUID;
         workerName: string;
+        /// Snapshot of the worker's explicit external-effects capability.
+        /// Absent on older batches means false.
+        allowExternalActions?: boolean;
         /// Which of a worker's two entry points produced this batch: its
         /// standing cadence (`shift`) or a one-off instruction the user typed
         /// (`errand`). Recorded rather than parsed back out of the batch title,

@@ -308,6 +308,28 @@ function workerBatch(over: Partial<Orchestration> = {}): Orchestration {
 }
 
 describe('WorkerEngine shifts', () => {
+  it('snapshots external-action authority onto the worker batch', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({
+          caps: {
+            maxItemsPerShift: 3,
+            runIn: 'worktree',
+            allowExternalActions: true,
+          },
+        }),
+      ],
+    });
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+
+    expect(h.parked[0].origin).toMatchObject({
+      kind: 'worker',
+      workerId: 'worker-1',
+      allowExternalActions: true,
+    });
+  });
+
   it('fires a probation shift with no auto-approve and the journal exclusions', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.journal.push({

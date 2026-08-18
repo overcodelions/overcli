@@ -394,6 +394,7 @@ interface StoreState {
   setPermissionMode(id: UUID, mode: PermissionMode): Promise<void>;
   setBackendModel(id: UUID, backend: Backend, model: string): Promise<void>;
   setEffortLevel(id: UUID, effort: EffortLevel): Promise<void>;
+  setTurbo(id: UUID, turbo: boolean | undefined): Promise<void>;
   setReviewBackend(id: UUID, backend: string | null): Promise<void>;
   setReviewMode(id: UUID, mode: 'review' | 'collab'): Promise<void>;
   setReviewModel(id: UUID, model: string | null): Promise<void>;
@@ -2348,6 +2349,10 @@ export const useStore = create<StoreState>((set, get) => ({
     mutateConversation(set, get, id, (c) => ({ ...c, effortLevel: effort }));
     await saveConversationState(get);
   },
+  async setTurbo(id, turbo) {
+    mutateConversation(set, get, id, (c) => ({ ...c, turbo }));
+    await saveConversationState(get);
+  },
   async setReviewBackend(id, backend) {
     mutateConversation(set, get, id, (c) => {
       const next = { ...c, reviewBackend: backend };
@@ -2641,6 +2646,9 @@ export const useStore = create<StoreState>((set, get) => ({
       // default; undefined means this conversation predates the setting and
       // should inherit it.
       effortLevel: conv.effortLevel ?? get().settings.defaultEffort,
+      // Undefined defers to the global setting in the runner, so an
+      // untouched conversation follows Settings the way it always has.
+      turbo: conv.turbo,
       codexRolloutPaths: conv.codexRolloutPaths,
       attachments: attachments.length ? attachments : undefined,
       reviewBackend: conv.reviewBackend ?? null,
