@@ -23,6 +23,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
+import { WORKER_ARCHIVE_DIR } from '../../shared/flows/workerCompaction';
 
 /// Biggest file we will read back into the renderer. A worker told to keep a
 /// baseline can write something enormous; the list still shows it, but the
@@ -190,7 +191,14 @@ export function fileWorkerDeliverable(args: {
 }): { written: boolean; name: string } {
   if (args.artifacts.length === 0) return { written: false, name: '' };
   const dir = ensureWorkerFilesDir(args.workerId);
-  const stem = existingJobStem(dir, args) ?? deliverableName({ ...args, extension: '' });
+  // Compaction may already have archived this job. Check there too before
+  // deciding this is new work — otherwise a re-fold (every orchestration
+  // update, every startup) would file a second copy at the top level.
+  const archiveDir = path.join(dir, WORKER_ARCHIVE_DIR);
+  const atRoot = existingJobStem(dir, args);
+  const inArchive = atRoot ? null : existingJobStem(archiveDir, args);
+  const root = inArchive ? archiveDir : dir;
+  const stem = atRoot ?? inArchive ?? deliverableName({ ...args, extension: '' });
 
   // One artifact is a file; several are a folder, so the supporting material
   // travels with the answer instead of scattering four rows across the list
@@ -198,10 +206,10 @@ export function fileWorkerDeliverable(args: {
   if (args.artifacts.length === 1) {
     const only = args.artifacts[0];
     const name = `${stem}${extensionOf(only.name)}`;
-    return fileOnce(path.join(dir, name), only, name);
+    return fileOnce(path.join(root, name), only, name);
   }
 
-  const folder = path.join(dir, stem);
+  const folder = path.join(root, stem);
   let wroteAny = false;
   for (const artifact of args.artifacts) {
     const base = safeBase(artifact.name);
@@ -305,6 +313,12 @@ function extensionOf(name: string): string {
   return /^\.[a-z0-9]{1,8}$/i.test(ext) ? ext : '.md';
 }
 
+/// The shape `deliverableName` produces. Compaction moves ONLY these: a
+/// worker is told to keep baselines, tallies and notes of its own in this
+/// directory under names it chooses, and hiding one of those in `archive/`
+/// would break the job rather than speed it up.
+const FILED_DELIVERABLE = /^\d{4}-\d{2}-\d{2}-\d{4}-(?:shift-\d+|shift|errand)-/;
+
 /// `2026-08-16-1031-errand-why-is-ci-slow.md`
 ///
 /// Date first so the directory sorts chronologically in any file manager and
@@ -381,10 +395,25 @@ export function deliverableFiles(args: {
   at: number;
 }): WorkerFileEntry[] {
   const dir = workerFilesDir(args.workerId);
+  // Compaction moves filed work into `archive/`; a deliverable link that
+  // worked last week has to keep working this week.
+  for (const relRoot of ['', WORKER_ARCHIVE_DIR]) {
+    const found = deliverablesUnder(relRoot ? path.join(dir, relRoot) : dir, relRoot, args);
+    if (found.length > 0) return found;
+  }
+  return [];
+}
+
+function deliverablesUnder(
+  root: string,
+  relRoot: string,
+  args: { task: 'shift' | 'errand'; label: string; title: string; at: number },
+): WorkerFileEntry[] {
   // Whatever the job is actually filed under — which for anything filed before
   // a naming change is not what `deliverableName` would produce today.
-  const stem = existingJobStem(dir, args) ?? deliverableName({ ...args, extension: '' });
-  const folder = path.join(dir, stem);
+  const stem = existingJobStem(root, args) ?? deliverableName({ ...args, extension: '' });
+  const prefix = relRoot ? `${relRoot}/` : '';
+  const folder = path.join(root, stem);
   const out: WorkerFileEntry[] = [];
   try {
     if (fs.existsSync(folder) && fs.statSync(folder).isDirectory()) {
@@ -393,7 +422,7 @@ export function deliverableFiles(args: {
         const full = path.join(folder, entry.name);
         const stat = fs.statSync(full);
         out.push({
-          name: `${stem}/${entry.name}`,
+          name: `${prefix}${stem}/${entry.name}`,
           path: full,
           bytes: stat.size,
           modifiedAt: stat.mtimeMs,
@@ -403,12 +432,12 @@ export function deliverableFiles(args: {
     }
     // A single-artifact run is filed as one file, not a folder — its extension
     // came from the artifact's own name, so look for any of them.
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
       if (entry.name !== stem && !entry.name.startsWith(`${stem}.`)) continue;
-      const full = path.join(dir, entry.name);
+      const full = path.join(root, entry.name);
       const stat = fs.statSync(full);
-      out.push({ name: entry.name, path: full, bytes: stat.size, modifiedAt: stat.mtimeMs });
+      out.push({ name: `${prefix}${entry.name}`, path: full, bytes: stat.size, modifiedAt: stat.mtimeMs });
     }
   } catch {
     // Never filed, or the directory is gone. An empty list is the truth.
@@ -457,4 +486,36 @@ export function deleteWorkerFile(
     log('error', 'worker-files', `could not delete ${name}`, err);
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/// Move filed deliverables older than `cutoffAt` into `archive/`. Nothing is
+/// deleted, and nothing the worker wrote itself is touched.
+export function archiveWorkerFiles(workerId: string, cutoffAt: number): { moved: number } {
+  const root = workerFilesDir(workerId);
+  if (!fs.existsSync(root)) return { moved: 0 };
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return { moved: 0 };
+  }
+  let moved = 0;
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    if (entry.name === WORKER_ARCHIVE_DIR) continue;
+    if (!FILED_DELIVERABLE.test(entry.name)) continue;
+    const full = path.join(root, entry.name);
+    try {
+      if (fs.statSync(full).mtimeMs >= cutoffAt) continue;
+      const destDir = path.join(root, WORKER_ARCHIVE_DIR);
+      const dest = path.join(destDir, entry.name);
+      if (fs.existsSync(dest)) continue;
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.renameSync(full, dest);
+      moved += 1;
+    } catch (err) {
+      log('warn', 'worker-files', `could not archive ${entry.name}`, err);
+    }
+  }
+  return { moved };
 }

@@ -77,7 +77,17 @@ import {
   workerRejectedTitles,
 } from './workerJournal';
 import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
-import { clearWorkerFiles, fileWorkerDeliverable, workerFilesDir } from './workerFiles';
+import {
+  archiveWorkerFiles,
+  clearWorkerFiles,
+  fileWorkerDeliverable,
+  workerFilesDir,
+} from './workerFiles';
+import {
+  WORKER_COMPACTION_KEEP_DAYS,
+  compactionCutoff,
+  isCompactionDue,
+} from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
@@ -409,6 +419,7 @@ export class WorkerEngine {
       // re-anchoring when the worker next runs is a scheduling decision, and
       // it must not tell the worker it has never looked at the project.
       lastPlannedAt: existing?.lastPlannedAt,
+      lastCompactedAt: existing?.lastCompactedAt,
     };
     // A non-autonomous worker may not run in the working copy; repair rather
     // than reject, since trust wasn't the caller's to choose here.
@@ -542,6 +553,39 @@ export class WorkerEngine {
     return { ok: true, entries, files, ...activity };
   }
 
+  /// Archive the filed work this worker has stopped needing, once a week,
+  /// before the shift that would otherwise read all of it. Deliberately no
+  /// model turn: the point is to make the next shift cheaper, and paying a
+  /// summariser to do it would spend more than it saves.
+  ///
+  /// Only the FILES are compacted. The journal is left alone on purpose — its
+  /// digest is already bounded (`WORKER_JOURNAL_DIGEST_LIMIT`), so folding it
+  /// would not shrink a single prompt, while `syncOrchestration` derives
+  /// meaning from an entry's ABSENCE and would misread the gaps.
+  ///
+  /// Only reached from `tick()`, which only runs while at least one worker is
+  /// enabled — a fully paused roster never compacts. That is the right
+  /// trade-off (nothing is running, so nothing needs to be made cheaper), but
+  /// it means the weekly cadence is conditional, not a hard guarantee.
+  private compactIfDue(w: Worker): void {
+    const now = this.now();
+    if (!isCompactionDue(w.lastCompactedAt, now)) return;
+    const { moved } = archiveWorkerFiles(w.id, compactionCutoff(now));
+    // Stamped even when nothing moved, so a quiet worker is not re-checked
+    // every minute for the rest of the week.
+    w.lastCompactedAt = now;
+    this.persistAndEmit(w);
+    if (moved === 0) return;
+    this.journal.append({
+      id: `compacted-${w.id}-${dayKey(now)}`,
+      workerId: w.id,
+      kind: 'compacted',
+      at: now,
+      title: '',
+      note: `Weekly compaction: archived ${moved} older ${moved === 1 ? 'file' : 'files'}.`,
+    });
+  }
+
   /// Work one shift right now, out of band — the "will this do what I think"
   /// button. Advances the shift number but not the cadence.
   async workShiftNow(id: UUID): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -640,6 +684,7 @@ export class WorkerEngine {
         const w = this.workers.get(id);
         if (!w) continue;
         if (this.firing.has(id)) continue;
+        this.compactIfDue(w);
         const now = this.now();
         const decision = evaluateSchedule(this.timing(w), now, { busy: false });
         if (decision.action === 'wait') continue;
@@ -1120,6 +1165,9 @@ export class WorkerEngine {
       'what you already checked. Use ordinary absolute paths; it is outside the',
       'project, so nothing you put there touches the repository. Create it if it',
       'does not exist yet.',
+      `Work you FILED more than ${WORKER_COMPACTION_KEEP_DAYS} days ago is moved into an`,
+      '`archive/` subfolder once a week. Notes and baselines you wrote yourself are never',
+      'moved. Do not read `archive/` unless you specifically need something old.',
       '',
       'WHERE FLOW OUTPUTS GO',
       'Every flow you launch runs in a disposable worktree/run root. Candidate',
