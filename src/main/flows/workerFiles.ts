@@ -251,10 +251,18 @@ function existingJobStem(
           ? entry.name.slice(0, entry.name.lastIndexOf('.'))
           : entry.name;
       if (base === want) return base;
-      // A prefix only counts at a slug boundary — "fix-auth" must not swallow
-      // "fix-auth-middleware", which is a DIFFERENT job filed in the same minute.
+      // The prefix rule exists ONLY so a name shortened by an older SLUG_MAX
+      // still matches. A short slug is never a truncation, so "fix-auth" must
+      // not swallow "fix-auth-middleware" — a DIFFERENT job in the same minute.
       const [shorter, longer] = base.length < want.length ? [base, want] : [want, base];
-      if (longer.startsWith(shorter) && longer[shorter.length] === '-') return base;
+      const shorterSlug = shorter.replace(FILED_DELIVERABLE, '');
+      if (
+        longer.startsWith(shorter) &&
+        longer[shorter.length] === '-' &&
+        shorterSlug.length >= TRUNCATED_SLUG_MIN
+      ) {
+        return base;
+      }
     }
   } catch {
     // Nothing filed yet.
@@ -375,6 +383,13 @@ function slug(text: string): string {
 }
 
 const SLUG_MAX = 48;
+
+/// Shortest slug a `SLUG_MAX` truncation can plausibly have produced. A
+/// heuristic, not a proof: a legacy truncation shorter than this (its only
+/// dash inside the cut window fell early) goes unrecognised. The failure mode
+/// is a second folder for the same job, never a merge with an unrelated one —
+/// a duplicate, not data loss.
+const TRUNCATED_SLUG_MIN = SLUG_MAX - 16;
 
 /// The files a finished item was filed as — the on-disk copies, not the run's
 /// artifacts.

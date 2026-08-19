@@ -135,17 +135,37 @@ describe('fileWorkerDeliverable', () => {
     ).toBe('b');
   });
 
+  it('keeps two same-minute jobs whose slugs share a dash-boundary prefix', () => {
+    fileWorkerDeliverable({ ...job, title: 'Fix auth', artifacts: [{ name: 'r.md', body: 'a' }] });
+    fileWorkerDeliverable({
+      ...job,
+      title: 'Fix auth middleware',
+      artifacts: [{ name: 'r.md', body: 'b' }],
+    });
+    const names = fs.readdirSync(workerFilesDir(WORKER)).sort();
+    expect(names).toEqual([
+      '2026-08-16-1431-errand-fix-auth-middleware.md',
+      '2026-08-16-1431-errand-fix-auth.md',
+    ]);
+  });
+
   it('reuses the folder a job is already filed under when the name was truncated', () => {
     // Stand in for a job filed before the slug was cut at a word boundary. The
     // truncation lands on a dash, matching what `slug()` actually produces —
     // a mid-word cut is a different (colliding) job, not this one shortened.
-    const legacy = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage');
+    // The legacy slug has to be long enough to look like a real SLUG_MAX
+    // truncation (TRUNCATED_SLUG_MIN), not a short title that merely happens
+    // to be a dash-boundary prefix of the new one.
+    const legacy = path.join(
+      workerFilesDir(WORKER),
+      '2026-08-16-1431-errand-generate-and-report-parser-test-coverage',
+    );
     fs.mkdirSync(legacy, { recursive: true });
     fs.writeFileSync(path.join(legacy, 'report.md'), 'a');
 
     fileWorkerDeliverable({
       ...job,
-      title: 'Coverage Report',
+      title: 'Generate and report parser test coverage across every module',
       artifacts: [
         { name: 'report.md', body: 'a' },
         { name: 'notes.md', body: 'b' },
@@ -155,7 +175,7 @@ describe('fileWorkerDeliverable', () => {
     const dirs = fs.readdirSync(workerFilesDir(WORKER));
     // One job, one folder: a second name for the same work would show the
     // same errand twice in the Files tab.
-    expect(dirs).toEqual(['2026-08-16-1431-errand-coverage']);
+    expect(dirs).toEqual(['2026-08-16-1431-errand-generate-and-report-parser-test-coverage']);
     expect(fs.readdirSync(legacy).sort()).toEqual(['notes.md', 'report.md']);
   });
 
@@ -216,10 +236,18 @@ describe('deliverableFiles', () => {
   it('finds a job filed under an older, shorter name', () => {
     // Same dash-boundary truncation as above — a legacy shorter slug, not a
     // different job that happens to share a prefix.
-    const legacy = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage');
+    const legacy = path.join(
+      workerFilesDir(WORKER),
+      '2026-08-16-1431-errand-generate-and-report-parser-test-coverage',
+    );
     fs.mkdirSync(legacy, { recursive: true });
     fs.writeFileSync(path.join(legacy, 'report.md'), 'a');
-    expect(deliverableFiles({ ...job, title: 'Coverage Report' })).toHaveLength(1);
+    expect(
+      deliverableFiles({
+        ...job,
+        title: 'Generate and report parser test coverage across every module',
+      }),
+    ).toHaveLength(1);
   });
 
   it('returns nothing when the job was never filed, rather than a dead link', () => {
