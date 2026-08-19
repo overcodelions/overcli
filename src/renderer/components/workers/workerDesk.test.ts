@@ -5,6 +5,7 @@ import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 import {
   activityOnDay,
+  carriedOverTurns,
   deskTimeline,
   adjacentDeskDay,
   anyDeskLive,
@@ -31,7 +32,6 @@ import {
   type WorkerActivity,
   sidebarActivity,
   sidebarShifts,
-  workerRunsForSidebar,
   workersForPath,
   workerAutoRenderTarget,
   workerRenderableOutputs,
@@ -521,6 +521,49 @@ describe('sidebarActivity', () => {
   });
 });
 
+describe('carriedOverTurns', () => {
+  const TODAY = startOfDay(new Date(2026, 7, 17, 15, 0).getTime());
+  const YESTERDAY = startOfDay(new Date(2026, 7, 16, 6, 0).getTime());
+  const turn = (id: string, at: number, proposed: number) =>
+    ({ orchestration: { id }, at, proposed } as unknown as WorkerActivity);
+  const ids = (items: WorkerActivity[]) => items.map((i) => i.orchestration.id);
+
+  it('carries an unanswered proposal forward onto today', () => {
+    // The case this exists for: a clean desk this morning, and yesterday's
+    // three parked candidates reachable only by guessing to press ‹.
+    const items = [turn('yday', YESTERDAY + 3_600_000, 3)];
+    expect(ids(carriedOverTurns(items, TODAY))).toEqual(['yday']);
+  });
+
+  it('leaves today’s own turns alone — they are already on the desk', () => {
+    const items = [turn('today', TODAY + 3_600_000, 2)];
+    expect(carriedOverTurns(items, TODAY)).toEqual([]);
+  });
+
+  it('ignores turns that owe you nothing', () => {
+    const items = [turn('done', YESTERDAY + 3_600_000, 0)];
+    expect(carriedOverTurns(items, TODAY)).toEqual([]);
+  });
+
+  it('is relative to the shown day, not to today', () => {
+    // Stepping back to yesterday must not re-offer you the turn sitting in
+    // the middle of the screen.
+    const items = [
+      turn('yday', YESTERDAY + 3_600_000, 1),
+      turn('thu', startOfDay(new Date(2026, 7, 13, 11, 0).getTime()), 2),
+    ];
+    expect(ids(carriedOverTurns(items, YESTERDAY))).toEqual(['thu']);
+  });
+
+  it('is newest first, so the tray names the one you might still recognise', () => {
+    const items = [
+      turn('thu', startOfDay(new Date(2026, 7, 13, 11, 0).getTime()), 1),
+      turn('yday', YESTERDAY + 3_600_000, 1),
+    ];
+    expect(ids(carriedOverTurns(items, TODAY))).toEqual(['yday', 'thu']);
+  });
+});
+
 describe('sidebarShifts', () => {
   // Newest first, the order the sidebar hands them over in.
   const shift = (id: string, proposed = 0, running = 0) =>
@@ -555,94 +598,6 @@ describe('sidebarShifts', () => {
 
   it('shows nothing for a worker with no shifts today', () => {
     expect(sidebarShifts([], 4)).toEqual([]);
-  });
-});
-
-describe('workerRunsForSidebar', () => {
-  const NOW = new Date(2026, 7, 17, 15, 0).getTime();
-  const todayAt = new Date(2026, 7, 17, 9, 0).getTime();
-  const yesterday = new Date(2026, 7, 16, 9, 0).getTime();
-  const run = (id: string, createdAt: number, kind = 'done') =>
-    ({
-      id,
-      workerId: 'w1',
-      createdAt,
-      updatedAt: createdAt,
-      flowSnapshot: { name: 'f', steps: [] },
-      // flowRunActivityAt folds over this; a real FlowRun always has one.
-      attempts: [],
-      state: { kind },
-    }) as unknown as FlowRun;
-
-  const runs = {
-    a: run('a', todayAt),
-    b: run('b', todayAt + 1),
-    c: run('c', todayAt + 2),
-  } as unknown as Record<string, FlowRun>;
-
-  it('takes only that worker’s runs, newest first', () => {
-    const mixed = {
-      ...runs,
-      other: { ...run('other', todayAt + 3), workerId: 'w2' },
-      // No worker at all: that run belongs to a project's Flows group.
-      loose: { ...run('loose', todayAt + 4), workerId: undefined },
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(mixed, 'w1', '', 10, null, NOW).map((r) => r.id)).toEqual([
-      'c',
-      'b',
-      'a',
-    ]);
-  });
-
-  it('narrows on the sidebar query', () => {
-    const named = {
-      a: { ...run('a', todayAt), flowSnapshot: { name: 'audit', steps: [] } },
-      b: run('b', todayAt + 1),
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(named, 'w1', 'audit', 10, null, NOW).map((r) => r.id)).toEqual([
-      'a',
-    ]);
-  });
-
-  it('caps the group so an hourly worker can’t bury the roster', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 1, null, NOW).map((r) => r.id)).toEqual(['c']);
-  });
-
-  it('pins the run you are looking at even when it falls past the cap', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 1, 'a', NOW).map((r) => r.id)).toEqual(['c', 'a']);
-  });
-
-  it('does not duplicate a pinned run already inside the cap', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 2, 'c', NOW).map((r) => r.id)).toEqual(['c', 'b']);
-  });
-
-  it('ignores an active run belonging to someone else', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 1, 'zzz', NOW).map((r) => r.id)).toEqual(['c']);
-  });
-
-  it('drops runs that merely finished on an earlier day', () => {
-    const stale = { old: run('old', yesterday), c: runs.c } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id)).toEqual(['c']);
-  });
-
-  it('keeps a paused or running run whatever day it started', () => {
-    const stale = {
-      paused: run('paused', yesterday, 'paused'),
-      watching: run('watching', yesterday, 'watching'),
-      done: run('done', yesterday),
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id).sort()).toEqual([
-      'paused',
-      'watching',
-    ]);
-  });
-
-  it('keeps one line when nothing ran today and nothing is outstanding', () => {
-    const stale = {
-      older: run('older', yesterday - 1000),
-      newer: run('newer', yesterday),
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id)).toEqual(['newer']);
   });
 });
 

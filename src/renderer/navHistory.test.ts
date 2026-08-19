@@ -36,6 +36,7 @@ function baseLocation(overrides: Partial<NavLocation> = {}): NavLocation {
     librarySegment: 'flows',
     activeOrchestrationId: null,
     selectedWorkerId: null,
+    workersView: 'worker',
     ...overrides,
   };
 }
@@ -48,6 +49,16 @@ describe('locationKey', () => {
 
     const c = baseLocation({ detailMode: 'workers', librarySegment: 'flows' });
     const d = baseLocation({ detailMode: 'workers', librarySegment: 'schedules' });
+    expect(locationKey(c)).toBe(locationKey(d));
+  });
+
+  it('treats the workers view as significant only inside Workers', () => {
+    const a = baseLocation({ detailMode: 'workers', workersView: 'worker' });
+    const b = baseLocation({ detailMode: 'workers', workersView: 'calendar' });
+    expect(locationKey(a)).not.toBe(locationKey(b));
+
+    const c = baseLocation({ detailMode: 'flows', workersView: 'worker' });
+    const d = baseLocation({ detailMode: 'flows', workersView: 'calendar' });
     expect(locationKey(c)).toBe(locationKey(d));
   });
 
@@ -77,7 +88,7 @@ describe('nav history', () => {
       explorerRootPath: null,
     });
     useFlowsStore.setState({ activeRunId: null, librarySegment: 'flows', runs: {} });
-    useWorkersStore.setState({ selectedWorkerId: null });
+    useWorkersStore.setState({ selectedWorkerId: null, view: 'worker' });
     uninstall?.();
     uninstall = installNavHistory();
   });
@@ -276,6 +287,41 @@ describe('nav history', () => {
       detailMode: 'conversation',
       selectedConversationId: 'conv-1',
     });
+  });
+
+  // The complaint this rule answers: sitting on a flow run, pressing Flows,
+  // and nothing happening — because "the last place in Flows" was the run
+  // already on screen.
+  it('takes you to the tab root when you click the tab you are already on', () => {
+    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('flows');
+    settle();
+
+    const root = vi.fn(() => {
+      useFlowsStore.getState().setActiveRun(null);
+      useStore.getState().setDetailMode('flows');
+    });
+    navigateToTab('flows', root);
+    settle();
+    expect(root).toHaveBeenCalledOnce();
+    expect(useFlowsStore.getState().activeRunId).toBeNull();
+
+    // And it was a real navigation, so Back returns to the run.
+    useNavHistory.getState().goBack();
+    expect(useFlowsStore.getState().activeRunId).toBe('run-9');
+  });
+
+  it('restores the workers view a location was recorded in', () => {
+    useStore.getState().setDetailMode('workers');
+    useWorkersStore.getState().showCalendar();
+    settle();
+    useWorkersStore.getState().showFunds();
+    settle();
+    expect(useWorkersStore.getState().view).toBe('funds');
+
+    useNavHistory.getState().goBack();
+    expect(useWorkersStore.getState().view).toBe('calendar');
   });
 
   it('runs the tab default on the first visit of the session', () => {

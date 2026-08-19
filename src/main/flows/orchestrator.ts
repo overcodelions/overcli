@@ -560,6 +560,35 @@ export class OrchestratorImpl {
     return { ok: true, queued };
   }
 
+  /// Reject one PAUSED item — the per-item form of the decline approveBatch
+  /// applies to unpicked proposals. A paused run is a proposal that got
+  /// further before the user saw it, and turning it down should count the
+  /// same way: settling the item to `cancelled` is what journals the
+  /// rejection on a worker-origin batch and feeds the demotion streak.
+  ///
+  /// The child run itself is the CALLER's to delete, before calling this —
+  /// the renderer routes deletion through the dirty-worktree confirm, and a
+  /// decline at that prompt must leave the item exactly as it was.
+  rejectItem(args: { id: UUID; candidateId: string }): { ok: true } | { ok: false; error: string } {
+    const o = this.batches.get(args.id);
+    if (!o) return { ok: false, error: `Batch ${args.id} not found.` };
+    const item = o.items.find((i) => i.candidate.id === args.candidateId);
+    if (!item) return { ok: false, error: `Item ${args.candidateId} not found in batch.` };
+    if (item.status !== 'paused') {
+      return { ok: false, error: 'Only paused work can be rejected here.' };
+    }
+    // The run is already deleted (or was never told about this batch's
+    // interest) — drop the link so a stale terminal event can't resurrect
+    // the item after it settles.
+    if (item.runId) this.runToBatch.delete(item.runId);
+    item.status = 'cancelled';
+    item.note = 'Rejected.';
+    item.finishedAt = Date.now();
+    this.persistAndEmit(o);
+    this.maybeComplete(o);
+    return { ok: true };
+  }
+
   /// Fill open concurrency slots with queued items. Each launch mints a
   /// child FlowRun — in its own worktree, or in the project's working tree
   /// for a `runIn: 'cwd'` batch (which is capped at one slot, so those items

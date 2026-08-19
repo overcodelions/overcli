@@ -1,10 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Backend, DailyBucket, FlowImpactRow, ModelTier, StatsReport, TierStats } from '@shared/types';
+import {
+  Backend,
+  BackendQuota,
+  DailyBucket,
+  FlowImpactRow,
+  ModelTier,
+  QuotaWindow,
+  StatsReport,
+  TierStats,
+} from '@shared/types';
+import { RANGE_DAYS, RANGE_KEYS, RangeKey, movingAverage, sliceRange } from './statsRange';
 import { backendColor, backendFromModel, backendName } from '../theme';
 
 export function StatsPage() {
   const [report, setReport] = useState<StatsReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [range, setRange] = useState<RangeKey>('30d');
+  const [refreshingLimits, setRefreshingLimits] = useState(false);
 
   useEffect(() => {
     void reload();
@@ -17,6 +29,23 @@ export function StatsPage() {
       setReport(r);
     } finally {
       setLoading(false);
+    }
+    void refreshLimits();
+  }
+
+  /// Claude publishes its quota nowhere on disk, so the only way to get it is
+  /// to run `claude -p "/usage"` — ~6s. Do it after the page has already
+  /// painted from the cached snapshot, then re-pull the report.
+  async function refreshLimits() {
+    setRefreshingLimits(true);
+    try {
+      if (await window.overcli.invoke('app:refreshClaudeUsage')) {
+        setReport(await window.overcli.invoke('app:reloadStats'));
+      }
+    } catch {
+      // Keep whatever the cached snapshot gave us.
+    } finally {
+      setRefreshingLimits(false);
     }
   }
 
@@ -32,7 +61,7 @@ export function StatsPage() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="max-w-[1600px] mx-auto px-8 2xl:px-12 py-7">
+      <div className="w-full px-6 2xl:px-10 py-7">
         {/* Header */}
         <div className="flex items-end gap-3 mb-7">
           <div>
@@ -64,6 +93,8 @@ export function StatsPage() {
           />
         </div>
 
+        <QuotaBand quotas={report.quotas} refreshing={refreshingLimits} />
+
         {/* Model mix — the fast vs premium question */}
         <ModelMixPanel rows={report.byTier} />
 
@@ -72,15 +103,33 @@ export function StatsPage() {
 
         {/* Activity over time */}
         <Panel
-          title={`Activity — last ${report.daily.length} days`}
-          aside={<BackendLegend backends={backends} />}
+          title="Activity over time"
+          aside={
+            <div className="flex items-center gap-4">
+              <BackendLegend backends={backends} />
+              <div className="flex items-center gap-px rounded-md overflow-hidden border border-card">
+                {RANGE_KEYS.map((k) => (
+                  <button
+                    key={k}
+                    onClick={() => setRange(k)}
+                    className={`px-2 py-0.5 text-[11px] transition-colors ${
+                      range === k ? 'bg-card-strong text-ink' : 'bg-card text-ink-faint hover:text-ink-muted'
+                    }`}
+                  >
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </div>
+          }
         >
-          <ActivityChart daily={report.daily} backends={backends} metric="tokens" />
+          <ActivityChart daily={sliceRange(report.daily, RANGE_DAYS[range])} backends={backends} metric="tokens" />
           <div className="h-3" />
-          <ActivityChart daily={report.daily} backends={backends} metric="turns" />
+          <ActivityChart daily={sliceRange(report.daily, RANGE_DAYS[range])} backends={backends} metric="turns" />
         </Panel>
 
         {/* Detail tables */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-x-6">
         <Panel title="By backend">
           <DataTable
             head={['Backend', 'Sessions', 'Turns', 'Input', 'Output', 'Cache', 'Lines', '5h', '24h', '7d']}
@@ -128,6 +177,7 @@ export function StatsPage() {
             ))}
           </DataTable>
         </Panel>
+        </div>
 
         <Panel title="By project" aside={<span className="text-ink-faint">top 40 by output</span>}>
           <DataTable head={['Project', 'Sessions', 'Turns', 'Input', 'Output', 'Lines']} align="lrrrrr">
@@ -149,6 +199,99 @@ export function StatsPage() {
         </Panel>
       </div>
     </div>
+  );
+}
+
+function QuotaBand({ quotas, refreshing }: { quotas: BackendQuota[]; refreshing?: boolean }) {
+  if (quotas.length === 0) return null;
+  return (
+    <Panel
+      title="Limits right now"
+      aside={
+        <span className="text-ink-faint">
+          {refreshing ? 'checking limits…' : 'reported where the CLI tells us, otherwise counted from transcripts'}
+        </span>
+      }
+    >
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+        {quotas.map((q) => (
+          <div key={q.backend} className="rounded-lg bg-card border border-card p-4">
+            <div className="flex items-center gap-2">
+              <Dot color={backendColor(q.backend)} />
+              <span className="text-sm font-medium">{backendName(q.backend)}</span>
+              <span
+                className={`ml-auto text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                  q.source === 'reported' ? 'bg-card-strong text-ink-muted' : 'text-ink-faint'
+                }`}
+              >
+                {q.source === 'reported' ? (q.planType ?? 'reported') : 'estimated'}
+                {q.source === 'reported' && q.stale ? ' · stale' : ''}
+              </span>
+            </div>
+            <div className="mt-3 space-y-3">
+              {q.windows.map((w) => (
+                <div key={w.label}>
+                  <div className="flex items-baseline justify-between text-[11px] text-ink-faint">
+                    <span>{w.label}</span>
+                    <span className="tabular-nums text-ink-muted">
+                      {w.usedPercent !== null ? `${Math.round(w.usedPercent)}%` : fmtCompact(w.tokens)}
+                    </span>
+                  </div>
+                  {w.usedPercent !== null && (
+                    <div className="mt-1 h-1.5 w-full rounded-full bg-card-strong overflow-hidden">
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, w.usedPercent))}%`,
+                          background: w.usedPercent >= 85 ? '#f43f5e' : w.usedPercent >= 60 ? '#f59e0b' : backendColor(q.backend),
+                        }}
+                      />
+                    </div>
+                  )}
+                  <div className="text-[10px] text-ink-faint mt-1 tabular-nums">
+                    {w.usedPercent !== null ? `${fmtCompact(w.tokens)} tokens` : ''}
+                    {w.usedPercent !== null && resetText(w) ? ' · ' : ''}
+                    {resetText(w)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+/// Codex reports an epoch we can count down to; claude prints a preformatted
+/// string with no year. An elapsed countdown means the snapshot outlived its
+/// own window, which is worth saying out loud rather than rendering "in —".
+function resetText(w: QuotaWindow): string {
+  if (w.resetsAt) {
+    return w.resetsAt > Date.now()
+      ? `resets in ${formatDurationMs(w.resetsAt - Date.now())}`
+      : 'window has since reset';
+  }
+  if (w.resetsLabel) return `resets ${w.resetsLabel}`;
+  return '';
+}
+
+/// Trailing 7-day mean, drawn over the bars so the long-term trend reads
+/// through daily spikes.
+function TrendLine({ values, max }: { values: number[]; max: number }) {
+  if (values.length < 2 || max <= 0) return null;
+  const avg = movingAverage(values, 7);
+  const points = avg
+    .map((v, i) => `${(i / (avg.length - 1)) * 100},${100 - Math.min(100, (v / max) * 100)}`)
+    .join(' ');
+  return (
+    <svg
+      className="absolute inset-0 w-full h-full pointer-events-none"
+      viewBox="0 0 100 100"
+      preserveAspectRatio="none"
+    >
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="0.6" vectorEffect="non-scaling-stroke" className="text-ink-faint" />
+    </svg>
   );
 }
 
@@ -357,16 +500,21 @@ function ActivityChart({
   }
 
   const scale = (v: number) => (v <= 0 ? 0 : (v / max) * 100);
+  // A year of bars won't fit at 3px + 2px gap, and flex won't shrink past a
+  // min-width, so it would overflow the panel instead. Go hairline past ~4
+  // months.
+  const dense = rows.length > 120;
 
   return (
     <div className="rounded-lg bg-card border border-card p-4">
       <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-ink-faint mb-3">
         <span>{metricLabel} per day</span>
         <span className="normal-case tracking-normal tabular-nums">
-          peak {fmtCompact(max)} · avg {fmtCompact(avg)} / active day
+          {rows.length} days · peak {fmtCompact(max)} · avg {fmtCompact(avg)} / active day
         </span>
       </div>
-      <div className="flex items-end gap-[2px] h-32">
+      <div className={`relative flex items-end h-32 ${dense ? 'gap-px' : 'gap-[2px]'}`}>
+        <TrendLine values={rows.map((r) => r.total)} max={max} />
         {rows.map((row) => {
           const h = scale(row.total);
           const breakdownSummary = row.breakdown
@@ -379,7 +527,8 @@ function ActivityChart({
           return (
             <div
               key={row.day}
-              className="flex-1 min-w-[3px] relative h-full group"
+              className="flex-1 relative h-full group"
+              style={{ minWidth: dense ? 1 : 3 }}
               title={title}
             >
               <div

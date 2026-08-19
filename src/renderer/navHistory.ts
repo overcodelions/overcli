@@ -25,6 +25,11 @@ export interface NavLocation {
   librarySegment: 'flows' | 'runs' | 'schedules';
   activeOrchestrationId: string | null;
   selectedWorkerId: string | null;
+  /// Which of the Workers tab's three surfaces is up. A peer of the worker
+  /// selection rather than part of it — the calendar and the funds waterfall
+  /// have no worker to be the selection of — so Back out of Funds has to
+  /// know to return to the calendar rather than to a desk.
+  workersView: 'worker' | 'calendar' | 'funds';
 }
 
 /// Identity of a location — two locations with the same key are the same
@@ -43,6 +48,9 @@ export function locationKey(loc: NavLocation): string {
     loc.detailMode === 'flows' ? loc.librarySegment : '',
     loc.activeOrchestrationId ?? '',
     loc.selectedWorkerId ?? '',
+    // Same reasoning as the library segment: only a place while you're in
+    // the tab that owns it.
+    loc.detailMode === 'workers' ? loc.workersView : '',
   ].join(' ');
 }
 
@@ -61,6 +69,7 @@ export function readLocation(): NavLocation {
     librarySegment: f.librarySegment,
     activeOrchestrationId: o.activeOrchestrationId,
     selectedWorkerId: w.selectedWorkerId,
+    workersView: w.view,
   };
 }
 
@@ -254,6 +263,11 @@ function applyLocation(loc: NavLocation): void {
     // run in place of its desk. A restored location is the authority on both,
     // so it sets the worker first and then says which run was open.
     useFlowsStore.getState().setActiveRun(loc.activeRunId);
+    // AFTER selectWorker too, which forces the desk: picking a worker means
+    // "show me the desk", but a restored location already knows whether the
+    // desk was what was on screen.
+    if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
+    else if (loc.workersView === 'funds') useWorkersStore.getState().showFunds();
     void window.overcli.invoke('store:saveSelection', loc.selectedConversationId);
     if (loc.selectedConversationId) {
       void useStore.getState().loadHistoryIfNeeded(loc.selectedConversationId);
@@ -290,16 +304,30 @@ export function installNavHistory(): () => void {
 
 /// Restore the last place the user was inside `mode`.
 ///
-/// `fallback` runs when there's nothing to restore — the first visit of the
-/// session, or a remembered spot whose subject has since been deleted. It's
-/// the tab's own default landing behaviour, which stays owned by the title
-/// bar rather than being duplicated here.
-export function navigateToTab(mode: DetailMode, fallback: () => void): void {
+/// `toRoot` is the tab's own top-level page — the flows library, the shift
+/// calendar — and stays owned by the title bar rather than being duplicated
+/// here. It runs in two cases: when there's nothing to restore (the first
+/// visit of the session, or a remembered spot whose subject has since been
+/// deleted), and when you're already inside the tab you clicked.
+///
+/// That second case is the whole point of a tab you can click twice. Sitting
+/// on a flow run and pressing Flows restoring "the last place in Flows" means
+/// restoring the run you are already looking at, so the click does nothing
+/// visible and the tab reads as dead. Clicking the tab you're on means "take
+/// me up to this tab's front page"; clicking a tab you're not on still means
+/// "put me back where I was".
+export function navigateToTab(mode: DetailMode, toRoot: () => void): void {
   flushPending();
+  if (useStore.getState().detailMode === mode) {
+    // A normal forward navigation: the deep page we're leaving lands on the
+    // back stack through the usual subscriber, so Back returns to it.
+    toRoot();
+    return;
+  }
   const remembered = useNavHistory.getState().lastByTab[mode];
   const target = remembered ? sanitize(remembered) : null;
   if (!target) {
-    fallback();
+    toRoot();
     return;
   }
   const { current, back } = useNavHistory.getState();
@@ -349,6 +377,7 @@ function blankFor(detailMode: DetailMode): NavLocation {
     librarySegment: 'flows',
     activeOrchestrationId: null,
     selectedWorkerId: null,
+    workersView: 'worker',
   };
 }
 

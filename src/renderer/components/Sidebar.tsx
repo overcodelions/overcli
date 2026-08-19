@@ -27,6 +27,30 @@ import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 import { WorkersSidebar } from './workers/WorkersSidebar';
 import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
 
+const WORKERS_EXPANDED_KEY = 'sidebar.workersExpanded';
+
+/// Which workers the user has opened in the roster. Persisted, unlike the
+/// project tree's in-memory collapse set, because the roster folds by
+/// DEFAULT — losing this on reload would re-fold everything the user
+/// deliberately opened, which makes opening things feel pointless.
+function loadWorkersExpanded(): Set<UUID> {
+  try {
+    const raw = localStorage.getItem(WORKERS_EXPANDED_KEY);
+    if (raw) return new Set(JSON.parse(raw) as UUID[]);
+  } catch {
+    // A corrupt entry just means starting folded.
+  }
+  return new Set();
+}
+
+function saveWorkersExpanded(ids: Set<UUID>): void {
+  try {
+    localStorage.setItem(WORKERS_EXPANDED_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Best effort: the fold state is a nicety, not data.
+  }
+}
+
 export function Sidebar() {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
@@ -78,6 +102,34 @@ export function Sidebar() {
       else next.add(id);
       return next;
     });
+  // The Workers roster runs the OPPOSITE model: folded by default, tracking
+  // what the user OPENED. A project group is a container you file into, so
+  // default-open earns its rows; a roster is a list of names you pick from,
+  // and ten workers arriving pre-expanded buried the picking. Openings
+  // persist across launches — see loadWorkersExpanded.
+  const [workersExpanded, setWorkersExpanded] = useState<Set<UUID>>(loadWorkersExpanded);
+  const updateWorkersExpanded = (updater: (cur: Set<UUID>) => Set<UUID>) =>
+    setWorkersExpanded((cur) => {
+      const next = updater(cur);
+      if (next !== cur) saveWorkersExpanded(next);
+      return next;
+    });
+  const toggleWorkerExpanded = (id: UUID) =>
+    updateWorkersExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  // Idempotent — returns the same set untouched when nothing changes —
+  // because the roster calls it from an effect on every selection render.
+  const expandWorker = (id: UUID) =>
+    updateWorkersExpanded((cur) => {
+      if (cur.has(id)) return cur;
+      const next = new Set(cur);
+      next.add(id);
+      return next;
+    });
   const toggleMoreProjects = () => {
     if (moreProjectsOpen) setExpandedMoreProjects(new Set());
     setMoreProjectsOpen((v) => !v);
@@ -119,10 +171,27 @@ export function Sidebar() {
         : [...projects.map((p) => p.id), ...workspaces.map((w) => w.id)],
     [detailMode, workers, projects, workspaces],
   );
-  const allCollapsed = allGroupIds.length > 0 && allGroupIds.every((id) => collapsed.has(id));
+  // "Everything folded" reads off a different set per tab, because the roster
+  // tracks openings where the project tree tracks closings.
+  const allCollapsed =
+    allGroupIds.length > 0 &&
+    (detailMode === 'workers'
+      ? allGroupIds.every((id) => !workersExpanded.has(id))
+      : allGroupIds.every((id) => collapsed.has(id)));
   // Only the ids on screen move, so folding the roster does not silently
   // reopen every project group you had closed on the Chat tab.
   const toggleAll = () => {
+    if (detailMode === 'workers') {
+      updateWorkersExpanded((cur) => {
+        const next = new Set(cur);
+        for (const id of allGroupIds) {
+          if (allCollapsed) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+      return;
+    }
     setCollapsed((cur) => {
       const next = new Set(cur);
       for (const id of allGroupIds) {
@@ -313,7 +382,12 @@ export function Sidebar() {
             launches runs that land in member repos — so nesting each one under
             a project group made the tree lie about where its work lives. */}
         {detailMode === 'workers' ? (
-          <WorkersSidebar query={query} collapsed={collapsed} onToggleCollapsed={toggle} />
+          <WorkersSidebar
+            query={query}
+            expanded={workersExpanded}
+            onToggleExpanded={toggleWorkerExpanded}
+            onExpand={expandWorker}
+          />
         ) : (
         <>
         {!query && showActiveSection && activeEntries.length > 0 && (

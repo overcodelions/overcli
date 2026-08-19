@@ -4,10 +4,18 @@ import { useStore } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
+import { useWorkersStore } from '../workersStore';
 import { navigateBack, navigateForward, navigateToTab, useNavHistory } from '../navHistory';
 import { formatShortcutDef, SHORTCUTS } from '../shortcuts';
-import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
-import { untilLabel } from '@shared/flows/schedule';
+import {
+  SCHEDULE_LABELS,
+  SHIFT_LABELS,
+  awaitingApproval,
+  headlineStatus,
+  scheduleSubjects,
+  workerSubjects,
+  type AutomationHeadline,
+} from '../upcoming';
 
 /// Custom title bar region. `hiddenInset` window style shows the traffic
 /// lights overlaid on our content; pad the left enough to clear them and
@@ -22,17 +30,25 @@ export function TitleBar() {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const showWorkersCalendar = useWorkersStore((s) => s.showCalendar);
+  const closeWorkerEditor = useWorkersStore((s) => s.closeEditor);
   const schedules = useSchedulesStore((s) => s.schedules);
   const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
+  const workers = useWorkersStore((s) => s.workers);
+  const nextShiftAt = useWorkersStore((s) => s.nextShiftAt);
+  const shiftProgress = useWorkersStore((s) => s.shiftProgress);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
 
   // The idle state shows a countdown, which is a lie the moment it's painted
-  // unless something re-renders it. One 30s tick, and only while a schedule is
-  // actually armed — the indicator isn't on screen otherwise, so neither is
+  // unless something re-renders it. One 30s tick, and only while something is
+  // actually armed — the indicators aren't on screen otherwise, so neither is
   // the timer.
   const anyArmed = useMemo(
-    () => Object.values(schedules).some((s) => s.enabled),
-    [schedules],
+    () =>
+      Object.values(schedules).some((s) => s.enabled) ||
+      Object.values(workers).some((w) => w.enabled),
+    [schedules, workers],
   );
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -41,57 +57,73 @@ export function TitleBar() {
     return () => clearInterval(t);
   }, [anyArmed]);
 
-  // What the schedule indicator has to say, in priority order. Nothing armed
-  // → nothing rendered: a permanently-lit chrome item for a feature you don't
-  // use is just noise in the one strip that's always on screen.
-  const scheduleStatus = useMemo(() => {
-    const armed = Object.values(schedules).filter((s) => s.enabled);
-    if (armed.length === 0) return null;
-    const running = armed.filter((s) => s.activeRunId).length;
-    // A parked proposal outranks a running run: one is blocked on the user,
-    // the other is just working.
-    const waiting = Object.values(orchestrations).filter(
-      isOrchestrationAwaitingApproval,
-    ).length;
-    // Every state leads with the same word and varies only the tail. The chip
-    // has no context around it — a title bar isn't a list with a header — so
-    // the noun has to be in the label itself, and repeating it means the user
-    // learns what this thing is once rather than re-reading it each time.
-    if (waiting > 0) {
-      return {
-        tone: 'waiting' as const,
-        label: waiting === 1 ? 'Scheduled · needs approval' : `Scheduled · ${waiting} to approve`,
-        title: 'A scheduled batch is waiting for you to approve it',
-      };
-    }
-    if (running > 0) {
-      return {
-        tone: 'running' as const,
-        label: running === 1 ? 'Scheduled · running' : `Scheduled · ${running} running`,
-        title: 'A schedule is running right now',
-      };
-    }
-    // Armed but idle. The countdown is what proves the thing is alive rather
-    // than forgotten, but it only means anything with the noun in front of it
-    // — "in 3h" on its own is a time with no subject.
-    const soonest = armed
-      .map((s) => nextFireAt[s.id])
-      .filter((at): at is number => typeof at === 'number')
-      .sort((a, b) => a - b)[0];
-    const counted = `${armed.length} ${armed.length === 1 ? 'schedule' : 'schedules'} armed`;
-    return {
-      tone: 'armed' as const,
-      label: soonest ? `Scheduled · ${untilLabel(soonest)}` : 'Scheduled',
-      title: soonest ? `${counted} · next at ${new Date(soonest).toLocaleString()}` : counted,
-    };
+  // ONE chip for both species, naming whichever is actually asking for
+  // attention. Shifts are listed first only as the tie-break: two sides in the
+  // same state, equally many, firing at the same moment is a coin toss, and
+  // the roster is the half with a persona behind it.
+  const status = useMemo(
+    () =>
+      headlineStatus([
+        {
+          source: 'worker',
+          subjects: workerSubjects(workers, nextShiftAt, shiftProgress),
+          waiting: awaitingApproval(orchestrations, 'worker'),
+          labels: SHIFT_LABELS,
+        },
+        {
+          source: 'schedule',
+          subjects: scheduleSubjects(schedules, nextFireAt),
+          waiting: awaitingApproval(orchestrations, 'schedule'),
+          labels: SCHEDULE_LABELS,
+        },
+      ]),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schedules, nextFireAt, orchestrations, tick]);
+    [workers, nextShiftAt, shiftProgress, schedules, nextFireAt, orchestrations, tick],
+  );
 
   function openSchedules(): void {
     setActiveRun(null);
     closeFlowEditor();
     setLibrarySegment('schedules');
     setDetailMode('flows');
+  }
+
+  // Each tab's front page — where the tab lands you on the first visit of the
+  // session, and where clicking it while you're already inside it takes you
+  // back up to.
+  function chatRoot(): void {
+    setDetailMode('conversation');
+  }
+
+  function flowsRoot(): void {
+    // Never the run detail, the editor, or the Schedules segment. The user's
+    // mental model is "Flows tab = the list of flows"; opening on a
+    // half-edited draft or a run that finished overnight breaks it.
+    setActiveRun(null);
+    closeFlowEditor();
+    setLibrarySegment('flows');
+    setDetailMode('flows');
+  }
+
+  function orchestratorRoot(): void {
+    // Like Flows, land on the Orchestrator's own surface, not a leftover run
+    // detail from another tab.
+    setActiveRun(null);
+    closeFlowEditor();
+    setDetailMode('orchestrator');
+  }
+
+  function workersRoot(): void {
+    // The shift calendar, not a desk: the tab is a roster on a clock, and the
+    // question you arrive with is "who is working when", which no single
+    // worker's desk answers. selectWorker(null) first so the calendar isn't
+    // secretly still a selection — it is about every worker at once — and it
+    // clears any run filling the pane on the way.
+    selectWorker(null);
+    closeWorkerEditor();
+    closeFlowEditor();
+    showWorkersCalendar();
+    setDetailMode('workers');
   }
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform;
   const isMac = platform.toLowerCase().includes('mac');
@@ -110,55 +142,31 @@ export function TitleBar() {
       </button>
       <HistoryArrows />
       <div className="flex items-center gap-1 no-drag">
-        {/* Each tab returns you to where you last were inside it, and only
-            falls back to its default landing spot the first time you open it
-            this session (or if what you were looking at has been deleted).
-            Leaving a flow run to check Workers and coming back to the library
-            instead of the run reads as the app losing your place. */}
+        {/* A tab you are not on returns you to where you last were inside it
+            — leaving a flow run to check Workers and coming back to the
+            library instead of the run reads as the app losing your place. A
+            tab you ARE on takes you up to its front page instead, which is
+            the only way back out of a run, a desk or an editor without
+            hunting for a breadcrumb. */}
         <NavButton
           label="Chat"
           active={detailMode === 'conversation'}
-          onClick={() => navigateToTab('conversation', () => setDetailMode('conversation'))}
+          onClick={() => navigateToTab('conversation', chatRoot)}
         />
         <NavButton
           label="Flows"
           active={detailMode === 'flows'}
-          onClick={() =>
-            navigateToTab('flows', () => {
-              // First visit of the session lands on the library — never the
-              // run detail, the editor, or the Schedules segment. The user's
-              // mental model is "Flows tab = the list of flows"; opening on a
-              // half-edited draft or a run that finished overnight breaks it.
-              setActiveRun(null);
-              closeFlowEditor();
-              setLibrarySegment('flows');
-              setDetailMode('flows');
-            })
-          }
+          onClick={() => navigateToTab('flows', flowsRoot)}
         />
         <NavButton
           label="Orchestrator"
           active={detailMode === 'orchestrator'}
-          onClick={() =>
-            navigateToTab('orchestrator', () => {
-              // Like Flows, land on the Orchestrator's own surface, not a
-              // leftover run detail from another tab.
-              setActiveRun(null);
-              closeFlowEditor();
-              setDetailMode('orchestrator');
-            })
-          }
+          onClick={() => navigateToTab('orchestrator', orchestratorRoot)}
         />
         <NavButton
           label="Workers"
           active={detailMode === 'workers'}
-          onClick={() =>
-            navigateToTab('workers', () => {
-              setActiveRun(null);
-              closeFlowEditor();
-              setDetailMode('workers');
-            })
-          }
+          onClick={() => navigateToTab('workers', workersRoot)}
         />
       </div>
       <div className="flex-1" />
@@ -167,8 +175,15 @@ export function TitleBar() {
           They stay text tabs (they swap the main pane), with a divider
           before the icon buttons so "tabs | icons" reads cleanly. */}
       <div className="flex items-center gap-1 no-drag">
-        {scheduleStatus && (
-          <ScheduleIndicator status={scheduleStatus} onClick={openSchedules} />
+        {status && (
+          <AutomationIndicator
+            status={status}
+            onClick={
+              status.source === 'worker'
+                ? () => navigateToTab('workers', workersRoot)
+                : openSchedules
+            }
+          />
         )}
         <NavButton label="Local" active={detailMode === 'local'} onClick={() => setDetailMode('local')} />
         <NavButton label="Usage" active={detailMode === 'stats'} onClick={() => setDetailMode('stats')} />
@@ -213,15 +228,17 @@ export function TitleBar() {
   );
 }
 
-/// Dot + label for scheduled activity, sitting with the passive dashboards on
-/// the right. It's a status readout that happens to be clickable, not a tab —
-/// so it doesn't take the active-tab treatment, and it disappears entirely
-/// when nothing is armed.
-function ScheduleIndicator({
+/// Dot + label for unattended activity — a schedule's next firing or the
+/// roster's next shift — sitting with the passive dashboards on the right.
+/// It's a status readout that happens to be clickable, not a tab, so it
+/// doesn't take the active-tab treatment, and it disappears entirely when
+/// nothing anywhere is armed. `headlineStatus` decides which of the two it is
+/// talking about; this only draws it, and opens whatever it named.
+function AutomationIndicator({
   status,
   onClick,
 }: {
-  status: { tone: 'waiting' | 'running' | 'armed'; label: string; title: string };
+  status: AutomationHeadline;
   onClick: () => void;
 }) {
   // Green for armed — the universal "powered on and ready" signal, and far
