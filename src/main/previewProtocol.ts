@@ -48,13 +48,18 @@ const BASE_CSP = [
   'img-src data: blob: https:',
   'font-src data: https:',
   'media-src data: blob: https:',
-  'connect-src https:',
   "frame-src 'none'",
 ];
 
 const CSP_BY_POLICY: Record<PreviewPolicy, string> = {
-  bundle: [...BASE_CSP, "script-src 'unsafe-inline'"].join('; '),
-  document: [...BASE_CSP, "script-src 'unsafe-inline' 'unsafe-eval' https:"].join('; '),
+  bundle: [...BASE_CSP, 'connect-src https:', "script-src 'unsafe-inline'"].join('; '),
+  // `document` runs REMOTE script, so it gets no egress at all: a page that
+  // inlines a local file must not be able to send it anywhere.
+  document: [
+    ...BASE_CSP,
+    "connect-src 'none'",
+    "script-src 'unsafe-inline' 'unsafe-eval' https:",
+  ].join('; '),
 };
 
 interface PublishedDocument {

@@ -95,6 +95,29 @@ describe('workerJournal', () => {
     expect(loaded.length).toBeLessThanOrEqual(second.WORKER_JOURNAL_MAX_ENTRIES);
     expect(loaded.some((entry) => entry.id === `entry-${second.WORKER_JOURNAL_MAX_ENTRIES + 9}`)).toBe(true);
   }, 15_000);
+
+  it('re-compacts within a single session, not only at the next launch', async () => {
+    // The bound used to be enforced once per process, so a desktop app left
+    // running for weeks grew monotonically and only shrank on restart.
+    const store = await freshStore();
+    const journalFile = path.join(userDataDir, 'worker-journal.jsonl');
+    for (let i = 0; i < store.WORKER_JOURNAL_MAX_ENTRIES + 250; i++) {
+      store.appendWorkerJournalEntry(makeEntry({ id: `entry-${i}`, at: i }));
+    }
+    // Read the file directly: no reload, no fresh import — this is the same
+    // process that did the appending.
+    const appended = store.WORKER_JOURNAL_MAX_ENTRIES + 250;
+    const lines = fs.readFileSync(journalFile, 'utf-8').trim().split('\n');
+    // In-session the file settles at the cap plus at most one compaction
+    // interval of fresh appends — the point is that it no longer grows with
+    // every append until the next launch.
+    expect(lines.length).toBeLessThanOrEqual(store.WORKER_JOURNAL_MAX_ENTRIES + 200);
+    expect(lines.length).toBeLessThan(appended);
+    // The newest entry survives the compaction.
+    expect(
+      store.loadWorkerJournal('worker-1')[0]?.id,
+    ).toBe(`entry-${store.WORKER_JOURNAL_MAX_ENTRIES + 249}`);
+  }, 20_000);
 });
 
 describe('clearWorkerJournal', () => {

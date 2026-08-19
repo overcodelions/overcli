@@ -165,6 +165,9 @@ export function probeLanExposure(): Promise<boolean> {
   for (const list of Object.values(os.networkInterfaces())) {
     for (const ni of list ?? []) {
       if (ni.family === 'IPv4' && !ni.internal) addrs.push(ni.address);
+      if (ni.family === 'IPv6' && !ni.internal && !ni.address.toLowerCase().startsWith('fe80')) {
+        addrs.push(ni.address);
+      }
     }
   }
   if (addrs.length === 0) return Promise.resolve(false);
@@ -236,14 +239,17 @@ export function buildFindings(input: {
     const a = parseSemver(installedVersion);
     const b = parseSemver(latestVersion);
     // Same major, several minors behind → unpatched, not merely old.
-    const stale = !!a && !!b && a[0] === b[0] && b[1] - a[1] >= STALE_MINOR_GAP;
+    const majorGap = !!a && !!b && b[0] > a[0];
+    const stale = majorGap || (!!a && !!b && a[0] === b[0] && b[1] - a[1] >= STALE_MINOR_GAP);
     findings.push({
       id: 'outdated',
       severity: stale ? 'high' : 'medium',
       title: `Ollama ${installedVersion} is behind ${latestVersion}`,
-      detail: stale
-        ? `You are ${b![1] - a![1]} minor releases behind. Ollama ships security fixes in ordinary releases without CVE numbers, so a gap this size means known bugs are unpatched.`
-        : 'A newer stable release is available. Ollama ships security fixes in ordinary releases, often without a CVE number.',
+      detail: majorGap
+        ? `You are a full major version behind (${installedVersion} → ${latestVersion}). Ollama ships security fixes in ordinary releases without CVE numbers, so a gap this size means known bugs are unpatched.`
+        : stale
+          ? `You are ${b![1] - a![1]} minor releases behind. Ollama ships security fixes in ordinary releases without CVE numbers, so a gap this size means known bugs are unpatched.`
+          : 'A newer stable release is available. Ollama ships security fixes in ordinary releases, often without a CVE number.',
       fixId: 'update-ollama',
     });
   }
