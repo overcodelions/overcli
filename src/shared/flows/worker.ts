@@ -517,3 +517,37 @@ export const WORKER_SUBJECT_MAX = 60;
 export function stripWorkerSubject(reply: string): string {
   return reply.replace(/<subject>[\s\S]*?<\/subject>/gi, '').trim();
 }
+
+/// The provenance stamp a worker-owned batch carries.
+///
+/// One function rather than a literal at each site because the stamp is
+/// authority, not decoration: `allowExternalActions` is what waives the
+/// runtime's external-effect gate for the batch's child runs, and a call site
+/// that forgets it silently re-gates a worker the user already authorized.
+/// That is exactly the shape of the bug this replaced — the drafted-flow
+/// errand path built its own literal and dropped the capability.
+///
+/// Absent rather than `false` when the worker has no such authority, matching
+/// how the field is persisted: older batches have no key at all, and both read
+/// as "ask first".
+export function workerOrigin(
+  w: Pick<Worker, 'id' | 'name' | 'caps'>,
+  task: 'shift' | 'errand',
+  errand?: string,
+): {
+  kind: 'worker';
+  workerId: UUID;
+  workerName: string;
+  task: 'shift' | 'errand';
+  errand?: string;
+  allowExternalActions?: boolean;
+} {
+  return {
+    kind: 'worker',
+    workerId: w.id,
+    workerName: w.name,
+    task,
+    ...(errand !== undefined ? { errand } : {}),
+    ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
+  };
+}
