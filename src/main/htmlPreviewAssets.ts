@@ -71,7 +71,7 @@ function readAsset(
     if (!stat.isFile()) return { ok: false, error: `${ref} is not a regular file.` };
     if (stat.size > MAX_ASSET_BYTES) return { ok: false, error: `${ref} is too large to inline.` };
     const ext = extensionOf(resolved);
-    if (!(ext in MIME_BY_EXTENSION)) {
+    if (!Object.hasOwn(MIME_BY_EXTENSION, ext)) {
       return { ok: false, error: `${ref} is not a previewable asset type.` };
     }
     if (ext === 'css') {
@@ -157,7 +157,7 @@ function readStylesheet(
   css = css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, _quote: string, ref: string) => {
     if (!isLocalRef(ref)) return match;
     const resolved = resolveRef(ref, cssDir, undefined, isReadable);
-    if (!resolved || !(extensionOf(resolved) in MIME_BY_EXTENSION)) return match;
+    if (!resolved || !Object.hasOwn(MIME_BY_EXTENSION, extensionOf(resolved))) return match;
     try {
       const stat = fs.statSync(resolved);
       if (!stat.isFile() || stat.size > MAX_ASSET_BYTES) return match;
@@ -181,7 +181,10 @@ export function isLocalRef(ref: string): boolean {
 }
 
 function toDataUrl(filePath: string): string {
-  const mimeType = MIME_BY_EXTENSION[extensionOf(filePath)] ?? 'application/octet-stream';
+  const ext = extensionOf(filePath);
+  const mimeType = Object.hasOwn(MIME_BY_EXTENSION, ext)
+    ? MIME_BY_EXTENSION[ext]
+    : 'application/octet-stream';
   return `data:${mimeType};base64,${fs.readFileSync(filePath).toString('base64')}`;
 }
 
