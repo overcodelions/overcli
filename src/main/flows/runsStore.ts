@@ -14,6 +14,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
 import { appendRunSummary } from './runSummaryLog';
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -29,7 +30,7 @@ function dir(): string {
 }
 
 function pathFor(runId: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(runId)) throw new Error(`Unsafe run id: ${runId}`);
+  if (!isSafeIdSegment(runId)) throw new Error(`Unsafe run id: ${runId}`);
   return path.join(dir(), `${runId}.json`);
 }
 

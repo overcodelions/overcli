@@ -79,14 +79,25 @@ function batch(
   id: string,
   workerId = 'worker-1',
   statuses: Array<string> = ['proposed'],
-  extra: { task?: 'shift' | 'errand'; title?: string; reply?: string } = {},
+  extra: {
+    task?: 'shift' | 'errand';
+    title?: string;
+    reply?: string;
+    from?: { workerId: string; workerName: string };
+  } = {},
 ): Orchestration {
   return {
     id,
     title: extra.title ?? `[Shift ${id}] Spec Hygiene`,
     projectPath: '/workspace',
     maxConcurrent: 1,
-    origin: { kind: 'worker', workerId, workerName: 'Spec Hygiene', task: extra.task },
+    origin: {
+      kind: 'worker',
+      workerId,
+      workerName: 'Spec Hygiene',
+      task: extra.task,
+      ...(extra.from ? { from: extra.from } : {}),
+    },
     ...(extra.reply ? { producer: { prompt: 'p', reply: extra.reply } } : {}),
     createdAt: Number(id.replace(/\D/g, '')) || 1,
     items: statuses.map((status, index) => ({
@@ -158,6 +169,37 @@ describe('worker activity', () => {
     expect(toWorkerActivity(batch('1', 'worker-1', [], { task: 'errand' })).task).toBe('errand');
     // Batches written before errands existed carry no `task`.
     expect(toWorkerActivity(batch('2')).task).toBe('shift');
+  });
+
+  /// The bubble reads as the user's own words. For an errand a colleague sent,
+  /// they are not — so the desk needs to know whose they are.
+  it('names the colleague that sent an errand, and nobody when you sent it', () => {
+    expect(
+      toWorkerActivity(
+        batch('1', 'worker-1', [], {
+          task: 'errand',
+          from: { workerId: 'chief', workerName: 'Chief of Staff' },
+        }),
+      ).from,
+    ).toBe('Chief of Staff');
+    expect(toWorkerActivity(batch('2', 'worker-1', [], { task: 'errand' })).from).toBeUndefined();
+    // A shift is nobody's message, however it was stamped.
+    expect(
+      toWorkerActivity(
+        batch('3', 'worker-1', [], { from: { workerId: 'chief', workerName: 'Chief of Staff' } }),
+      ).from,
+    ).toBeUndefined();
+  });
+
+  it('keeps handoff markup out of the prose the desk renders', () => {
+    expect(
+      toWorkerActivity(
+        batch('1', 'worker-1', [], {
+          task: 'errand',
+          reply: 'Nothing for me.\n<handoff to="Triage">Split RED-6814.</handoff>',
+        }),
+      ).reply,
+    ).toBe('Nothing for me.');
   });
 
   it('strips the ledger prefix and the candidates payload', () => {

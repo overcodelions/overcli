@@ -14,6 +14,13 @@ import {
   validateWorker,
   workerAutoApproveCap,
   workerOrigin,
+  canDelegate,
+  delegationTargets,
+  parseHandoffs,
+  resolveHandoffTarget,
+  rosterLine,
+  stripHandoffs,
+  WORKER_ROSTER_LINE_MAX,
   type Worker,
   type WorkerJournalEntry,
 } from './worker';
@@ -424,5 +431,136 @@ describe('workerOrigin', () => {
 
   it('omits errand entirely when none was typed', () => {
     expect('errand' in workerOrigin(makeWorker(), 'errand')).toBe(false);
+  });
+});
+
+describe('delegation', () => {
+  it('needs the capability AND a trust level that acts unattended', () => {
+    expect(canDelegate(makeWorker({ caps: { maxItemsPerShift: 3, runIn: 'worktree' } }))).toBe(
+      false,
+    );
+    expect(
+      canDelegate(
+        makeWorker({ caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true } }),
+      ),
+    ).toBe(true);
+  });
+
+  /// The laundering case, and the reason the trust half exists: a worker whose
+  /// every proposal parks for approval must not be able to get work moving by
+  /// handing it to a colleague who launches unattended.
+  it('refuses a worker on probation even with the capability set', () => {
+    expect(
+      canDelegate(
+        makeWorker({
+          trust: 'probation',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  const delegator = (over: Partial<Worker> = {}) =>
+    makeWorker({
+      caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+      ...over,
+    });
+
+  it('offers only enabled colleagues on the same project', () => {
+    const targets = delegationTargets(delegator(), [
+      makeWorker({ id: 'worker-1', name: 'Scout' }),
+      makeWorker({ id: 'triage', name: 'Triage' }),
+      makeWorker({ id: 'paused', name: 'Paused', enabled: false }),
+      makeWorker({ id: 'elsewhere', name: 'Triage', projectPath: '/other' }),
+    ]);
+    expect(targets.map((t) => t.id)).toEqual(['triage']);
+  });
+
+  /// Two workspaces can each employ a "Triage". A name is all a handoff has to
+  /// go on, so the off-project one must never be nameable in the first place.
+  it('keeps a same-named worker on another project out of reach', () => {
+    const targets = delegationTargets(delegator(), [
+      makeWorker({ id: 'elsewhere', name: 'Triage', projectPath: '/other' }),
+    ]);
+    expect(targets).toEqual([]);
+    expect(resolveHandoffTarget('Triage', targets)).toBeNull();
+  });
+
+  it('honours an explicit narrowing and ignores an empty one', () => {
+    const roster = [
+      makeWorker({ id: 'triage', name: 'Triage' }),
+      makeWorker({ id: 'warden', name: 'Warden' }),
+    ];
+    expect(
+      delegationTargets(delegator({ delegatesTo: ['warden'] }), roster).map((t) => t.id),
+    ).toEqual(['warden']);
+    expect(delegationTargets(delegator({ delegatesTo: [] }), roster).map((t) => t.id)).toEqual([
+      'triage',
+      'warden',
+    ]);
+  });
+
+  it('offers nothing to a worker that may not delegate', () => {
+    expect(delegationTargets(makeWorker(), [makeWorker({ id: 'triage', name: 'Triage' })])).toEqual(
+      [],
+    );
+  });
+
+  it('matches a colleague name case- and space-insensitively', () => {
+    const targets = [makeWorker({ id: 'triage', name: 'Triage' })];
+    expect(resolveHandoffTarget('  triage ', targets)?.id).toBe('triage');
+    expect(resolveHandoffTarget('Ticket Triage', targets)).toBeNull();
+  });
+
+  /// Sending real work to a coin flip is worse than reporting a clash the user
+  /// can fix by renaming.
+  it('refuses to guess between two colleagues sharing a name', () => {
+    const targets = [
+      makeWorker({ id: 'a', name: 'Triage' }),
+      makeWorker({ id: 'b', name: 'Triage' }),
+    ];
+    expect(resolveHandoffTarget('Triage', targets)).toBeNull();
+  });
+
+  it('parses handoff blocks and strips them from the prose', () => {
+    const reply = [
+      'I found two things that are not mine.',
+      '<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>',
+      "<handoff to='Warden'>Check the release.</handoff>",
+    ].join('\n');
+    expect(parseHandoffs(reply)).toEqual([
+      { to: 'Triage', instruction: 'RED-6814 bundles six issues. Split it.' },
+      { to: 'Warden', instruction: 'Check the release.' },
+    ]);
+    expect(stripHandoffs(reply)).toBe('I found two things that are not mine.');
+  });
+
+  it('ignores a handoff with no target or no instruction', () => {
+    expect(parseHandoffs('<handoff to="">do a thing</handoff>')).toEqual([]);
+    expect(parseHandoffs('<handoff to="Triage"></handoff>')).toEqual([]);
+    expect(parseHandoffs('no blocks here')).toEqual([]);
+  });
+
+  /// "You are the Test Warden." names the worker without saying what it does,
+  /// and a router given only that has nothing to route on.
+  it('pulls in the next sentence when the opening one is a bare title', () => {
+    const line = rosterLine({
+      name: 'Triage',
+      jobDescription:
+        'You are the Ticket Triage Worker. Every weekday morning, find and solve the open tickets. Then file a report nobody asked for.',
+    });
+    expect(line).toContain('You are the Ticket Triage Worker.');
+    expect(line).toContain('find and solve the open tickets');
+  });
+
+  it('bounds a roster line so a long job description cannot flood the prompt', () => {
+    const line = rosterLine({ name: 'Verbose', jobDescription: 'x'.repeat(4000) });
+    expect(line.length).toBeLessThanOrEqual('Verbose — '.length + WORKER_ROSTER_LINE_MAX);
+  });
+
+  it('stamps the sender onto a delegated errand and omits it otherwise', () => {
+    const from = { workerId: 'boss', workerName: 'Chief of Staff' };
+    expect(workerOrigin(makeWorker(), 'errand', 'do it', from).from).toEqual(from);
+    expect('from' in workerOrigin(makeWorker(), 'errand', 'do it')).toBe(false);
   });
 });

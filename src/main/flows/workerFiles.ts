@@ -24,6 +24,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
 import { WORKER_ARCHIVE_DIR } from '../../shared/flows/workerCompaction';
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 /// Biggest file we will read back into the renderer. A worker told to keep a
 /// baseline can write something enormous; the list still shows it, but the
@@ -55,7 +56,7 @@ function workersRoot(): string {
 /// the worktree, no runtime change. The id is a UUID, so it is already safe as
 /// a path segment; guard anyway rather than trust a caller.
 export function workerFilesDir(workerId: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(workerId)) throw new Error(`Unsafe worker id: ${workerId}`);
+  if (!isSafeIdSegment(workerId)) throw new Error(`Unsafe worker id: ${workerId}`);
   return path.join(workersRoot(), workerId);
 }
 
@@ -250,10 +251,18 @@ function existingJobStem(
           ? entry.name.slice(0, entry.name.lastIndexOf('.'))
           : entry.name;
       if (base === want) return base;
-      // A prefix only counts at a slug boundary — "fix-auth" must not swallow
-      // "fix-auth-middleware", which is a DIFFERENT job filed in the same minute.
+      // The prefix rule exists ONLY so a name shortened by an older SLUG_MAX
+      // still matches. A short slug is never a truncation, so "fix-auth" must
+      // not swallow "fix-auth-middleware" — a DIFFERENT job in the same minute.
       const [shorter, longer] = base.length < want.length ? [base, want] : [want, base];
-      if (longer.startsWith(shorter) && longer[shorter.length] === '-') return base;
+      const shorterSlug = shorter.replace(FILED_DELIVERABLE, '');
+      if (
+        longer.startsWith(shorter) &&
+        longer[shorter.length] === '-' &&
+        shorterSlug.length >= TRUNCATED_SLUG_MIN
+      ) {
+        return base;
+      }
     }
   } catch {
     // Nothing filed yet.
@@ -375,6 +384,13 @@ function slug(text: string): string {
 
 const SLUG_MAX = 48;
 
+/// Shortest slug a `SLUG_MAX` truncation can plausibly have produced. A
+/// heuristic, not a proof: a legacy truncation shorter than this (its only
+/// dash inside the cut window fell early) goes unrecognised. The failure mode
+/// is a second folder for the same job, never a merge with an unrelated one —
+/// a duplicate, not data loss.
+const TRUNCATED_SLUG_MIN = SLUG_MAX - 16;
+
 /// The files a finished item was filed as — the on-disk copies, not the run's
 /// artifacts.
 ///
@@ -483,6 +499,70 @@ export function deleteWorkerFile(
     log('error', 'worker-files', `could not delete ${name}`, err);
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/// Un-file ONE job — the on-disk copies of a single finished item, addressed
+/// by the same four facts that filed them (see `deliverableFiles`, which this
+/// is the destructive twin of).
+///
+/// Looks in `archive/` as well as at the top level, because compaction may
+/// already have moved the job: a delete that only swept the top level would
+/// report success and leave the output sitting one directory down, which is
+/// the one outcome worse than refusing.
+///
+/// Only the job is removed. Whatever the worker wrote for ITSELF — baselines,
+/// tallies, notes for its next shift — is not named by the deliverable scheme
+/// and is deliberately left alone: re-running a shift should let it read back
+/// what it knew, not amnesia.
+export function deleteDeliverable(args: {
+  workerId: string;
+  task: 'shift' | 'errand';
+  label: string;
+  title: string;
+  at: number;
+}): { removed: number } {
+  const root = workerFilesDir(args.workerId);
+  let removed = 0;
+  for (const relRoot of ['', WORKER_ARCHIVE_DIR]) {
+    const base = relRoot ? path.join(root, relRoot) : root;
+    const stem = existingJobStem(base, args);
+    if (!stem) continue;
+    try {
+      const folder = path.join(base, stem);
+      if (fs.existsSync(folder) && fs.statSync(folder).isDirectory()) {
+        removed += countFilesUnder(folder);
+        fs.rmSync(folder, { recursive: true, force: true });
+        continue;
+      }
+      // A single-artifact run is one loose file whose extension came from the
+      // artifact's own name — same wildcard the reader uses.
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        if (entry.name !== stem && !entry.name.startsWith(`${stem}.`)) continue;
+        fs.rmSync(path.join(base, entry.name), { force: true });
+        removed += 1;
+      }
+    } catch (err) {
+      log('error', 'worker-files', `could not un-file ${stem}`, err);
+    }
+  }
+  return { removed };
+}
+
+/// How many files a job folder holds, so a delete can report "4 files" rather
+/// than "1 folder". Recursive: a run that wrote a subdirectory still filed
+/// every file in it.
+function countFilesUnder(dir: string): number {
+  let count = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) count += countFilesUnder(path.join(dir, entry.name));
+      else if (entry.isFile()) count += 1;
+    }
+  } catch {
+    // Raced with a delete; whatever we could not read is already gone.
+  }
+  return count;
 }
 
 /// Move filed deliverables older than `cutoffAt` into `archive/`. Nothing is

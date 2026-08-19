@@ -37,6 +37,7 @@ import {
 } from './workerEngine';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
+import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 import { compactionCutoff } from '../../shared/flows/workerCompaction';
 
@@ -56,6 +57,7 @@ function makeHarness(
     pool?: number;
     generatedFlow?: WorkerEngineDeps['generatedFlow'];
     clearActivity?: WorkerEngineDeps['clearActivity'];
+    deleteActivity?: WorkerEngineDeps['deleteActivity'];
     journalClear?: (workerId: string) => number;
     supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
   } = {},
@@ -118,6 +120,7 @@ function makeHarness(
       },
       load: (workerId) =>
         journal.filter((e) => e.workerId === workerId).sort((a, b) => b.at - a.at),
+      has: (entryId) => journal.some((e) => e.id === entryId),
       rejectedTitles: (workerId) => [
         ...new Set(
           journal
@@ -139,6 +142,19 @@ function makeHarness(
         }
         return before - journal.length;
       },
+      remove: (workerId, match) => {
+        const ids = new Set(match.ids ?? []);
+        const before = journal.length;
+        for (let i = journal.length - 1; i >= 0; i--) {
+          const e = journal[i];
+          if (e.workerId !== workerId) continue;
+          const hit =
+            (match.orchestrationId !== undefined && e.orchestrationId === match.orchestrationId) ||
+            ids.has(e.id);
+          if (hit) journal.splice(i, 1);
+        }
+        return before - journal.length;
+      },
     },
     spend: () => spend,
     // The harness models one spend figure for everybody; the engine wants it
@@ -157,6 +173,7 @@ function makeHarness(
     },
     generatedFlow: opts.generatedFlow,
     clearActivity: opts.clearActivity,
+    deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
   });
 
@@ -1322,5 +1339,389 @@ describe('WorkerEngine memory reset', () => {
     const h = makeHarness();
     h.engine.start();
     expect(h.engine.resetMemory('nobody')).toEqual({ ok: false, error: 'Worker not found.' });
+  });
+});
+
+describe('WorkerEngine delegation', () => {
+  const CHIEF = 'worker-1';
+
+  function delegationHarness(over: { chief?: Partial<Worker>; roster?: Worker[] } = {}) {
+    const chief = seedWorker({
+      name: 'Chief of Staff',
+      trust: 'autonomous',
+      caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+      ...over.chief,
+    });
+    const triage = seedWorker({
+      id: 'triage',
+      name: 'Triage',
+      jobDescription:
+        'You are the Ticket Triage Worker. Every weekday morning, find and solve the open tickets.',
+      trust: 'trusted',
+    });
+    const h = makeHarness({ seed: [chief, ...(over.roster ?? [triage])] });
+    // A shift that proposed nothing still has item budget for a referral,
+    // which is the case the handoff path exists for.
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    return h;
+  }
+
+  function seedReply(h: ReturnType<typeof makeHarness>, reply: string): void {
+    h.orchestrations.set(
+      'orch-1',
+      workerBatch({ producer: { prompt: 'plan the shift', reply } }),
+    );
+  }
+
+  it('sends a shift handoff on as an errand stamped with the sender', async () => {
+    const h = delegationHarness();
+    seedReply(
+      h,
+      'Nothing for me today.\n<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>',
+    );
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    const errand = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand');
+    expect(errand).toBeDefined();
+    expect(errand!.origin).toMatchObject({
+      workerId: 'triage',
+      task: 'errand',
+      errand: 'RED-6814 bundles six issues. Split it.',
+      from: { workerId: CHIEF, workerName: 'Chief of Staff' },
+    });
+
+    const handed = h.journal.find((e) => e.kind === 'delegated');
+    expect(handed?.workerId).toBe(CHIEF);
+    expect(handed?.note).toContain('Handed to Triage');
+    expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain('Handed on to Triage.');
+  });
+
+  /// The whole of the depth limit: a worker that cannot see its colleagues
+  /// cannot pass the parcel on to them.
+  it('shows a delegated errand no roster, so referrals cannot chain', async () => {
+    const h = delegationHarness({
+      roster: [
+        seedWorker({
+          id: 'triage',
+          name: 'Triage',
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+        }),
+      ],
+    });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    const errand = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand');
+    expect(errand!.prompt).not.toContain('YOUR COLLEAGUES');
+    expect(errand!.prompt).toContain('A COLLEAGUE — "Chief of Staff"');
+  });
+
+  it('reports a handoff aimed at nobody instead of dropping it', async () => {
+    const h = delegationHarness();
+    seedReply(h, '<handoff to="Ticket Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
+      false,
+    );
+    const handed = h.journal.find((e) => e.kind === 'delegated');
+    expect(handed?.note).toContain('"Ticket Triage", who is not a colleague');
+    expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain('matched no colleague');
+  });
+
+  it('never offers, and never reaches, a colleague on another project', async () => {
+    const h = delegationHarness({
+      roster: [seedWorker({ id: 'triage', name: 'Triage', projectPath: '/other-workspace' })],
+    });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
+      false,
+    );
+  });
+
+  it('gives no roster to a worker without the capability', async () => {
+    const h = delegationHarness({
+      chief: { caps: { maxItemsPerShift: 3, runIn: 'worktree' } },
+    });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
+    expect(h.journal.some((e) => e.kind === 'delegated')).toBe(false);
+  });
+
+  it('gives no roster to a delegating worker still on probation', async () => {
+    const h = delegationHarness({ chief: { trust: 'probation' } });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
+    expect(h.journal.some((e) => e.kind === 'delegated')).toBe(false);
+  });
+
+  /// A dropped referral must not read, to its author, exactly like a sent one.
+  it('drops handoffs past the turn item budget and says so', async () => {
+    const h = delegationHarness({ chief: { caps: { maxItemsPerShift: 1, runIn: 'worktree', canDelegate: true } } });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 1, queued: 0, excluded: 0 });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
+      false,
+    );
+    expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain(
+      '1 more handoff dropped — no item budget left this turn.',
+    );
+  });
+
+  it('caps how many colleagues one turn may commission', async () => {
+    const h = delegationHarness({
+      roster: [
+        seedWorker({ id: 'a', name: 'Alpha' }),
+        seedWorker({ id: 'b', name: 'Bravo' }),
+        seedWorker({ id: 'c', name: 'Charlie' }),
+      ],
+    });
+    seedReply(
+      h,
+      [
+        '<handoff to="Alpha">one</handoff>',
+        '<handoff to="Bravo">two</handoff>',
+        '<handoff to="Charlie">three</handoff>',
+      ].join('\n'),
+    );
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.journal.filter((e) => e.kind === 'delegated')).toHaveLength(
+      WORKER_MAX_HANDOFFS_PER_TURN,
+    );
+  });
+
+  /// Without this the same unresolved finding is re-read and re-sent every
+  /// morning, and the receiver has no way to notice: each arrival looks new.
+  it('tells the next shift what it already handed over', async () => {
+    const h = delegationHarness();
+    seedReply(h, '<handoff to="Triage">Split RED-6814 into its six issues.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    h.parked.length = 0;
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).toContain('ALREADY HANDED OVER');
+    expect(h.parked[0].prompt).toContain('Split RED-6814 into its six issues.');
+  });
+
+  /// A narrowing that names a worker who has been deleted or moved is a
+  /// narrowing the roster no longer supports. Pruning it to nothing restores
+  /// the "any colleague" default, which the editor states in words — the other
+  /// reading, "delegates to nobody", would switch delegation off in silence
+  /// the day the one chosen colleague was let go.
+  it('prunes handoff targets that are gone or have moved project', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'triage', name: 'Triage' }),
+        seedWorker({ id: 'far', name: 'Far', projectPath: '/other' }),
+      ],
+    });
+    h.engine.start();
+
+    const chief = seedWorker({
+      id: 'chief',
+      name: 'Chief of Staff',
+      caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+      delegatesTo: ['triage', 'far', 'deleted'],
+    });
+    const kept = h.engine.save(chief);
+    expect(kept.ok && kept.worker.delegatesTo).toEqual(['triage']);
+
+    const emptied = h.engine.save({ ...chief, delegatesTo: ['far', 'deleted'] });
+    expect(emptied.ok && emptied.worker.delegatesTo).toBeUndefined();
+  });
+
+  /// A referral that died on someone else's spent budget has to be visible
+  /// from the sender's desk — otherwise the sender records that it handed the
+  /// work over, and nothing ever happens to it.
+  it('tells the sender when the receiver cannot take the work', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({
+          name: 'Chief of Staff',
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+          budgetUSDPerMonth: 1000,
+        }),
+        seedWorker({ id: 'triage', name: 'Triage', trust: 'trusted', budgetUSDPerMonth: 1 }),
+      ],
+      spend: 500,
+      pool: 100_000,
+    });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    const failed = h.journal.find((e) => e.kind === 'delegated' && e.id.endsWith(':failed'));
+    expect(failed?.workerId).toBe(CHIEF);
+    expect(failed?.note).toContain('Triage could not take it');
+    expect(h.notifications.some((n) => n.title.includes('could not take'))).toBe(true);
+  });
+});
+
+describe('WorkerEngine re-running and deleting one shift', () => {
+  /// A worker that has worked one shift, with the batch registered so the
+  /// engine can look it up the way the desk's row does.
+  async function afterOneShift(opts: { deleted?: string[]; runs?: number } = {}) {
+    const deleted = opts.deleted ?? [];
+    const h = makeHarness({
+      seed: [seedWorker()],
+      deleteActivity: (_workerId, orchestrationId) => {
+        deleted.push(orchestrationId);
+        return { runs: opts.runs ?? 2 };
+      },
+    });
+    h.orchestrations.set('orch-1', workerBatch({ title: '[Shift 1] Scout' }));
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    return { h, deleted };
+  }
+
+  it('gives the shift number and the data window back when the latest shift is deleted', async () => {
+    const { h, deleted } = await afterOneShift();
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
+
+    const res = h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(res).toMatchObject({ ok: true, task: 'shift', label: 'Shift 1', runs: 2 });
+    expect(deleted).toEqual(['orch-1']);
+    // Its journal entries are gone — including the shift note, whose id is
+    // built from the number the redo is about to reuse.
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-1')).toBe(false);
+    expect(h.journal.some((e) => e.id === 'shift-worker-1-1')).toBe(false);
+    // Memory this shift did not write is not the delete's to take: the weekly
+    // compaction note is a fact about the filing cabinet, not about the shift.
+    expect(h.journal.some((e) => e.kind === 'compacted')).toBe(true);
+    const w = h.engine.get('worker-1')!;
+    expect(w.shiftCount).toBeUndefined();
+    expect(w.lastPlannedAt).toBeUndefined();
+  });
+
+  it('leaves the clock alone, so a delete cannot trigger an unattended shift', async () => {
+    const { h } = await afterOneShift();
+    const before = h.engine.get('worker-1')!.lastShiftAt;
+
+    h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(h.engine.get('worker-1')!.lastShiftAt).toBe(before);
+  });
+
+  it('re-runs the latest shift as the SAME number over the same window', async () => {
+    const { h } = await afterOneShift();
+    const first = h.parked.length;
+    h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 1] Scout' }));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+
+    const res = await h.engine.redoShift('worker-1', 'orch-1');
+
+    expect(res).toEqual({ ok: true, shift: 1 });
+    expect(h.parked).toHaveLength(first + 1);
+    expect(h.parked[first].prompt).toContain('This is your shift #1.');
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
+    // The re-run's own shift note landed: the deleted one shared its id, and
+    // an append that silently deduped against it would leave no record at all.
+    expect(
+      h.journal.filter((e) => e.kind === 'shift' && e.orchestrationId === 'orch-2'),
+    ).toHaveLength(1);
+  });
+
+  it('refuses to re-run anything but the most recent shift', async () => {
+    const { h, deleted } = await afterOneShift();
+    // A second shift makes the first one history — its number cannot come back.
+    h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 2] Scout' }));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(2);
+
+    const res = await h.engine.redoShift('worker-1', 'orch-1');
+
+    expect(res).toEqual({
+      ok: false,
+      error: 'Only the most recent shift can be re-run — an older one cannot have its number back.',
+    });
+    // Nothing was removed on the way to refusing.
+    expect(deleted).toEqual([]);
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-1')).toBe(true);
+  });
+
+  it('keeps numbering when an older shift is deleted, and only forgets that one', async () => {
+    const { h } = await afterOneShift();
+    h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 2] Scout' }));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+
+    const res = h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(res).toMatchObject({ ok: true, shiftGivenBack: null });
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(2);
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-1')).toBe(false);
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-2')).toBe(true);
+  });
+
+  it('refuses a batch that belongs to somebody else', async () => {
+    const { h, deleted } = await afterOneShift();
+    h.orchestrations.set(
+      'orch-9',
+      workerBatch({
+        id: 'orch-9',
+        origin: { kind: 'worker', workerId: 'worker-2', workerName: 'Warden' },
+      }),
+    );
+
+    expect(h.engine.forgetActivity('worker-1', 'orch-9')).toEqual({
+      ok: false,
+      error: 'That turn belongs to a different worker.',
+    });
+    expect(deleted).toEqual([]);
+  });
+
+  it('deletes nothing when the journal rewrite fails', async () => {
+    const { h, deleted } = await afterOneShift();
+    const engine = h.engine as unknown as {
+      journal: { remove: (...args: unknown[]) => number };
+    };
+    engine.journal.remove = () => {
+      throw new Error('read-only file system');
+    };
+
+    expect(h.engine.forgetActivity('worker-1', 'orch-1')).toEqual({
+      ok: false,
+      error: 'read-only file system',
+    });
+    // The irreversible half never ran, so the same delete can be retried.
+    expect(deleted).toEqual([]);
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
   });
 });

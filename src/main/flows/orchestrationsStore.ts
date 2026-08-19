@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 import type { Orchestration } from '../../shared/flows/orchestration';
 
@@ -22,7 +23,7 @@ function dir(): string {
 }
 
 function pathFor(id: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error(`Unsafe orchestration id: ${id}`);
+  if (!isSafeIdSegment(id)) throw new Error(`Unsafe orchestration id: ${id}`);
   return path.join(dir(), `${id}.json`);
 }
 

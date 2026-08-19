@@ -19,6 +19,17 @@ export interface WorkerCaps {
   /// boundary without a per-step approval. Optional so workers persisted by
   /// older builds remain conservative: absent is always read as false.
   allowExternalActions?: boolean;
+  /// Let this worker hand work sideways to a colleague as an errand. Off by
+  /// default and off for every worker persisted before delegation existed:
+  /// most workers have no business commissioning anyone, and the roster block
+  /// this unlocks costs prompt budget in every planning turn that carries it.
+  ///
+  /// This is the "may commission" half. The "may be commissioned" half is not
+  /// a flag at all — any enabled worker on the same project can receive one,
+  /// because receiving an errand is a thing the user could already do to it by
+  /// hand, and the receiver plans it through its own job description either
+  /// way. See `canDelegate` for the trust half of the gate.
+  canDelegate?: boolean;
 }
 
 export interface Worker {
@@ -69,6 +80,18 @@ export interface Worker {
   /// first, and arranging one worker must not renumber the rest into an order
   /// the user never chose. See `sortRoster`.
   order?: number;
+  /// Narrow who this worker may hand work to, when `caps.canDelegate` is on.
+  /// Absent or empty means the whole eligible roster — every enabled worker
+  /// on the same project.
+  ///
+  /// Deliberately opt-in narrowing rather than a required org chart: an
+  /// explicit hierarchy is config that has to be drawn up front, before
+  /// anyone has seen a misroute, and that silently goes stale on every hire.
+  /// A misroute is cheap and self-correcting — the receiver plans the errand
+  /// through its own job description and refuses work outside it — so the
+  /// default is to let the roster speak for itself and let the user pin it
+  /// down only where the model has actually got it wrong.
+  delegatesTo?: UUID[];
   /// Which of its own outputs to render when you open this worker.
   ///
   /// A worker whose job is to produce a page — a dashboard, a report — is
@@ -175,6 +198,12 @@ export type WorkerJournalKind =
   /// through its standing job description. It does not advance cadence or the
   /// shift number; its note records both the ask and the worker's response.
   | 'errand'
+  /// This worker judged something outside its own remit and handed it to a
+  /// colleague as an errand. Recorded on the SENDER — the receiver records
+  /// its own `errand` entry, stamped with who sent it, so the referral reads
+  /// from both desks. Carries no cost of its own: the work is charged to the
+  /// worker that actually does it.
+  | 'delegated'
   /// A trust demotion landed. Its own kind (not a 'shift' note) because the
   /// rejection streak must treat it as a terminator — the rejections that
   /// caused a demotion are spent, and must not count toward the next one.
@@ -518,6 +547,148 @@ export function stripWorkerSubject(reply: string): string {
   return reply.replace(/<subject>[\s\S]*?<\/subject>/gi, '').trim();
 }
 
+// ---- Delegation ---------------------------------------------------------
+
+/// May this worker hand work to a colleague?
+///
+/// Two conditions, and the trust one is the load-bearing half. Handing work
+/// sideways is an unattended act: the sender decides alone, and something
+/// starts moving on another desk before anyone has read it. That is exactly
+/// the question the trust ladder already answers, so it answers this one too
+/// — probation means nothing acts unattended, delegation included.
+///
+/// It is also what closes the laundering hole. Without the trust condition, a
+/// worker whose own proposals all park for approval could get work running
+/// anyway by handing it to an autonomous colleague, borrowing a cap it was
+/// deliberately denied. With it, the two gates sit in series and each is owned
+/// by the right worker: the sender's trust decides whether the referral leaves,
+/// the receiver's decides what the referral is allowed to launch.
+export function canDelegate(w: Pick<Worker, 'trust' | 'caps'>): boolean {
+  return w.caps.canDelegate === true && w.trust !== 'probation';
+}
+
+/// Most handoffs a turn can make. A worker that has noticed one thing outside
+/// its remit has probably noticed one; a turn emitting six is a turn that has
+/// decided its whole job belongs to someone else.
+export const WORKER_MAX_HANDOFFS_PER_TURN = 2;
+
+/// How much of a colleague's job description rides in the roster block.
+export const WORKER_ROSTER_LINE_MAX = 180;
+
+/// One roster row: a colleague's name and enough of their job description to
+/// route against.
+///
+/// Taken from the START of the job description rather than a separate `role`
+/// field the user would have to write and maintain, because the opening of a
+/// job description is already a role statement in every one anyone writes —
+/// "You are the Ticket Triage Worker. Every weekday morning, find and solve
+/// the sprint's open tickets end to end." A description too vague to route
+/// against is a description that also plans vague shifts, so the fix belongs
+/// in the description, not in a second field that can disagree with it.
+///
+/// Sentences, not a hard slice, and more than one when the first is short: a
+/// lot of job descriptions open with a bare "You are the Test Warden.", which
+/// names the worker without saying what it does.
+export function rosterLine(w: Pick<Worker, 'name' | 'jobDescription'>): string {
+  const flat = w.jobDescription.replace(/\s+/g, ' ').trim();
+  let out = '';
+  for (const sentence of splitSentences(flat)) {
+    if (out && out.length + 1 + sentence.length > WORKER_ROSTER_LINE_MAX) break;
+    out = out ? `${out} ${sentence}` : sentence;
+    if (out.length >= WORKER_ROSTER_LINE_MAX) break;
+  }
+  if (!out) out = flat;
+  const clipped =
+    out.length > WORKER_ROSTER_LINE_MAX ? `${out.slice(0, WORKER_ROSTER_LINE_MAX - 1)}…` : out;
+  return `${w.name} — ${clipped}`;
+}
+
+function splitSentences(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== '.' && ch !== '!' && ch !== '?') continue;
+    const next = text[i + 1];
+    if (next !== undefined && next !== ' ') continue;
+    out.push(text.slice(start, i + 1).trim());
+    start = i + 1;
+  }
+  const tail = text.slice(start).trim();
+  if (tail) out.push(tail);
+  return out.filter(Boolean);
+}
+
+/// Who this worker is allowed to hand work to.
+///
+/// Scoped to the sender's own project, and that bound is enforced HERE rather
+/// than asked for in the prompt. A roster is a list of names, and two installs
+/// of the same job on two workspaces produce two workers called "Triage" that
+/// a name cannot tell apart — so an off-project colleague must never reach the
+/// roster block in the first place, because once it is nameable it is
+/// reachable. Same reason disabled workers are excluded: a paused worker is
+/// one the user switched off, and a colleague must not be able to switch it
+/// back on by sending it work.
+export function delegationTargets<T extends Pick<Worker, 'id' | 'order' | 'createdAt' | 'enabled' | 'projectPath'>>(
+  sender: Worker,
+  roster: T[],
+): T[] {
+  if (!canDelegate(sender)) return [];
+  const narrowed =
+    sender.delegatesTo && sender.delegatesTo.length > 0 ? new Set(sender.delegatesTo) : null;
+  return sortRoster(
+    roster.filter(
+      (t) =>
+        t.id !== sender.id &&
+        t.enabled &&
+        t.projectPath === sender.projectPath &&
+        (!narrowed || narrowed.has(t.id)),
+    ),
+  );
+}
+
+/// One referral a planning turn asked for: who it wants, and the errand to
+/// hand them. `to` is whatever the worker wrote — resolving it to an actual
+/// colleague is the engine's job, and may fail.
+export interface WorkerHandoff {
+  to: string;
+  instruction: string;
+}
+
+const HANDOFF_RE = /<handoff\s+to\s*=\s*["']?([^"'>\n]+?)["']?\s*>([\s\S]*?)<\/handoff\s*>/gi;
+
+export function parseHandoffs(reply: string): WorkerHandoff[] {
+  const out: WorkerHandoff[] = [];
+  for (const m of reply.matchAll(HANDOFF_RE)) {
+    const to = m[1]?.trim();
+    const instruction = m[2]?.trim();
+    if (to && instruction) out.push({ to, instruction });
+  }
+  return out;
+}
+
+export function stripHandoffs(reply: string): string {
+  return reply.replace(HANDOFF_RE, '').trim();
+}
+
+/// Resolve what a worker wrote in `to=` against the colleagues it may actually
+/// reach. Case- and space-insensitive, because the worker is copying a name
+/// out of a prompt block, not quoting an id.
+///
+/// An ambiguous name resolves to nothing rather than to a guess: two enabled
+/// colleagues sharing a name on one project is rare, and picking one of them
+/// silently would send real work to a coin flip. Failing loudly puts the
+/// clash on the sender's desk where it can be fixed by renaming.
+export function resolveHandoffTarget<T extends Pick<Worker, 'id' | 'name'>>(
+  to: string,
+  targets: T[],
+): T | null {
+  const wanted = to.trim().toLowerCase();
+  if (!wanted) return null;
+  const hits = targets.filter((t) => t.name.trim().toLowerCase() === wanted);
+  return hits.length === 1 ? hits[0] : null;
+}
+
 /// The provenance stamp a worker-owned batch carries.
 ///
 /// One function rather than a literal at each site because the stamp is
@@ -530,10 +701,15 @@ export function stripWorkerSubject(reply: string): string {
 /// Absent rather than `false` when the worker has no such authority, matching
 /// how the field is persisted: older batches have no key at all, and both read
 /// as "ask first".
+/// `from` marks an errand a COLLEAGUE sent rather than the user. The receiver
+/// plans it identically either way — the stamp exists so the desk can say
+/// where it came from, and so the engine can tell a delegated errand apart
+/// from a typed one when deciding whether it may delegate onward (it may not).
 export function workerOrigin(
   w: Pick<Worker, 'id' | 'name' | 'caps'>,
   task: 'shift' | 'errand',
   errand?: string,
+  from?: { workerId: UUID; workerName: string },
 ): {
   kind: 'worker';
   workerId: UUID;
@@ -541,6 +717,7 @@ export function workerOrigin(
   task: 'shift' | 'errand';
   errand?: string;
   allowExternalActions?: boolean;
+  from?: { workerId: UUID; workerName: string };
 } {
   return {
     kind: 'worker',
@@ -549,5 +726,6 @@ export function workerOrigin(
     task,
     ...(errand !== undefined ? { errand } : {}),
     ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
+    ...(from ? { from } : {}),
   };
 }
