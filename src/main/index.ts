@@ -128,6 +128,7 @@ import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
 import { SchedulerEngine } from './flows/scheduler';
 import { WorkerEngine } from './flows/workerEngine';
+import { workerOrigin } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
 import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
@@ -448,7 +449,12 @@ function registerIpc(): void {
         projectPath: worker.projectPath,
         runIn,
         maxConcurrent: 1,
-        origin: { kind: 'worker', workerId: worker.id, workerName: worker.name, task: 'errand' },
+        // The generated flow is drafted read-only, but `resolveStepEffect` is a
+        // heuristic over step text — a "report the answer" step can still read
+        // as external. Stamped through the shared helper for the same reason
+        // the shift and errand parks are, so one worker doesn't gate on path 3
+        // after being waived on paths 1 and 2.
+        origin: workerOrigin(worker, 'errand', errand),
         items: [
           {
             candidate: { id: flow.id, title: flow.name, prompt: errand },
