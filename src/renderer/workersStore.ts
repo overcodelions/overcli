@@ -533,7 +533,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           set({ error: savedFlow.error });
           return false;
         }
-        if (flowIds.length === 0) flowIds = [draftedFlow.id];
+        if (!flowIds.includes(draftedFlow.id)) flowIds = [draftedFlow.id];
         // `flows:save` writes the file; the library every flow-reading pane
         // binds to is a renderer mirror that knows nothing about it. Without
         // this the worker's Settings tab kept rendering the flow's
