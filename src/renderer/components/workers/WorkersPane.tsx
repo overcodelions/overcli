@@ -2916,6 +2916,7 @@ function HireWorker({
         {
           draftedFlow: result.draftedFlow,
           hireSummary: result.summary || undefined,
+          hireFlowError: result.flowError,
         },
       );
       onClose();
@@ -3061,7 +3062,7 @@ function HireWorker({
               </button>
             </div>
             {loading && (
-              <WorkingStrip message="Drafting — one turn writes the contract (persona, cadence, caps, budget); if no existing flow fits, a second turn drafts the flow too. Usually under two minutes." />
+              <WorkingStrip message="Drafting — one turn writes the contract (persona, cadence, caps, budget); if no existing flow fits, a second turn drafts the flow too. Two full turns, so give it a few minutes." />
             )}
           </div>
 
@@ -3114,6 +3115,7 @@ function WorkerEditor() {
   const draft = useWorkersStore((s) => s.draft)!;
   const draftedFlow = useWorkersStore((s) => s.draftedFlow);
   const hireSummary = useWorkersStore((s) => s.hireSummary);
+  const hireFlowError = useWorkersStore((s) => s.hireFlowError);
   const busy = useWorkersStore((s) => s.busy);
   const error = useWorkersStore((s) => s.error);
   const patch = useWorkersStore((s) => s.patchDraft);
@@ -3311,6 +3313,14 @@ function WorkerEditor() {
                     <div className="mt-1.5 text-[11px] text-emerald-600 dark:text-emerald-400">
                       “{draftedFlow.name}” has unsaved AI changes — they save
                       with this worker.
+                    </div>
+                  )}
+                  {hireFlowError && draft.flowIds.length === 0 && (
+                    <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+                      The hire asked for a new flow and the flow drafter
+                      couldn&rsquo;t produce one ({hireFlowError}). Pick an
+                      existing flow, or describe the flow you want in the AI box
+                      above.
                     </div>
                   )}
                 </>

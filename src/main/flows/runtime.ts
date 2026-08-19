@@ -2468,7 +2468,7 @@ export class FlowRuntimeImpl {
     // the normal `on_fail` policy — pause by default, or `goto` to loop
     // back to an earlier step the user wired up. The artifact itself is
     // already recorded above, so the user sees the rejecting review.
-    if (isGatingReviewStep(step) && !isReviewApproved(body)) {
+    if (verdictGateStopsRun(run, step) && !isReviewApproved(body)) {
       const gist = summarizeReviewRejection(body);
       this.handleStepFailure(
         runId,
@@ -3102,6 +3102,49 @@ const GATING_REVIEWER_ROLES: ReadonlySet<FlowRolePreset> = new Set([
 
 export function isGatingReviewerRole(role: FlowRolePreset): boolean {
   return GATING_REVIEWER_ROLES.has(role);
+}
+
+/// Roles that change the working copy or push it somewhere. Their presence is
+/// what makes a verdict actionable: something downstream can build on, fix, or
+/// ship the reviewed work. A flow without one of these produces documents and
+/// nothing else.
+const CODE_WRITING_ROLES: ReadonlySet<FlowRolePreset> = new Set([
+  'implementer',
+  'test-writer',
+  'shipper',
+]);
+
+export function flowHasCodeWritingStep(steps: readonly Pick<FlowStep, 'role'>[]): boolean {
+  return steps.some((step) => CODE_WRITING_ROLES.has(step.role));
+}
+
+/// Should a non-approving verdict actually STOP this run?
+///
+/// A gating reviewer that never approves is right in front of a step that would
+/// act on the work. It is wrong when the review IS the deliverable: an audit
+/// whose security lens finds two real issues has succeeded, and halting there
+/// throws away the report that was the point of the run.
+///
+/// Unattended runs are where that distinction stops being cosmetic. A user who
+/// launched a flow by hand sees the pause and clicks through it; a worker on a
+/// 08:30 cadence just produces nothing, on exactly the shifts that had
+/// something to say, until someone notices the silence. So the assessor
+/// reading only relaxes the gate for worker-owned runs — an interactive run
+/// keeps pausing, because there is someone there for the pause to inform.
+///
+/// Narrow on purpose. An explicit `verdict_gate` always wins (that is the
+/// user's own answer to this question), `plan-reviewer` is exempt because
+/// judging a plan before code exists is a real gate, and a flow holding any
+/// code-writing step keeps every gate it has.
+export function verdictGateStopsRun(
+  run: Pick<FlowRun, 'workerId' | 'flowSnapshot'>,
+  step: Pick<FlowStep, 'role' | 'systemPromptOverride' | 'verdictGate' | 'onFail'>,
+): boolean {
+  if (!isGatingReviewStep(step)) return false;
+  if (step.verdictGate !== undefined) return step.verdictGate;
+  if (!run.workerId) return true;
+  if (step.role === 'plan-reviewer') return true;
+  return flowHasCodeWritingStep(run.flowSnapshot.steps);
 }
 
 /// Custom steps are how AI-drafted flows express domain-specific reviews:

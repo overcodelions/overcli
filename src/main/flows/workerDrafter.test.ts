@@ -17,7 +17,7 @@ vi.mock('../health', () => ({
 }));
 vi.mock('../diagnostics', () => ({ log: mockLog }));
 
-import { draftWorkerFromPrompt } from './workerDrafter';
+import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './workerDrafter';
 import type { DraftDeps } from './drafter';
 
 function claudeDeps(backend: 'claude' | 'copilot' | 'gemini' | 'codex' = 'claude', reply = ''): DraftDeps {
@@ -151,6 +151,32 @@ describe('draftWorkerFromPrompt', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('says why the hire came back without a flow instead of dropping it', async () => {
+    // The flow half failed; the contract half is still reviewable. Silently
+    // returning it left the review screen on an empty flow picker with no
+    // explanation of what went wrong.
+    mockQuery
+      .mockReturnValueOnce(claudeStream(hireReply('A weekly sprint report flow.')))
+      .mockReturnValueOnce(claudeStream('sorry, I cannot write that'));
+
+    const result = await draftWorkerFromPrompt(
+      { jobDescription: JOB, flows: [], projects: [] },
+      claudeDeps(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.draftedFlow).toBeUndefined();
+      expect(result.contract.name).toBe('Scribe');
+      expect(result.flowError).toMatch(/unparseable YAML|validation/i);
+    }
+    expect(mockLog).toHaveBeenCalledWith(
+      'warn',
+      'workers.hire',
+      expect.stringContaining('Flow draft for worker "Scribe" failed'),
+    );
+  });
+
   it('reports Claude authentication output directly', async () => {
     mockQuery.mockReturnValueOnce(claudeStream('Not logged in · Please run /login'));
     const result = await draftWorkerFromPrompt({ jobDescription: JOB, flows: [], projects: [] }, claudeDeps());
@@ -201,5 +227,76 @@ describe('draftWorkerFromPrompt', () => {
     const block = prompt.match(/<worker>\n([\s\S]*?)\n<\/worker>/)?.[1];
     expect(block).toBeTruthy();
     expect(() => JSON.parse(block!)).not.toThrow();
+  });
+});
+
+describe('reviseWorkerFromPrompt', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockLog.mockReset();
+  });
+
+  function revisionReply(flowInstruction: string): string {
+    return [
+      'Adding the execution half.',
+      '',
+      '<revision>',
+      JSON.stringify({ jobDescription: null, flowInstruction }),
+      '</revision>',
+    ].join('\n');
+  }
+
+  it('drafts a flow from scratch when the worker has none yet', async () => {
+    // The recovery path for a hire whose flow draft failed: the AI box is
+    // the only way back to a flow, so a flow instruction with no existing
+    // flow must reach the DESIGNER rather than being dropped.
+    mockQuery
+      .mockReturnValueOnce(claudeStream(revisionReply('Gather the sprint data, then write it up.')))
+      .mockReturnValueOnce(claudeStream(VALID_YAML));
+
+    const result = await reviseWorkerFromPrompt(
+      { jobDescription: JOB, instruction: 'give this worker a flow' },
+      claudeDeps(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.flow?.name).toBe('Sprint Report');
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(mockQuery.mock.calls[1][0].prompt as string).toContain('Gather the sprint data');
+  });
+
+  it('tells the reviser that a flowInstruction designs a whole flow when there is none', async () => {
+    mockQuery.mockReturnValueOnce(claudeStream(revisionReply('Add a review step.')));
+    mockQuery.mockReturnValueOnce(claudeStream(VALID_YAML));
+
+    await reviseWorkerFromPrompt(
+      { jobDescription: JOB, instruction: 'add a review step' },
+      claudeDeps(),
+    );
+
+    expect(mockQuery.mock.calls[0][0].prompt as string).toContain('NO FLOW yet');
+  });
+
+  it('keeps the revision usable when the from-scratch flow draft fails', async () => {
+    mockQuery
+      .mockReturnValueOnce(claudeStream(revisionReply('Write the sprint report.')))
+      .mockReturnValueOnce(claudeStream('nope'));
+
+    const result = await reviseWorkerFromPrompt(
+      { jobDescription: JOB, instruction: 'give this worker a flow' },
+      claudeDeps(),
+    );
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow).toBeUndefined();
+      expect(result.note).toContain('could not be drafted automatically');
+      expect(result.note).toContain('Write the sprint report.');
+    }
+    expect(mockLog).toHaveBeenCalledWith(
+      'warn',
+      'workers.revise',
+      expect.stringContaining('New flow draft failed'),
+    );
   });
 });
