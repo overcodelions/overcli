@@ -12,6 +12,7 @@ import {
   extractOutput,
   extractWorkerQuestion,
   isGatingReviewStep,
+  verdictGateStopsRun,
   isGatingReviewerRole,
   isReviewApproved,
   stepParticipantKey,
@@ -162,6 +163,59 @@ describe('isGatingReviewerRole', () => {
     ] as const) {
       expect(isGatingReviewerRole(role)).toBe(false);
     }
+  });
+});
+
+describe('verdictGateStopsRun', () => {
+  const lens = { role: 'security-reviewer' as const };
+  const auditFlow = {
+    steps: [{ role: 'security-reviewer' as const }, { role: 'technical-writer' as const }],
+  } as never;
+  const shippingFlow = {
+    steps: [{ role: 'implementer' as const }, { role: 'code-reviewer' as const }],
+  } as never;
+
+  it('keeps pausing an interactive run — someone is there to see it', () => {
+    expect(verdictGateStopsRun({ workerId: undefined, flowSnapshot: auditFlow }, lens)).toBe(true);
+  });
+
+  it('lets an unattended worker roll on past an assessor lens', () => {
+    // The whole point of a worker: nobody is watching at 08:30, so halting the
+    // audit on the shift that found something just produces silence.
+    expect(verdictGateStopsRun({ workerId: 'w1', flowSnapshot: auditFlow }, lens)).toBe(false);
+  });
+
+  it('still stops a worker before it acts on disapproved work', () => {
+    expect(
+      verdictGateStopsRun({ workerId: 'w1', flowSnapshot: shippingFlow }, { role: 'code-reviewer' }),
+    ).toBe(true);
+  });
+
+  it('honors an explicit verdict_gate over the worker reading', () => {
+    expect(
+      verdictGateStopsRun({ workerId: 'w1', flowSnapshot: auditFlow }, { ...lens, verdictGate: true }),
+    ).toBe(true);
+    expect(
+      verdictGateStopsRun(
+        { workerId: undefined, flowSnapshot: auditFlow },
+        { ...lens, verdictGate: false },
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps plan-reviewer gating for a worker with no code-writing step', () => {
+    const planFlow = {
+      steps: [{ role: 'planner' as const }, { role: 'plan-reviewer' as const }],
+    } as never;
+    expect(
+      verdictGateStopsRun({ workerId: 'w1', flowSnapshot: planFlow }, { role: 'plan-reviewer' }),
+    ).toBe(true);
+  });
+
+  it('never gates a step that was not a review to begin with', () => {
+    expect(
+      verdictGateStopsRun({ workerId: 'w1', flowSnapshot: auditFlow }, { role: 'researcher' }),
+    ).toBe(false);
   });
 });
 
