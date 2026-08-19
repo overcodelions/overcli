@@ -15,6 +15,21 @@ export type TerminalLaunchResult =
   | { ok: true }
   | { ok: false; error: string; command?: string };
 
+/// Which feature asked for the window. Every launch is logged with one of
+/// these so a Terminal that pops up unbidden can be traced back to the code
+/// that wanted it. Previously only *failures* were logged, which left a
+/// successful launch as the single case with no trace at all — exactly the
+/// case you need when windows appear and nobody knows why.
+export type TerminalOrigin =
+  | 'ollama-install'
+  | 'ollama-update'
+  | 'ollama-security'
+  | 'backend-update'
+  | 'agent-launch'
+  | 'workspace-command'
+  | 'file-tree'
+  | 'unknown';
+
 // `do script` passes the string to the user's login shell, so any shell
 // metacharacter in the command reaches sh/bash/zsh. Command substitution
 // (backtick, `$(...)`) and control operators (`;`, `&&`, `|`) are the
@@ -109,12 +124,17 @@ function runWindowsTerminal(command: string, cwd?: string): TerminalLaunchResult
 // init and the typed command ends up sitting in the buffer unexecuted,
 // and `open` needs no Apple Events, so the user still gets a visible
 // window to paste into when the `do script` half is refused by TCC.
-async function launchTerminalWith(cwd: string, command: string): Promise<TerminalLaunchResult> {
+async function launchTerminalWith(
+  cwd: string,
+  command: string,
+  origin: TerminalOrigin,
+): Promise<TerminalLaunchResult> {
+  log('info', 'terminal', `[${origin}] opening Terminal in ${cwd} to run \`${command}\``);
   try {
     spawn('open', ['-a', 'Terminal', cwd], { detached: true, stdio: 'ignore' }).unref();
   } catch (err: any) {
     const error = err?.message ?? String(err);
-    log('warn', 'terminal', `open -a Terminal failed: ${error}`);
+    log('warn', 'terminal', `[${origin}] open -a Terminal failed: ${error}`);
     return { ok: false, error };
   }
   // Give Terminal.app time to open the window and the login shell to
@@ -127,8 +147,18 @@ tell application "Terminal"
   do script "${appleScriptString(command)}" in front window
 end tell`;
   const res = await runAppleScript(script);
-  if (res.ok) return res;
-  log('warn', 'terminal', `couldn't run \`${command}\` in Terminal: ${res.error}`);
+  if (res.ok) {
+    log('info', 'terminal', `[${origin}] Terminal accepted \`${command}\``);
+    return res;
+  }
+  // The window from `open` is already on screen at this point — the command
+  // just never made it in. That is the empty-window-at-home symptom, so name
+  // it in the log rather than leaving only the osascript error.
+  log(
+    'warn',
+    'terminal',
+    `[${origin}] window opened but \`${command}\` was not delivered: ${res.error}`,
+  );
   if (isAutomationDenial(res.error)) {
     return {
       ok: false,
@@ -141,8 +171,12 @@ end tell`;
   return { ok: false, error: `${res.error} Run this in the window that just opened:`, command };
 }
 
-export function runInTerminal(command: string): Promise<TerminalLaunchResult> {
+export function runInTerminal(
+  command: string,
+  origin: TerminalOrigin = 'unknown',
+): Promise<TerminalLaunchResult> {
   if (FORBIDDEN_COMMAND_PATTERNS.test(command)) {
+    log('warn', 'terminal', `[${origin}] refused \`${command}\`: shell metacharacters`);
     return Promise.resolve({
       ok: false,
       error: 'Command contains shell metacharacters and was refused.',
@@ -160,7 +194,7 @@ export function runInTerminal(command: string): Promise<TerminalLaunchResult> {
   }
   // No workspace to sit in — home is as good a place as any, and going
   // through the same two-step path means one launch mechanism to keep working.
-  return launchTerminalWith(os.homedir(), command);
+  return launchTerminalWith(os.homedir(), command, origin);
 }
 
 // Opens a terminal window sitting in `cwd` with nothing typed into it —
@@ -170,10 +204,15 @@ export function runInTerminal(command: string): Promise<TerminalLaunchResult> {
 // is a dedicated argv entry either way. A leading dash is refused rather than
 // passed on: `open` would read it as a flag (the option-injection class of
 // bug f731162 fixed for refs).
-export function openTerminalIn(cwd: string): TerminalLaunchResult {
+export function openTerminalIn(
+  cwd: string,
+  origin: TerminalOrigin = 'file-tree',
+): TerminalLaunchResult {
   if (!cwd || /[\n\r]/.test(cwd) || cwd.startsWith('-')) {
+    log('warn', 'terminal', `[${origin}] refused bare Terminal in ${cwd}: unsafe path`);
     return { ok: false, error: 'That folder path is unsafe to hand to a terminal.' };
   }
+  log('info', 'terminal', `[${origin}] opening bare Terminal in ${cwd}`);
   try {
     if (process.platform === 'win32') {
       spawn('cmd.exe', ['/d', '/c', 'start', '', 'powershell.exe', '-NoProfile', '-NoExit'], {
@@ -197,7 +236,11 @@ export function openTerminalIn(cwd: string): TerminalLaunchResult {
   }
 }
 
-export function openTerminalAt(cwd: string, command: string): Promise<TerminalLaunchResult> {
+export function openTerminalAt(
+  cwd: string,
+  command: string,
+  origin: TerminalOrigin = 'unknown',
+): Promise<TerminalLaunchResult> {
   // `cwd` is passed to `open` as a dedicated argv entry (not shell-
   // interpolated), so quotes/backslashes are safe. Only reject blank or
   // newline-delimited values to avoid malformed AppleScript fallback text.
@@ -223,5 +266,5 @@ export function openTerminalAt(cwd: string, command: string): Promise<TerminalLa
       command: `cd '${cwd}' && ${command}`,
     });
   }
-  return launchTerminalWith(cwd, command);
+  return launchTerminalWith(cwd, command, origin);
 }
