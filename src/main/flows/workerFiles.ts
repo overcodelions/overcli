@@ -24,6 +24,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
 import { WORKER_ARCHIVE_DIR } from '../../shared/flows/workerCompaction';
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 /// Biggest file we will read back into the renderer. A worker told to keep a
 /// baseline can write something enormous; the list still shows it, but the
@@ -55,7 +56,7 @@ function workersRoot(): string {
 /// the worktree, no runtime change. The id is a UUID, so it is already safe as
 /// a path segment; guard anyway rather than trust a caller.
 export function workerFilesDir(workerId: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(workerId)) throw new Error(`Unsafe worker id: ${workerId}`);
+  if (!isSafeIdSegment(workerId)) throw new Error(`Unsafe worker id: ${workerId}`);
   return path.join(workersRoot(), workerId);
 }
 

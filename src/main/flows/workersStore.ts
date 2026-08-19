@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 import type { Worker } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
@@ -13,7 +14,7 @@ function dir(): string {
 }
 
 function pathFor(id: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error(`Unsafe worker id: ${id}`);
+  if (!isSafeIdSegment(id)) throw new Error(`Unsafe worker id: ${id}`);
   return path.join(dir(), `${id}.json`);
 }
 

@@ -27,6 +27,7 @@
 
 import { randomUUID } from 'node:crypto';
 
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import {
@@ -410,6 +411,9 @@ export class WorkerEngine {
     input: Omit<Worker, 'id' | 'createdAt' | 'trust'> & { id?: UUID; trust?: WorkerTrustLevel },
   ): { ok: true; worker: Worker } | { ok: false; error: string } {
     const existing = input.id ? this.workers.get(input.id) : undefined;
+    if (input.id !== undefined && !isSafeIdSegment(input.id)) {
+      return { ok: false, error: `Unsafe worker id: ${input.id}` };
+    }
     const now = this.now();
     const trust: WorkerTrustLevel = existing?.trust ?? 'probation';
 

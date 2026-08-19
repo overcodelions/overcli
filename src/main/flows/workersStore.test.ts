@@ -96,6 +96,8 @@ describe('workersStore', () => {
     expect(() => deleteWorker('../evil')).not.toThrow();
     expect(fs.existsSync(bystander)).toBe(true);
     expect(() => saveWorker(makeWorker({ id: 'a/b' }))).toThrow(/Unsafe worker id/);
+    expect(() => saveWorker(makeWorker({ id: '..' }))).toThrow(/Unsafe worker id/);
+    expect(() => saveWorker(makeWorker({ id: '.' }))).toThrow(/Unsafe worker id/);
     // A real id is a UUID, so the guard costs nothing legitimate.
     expect(() => saveWorker(makeWorker({ id: '3f2a1c4e-0b7d-4f9a-8c21-5e6d7a8b9c01' }))).not.toThrow();
   });

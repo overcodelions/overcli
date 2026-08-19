@@ -435,6 +435,13 @@ describe('archiveWorkerFiles', () => {
   });
 });
 
+describe('workerFilesDir', () => {
+  it('refuses a bare traversal worker id at the directory sink', () => {
+    expect(() => workerFilesDir('..')).toThrow(/Unsafe worker id/);
+    expect(() => workerFilesDir('.')).toThrow(/Unsafe worker id/);
+  });
+});
+
 describe('clearWorkerFiles', () => {
   it('empties the cabinet and leaves the neighbours alone', () => {
     const mine = ensureWorkerFilesDir(WORKER);
