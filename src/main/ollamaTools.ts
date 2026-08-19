@@ -23,10 +23,26 @@ import {
   OllamaChatMessage,
   OllamaToolCall,
   OllamaToolDefinition,
+  modelCapabilities,
   streamChat,
 } from './ollama';
 
 const MAX_FILE_BYTES = 256 * 1024;
+
+/// Lines `read_file` returns when the model doesn't ask for a window.
+/// Deliberately modest: on a local model every token of tool output is
+/// prefill, and prefill is the dominant cost of an Ollama flow step.
+/// Measured on an M-series box at ~120 tok/s, handing back all 2,524 lines
+/// of `src/shared/types.ts` costs ~27k tokens ≈ 3.7 minutes of prompt
+/// processing — to make a five-line edit. A 400-line window is ~20x
+/// cheaper and is almost always enough when paired with grep.
+///
+/// Declared up here with the other limits rather than beside `readFileTool`
+/// because `OLLAMA_BUILTIN_TOOLS` interpolates it at module-init time.
+const DEFAULT_READ_LINES = 400;
+/// Ceiling on an explicit `limit`, so a model asking for 100_000 lines
+/// can't undo the budget above.
+const MAX_READ_LINES = 2000;
 const MAX_LIST_ENTRIES = 500;
 const MAX_GREP_MATCHES = 200;
 
@@ -56,13 +72,23 @@ export const OLLAMA_BUILTIN_TOOLS: OllamaToolDefinition[] = [
       name: 'read_file',
       description:
         'Read a UTF-8 text file from the project. Paths are relative to the project root. ' +
-        'Returns up to 256 KB of content; binary files are rejected.',
+        `Returns at most ${DEFAULT_READ_LINES} lines per call unless you pass a larger limit; ` +
+        'the reply says which range you got. Binary files are rejected.',
       parameters: {
         type: 'object',
         properties: {
           path: {
             type: 'string',
             description: 'File path relative to the project root (e.g. "src/main/index.ts").',
+          },
+          offset: {
+            type: 'number',
+            description:
+              'Optional 1-based line to start at. Use the line number grep reported to read just the region you care about.',
+          },
+          limit: {
+            type: 'number',
+            description: `Optional number of lines to return. Defaults to ${DEFAULT_READ_LINES}, capped at ${MAX_READ_LINES}.`,
           },
         },
         required: ['path'],
@@ -193,6 +219,68 @@ export const OLLAMA_BUILTIN_TOOLS: OllamaToolDefinition[] = [
 export interface ToolExecutionResult {
   content: string;
   isError: boolean;
+}
+
+/// Separate chat-template control tokens and inline reasoning blocks from
+/// the model's actual prose.
+///
+/// Two distinct leaks land in the content channel:
+///
+///   1. Raw control tokens — `<|tool_response|>`, `<|im_start|>`, and
+///      friends. We embed the tool schema in the system prompt rather than
+///      passing `tools` on the wire (see `buildOllamaToolSystemPrompt`), so
+///      Ollama's template never puts the model into its native tool mode
+///      and a tool-trained model will happily emit its own protocol tokens
+///      as plain text. They are noise — drop them. The trailing-`|>`-
+///      optional match catches tokens truncated by a stop sequence, which
+///      is how `<|tool_response` (no closer) reached the chat bubble.
+///
+///   2. `<think>` / `<thought>` blocks — reasoning that belongs in the
+///      thinking channel, not the answer. Models split between emitting
+///      these inline and using Ollama's `message.thinking` field; some do
+///      both. We hoist them so the renderer shows them as a collapsed
+///      thinking block instead of leaking raw XML into the answer.
+///
+/// Returns the cleaned prose plus any hoisted reasoning (empty string when
+/// there was none).
+export function scrubModelSpecialTokens(text: string): {
+  text: string;
+  thinking: string;
+} {
+  const hoisted: string[] = [];
+  let out = text.replace(
+    /<(think|thought|reasoning)>([\s\S]*?)<\/\1>/gi,
+    (_m, _tag, body: string) => {
+      hoisted.push(body.trim());
+      return '';
+    },
+  );
+  // An unclosed reasoning block means the model was still thinking when
+  // the round ended — everything after the opener is reasoning.
+  out = out.replace(/<(think|thought|reasoning)>([\s\S]*)$/i, (_m, _tag, body: string) => {
+    hoisted.push(body.trim());
+    return '';
+  });
+  // Three observed shapes, all from live gemma4:26b output:
+  //   <|tool_response|>  balanced, identifier body
+  //   <|"|>              balanced, PUNCTUATION body — emitted where a plain
+  //                      quote belongs, which is what breaks tool-call JSON
+  //   <channel|>         opens with a bare `<`, closes with `|>`
+  // Balanced forms are matched first and allow any body, so `<|"|>` is
+  // caught. The unbalanced fallback stays narrow — an identifier body only —
+  // so a stray `<|` in prose or in a code snippet survives untouched.
+  out = out.replace(/<\|[^<>]{0,32}?\|>/g, '');
+  out = out.replace(/<[a-z0-9_]{1,32}\|>/gi, '');
+  out = out.replace(/<\|[a-z0-9_]{1,32}>?/gi, '');
+  out = out.trim();
+  // A message whose entire content is a horizontal rule is decoration, not an
+  // answer: gemma4 punctuates its tool calls with `---`, and markdown renders
+  // that as a hairline. The result is an assistant bubble that shows a model
+  // label and copy buttons wrapped around something invisible — it reads as a
+  // stray empty reply. Multi-line content is left alone, so a unified diff's
+  // own `---` header is untouched.
+  if (/^[-*_]{3,}$/.test(out)) out = '';
+  return { text: out, thinking: hoisted.filter(Boolean).join('\n\n') };
 }
 
 /// Some models (especially the smaller Qwen/Llama coder variants) emit
@@ -343,7 +431,12 @@ export function executeOllamaTool(args: {
   try {
     switch (args.name) {
       case 'read_file':
-        return readFileTool(args.cwd, asString(args.arguments.path));
+        return readFileTool(
+          args.cwd,
+          asString(args.arguments.path),
+          asOptionalNumber(args.arguments.offset),
+          asOptionalNumber(args.arguments.limit),
+        );
       case 'list_dir':
         return listDirTool(args.cwd, asString(args.arguments.path));
       case 'grep':
@@ -380,6 +473,18 @@ export function executeOllamaTool(args: {
 function asString(v: unknown): string {
   if (typeof v !== 'string') throw new Error('expected string argument');
   return v;
+}
+
+/// Coerce an optional numeric argument. Local models routinely send
+/// numbers as strings ("400") or fill an unused optional with null/""/"0",
+/// and a hard throw there would fail the whole tool call over nothing.
+/// Anything we can't read as a positive number becomes undefined, which
+/// falls back to the default window.
+function asOptionalNumber(v: unknown): number | undefined {
+  if (v == null || v === '') return undefined;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return n;
 }
 
 /// Resolve a relative path against cwd and reject anything that escapes
@@ -425,7 +530,31 @@ function realpathNearestAncestor(target: string): string {
   }
 }
 
+/// Buffer ceiling for the child process. Stays generous — this only has to
+/// stop a runaway command from exhausting memory; `clampToolOutput` decides
+/// how much actually reaches the model.
 const MAX_BASH_OUTPUT_BYTES = 256 * 1024;
+
+/// What a single stream of command output may contribute to the prompt.
+///
+/// The full 256 KB buffer used to go straight into the transcript, which is
+/// roughly 65k tokens — on a local model that is minutes of prompt
+/// processing for one failing `npm test`, and it crowds out the context the
+/// step actually needs. 8 KB is ample: what matters in a test run is the
+/// first failure and the summary, which live at the two ends.
+const MAX_TOOL_OUTPUT_CHARS = 8 * 1024;
+
+/// Trim the middle out of oversized command output, keeping the head (where
+/// the first failure appears) and the tail (where the summary lives), with
+/// an explicit marker so the model knows it isn't seeing everything.
+function clampToolOutput(text: string): string {
+  if (text.length <= MAX_TOOL_OUTPUT_CHARS) return text;
+  const keep = Math.floor(MAX_TOOL_OUTPUT_CHARS / 2);
+  const head = text.slice(0, keep);
+  const tail = text.slice(-keep);
+  const omitted = text.length - keep * 2;
+  return `${head}\n… [${omitted} characters omitted — re-run with a narrower command, or grep the output, if you need the middle] …\n${tail}`;
+}
 const BASH_TIMEOUT_MS = 60_000;
 
 /// Bounds for the JS grep fallback. The pattern is model-controlled, so a
@@ -542,8 +671,8 @@ function bashTool(cwd: string, command: string): ToolExecutionResult {
     timeout: BASH_TIMEOUT_MS,
     maxBuffer: MAX_BASH_OUTPUT_BYTES,
   });
-  const stdout = (res.stdout ?? '').toString();
-  const stderr = (res.stderr ?? '').toString();
+  const stdout = clampToolOutput((res.stdout ?? '').toString());
+  const stderr = clampToolOutput((res.stderr ?? '').toString());
   const timedOut = res.signal === 'SIGTERM' || (res.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT';
   const exit = res.status ?? -1;
   const parts: string[] = [
@@ -560,19 +689,53 @@ function bashTool(cwd: string, command: string): ToolExecutionResult {
   };
 }
 
-function readFileTool(cwd: string, rel: string): ToolExecutionResult {
+/// Read a file, optionally windowed to a line range.
+///
+/// Content is returned WITHOUT line-number prefixes on purpose: `edit_file`
+/// matches `old_string` exactly, and a model that copies a numbered gutter
+/// into its edit produces a no-match failure that is miserable to debug.
+/// Orientation comes from a one-line header instead, and `grep` already
+/// reports `file:line:text` for finding the range in the first place.
+function readFileTool(
+  cwd: string,
+  rel: string,
+  offset?: number,
+  limit?: number,
+): ToolExecutionResult {
   const full = safeResolve(cwd, rel);
   const stat = fs.statSync(full);
   if (!stat.isFile()) return { content: `${rel}: not a regular file`, isError: true };
   if (stat.size > MAX_FILE_BYTES) {
     return {
-      content: `${rel}: file is ${Math.round(stat.size / 1024)} KB — over the 256 KB tool limit. Use grep or read a smaller file.`,
+      content: `${rel}: file is ${Math.round(stat.size / 1024)} KB — over the 256 KB tool limit. Use grep to find the lines you need.`,
       isError: true,
     };
   }
   const buf = fs.readFileSync(full);
   if (buf.includes(0)) return { content: `${rel}: binary file`, isError: true };
-  return { content: buf.toString('utf-8'), isError: false };
+
+  const lines = buf.toString('utf-8').split(/\r?\n/);
+  const total = lines.length;
+  const start = Math.max(1, Math.trunc(offset ?? 1));
+  if (start > total) {
+    return {
+      content: `${rel}: offset ${start} is past the end of the file (${total} lines).`,
+      isError: true,
+    };
+  }
+  const count = Math.min(Math.max(1, Math.trunc(limit ?? DEFAULT_READ_LINES)), MAX_READ_LINES);
+  const end = Math.min(total, start + count - 1);
+  const body = lines.slice(start - 1, end).join('\n');
+
+  if (start === 1 && end === total) return { content: body, isError: false };
+  const more =
+    end < total
+      ? ` Call read_file again with offset=${end + 1} to continue, or grep to jump straight to a symbol.`
+      : '';
+  return {
+    content: `[${rel} — lines ${start}-${end} of ${total}.${more}]\n${body}`,
+    isError: false,
+  };
 }
 
 function listDirTool(cwd: string, rel: string): ToolExecutionResult {
@@ -714,14 +877,38 @@ export function modelSupportsTools(tag: string): boolean {
 export function buildOllamaToolSystemPrompt(
   cwd: string,
   enabledTools?: ReadonlySet<string>,
+  opts?: { nativeTools?: boolean },
 ): string {
   const isEnabled = (name: string): boolean => !enabledTools || enabledTools.has(name);
+  // When Ollama drives tool calling through the model's own chat template,
+  // teaching a SECOND text protocol is not redundant — it is actively
+  // destructive. Measured on gemma4:26b with an identical task:
+  //
+  //   native tools alone        → clean structured tool_calls, empty content
+  //   in-prompt protocol alone  → invents tools, leaks <channel|>/<|tool_response>
+  //   both together             → `{"name":<|"|>grep<|"|>, …}` — unparseable
+  //
+  // Asked to render our `<tool_call>` shape while its template has it in
+  // native tool mode, the model reaches for its own control-token
+  // vocabulary and emits the special token `<|"|>` where a plain quote
+  // belongs. That JSON never parses, so no tool is ever dispatched, so the
+  // model second-guesses itself and spins until the round is exhausted.
+  //
+  // So: when native tools are on, say nothing about call formatting at all.
+  // The behavioural rules and the efficiency guidance still earn their
+  // place — those are about WHICH tool to reach for, not how to spell it.
+  const native = opts?.nativeTools === true;
   const sections: Array<{ name: string; lines: string[] }> = [
     {
       name: 'read_file',
       lines: [
-        '  read_file(path: string)',
-        '    Read a UTF-8 text file relative to the project root. Returns up to 256 KB.',
+        '  read_file(path: string, offset?: number, limit?: number)',
+        '    Read a UTF-8 text file relative to the project root. Returns at most',
+        `    ${DEFAULT_READ_LINES} lines per call; the reply tells you which range you got and`,
+        '    how to ask for the next one. `offset` is a 1-based line number.',
+        '    PREFER a window over a whole file: grep for the symbol, then read_file',
+        '    with offset set near the line grep reported. Reading a 2,000-line file in',
+        '    full to change three lines wastes minutes of local compute.',
       ],
     },
     {
@@ -736,6 +923,9 @@ export function buildOllamaToolSystemPrompt(
       lines: [
         '  grep(pattern: string, path?: string, caseInsensitive?: boolean)',
         '    Regex-search across the project. `path` defaults to the project root.',
+        '    Results are `file:line:text` — feed that line number to read_file as',
+        '    `offset` to pull just the surrounding region. This is the cheapest way to',
+        '    locate code, and the right first move before editing an unfamiliar file.',
       ],
     },
     {
@@ -840,38 +1030,85 @@ export function buildOllamaToolSystemPrompt(
     .flatMap((e) => ['', ...e.lines])
     .join('\n');
 
-  return [
+  const head = [
     'You are a local coding assistant running inside overcli on the user\'s machine.',
     `You have real, working access to the user's project directory at: ${cwd}`,
     '',
     'AVAILABLE TOOLS (real, working — they read AND modify the user\'s actual disk):',
     toolBlock,
-    '',
-    'TOOL-CALL FORMAT (MANDATORY):',
-    'Whenever you need to use a tool, emit EXACTLY this block — no prose, no markdown fences, just the tag:',
-    '',
-    '<tool_call>',
-    '{"name": "<tool_name>", "arguments": {<json args>}}',
-    '</tool_call>',
-    '',
-    'The wrapper tags and the JSON are BOTH required. Stop generating after </tool_call>; the tool result will be fed back to you on the next turn.',
+  ];
+
+  // Only describe a wire format when we are the ones defining it.
+  const formatSection = native
+    ? [
+        '',
+        'Call these through your normal tool-calling interface. One call at a time:',
+        'the result comes back to you on the next turn, and you cannot know it before',
+        'then — so never write a second call, or the answer, in the same reply.',
+      ]
+    : [
+        '',
+        'TOOL-CALL FORMAT (MANDATORY):',
+        'Whenever you need to use a tool, emit EXACTLY this block — no prose, no markdown fences, just the tag:',
+        '',
+        '<tool_call>',
+        '{"name": "<tool_name>", "arguments": {<json args>}}',
+        '</tool_call>',
+        '',
+        'The wrapper tags and the JSON are BOTH required. Stop generating after </tool_call>; the tool result will be fed back to you on the next turn.',
+      ];
+
+  const rules = [
     '',
     'CRITICAL RULES:',
     '1. When you need to do something with files, you MUST call the appropriate tool. Do NOT describe what you "will" do.',
-    '2. Never narrate ("I will read X", "I\'ll use the edit_file tool", "Let me list Y"). If you catch yourself typing those phrases, STOP and emit the <tool_call> block instead.',
+    native
+      ? '2. Never narrate ("I will read X", "I\'ll use the edit_file tool", "Let me list Y"). If you catch yourself typing those phrases, STOP and make the tool call instead.'
+      : '2. Never narrate ("I will read X", "I\'ll use the edit_file tool", "Let me list Y"). If you catch yourself typing those phrases, STOP and emit the <tool_call> block instead.',
     '3. Never fabricate file names, directory contents, or file content. If you have not called the tool yet, you do not know what is there.',
     '4. Only call the tools listed above. If a task asks for something that requires a tool not in your list, say so plainly — do not invent a tool name.',
     '5. After the tool returns, answer concisely using the real result.',
-    '',
-    'WORKED EXAMPLES:',
-    exampleBlock,
+  ];
+
+  // Worked examples exist to teach the JSON-in-tags shape. Under native
+  // tools there is no shape to teach, and showing `<tool_call>` blocks is
+  // precisely the collision that corrupts the model's output.
+  const exampleSection = native ? [] : ['', 'WORKED EXAMPLES:', exampleBlock];
+
+  const antiPatterns = [
     '',
     'WRONG (do NOT produce output like this):',
     '"I will read README.md to provide you with its contents."',
     '"Let me fetch the contents of that file."',
     '"I\'ll just use the edit_file tool."',
     '"Sure, I\'ll list the directory."',
-  ].join('\n');
+  ];
+
+  return [...head, ...formatSection, ...rules, ...exampleSection, ...antiPatterns].join('\n');
+}
+
+/// Decide whether this model can drive tool calling through Ollama's own
+/// chat template, and if so which schemas to hand it.
+///
+/// Capability comes from `/api/show` on the actual pulled model rather than
+/// our static catalog: the catalog only covers tags we ship, and describes
+/// a family rather than the specific build the user pulled. An unreachable
+/// probe yields no capabilities, which falls back to the in-prompt path.
+///
+/// Callers must feed the result to BOTH `buildOllamaToolSystemPrompt`
+/// (via `opts.nativeTools`) and `runOllamaToolLoop` — the prompt and the
+/// wire have to agree on which protocol is in play. Disagreement is not a
+/// degraded mode, it is the corruption documented above.
+export async function resolveNativeTools(
+  model: string,
+  enabledTools?: ReadonlySet<string>,
+): Promise<OllamaToolDefinition[] | undefined> {
+  const caps = await modelCapabilities(model);
+  if (!caps.has('tools')) return undefined;
+  const allowed = OLLAMA_BUILTIN_TOOLS.filter(
+    (t) => !enabledTools || enabledTools.has(t.function.name),
+  );
+  return allowed.length > 0 ? allowed : undefined;
 }
 
 /// Shared tool-call loop used by both the primary Ollama chat path
@@ -911,12 +1148,29 @@ export interface OllamaToolLoopArgs {
   /// model can correct course. Flow steps use this to enforce a
   /// researcher's read-only contract. Undefined = all tools allowed.
   enabledTools?: ReadonlySet<string>;
+  /// Tool schemas to hand Ollama, from `resolveNativeTools`. When set, the
+  /// model's own chat template drives tool calling and `systemPrompt` MUST
+  /// have been built with `{ nativeTools: true }` so it teaches no competing
+  /// text format — see the note in `buildOllamaToolSystemPrompt`.
+  nativeTools?: OllamaToolDefinition[];
 }
 
 export type OllamaToolLoopEvent =
   | { type: 'roundStart'; round: number }
-  | { type: 'assistantDelta'; round: number; cumulative: string }
-  | { type: 'roundComplete'; round: number; text: string; toolCalls: OllamaToolCall[] }
+  | { type: 'assistantDelta'; round: number; cumulative: string; thinking: string }
+  /// Reasoning-only delta. Emitted while the model is thinking but has
+  /// produced no prose yet — which on a large prompt is the entire first
+  /// minute or more. Consumers must render something on this or the user
+  /// stares at an empty bubble wondering if anything is running.
+  | { type: 'thinkingDelta'; round: number; thinking: string }
+  | {
+      type: 'roundComplete';
+      round: number;
+      text: string;
+      toolCalls: OllamaToolCall[];
+      thinking: string;
+      usage?: { promptEvalCount?: number; evalCount?: number };
+    }
   | { type: 'toolResult'; round: number; call: OllamaToolCall; result: ToolExecutionResult };
 
 export type OllamaToolLoopOutcome =
@@ -930,6 +1184,9 @@ export async function runOllamaToolLoop(
   const maxRounds = args.maxRounds ?? MAX_OLLAMA_TOOL_ROUNDS;
   const nudgeOnNarration = args.nudgeOnNarration ?? true;
   let nudged = false;
+  let thoughtOnlyNudged = false;
+
+  const nativeTools = args.nativeTools;
   // Track the previous no-tool-call text so we can detect a model spinning
   // on the same narration ("I'll use the edit_file tool." × 25). Once we
   // see the same gist twice in a row with no tool call, bail with a clear
@@ -941,17 +1198,61 @@ export async function runOllamaToolLoop(
 
     const wireMessages = buildWireMessages(args.messages, args.turnStartIndex, args.systemPrompt);
     let acc = '';
+    let think = '';
+    let usage: { promptEvalCount?: number; evalCount?: number } | undefined;
     let pendingCalls: OllamaToolCall[] = [];
     let streamError: string | null = null;
 
+    // Per-round abort, chained to the caller's. Lets us end the round the
+    // instant a complete tool call is on the wire (see below) without
+    // disturbing the caller's own cancellation.
+    const roundAbort = new AbortController();
+    const linkOuterAbort = () => roundAbort.abort();
+    if (args.signal.aborted) roundAbort.abort();
+    else args.signal.addEventListener('abort', linkOuterAbort, { once: true });
+    let stoppedAtToolCall = false;
+
     await streamChat(
-      { model: args.model, messages: wireMessages, signal: args.signal },
+      {
+        model: args.model,
+        messages: wireMessages,
+        tools: nativeTools,
+        signal: roundAbort.signal,
+      },
       (ev) => {
         if (ev.type === 'token') {
           acc += ev.text;
-          onEvent({ type: 'assistantDelta', round, cumulative: acc });
+          onEvent({ type: 'assistantDelta', round, cumulative: acc, thinking: think });
+          // We embed the tool protocol in the prompt rather than passing
+          // `tools` on the wire, so Ollama's template gives the model no
+          // stop token at the tool-call boundary. Left to run, a model
+          // emits its first call and then just keeps going — fabricating
+          // the tool result it never received, then the next call, then
+          // the next, often collapsing into verbatim repetition until the
+          // context fills. Everything after the first call is invented, so
+          // cut the round off the moment one complete call exists.
+          //
+          // The `"name"` check keeps this cheap: the balanced-brace parse
+          // only runs on tokens that could plausibly close a call.
+          if (
+            !stoppedAtToolCall &&
+            ev.text.includes('}') &&
+            acc.includes('"name"') &&
+            extractInlineToolCalls(acc).calls.length > 0
+          ) {
+            stoppedAtToolCall = true;
+            roundAbort.abort();
+          }
+        } else if (ev.type === 'thinking') {
+          think += ev.text;
+          // Before any prose exists there is no bubble to update, so the
+          // reasoning stream is the only proof of life the user gets.
+          if (acc) onEvent({ type: 'assistantDelta', round, cumulative: acc, thinking: think });
+          else onEvent({ type: 'thinkingDelta', round, thinking: think });
         } else if (ev.type === 'toolCalls') {
           pendingCalls = pendingCalls.concat(ev.calls);
+        } else if (ev.type === 'done') {
+          usage = { promptEvalCount: ev.promptEvalCount, evalCount: ev.evalCount };
         } else if (ev.type === 'error') {
           streamError = ev.message;
         }
@@ -959,8 +1260,13 @@ export async function runOllamaToolLoop(
     ).catch((err: any) => {
       streamError = err?.message ?? String(err);
     });
+    args.signal.removeEventListener('abort', linkOuterAbort);
 
-    if (streamError) return { ok: false, error: streamError, rounds: round + 1 };
+    // A deliberate stop-at-tool-call surfaces as an abort error. That's a
+    // successful round, not a failure — but a caller-driven abort still is.
+    if (streamError && (!stoppedAtToolCall || args.signal.aborted)) {
+      return { ok: false, error: streamError, rounds: round + 1 };
+    }
 
     // No structured tool_calls came through → check the content channel
     // for the `<tool_call>{…}</tool_call>` wrapper (and bare/fenced JSON
@@ -969,12 +1275,30 @@ export async function runOllamaToolLoop(
     if (pendingCalls.length === 0) {
       const extracted = extractInlineToolCalls(acc);
       if (extracted.calls.length > 0) {
-        pendingCalls = extracted.calls;
+        // First call only. The model cannot know the result of call #1, so
+        // any further calls in the same round were written against an
+        // imagined result — dispatching them applies edits based on a
+        // fiction. (With the stop above there is usually only one, but a
+        // single streamed chunk can still carry several.)
+        pendingCalls = extracted.calls.slice(0, 1);
         cleanedText = extracted.cleanedText;
       }
     }
 
-    onEvent({ type: 'roundComplete', round, text: cleanedText, toolCalls: pendingCalls });
+    // Strip template control tokens and hoist any inline reasoning block
+    // into the thinking channel, where the renderer can collapse it.
+    const scrubbed = scrubModelSpecialTokens(cleanedText);
+    cleanedText = scrubbed.text;
+    if (scrubbed.thinking) think = think ? `${think}\n\n${scrubbed.thinking}` : scrubbed.thinking;
+
+    onEvent({
+      type: 'roundComplete',
+      round,
+      text: cleanedText,
+      toolCalls: pendingCalls,
+      thinking: think,
+      usage,
+    });
 
     if (pendingCalls.length === 0) {
       // Stuck-loop guard: a model that keeps emitting the same narration
@@ -995,6 +1319,27 @@ export async function runOllamaToolLoop(
         };
       }
       if (norm) lastNoCallText = norm;
+
+      // Reasoning-only round: everything the model produced went to the
+      // thinking channel (or into a <thought> block we hoisted) and the
+      // answer came back empty. Ask once for the answer itself; if it
+      // stonewalls again, hand back the reasoning rather than an empty
+      // string — a flow step whose output is "" fails downstream with
+      // nothing to explain why.
+      if (!cleanedText && think) {
+        if (!thoughtOnlyNudged) {
+          thoughtOnlyNudged = true;
+          args.messages.push({
+            role: 'system',
+            content:
+              'Your reply contained only reasoning and no answer. Write the answer itself now, as ordinary text outside any <think>/<thought> block — or call a tool if you still need one.',
+          });
+          continue;
+        }
+        const salvaged = think.trim();
+        args.messages.push({ role: 'assistant', content: salvaged });
+        return { ok: true, finalText: salvaged, rounds: round + 1 };
+      }
 
       // No tool call this round. If the response looks like narration
       // ("I'll read X") and we haven't nudged yet, push a system reminder

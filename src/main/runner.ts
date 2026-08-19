@@ -52,6 +52,7 @@ import {
   makeResultEvent,
   makeSystemInitEvent,
   makeToolResultEvent,
+  ollamaUsage,
 } from './parsers/ollama';
 import {
   backendNeedsShell,
@@ -68,6 +69,7 @@ import {
   OLLAMA_READONLY_TOOLS,
   buildOllamaToolSystemPrompt,
   modelSupportsTools,
+  resolveNativeTools,
   runOllamaToolLoop,
 } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
@@ -2223,9 +2225,6 @@ export class RunnerManager {
     const enabledToolSet = args.enabledTools
       ? new Set(args.enabledTools)
       : new Set(OLLAMA_READONLY_TOOLS);
-    const systemPrompt = toolsEnabled
-      ? buildOllamaToolSystemPrompt(args.cwd, enabledToolSet)
-      : '';
 
     const startedAt = Date.now();
     let finished = false;
@@ -2300,6 +2299,18 @@ export class RunnerManager {
 
     const driveLoop = async () => {
       const messageCountBefore = session!.messages.length;
+      // Resolve the tool protocol BEFORE building the prompt: the prompt and
+      // the wire must agree on which one is in play, or the model renders our
+      // text format using its own control tokens and corrupts the JSON (see
+      // resolveNativeTools). Lives here rather than in the synchronous caller
+      // because the capability probe is async — it's cached after the first
+      // call per model, so this costs one local round-trip per session.
+      const nativeTools = toolsEnabled
+        ? await resolveNativeTools(model, enabledToolSet)
+        : undefined;
+      const systemPrompt = toolsEnabled
+        ? buildOllamaToolSystemPrompt(args.cwd, enabledToolSet, { nativeTools: !!nativeTools })
+        : '';
       const outcome = await runOllamaToolLoop(
         {
           model,
@@ -2310,6 +2321,7 @@ export class RunnerManager {
           turnStartIndex,
           nudgeOnNarration: toolsEnabled,
           enabledTools: enabledToolSet,
+          nativeTools,
         },
         (ev) => {
           if (ev.type === 'roundStart') {
@@ -2322,8 +2334,32 @@ export class RunnerManager {
               type: 'stream',
               conversationId: convId,
               events: [
-                makeAssistantEvent(model, ev.cumulative, assistantEventId, assistantRevision),
+                makeAssistantEvent(model, ev.cumulative, assistantEventId, assistantRevision, {
+                  thinking: ev.thinking,
+                  isPartial: true,
+                }),
               ],
+            });
+          } else if (ev.type === 'thinkingDelta') {
+            // Thinking-only so far. Paint the bubble with an empty body and
+            // the reasoning attached — otherwise a thinking model on a big
+            // prompt shows nothing at all for minutes while it reasons.
+            assistantRevision += 1;
+            this.emit({
+              type: 'stream',
+              conversationId: convId,
+              events: [
+                makeAssistantEvent(model, '', assistantEventId, assistantRevision, {
+                  thinking: ev.thinking,
+                  isPartial: true,
+                }),
+              ],
+            });
+            this.emit({
+              type: 'running',
+              conversationId: convId,
+              isRunning: true,
+              activityLabel: 'Thinking…',
             });
           } else if (ev.type === 'roundComplete') {
             if (ev.toolCalls.length > 0 && !postedToolCallsThisRound) {
@@ -2341,14 +2377,32 @@ export class RunnerManager {
                     assistantEventId,
                     assistantRevision,
                     ev.toolCalls,
+                    { thinking: ev.thinking, usage: ollamaUsage(ev.usage) },
                   ),
                 ],
               });
-            } else if (ev.toolCalls.length === 0 && ev.text) {
-              // Final round with no tools — keep finalAssistantText
-              // current for the reviewer hook below.
-              finalAssistantText = ev.text;
-              session!.currentAssistantText = ev.text;
+            } else if (ev.toolCalls.length === 0) {
+              // Final round with no tools. Repaint the bubble one last
+              // time so the round's reasoning and token usage land on a
+              // settled (non-delta) event — the flow header's "local"
+              // token chip and the usage rollups read `usage` off exactly
+              // this event, and the streaming deltas never carry it.
+              assistantRevision += 1;
+              this.emit({
+                type: 'stream',
+                conversationId: convId,
+                events: [
+                  makeAssistantEvent(model, ev.text, assistantEventId, assistantRevision, {
+                    thinking: ev.thinking,
+                    usage: ollamaUsage(ev.usage),
+                  }),
+                ],
+              });
+              // Keep finalAssistantText current for the reviewer hook below.
+              if (ev.text) {
+                finalAssistantText = ev.text;
+                session!.currentAssistantText = ev.text;
+              }
             }
           } else if (ev.type === 'toolResult') {
             this.emit({
