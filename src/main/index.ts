@@ -68,6 +68,7 @@ import {
   conversationWorktreeStates,
 } from './worktreeSweep';
 import { computeStats } from './stats';
+import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import {
@@ -950,6 +951,7 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle('app:reloadStats', () => computeStats());
+  ipcMain.handle('app:refreshClaudeUsage', async () => (await refreshClaudeUsage()) !== null);
 
   // Cross-platform "an agent finished, look at me" attention nudge.
   // Skipped when the window is focused (the sidebar checkmark is enough)

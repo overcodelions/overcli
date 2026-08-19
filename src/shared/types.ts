@@ -1563,6 +1563,12 @@ export interface IPCInvokeMap {
   'app:openExternal': (url: string) => void;
   'app:showAbout': () => void;
   'app:reloadStats': () => StatsReport;
+  /// Shell out to `claude -p "/usage"` for Claude's real limit percentages —
+  /// it writes nothing to disk, so this is the only way to get them. Takes
+  /// ~6s, hence its own channel: the Usage page renders from the cached
+  /// snapshot first and calls this afterwards. Resolves false when claude is
+  /// missing, logged out, or changed its wording.
+  'app:refreshClaudeUsage': () => boolean;
   /// Notify the OS that an agent finished while the app wasn't focused.
   /// macOS: dock bounce. Windows/Linux: taskbar flash. No-op when the
   /// window is already focused. Debounced in main to avoid a chain of
@@ -2210,8 +2216,11 @@ export interface StatsReport {
     cacheCreation: number;
   }>;
   byTier: TierStats[];
+  quotas: BackendQuota[];
   flowImpact: FlowImpactStats;
-  /// Last 90 days of activity for the stats-page chart.
+  /// Last 365 days of activity for the stats-page chart, merged from the
+  /// persisted daily snapshots so days whose transcripts have since been
+  /// pruned are still in here.
   daily: DailyBucket[];
 }
 
@@ -2249,6 +2258,35 @@ export interface FlowImpactRow {
   costUSD: number;
   wallClockMs: number;
   lastRunAt: number;
+}
+
+export interface QuotaWindow {
+  label: string;
+  /// Real percentage when the CLI reports one; null when we can only
+  /// count tokens ourselves.
+  usedPercent: number | null;
+  windowMinutes: number;
+  /// Epoch ms when the window resets, when the CLI tells us.
+  resetsAt: number | null;
+  /// Pre-formatted reset text for CLIs that print a human string with no
+  /// year (claude's `/usage`), where reconstructing an epoch would be
+  /// guesswork. Shown verbatim when present.
+  resetsLabel?: string;
+  tokens: number;
+}
+
+export interface BackendQuota {
+  backend: Backend;
+  /// 'reported' = read from the CLI's own rate-limit payload.
+  /// 'inferred' = counted from transcripts by us.
+  source: 'reported' | 'inferred';
+  /// True when `source` is 'reported' but the snapshot is old enough that the
+  /// percentages may have moved since.
+  stale?: boolean;
+  planType?: string;
+  /// Epoch ms the reported snapshot was written. 0 when inferred.
+  capturedAt: number;
+  windows: QuotaWindow[];
 }
 
 export interface BackendStats {
