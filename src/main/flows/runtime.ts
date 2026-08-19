@@ -3144,6 +3144,10 @@ export function verdictGateStopsRun(
   if (step.verdictGate !== undefined) return step.verdictGate;
   if (!run.workerId) return true;
   if (step.role === 'plan-reviewer') return true;
+  // The code-writing relaxation is about PRESET reviewers on a flow that
+  // writes no code. A custom step only counts as a gate when its own prompt
+  // and `on_fail: goto` say so, and dropping that turns the revision loop off.
+  if (!isGatingReviewerRole(step.role)) return true;
   return flowHasCodeWritingStep(run.flowSnapshot.steps);
 }
 

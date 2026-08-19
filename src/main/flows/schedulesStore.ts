@@ -13,6 +13,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
 import { log } from '../diagnostics';
+import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 import { SCHEDULE_HISTORY_LIMIT, type Schedule } from '../../shared/flows/schedule';
 
@@ -21,7 +22,7 @@ function dir(): string {
 }
 
 function pathFor(id: string): string {
-  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error(`Unsafe schedule id: ${id}`);
+  if (!isSafeIdSegment(id)) throw new Error(`Unsafe schedule id: ${id}`);
   return path.join(dir(), `${id}.json`);
 }
 

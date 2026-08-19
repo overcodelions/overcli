@@ -42,6 +42,9 @@ export interface WorkerDraft {
   heartbeatBackend?: Backend;
   flowIds: string[];
   enabled: boolean;
+  /// Narrowed handoff targets. Absent/empty means every colleague on the
+  /// same project, which is the default the editor writes.
+  delegatesTo?: UUID[];
 }
 
 interface WorkersState {
@@ -171,6 +174,22 @@ interface WorkersActions {
     errands: number;
     runs: number;
   } | null>;
+  /// Rub out one turn — its ledger, runs, filed output and journal entries.
+  /// Resolves to what went, or null on failure (the error is on the store).
+  deleteActivity(
+    id: string,
+    orchestrationId: string,
+  ): Promise<{
+    task: 'shift' | 'errand';
+    label: string;
+    entries: number;
+    files: number;
+    runs: number;
+    shiftGivenBack: number | null;
+  } | null>;
+  /// Work the most recent shift again from the state it started in. Resolves
+  /// to the shift number that was re-run, or null on failure.
+  redoShift(id: string, orchestrationId: string): Promise<number | null>;
   /// This worker as a share file. Read on demand rather than held in state:
   /// it is a rendering of the worker plus its flows, and a copy kept here
   /// would go stale the moment either is edited.
@@ -194,7 +213,7 @@ export function newWorkerDraft(projectPath: string): WorkerDraft {
     jobDescription: '',
     projectPath,
     cadence: { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] },
-    caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: false },
+    caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: false, canDelegate: false },
     budgetUSDPerMonth: 10,
     heartbeatModel: '',
     flowIds: [],
@@ -210,6 +229,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     projectPath: w.projectPath,
     cadence: structuredClone(w.cadence),
     caps: { ...w.caps },
+    delegatesTo: w.delegatesTo ? [...w.delegatesTo] : undefined,
     budgetUSDPerMonth: w.budgetUSDPerMonth,
     heartbeatModel: w.heartbeatModel,
     heartbeatBackend: w.heartbeatBackend,
@@ -234,6 +254,7 @@ export function draftFromContract(
       maxItemsPerShift: contract.maxItemsPerShift,
       runIn: 'worktree',
       allowExternalActions: false,
+      canDelegate: false,
     },
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
@@ -264,8 +285,10 @@ export function draftFromPortable(
     projectPath,
     cadence: structuredClone(worker.cadence),
     // External authority is local employment state, like trust and cwd
-    // access. A shared worker file cannot arrive pre-authorized.
-    caps: { ...worker.caps, allowExternalActions: false },
+    // access. A shared worker file cannot arrive pre-authorized — and that
+    // covers delegation too: an imported worker knows nothing about who else
+    // this install employs, and must not arrive able to commission them.
+    caps: { ...worker.caps, allowExternalActions: false, canDelegate: false },
     budgetUSDPerMonth: worker.budgetUSDPerMonth,
     heartbeatModel: worker.heartbeatModel,
     heartbeatBackend: worker.heartbeatBackend,
@@ -533,7 +556,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           set({ error: savedFlow.error });
           return false;
         }
-        if (flowIds.length === 0) flowIds = [draftedFlow.id];
+        if (!flowIds.includes(draftedFlow.id)) flowIds = [draftedFlow.id];
         // `flows:save` writes the file; the library every flow-reading pane
         // binds to is a renderer mirror that knows nothing about it. Without
         // this the worker's Settings tab kept rendering the flow's
@@ -633,6 +656,28 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   async loadJournal(id) {
     const entries = await window.overcli.invoke('workers:journal', { id });
     set((s) => ({ journals: { ...s.journals, [id]: entries } }));
+  },
+
+  async deleteActivity(id, orchestrationId) {
+    const res = await window.overcli.invoke('workers:deleteActivity', { id, orchestrationId });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    // The journal drawer is a snapshot taken when it was opened; entries this
+    // just removed would otherwise sit there until the next manual reload.
+    await get().loadJournal(id);
+    return res;
+  },
+
+  async redoShift(id, orchestrationId) {
+    const res = await window.overcli.invoke('workers:redoShift', { id, orchestrationId });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    await get().loadJournal(id);
+    return res.shift;
   },
 
   async resetMemory(id) {

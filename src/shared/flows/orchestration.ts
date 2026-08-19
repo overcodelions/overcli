@@ -150,6 +150,17 @@ export interface Orchestration {
         /// worker's thread renders as your message, and what the activity row
         /// is titled with.
         errand?: string;
+        /// Set when a COLLEAGUE sent this errand rather than the user — a
+        /// worker that found something outside its own remit and handed it
+        /// on. Absent means the user typed it, which is what every errand
+        /// before delegation was.
+        ///
+        /// The receiver plans a delegated errand exactly like a typed one;
+        /// this is provenance, not authority. It is what lets the desk say
+        /// "from Chief of Staff" instead of implying you asked, and what
+        /// stops the receiver delegating onward — referrals are one hop, so
+        /// a batch carrying `from` never gets a roster block of its own.
+        from?: { workerId: UUID; workerName: string };
       };
   createdAt: number;
   /// Set once every item has reached a terminal status (done/failed/cancelled).

@@ -15,6 +15,7 @@ vi.mock('electron', () => ({
 import {
   archiveWorkerFiles,
   clearWorkerFiles,
+  deleteDeliverable,
   deleteWorkerFile,
   deliverableFiles,
   ensureWorkerFilesDir,
@@ -135,17 +136,37 @@ describe('fileWorkerDeliverable', () => {
     ).toBe('b');
   });
 
+  it('keeps two same-minute jobs whose slugs share a dash-boundary prefix', () => {
+    fileWorkerDeliverable({ ...job, title: 'Fix auth', artifacts: [{ name: 'r.md', body: 'a' }] });
+    fileWorkerDeliverable({
+      ...job,
+      title: 'Fix auth middleware',
+      artifacts: [{ name: 'r.md', body: 'b' }],
+    });
+    const names = fs.readdirSync(workerFilesDir(WORKER)).sort();
+    expect(names).toEqual([
+      '2026-08-16-1431-errand-fix-auth-middleware.md',
+      '2026-08-16-1431-errand-fix-auth.md',
+    ]);
+  });
+
   it('reuses the folder a job is already filed under when the name was truncated', () => {
     // Stand in for a job filed before the slug was cut at a word boundary. The
     // truncation lands on a dash, matching what `slug()` actually produces —
     // a mid-word cut is a different (colliding) job, not this one shortened.
-    const legacy = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage');
+    // The legacy slug has to be long enough to look like a real SLUG_MAX
+    // truncation (TRUNCATED_SLUG_MIN), not a short title that merely happens
+    // to be a dash-boundary prefix of the new one.
+    const legacy = path.join(
+      workerFilesDir(WORKER),
+      '2026-08-16-1431-errand-generate-and-report-parser-test-coverage',
+    );
     fs.mkdirSync(legacy, { recursive: true });
     fs.writeFileSync(path.join(legacy, 'report.md'), 'a');
 
     fileWorkerDeliverable({
       ...job,
-      title: 'Coverage Report',
+      title: 'Generate and report parser test coverage across every module',
       artifacts: [
         { name: 'report.md', body: 'a' },
         { name: 'notes.md', body: 'b' },
@@ -155,7 +176,7 @@ describe('fileWorkerDeliverable', () => {
     const dirs = fs.readdirSync(workerFilesDir(WORKER));
     // One job, one folder: a second name for the same work would show the
     // same errand twice in the Files tab.
-    expect(dirs).toEqual(['2026-08-16-1431-errand-coverage']);
+    expect(dirs).toEqual(['2026-08-16-1431-errand-generate-and-report-parser-test-coverage']);
     expect(fs.readdirSync(legacy).sort()).toEqual(['notes.md', 'report.md']);
   });
 
@@ -216,10 +237,18 @@ describe('deliverableFiles', () => {
   it('finds a job filed under an older, shorter name', () => {
     // Same dash-boundary truncation as above — a legacy shorter slug, not a
     // different job that happens to share a prefix.
-    const legacy = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage');
+    const legacy = path.join(
+      workerFilesDir(WORKER),
+      '2026-08-16-1431-errand-generate-and-report-parser-test-coverage',
+    );
     fs.mkdirSync(legacy, { recursive: true });
     fs.writeFileSync(path.join(legacy, 'report.md'), 'a');
-    expect(deliverableFiles({ ...job, title: 'Coverage Report' })).toHaveLength(1);
+    expect(
+      deliverableFiles({
+        ...job,
+        title: 'Generate and report parser test coverage across every module',
+      }),
+    ).toHaveLength(1);
   });
 
   it('returns nothing when the job was never filed, rather than a dead link', () => {
@@ -435,6 +464,13 @@ describe('archiveWorkerFiles', () => {
   });
 });
 
+describe('workerFilesDir', () => {
+  it('refuses a bare traversal worker id at the directory sink', () => {
+    expect(() => workerFilesDir('..')).toThrow(/Unsafe worker id/);
+    expect(() => workerFilesDir('.')).toThrow(/Unsafe worker id/);
+  });
+});
+
 describe('clearWorkerFiles', () => {
   it('empties the cabinet and leaves the neighbours alone', () => {
     const mine = ensureWorkerFilesDir(WORKER);
@@ -459,5 +495,74 @@ describe('clearWorkerFiles', () => {
 
   it('succeeds for a worker that never wrote anything', () => {
     expect(clearWorkerFiles(WORKER)).toEqual({ ok: true, removed: 0 });
+  });
+});
+
+describe('deleteDeliverable', () => {
+  const JOB = {
+    workerId: WORKER,
+    task: 'shift' as const,
+    label: '[Shift 3] Scout',
+    title: 'Fix the payments parser',
+    at: AT,
+  };
+
+  it('takes the whole job folder and reports how many files were in it', () => {
+    fileWorkerDeliverable({
+      ...JOB,
+      artifacts: [
+        { name: 'raw_test_output.md', body: 'raw' },
+        { name: 'report.md', body: 'answer' },
+      ],
+    });
+    expect(deliverableFiles(JOB)).toHaveLength(2);
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 2 });
+
+    expect(deliverableFiles(JOB)).toEqual([]);
+    // The folder goes with its contents; an empty directory left behind would
+    // show up in the Files tab as a job that produced nothing.
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('takes a single-artifact job filed as one loose file', () => {
+    fileWorkerDeliverable({ ...JOB, artifacts: [{ name: 'report.md', body: 'answer' }] });
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 1 });
+
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('reaches into archive/, where compaction may already have moved the job', () => {
+    fileWorkerDeliverable({ ...JOB, artifacts: [{ name: 'report.md', body: 'answer' }] });
+    // Everything filed is older than the cutoff, so this archives the job.
+    expect(archiveWorkerFiles(WORKER, Date.now() + 60_000).moved).toBe(1);
+    expect(listWorkerFiles(WORKER)[0].name).toMatch(/^archive\//);
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 1 });
+
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('leaves the worker’s own notes and every other job alone', () => {
+    fileWorkerDeliverable({ ...JOB, artifacts: [{ name: 'report.md', body: 'answer' }] });
+    fileWorkerDeliverable({
+      ...JOB,
+      title: 'Something else entirely',
+      artifacts: [{ name: 'report.md', body: 'other' }],
+    });
+    // A baseline the worker keeps for itself between shifts.
+    fs.writeFileSync(path.join(ensureWorkerFilesDir(WORKER), 'baseline.json'), '{}', 'utf-8');
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 1 });
+
+    expect(listWorkerFiles(WORKER).map((f) => f.name).sort()).toEqual([
+      '2026-08-16-1431-shift-3-something-else-entirely.md',
+      'baseline.json',
+    ]);
+  });
+
+  it('is a no-op for a job that filed nothing', () => {
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 0 });
   });
 });
