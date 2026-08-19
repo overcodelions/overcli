@@ -81,6 +81,10 @@ interface WorkersState {
   draftedFlow: Flow | null;
   /// The hire drafter's prose read on the job, shown above the editor.
   hireSummary: string | null;
+  /// Why the hire came back without a flow, when it asked for one and the
+  /// flow drafter failed. Shown under the (empty) flow picker so the gap is
+  /// explained rather than left for the user to discover on Hire.
+  hireFlowError: string | null;
   /// Which worker the Workers pane is showing. The Workers sidebar is the
   /// roster and this is its selection — the same master/detail split the Chat
   /// and Flows tabs use, so a worker's shifts, errands and replies have a full
@@ -118,7 +122,10 @@ interface WorkersActions {
   setShiftActive(id: string, active: boolean, task?: 'shift' | 'errand'): void;
   applyShiftProgress(id: string, text: string, tools: string[]): void;
   removeLocal(id: string): void;
-  openEditor(draft: WorkerDraft, extras?: { draftedFlow?: Flow; hireSummary?: string }): void;
+  openEditor(
+    draft: WorkerDraft,
+    extras?: { draftedFlow?: Flow; hireSummary?: string; hireFlowError?: string },
+  ): void;
   closeEditor(): void;
   patchDraft(patch: Partial<WorkerDraft>): void;
   /// Land an AI revision on the open draft: new job description text and/or
@@ -312,6 +319,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   draft: null,
   draftedFlow: null,
   hireSummary: null,
+  hireFlowError: null,
   selectedWorkerId: null,
   treasury: null,
   allocation: null,
@@ -482,12 +490,13 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       draft,
       draftedFlow: extras?.draftedFlow ?? null,
       hireSummary: extras?.hireSummary ?? null,
+      hireFlowError: extras?.hireFlowError ?? null,
       error: null,
     });
   },
 
   closeEditor() {
-    set({ draft: null, draftedFlow: null, hireSummary: null, error: null });
+    set({ draft: null, draftedFlow: null, hireSummary: null, hireFlowError: null, error: null });
   },
 
   patchDraft(patch) {
@@ -499,7 +508,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       ...(s.draft && patch.jobDescription
         ? { draft: { ...s.draft, jobDescription: patch.jobDescription } }
         : {}),
-      ...(patch.flow ? { draftedFlow: patch.flow } : {}),
+      ...(patch.flow ? { draftedFlow: patch.flow, hireFlowError: null } : {}),
       error: null,
     }));
   },
@@ -538,7 +547,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         return false;
       }
       // The `workerUpdate` push has already landed the record; just close.
-      set({ draft: null, draftedFlow: null, hireSummary: null });
+      set({ draft: null, draftedFlow: null, hireSummary: null, hireFlowError: null });
       return true;
     } finally {
       set({ busy: false });

@@ -1950,8 +1950,11 @@ export interface IPCInvokeMap {
     | { ok: false; error: string };
   /// One hire-drafter turn: a free-text job description in, a reviewed-not-
   /// saved contract out — plus a drafted Flow when no existing flow fit.
+  /// `flowError` is set when a flow was asked for and the flow drafter
+  /// failed: the contract is still reviewable, but the flow picker is empty
+  /// on purpose and the review screen says why.
   'workers:draftFromPrompt': (args: { jobDescription: string }) =>
-    | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow }
+    | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow; flowError?: string }
     | { ok: false; error: string };
   /// One revision turn across a worker's two halves: the instruction is
   /// routed to the job description (planning), the flow (execution), or

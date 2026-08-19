@@ -49,6 +49,7 @@ import {
   drafterModelHints,
 } from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
+import { flowHasCodeWritingStep, isGatingReviewerRole } from './runtime';
 import type { OneShotResult, RunnerManager } from '../runner';
 
 export interface DraftDeps {
@@ -146,6 +147,8 @@ function systemPrompt(
     '  verdict_gate  — optional bool. Set true only when this step itself returns the',
     '                  APPROVED/rejected verdict that gates later steps. Never infer this',
     '                  merely because an action prompt refers to an earlier approval.',
+    '                  Set it FALSE to switch OFF the automatic gate a reviewer role',
+    '                  carries — see ASSESSOR vs GATE below.',
     '  pause_before  — optional bool. When true, the run pauses BEFORE this step so the user can',
     '                  review prior artifacts. NEVER set on the first step.',
     '  turbo         — optional bool. Runs this step at low reasoning effort with no MCP',
@@ -204,6 +207,37 @@ function systemPrompt(
     '    that splits or formats it into several documents — that yields the same document',
     '    twice with different headings, which is the exact thing a user asking for two',
     '    audiences is trying to avoid.',
+    '',
+    'ASSESSOR vs GATE (a reviewer role blocks the flow unless you say otherwise)',
+    '=========================================================================',
+    'The five reviewer roles above GATE: when the step does not clearly approve, the',
+    'runtime treats it as FAILED and applies `on_fail` (pause by default) instead of',
+    'running the rest of the flow. That is right when a later step would otherwise act',
+    'on disapproved work — ship it, merge it, deploy it.',
+    '',
+    'It is WRONG when the review IS the deliverable. In an audit, assessment, or',
+    'readiness flow, a lens that finds problems is doing its job, and its findings are',
+    'the raw material for the report. Gating there means the flow deadlocks precisely',
+    'on the shifts that had something to say, and the report — the entire point of the',
+    'run — never gets written.',
+    '',
+    'So, for every reviewer-role step, ask: does anything downstream ACT on this',
+    'verdict, or does something downstream merely READ these findings?',
+    '  - ACTS on it (implementer fixes it / shipper ships it / a later step depends on',
+    '    the work being sound) → leave it gating.',
+    '  - READS it (a synthesis, refutation, scoring, or report step consumes the',
+    '    artifact) → set `verdict_gate: false`. The findings then flow downstream and',
+    '    the report gets written whatever the verdict says.',
+    '',
+    'Rule of thumb: a flow with NO implementer / test-writer / shipper step has nothing',
+    'to gate — nothing in it can act on the verdict. Every reviewer role in such a flow',
+    'is an assessor and MUST set `verdict_gate: false`. (`plan-reviewer` is the one',
+    'exception: validating a plan before work begins is a real gate even with no code.)',
+    '',
+    'Keep sibling lenses consistent. If a flow reviews one change through several',
+    'parallel lenses that all feed one report, they either all gate or none do —',
+    'usually none. A single lens left gating while its siblings do not is a flow that',
+    'halts at that one lens for no reason the user can see.',
     '',
     'ROLE FIT CHECK (do this for EVERY step before you emit it)',
     '==========================================================',
@@ -535,7 +569,26 @@ async function draftViaRunner(
   userMessage: string,
 ): Promise<OneShotResult> {
   const prompt = `${systemPromptText}\n\n---\n\n${userMessage}`;
-  return runner.oneShot({ backend, model, prompt, cwd: os.homedir() });
+  return runner.oneShot({
+    backend,
+    model,
+    prompt,
+    cwd: os.homedir(),
+    // `oneShot`'s flat 120s default was killing healthy drafts. Drafting runs
+    // the backend's STRONGEST model against a large schema prompt and asks it
+    // to emit a whole flow in one turn — a minute of reasoning before the
+    // first token, then sixty-plus lines of YAML, is normal, and two minutes
+    // of wall clock is not a lot of room. The hire drafter felt it worst:
+    // its second turn is a full flow draft, so a hire that "worked" landed on
+    // the review screen with an empty flow picker.
+    //
+    // Budget on SILENCE instead, the same shape the orchestrator producer and
+    // the worker planner use. A turn still streaming tokens keeps going; only
+    // one that has genuinely gone quiet is cut, with a generous ceiling
+    // behind it as the runaway backstop.
+    timeoutMs: 10 * 60_000,
+    idleTimeoutMs: 90_000,
+  });
 }
 
 /// Parse + validate the raw CLI output into a Flow. Shared by every
@@ -585,6 +638,9 @@ function finalizeDraft(
   // Reconcile role against the system prompt the model did (or didn't) write,
   // so a near-miss on the custom-prompt path doesn't ship a broken step.
   repairRoleFit(parsed);
+
+  // Un-gate reviewer lenses in a flow that has nothing to gate.
+  repairAssessorGates(parsed);
 
   // Drop invented tags. The vocabulary is the whole point — a drafted flow
   // tagged "jira-triage" doesn't sit under the `triage` filter next to the
@@ -690,6 +746,33 @@ function repairRoleFit(flow: Flow): void {
     if (!step.systemPromptOverride?.trim()) continue;
     if (step.role === 'custom') continue;
     step.role = 'custom';
+  }
+}
+
+/// A reviewer role GATES: fail to approve and the runtime treats the step as
+/// failed and pauses the run. That is only meaningful when something later can
+/// act on the verdict. The drafter is told (ROLES) that
+/// `reviewer`/`code-reviewer`/`security-reviewer`/`adversarial-reviewer`
+/// require a prior code-writing step — a flow with no implementer, test-writer
+/// or shipper has none, so nothing in it can act on a verdict and every such
+/// review is really an ASSESSOR feeding a report.
+///
+/// Left gating, those flows deadlock on exactly the runs worth reading: an
+/// audit whose security lens finds two real issues stops at the lens, and the
+/// report that was the whole point of the run never gets written. So when the
+/// model emits that shape anyway, take it at its word about the flow's purpose
+/// and drop the gate rather than shipping a run that halts on success.
+///
+/// `plan-reviewer` is deliberately exempt — judging a plan before any code
+/// exists is a real gate, and its whole job is to run in a flow with no
+/// code-writing step. An explicit `verdict_gate` always wins.
+function repairAssessorGates(flow: Flow): void {
+  if (flowHasCodeWritingStep(flow.steps)) return;
+  for (const step of flow.steps) {
+    if (step.verdictGate !== undefined) continue;
+    if (step.role === 'plan-reviewer') continue;
+    if (!isGatingReviewerRole(step.role)) continue;
+    step.verdictGate = false;
   }
 }
 
