@@ -32,7 +32,6 @@ import {
   type WorkerActivity,
   sidebarActivity,
   sidebarShifts,
-  workerRunsForSidebar,
   workersForPath,
   workerAutoRenderTarget,
   workerRenderableOutputs,
@@ -599,94 +598,6 @@ describe('sidebarShifts', () => {
 
   it('shows nothing for a worker with no shifts today', () => {
     expect(sidebarShifts([], 4)).toEqual([]);
-  });
-});
-
-describe('workerRunsForSidebar', () => {
-  const NOW = new Date(2026, 7, 17, 15, 0).getTime();
-  const todayAt = new Date(2026, 7, 17, 9, 0).getTime();
-  const yesterday = new Date(2026, 7, 16, 9, 0).getTime();
-  const run = (id: string, createdAt: number, kind = 'done') =>
-    ({
-      id,
-      workerId: 'w1',
-      createdAt,
-      updatedAt: createdAt,
-      flowSnapshot: { name: 'f', steps: [] },
-      // flowRunActivityAt folds over this; a real FlowRun always has one.
-      attempts: [],
-      state: { kind },
-    }) as unknown as FlowRun;
-
-  const runs = {
-    a: run('a', todayAt),
-    b: run('b', todayAt + 1),
-    c: run('c', todayAt + 2),
-  } as unknown as Record<string, FlowRun>;
-
-  it('takes only that worker’s runs, newest first', () => {
-    const mixed = {
-      ...runs,
-      other: { ...run('other', todayAt + 3), workerId: 'w2' },
-      // No worker at all: that run belongs to a project's Flows group.
-      loose: { ...run('loose', todayAt + 4), workerId: undefined },
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(mixed, 'w1', '', 10, null, NOW).map((r) => r.id)).toEqual([
-      'c',
-      'b',
-      'a',
-    ]);
-  });
-
-  it('narrows on the sidebar query', () => {
-    const named = {
-      a: { ...run('a', todayAt), flowSnapshot: { name: 'audit', steps: [] } },
-      b: run('b', todayAt + 1),
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(named, 'w1', 'audit', 10, null, NOW).map((r) => r.id)).toEqual([
-      'a',
-    ]);
-  });
-
-  it('caps the group so an hourly worker can’t bury the roster', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 1, null, NOW).map((r) => r.id)).toEqual(['c']);
-  });
-
-  it('pins the run you are looking at even when it falls past the cap', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 1, 'a', NOW).map((r) => r.id)).toEqual(['c', 'a']);
-  });
-
-  it('does not duplicate a pinned run already inside the cap', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 2, 'c', NOW).map((r) => r.id)).toEqual(['c', 'b']);
-  });
-
-  it('ignores an active run belonging to someone else', () => {
-    expect(workerRunsForSidebar(runs, 'w1', '', 1, 'zzz', NOW).map((r) => r.id)).toEqual(['c']);
-  });
-
-  it('drops runs that merely finished on an earlier day', () => {
-    const stale = { old: run('old', yesterday), c: runs.c } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id)).toEqual(['c']);
-  });
-
-  it('keeps a paused or running run whatever day it started', () => {
-    const stale = {
-      paused: run('paused', yesterday, 'paused'),
-      watching: run('watching', yesterday, 'watching'),
-      done: run('done', yesterday),
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id).sort()).toEqual([
-      'paused',
-      'watching',
-    ]);
-  });
-
-  it('keeps one line when nothing ran today and nothing is outstanding', () => {
-    const stale = {
-      older: run('older', yesterday - 1000),
-      newer: run('newer', yesterday),
-    } as unknown as Record<string, FlowRun>;
-    expect(workerRunsForSidebar(stale, 'w1', '', 4, null, NOW).map((r) => r.id)).toEqual(['newer']);
   });
 });
 

@@ -1,7 +1,7 @@
 import type { Orchestration } from '@shared/flows/orchestration';
 import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { FlowArtifact, FlowRun } from '@shared/flows/schema';
-import { flowRunActivityAt, isWorkerRun } from '@shared/flows/schema';
+import { isWorkerRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 import {
   WORKER_AUTO_RENDER_NEWEST,
@@ -586,56 +586,6 @@ export function orchestrationForRun(
     if (o.items.some((it) => it.runId === runId)) return o;
   }
   return null;
-}
-
-/// The runs the Workers sidebar lists under one worker — the mirror of
-/// `flowRunsForPath` for projects. Worker runs are filtered OUT of every
-/// project's Flows group on purpose, so this is their one home in the
-/// sidebar; without it, work a worker launched had status nowhere except
-/// inside the desk's expansion.
-///
-/// Scoped to the day the same way the turns above it are, with one exception
-/// that matters more than the symmetry: a run that is LIVE, PAUSED or WATCHING
-/// stays whatever day it started. A paused run from Tuesday still needs a
-/// person on Thursday, and hiding it because the calendar rolled over would
-/// lose the only place it is visible. A run that merely FINISHED on Tuesday is
-/// history, and history belongs in the Files tab and the journal.
-///
-/// `activeRunId` is pinned in even when it falls outside the cap: the run you
-/// are looking at must have a row, or the sidebar is telling you that the
-/// thing filling your screen doesn't exist.
-export function workerRunsForSidebar(
-  runs: Record<string, FlowRun>,
-  workerId: string,
-  query: string,
-  limit: number,
-  activeRunId?: string | null,
-  now: number = Date.now(),
-): FlowRun[] {
-  const mine = workerDeskRuns(runs, workerId).filter((run) => flowRunMatchesQuery(run, query));
-  const today = startOfDay(now);
-  const current = mine.filter((run) => runNeedsYou(run) || startOfDay(flowRunActivityAt(run)) === today);
-  // Nothing today and nothing outstanding: keep the last one, for the same
-  // reason a quiet worker keeps its last turn — "did this worker ever run
-  // anything" is a different answer from "it ran nothing today".
-  const base = current.length > 0 ? current : mine.slice(0, 1);
-  const shown = base.slice(0, limit);
-  const active = activeRunId ? mine.find((run) => run.id === activeRunId) : undefined;
-  if (active && !shown.some((run) => run.id === active.id)) {
-    shown.push(active);
-    shown.sort((a, b) => b.createdAt - a.createdAt);
-  }
-  return shown;
-}
-
-/// A run whose state is an open question for a person: still going, stopped
-/// waiting on a decision, or standing watch.
-function runNeedsYou(run: FlowRun): boolean {
-  return (
-    run.state.kind === 'running' ||
-    run.state.kind === 'paused' ||
-    run.state.kind === 'watching'
-  );
 }
 
 /// The turns the sidebar hangs under a worker: TODAY's, capped — the same

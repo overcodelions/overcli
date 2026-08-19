@@ -1,32 +1,36 @@
 // The Workers tab's navigator — a shift board.
 //
 // Its job is not to describe workers, it is to allocate attention: who needs
-// you, who is working, and what each one did last. Three decisions follow from
-// that, and each removes something the previous version showed:
+// you, who is working, and what each one did last. Five decisions follow from
+// that, and each removes something an earlier version showed:
 //
 //   1. TRUST IS A SHAPE, NOT A WORD. Every row used to carry "probation" /
 //      "trusted" / "autonomous" in its own tint, so six workers put six
 //      coloured words next to the six names they were supposed to annotate.
 //      It now rides on the avatar's ring — dashed, solid, doubled — leaving
 //      colour free to say WHO. The tooltip and Settings still say it in words.
-//   2. THE REVIEW COUNT IS THE ONLY LOUD THING. It used to be a clause in the
-//      middle of "2 running · 3 need review · 11 done", at 9px, in the same
-//      grey as everything else — the one number that requires a human, hidden
-//      in a list. It is now a filled pill, and the only saturated element in
-//      the column, so the eye lands on it before reading a word.
-//   3. IDLE WORKERS SAY NOTHING. "no work yet" on four of six rows is not
+//   2. WHAT NEEDS YOU COMES FIRST. The review pill was already the only loud
+//      thing in the column, but finding it still meant scanning the whole
+//      roster for violet. The "Needs you" block at the top lists exactly the
+//      workers that cannot proceed without a person — work proposed, a run
+//      paused, a pay queue run dry — and is absent when nobody does.
+//   3. THE ROSTER FOLDS BY DEFAULT. Ten workers pre-expanded into sixty rows
+//      buried the one act this list exists for: picking a worker. A folded
+//      row is a name, a status, and a count; opening it is one click, the
+//      selection opens it for you, and the openings persist across launches.
+//   4. ONE LIST UNDER A WORKER, NOT THREE. "Errands" / "Shifts" / "Flows"
+//      captions repeated per worker were structure describing itself. Turns
+//      now sit in a single newest-first list — an errand is your words behind
+//      a speech bubble, a shift names itself ("Shift 12") behind a clock — and
+//      a turn's flows live where the turn does, on the desk. The runs that
+//      still need a person are precisely the ones "Needs you" already lists.
+//   5. IDLE WORKERS SAY NOTHING. "no work yet" on four of six rows is not
 //      status, it is noise. An absent line is the correct rendering of nothing
 //      happening.
-//
-// The nested work under each worker drops its `errand` / `shift` tag column
-// too: an errand is what YOU said, so it renders as your words; a shift is
-// what the worker did on its own, so it is dimmer and numbered. The shape of
-// the line carries the distinction the tag used to spell out.
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import { useFlowsStore } from "../../flowsStore";
-import { FlowRunRow, runIsLive } from "../flows/FlowRunSidebarRow";
 import { useOrchestratorStore } from "../../orchestratorStore";
 import { useRunningMap } from "../../runnersStore";
 import { useStore } from "../../store";
@@ -38,6 +42,7 @@ import { TRUST_LABEL } from "./WorkerRowParts";
 import {
   describeActivity,
   deskMatchesQuery,
+  orchestrationForRun,
   relativeTime,
   summarizeDesk,
   workerActivity,
@@ -45,49 +50,59 @@ import {
   sidebarShifts,
   workerDeskOrchestrations,
   workerDeskRuns,
-  workerRunsForSidebar,
   type WorkerActivity,
 } from "./workerDeskSelectors";
 
-/// How many of TODAY's errands hang under a worker's row. Four: a busy morning
-/// is visible without one worker pushing the rest of the roster off screen.
-const NESTED_ERRANDS = 4;
-/// And how many of its shifts — see sidebarShifts, which keeps the newest plus
-/// whatever still owes you a decision. The cap is only a backstop for a worker
-/// holding an implausible pile of unreviewed shifts.
+/// How many turns hang under an open worker, errands and shifts together. Five:
+/// a busy morning is visible without one worker pushing the rest of the roster
+/// off screen; the desk has the whole day.
+const NESTED_TURNS = 5;
+/// Backstop for the shift-thinning rule — see sidebarShifts, which keeps the
+/// newest plus whatever still owes you a decision. Only a worker holding an
+/// implausible pile of unreviewed shifts hits this.
 const NESTED_SHIFTS = 4;
 /// How deep we look for those turns before the day filter runs.
 const ACTIVITY_SCAN = 40;
-/// And how many of its RUNS. A worker's runs are kept out of every project's
-/// Flows group, so this is their only home in the sidebar — but a worker on an
-/// hourly cadence would otherwise bury the roster under its own history.
-const NESTED_RUNS = 4;
 
 export function WorkersSidebar({
   query,
-  collapsed,
-  onToggleCollapsed,
+  expanded,
+  onToggleExpanded,
+  onExpand,
 }: {
   query: string;
-  // Expanded unless the user says otherwise — the same model the project rows
-  // use. Tracking only what was CLOSED means a worker hired tomorrow arrives
-  // open, rather than inheriting a default nobody chose. The set lives in the
-  // Sidebar because the collapse-all button up in the search row folds this
-  // roster too, and two copies of that state meant the button did nothing.
-  collapsed: Set<string>;
-  onToggleCollapsed: (id: string) => void;
+  // Folded unless the user opened it — the OPPOSITE of the project tree's
+  // model. A project group is a container you file into and default-open pays
+  // for itself; a roster is a list of names you pick from, and ten workers
+  // arriving pre-exploded buried the picking. The set lives in the Sidebar,
+  // persisted there, because the collapse-all button up in the search row
+  // folds this roster too.
+  expanded: Set<string>;
+  onToggleExpanded: (id: string) => void;
+  // Selecting a worker opens it — see the effect below.
+  onExpand: (id: string) => void;
 }) {
   const workers = useWorkersStore((s) => s.workers);
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
   const view = useWorkersStore((s) => s.view);
   const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
   const allocation = useWorkersStore((s) => s.allocation);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const runs = useFlowsStore((s) => s.runs);
+  const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
+
+  // The worker you are reading is never folded: selecting one records it as
+  // open, and the record persists, so the roster reopens the way you left it.
+  // Folding it back by hand still works — this only ADDS, and is idempotent
+  // because it fires on every render the selection is visible.
+  useEffect(() => {
+    if (view === "worker" && selectedWorkerId) onExpand(selectedWorkerId);
+  }, [view, selectedWorkerId, onExpand]);
 
   // Search matches a worker's own runs too, not just its name — you look for a
   // worker by what it did at least as often as by what it is called.
@@ -102,8 +117,87 @@ export function WorkersSidebar({
   );
   const hirePath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
 
+  // The attention block: exactly the workers that cannot proceed without a
+  // person. Proposed work waiting on approval, a run paused mid-flight, a pay
+  // queue that ran dry above them. Computed over the (search-filtered) roster
+  // so a query narrows this too, and absent entirely when nobody needs you —
+  // an empty inbox renders as no inbox.
+  const needsYou = useMemo(() => {
+    const starved = new Set(
+      (allocation?.byWorker ?? [])
+        .filter((f) => f.blocked === "pool")
+        .map((f) => f.workerId),
+    );
+    return roster
+      .map((worker) => {
+        const awaiting = workerDeskOrchestrations(
+          orchestrations,
+          worker.id,
+        ).awaiting;
+        const review = awaiting.reduce(
+          (count, o) =>
+            count + o.items.filter((item) => item.status === "proposed").length,
+          0,
+        );
+        const pausedRuns = workerDeskRuns(runs, worker.id).filter(
+          (run) => run.state.kind === "paused",
+        );
+        // Where the click LANDS: the turn holding the decision, not the
+        // worker. Selecting the worker opens the desk on today, and the
+        // thing that needs you may be a turn from Tuesday — a "needs you"
+        // row that lands on a clean desk is a door painted on a wall.
+        // Proposed work outranks a paused run, the newest of either stands
+        // for the rest, and the desk shows that turn's whole day anyway.
+        const focusOn =
+          awaiting[0] ??
+          (pausedRuns[0]
+            ? orchestrationForRun(orchestrations, pausedRuns[0].id)
+            : null);
+        return {
+          worker,
+          review,
+          paused: pausedRuns.length,
+          starved: starved.has(worker.id),
+          target: focusOn
+            ? { orchestrationId: focusOn.id, at: focusOn.createdAt }
+            : null,
+        };
+      })
+      .filter((entry) => entry.review > 0 || entry.paused > 0 || entry.starved);
+  }, [roster, orchestrations, runs, allocation]);
+
   return (
     <>
+      {needsYou.length > 0 && (
+        <>
+          <div className="mt-1 px-2 text-[10px] uppercase tracking-wider text-ink-faint">
+            Needs you
+          </div>
+          {needsYou.map((entry) => (
+            <NeedsYouRow
+              key={entry.worker.id}
+              entry={entry}
+              onSelect={() => {
+                if (entry.target) {
+                  openWorkerActivity(
+                    entry.worker.id,
+                    entry.target.orchestrationId,
+                    entry.target.at,
+                  );
+                } else if (entry.starved) {
+                  // Nothing to review and nothing paused — the row exists
+                  // because the pay queue ran dry, and the fix (re-order,
+                  // re-fund) lives on the Funds pane, not the desk.
+                  showFunds();
+                } else {
+                  selectWorker(entry.worker.id);
+                }
+              }}
+            />
+          ))}
+        </>
+      )}
+
       {/* Above the roster, not in it: the calendar is about every worker at
           once, so it is not one of the names it sits over. */}
       <button
@@ -196,14 +290,84 @@ export function WorkersSidebar({
             onSelect={() => selectWorker(worker.id)}
             canMoveUp={index > 0}
             canMoveDown={index < roster.length - 1}
-            // A search is a request to SEE things; honouring a collapse while
-            // one is running would hide the row that matched it.
-            expanded={query !== "" || !collapsed.has(worker.id)}
-            onToggleExpanded={() => onToggleCollapsed(worker.id)}
+            // A search is a request to SEE things; honouring a fold while one
+            // is running would hide the row that matched it.
+            expanded={query !== "" || expanded.has(worker.id)}
+            onToggleExpanded={() => onToggleExpanded(worker.id)}
           />
         ))
       )}
     </>
+  );
+}
+
+interface NeedsYouEntry {
+  worker: Worker;
+  review: number;
+  paused: number;
+  starved: boolean;
+  /// The turn to open the desk ON — the one holding the decision. Null only
+  /// when the row exists for funding alone, or a paused run's batch cannot
+  /// be found.
+  target: { orchestrationId: string; at: number } | null;
+}
+
+/// One worker that is waiting on a person, and why, in words. Clicking it
+/// lands ON the decision: the desk opened at the waiting turn (whatever day
+/// it happened), or the Funds pane for a worker that is merely unfunded —
+/// the block's promise is one click to the thing needing you, not one click
+/// to somewhere it might be. The violet pill repeats the count from the
+/// roster row it summarizes; the amber dot is the same one the Funds row
+/// uses for a starved pool.
+function NeedsYouRow({
+  entry,
+  onSelect,
+}: {
+  entry: NeedsYouEntry;
+  onSelect: () => void;
+}) {
+  const { worker, review, paused, starved } = entry;
+  const reasons = [
+    review > 0 && `${review} to review`,
+    paused > 0 && (paused === 1 ? "a flow paused" : `${paused} flows paused`),
+    starved && "unfunded",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <button
+      onClick={onSelect}
+      className={
+        "sidebar-row mt-0.5 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+        "text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card " +
+        "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+      }
+      title={`${worker.name} · ${reasons}`}
+    >
+      <WorkerAvatar worker={worker} live={false} />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] leading-tight">
+          {worker.name}
+        </span>
+        <span className="block truncate text-[10px] leading-4 text-ink-faint">
+          {reasons}
+        </span>
+      </span>
+      {review > 0 && (
+        <span
+          className="shrink-0 rounded-full bg-violet-500 px-1.5 text-[10px] font-medium leading-4 text-white"
+          title={`${review} waiting for your review`}
+        >
+          {review}
+        </span>
+      )}
+      {(paused > 0 || starved) && (
+        <span
+          aria-hidden
+          className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500"
+        />
+      )}
+    </button>
   );
 }
 
@@ -300,9 +464,6 @@ function RosterRow({
     () => summarizeDesk(claimedRuns, batches.awaiting, runners, !!shift),
     [batches.awaiting, claimedRuns, runners, shift],
   );
-  // Today's turns, uncapped here on purpose: errands and shifts thin out by
-  // different rules below, and a shared cap let an hourly clock spend the whole
-  // budget before the errand you sent got a row.
   const recent = useMemo(
     () =>
       sidebarActivity(
@@ -313,31 +474,25 @@ function RosterRow({
     [orchestrations, worker.id],
   );
   const sending = useWorkersStore((s) => s.errandSending[worker.id]);
-  const todaysErrands = useMemo(
-    () => recent.filter((item) => item.task === "errand"),
-    [recent],
-  );
-  const errands = useMemo(
-    () => todaysErrands.slice(0, NESTED_ERRANDS),
-    [todaysErrands],
-  );
-  const todaysShifts = useMemo(
-    () => recent.filter((item) => item.task === "shift"),
-    [recent],
-  );
-  const shifts = useMemo(
-    () => sidebarShifts(todaysShifts, NESTED_SHIFTS),
-    [todaysShifts],
-  );
+  // One list, newest first. Every errand gets a row — each is a distinct
+  // thing you asked for — while shifts thin by sidebarShifts' rule, because a
+  // worker on an hourly cadence must not turn its corner of the roster into a
+  // column of identical empty wake-ups. The two kinds tell themselves apart
+  // without headings: a shift names itself ("Shift 12") behind a clock, an
+  // errand is your own words behind a speech bubble.
+  const turnsAll = useMemo(() => {
+    const errands = recent.filter((item) => item.task === "errand");
+    const shifts = sidebarShifts(
+      recent.filter((item) => item.task === "shift"),
+      NESTED_SHIFTS,
+    );
+    return [...errands, ...shifts].sort((a, b) => b.at - a.at);
+  }, [recent]);
+  const turns = turnsAll.slice(0, NESTED_TURNS);
+  const overflow = turnsAll.length - turns.length;
+  const hidden = turnsAll.length;
   const openTurn = (orchestrationId: string, at: number) =>
     openWorkerActivity(worker.id, orchestrationId, at);
-  const activeRunId = useFlowsStore((s) => s.activeRunId);
-  const myRuns = useMemo(
-    () =>
-      workerRunsForSidebar(runs, worker.id, query, NESTED_RUNS, activeRunId),
-    [runs, worker.id, query, activeRunId],
-  );
-  const hidden = errands.length + shifts.length + myRuns.length;
 
   // Only what is true RIGHT NOW. Totals are history and live in Stats; putting
   // "11 done" here made an idle worker look busy.
@@ -352,7 +507,7 @@ function RosterRow({
         : null;
 
   return (
-    <div className="group/row relative mt-0.5">
+    <div className="group/row relative mt-1">
       <button
         onClick={onSelect}
         className={
@@ -371,7 +526,7 @@ function RosterRow({
           role="button"
           tabIndex={0}
           onClick={(e) => {
-            // Collapsing is not selecting: a roster you have to open in order
+            // Folding is not selecting: a roster you have to open in order
             // to fold would defeat the point.
             e.stopPropagation();
             onToggleExpanded();
@@ -395,11 +550,15 @@ function RosterRow({
         </span>
         <WorkerAvatar worker={worker} live={summary.live} />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] leading-tight">
+          {/* The name carries weight the child rows don't — in a folded roster
+              the names ARE the list, and in an open one the eye needs to find
+              where one worker ends and the next begins without counting
+              indents. */}
+          <span className="block truncate text-[13px] font-medium leading-tight">
             {worker.name}
           </span>
           {status && (
-            <span className="block truncate text-[10px] leading-4 text-ink-faint">
+            <span className="block truncate text-[10px] font-normal leading-4 text-ink-faint">
               {status}
             </span>
           )}
@@ -418,7 +577,7 @@ function RosterRow({
           {/* Folded away, the count of what is underneath is the only thing
               left saying this worker did anything today. */}
           {!expanded && hidden > 0 && (
-            <span className="shrink-0 text-[10px] tabular-nums text-ink-faint">
+            <span className="shrink-0 text-[10px] font-normal tabular-nums text-ink-faint">
               {hidden}
             </span>
           )}
@@ -446,86 +605,58 @@ function RosterRow({
       </div>
 
       {/* A rail, so the work reads as belonging to the worker above it rather
-          than floating between two of them — and inside it, the three things a
-          worker has: what YOU asked for, what it did on its own, and the runs
-          either of those launched. Each group is named, because "Shift 2" and
-          "can you run the tests" sitting in one unlabelled list made the
-          reader do the sorting. Empty groups render nothing. */}
-      {expanded &&
-        (sending?.length ||
-          errands.length > 0 ||
-          shifts.length > 0 ||
-          myRuns.length > 0) && (
-          <div className="ml-[13px] border-l border-card pl-2">
-            {(sending?.length || errands.length > 0) && (
-              <GroupLabel
-                text="Errands"
-                hidden={todaysErrands.length - errands.length}
-              />
-            )}
-            {/* The errand you just sent, before any batch exists to represent it
+          than floating between two of them. Turns only: a turn's flows live
+          where the turn does — click through to the desk — and the runs that
+          still need a person are exactly the ones "Needs you" already lists,
+          so putting a Flows group here listed the same work twice at the same
+          level. */}
+      {expanded && (sending?.length || turns.length > 0) && (
+        <div className="ml-[13px] border-l border-card pl-2">
+          {/* The errand you just sent, before any batch exists to represent it
               — the planning turn can take minutes, and a sidebar that shows
               nothing until it finishes reads as a message that went nowhere. */}
-            {sending?.map((pending) => (
-              <button
-                key={pending.id}
-                onClick={onSelect}
-                className="group mt-0.5 flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-card-strong focus:outline-none"
-                title={`${pending.text} — in flight`}
-              >
-                <TurnIcon task="errand" live />
-                <span className="min-w-0 flex-1 truncate text-ink-muted">
-                  {pending.text}
-                </span>
-                <span className="shrink-0 text-[10px] text-ink-faint">…</span>
-              </button>
-            ))}
-            {errands.map((item) => (
-              <TurnRow
-                key={item.orchestration.id}
-                item={item}
-                onOpen={openTurn}
-              />
-            ))}
-
-            {/* The count says what was folded away, because a group that quietly
-              drops eleven shifts reads as a worker that only ran one. */}
-            {shifts.length > 0 && (
-              <GroupLabel
-                text="Shifts"
-                hidden={todaysShifts.length - shifts.length}
-              />
-            )}
-            {shifts.map((item) => (
-              <TurnRow
-                key={item.orchestration.id}
-                item={item}
-                onOpen={openTurn}
-              />
-            ))}
-
-            {/* The worker's runs, exactly as a project lists its flows. A worker IS
-          the container these runs belong to — that is why they are filtered
-          out of every project's group — so this is where their state (live,
-          paused, failed) has to be visible without opening anything. */}
-            {myRuns.length > 0 && <GroupLabel text="Flows" />}
-            {myRuns.map((run) => (
-              <FlowRunRow
-                key={run.id}
-                run={run}
-                selected={run.id === activeRunId}
-                isLive={runIsLive(run, runners)}
-              />
-            ))}
-          </div>
-        )}
+          {sending?.map((pending) => (
+            <button
+              key={pending.id}
+              onClick={onSelect}
+              className="group mt-0.5 flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-card-strong focus:outline-none"
+              title={`${pending.text} — in flight`}
+            >
+              <TurnIcon task="errand" live />
+              <span className="min-w-0 flex-1 truncate text-ink-muted">
+                {pending.text}
+              </span>
+              <span className="shrink-0 text-[10px] text-ink-faint">…</span>
+            </button>
+          ))}
+          {turns.map((item) => (
+            <TurnRow
+              key={item.orchestration.id}
+              item={item}
+              onOpen={openTurn}
+            />
+          ))}
+          {/* The count says what was thinned away, because a rail that quietly
+              drops four errands reads as a worker that only ran one. Clicking
+              it opens the desk, which shows the whole day. */}
+          {overflow > 0 && (
+            <button
+              onClick={onSelect}
+              className="mt-0.5 w-full rounded px-2 py-0.5 text-left text-[10px] text-ink-faint hover:bg-card-strong hover:text-ink-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+              title={`Open ${worker.name} — the desk shows the whole day`}
+            >
+              {overflow} more today
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
 
-/// The same 20px tile a flow run gets, so the three groups under a worker line
-/// their text up instead of stepping in and out. The glyphs say WHOSE the work
-/// is: an errand is speech — you asked for it — and a shift is a clock, the
+/// The same 20px tile a flow run gets, so the turns under a worker line their
+/// text up instead of stepping in and out. The glyphs say WHOSE the work is:
+/// an errand is speech — you asked for it — and a shift is a clock, the
 /// worker's own standing time.
 function TurnIcon({
   task,
@@ -597,19 +728,9 @@ function MoveButton({
   );
 }
 
-function GroupLabel({ text, hidden = 0 }: { text: string; hidden?: number }) {
-  return (
-    <div className="px-1.5 pt-1 text-[10px] uppercase tracking-wider text-ink-faint">
-      {text}
-      {hidden > 0 && (
-        <span className="normal-case tracking-normal"> · {hidden} more</span>
-      )}
-    </div>
-  );
-}
-
 /// One turn under a worker. Clicking it opens THAT turn on the desk — on its
-/// own day, expanded — rather than dropping you on the worker to search again.
+/// own day, expanded, with the flows it launched — rather than dropping you
+/// on the worker to search again.
 function TurnRow({
   item,
   onOpen,
@@ -625,9 +746,11 @@ function TurnRow({
         "text-xs hover:bg-card-strong focus:outline-none " +
         "focus-visible:ring-1 focus-visible:ring-accent/50"
       }
-      title={`${item.title} · ${describeActivity(item)} · ${relativeTime(item.at)}`}
+      title={`${item.task === "errand" ? "Errand" : "Shift"} · ${item.title} · ${describeActivity(item)} · ${relativeTime(item.at)}`}
     >
-      <TurnIcon task={item.task} />
+      {/* The tile pulses while the turn still has flows in flight — with no
+          Flows group underneath, this is the rail's only live signal. */}
+      <TurnIcon task={item.task} live={item.running > 0} />
       <span
         className={
           "min-w-0 flex-1 truncate " +
