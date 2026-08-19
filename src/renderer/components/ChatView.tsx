@@ -253,18 +253,17 @@ export function ChatView({
           // instead of breathing like full bubbles. ReviewerStepLine's
           // own internal py-0.5 supplies a 2px line gap.
           const rowPad = isIntermediate ? 'px-5 py-0' : 'px-5 py-1.5';
-          // Reviewer-tagged events (codex collab/review path) get the
-          // same indent + wash treatment as one-shot review cards in
-          // ReviewCard.tsx. The wash sits on an INNER div so it
-          // respects the row's `px-5` content padding (same right
-          // edge as primary bubbles); putting it on the row wrapper
-          // would extend it edge-to-edge. Boundary rows get rounded
-          // corners + extra padding so the wash reads as one
-          // contained card spanning the block.
+          // Reviewer-tagged events (codex collab/review path) are
+          // indented so they read as a reply to the primary turn
+          // above — but they carry no wash or card chrome of their
+          // own. The verdict already renders as a full AssistantBubble
+          // (border + tint strip + copy actions); wrapping that in a
+          // second container produced a bubble inside a bubble. The ↩
+          // header, the indent and the tint do the grouping instead.
+          // Boundary rows add a little breathing room above/below the
+          // block. Matches ReviewCard.tsx.
           const reviewerInner = event.reviewer
-            ? `ml-6 bg-white/[0.02] px-3${isFirstInBlock ? ' rounded-t-xl pt-3' : ''}${
-                isLastInBlock ? ' rounded-b-xl pb-3' : ''
-              }`
+            ? `ml-6${isFirstInBlock ? ' pt-1' : ''}${isLastInBlock ? ' pb-1' : ''}`
             : '';
           const inner = (
             <>

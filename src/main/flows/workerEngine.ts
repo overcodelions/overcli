@@ -46,6 +46,7 @@ import {
   stripWorkerSubject,
   validateWorker,
   workerAutoApproveCap,
+  workerOrigin,
   type Worker,
   type WorkerErrandResult,
   type WorkerJournalEntry,
@@ -878,13 +879,7 @@ export class WorkerEngine {
     previousPlannedAt?: number,
   ): ReturnType<WorkerParker['parkProposal']> {
     return this.deps.parker.parkProposal({
-      origin: {
-        kind: 'worker',
-        workerId: w.id,
-        workerName: w.name,
-        task: 'shift',
-        ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
-      },
+      origin: workerOrigin(w, 'shift'),
       projectPath: w.projectPath,
       prompt: this.buildShiftPrompt(w, sequence, rejected, previousPlannedAt),
       flowId: w.flowIds[0],
@@ -921,14 +916,7 @@ export class WorkerEngine {
     let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
     try {
       res = await this.deps.parker.parkProposal({
-        origin: {
-          kind: 'worker',
-          workerId: w.id,
-          workerName: w.name,
-          task: 'errand',
-          errand,
-          ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
-        },
+        origin: workerOrigin(w, 'errand', errand),
         projectPath: w.projectPath,
         prompt: this.buildErrandPrompt(w, errand, rejected),
         ...(priorTurns.length > 0 ? { priorTurns } : {}),

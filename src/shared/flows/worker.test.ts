@@ -13,6 +13,7 @@ import {
   WORKER_SUBJECT_MAX,
   validateWorker,
   workerAutoApproveCap,
+  workerOrigin,
   type Worker,
   type WorkerJournalEntry,
 } from './worker';
@@ -389,5 +390,39 @@ describe('parseWorkerContract — heartbeat backend', () => {
       { knownFlowIds: ['fix-it'], defaultHeartbeatModel: 'cheap-model' },
     );
     expect(c?.heartbeatBackend).toBeUndefined();
+  });
+});
+
+describe('workerOrigin', () => {
+  it('carries the external-action capability when the worker has it', () => {
+    const w = makeWorker({ caps: { maxItemsPerShift: 1, runIn: 'worktree', allowExternalActions: true } });
+    expect(workerOrigin(w, 'shift')).toEqual({
+      kind: 'worker',
+      workerId: 'worker-1',
+      workerName: 'Scout',
+      task: 'shift',
+      allowExternalActions: true,
+    });
+  });
+
+  it('omits the capability rather than stamping false, so older batches read the same', () => {
+    const origin = workerOrigin(makeWorker(), 'shift');
+    expect('allowExternalActions' in origin).toBe(false);
+  });
+
+  it('keeps the typed instruction on an errand, alongside the capability', () => {
+    const w = makeWorker({ caps: { maxItemsPerShift: 1, runIn: 'cwd', allowExternalActions: true } });
+    expect(workerOrigin(w, 'errand', 'post the digest')).toEqual({
+      kind: 'worker',
+      workerId: 'worker-1',
+      workerName: 'Scout',
+      task: 'errand',
+      errand: 'post the digest',
+      allowExternalActions: true,
+    });
+  });
+
+  it('omits errand entirely when none was typed', () => {
+    expect('errand' in workerOrigin(makeWorker(), 'errand')).toBe(false);
   });
 });
