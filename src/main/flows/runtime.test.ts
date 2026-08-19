@@ -217,6 +217,19 @@ describe('verdictGateStopsRun', () => {
       verdictGateStopsRun({ workerId: 'w1', flowSnapshot: auditFlow }, { role: 'researcher' }),
     ).toBe(false);
   });
+
+  it('keeps a custom reviewer gating in a worker flow with no code-writing step', () => {
+    const review = {
+      role: 'custom' as const,
+      systemPromptOverride: 'Reply APPROVED or REJECTED.',
+      onFail: { action: 'goto' as const, stepId: 'draft' },
+    };
+    const run = {
+      workerId: 'worker-1',
+      flowSnapshot: { steps: [{ role: 'custom' as const }, { role: 'custom' as const }] },
+    };
+    expect(verdictGateStopsRun(run as never, review as never)).toBe(true);
+  });
 });
 
 describe('isGatingReviewStep', () => {
