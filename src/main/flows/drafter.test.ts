@@ -273,6 +273,139 @@ describe('draftFlowFromPrompt', () => {
     if (result.ok) expect(result.flow.name).toBe('CLI Drafted');
   });
 
+  it('un-gates a reviewer lens in a flow with nothing to gate', async () => {
+    // A read-only audit: four lenses feed a report, no code is ever written.
+    // Left gating, the security lens halts the run on exactly the shifts that
+    // found something and the report never gets written.
+    const audit = [
+      'name: Release Audit',
+      'input: user_prompt',
+      'steps:',
+      '  - id: lens-security',
+      '    model: { backend: claude, model: claude-sonnet-4-6 }',
+      '    role: security-reviewer',
+      '    inputs: [user_prompt]',
+      '    tools: [Read]',
+      '    output: lens_security.md',
+      '  - id: report',
+      '    model: { backend: claude, model: claude-sonnet-4-6 }',
+      '    role: technical-writer',
+      '    inputs: [lens_security.md]',
+      '    tools: [Read, Write]',
+      '    output: report.md',
+    ].join('\n');
+    const oneShot = vi.fn().mockResolvedValue({ ok: true, text: audit });
+    const deps: DraftDeps = {
+      settings: {
+        preferredBackend: 'claude',
+        disabledBackends: {},
+        backendPaths: {},
+      } as unknown as AppSettings,
+      runner: { oneShot } as unknown as DraftDeps['runner'],
+    };
+
+    const result = await draftFlowFromPrompt({ description: 'Audit the release' }, deps);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps.find((s) => s.id === 'lens-security')?.verdictGate).toBe(false);
+    }
+  });
+
+  it('leaves a reviewer gating when the flow can act on its verdict', async () => {
+    const shipping = [
+      'name: Fix And Ship',
+      'input: user_prompt',
+      'steps:',
+      '  - id: build',
+      '    model: { backend: claude, model: claude-sonnet-4-6 }',
+      '    role: implementer',
+      '    inputs: [user_prompt]',
+      '    tools: [Read, Edit]',
+      '    output: diff',
+      '  - id: check',
+      '    model: { backend: claude, model: claude-sonnet-4-6 }',
+      '    role: code-reviewer',
+      '    inputs: [diff]',
+      '    tools: [Read]',
+      '    output: review.md',
+    ].join('\n');
+    const oneShot = vi.fn().mockResolvedValue({ ok: true, text: shipping });
+    const deps: DraftDeps = {
+      settings: {
+        preferredBackend: 'claude',
+        disabledBackends: {},
+        backendPaths: {},
+      } as unknown as AppSettings,
+      runner: { oneShot } as unknown as DraftDeps['runner'],
+    };
+
+    const result = await draftFlowFromPrompt({ description: 'Fix it and review' }, deps);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps.find((s) => s.id === 'check')?.verdictGate).toBeUndefined();
+    }
+  });
+
+  it('keeps plan-reviewer gating in a flow that writes no code', async () => {
+    // The one reviewer whose whole job is to gate before code exists.
+    const planning = [
+      'name: Plan And Validate',
+      'input: user_prompt',
+      'steps:',
+      '  - id: plan',
+      '    model: { backend: claude, model: claude-sonnet-4-6 }',
+      '    role: planner',
+      '    inputs: [user_prompt]',
+      '    tools: [Read]',
+      '    output: plan.md',
+      '  - id: judge',
+      '    model: { backend: claude, model: claude-sonnet-4-6 }',
+      '    role: plan-reviewer',
+      '    inputs: [plan.md]',
+      '    tools: [Read]',
+      '    output: plan_review.md',
+    ].join('\n');
+    const oneShot = vi.fn().mockResolvedValue({ ok: true, text: planning });
+    const deps: DraftDeps = {
+      settings: {
+        preferredBackend: 'claude',
+        disabledBackends: {},
+        backendPaths: {},
+      } as unknown as AppSettings,
+      runner: { oneShot } as unknown as DraftDeps['runner'],
+    };
+
+    const result = await draftFlowFromPrompt({ description: 'Plan it and check the plan' }, deps);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.flow.steps.find((s) => s.id === 'judge')?.verdictGate).toBeUndefined();
+    }
+  });
+
+  it('budgets drafting on silence, not a flat wall clock', async () => {
+    // `oneShot`'s 120s default cut healthy drafts off mid-YAML — the hire
+    // drafter's second turn (a full flow draft on a frontier model) hit it
+    // routinely and landed the user on a review screen with no flow.
+    const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('Slow Draft') });
+    const deps: DraftDeps = {
+      settings: {
+        preferredBackend: 'claude',
+        disabledBackends: {},
+        backendPaths: {},
+      } as unknown as AppSettings,
+      runner: { oneShot } as unknown as DraftDeps['runner'],
+    };
+
+    await draftFlowFromPrompt({ description: 'Something long to design' }, deps);
+
+    const call = oneShot.mock.calls[0][0];
+    expect(call.idleTimeoutMs).toBeGreaterThan(0);
+    expect(call.timeoutMs).toBeGreaterThan(120_000);
+  });
+
   it('routes a non-Claude preferred backend through runner.oneShot', async () => {
     const oneShot = vi.fn().mockResolvedValue({ ok: true, text: validYaml('Codex Drafted') });
     const deps: DraftDeps = {

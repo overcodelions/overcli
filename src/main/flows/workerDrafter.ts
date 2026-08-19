@@ -101,7 +101,7 @@ export async function draftWorkerFromPrompt(
   args: { jobDescription: string; flows: HireFlowOption[]; projects: HireProjectOption[] },
   deps: DraftDeps,
 ): Promise<
-  | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow }
+  | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow; flowError?: string }
   | { ok: false; error: string }
 > {
   const jobDescription = args.jobDescription.trim();
@@ -158,7 +158,10 @@ export async function draftWorkerFromPrompt(
   );
   if (!drafted.ok) {
     // The contract is still reviewable — the user can pick a flow by hand.
-    return { ok: true, contract, summary };
+    // Say so out loud: a silent miss here reads as "the hire worked" while
+    // the review screen quietly sits on an empty flow picker.
+    log('warn', 'workers.hire', `Flow draft for worker "${contract.name}" failed: ${drafted.error}`);
+    return { ok: true, contract, summary, flowError: drafted.error };
   }
   return { ok: true, contract, summary, draftedFlow: drafted.flow };
 }
@@ -189,7 +192,9 @@ function flowRequestFromJob(contract: WorkerContract): string {
     `A flow for items produced by a standing worker named "${contract.name}"`,
     `(cadence: ${describeTrigger(contract.cadence)}). The worker's job: ${contract.jobDescription}`,
     'Each run receives ONE self-contained candidate prompt from that job. Investigate, do the',
-    'work the candidate asks for, and include a review step before anything ships.',
+    'work the candidate asks for, and include a review step before anything ships. If the',
+    'job ships nothing — if its deliverable IS a report, audit, or assessment — then the',
+    'review findings are the raw material for that report, not a gate on it.',
   ].join(' ');
 }
 
@@ -262,7 +267,12 @@ export async function reviseWorkerFromPrompt(
     '',
     ...(args.flow
       ? ['CURRENT FLOW (YAML)', '===================', serializeFlow(args.flow), '']
-      : ['(This worker has no flow yet.)', '']),
+      : [
+          '(This worker has NO FLOW yet. A flowInstruction will be handed to the flow DESIGNER,',
+          'not an editor — so describe the whole flow the job needs, not a delta to an existing',
+          'one.)',
+          '',
+        ]),
     'REQUESTED CHANGE',
     '================',
     instruction,
@@ -294,11 +304,32 @@ export async function reviseWorkerFromPrompt(
       ? parsed.flowInstruction.trim()
       : undefined;
 
-  if (!flowInstruction || !args.flow) {
-    if (!jobDescription && !flowInstruction) {
+  if (!flowInstruction) {
+    if (!jobDescription) {
       return { ok: false, error: 'The reviser found nothing to change for that instruction.' };
     }
     return { ok: true, jobDescription, note };
+  }
+
+  // A worker with no flow yet — a hire whose flow draft failed, or one the
+  // user is building by hand. "Add a step that…" has nothing to edit, so the
+  // execution half gets DRAFTED rather than revised. Without this the flow
+  // instruction was silently dropped and the AI box could never fill an empty
+  // flow picker.
+  if (!args.flow) {
+    const drafted = await draftFlowFromPrompt(
+      { description: flowDraftDescription(flowInstruction, jobDescription ?? args.jobDescription) },
+      deps,
+    );
+    if (!drafted.ok) {
+      log('warn', 'workers.revise', `New flow draft failed: ${drafted.error}`);
+      return {
+        ok: true,
+        jobDescription,
+        note: `${note}\n\nThis worker has no flow yet and one could not be drafted automatically (${drafted.error}). Flow instruction that was attempted: ${flowInstruction}`,
+      };
+    }
+    return { ok: true, jobDescription, flow: drafted.flow, note };
   }
 
   // The flow half goes through the SAME editor the Flows tab uses — full
