@@ -243,25 +243,22 @@ function existingJobStem(
 ): string | null {
   const want = deliverableName({ ...args, extension: '' });
   try {
-    for (const entry of fs.readdirSync(dir)) {
-      const base = entryStem(dir, entry);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const base = entry.isDirectory()
+        ? entry.name
+        : entry.name.lastIndexOf('.') > 0
+          ? entry.name.slice(0, entry.name.lastIndexOf('.'))
+          : entry.name;
       if (base === want) return base;
-      if (base.startsWith(want) || want.startsWith(base)) return base;
+      // A prefix only counts at a slug boundary — "fix-auth" must not swallow
+      // "fix-auth-middleware", which is a DIFFERENT job filed in the same minute.
+      const [shorter, longer] = base.length < want.length ? [base, want] : [want, base];
+      if (longer.startsWith(shorter) && longer[shorter.length] === '-') return base;
     }
   } catch {
     // Nothing filed yet.
   }
   return null;
-}
-
-function entryStem(dir: string, entry: string): string {
-  try {
-    if (fs.statSync(path.join(dir, entry)).isDirectory()) return entry;
-  } catch {
-    return entry;
-  }
-  const dot = entry.lastIndexOf('.');
-  return dot > 0 ? entry.slice(0, dot) : entry;
 }
 
 /// Never overwrites. The journal fold that calls this re-runs on every

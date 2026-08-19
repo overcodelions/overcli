@@ -31,7 +31,7 @@
 // for the keyboard, revealed on hover or focus, since a drag-only list cannot
 // be reordered without a mouse.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useWorkersStore } from '../../workersStore';
 import {
@@ -206,20 +206,25 @@ function PotHeader({
   committed: number;
   onSet: (monthlyUSD: number) => void;
 }) {
-  const [text, setText] = useState(String(Math.round(allocation.poolUSD)));
+  const [text, setText] = useState(String(allocation.poolUSD));
   const [editing, setEditing] = useState(false);
+  const cancelled = useRef(false);
 
   // Follow main unless the user is mid-edit — a `treasuryUpdate` landing
   // because some run finished must not rewrite the number being typed.
   useEffect(() => {
-    if (!editing) setText(String(Math.round(allocation.poolUSD)));
+    if (!editing) setText(String(allocation.poolUSD));
   }, [allocation.poolUSD, editing]);
 
   const commit = () => {
+    if (cancelled.current) {
+      cancelled.current = false;
+      return;
+    }
     setEditing(false);
     const next = Number(text);
     if (!Number.isFinite(next) || next <= 0) {
-      setText(String(Math.round(allocation.poolUSD)));
+      setText(String(allocation.poolUSD));
       return;
     }
     if (next !== allocation.poolUSD) onSet(next);
@@ -255,8 +260,9 @@ function PotHeader({
             onKeyDown={(e) => {
               if (e.key === 'Enter') e.currentTarget.blur();
               if (e.key === 'Escape') {
+                cancelled.current = true;
                 setEditing(false);
-                setText(String(Math.round(allocation.poolUSD)));
+                setText(String(allocation.poolUSD));
                 e.currentTarget.blur();
               }
             }}

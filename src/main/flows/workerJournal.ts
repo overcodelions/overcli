@@ -27,6 +27,7 @@ function filePath(): string {
 }
 
 let journalIds: Set<string> | null = null;
+let appendsSinceCompaction = 0;
 
 function ensureIndex(): Set<string> {
   if (journalIds) return journalIds;
@@ -45,6 +46,11 @@ export function appendWorkerJournalEntry(entry: WorkerJournalEntry): boolean {
   try {
     fs.appendFileSync(filePath(), JSON.stringify(entry) + '\n', 'utf-8');
     ids.add(entry.id);
+    if (++appendsSinceCompaction >= 200) {
+      appendsSinceCompaction = 0;
+      journalIds = null;
+      ensureIndex();
+    }
     return true;
   } catch (err) {
     log('error', 'flows.appendWorkerJournalEntry', `failed to append journal entry for ${entry.id}`, err);
@@ -52,8 +58,8 @@ export function appendWorkerJournalEntry(entry: WorkerJournalEntry): boolean {
   }
 }
 
-/// This reads and parses the whole journal per call; acceptable because
-/// WORKER_JOURNAL_MAX_ENTRIES bounds the file.
+/// This reads and parses the whole journal per call; acceptable because the
+/// file is re-compacted every 200 appends, not only at launch.
 export function loadWorkerJournal(workerId: string): WorkerJournalEntry[] {
   ensureIndex();
   const byId = new Map<string, WorkerJournalEntry>();

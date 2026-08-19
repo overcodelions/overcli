@@ -111,6 +111,13 @@ describe('allocateTreasury', () => {
     expect(alloc.remainingUSD).toBe(495);
   });
 
+  it('spend from a worker no longer on the roster still counts against the pot', () => {
+    const alloc = allocateTreasury(roster(['b', 50]), () => 0, 50, 30);
+    expect(alloc.spentUSD).toBe(30);
+    expect(alloc.remainingUSD).toBe(20);
+    expect(fundingFor(alloc, 'b')!.availableUSD).toBe(20);
+  });
+
   it('counts spend from workers who are no longer funded, and never goes negative', () => {
     const alloc = allocateTreasury(roster(['a', 10], ['b', 10]), () => 30, 20);
     expect(alloc.spentUSD).toBe(60);

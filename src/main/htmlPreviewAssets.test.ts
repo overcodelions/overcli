@@ -126,6 +126,23 @@ describe('readHtmlPreviewAssets', () => {
     });
   });
 
+  it('refuses to inline a non-previewable file through a stylesheet @import or url()', () => {
+    const html = write('page.html', '');
+    write('.env', 'AWS_SECRET_KEY=hunter2');
+    write(
+      'theme.css',
+      '@import "./.env";\nbody{background:url("./.env")}',
+    );
+    const res = readHtmlPreviewAssets({ path: html, refs: ['theme.css'] }, readable);
+    const asset = res.ok ? res.assets['theme.css'] : null;
+    const text = asset?.ok && asset.kind === 'css' ? asset.text : '';
+    expect(text).not.toContain('hunter2');
+    expect(text).not.toContain('AWS_SECRET_KEY');
+    // Both refs fall through unresolved — the `@import` line and the `url()`
+    // call stay exactly as written, rather than being spliced or base64'd in.
+    expect(text).toBe('@import "./.env";\nbody{background:url("./.env")}');
+  });
+
   it('reports a missing asset without failing the batch', () => {
     const html = write('page.html', '');
     write('styles.css', 'body{}');
