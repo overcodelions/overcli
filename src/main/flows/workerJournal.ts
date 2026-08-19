@@ -58,6 +58,12 @@ export function appendWorkerJournalEntry(entry: WorkerJournalEntry): boolean {
   }
 }
 
+/// Membership only. `loadWorkerJournal` re-reads and re-parses the whole file;
+/// callers that need one yes/no answer use this instead.
+export function hasWorkerJournalEntry(entryId: string): boolean {
+  return ensureIndex().has(entryId);
+}
+
 /// This reads and parses the whole journal per call; acceptable because the
 /// file is re-compacted every 200 appends, not only at launch.
 export function loadWorkerJournal(workerId: string): WorkerJournalEntry[] {
@@ -168,4 +174,41 @@ function maybeCompact(loaded: WorkerJournalEntry[]): void {
     .sort((a, b) => a.at - b.at)
     .slice(-WORKER_JOURNAL_MAX_ENTRIES);
   rewrite(compacted);
+}
+
+/// Forget ONE turn — every entry the projection wrote for a single shift or
+/// errand — leaving the rest of this worker's memory, and every other
+/// worker's, exactly as it was.
+///
+/// Matched by `orchestrationId` (which is what `syncOrchestration` stamps on
+/// every entry it folds) plus any explicit ids the caller knows about: the
+/// shift NOTE for a shift whose planning turn failed carries no batch id,
+/// because there is no batch.
+///
+/// THROWS rather than returning false if the rewrite could not land, for the
+/// same reason `clearWorkerJournal` does — a caller that rolls shift numbering
+/// back on the strength of a delete that silently failed would have the redo's
+/// entries collide with the old ones and be dropped by idempotent append.
+export function deleteWorkerJournalEntries(
+  workerId: string,
+  match: { orchestrationId?: string; ids?: string[] },
+): number {
+  const ids = new Set(match.ids ?? []);
+  const loaded = loadWorkerJournalRaw();
+  const kept = loaded.filter(
+    (entry) =>
+      entry.workerId !== workerId ||
+      !(
+        (match.orchestrationId !== undefined && entry.orchestrationId === match.orchestrationId) ||
+        ids.has(entry.id)
+      ),
+  );
+  const dropped = loaded.length - kept.length;
+  if (dropped === 0) return 0;
+  if (!rewrite(kept)) throw new Error('Could not rewrite the worker journal.');
+  // The append-dedupe index is keyed by entry id with no worker dimension, so
+  // it cannot be filtered in place — drop it and let the next append reload.
+  // This is what lets a re-run reuse the shift number it just gave back.
+  journalIds = null;
+  return dropped;
 }

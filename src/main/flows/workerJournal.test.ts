@@ -178,3 +178,64 @@ describe('a journal that cannot be rewritten', () => {
     expect(store.loadWorkerJournal('worker-1')).toHaveLength(1);
   });
 });
+
+describe('deleteWorkerJournalEntries', () => {
+  it('drops one batch’s entries and leaves the rest of the memory', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'a', orchestrationId: 'orch-1' }));
+    store.appendWorkerJournalEntry(makeEntry({ id: 'b', orchestrationId: 'orch-1' }));
+    store.appendWorkerJournalEntry(makeEntry({ id: 'c', orchestrationId: 'orch-2' }));
+    // Same batch id, different worker — batch ids are unique, but the filter
+    // must be scoped to the worker anyway or the guarantee rests on luck.
+    store.appendWorkerJournalEntry(
+      makeEntry({ id: 'd', workerId: 'worker-2', orchestrationId: 'orch-1' }),
+    );
+
+    expect(store.deleteWorkerJournalEntries('worker-1', { orchestrationId: 'orch-1' })).toBe(2);
+
+    expect(store.loadWorkerJournal('worker-1').map((e) => e.id)).toEqual(['c']);
+    expect(store.loadWorkerJournal('worker-2').map((e) => e.id)).toEqual(['d']);
+  });
+
+  it('also takes entries named outright — a failed shift’s note has no batch', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'shift-worker-1-4', kind: 'shift' }));
+    store.appendWorkerJournalEntry(makeEntry({ id: 'other' }));
+
+    expect(
+      store.deleteWorkerJournalEntries('worker-1', {
+        orchestrationId: 'orch-1',
+        ids: ['shift-worker-1-4'],
+      }),
+    ).toBe(1);
+
+    expect(store.loadWorkerJournal('worker-1').map((e) => e.id)).toEqual(['other']);
+  });
+
+  it('frees the id for re-use, so a re-run can reuse the shift number', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(
+      makeEntry({ id: 'shift-worker-1-4', kind: 'shift', orchestrationId: 'orch-1' }),
+    );
+    store.deleteWorkerJournalEntries('worker-1', { orchestrationId: 'orch-1' });
+
+    // Idempotent append is keyed on the id — without the index being dropped,
+    // the re-run's note would be silently swallowed and the shift would look
+    // as though it never happened.
+    expect(store.hasWorkerJournalEntry('shift-worker-1-4')).toBe(false);
+    expect(
+      store.appendWorkerJournalEntry(
+        makeEntry({ id: 'shift-worker-1-4', kind: 'shift', orchestrationId: 'orch-2' }),
+      ),
+    ).toBe(true);
+    expect(store.loadWorkerJournal('worker-1')[0].orchestrationId).toBe('orch-2');
+  });
+
+  it('is a no-op when nothing matches', async () => {
+    const store = await freshStore();
+    store.appendWorkerJournalEntry(makeEntry({ id: 'a', orchestrationId: 'orch-2' }));
+
+    expect(store.deleteWorkerJournalEntries('worker-1', { orchestrationId: 'orch-1' })).toBe(0);
+    expect(store.loadWorkerJournal('worker-1')).toHaveLength(1);
+  });
+});

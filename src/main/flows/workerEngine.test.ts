@@ -118,6 +118,7 @@ function makeHarness(
       },
       load: (workerId) =>
         journal.filter((e) => e.workerId === workerId).sort((a, b) => b.at - a.at),
+      has: (entryId) => journal.some((e) => e.id === entryId),
       rejectedTitles: (workerId) => [
         ...new Set(
           journal
@@ -136,6 +137,19 @@ function makeHarness(
         const before = journal.length;
         for (let i = journal.length - 1; i >= 0; i--) {
           if (journal[i].workerId === workerId) journal.splice(i, 1);
+        }
+        return before - journal.length;
+      },
+      remove: (workerId, match) => {
+        const ids = new Set(match.ids ?? []);
+        const before = journal.length;
+        for (let i = journal.length - 1; i >= 0; i--) {
+          const e = journal[i];
+          if (e.workerId !== workerId) continue;
+          const hit =
+            (match.orchestrationId !== undefined && e.orchestrationId === match.orchestrationId) ||
+            ids.has(e.id);
+          if (hit) journal.splice(i, 1);
         }
         return before - journal.length;
       },

@@ -74,7 +74,9 @@ import {
 import {
   appendWorkerJournalEntry,
   clearWorkerJournal,
+  deleteWorkerJournalEntries,
   digestWorkerJournal,
+  hasWorkerJournalEntry,
   loadWorkerJournal,
   workerRejectedTitles,
 } from './workerJournal';
@@ -161,9 +163,12 @@ export interface WorkerEngineDeps {
   journal?: {
     append: (entry: WorkerJournalEntry) => boolean;
     load: (workerId: string) => WorkerJournalEntry[];
+    has: (entryId: string) => boolean;
     rejectedTitles: (workerId: string) => string[];
     digest: (workerId: string) => string;
     clear: (workerId: string) => number;
+    /// Drop the entries one turn wrote, leaving the rest of the memory.
+    remove: (workerId: string, match: { orchestrationId?: string; ids?: string[] }) => number;
   };
   /// Run spend for a worker since `sinceMs`, from the run-summary log.
   spend?: (workerId: string, sinceMs: number) => number;
@@ -261,9 +266,11 @@ export class WorkerEngine {
     this.journal = deps.journal ?? {
       append: appendWorkerJournalEntry,
       load: loadWorkerJournal,
+      has: hasWorkerJournalEntry,
       rejectedTitles: workerRejectedTitles,
       digest: digestWorkerJournal,
       clear: clearWorkerJournal,
+      remove: deleteWorkerJournalEntries,
     };
     this.spend = deps.spend ?? workerSpendSince;
     this.spendAll = deps.spendAll ?? workerSpendByWorkerSince;
@@ -539,19 +546,20 @@ export class WorkerEngine {
       // we are resetting, so it would write the old life into the new one.
       return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then reset.' };
     }
-    // Files are the only cleanup operation that can surface an I/O failure.
-    // Do it before mutating the worker record or its activity ledgers so a
-    // permissions error does not present a half-reset worker as clean.
-    const cleared = clearWorkerFiles(id);
-    if (!cleared.ok) return { ok: false, error: cleared.error };
-    const files = cleared.removed;
-
+    // The journal rewrite is the retry-safe step: it either lands or throws
+    // having changed nothing. File deletion is irreversible, so it goes
+    // second — a failed reset must not have already destroyed the output it
+    // reports as untouched.
     let entries = 0;
     try {
       entries = this.journal.clear(id);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+
+    const cleared = clearWorkerFiles(id);
+    if (!cleared.ok) return { ok: false, error: cleared.error };
+    const files = cleared.removed;
 
     const activity = this.deps.clearActivity?.(id) ?? { shifts: 0, errands: 0, runs: 0 };
 
@@ -1284,7 +1292,6 @@ export class WorkerEngine {
     // settled by an app restart — is not a verdict on the idea. Folding it
     // as `rejected` would ban the title forever and feed the demotion
     // streak with rejections nobody made.
-    const priorIds = new Set(this.journal.load(w.id).map((e) => e.id));
     let newestRejectedId: string | null = null;
     let changed = false;
 
@@ -1356,7 +1363,7 @@ export class WorkerEngine {
             note: item.note,
           }) || changed;
       }
-      if (item.status === 'cancelled' && !priorIds.has(key('approved'))) {
+      if (item.status === 'cancelled' && !this.journal.has(key('approved'))) {
         const wrote = this.journal.append({
           ...base,
           id: key('rejected'),
