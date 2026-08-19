@@ -792,7 +792,7 @@ export async function installOllama(
 ): Promise<{ started: 'brew' | 'browser'; detail?: string; command?: string }> {
   if (process.platform === 'darwin' && brewAvailable()) {
     const command = 'brew install ollama';
-    const res = await runInTerminal(command);
+    const res = await runInTerminal(command, 'ollama-install');
     if (res.ok) return { started: 'brew', detail: `Opened Terminal running \`${command}\`` };
     // Terminal wouldn't take the command (usually a blocked Apple Event).
     // Fall back to the download page rather than reporting a phantom window.
@@ -1169,9 +1169,109 @@ export interface OllamaToolDefinition {
 
 export type ChatStreamEvent =
   | { type: 'token'; text: string }
+  /// Reasoning delta. Thinking-capable models (gemma4, deepseek-r1,
+  /// qwen3, gpt-oss) return their chain of thought on `message.thinking`,
+  /// a channel entirely separate from `message.content`. On a long prompt
+  /// the content channel stays EMPTY for minutes while thinking streams —
+  /// so a consumer that only watches `token` shows a frozen, blank bubble
+  /// while the server is visibly working. Always surface this.
+  | { type: 'thinking'; text: string }
   | { type: 'toolCalls'; calls: OllamaToolCall[] }
   | { type: 'done'; totalDurationMs?: number; evalCount?: number; promptEvalCount?: number }
   | { type: 'error'; message: string };
+
+/// Generation bounds sent on every /api/chat call.
+///
+/// We previously sent no `options` at all, which meant unbounded
+/// generation: a model that fell into a repetition loop — emitting the
+/// same `read_file` / `edit_file` pair over and over, inventing the tool
+/// results it never received — would generate until its context filled,
+/// burning minutes of local compute and producing a wall of fabricated
+/// tool-call JSON. The round-level stuck-loop guard could not help,
+/// because it only compares text BETWEEN rounds and this never finished a
+/// round.
+///
+/// `num_predict` is the backstop for that: a hard ceiling on tokens per
+/// round. 4096 is comfortably more than any single tool call or final
+/// answer needs, while capping a runaway at seconds rather than minutes.
+/// `repeat_penalty` discourages the degenerate loop from starting.
+const DEFAULT_CHAT_OPTIONS: Record<string, unknown> = {
+  num_predict: 4096,
+  repeat_penalty: 1.1,
+};
+
+/// How long Ollama keeps the model resident after a request. The default
+/// is 5 minutes, which a flow routinely exceeds: a plan step running on
+/// Claude for several minutes lets the local model fall out of VRAM, so
+/// the next Ollama step pays a full reload — for gemma4:26b that is 17.6
+/// GB off disk before the first token. Holding it for the length of a
+/// realistic step gap trades idle VRAM for removing that stall.
+const DEFAULT_KEEP_ALIVE = '30m';
+
+/// Cache of `/api/show` capability lookups, keyed by model tag. Capabilities
+/// are a static property of the pulled model, so one probe per tag per
+/// process run is enough.
+const capabilityCache = new Map<string, Set<string>>();
+
+/// Capabilities the pulled model declares — typically some of
+/// `completion`, `tools`, `thinking`, `vision`, `insert`.
+///
+/// This is the authority on whether we can hand Ollama a `tools` array and
+/// let its chat template drive tool calling. The static `OLLAMA_CATALOG`
+/// flag can't answer it: it only covers tags we ship, and it describes the
+/// model family rather than the specific build the user pulled.
+///
+/// Returns an empty set when Ollama is unreachable or the model is unknown,
+/// so callers fall back to the in-prompt protocol rather than failing.
+export async function modelCapabilities(tag: string): Promise<Set<string>> {
+  const cached = capabilityCache.get(tag);
+  if (cached) return cached;
+  const res = await httpPostJson<{ capabilities?: unknown }>('/api/show', { model: tag });
+  const caps = new Set<string>(
+    Array.isArray(res?.capabilities) ? res!.capabilities.filter((c): c is string => typeof c === 'string') : [],
+  );
+  // Only cache a real answer — a failed probe shouldn't pin the model as
+  // capability-less for the rest of the session.
+  if (caps.size > 0) capabilityCache.set(tag, caps);
+  return caps;
+}
+
+function httpPostJson<T>(pathname: string, body: unknown, timeoutMs = 3000): Promise<T | null> {
+  return new Promise((resolve) => {
+    const payload = JSON.stringify(body);
+    const req = http.request(
+      {
+        host: OLLAMA_HOST,
+        port: OLLAMA_PORT,
+        path: pathname,
+        method: 'POST',
+        timeout: timeoutMs,
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c) => chunks.push(Buffer.from(c)));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')) as T);
+          } catch {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+    req.write(payload);
+    req.end();
+  });
+}
 
 /// POST /api/chat with stream=true. Emits tokens as they arrive, a
 /// `toolCalls` event if the model issued one or more tool calls, then a
@@ -1186,14 +1286,29 @@ export function streamChat(
     messages: OllamaChatMessage[];
     tools?: OllamaToolDefinition[];
     signal?: AbortSignal;
+    /// Generation bounds. Defaults applied when omitted — see
+    /// `DEFAULT_CHAT_OPTIONS`.
+    options?: Record<string, unknown>;
+    /// Ollama residency hint, e.g. "30m". Defaults to `DEFAULT_KEEP_ALIVE`.
+    keepAlive?: string;
   },
   onEvent: (ev: ChatStreamEvent) => void,
 ): Promise<void> {
   return new Promise((resolve) => {
+    // An already-aborted signal fires no 'abort' event, so the listener
+    // installed at the bottom would never run and the request would go out
+    // anyway. Bail before opening the socket.
+    if (args.signal?.aborted) {
+      onEvent({ type: 'error', message: 'aborted' });
+      resolve();
+      return;
+    }
     const payload: Record<string, unknown> = {
       model: args.model,
       messages: args.messages,
       stream: true,
+      keep_alive: args.keepAlive ?? DEFAULT_KEEP_ALIVE,
+      options: { ...DEFAULT_CHAT_OPTIONS, ...(args.options ?? {}) },
     };
     if (args.tools && args.tools.length > 0) payload.tools = args.tools;
     const body = JSON.stringify(payload);
@@ -1232,6 +1347,9 @@ export function streamChat(
               const evt = JSON.parse(trimmed);
               if (evt.message?.content) {
                 onEvent({ type: 'token', text: String(evt.message.content) });
+              }
+              if (evt.message?.thinking) {
+                onEvent({ type: 'thinking', text: String(evt.message.thinking) });
               }
               const rawCalls = evt.message?.tool_calls;
               if (Array.isArray(rawCalls) && rawCalls.length > 0) {

@@ -50,6 +50,16 @@ export function workerColorFor(map: Record<string, string>, workerId: string): s
   return map[workerId] ?? WORKER_PALETTE[0];
 }
 
+/// The one colour every schedule draws in on the shift calendar.
+///
+/// Deliberately NOT a slice of WORKER_PALETTE. Colour on that grid means "who
+/// is this", and a schedule is not a who — giving each schedule its own hue
+/// would put ten more identities into a legend that exists to name the roster,
+/// and would make a schedule and a worker at 09:00 look like two colleagues.
+/// One steel tone plus the clock mark says "this block is machinery" at a
+/// glance, and the block's own label says which machinery.
+export const SCHEDULE_TINT = '#94a3b8';
+
 /// How many rungs of the trust ladder this worker has climbed. Drives the pip
 /// count; the words live in TRUST_LABEL.
 export function trustRungs(trust: WorkerTrustLevel): number {

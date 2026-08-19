@@ -68,6 +68,7 @@ import {
   conversationWorktreeStates,
 } from './worktreeSweep';
 import { computeStats } from './stats';
+import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import {
@@ -840,7 +841,7 @@ function registerIpc(): void {
       if (!/^[A-Za-z0-9 .:_/-]+$/.test(command)) {
         return { ok: false, error: 'Preview command contains unsupported characters.' };
       }
-      return openTerminalAt(cwd, command);
+      return openTerminalAt(cwd, command, 'workspace-command');
     },
   );
 
@@ -950,6 +951,7 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle('app:reloadStats', () => computeStats());
+  ipcMain.handle('app:refreshClaudeUsage', async () => (await refreshClaudeUsage()) !== null);
 
   // Cross-platform "an agent finished, look at me" attention nudge.
   // Skipped when the window is focused (the sidebar checkmark is enough)
@@ -986,7 +988,7 @@ function registerIpc(): void {
     const cmd = bin ?? backend;
     const quoted = cmd.includes(' ') ? `"${cmd}"` : cmd;
     const args = backend === 'claude' ? 'auth login' : backend === 'codex' ? 'login' : 'auth login';
-    return runInTerminal(`${quoted} ${args}`);
+    return runInTerminal(`${quoted} ${args}`, 'agent-launch');
   });
 
   ipcMain.handle(
@@ -1030,7 +1032,7 @@ function registerIpc(): void {
       const modelFlag = backend === 'claude' || backend === 'copilot' ? '--model' : '-m';
       const modelSuffix =
         model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
-      return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`);
+      return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`, 'agent-launch');
     },
   );
 
@@ -1048,7 +1050,7 @@ function registerIpc(): void {
     } catch {
       return { ok: false, error: 'That folder no longer exists.' };
     }
-    return openTerminalIn(target);
+    return openTerminalIn(target, 'file-tree');
   });
 
   ipcMain.handle('ollama:detect', () => detectOllama());
@@ -1259,6 +1261,11 @@ function registerIpc(): void {
   ipcMain.handle('orchestrator:approveBatch', (_e, args) =>
     orchestrator
       ? orchestrator.approveBatch(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
+  ipcMain.handle('orchestrator:rejectItem', (_e, args) =>
+    orchestrator
+      ? orchestrator.rejectItem(args)
       : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:delete', (_e, args) =>

@@ -12,17 +12,33 @@
 // that a paused worker, an edited cadence or a missed window will invalidate.
 // They are rendered differently for that reason; the distinction is not
 // cosmetic.
+//
+// SCHEDULES share the grid too, and for the same reason the workers do: a
+// schedule that fires every hour and a worker that wakes at 09:00 compete for
+// the same machine, the same project and the same attention, so a week view
+// that draws only half of the unattended work is answering "when does everyone
+// work" with a partial roster. They stay a distinct species on the grid
+// (`source`) rather than being flattened into fake workers — a schedule has no
+// trust, no desk and no judgement, and drawing it as a worker would claim
+// otherwise.
 
 import { nextOccurrenceAfter } from '@shared/flows/schedule';
+import type { Schedule, ScheduleTrigger } from '@shared/flows/schedule';
 import type { Orchestration } from '@shared/flows/orchestration';
+import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { Worker, WorkerTrustLevel } from '@shared/flows/worker';
 
 import { orchestrationTask, startOfDay } from './workerDeskSelectors';
 
 export interface CalendarEntry {
-  workerId: string;
-  workerName: string;
-  trust: WorkerTrustLevel;
+  /// Which mechanism put this block on the grid. Not cosmetic: it decides
+  /// what clicking it can open, and whether `trust` means anything.
+  source: 'worker' | 'schedule';
+  /// The rule's id — a worker id or a schedule id.
+  subjectId: string;
+  subjectName: string;
+  /// Workers only. A schedule has no standing to encode.
+  trust?: WorkerTrustLevel;
   kind: 'worked' | 'planned';
   /// When the shift starts. Its length is SHIFT_MINUTES — a worker's shift
   /// has no recorded duration (the planning turn is quick, the runs it
@@ -32,6 +48,11 @@ export interface CalendarEntry {
   /// Worked entries only.
   title?: string;
   orchestrationId?: string;
+  /// Set for a worked schedule firing that launched a flow run.
+  runId?: string;
+  /// Worked schedule firings record how they went; a worker's batch doesn't
+  /// (its outcome is the items inside it).
+  outcome?: 'launched' | 'done' | 'failed';
   needsReview?: boolean;
 }
 
@@ -61,13 +82,34 @@ export function calendarWindow(from: number, days: number): { start: number; end
   return { start, end: last.getTime() };
 }
 
-/// Every occurrence of `worker`'s cadence inside [from, end).
+/// Every occurrence of `trigger` inside [from, end).
 ///
-/// `seed` is the engine's own answer for the next shift (`nextShiftAt`), which
-/// accounts for the last shift worked and the anchor. Without it a projection
-/// re-derived from the cadence alone can disagree with the number the worker's
-/// own page shows, and the calendar would be quietly wrong about the one
-/// occurrence the user can check.
+/// `seed` is the engine's own answer for the next occurrence (`nextShiftAt` /
+/// `nextFireAt`), which accounts for the last firing and the anchor. Without
+/// it a projection re-derived from the trigger alone can disagree with the
+/// number the subject's own page shows, and the calendar would be quietly
+/// wrong about the one occurrence the user can check.
+export function projectOccurrences(
+  trigger: ScheduleTrigger,
+  from: number,
+  end: number,
+  seed?: number | null,
+): number[] {
+  const out: number[] = [];
+  let at = seed ?? nextOccurrenceAfter(trigger, from);
+  // A seed in the past (a subject overdue for its turn, or a window opened
+  // while the app was closed) still belongs on today's column: it is due.
+  if (at < from) at = nextOccurrenceAfter(trigger, from);
+  for (let i = 0; i < MAX_PROJECTED && at < end; i++) {
+    if (at >= from) out.push(at);
+    const next = nextOccurrenceAfter(trigger, at);
+    if (next <= at) break; // never advanced — refuse to spin
+    at = next;
+  }
+  return out;
+}
+
+/// Every occurrence of `worker`'s cadence inside [from, end).
 export function projectShifts(
   worker: Pick<Worker, 'cadence' | 'enabled'>,
   from: number,
@@ -75,18 +117,7 @@ export function projectShifts(
   seed?: number | null,
 ): number[] {
   if (!worker.enabled) return [];
-  const out: number[] = [];
-  let at = seed ?? nextOccurrenceAfter(worker.cadence, from);
-  // A seed in the past (a worker overdue for its shift, or a window opened
-  // while the app was closed) still belongs on today's column: it is due.
-  if (at < from) at = nextOccurrenceAfter(worker.cadence, from);
-  for (let i = 0; i < MAX_PROJECTED && at < end; i++) {
-    if (at >= from) out.push(at);
-    const next = nextOccurrenceAfter(worker.cadence, at);
-    if (next <= at) break; // never advanced — refuse to spin
-    at = next;
-  }
-  return out;
+  return projectOccurrences(worker.cadence, from, end, seed);
 }
 
 /// Shifts this roster already worked, inside the window. Errands are excluded:
@@ -108,8 +139,9 @@ export function workedShifts(
     // did happen — but there is no trust level to tint them with.
     if (!w) continue;
     out.push({
-      workerId: w.id,
-      workerName: w.name,
+      source: 'worker',
+      subjectId: w.id,
+      subjectName: w.name,
       trust: w.trust,
       kind: 'worked',
       at: o.createdAt,
@@ -121,25 +153,72 @@ export function workedShifts(
   return out;
 }
 
+/// Firings each schedule already did, inside the window.
+///
+/// Read from `Schedule.history` rather than from the runs, because a schedule
+/// has two target kinds — one mints a flow run, the other parks an
+/// orchestration — and the history is the one record that covers both. It is
+/// capped (SCHEDULE_HISTORY_LIMIT), so a busy schedule's older firings simply
+/// fall off the back of the grid; the alternative is a second store of
+/// per-firing rows that exists only to be drawn.
+///
+/// `skipped` firings are left off. A skip is a decision NOT to run, and a
+/// block on a calendar says the opposite; the schedule's own page explains its
+/// skips, where there is room to say why.
+export function scheduleFirings(
+  schedules: Record<string, Schedule>,
+  orchestrations: Record<string, Orchestration>,
+  start: number,
+  end: number,
+): CalendarEntry[] {
+  const out: CalendarEntry[] = [];
+  for (const s of Object.values(schedules)) {
+    for (const record of s.history ?? []) {
+      if (record.at < start || record.at >= end) continue;
+      if (record.outcome === 'skipped') continue;
+      const parked = record.orchestrationId
+        ? orchestrations[record.orchestrationId]
+        : undefined;
+      out.push({
+        source: 'schedule',
+        subjectId: s.id,
+        subjectName: s.name,
+        kind: 'worked',
+        at: record.at,
+        title: record.note ?? s.name,
+        runId: record.runId,
+        orchestrationId: record.orchestrationId,
+        outcome: record.outcome,
+        needsReview: parked ? isOrchestrationAwaitingApproval(parked) : false,
+      });
+    }
+  }
+  return out;
+}
+
 /// The grid: `days` columns from the local midnight of `from`, each holding
 /// what was worked and what is projected, in clock order.
 export function workerCalendar(args: {
   workers: Record<string, Worker>;
   orchestrations: Record<string, Orchestration>;
   nextShiftAt: Record<string, number | null>;
+  /// Omitted (or empty) draws workers only — which is what the calendar did
+  /// before schedules joined it, and what the header's toggle asks for.
+  schedules?: Record<string, Schedule>;
+  nextFireAt?: Record<string, number | null>;
   from: number;
   days: number;
   now: number;
 }): CalendarDay[] {
   const { start, end } = calendarWindow(args.from, args.days);
   const roster = Object.values(args.workers);
+  const schedules = args.schedules ?? {};
+  const nextFireAt = args.nextFireAt ?? {};
 
-  const entries: CalendarEntry[] = workedShifts(
-    args.orchestrations,
-    args.workers,
-    start,
-    end,
-  );
+  const entries: CalendarEntry[] = [
+    ...workedShifts(args.orchestrations, args.workers, start, end),
+    ...scheduleFirings(schedules, args.orchestrations, start, end),
+  ];
 
   // Projection only runs forward from now. Back-filling a past week with what
   // the cadence "would have" fired is a claim about history that the journal
@@ -149,9 +228,22 @@ export function workerCalendar(args: {
   for (const w of roster) {
     for (const at of projectShifts(w, projectFrom, end, args.nextShiftAt[w.id])) {
       entries.push({
-        workerId: w.id,
-        workerName: w.name,
+        source: 'worker',
+        subjectId: w.id,
+        subjectName: w.name,
         trust: w.trust,
+        kind: 'planned',
+        at,
+      });
+    }
+  }
+  for (const s of Object.values(schedules)) {
+    if (!s.enabled) continue;
+    for (const at of projectOccurrences(s.trigger, projectFrom, end, nextFireAt[s.id])) {
+      entries.push({
+        source: 'schedule',
+        subjectId: s.id,
+        subjectName: s.name,
         kind: 'planned',
         at,
       });
@@ -258,4 +350,26 @@ export function isSameDay(a: number, b: number): boolean {
 /// How many shifts land on that day.
 export function dayLoad(day: CalendarDay): number {
   return day.entries.length;
+}
+
+/// The one entry a subject's next occurrence corresponds to, if it is on this
+/// grid at all — how the up-next strip finds the block it is talking about, so
+/// pointing at a chip can ring the block it names.
+export function entryKey(entry: CalendarEntry): string {
+  return `${entry.source}:${entry.subjectId}:${entry.kind}:${entry.orchestrationId ?? entry.at}`;
+}
+
+/// True when this block is the next occurrence of `subjectId` — the projected
+/// one the up-next strip is counting down to.
+export function isNextUp(
+  entry: CalendarEntry,
+  next: { source: string; id: string; at: number } | null,
+): boolean {
+  return (
+    !!next &&
+    entry.kind === 'planned' &&
+    entry.source === next.source &&
+    entry.subjectId === next.id &&
+    entry.at === next.at
+  );
 }

@@ -225,6 +225,67 @@ describe('OrchestratorImpl dispatch', () => {
     expect(o.completedAt).toBeGreaterThan(0);
   });
 
+  it('rejectItem settles one paused item and leaves the rest of the batch alone', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(2),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+
+    // run-1 parks → the slot frees → run-2 pumps. One paused, one running.
+    await h.transition('run-1', { kind: 'paused', nextStepId: 's2', reason: 'preStep' });
+    let o = h.engine.get(id)!;
+    const paused = o.items.find((i) => i.status === 'paused')!;
+
+    expect(h.engine.rejectItem({ id, candidateId: paused.candidate.id })).toMatchObject({
+      ok: true,
+    });
+    o = h.engine.get(id)!;
+    const settled = o.items.find((i) => i.candidate.id === paused.candidate.id)!;
+    expect(settled.status).toBe('cancelled');
+    expect(settled.note).toBe('Rejected.');
+    expect(settled.finishedAt).toBeGreaterThan(0);
+    // The running item is untouched, so the batch stays open.
+    expect(o.items.some((i) => i.status === 'running')).toBe(true);
+    expect(o.completedAt).toBeUndefined();
+  });
+
+  it('rejectItem completes the batch when it settles the last open item', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+    await h.transition('run-1', { kind: 'paused', nextStepId: 's2', reason: 'failure' });
+
+    const o = h.engine.get(id)!;
+    h.engine.rejectItem({ id, candidateId: o.items[0].candidate.id });
+    expect(h.engine.get(id)!.completedAt).toBeGreaterThan(0);
+  });
+
+  it('rejectItem refuses work that is not paused', async () => {
+    const h = makeHarness();
+    const res = await h.engine.startBatch({
+      title: 'b',
+      projectPath: '/proj',
+      maxConcurrent: 1,
+      items: items(1),
+    });
+    const id = (res as { orchestrationId: string }).orchestrationId;
+    const o = h.engine.get(id)!;
+    // Still running — rejecting it here would orphan a live child run.
+    expect(h.engine.rejectItem({ id, candidateId: o.items[0].candidate.id })).toMatchObject({
+      ok: false,
+    });
+    expect(h.engine.get(id)!.items[0].status).toBe('running');
+  });
+
   it('a paused item frees its slot, pumps the next, then resumes + finishes', async () => {
     const h = makeHarness();
     const res = await h.engine.startBatch({

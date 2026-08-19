@@ -38,6 +38,7 @@ import { OllamaChatMessage } from './ollama';
 import {
   buildOllamaToolSystemPrompt,
   modelSupportsTools,
+  resolveNativeTools,
   runOllamaToolLoop,
 } from './ollamaTools';
 import { resolveSymlinkWritableRoots } from './workspace';
@@ -837,8 +838,16 @@ export class ReviewerManager {
     // Rebound reviewer is read-only by design — it inspects the
     // implementer's claims, never mutates the working tree.
     const reviewerTools: ReadonlySet<string> = new Set(['read_file', 'list_dir', 'grep']);
+    // Prompt and wire must agree on the tool protocol — see
+    // resolveNativeTools. Teaching a text format while the model's template
+    // is in native tool mode corrupts its output.
+    const nativeTools = toolsEnabled
+      ? await resolveNativeTools(model, reviewerTools)
+      : undefined;
     const systemPrompt = toolsEnabled
-      ? `${personaSystem}\n\n${buildOllamaToolSystemPrompt(args.cwd, reviewerTools)}`
+      ? `${personaSystem}\n\n${buildOllamaToolSystemPrompt(args.cwd, reviewerTools, {
+          nativeTools: !!nativeTools,
+        })}`
       : personaSystem;
 
     // Reviewer transcript stays local to this call — we don't persist
@@ -887,6 +896,7 @@ export class ReviewerManager {
         // actually needed.
         nudgeOnNarration: false,
         enabledTools: reviewerTools,
+        nativeTools,
       },
       (ev) => {
         if (ev.type === 'assistantDelta') {
