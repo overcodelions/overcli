@@ -72,6 +72,7 @@ import { Markdown } from "../Markdown";
 import { UserBubble } from "../UserBubble";
 import { FlowMonogram } from "../flows/FlowMonogram";
 import { FlowRunPane } from "../flows/FlowRunPane";
+import { deleteFlowRunWithDirtyGuard } from "../flows/deleteRun";
 import { WorkerErrandComposer } from "./WorkerDesk";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
@@ -2597,6 +2598,30 @@ function PlanItemRow({
       });
   };
 
+  // Rejecting a paused run is the decline half of the choice its pause
+  // button offers — the run goes first, through the same dirty-worktree
+  // confirm every other delete uses, so declining THAT prompt leaves the
+  // item exactly as it was. Only once the run and its worktree are gone
+  // does the item settle to rejected, which is what writes the journal
+  // entry that keeps the idea from coming back.
+  const removeRun = useFlowsStore((s) => s.removeRun);
+  const [confirmingReject, setConfirmingReject] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const reject = async () => {
+    if (!item.runId || rejecting) return;
+    setRejecting(true);
+    const res = await deleteFlowRunWithDirtyGuard(item.runId);
+    if (res.deleted) {
+      removeRun(item.runId);
+      await window.overcli.invoke("orchestrator:rejectItem", {
+        id: orchestration.id,
+        candidateId: item.candidate.id,
+      });
+    }
+    setRejecting(false);
+    setConfirmingReject(false);
+  };
+
   return (
     <div>
       <div className="flex items-baseline gap-2 text-[11px]">
@@ -2605,7 +2630,10 @@ function PlanItemRow({
         >
           {PLAN_STATUS[item.status]?.text ?? item.status}
         </span>
-        {item.runId ? (
+        {/* A door only while there is a room: a rejected item keeps its
+            runId for the record, but the run behind it is deleted, and a
+            click that opens nothing reads as broken. */}
+        {run ? (
           <button
             onClick={openRun}
             title="Open the run"
@@ -2623,7 +2651,7 @@ function PlanItemRow({
             — {item.note}
           </span>
         )}
-        {pause && (
+        {pause && !confirmingReject && (
           <button
             onClick={resume}
             disabled={inFlight}
@@ -2633,7 +2661,50 @@ function PlanItemRow({
             {inFlight ? "resuming…" : PAUSE_ACTION[pause.reason]}
           </button>
         )}
+        {/* The decline half of the pause's choice. Confirms in place because
+            it takes out a real run and a real worktree; the message says the
+            part that isn't obvious — a rejection is remembered. */}
+        {pause &&
+          item.runId &&
+          (confirmingReject ? (
+            <span className="flex shrink-0 items-center gap-1.5">
+              <span className="text-[10px] text-ink-muted">
+                Deletes the run and its worktree. The worker won&apos;t
+                propose it again.
+              </span>
+              <button
+                onClick={() => void reject()}
+                disabled={rejecting}
+                className="shrink-0 rounded bg-red-500/80 px-1.5 py-[1px] text-[10px] text-white disabled:opacity-50 focus:outline-none"
+              >
+                {rejecting ? "rejecting…" : "Reject"}
+              </button>
+              <button
+                onClick={() => setConfirmingReject(false)}
+                className="shrink-0 text-[10px] text-ink-faint hover:text-ink focus:outline-none"
+              >
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              onClick={() => setConfirmingReject(true)}
+              disabled={inFlight}
+              title="Turn this work down — deletes the run and drops its worktree, and the rejection is journaled so it stays gone"
+              className="shrink-0 rounded border border-red-500/40 px-1.5 py-[1px] text-[10px] text-red-500 hover:bg-red-500/10 focus:outline-none disabled:opacity-50 dark:text-red-400"
+            >
+              reject
+            </button>
+          ))}
       </div>
+      {/* Where the run is inside its flow — the run pane's pipeline at desk
+          density. "running" on a seven-step flow says almost nothing; step
+          five of seven with the live one named says how far it got and what
+          is left, and when it pauses, exactly where it stopped. */}
+      {run &&
+        (run.state.kind === "running" || run.state.kind === "paused") && (
+          <StepStrip run={run} onOpen={openRun} />
+        )}
       {/* What the work was FOR, every file of it, opening in the preview pane
           the same way any other markdown in the app does. These are the filed
           copies on disk, so they outlive the run that made them. */}

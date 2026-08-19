@@ -1808,6 +1808,15 @@ export interface IPCInvokeMap {
     id: UUID;
     approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
   }) => { ok: true; queued: number } | { ok: false; error: string };
+  /// Reject ONE paused item — the per-item form of the decline that
+  /// approveBatch applies to unpicked proposals. Settles the item to
+  /// `cancelled`, which is what journals the rejection on a worker-origin
+  /// batch and feeds the demotion streak. The child run is the CALLER's to
+  /// delete first (via `flows:deleteRun`), so the dirty-worktree confirm
+  /// stays in one place and a decline there leaves the item untouched.
+  'orchestrator:rejectItem': (args: { id: UUID; candidateId: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
 
   // ---- Schedules --------------------------------------------------------
   /// Every schedule, newest first, each with its computed next fire time.

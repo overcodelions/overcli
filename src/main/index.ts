@@ -1261,6 +1261,11 @@ function registerIpc(): void {
       ? orchestrator.approveBatch(args)
       : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
+  ipcMain.handle('orchestrator:rejectItem', (_e, args) =>
+    orchestrator
+      ? orchestrator.rejectItem(args)
+      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+  );
   ipcMain.handle('orchestrator:delete', (_e, args) =>
     orchestrator
       ? orchestrator.delete(args)
