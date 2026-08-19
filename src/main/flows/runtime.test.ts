@@ -22,6 +22,9 @@ import {
   rebindRunToLocalProject,
   resolveStepEffect,
   workerPromptWritesToPersistentRoot,
+  canSynthesizeDiffFromTree,
+  treeChanged,
+  ollamaConvNeedsReset,
 } from './runtime';
 
 describe('rebindRunToLocalProject', () => {
@@ -538,5 +541,86 @@ describe('buildRetryFeedbackBlock', () => {
     expect(block).not.toContain('input "');
     // Still tells the implementer not to start from scratch.
     expect(block).toContain('Do NOT start over');
+  });
+});
+
+describe('canSynthesizeDiffFromTree', () => {
+  // A local diff step does its work with edit_file, so the change is already
+  // on disk when it writes its closing message. gemma4 routinely finishes the
+  // edits and then just stops, with no <output name="diff"> wrapper — and
+  // failing there discarded several minutes of correct work over a missing tag.
+  const base = { hasOutputBlock: false, kind: 'diff', backend: 'ollama' as const };
+
+  it('rescues a local diff step that made its edits but skipped the wrapper', () => {
+    expect(canSynthesizeDiffFromTree(base)).toBe(true);
+  });
+
+  it('leaves a step that DID emit the wrapper on the normal path', () => {
+    expect(canSynthesizeDiffFromTree({ ...base, hasOutputBlock: true })).toBe(false);
+  });
+
+  it('does not rescue non-diff artifacts — prose cannot be read off the tree', () => {
+    expect(canSynthesizeDiffFromTree({ ...base, kind: 'markdown' })).toBe(false);
+  });
+
+  // For a cloud backend a missing <output> more often means the step derailed
+  // partway, leaving partial edits — promoting that to success hides a real
+  // failure.
+  it('keeps the strict contract for cloud backends', () => {
+    for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
+      expect(canSynthesizeDiffFromTree({ ...base, backend })).toBe(false);
+    }
+  });
+});
+
+describe('treeChanged', () => {
+  it('treats a real increment as work worth rescuing', () => {
+    expect(treeChanged('diff --git a/x b/x\n+added\n')).toBe(true);
+  });
+
+  // No wrapper AND no edits means the step genuinely failed: there is nothing
+  // to rescue, and passing it on would hand the next step an empty diff.
+  it('does not rescue a step that touched nothing', () => {
+    expect(treeChanged('')).toBe(false);
+    expect(treeChanged('   \n  ')).toBe(false);
+    expect(treeChanged(null)).toBe(false);
+  });
+});
+
+describe('ollamaConvNeedsReset', () => {
+  // Ollama replays the whole transcript every round, so a conversation
+  // shared across steps carries a finished step's <output name="…">
+  // contract into the next one. Observed with gemma4:26b: a test step
+  // (output test_report.md) reading the build step's prompt (output diff)
+  // reasoned itself to a standstill — "I can't have both" — and emitted
+  // neither. It was right; we had handed it two contradictory contracts.
+  it('resets when the same participant moves to a new step', () => {
+    expect(
+      ollamaConvNeedsReset({ backend: 'ollama', openedFor: 'impl:build', wantedFor: 'impl:test' }),
+    ).toBe(true);
+  });
+
+  // A retry genuinely wants the failed attempt and the rejection feedback in
+  // context, and its contract has not changed.
+  it('keeps the conversation when the same step retries', () => {
+    expect(
+      ollamaConvNeedsReset({ backend: 'ollama', openedFor: 'impl:build', wantedFor: 'impl:build' }),
+    ).toBe(false);
+  });
+
+  // Cloud backends deliberately share one conv across steps — continuity and
+  // prompt-cache hits, neither of which a local model gets.
+  it('leaves cloud backends on the shared conversation', () => {
+    for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
+      expect(ollamaConvNeedsReset({ backend, openedFor: 'impl:build', wantedFor: 'impl:test' })).toBe(
+        false,
+      );
+    }
+  });
+
+  it('does not reset when there is no conversation to reset', () => {
+    expect(
+      ollamaConvNeedsReset({ backend: 'ollama', openedFor: undefined, wantedFor: 'impl:build' }),
+    ).toBe(false);
   });
 });
