@@ -5,6 +5,7 @@ import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 import {
   activityOnDay,
+  carriedOverTurns,
   deskTimeline,
   adjacentDeskDay,
   anyDeskLive,
@@ -518,6 +519,49 @@ describe('sidebarActivity', () => {
 
   it('shows nothing for a worker that has never worked', () => {
     expect(sidebarActivity([], NOW, 4)).toEqual([]);
+  });
+});
+
+describe('carriedOverTurns', () => {
+  const TODAY = startOfDay(new Date(2026, 7, 17, 15, 0).getTime());
+  const YESTERDAY = startOfDay(new Date(2026, 7, 16, 6, 0).getTime());
+  const turn = (id: string, at: number, proposed: number) =>
+    ({ orchestration: { id }, at, proposed } as unknown as WorkerActivity);
+  const ids = (items: WorkerActivity[]) => items.map((i) => i.orchestration.id);
+
+  it('carries an unanswered proposal forward onto today', () => {
+    // The case this exists for: a clean desk this morning, and yesterday's
+    // three parked candidates reachable only by guessing to press ‹.
+    const items = [turn('yday', YESTERDAY + 3_600_000, 3)];
+    expect(ids(carriedOverTurns(items, TODAY))).toEqual(['yday']);
+  });
+
+  it('leaves today’s own turns alone — they are already on the desk', () => {
+    const items = [turn('today', TODAY + 3_600_000, 2)];
+    expect(carriedOverTurns(items, TODAY)).toEqual([]);
+  });
+
+  it('ignores turns that owe you nothing', () => {
+    const items = [turn('done', YESTERDAY + 3_600_000, 0)];
+    expect(carriedOverTurns(items, TODAY)).toEqual([]);
+  });
+
+  it('is relative to the shown day, not to today', () => {
+    // Stepping back to yesterday must not re-offer you the turn sitting in
+    // the middle of the screen.
+    const items = [
+      turn('yday', YESTERDAY + 3_600_000, 1),
+      turn('thu', startOfDay(new Date(2026, 7, 13, 11, 0).getTime()), 2),
+    ];
+    expect(ids(carriedOverTurns(items, YESTERDAY))).toEqual(['thu']);
+  });
+
+  it('is newest first, so the tray names the one you might still recognise', () => {
+    const items = [
+      turn('thu', startOfDay(new Date(2026, 7, 13, 11, 0).getTime()), 1),
+      turn('yday', YESTERDAY + 3_600_000, 1),
+    ];
+    expect(ids(carriedOverTurns(items, TODAY))).toEqual(['yday', 'thu']);
   });
 });
 

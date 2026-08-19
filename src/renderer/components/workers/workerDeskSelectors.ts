@@ -529,6 +529,29 @@ export function adjacentDeskDay(days: DeskDay[], current: number, dir: -1 | 1): 
   return dir === -1 ? candidates[0].at : candidates[candidates.length - 1].at;
 }
 
+/// How many carried-over turns the desk lists before it stops naming them
+/// individually. A worker left unattended on an hourly cadence can park a
+/// fortnight of proposals; the strip is an in-tray, and an in-tray that is
+/// forty items tall is the pile again.
+export const CARRIED_OVER_SHOWN = 3;
+
+/// Turns from BEFORE the shown day that are still waiting on you, newest
+/// first.
+///
+/// The desk clears nightly, which is right for a transcript and wrong for a
+/// decision: a shift that parked three candidates at 6am yesterday is work
+/// that is still yours to do, and by this morning the only thing pointing at
+/// it was a back arrow you had no reason to press. Carrying it forward is
+/// what an in-tray does — the paper is off the desk, not out of the building.
+///
+/// Relative to `day` rather than to today, so stepping back a week doesn't
+/// re-offer you the turns that are sitting right there on the screen.
+export function carriedOverTurns(items: WorkerActivity[], day: number): WorkerActivity[] {
+  return items
+    .filter((item) => item.proposed > 0 && startOfDay(item.at) < day)
+    .sort((a, b) => b.at - a.at);
+}
+
 /// Which day the desk opens on: today, always. Landing on the last day that
 /// happened to have work would mean the desk shows a different date every time
 /// you open it, and "clean" would depend on what the worker did last week.

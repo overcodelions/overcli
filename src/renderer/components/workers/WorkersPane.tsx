@@ -57,7 +57,7 @@ import {
   type WorkerTrustLevel,
 } from "@shared/flows/worker";
 import { describeFundingBlock, fundingFor } from "@shared/flows/treasury";
-import { isSelectableFlow } from "@shared/flows/schema";
+import { isSelectableFlow, type FlowRun } from "@shared/flows/schema";
 import {
   describeTrigger,
   untilLabel,
@@ -78,7 +78,9 @@ import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
 import { FundsPane } from "./FundsPane";
 import {
+  CARRIED_OVER_SHOWN,
   adjacentDeskDay,
+  carriedOverTurns,
   describeActivity,
   orchestrationTask,
   deskDayLabel,
@@ -909,6 +911,10 @@ function WorkerRow({
       {tab === "desk" ? (
         <>
           <DeskDayBar day={day} days={days} onSet={setDay} />
+          {/* Outside the scroller on purpose: it is the one thing here that
+              must not scroll away, and it is about the desk rather than on
+              it. */}
+          <CarriedOver items={activity} day={day} onSet={setDay} />
           <div
             ref={scroller}
             className="min-h-0 flex-1 overflow-y-auto px-6 py-4"
@@ -2221,6 +2227,98 @@ function EmptyDesk({
   );
 }
 
+/// The in-tray: proposals from earlier days that are still yours to answer,
+/// carried onto whatever day the desk is showing.
+///
+/// Clearing the desk nightly is right for a transcript and wrong for a
+/// decision. A shift that parked three candidates yesterday morning left no
+/// trace on today at all — a clean desk, and the only route back to the thing
+/// waiting on you was guessing it was there and pressing ‹. Nothing expires
+/// here and nothing is decided for you; the work just stops being invisible.
+///
+/// Collapsed by default, because a tray belongs at the EDGE of the desk. One
+/// violet line is enough to be seen from across the room; opening it is the
+/// act of picking the paper up.
+function CarriedOver({
+  items,
+  day,
+  onSet,
+}: {
+  items: WorkerActivity[];
+  day: number;
+  onSet: (day: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const carried = useMemo(() => carriedOverTurns(items, day), [items, day]);
+  if (carried.length === 0) return null;
+
+  const proposals = carried.reduce((n, item) => n + item.proposed, 0);
+  const shown = carried.slice(0, CARRIED_OVER_SHOWN);
+  const rest = carried.length - shown.length;
+  const oldest = startOfDay(carried[carried.length - 1].at);
+  // Named by the newest turn, which is the one you are likeliest to still
+  // recognise; the day count says how far back the rest of it goes.
+  const dayCount = new Set(carried.map((item) => startOfDay(item.at))).size;
+
+  return (
+    <div className="shrink-0 px-6 pt-2">
+      <div className="rounded-lg border border-violet-400/40 bg-violet-500/10">
+        <button
+          onClick={() => setOpen(!open)}
+          className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-violet-500 focus:outline-none"
+        >
+          <span className="shrink-0 font-medium">
+            {proposals} {proposals === 1 ? "proposal" : "proposals"} carried over
+          </span>
+          <span className="truncate text-ink-muted">
+            from {deskDayLabel(startOfDay(carried[0].at))}
+            {dayCount > 1 &&
+              ` and ${dayCount - 1} earlier ${dayCount === 2 ? "day" : "days"}`}
+          </span>
+          <span className="ml-auto shrink-0">{open ? "▾" : "▸"}</span>
+        </button>
+        {open && (
+          <div className="space-y-2 px-3 pb-2.5">
+            {shown.map((item) => (
+              <div key={item.orchestration.id}>
+                <div className="flex items-center gap-2 text-[11px] text-ink-faint">
+                  <span className="truncate">
+                    {item.title} · {deskDayLabel(startOfDay(item.at))} ·{" "}
+                    {relativeTime(item.at)}
+                  </span>
+                  {/* The tray holds the decision, not the context. The
+                      planning prose, the items that already ran, the shift's
+                      own controls — those stay on the day they happened, and
+                      this is the way there. */}
+                  <button
+                    onClick={() => onSet(startOfDay(item.at))}
+                    className="shrink-0 text-ink-muted hover:text-ink hover:underline focus:outline-none"
+                  >
+                    open that day →
+                  </button>
+                </div>
+                <WorkerPendingProposal orchestration={item.orchestration} />
+              </div>
+            ))}
+            {/* Never a silent cut. A tray that shows three of eleven and says
+                nothing reads as "three" — and the eight it dropped are the
+                ones that have been waiting longest. */}
+            {rest > 0 && (
+              <button
+                onClick={() => onSet(oldest)}
+                className="text-[11px] text-ink-muted hover:text-ink hover:underline focus:outline-none"
+              >
+                {rest} older {rest === 1 ? "turn" : "turns"} still waiting —
+                oldest is {deskDayLabel(oldest)} →
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /// The desk's date line. Steps only through days that HAVE work, so a worker
 /// idle for a fortnight is one click back, not fourteen.
 function DeskDayBar({
@@ -2737,6 +2835,71 @@ function PlanItemRow({
         </div>
       )}
     </div>
+  );
+}
+
+/// One line of step names with the live one lit — the same derivation the
+/// run pane's InlineStepPipeline uses (attempts say what finished; the run
+/// state names the step in flight, or the one waiting when paused), reduced
+/// to desk density. Steps a run never reached stay dim, a failed one goes
+/// red, and the whole line is a door to the run, where the full pipeline
+/// and its transcripts live. Hidden for one-step flows: a strip that reads
+/// "the only step is the current step" is the row's status word again.
+function StepStrip({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
+  const steps = run.flowSnapshot.steps;
+  if (steps.length < 2) return null;
+  const st = run.state;
+  const liveId =
+    st.kind === "running"
+      ? st.currentStepId
+      : st.kind === "paused"
+        ? st.nextStepId
+        : null;
+  return (
+    <button
+      onClick={onOpen}
+      title="Open the run"
+      className="mt-0.5 flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-[72px] text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+    >
+      {steps.map((step, idx) => {
+        const attempts = run.attempts.filter((a) => a.stepId === step.id);
+        const last = attempts[attempts.length - 1];
+        const done = last?.outcome === "success";
+        const failed =
+          !!last?.outcome &&
+          last.outcome !== "success" &&
+          last.outcome !== "question";
+        const live = step.id === liveId;
+        const cls = live
+          ? st.kind === "running"
+            ? "text-sky-500"
+            : "text-amber-600 dark:text-amber-300"
+          : failed
+            ? "text-red-400"
+            : done
+              ? "text-ink-faint"
+              : "text-ink-faint opacity-50";
+        return (
+          <span key={step.id} className="flex items-center gap-x-1.5">
+            {idx > 0 && (
+              <span aria-hidden className="text-[9px] text-ink-faint opacity-50">
+                →
+              </span>
+            )}
+            <span className={"whitespace-nowrap text-[10px] " + cls}>
+              {live && st.kind === "running" && (
+                <span
+                  aria-hidden
+                  className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 align-middle"
+                />
+              )}
+              {live && st.kind === "paused" ? "⏸ " : done ? "✓ " : ""}
+              {step.id}
+            </span>
+          </span>
+        );
+      })}
+    </button>
   );
 }
 
