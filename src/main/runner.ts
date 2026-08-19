@@ -455,6 +455,22 @@ export function isBrokerPromptToolMissingError(text: string): boolean {
   );
 }
 
+/// Whether this send would cancel a flow step that is still generating.
+///
+/// `sendOllama` aborts whatever is in flight so a new chat message supersedes
+/// the previous one — right for ordinary chat, disastrous during a flow. The
+/// run pane's composer says "your messages don't advance the flow", which
+/// reads as a promise that typing is harmless; instead it silently destroyed
+/// minutes of local generation (observed as a step dying at 0.0s with "Ollama
+/// error: aborted" the moment a message was sent). Flow-driven turns still
+/// supersede each other, and plain chat is unchanged.
+export function hijackWouldCancelFlowStep(
+  session: { inFlight?: unknown; flowStepInFlight?: boolean },
+  send: { flowStep?: boolean },
+): boolean {
+  return !!session.inFlight && !!session.flowStepInFlight && !send.flowStep;
+}
+
 interface SendArgs {
   conversationId: UUID;
   prompt: string;
@@ -464,6 +480,10 @@ interface SendArgs {
   permissionMode: PermissionMode;
   sessionId?: string;
   effortLevel?: EffortLevel;
+  /// Set by the flow runtime on step-driven sends. Distinguishes a step's
+  /// own turn from a user hijack typed into the run pane's composer, so the
+  /// hijack can be refused rather than aborting the step.
+  flowStep?: boolean;
   /// Per-send turbo override. Undefined defers to the global setting;
   /// flow steps set it explicitly from `step.turbo`.
   turbo?: boolean;
@@ -694,6 +714,9 @@ interface OllamaSession {
   /// StreamEvent timestamps after an app restart.
   messageTimestamps: number[];
   inFlight?: AbortController;
+  /// Whether the in-flight turn belongs to a flow step. Hijack sends refuse
+  /// to interrupt one — see `sendOllama`.
+  flowStepInFlight?: boolean;
   sessionId: string;
   lastModel: string;
   initEmitted: boolean;
@@ -2203,9 +2226,25 @@ export class RunnerManager {
     session.messages.push({ role: 'user', content: args.prompt });
     session.messageTimestamps.push(Date.now());
 
+    // Never let a hijack message kill a flow step mid-turn. The composer
+    // says "your messages don't advance the flow", which reads as a promise
+    // that typing is harmless — but this used to abort whatever was in
+    // flight, and on a local model that silently threw away minutes of
+    // generation. (Observed: a step died at 0.0s with "Ollama error:
+    // aborted" the instant a message was sent.) Refuse the send instead;
+    // the user still has Abort if they really mean to stop the step.
+    if (hijackWouldCancelFlowStep(session, args)) {
+      return {
+        ok: false,
+        error:
+          'That step is mid-turn. Your message would have cancelled it, so it was not sent — ' +
+          'wait for the step to finish, or press Abort to stop it first.',
+      };
+    }
     const controller = new AbortController();
     session.inFlight?.abort();
     session.inFlight = controller;
+    session.flowStepInFlight = !!args.flowStep;
 
     this.emit({ type: 'running', conversationId: convId, isRunning: true, activityLabel: 'Thinking…' });
 
@@ -2262,7 +2301,10 @@ export class RunnerManager {
           messageTimestamps: session!.messageTimestamps,
         });
       }
-      if (session!.inFlight === controller) session!.inFlight = undefined;
+      if (session!.inFlight === controller) {
+        session!.inFlight = undefined;
+        session!.flowStepInFlight = false;
+      }
 
       if (handsOffToReviewer) {
         void this.runOllamaReviewHook({

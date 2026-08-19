@@ -1348,6 +1348,7 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
+      flowStep: true,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -2228,6 +2229,8 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
+      // Runtime-driven, not a user hijack — see SendArgs.flowStep.
+      flowStep: true,
       turbo: step.turbo,
       reviewBackend: step.rebound?.critic.backend ?? null,
       reviewMode: step.rebound?.mode ?? null,
