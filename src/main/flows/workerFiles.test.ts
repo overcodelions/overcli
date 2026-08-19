@@ -15,6 +15,7 @@ vi.mock('electron', () => ({
 import {
   archiveWorkerFiles,
   clearWorkerFiles,
+  deleteDeliverable,
   deleteWorkerFile,
   deliverableFiles,
   ensureWorkerFilesDir,
@@ -494,5 +495,74 @@ describe('clearWorkerFiles', () => {
 
   it('succeeds for a worker that never wrote anything', () => {
     expect(clearWorkerFiles(WORKER)).toEqual({ ok: true, removed: 0 });
+  });
+});
+
+describe('deleteDeliverable', () => {
+  const JOB = {
+    workerId: WORKER,
+    task: 'shift' as const,
+    label: '[Shift 3] Scout',
+    title: 'Fix the payments parser',
+    at: AT,
+  };
+
+  it('takes the whole job folder and reports how many files were in it', () => {
+    fileWorkerDeliverable({
+      ...JOB,
+      artifacts: [
+        { name: 'raw_test_output.md', body: 'raw' },
+        { name: 'report.md', body: 'answer' },
+      ],
+    });
+    expect(deliverableFiles(JOB)).toHaveLength(2);
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 2 });
+
+    expect(deliverableFiles(JOB)).toEqual([]);
+    // The folder goes with its contents; an empty directory left behind would
+    // show up in the Files tab as a job that produced nothing.
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('takes a single-artifact job filed as one loose file', () => {
+    fileWorkerDeliverable({ ...JOB, artifacts: [{ name: 'report.md', body: 'answer' }] });
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 1 });
+
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('reaches into archive/, where compaction may already have moved the job', () => {
+    fileWorkerDeliverable({ ...JOB, artifacts: [{ name: 'report.md', body: 'answer' }] });
+    // Everything filed is older than the cutoff, so this archives the job.
+    expect(archiveWorkerFiles(WORKER, Date.now() + 60_000).moved).toBe(1);
+    expect(listWorkerFiles(WORKER)[0].name).toMatch(/^archive\//);
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 1 });
+
+    expect(listWorkerFiles(WORKER)).toEqual([]);
+  });
+
+  it('leaves the worker’s own notes and every other job alone', () => {
+    fileWorkerDeliverable({ ...JOB, artifacts: [{ name: 'report.md', body: 'answer' }] });
+    fileWorkerDeliverable({
+      ...JOB,
+      title: 'Something else entirely',
+      artifacts: [{ name: 'report.md', body: 'other' }],
+    });
+    // A baseline the worker keeps for itself between shifts.
+    fs.writeFileSync(path.join(ensureWorkerFilesDir(WORKER), 'baseline.json'), '{}', 'utf-8');
+
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 1 });
+
+    expect(listWorkerFiles(WORKER).map((f) => f.name).sort()).toEqual([
+      '2026-08-16-1431-shift-3-something-else-entirely.md',
+      'baseline.json',
+    ]);
+  });
+
+  it('is a no-op for a job that filed nothing', () => {
+    expect(deleteDeliverable(JOB)).toEqual({ removed: 0 });
   });
 });

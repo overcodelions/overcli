@@ -2099,7 +2099,12 @@ function WorkerTimeline({
         if (item.task === "shift") {
           return (
             <div key={id} ref={anchor}>
-              <ShiftRule item={item} open={open} onToggle={toggle} />
+              <ShiftRule
+                worker={worker}
+                item={item}
+                open={open}
+                onToggle={toggle}
+              />
             </div>
           );
         }
@@ -2326,10 +2331,12 @@ function WorkerReply({
 /// A shift is something the worker did unprompted, so it reads as a rule
 /// across the thread rather than a message — the way a chat marks a day break.
 function ShiftRule({
+  worker,
   item,
   open,
   onToggle,
 }: {
+  worker: Worker;
   item: WorkerActivity;
   open: boolean;
   onToggle: () => void;
@@ -2361,7 +2368,95 @@ function ShiftRule({
           {awaiting && (
             <WorkerPendingProposal orchestration={item.orchestration} />
           )}
+          <ShiftActions worker={worker} item={item} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/// Undo, for a shift. Two acts that share almost all their machinery and read
+/// very differently, so they get two buttons rather than one with a checkbox:
+///
+///   RE-RUN — the shift went wrong (the worker misread the window, a flow was
+///   broken, you fixed something it depended on) and you want THAT shift done
+///   again rather than a new one stacked on top. It rubs out what the shift
+///   did, hands its number back, and plans it afresh over the same window.
+///   Offered only on the most recent shift, because an older one cannot have
+///   its number back — main refuses it, and an enabled button that always
+///   errors is worse than an absent one.
+///
+///   DELETE — the shift should never have happened. Same removal, no re-run.
+///
+/// Both are permanent and both take out real files and flow runs, so delete
+/// confirms in place. Re-run does not: what it removes it immediately replaces,
+/// and it is the button you reach for when you already know the shift was wrong.
+function ShiftActions({
+  worker,
+  item,
+}: {
+  worker: Worker;
+  item: WorkerActivity;
+}) {
+  const deleteActivity = useWorkersStore((s) => s.deleteActivity);
+  const redoShift = useWorkersStore((s) => s.redoShift);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState<"redo" | "delete" | null>(null);
+
+  // `[Shift 7]` against the worker's running count — the same test main makes.
+  // Kept in sync by construction: both read the number off the ledger title.
+  const number = /^Shift\s+(\d+)$/.exec(item.title)?.[1];
+  const isLatest = !!number && Number(number) === (worker.shiftCount ?? 0);
+  const live = item.running > 0;
+
+  const run = async (which: "redo" | "delete") => {
+    setBusy(which);
+    if (which === "redo") await redoShift(worker.id, item.orchestration.id);
+    else await deleteActivity(worker.id, item.orchestration.id);
+    setBusy(null);
+    setConfirming(false);
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-3 border-t border-card-strong pt-2">
+      {isLatest && (
+        <button
+          onClick={() => void run("redo")}
+          disabled={!!busy}
+          className="text-[11px] text-ink-faint hover:text-accent disabled:opacity-50 focus:outline-none"
+        >
+          {busy === "redo" ? "Re-running\u2026" : "Re-run this shift"}
+        </button>
+      )}
+      {confirming ? (
+        <span className="flex items-center gap-2">
+          <span className="text-[11px] text-ink-muted">
+            Deletes this shift{live ? ", stops the work still running," : ","}{" "}
+            its flow runs, the files it filed, and its journal entries.
+            {isLatest ? " Shift " + number + " will be given back." : ""}
+          </span>
+          <button
+            onClick={() => void run("delete")}
+            disabled={!!busy}
+            className="rounded bg-red-500/80 px-2 py-0.5 text-[11px] text-white disabled:opacity-50"
+          >
+            {busy === "delete" ? "Deleting\u2026" : "Delete"}
+          </button>
+          <button
+            onClick={() => setConfirming(false)}
+            className="text-[11px] text-ink-faint hover:text-ink"
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          onClick={() => setConfirming(true)}
+          disabled={!!busy}
+          className="text-[11px] text-ink-faint hover:text-red-400 disabled:opacity-50 focus:outline-none"
+        >
+          Delete this shift
+        </button>
       )}
     </div>
   );

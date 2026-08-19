@@ -501,6 +501,70 @@ export function deleteWorkerFile(
   }
 }
 
+/// Un-file ONE job — the on-disk copies of a single finished item, addressed
+/// by the same four facts that filed them (see `deliverableFiles`, which this
+/// is the destructive twin of).
+///
+/// Looks in `archive/` as well as at the top level, because compaction may
+/// already have moved the job: a delete that only swept the top level would
+/// report success and leave the output sitting one directory down, which is
+/// the one outcome worse than refusing.
+///
+/// Only the job is removed. Whatever the worker wrote for ITSELF — baselines,
+/// tallies, notes for its next shift — is not named by the deliverable scheme
+/// and is deliberately left alone: re-running a shift should let it read back
+/// what it knew, not amnesia.
+export function deleteDeliverable(args: {
+  workerId: string;
+  task: 'shift' | 'errand';
+  label: string;
+  title: string;
+  at: number;
+}): { removed: number } {
+  const root = workerFilesDir(args.workerId);
+  let removed = 0;
+  for (const relRoot of ['', WORKER_ARCHIVE_DIR]) {
+    const base = relRoot ? path.join(root, relRoot) : root;
+    const stem = existingJobStem(base, args);
+    if (!stem) continue;
+    try {
+      const folder = path.join(base, stem);
+      if (fs.existsSync(folder) && fs.statSync(folder).isDirectory()) {
+        removed += countFilesUnder(folder);
+        fs.rmSync(folder, { recursive: true, force: true });
+        continue;
+      }
+      // A single-artifact run is one loose file whose extension came from the
+      // artifact's own name — same wildcard the reader uses.
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        if (!entry.isFile()) continue;
+        if (entry.name !== stem && !entry.name.startsWith(`${stem}.`)) continue;
+        fs.rmSync(path.join(base, entry.name), { force: true });
+        removed += 1;
+      }
+    } catch (err) {
+      log('error', 'worker-files', `could not un-file ${stem}`, err);
+    }
+  }
+  return { removed };
+}
+
+/// How many files a job folder holds, so a delete can report "4 files" rather
+/// than "1 folder". Recursive: a run that wrote a subdirectory still filed
+/// every file in it.
+function countFilesUnder(dir: string): number {
+  let count = 0;
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) count += countFilesUnder(path.join(dir, entry.name));
+      else if (entry.isFile()) count += 1;
+    }
+  } catch {
+    // Raced with a delete; whatever we could not read is already gone.
+  }
+  return count;
+}
+
 /// Move filed deliverables older than `cutoffAt` into `archive/`. Nothing is
 /// deleted, and nothing the worker wrote itself is touched.
 export function archiveWorkerFiles(workerId: string, cutoffAt: number): { moved: number } {

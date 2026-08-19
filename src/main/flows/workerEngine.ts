@@ -92,6 +92,7 @@ import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
 import {
   archiveWorkerFiles,
   clearWorkerFiles,
+  deleteDeliverable,
   fileWorkerDeliverable,
   workerFilesDir,
 } from './workerFiles';
@@ -218,6 +219,11 @@ export interface WorkerEngineDeps {
   /// as one dependency lets the worker reset stay the single owner of what
   /// "start fresh" means without coupling this engine to either store.
   clearActivity?: (workerId: UUID) => { shifts: number; errands: number; runs: number };
+  /// The same removal for ONE batch: forget the ledger and delete the flow
+  /// runs it launched. Split from `clearActivity` rather than generalised
+  /// because the whole-worker reset counts shifts and errands for its
+  /// confirmation line and this one already knows which it removed.
+  deleteActivity?: (workerId: UUID, orchestrationId: UUID) => { runs: number };
   /// One read-only model turn used when a participant asks its standing
   /// Worker for a decision. Main owns backend selection and RunnerManager;
   /// the engine owns persona, journal context, and answer/escalation policy.
@@ -594,6 +600,131 @@ export class WorkerEngine {
     this.persistAndEmit(w);
     this.arm();
     return { ok: true, entries, files, ...activity };
+  }
+
+  /// Rub out ONE turn — a shift or an errand — and everything it left behind:
+  /// its ledger, the flow runs it launched, the output those runs filed, and
+  /// its journal entries. The whole-worker version of this is `resetMemory`;
+  /// this is the same act scoped to a single line of history, for the case
+  /// where one shift went wrong and the other fifty were fine.
+  ///
+  /// When the turn is the worker's MOST RECENT shift, shift numbering is
+  /// handed back too, so the next shift is #N again rather than #N+1 with a
+  /// hole where N used to be. `lastPlannedAt` rewinds with it: that anchor is
+  /// what the prompt states as "your previous shift ran at", and leaving it on
+  /// a shift that no longer exists would make the redo skip the window the
+  /// deleted shift was supposed to cover.
+  ///
+  /// CADENCE is deliberately untouched. Deleting history is not a statement
+  /// about the clock, and rewinding `lastShiftAt` would make the worker fire
+  /// again by itself the moment the delete landed — a surprise unattended run
+  /// as the result of a cleanup. Re-running is `redoShift`, which is a click.
+  forgetActivity(
+    id: UUID,
+    orchestrationId: UUID,
+  ):
+    | { ok: true; task: 'shift' | 'errand'; label: string; entries: number; files: number; runs: number; shiftGivenBack: number | null }
+    | { ok: false; error: string } {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    if (this.firing.has(id)) {
+      // A planning turn in flight is about to journal against the shift number
+      // this may be handing back — it would write the old turn into the new one.
+      return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then try again.' };
+    }
+    const o = this.deps.parker.get(orchestrationId);
+    if (!o) return { ok: false, error: 'That turn is already gone.' };
+    if (o.origin?.kind !== 'worker' || o.origin.workerId !== id) {
+      return { ok: false, error: 'That turn belongs to a different worker.' };
+    }
+    const task = o.origin.task === 'errand' ? 'errand' : 'shift';
+    const number = shiftNumberOf(o.title);
+    const label = task === 'shift' && number !== null ? `Shift ${number}` : 'that errand';
+
+    // Journal first, for the same reason `resetMemory` does it first: the
+    // rewrite either lands or throws having changed nothing, while deleting
+    // files and runs is irreversible. A failed delete must not have already
+    // destroyed the output it is about to report as untouched.
+    let entries = 0;
+    try {
+      entries = this.journal.remove(id, {
+        orchestrationId,
+        // A shift whose planning turn FAILED journals a note with no batch id
+        // on it (there was no batch to stamp). It shares the number, so the
+        // redo's own note would be swallowed by idempotent append.
+        ids: number === null ? [] : [`shift-${id}-${number}`],
+      });
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // The filed copies, addressed exactly as the filing addressed them. Only
+    // finished items filed anything.
+    let files = 0;
+    for (const item of o.items) {
+      if (item.status !== 'done' || !item.finishedAt) continue;
+      files += deleteDeliverable({
+        workerId: id,
+        task,
+        label: o.title,
+        title: item.candidate.title,
+        at: item.finishedAt,
+      }).removed;
+    }
+
+    const { runs } = this.deps.deleteActivity?.(id, orchestrationId) ?? { runs: 0 };
+
+    // Hand the number back only if this WAS the last shift. Rewinding a hole
+    // in the middle would renumber nothing and collide with everything after.
+    let shiftGivenBack: number | null = null;
+    if (task === 'shift' && number !== null && (w.shiftCount ?? 0) === number) {
+      shiftGivenBack = number;
+      w.shiftCount = number > 1 ? number - 1 : undefined;
+      // `load` is newest-first and the deleted entries are already gone, so
+      // the first shift note left is the one this shift followed.
+      const previous = this.journal.load(id).find((e) => e.kind === 'shift' && !!e.orchestrationId);
+      w.lastPlannedAt = previous?.at;
+    }
+    this.persistAndEmit(w);
+    return { ok: true, task, label, entries, files, runs, shiftGivenBack };
+  }
+
+  /// Work the shift again from the state it started in: forget what it did,
+  /// give the number back, then fire a fresh planning turn that lands as the
+  /// same shift number over the same window.
+  ///
+  /// Only the LATEST shift. Re-running an older one could not give its number
+  /// back (see `forgetActivity`), so it would delete Shift 3 and produce
+  /// Shift 12 — which is not a re-run, it is a delete and a new shift wearing
+  /// a confusing label. Refusing says so instead of quietly doing that.
+  async redoShift(
+    id: UUID,
+    orchestrationId: UUID,
+  ): Promise<{ ok: true; shift: number } | { ok: false; error: string }> {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    const o = this.deps.parker.get(orchestrationId);
+    if (!o) return { ok: false, error: 'That shift is already gone.' };
+    if (o.origin?.kind !== 'worker' || o.origin.workerId !== id) {
+      return { ok: false, error: 'That shift belongs to a different worker.' };
+    }
+    if (o.origin.task === 'errand') {
+      return { ok: false, error: 'That was an errand — send it again rather than re-running it.' };
+    }
+    const number = shiftNumberOf(o.title);
+    if (number === null || (w.shiftCount ?? 0) !== number) {
+      return {
+        ok: false,
+        error: 'Only the most recent shift can be re-run — an older one cannot have its number back.',
+      };
+    }
+    const forgotten = this.forgetActivity(id, orchestrationId);
+    if (!forgotten.ok) return forgotten;
+    // Manual, so the re-run does not stamp cadence: the clock has already had
+    // this shift, and the point here is to do the work again, not to move on.
+    const res = await this.fire(this.workers.get(id) ?? w, { manual: true });
+    if (!res.ok) return res;
+    return { ok: true, shift: number };
   }
 
   /// Archive the filed work this worker has stopped needing, once a week,
@@ -1789,6 +1920,17 @@ function taggedBody(text: string, tag: string): string | null {
 function monthStart(now: number): number {
   const d = new Date(now);
   return new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+}
+
+/// The shift number out of a batch's ledger title (`[Shift 3] Warden`), or
+/// null for an errand or anything filed before the scheme existed. This is
+/// the only place the number survives on the batch itself — the worker record
+/// holds the running count, not which count each batch was.
+function shiftNumberOf(title: string): number | null {
+  const found = /^\[Shift\s+(\d+)\]/i.exec(title);
+  if (!found) return null;
+  const n = Number(found[1]);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 function dayKey(now: number): string {

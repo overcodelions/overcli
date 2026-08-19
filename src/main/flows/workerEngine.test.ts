@@ -57,6 +57,7 @@ function makeHarness(
     pool?: number;
     generatedFlow?: WorkerEngineDeps['generatedFlow'];
     clearActivity?: WorkerEngineDeps['clearActivity'];
+    deleteActivity?: WorkerEngineDeps['deleteActivity'];
     journalClear?: (workerId: string) => number;
     supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
   } = {},
@@ -172,6 +173,7 @@ function makeHarness(
     },
     generatedFlow: opts.generatedFlow,
     clearActivity: opts.clearActivity,
+    deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
   });
 
@@ -1589,3 +1591,137 @@ describe('WorkerEngine delegation', () => {
   });
 });
 
+describe('WorkerEngine re-running and deleting one shift', () => {
+  /// A worker that has worked one shift, with the batch registered so the
+  /// engine can look it up the way the desk's row does.
+  async function afterOneShift(opts: { deleted?: string[]; runs?: number } = {}) {
+    const deleted = opts.deleted ?? [];
+    const h = makeHarness({
+      seed: [seedWorker()],
+      deleteActivity: (_workerId, orchestrationId) => {
+        deleted.push(orchestrationId);
+        return { runs: opts.runs ?? 2 };
+      },
+    });
+    h.orchestrations.set('orch-1', workerBatch({ title: '[Shift 1] Scout' }));
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    return { h, deleted };
+  }
+
+  it('gives the shift number and the data window back when the latest shift is deleted', async () => {
+    const { h, deleted } = await afterOneShift();
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
+
+    const res = h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(res).toMatchObject({ ok: true, task: 'shift', label: 'Shift 1', runs: 2 });
+    expect(deleted).toEqual(['orch-1']);
+    // Its journal entries are gone — including the shift note, whose id is
+    // built from the number the redo is about to reuse.
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-1')).toBe(false);
+    expect(h.journal.some((e) => e.id === 'shift-worker-1-1')).toBe(false);
+    // Memory this shift did not write is not the delete's to take: the weekly
+    // compaction note is a fact about the filing cabinet, not about the shift.
+    expect(h.journal.some((e) => e.kind === 'compacted')).toBe(true);
+    const w = h.engine.get('worker-1')!;
+    expect(w.shiftCount).toBeUndefined();
+    expect(w.lastPlannedAt).toBeUndefined();
+  });
+
+  it('leaves the clock alone, so a delete cannot trigger an unattended shift', async () => {
+    const { h } = await afterOneShift();
+    const before = h.engine.get('worker-1')!.lastShiftAt;
+
+    h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(h.engine.get('worker-1')!.lastShiftAt).toBe(before);
+  });
+
+  it('re-runs the latest shift as the SAME number over the same window', async () => {
+    const { h } = await afterOneShift();
+    const first = h.parked.length;
+    h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 1] Scout' }));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+
+    const res = await h.engine.redoShift('worker-1', 'orch-1');
+
+    expect(res).toEqual({ ok: true, shift: 1 });
+    expect(h.parked).toHaveLength(first + 1);
+    expect(h.parked[first].prompt).toContain('This is your shift #1.');
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
+    // The re-run's own shift note landed: the deleted one shared its id, and
+    // an append that silently deduped against it would leave no record at all.
+    expect(
+      h.journal.filter((e) => e.kind === 'shift' && e.orchestrationId === 'orch-2'),
+    ).toHaveLength(1);
+  });
+
+  it('refuses to re-run anything but the most recent shift', async () => {
+    const { h, deleted } = await afterOneShift();
+    // A second shift makes the first one history — its number cannot come back.
+    h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 2] Scout' }));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(2);
+
+    const res = await h.engine.redoShift('worker-1', 'orch-1');
+
+    expect(res).toEqual({
+      ok: false,
+      error: 'Only the most recent shift can be re-run — an older one cannot have its number back.',
+    });
+    // Nothing was removed on the way to refusing.
+    expect(deleted).toEqual([]);
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-1')).toBe(true);
+  });
+
+  it('keeps numbering when an older shift is deleted, and only forgets that one', async () => {
+    const { h } = await afterOneShift();
+    h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 2] Scout' }));
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    await h.advanceTo(local(2026, 3, 3, 9, 0));
+
+    const res = h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(res).toMatchObject({ ok: true, shiftGivenBack: null });
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(2);
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-1')).toBe(false);
+    expect(h.journal.some((e) => e.orchestrationId === 'orch-2')).toBe(true);
+  });
+
+  it('refuses a batch that belongs to somebody else', async () => {
+    const { h, deleted } = await afterOneShift();
+    h.orchestrations.set(
+      'orch-9',
+      workerBatch({
+        id: 'orch-9',
+        origin: { kind: 'worker', workerId: 'worker-2', workerName: 'Warden' },
+      }),
+    );
+
+    expect(h.engine.forgetActivity('worker-1', 'orch-9')).toEqual({
+      ok: false,
+      error: 'That turn belongs to a different worker.',
+    });
+    expect(deleted).toEqual([]);
+  });
+
+  it('deletes nothing when the journal rewrite fails', async () => {
+    const { h, deleted } = await afterOneShift();
+    const engine = h.engine as unknown as {
+      journal: { remove: (...args: unknown[]) => number };
+    };
+    engine.journal.remove = () => {
+      throw new Error('read-only file system');
+    };
+
+    expect(h.engine.forgetActivity('worker-1', 'orch-1')).toEqual({
+      ok: false,
+      error: 'read-only file system',
+    });
+    // The irreversible half never ran, so the same delete can be retried.
+    expect(deleted).toEqual([]);
+    expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
+  });
+});

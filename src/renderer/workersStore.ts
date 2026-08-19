@@ -174,6 +174,22 @@ interface WorkersActions {
     errands: number;
     runs: number;
   } | null>;
+  /// Rub out one turn — its ledger, runs, filed output and journal entries.
+  /// Resolves to what went, or null on failure (the error is on the store).
+  deleteActivity(
+    id: string,
+    orchestrationId: string,
+  ): Promise<{
+    task: 'shift' | 'errand';
+    label: string;
+    entries: number;
+    files: number;
+    runs: number;
+    shiftGivenBack: number | null;
+  } | null>;
+  /// Work the most recent shift again from the state it started in. Resolves
+  /// to the shift number that was re-run, or null on failure.
+  redoShift(id: string, orchestrationId: string): Promise<number | null>;
   /// This worker as a share file. Read on demand rather than held in state:
   /// it is a rendering of the worker plus its flows, and a copy kept here
   /// would go stale the moment either is edited.
@@ -640,6 +656,28 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   async loadJournal(id) {
     const entries = await window.overcli.invoke('workers:journal', { id });
     set((s) => ({ journals: { ...s.journals, [id]: entries } }));
+  },
+
+  async deleteActivity(id, orchestrationId) {
+    const res = await window.overcli.invoke('workers:deleteActivity', { id, orchestrationId });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    // The journal drawer is a snapshot taken when it was opened; entries this
+    // just removed would otherwise sit there until the next manual reload.
+    await get().loadJournal(id);
+    return res;
+  },
+
+  async redoShift(id, orchestrationId) {
+    const res = await window.overcli.invoke('workers:redoShift', { id, orchestrationId });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    await get().loadJournal(id);
+    return res.shift;
   },
 
   async resetMemory(id) {

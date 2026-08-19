@@ -1923,6 +1923,29 @@ export interface IPCInvokeMap {
   'workers:resetMemory': (args: { id: UUID }) =>
     | { ok: true; entries: number; files: number; shifts: number; errands: number; runs: number }
     | { ok: false; error: string };
+  /// Rub out ONE turn: its ledger, the flow runs it launched, the output they
+  /// filed, and its journal entries. If it was the worker's most recent shift
+  /// the number is handed back, so the next shift is that number again.
+  /// `shiftGivenBack` is null when it wasn't (an errand, or an older shift).
+  'workers:deleteActivity': (args: { id: UUID; orchestrationId: UUID }) =>
+    | {
+        ok: true;
+        task: 'shift' | 'errand';
+        /// What to call it in the confirmation — `Shift 7` / `that errand`.
+        label: string;
+        entries: number;
+        files: number;
+        runs: number;
+        shiftGivenBack: number | null;
+      }
+    | { ok: false; error: string };
+  /// Work the most recent shift again from the state it started in: delete
+  /// what it did, hand its number back, and plan it afresh over the same
+  /// window. Refuses anything but the latest shift — an older one cannot have
+  /// its number back, so re-running it would silently be a new shift instead.
+  'workers:redoShift': (args: { id: UUID; orchestrationId: UUID }) =>
+    | { ok: true; shift: number }
+    | { ok: false; error: string };
   /// The worker as a shareable YAML document: the JOB, with the flows it
   /// launches embedded whole, and none of the employment — no id, no trust,
   /// no project path, no history. See src/shared/flows/workerYaml.ts.

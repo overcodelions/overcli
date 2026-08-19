@@ -387,6 +387,26 @@ function registerIpc(): void {
       }
       return { shifts, errands, runs: runs.length };
     },
+    // The single-turn twin of `clearActivity`. Deleting the batch first is
+    // what stops anything still in flight — its terminal update would
+    // otherwise route to a ledger that no longer exists.
+    deleteActivity: (workerId, orchestrationId) => {
+      const batch = orchestrator?.get(orchestrationId) ?? null;
+      if (!batch || batch.origin?.kind !== 'worker' || batch.origin.workerId !== workerId) {
+        return { runs: 0 };
+      }
+      const runIds = batch.items.map((item) => item.runId).filter((id): id is string => !!id);
+      orchestrator?.delete({ id: orchestrationId });
+      let runs = 0;
+      for (const runId of runIds) {
+        const deleted = flowRuntime?.deleteRun({ runId, force: true });
+        if (deleted?.ok) {
+          emitToRenderer({ type: 'flowRunDeleted', runId });
+          runs += 1;
+        }
+      }
+      return { runs };
+    },
     // Triage path 3: the errand needs real investigation and no flow on the
     // worker's contract fits. Draft one, file it in the generated bucket (kept
     // out of the library's groups and every picker), and launch it through the
@@ -1410,6 +1430,16 @@ function registerIpc(): void {
   });
   ipcMain.handle('workers:journal', (_e, { id }) =>
     workerEngine ? workerEngine.journalFor(id) : [],
+  );
+  ipcMain.handle('workers:deleteActivity', (_e, { id, orchestrationId }) =>
+    workerEngine
+      ? workerEngine.forgetActivity(id, orchestrationId)
+      : ({ ok: false, error: 'Workers are not running.' } as const),
+  );
+  ipcMain.handle('workers:redoShift', (_e, { id, orchestrationId }) =>
+    workerEngine
+      ? workerEngine.redoShift(id, orchestrationId)
+      : ({ ok: false, error: 'Workers are not running.' } as const),
   );
   ipcMain.handle('workers:resetMemory', (_e, { id }) =>
     workerEngine
