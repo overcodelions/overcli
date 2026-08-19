@@ -70,7 +70,11 @@ function readAsset(
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) return { ok: false, error: `${ref} is not a regular file.` };
     if (stat.size > MAX_ASSET_BYTES) return { ok: false, error: `${ref} is too large to inline.` };
-    if (extensionOf(resolved) === 'css') {
+    const ext = extensionOf(resolved);
+    if (!(ext in MIME_BY_EXTENSION)) {
+      return { ok: false, error: `${ref} is not a previewable asset type.` };
+    }
+    if (ext === 'css') {
       return { ok: true, kind: 'css', text: readStylesheet(resolved, isReadable, 0, new Set()) };
     }
     return { ok: true, kind: 'data', dataUrl: toDataUrl(resolved) };
@@ -139,7 +143,7 @@ function readStylesheet(
     (match, ref: string, media: string) => {
       if (depth >= MAX_IMPORT_DEPTH || !isLocalRef(ref)) return match;
       const resolved = resolveRef(ref, cssDir, undefined, isReadable);
-      if (!resolved) return match;
+      if (!resolved || extensionOf(resolved) !== 'css') return match;
       try {
         const imported = readStylesheet(resolved, isReadable, depth + 1, seen);
         const condition = media.trim();
@@ -153,7 +157,7 @@ function readStylesheet(
   css = css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, _quote: string, ref: string) => {
     if (!isLocalRef(ref)) return match;
     const resolved = resolveRef(ref, cssDir, undefined, isReadable);
-    if (!resolved) return match;
+    if (!resolved || !(extensionOf(resolved) in MIME_BY_EXTENSION)) return match;
     try {
       const stat = fs.statSync(resolved);
       if (!stat.isFile() || stat.size > MAX_ASSET_BYTES) return match;

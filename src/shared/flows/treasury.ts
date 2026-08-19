@@ -96,6 +96,9 @@ export function allocateTreasury(
   workers: FundableWorker[],
   spentByWorker: (workerId: string) => number,
   poolUSD: number,
+  /// Spend across EVERY id in the run log, fired workers included. Omitted
+  /// only by callers that have no wider figure; then the roster is the total.
+  totalSpentUSD?: number,
 ): TreasuryAllocation {
   const ordered = sortRoster(workers);
   const poolTotal = Math.max(0, poolUSD);
@@ -103,13 +106,15 @@ export function allocateTreasury(
   // Total spend counts EVERY worker, enabled or not. A worker paused halfway
   // through the month already took its money out of the pot; releasing its
   // reserve must not also refund what it burned.
-  let spentUSD = 0;
+  let rosterSpent = 0;
   const spend = new Map<string, number>();
   for (const w of ordered) {
     const s = Math.max(0, spentByWorker(w.id));
     spend.set(w.id, s);
-    spentUSD += s;
+    rosterSpent += s;
   }
+  const spentUSD =
+    totalSpentUSD === undefined ? rosterSpent : Math.max(0, totalSpentUSD);
   const remainingUSD = Math.max(0, poolTotal - spentUSD);
 
   let claimedAbove = 0;

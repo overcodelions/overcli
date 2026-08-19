@@ -297,6 +297,7 @@ async function applyRosterOrder(
             Object.values(workers),
             (wid) => fundingFor(s.allocation, wid)?.spentUSD ?? 0,
             s.treasury.monthlyUSD,
+            s.allocation.spentUSD,
           )
         : s.allocation;
     return { workers, allocation };

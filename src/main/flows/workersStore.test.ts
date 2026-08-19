@@ -82,4 +82,21 @@ describe('workersStore', () => {
 
     expect(loadAllWorkers()).toEqual([]);
   });
+
+  it('refuses an id that would escape the workers directory', () => {
+    // A compromised renderer calling workers:save with a traversal id would
+    // otherwise write, and then delete, an arbitrary path outside userData.
+    const escapee = path.join(userDataDir, 'evil.json');
+    expect(() => saveWorker(makeWorker({ id: '../evil' }))).toThrow(/Unsafe worker id/);
+    expect(fs.existsSync(escapee)).toBe(false);
+    // `deleteWorker` is best-effort and swallows the guard's throw — what
+    // matters is that the traversal delete never reaches `rmSync`.
+    const bystander = path.join(userDataDir, 'evil.json');
+    fs.writeFileSync(bystander, 'not mine to delete');
+    expect(() => deleteWorker('../evil')).not.toThrow();
+    expect(fs.existsSync(bystander)).toBe(true);
+    expect(() => saveWorker(makeWorker({ id: 'a/b' }))).toThrow(/Unsafe worker id/);
+    // A real id is a UUID, so the guard costs nothing legitimate.
+    expect(() => saveWorker(makeWorker({ id: '3f2a1c4e-0b7d-4f9a-8c21-5e6d7a8b9c01' }))).not.toThrow();
+  });
 });

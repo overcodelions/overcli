@@ -95,7 +95,7 @@ export function WorkersSidebar({
     () =>
       sortRoster(
         Object.values(workers).filter((w) =>
-          deskMatchesQuery(w, workerDeskRuns(runs, w.id), query),
+          query ? deskMatchesQuery(w, workerDeskRuns(runs, w.id), query) : true,
         ),
       ),
     [workers, query, runs],

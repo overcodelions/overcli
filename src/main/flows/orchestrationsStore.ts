@@ -12,11 +12,17 @@ import { log } from '../diagnostics';
 
 import type { Orchestration } from '../../shared/flows/orchestration';
 
+/// Worker batches are exempt from the residue sweep by design, so nothing
+/// else bounds this directory. Completed batches past this count are dropped
+/// at hydrate time — the worker journal keeps the durable history.
+const MAX_RETAINED_ORCHESTRATIONS = 600;
+
 function dir(): string {
   return path.join(app.getPath('userData'), 'orchestrations');
 }
 
 function pathFor(id: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error(`Unsafe orchestration id: ${id}`);
   return path.join(dir(), `${id}.json`);
 }
 
@@ -100,7 +106,19 @@ export function loadAllOrchestrations(): Orchestration[] {
       log('warn', 'orchestrations', `Skipping unreadable ${name}: ${String(err)}`);
     }
   }
-  return out.sort((a, b) => b.createdAt - a.createdAt);
+  out.sort((a, b) => b.createdAt - a.createdAt);
+  if (out.length <= MAX_RETAINED_ORCHESTRATIONS) return out;
+  const kept: Orchestration[] = [];
+  out.forEach((o, index) => {
+    // Never evict a batch still holding proposals or live items.
+    if (index < MAX_RETAINED_ORCHESTRATIONS || !o.completedAt) {
+      kept.push(o);
+      return;
+    }
+    deleteOrchestration(o.id);
+  });
+  log('info', 'orchestrations', `Pruned ${out.length - kept.length} completed batches`);
+  return kept;
 }
 
 export function deleteOrchestration(id: string): void {

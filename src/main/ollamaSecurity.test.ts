@@ -3,7 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const runInTerminal = vi.hoisted(() => vi.fn());
 vi.mock('./terminal', () => ({ runInTerminal }));
 
-import { buildFindings, updateOllama } from './ollamaSecurity';
+const mockNetworkInterfaces = vi.hoisted(() => vi.fn());
+vi.mock('node:os', () => ({ default: { networkInterfaces: mockNetworkInterfaces } }));
+
+const mockHttpGet = vi.hoisted(() => vi.fn());
+vi.mock('node:http', () => ({ default: { get: mockHttpGet } }));
+
+import { buildFindings, probeLanExposure, updateOllama } from './ollamaSecurity';
 
 const base = {
   env: {} as NodeJS.ProcessEnv,
@@ -78,6 +84,35 @@ describe('buildFindings', () => {
     });
     expect(external[0].fixId).toBeUndefined();
     expect(external[0].manualCommand).toBeTruthy();
+  });
+});
+
+describe('probeLanExposure', () => {
+  afterEach(() => {
+    mockNetworkInterfaces.mockReset();
+    mockHttpGet.mockReset();
+  });
+
+  it('probes an IPv6 address bare, not bracketed — a bracketed host never resolves', () => {
+    mockNetworkInterfaces.mockReturnValue({
+      en0: [{ family: 'IPv6', internal: false, address: '2001:db8::1', mac: '', netmask: '', cidr: null }],
+    });
+    const seenHosts: unknown[] = [];
+    mockHttpGet.mockImplementation((opts: { host: unknown }) => {
+      seenHosts.push(opts.host);
+      return { on: vi.fn() };
+    });
+    void probeLanExposure();
+    expect(seenHosts).toEqual(['2001:db8::1']);
+  });
+
+  it('skips link-local IPv6 addresses', () => {
+    mockNetworkInterfaces.mockReturnValue({
+      en0: [{ family: 'IPv6', internal: false, address: 'fe80::1', mac: '', netmask: '', cidr: null }],
+    });
+    mockHttpGet.mockImplementation(() => ({ on: vi.fn() }));
+    void probeLanExposure();
+    expect(mockHttpGet).not.toHaveBeenCalled();
   });
 });
 
