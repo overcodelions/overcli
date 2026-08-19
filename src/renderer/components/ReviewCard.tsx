@@ -12,11 +12,11 @@ export function ReviewCard({ info }: { info: ReviewInfo }) {
   return (
     // Indent the whole card so it visually nests under the primary
     // turn it's commenting on — easy to scan as a meta-comment vs.
-    // another primary bubble. The subtle background wash + rounded
-    // corners group everything (label, activity, thinking, verdict,
-    // raw) into one visible "review section" so it reads as a single
-    // sub-thread instead of a stack of loose elements.
-    <div className="flex flex-col gap-1.5 ml-6 rounded-xl bg-white/[0.02] p-3">
+    // another primary bubble. No wash or card chrome around it: the
+    // verdict below is already a full bubble, so a container here
+    // would read as a bubble inside a bubble. The indent, the ↩ label
+    // and the tint are what group the section.
+    <div className="flex flex-col gap-1.5 ml-6">
       <div
         className="text-[10px] uppercase tracking-wider font-medium flex items-center gap-1.5"
         style={{ color: tint }}
