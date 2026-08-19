@@ -139,12 +139,18 @@ export function WorkersPane() {
   // The Workers sidebar is the roster; this pane is the detail half. Landing
   // on an empty pane when a roster exists reads as a broken tab, so the first
   // worker stands in until the user picks one.
+  //
+  // Only while the desk is what's on screen, though. The calendar and the
+  // funds waterfall are about every worker at once and deliberately have no
+  // selection, and `selectWorker` means "show me this desk" — filling one in
+  // from here bounced the tab's own front page straight back to a desk.
   const selected = previewEmpty
     ? null
     : (selectedWorkerId && workers[selectedWorkerId]) || rows[0] || null;
   useEffect(() => {
+    if (view !== "worker") return;
     if (!selectedWorkerId && rows.length > 0) selectWorker(rows[0].id);
-  }, [rows, selectWorker, selectedWorkerId]);
+  }, [rows, selectWorker, selectedWorkerId, view]);
 
   const nameForPath = useMemo(() => {
     const m = new Map<string, string>();
