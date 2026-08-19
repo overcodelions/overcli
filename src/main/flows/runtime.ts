@@ -259,6 +259,14 @@ export class FlowRuntimeImpl {
   /// — without this, a second click would spin up a second finalize and
   /// race the first to extract the artifact.
   private finalizingRuns = new Set<UUID>();
+  /// Which step an Ollama conversation was opened for, `convId` →
+  /// `${participantId} ${stepId}`. Ollama participants get a fresh
+  /// conversation per NEW step (see `executeStep`) because the Ollama path
+  /// replays the whole transcript each round, so a shared conv would carry a
+  /// finished step's `<output name="…">` contract into the next one. Same
+  /// step retrying keeps its conv. In-memory like `retryCounts`; losing it in
+  /// a restart just mints a fresh conversation, which is the safe direction.
+  private ollamaConvStepKeys = new Map<UUID, string>();
   /// Track how many `goto` retries each step has consumed in a run, so
   /// `on_fail.goto.maxRetries` is respected.
   private retryCounts = new Map<string, number>(); // `${runId}:${stepId}` → count
@@ -1348,6 +1356,7 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
+      flowStep: true,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -2158,11 +2167,44 @@ export class FlowRuntimeImpl {
     // resolved to a real participant, fall back to a per-step conv to
     // avoid hanging the run.
     const participantId = stepParticipantKey(step);
-    let convId = run.conversationIds[participantId];
+    // Declared wider than the map's value type: the Ollama reset below clears
+    // this back to `undefined` to force a fresh conv, and the `if (!convId)`
+    // mint that follows narrows it to a real id again before it is used.
+    let convId: UUID | undefined = run.conversationIds[participantId];
+
+    // …except on Ollama, where a participant gets a fresh conversation for
+    // each NEW step. The shared-conv design buys continuity and prompt-cache
+    // hits on the cloud backends. Locally it buys neither and costs a great
+    // deal: the Ollama path replays the entire prior transcript on every
+    // round, so step N+1 opens with step N's instructions still in context —
+    // including its `<output name="…">` contract. Observed with gemma4:26b: a
+    // test step (output `test_report.md`) reading the build step's prompt
+    // (output `diff`) reasoned itself to a standstill — "This implies I can't
+    // have both `<output name="diff">` and `<output name="test_report.md">`"
+    // — and never emitted either. It was right; we had handed it two
+    // contradictory contracts. Nothing is lost by starting clean: a step's
+    // inputs are passed as artifacts in its own prompt.
+    //
+    // Keyed by step so a RETRY of the same step keeps its conversation — a
+    // retry genuinely wants the failed attempt and the rejection feedback in
+    // context, and its contract is unchanged.
+    const stepConvKey = `${participantId}:${step.id}`;
+    const stepBackend = resolveRunStepModel(run, step).backend;
+    if (
+      ollamaConvNeedsReset({
+        backend: stepBackend,
+        openedFor: convId ? this.ollamaConvStepKeys.get(convId) : undefined,
+        wantedFor: stepConvKey,
+      })
+    ) {
+      convId = undefined;
+    }
+
     if (!convId) {
       convId = randomUUID();
       run.conversationIds[participantId] = convId;
     }
+    if (stepBackend === 'ollama') this.ollamaConvStepKeys.set(convId, stepConvKey);
     this.convIdToRun.set(convId, runId);
     // Fresh buffer for this step's turn — the conv may already have
     // earlier steps' transcripts inside it, but artifact extraction
@@ -2228,6 +2270,8 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
+      // Runtime-driven, not a user hijack — see SendArgs.flowStep.
+      flowStep: true,
       turbo: step.turbo,
       reviewBackend: step.rebound?.critic.backend ?? null,
       reviewMode: step.rebound?.mode ?? null,
@@ -2350,7 +2394,31 @@ export class FlowRuntimeImpl {
     const buf = this.stepBuffers.get(runId);
     const text = buf?.assistantText ?? '';
 
-    const artifactBody = extractOutput(text, step.output);
+    const artifactKind = detectArtifactKind(step.output);
+    let artifactBody = extractOutput(text, step.output);
+
+    /// This step's own change, measured off the previous diff step's
+    /// snapshot. Computed at most once per step: `computeIncrementalDiffForRun`
+    /// ADVANCES that snapshot as a side effect, so calling it twice would
+    /// report the second call as an empty increment.
+    let incrementalDiff: string | null = null;
+
+    // No <output> wrapper is not automatically a failed step: for a local
+    // diff step the work may already be on disk. See canSynthesizeDiffFromTree.
+    // The body assigned here is only a placeholder — the diff-kind branch
+    // below overwrites it with the real filesystem diff, which is what the
+    // artifact would have carried even had the model emitted a perfect block.
+    if (
+      canSynthesizeDiffFromTree({
+        hasOutputBlock: artifactBody !== null,
+        kind: artifactKind,
+        backend: resolveRunStepModel(run, step).backend,
+      })
+    ) {
+      incrementalDiff = this.computeIncrementalDiffForRun(run);
+      if (treeChanged(incrementalDiff)) artifactBody = '';
+    }
+
     if (artifactBody === null) {
       const question = run.workerId ? extractWorkerQuestion(text) : null;
       if (question && this.workerSupervisor) {
@@ -2407,7 +2475,7 @@ export class FlowRuntimeImpl {
       return;
     }
 
-    const kind = detectArtifactKind(step.output);
+    const kind = artifactKind;
     // For diff-kind artifacts, prefer the real filesystem diff over
     // whatever the model emitted. Models — especially smaller local
     // ones — routinely narrate ("Added [path](...)" bullet lists)
@@ -2426,7 +2494,9 @@ export class FlowRuntimeImpl {
     if (kind === 'diff') {
       const realDiff = computeRunDiffForRun(run);
       if (realDiff !== null) body = realDiff;
-      const incremental = this.computeIncrementalDiffForRun(run);
+      // Already measured above on the synthesize-from-tree path; measuring
+      // again would advance the snapshot past this step's own change.
+      const incremental = incrementalDiff ?? this.computeIncrementalDiffForRun(run);
       // Fall back to the cumulative diff when an incremental can't be
       // computed (non-git cwd, or snapshot lost across a restart).
       displayBody = incremental ?? body;
@@ -3576,6 +3646,69 @@ function computeIncrementalDiff(
   const r = runGit(['diff', '--no-color', '--no-ext-diff', fromRef, snapshot], cwd);
   if (r.exitCode !== 0) return null;
   return { diff: filterNoiseFromDiff(r.stdout).diff, snapshot };
+}
+
+/// Whether an Ollama participant's conversation must be replaced because it
+/// belongs to a different step.
+///
+/// Cloud backends deliberately share ONE conversation per participant across a
+/// run: the planner remembers its plan when it later reviews, and the
+/// provider's prompt cache hits on the shared prefix. Locally neither applies,
+/// and the sharing costs a great deal — the Ollama path replays the entire
+/// prior transcript every round, so step N+1 opens with step N's instructions
+/// still in context, including its `<output name="...">` contract. Observed
+/// with gemma4:26b: a test step (output `test_report.md`) reading the build
+/// step's prompt (output `diff`) reasoned itself to a standstill rather than
+/// emit either. It was right — we had handed it two contradictory contracts.
+/// Nothing is lost by starting clean: a step's inputs arrive as artifacts in
+/// its own prompt.
+///
+/// Keys are `${participantId}:${stepId}`, so the same step retrying keeps its
+/// conversation — a retry wants the failed attempt and the rejection feedback
+/// in context, and its contract is unchanged.
+export function ollamaConvNeedsReset(args: {
+  backend: Backend;
+  openedFor: string | undefined;
+  wantedFor: string;
+}): boolean {
+  if (args.backend !== 'ollama') return false;
+  if (args.openedFor === undefined) return false;
+  return args.openedFor !== args.wantedFor;
+}
+
+/// Whether a step that produced no `<output>` block may still have its
+/// artifact synthesized from the working tree.
+///
+/// An Ollama step that edits files with tools has already done the work by
+/// the time it writes its closing message — the changes are on disk. Making
+/// it ALSO hand-transcribe them inside `<output name="diff">` asks it to
+/// restate in prose what the filesystem already records, and small local
+/// models routinely finish their edits and simply stop. Failing there
+/// discards minutes of correct work over a missing tag.
+///
+/// Restricted to Ollama on purpose. For the cloud backends a missing
+/// `<output>` more often means the step derailed partway — leaving partial
+/// edits behind — than that it forgot a tag, and promoting that to success
+/// would bury a real failure. Local models have the opposite base rate, and
+/// re-running one costs minutes rather than seconds.
+///
+/// Caller must still confirm the step actually changed something; see
+/// `treeChanged`.
+export function canSynthesizeDiffFromTree(args: {
+  hasOutputBlock: boolean;
+  kind: string;
+  backend: Backend;
+}): boolean {
+  if (args.hasOutputBlock) return false;
+  if (args.kind !== 'diff') return false;
+  return args.backend === 'ollama';
+}
+
+/// True when a measured increment represents real work. A step that emitted
+/// no `<output>` AND touched nothing has genuinely failed — there is no work
+/// to rescue, and passing it on would hand the next step an empty diff.
+export function treeChanged(incrementalDiff: string | null): boolean {
+  return incrementalDiff !== null && incrementalDiff.trim().length > 0;
 }
 
 /// Compute the actual git diff between the run's baseline commit and the

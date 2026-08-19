@@ -49,6 +49,11 @@ export function AssistantBubble({
   const renderedRef = useRef<HTMLDivElement>(null);
   const backend = backendFromModel(info.model);
   const tint = backendColor(backend);
+  // Local models put their whole working narrative in the reasoning channel
+  // and frequently leave `text` empty, so on Ollama the thinking block IS
+  // the visible output rather than an aside. Cloud backends keep the quiet
+  // collapsed default — there the answer carries the story.
+  const showReasoningInline = backend === 'ollama';
 
   // Claude occasionally emits the same AskUserQuestion call twice in one
   // assistant turn (model glitch), which renders as two identical question
@@ -74,7 +79,13 @@ export function AssistantBubble({
   return (
     <div className="flex flex-col gap-1.5">
       {info.thinking.map((think, i) => (
-        <ThinkingBlock key={i} text={think} label={backend === 'codex' ? 'codex thinking' : 'thinking'} />
+        <ThinkingBlock
+          key={i}
+          text={think}
+          label={backend === 'codex' ? 'codex thinking' : 'thinking'}
+          live={showReasoningInline && info.isPartial}
+          tailPreview={showReasoningInline}
+        />
       ))}
       {info.hasOpaqueReasoning && !hasThinking && <OpaqueReasoningPill tint={tint} />}
       {hasContent && (
@@ -243,19 +254,49 @@ function extractWatchNote(inner: string): string | null {
   }
 }
 
-function ThinkingBlock({ text, label }: { text: string; label: string }) {
-  const [expanded, setExpanded] = useState(false);
+function ThinkingBlock({
+  text,
+  label,
+  live,
+  tailPreview,
+}: {
+  text: string;
+  label: string;
+  /// Streaming right now. Auto-expands so the reasoning is visible as it
+  /// arrives, then collapses on its own once the round settles. Only set
+  /// for Ollama — see the note on `showReasoningInline`.
+  live?: boolean;
+  /// Show the LAST line under a collapsed header. Only set for Ollama.
+  tailPreview?: boolean;
+}) {
   // Header-only when collapsed — no preview text. Earlier we showed
   // the first 2 lines as a preview, which on long conversations made
   // thinking blocks dominate the chat visually. Now the collapsed
   // state is a single muted line ("▸ thinking · 4 lines"); transparency
   // is one click away when you want it.
-  const lineCount = text.trim().split('\n').filter((l) => l.trim().length > 0).length;
+  //
+  // Ollama is the exception, because its content channel is usually EMPTY:
+  // the model reasons, calls a tool, and writes no prose at all. A
+  // header-only row there isn't a tidy summary of a visible answer, it's
+  // the entire record of a step — a five-minute run rendering as a stack of
+  // bare "▸ THINKING" strips with nothing to read. So local runs get a live
+  // auto-expand plus a one-line tail preview, while the cloud backends keep
+  // the quiet collapsed default.
+  const [override, setOverride] = useState<boolean | null>(null);
+  // `live` drives the default, but an explicit click always wins and sticks
+  // — otherwise the block would fight the user by re-collapsing mid-stream.
+  const expanded = override ?? !!live;
+  const lines = text.trim().split('\n').filter((l) => l.trim().length > 0);
+  const lineCount = lines.length;
+  // The tail, not the head: models state their conclusion last ("Let me list
+  // the directory to see what's actually in src/main"), so the final line is
+  // what makes a collapsed stack skimmable as a narrative.
+  const tail = lines.length > 0 ? lines[lines.length - 1] : '';
   return (
     <div className="rounded-lg text-xs text-ink-faint italic pl-3 pr-3 py-1.5 relative overflow-hidden bg-card">
       <div className="absolute left-0 top-0 bottom-0 w-[2px] bg-ink-faint/30" />
       <button
-        onClick={() => setExpanded((e) => !e)}
+        onClick={() => setOverride(!expanded)}
         className="flex items-center gap-1.5 text-ink-faint hover:text-ink-muted uppercase text-[9px] tracking-wider"
       >
         <span>{expanded ? '▾' : '▸'}</span>
@@ -265,6 +306,11 @@ function ThinkingBlock({ text, label }: { text: string; label: string }) {
         </span>
       </button>
       {expanded && <div className="whitespace-pre-wrap mt-1">{text}</div>}
+      {!expanded && tailPreview && tail && (
+        <div className="mt-0.5 truncate opacity-70" title={tail}>
+          {tail}
+        </div>
+      )}
     </div>
   );
 }

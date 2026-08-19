@@ -17,13 +17,17 @@ import os from 'node:os';
 import { app } from 'electron';
 import {
   Backend,
+  BackendQuota,
   BackendStats,
   DailyBackendBucket,
   DailyBucket,
   ProjectStats,
+  QuotaWindow,
   StatsReport,
 } from '../shared/types';
 import { logSilent } from './diagnostics';
+import { recordDailyHistory } from './statsHistory';
+import { readClaudeUsage } from './claudeUsage';
 import { modelSpeed } from '../shared/modelCatalog';
 import { loadAllRuns } from './flows/runsStore';
 import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
@@ -151,7 +155,10 @@ export function computeStats(): StatsReport {
       };
     });
 
-  const filledDaily = fillDays(daily, 90, now);
+  // Merge this scan into the persisted snapshots before charting it — Claude
+  // prunes its transcripts after ~30 days, so the scan alone can only ever
+  // show a rolling window of history.
+  const filledDaily = fillDays(recordDailyHistory(daily), 365, now);
 
   const totalInput = byBackend.reduce((s, b) => s + b.inputTokens, 0);
   const totalOutput = byBackend.reduce((s, b) => s + b.outputTokens, 0);
@@ -176,6 +183,7 @@ export function computeStats(): StatsReport {
     byProject: projectRows,
     byModel: modelRows,
     byTier,
+    quotas: buildQuotas(byBackend),
     flowImpact: computeFlowImpact(),
     daily: filledDaily,
   };
@@ -1300,4 +1308,116 @@ export function unslug(slug: string): string {
     return '/' + slug.slice(1).replace(/-/g, '/');
   }
   return slug.replace(/-/g, '/');
+}
+
+// ---------- Quotas ----------
+
+export interface CodexQuotaSnapshot {
+  planType?: string;
+  capturedAt: number;
+  windows: QuotaWindow[];
+}
+
+function windowLabel(minutes: number): string {
+  if (minutes >= 1440) return `${Math.round(minutes / 1440)}d window`;
+  if (minutes >= 60) return `${Math.round(minutes / 60)}h window`;
+  return minutes > 0 ? `${minutes}m window` : 'window';
+}
+
+/// Pull the rate-limit block out of one codex rollout JSONL line.
+/// Returns null when the line isn't a rate-limit-bearing event.
+export function parseCodexRateLimitLine(line: string): CodexQuotaSnapshot | null {
+  if (!line.includes('"rate_limits"')) return null;
+  let obj: any;
+  try {
+    obj = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const rl = obj?.payload?.rate_limits;
+  if (!rl) return null;
+  const windows: QuotaWindow[] = [];
+  for (const key of ['primary', 'secondary']) {
+    const w = rl[key];
+    if (!w || typeof w.used_percent !== 'number') continue;
+    const minutes = intVal(w.window_minutes);
+    windows.push({
+      label: windowLabel(minutes),
+      usedPercent: w.used_percent,
+      windowMinutes: minutes,
+      resetsAt: typeof w.resets_at === 'number' ? w.resets_at * 1000 : null,
+      tokens: 0,
+    });
+  }
+  if (windows.length === 0) return null;
+  return {
+    planType: typeof rl.plan_type === 'string' ? rl.plan_type : undefined,
+    capturedAt: Date.parse(obj?.timestamp ?? '') || 0,
+    windows,
+  };
+}
+
+/// Newest rollout wins. Scans at most the 20 most recent files, each
+/// from the last line backwards, so this stays cheap.
+export function readCodexQuota(): CodexQuotaSnapshot | null {
+  const root = path.join(os.homedir(), '.codex', 'sessions');
+  if (!fs.existsSync(root)) return null;
+  const files = walkCodexRollouts(root).sort();
+  for (let i = files.length - 1; i >= 0 && i >= files.length - 20; i--) {
+    const text = readFileSafe(files[i]);
+    if (!text) continue;
+    const lines = text.split('\n');
+    for (let j = lines.length - 1; j >= 0; j--) {
+      const snap = parseCodexRateLimitLine(lines[j]);
+      if (snap) return snap;
+    }
+  }
+  return null;
+}
+
+/// A reported snapshot older than this is still shown — it's better than the
+/// estimate — but flagged, since the percentages have probably moved.
+const QUOTA_STALE_MS = 30 * 60 * 1000;
+
+export function buildQuotas(byBackend: BackendStats[], now = Date.now()): BackendQuota[] {
+  const codexSnap = readCodexQuota();
+  const claudeSnap = readClaudeUsage();
+  return byBackend.map((b) => {
+    if (b.backend === 'claude' && claudeSnap) {
+      return {
+        backend: b.backend,
+        source: 'reported' as const,
+        planType: claudeSnap.planType,
+        capturedAt: claudeSnap.capturedAt,
+        stale: now - claudeSnap.capturedAt > QUOTA_STALE_MS,
+        windows: claudeSnap.windows.map((w) => ({
+          ...w,
+          tokens: w.windowMinutes >= 1440 ? b.tokensLast7d : b.tokensLast5h,
+        })),
+      };
+    }
+    if (b.backend === 'codex' && codexSnap) {
+      return {
+        backend: b.backend,
+        source: 'reported' as const,
+        planType: codexSnap.planType,
+        capturedAt: codexSnap.capturedAt,
+        stale: now - codexSnap.capturedAt > QUOTA_STALE_MS,
+        windows: codexSnap.windows.map((w) => ({
+          ...w,
+          tokens: w.windowMinutes >= 1440 ? b.tokensLast7d : b.tokensLast5h,
+        })),
+      };
+    }
+    return {
+      backend: b.backend,
+      source: 'inferred' as const,
+      capturedAt: 0,
+      windows: [
+        { label: '5h window', usedPercent: null, windowMinutes: 300, resetsAt: null, tokens: b.tokensLast5h },
+        { label: '24h window', usedPercent: null, windowMinutes: 1440, resetsAt: null, tokens: b.tokensLast24h },
+        { label: '7d window', usedPercent: null, windowMinutes: 10080, resetsAt: null, tokens: b.tokensLast7d },
+      ],
+    };
+  });
 }

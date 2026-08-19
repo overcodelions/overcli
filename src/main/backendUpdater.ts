@@ -208,7 +208,7 @@ async function updateCodexIfOutdated(now: number): Promise<void> {
   // Hidden update failed — almost always a global prefix that needs sudo, or
   // a non-npm install. Open a Terminal so the user can finish it themselves.
   log('warn', 'backendUpdater', 'hidden codex update failed; opening terminal for manual update');
-  const launched = await runInTerminal(`npm install -g ${CODEX_NPM_PKG}@latest`);
+  const launched = await runInTerminal(`npm install -g ${CODEX_NPM_PKG}@latest`, 'backend-update');
   if (!launched.ok) {
     log('warn', 'backendUpdater', `terminal fallback failed: ${launched.error}`);
   }

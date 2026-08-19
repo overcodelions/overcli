@@ -12,17 +12,21 @@ import {
   flowRunActivityAt,
   flowRunOwnerPath,
   flowRunTitle as runTitle,
-  resolveStepModel,
   flowStarKey,
   type Flow,
 } from '@shared/flows/schema';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import {
   flowTagCounts,
-  groupFlows,
   installedRegistryKeys,
   registryEntryMatchesQuery,
 } from './flowGrouping';
+import {
+  SCOPES, SORTS, filterFlows, scopeCounts, sortFlows,
+  type FlowScope, type FlowSort,
+} from './flowLibraryFilters';
+import { compactStepModel } from './flowSpine';
+import { FlowOverviewPanel } from './FlowOverviewPanel';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
@@ -837,25 +841,9 @@ function FlowLibraryList({
   const [drafting, setDrafting] = useState(false);
   const openEditor = useFlowsStore((s) => s.openEditor);
 
-  // Archived flows sit out of every group and land in one collapsed section
-  // at the bottom — shelved, not gone. Worker-generated flows get the same
-  // treatment for a different reason: a worker answering questions all week
-  // can mint dozens, and burying the handful the user actually wrote under
-  // them is exactly the clutter the separate bucket exists to prevent.
-  const liveFlows = useMemo(
-    () => flows.filter((f) => !f.archived && f.source !== 'generated'),
-    [flows],
-  );
-  const archivedFlows = useMemo(
-    () => flows.filter((f) => f.archived && f.source !== 'generated'),
-    [flows],
-  );
-  const generatedFlows = useMemo(
-    () => flows.filter((f) => f.source === 'generated' && !f.archived),
-    [flows],
-  );
-  const [showArchived, setShowArchived] = useState(false);
-  const [showGenerated, setShowGenerated] = useState(false);
+  const [scope, setScope] = useState<FlowScope>('all');
+  const [sort, setSort] = useState<FlowSort>('usage');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   // All-time run tallies, so most-used flows float and dusty ones sink.
   const [runCounts, setRunCounts] = useState<Record<string, { count: number; lastAt: number }>>(
@@ -865,22 +853,21 @@ function FlowLibraryList({
     void window.overcli.invoke('flows:runCounts').then(setRunCounts);
   }, []);
 
-  const tagCounts = useMemo(() => flowTagCounts(liveFlows), [liveFlows]);
-  const groups = useMemo(() => {
-    const byUsage = (a: Flow, b: Flow) => {
-      const ua = runCounts[a.id]?.count ?? 0;
-      const ub = runCounts[b.id]?.count ?? 0;
-      if (ua !== ub) return ub - ua;
-      return a.name.localeCompare(b.name);
-    };
-    return groupFlows(liveFlows, {
-      starred: starredFlows,
-      installed: installedFlows,
-      query,
-      tags,
-    }).map((g) => ({ ...g, flows: [...g.flows].sort(byUsage) }));
-  }, [liveFlows, starredFlows, installedFlows, query, tags, runCounts]);
-  const matchCount = groups.reduce((n, g) => n + g.flows.length, 0);
+  const tagCounts = useMemo(() => flowTagCounts(flows), [flows]);
+  const scopeOpts = { starred: starredFlows, installed: installedFlows, query, tags };
+  const counts = useMemo(
+    () => scopeCounts(flows, scopeOpts),
+    [flows, starredFlows, installedFlows, query, tags],
+  );
+  const rows = useMemo(
+    () => sortFlows(filterFlows(flows, { ...scopeOpts, scope }), sort, runCounts),
+    [flows, starredFlows, installedFlows, query, tags, scope, sort, runCounts],
+  );
+  const matchCount = rows.length;
+  // Keyed on `flowStarKey` (source:id), not the bare id — a user flow and a
+  // project flow can share an id, and selecting one shouldn't also select
+  // (or edit) the other.
+  const selected = rows.find((f) => flowStarKey(f) === selectedId) ?? null;
   const filtering = query.trim().length > 0 || tags.size > 0;
   const searching = query.trim().length > 0;
 
@@ -938,14 +925,27 @@ function FlowLibraryList({
   );
 
   return (
-    <>
-      <div className="flex items-center gap-2 mb-3">
+    // Reserve the drawer's width on the right while it's open — the drawer
+    // itself is `fixed`, so without this the row action column (Run / ⋯)
+    // and the registry results sit underneath it and become unreachable.
+    <div className={selected ? 'pr-[440px]' : undefined}>
+      <div className="flex items-center gap-2 mb-2">
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search your flows and the registry…"
           className="field flex-1 text-sm px-3 py-1.5"
         />
+        <select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as FlowSort)}
+          aria-label="Sort flows"
+          className="field text-xs px-2 py-1.5"
+        >
+          {SORTS.map((s) => (
+            <option key={s.key} value={s.key}>{s.label}</option>
+          ))}
+        </select>
         {filtering && (
           <button
             onClick={() => { setQuery(''); setTags(new Set()); }}
@@ -955,6 +955,27 @@ function FlowLibraryList({
           </button>
         )}
       </div>
+      <div className="flex flex-wrap items-center gap-1 mb-3">
+        {SCOPES.filter((s) => counts[s.key] > 0 || s.key === scope || s.key === 'all').map((s) => (
+          <button
+            key={s.key}
+            onClick={() => { setScope(s.key); setSelectedId(null); }}
+            className={
+              'text-[11px] px-2.5 py-1 rounded-md border transition-colors ' +
+              (scope === s.key
+                ? 'border-accent/60 bg-accent/15 text-accent'
+                : 'border-transparent text-ink-faint hover:text-ink hover:border-card')
+            }
+          >
+            {s.label} <span className="opacity-60 tabular-nums">{counts[s.key]}</span>
+          </button>
+        ))}
+      </div>
+      {scope === 'generated' && (
+        <div className="text-[11px] text-ink-faint/60 mb-3">
+          Drafted by a worker to answer an errand — edit one to adopt it as your own.
+        </div>
+      )}
 
       {chips.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-4">
@@ -981,89 +1002,34 @@ function FlowLibraryList({
 
       {matchCount === 0 ? (
         <div className="text-sm text-ink-muted py-6 text-center">
-          No flow of yours matches that.
+          Nothing here. Try another scope or clear the search.
         </div>
       ) : (
-        groups.map((group) => (
-          <div key={group.key} className="mb-6">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[11px] uppercase tracking-wider text-ink-faint">
-                {group.title}
-              </span>
-              <span className="text-[11px] text-ink-faint">· {group.flows.length}</span>
-              {group.hint && (
-                <span className="text-[11px] text-ink-faint/60">{group.hint}</span>
-              )}
-            </div>
-            <div className="space-y-3">
-              {group.flows.map((flow) => (
-                <FlowRow
-                  key={`${flow.source}:${flow.id}`}
-                  flow={flow}
-                  projectPaths={projectPaths}
-                  onTagClick={(tag) => setTags((prev) => {
-                    const n = new Set(prev);
-                    if (n.has(tag)) n.delete(tag); else n.add(tag);
-                    return n;
-                  })}
-                />
-              ))}
-            </div>
-          </div>
-        ))
-      )}
-
-      {generatedFlows.length > 0 && (
-        <div className="mb-6">
-          <button
-            onClick={() => setShowGenerated((v) => !v)}
-            className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-ink-faint hover:text-ink mb-2"
-          >
-            <span>{showGenerated ? '▼' : '▶'}</span>
-            <span>Generated</span>
-            <span className="text-ink-faint normal-case tracking-normal">
-              · {generatedFlows.length} drafted by a worker to answer an errand — edit one to
-              adopt it as your own
-            </span>
-          </button>
-          {showGenerated && (
-            <div className="space-y-3">
-              {generatedFlows.map((flow) => (
-                <FlowRow
-                  key={`${flow.source}:${flow.id}`}
-                  flow={flow}
-                  projectPaths={projectPaths}
-                />
-              ))}
-            </div>
-          )}
+        <div className="border-t border-card mb-6">
+          {rows.map((flow) => (
+            <FlowTableRow
+              key={`${flow.source}:${flow.id}`}
+              flow={flow}
+              projectPaths={projectPaths}
+              usage={runCounts[flow.id]}
+              selected={selectedId === flowStarKey(flow)}
+              onSelect={() => setSelectedId(flowStarKey(flow))}
+            />
+          ))}
         </div>
       )}
-
-      {archivedFlows.length > 0 && (
-        <div className="mb-6">
-          <button
-            onClick={() => setShowArchived((v) => !v)}
-            className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-ink-faint hover:text-ink mb-2"
-          >
-            <span>{showArchived ? '▼' : '▶'}</span>
-            <span>Archived</span>
-            <span className="text-ink-faint normal-case tracking-normal">
-              · {archivedFlows.length} shelved — hidden from pickers, unarchive any time
-            </span>
-          </button>
-          {showArchived && (
-            <div className="space-y-3">
-              {archivedFlows.map((flow) => (
-                <FlowRow
-                  key={`${flow.source}:${flow.id}`}
-                  flow={flow}
-                  projectPaths={projectPaths}
-                />
-              ))}
-            </div>
-          )}
-        </div>
+      {selected && (
+        <FlowOverviewPanel
+          flow={selected}
+          usage={runCounts[selected.id]}
+          onClose={() => setSelectedId(null)}
+          onEdit={() => openEditor({ kind: 'editing', flowId: selected.id })}
+          onTagClick={(tag) => setTags((prev) => {
+            const n = new Set(prev);
+            if (n.has(tag)) n.delete(tag); else n.add(tag);
+            return n;
+          })}
+        />
       )}
 
       {/* Registry results for the same query, inline. Only while searching:
@@ -1139,7 +1105,7 @@ function FlowLibraryList({
           Filter published flows by activity, surface, or domain.
         </div>
       </button>
-    </>
+    </div>
   );
 }
 
@@ -1202,14 +1168,18 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
   );
 }
 
-function FlowRow({
+function FlowTableRow({
   flow,
   projectPaths,
-  onTagClick,
+  usage,
+  selected,
+  onSelect,
 }: {
   flow: Flow;
   projectPaths: string[];
-  onTagClick?: (tag: string) => void;
+  usage?: { count: number; lastAt: number };
+  selected: boolean;
+  onSelect: () => void;
 }) {
   const openEditor = useFlowsStore((s) => s.openEditor);
   const reload = useFlowsStore((s) => s.reload);
@@ -1281,133 +1251,104 @@ function FlowRow({
         renamingAtMouseDown.current = renameValue !== null;
       }}
       onClick={() => {
-        // Mid-rename the card is a form, not a link — clicking around the
-        // input shouldn't yank the user into the editor.
+        // Mid-rename the row is a form, not a link — clicking around the
+        // input shouldn't yank the user into the overview.
         if (renameValue === null && !renamingAtMouseDown.current) {
-          openEditor({ kind: 'editing', flowId: flow.id });
+          onSelect();
         }
       }}
       onKeyDown={(e) => {
-        // Only the card itself opens the editor on Enter/Space — a keypress
-        // while an inner button (Run / ⋯) is focused must not also edit.
+        // Only the row itself opens the overview on Enter/Space — a keypress
+        // while an inner button (Run / ⋯) is focused must not also select.
         if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          openEditor({ kind: 'editing', flowId: flow.id });
+          onSelect();
         }
       }}
-      title="Click to edit this flow"
-      className="group rounded-lg border border-card bg-card/30 p-4 cursor-pointer transition hover:border-accent hover:bg-accent/[0.08] hover:shadow-md"
+      title="Click to see the overview"
+      className={
+        'group grid grid-cols-[auto_minmax(0,1.6fr)_minmax(0,2fr)_auto_auto] items-center gap-3 px-3 py-2 border-b border-card cursor-pointer transition-colors ' +
+        (selected ? 'bg-accent/[0.10]' : 'hover:bg-white/[0.04]')
+      }
     >
-      <div className="flex items-start gap-3">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            {renameValue !== null ? (
-              <input
-                autoFocus
-                value={renameValue}
-                onChange={(e) => setRenameValue(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                onBlur={() => void commitRename()}
-                onKeyDown={(e) => {
-                  e.stopPropagation();
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    void commitRename();
-                  } else if (e.key === 'Escape') {
-                    e.preventDefault();
-                    setRenameValue(null);
-                  }
-                }}
-                aria-label="Flow name"
-                className="flex-1 min-w-0 bg-transparent border border-accent rounded px-1.5 py-0.5 text-base font-semibold outline-none"
-              />
-            ) : (
-              <>
-                <div className="text-base font-semibold truncate transition-colors group-hover:text-accent">
-                  {flow.name}
-                </div>
-                <SourceBadge source={flow.source} />
-                <WorkerUsageBadge flowId={flow.id} />
-                <span className="text-[11px] font-medium text-accent opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                  ✎ Edit
-                </span>
-              </>
-            )}
-          </div>
-          {flow.description && (
-            <div className="text-sm text-ink-muted line-clamp-2 mb-2">{flow.description}</div>
-          )}
-          {flow.tags && flow.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 mb-2">
-              {flow.tags.map((tag) => (
-                <span
-                  key={tag}
-                  role={onTagClick ? 'button' : undefined}
-                  onClick={
-                    onTagClick
-                      ? (e) => {
-                          e.stopPropagation();
-                          onTagClick(tag);
-                        }
-                      : undefined
-                  }
-                  title={onTagClick ? `Filter by "${tag}"` : undefined}
-                  className={
-                    'text-[10px] px-1.5 py-0.5 rounded-full border border-card text-ink-faint ' +
-                    (onTagClick ? 'cursor-pointer hover:text-ink hover:border-card-strong' : '')
-                  }
-                >
-                  {tag}
-                </span>
-              ))}
-            </div>
-          )}
-          <div className="flex flex-wrap items-center gap-1.5">
-            {flow.steps.map((step) => {
-              const m = resolveStepModel(flow, step);
-              return (
-                <StepChip
-                  key={step.id}
-                  id={step.id}
-                  model={`${m.backend}:${m.model}`}
-                />
-              );
-            })}
-          </div>
-        </div>
-        {/* The whole card is click-to-edit; this action cluster stops
-            propagation so Run / ⋯ don't also trip the edit. Delete still
-            lives behind the ⋯ menu so the row isn't a wall of buttons. */}
-        <div
-          className="flex items-center gap-2 flex-shrink-0"
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          void toggleFlowStar({ source: flow.source, id: flow.id });
+        }}
+        className={
+          'text-sm leading-none px-1 ' +
+          (starred ? 'text-amber-400' : 'text-ink-faint hover:text-amber-400')
+        }
+        title={starred ? 'Unstar' : 'Star to pin to the welcome pane'}
+        aria-label={starred ? 'Unstar flow' : 'Star flow'}
+      >
+        {starred ? '★' : '☆'}
+      </button>
+      {renameValue !== null ? (
+        <input
+          autoFocus
+          value={renameValue}
+          onChange={(e) => setRenameValue(e.target.value)}
           onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={() => void toggleFlowStar({ source: flow.source, id: flow.id })}
-            className={
-              'text-base leading-none px-2 py-1 rounded-md hover:bg-card-strong ' +
-              (starred ? 'text-amber-400' : 'text-ink-faint hover:text-amber-400')
+          onBlur={() => void commitRename()}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void commitRename();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              setRenameValue(null);
             }
-            title={starred ? 'Unstar' : 'Star to pin to the welcome pane'}
-            aria-label={starred ? 'Unstar flow' : 'Star flow'}
-          >
-            {starred ? '★' : '☆'}
-          </button>
-          <button
-            onClick={() => setRunning(true)}
-            className="text-xs px-3 py-1 rounded-md bg-accent text-white hover:opacity-90"
-          >
-            Run
-          </button>
-          <RowActionsMenu
-            onEdit={() => openEditor({ kind: 'editing', flowId: flow.id })}
-            onRename={() => setRenameValue(flow.name)}
-            archived={!!flow.archived}
-            onArchive={handleArchiveToggle}
-            onDelete={handleDelete}
-          />
+          }}
+          aria-label="Flow name"
+          className="flex-1 min-w-0 bg-transparent border border-accent rounded px-1.5 py-0.5 text-sm font-semibold outline-none"
+        />
+      ) : (
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-sm font-medium truncate">{flow.name}</span>
+          <SourceBadge source={flow.source} />
+          <WorkerUsageBadge flowId={flow.id} />
         </div>
+      )}
+      <div className="flex items-center gap-1 min-w-0 overflow-hidden">
+        {flow.steps.slice(0, 5).flatMap((step, i) => [
+          i > 0 && (
+            <span key={`sep-${step.id}`} className="text-[10px] text-ink-faint/50">
+              ▸
+            </span>
+          ),
+          <span
+            key={step.id}
+            title={compactStepModel(flow, step)}
+            className="text-[11px] text-ink-faint whitespace-nowrap"
+          >
+            {step.id}
+          </span>,
+        ])}
+        {flow.steps.length > 5 && (
+          <span className="text-[11px] text-ink-faint">+{flow.steps.length - 5}</span>
+        )}
+      </div>
+      <span className="text-[11px] text-ink-faint tabular-nums whitespace-nowrap">
+        {usage?.count ? `${usage.count}×` : '—'}
+      </span>
+      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+        <button
+          onClick={() => setRunning(true)}
+          className="text-[11px] px-2 py-0.5 rounded-md bg-accent text-white hover:opacity-90"
+        >
+          Run
+        </button>
+        <RowActionsMenu
+          onEdit={() => openEditor({ kind: 'editing', flowId: flow.id })}
+          onRename={() => setRenameValue(flow.name)}
+          archived={!!flow.archived}
+          onArchive={handleArchiveToggle}
+          onDelete={handleDelete}
+        />
       </div>
     </div>
   );
@@ -1521,14 +1462,6 @@ function RowActionsMenu({
         </div>
       )}
     </div>
-  );
-}
-
-function StepChip({ id, model }: { id: string; model: string }) {
-  return (
-    <span className="text-[11px] px-2 py-0.5 rounded-full bg-white/5 text-ink-muted">
-      {id} <span className="text-ink-faint">·</span> {model}
-    </span>
   );
 }
 

@@ -5,7 +5,13 @@
 
 import { randomUUID } from 'node:crypto';
 import { OllamaToolCall } from '../ollama';
-import { StreamEvent, StreamEventKind, ToolResultBlock, ToolUseBlock } from '../../shared/types';
+import {
+  ModelUsage,
+  StreamEvent,
+  StreamEventKind,
+  ToolResultBlock,
+  ToolUseBlock,
+} from '../../shared/types';
 
 export function makeSystemInitEvent(model: string, cwd: string, sessionId: string): StreamEvent {
   return event(
@@ -34,6 +40,7 @@ export function makeAssistantEvent(
   text: string,
   id: string,
   revision: number,
+  extra?: OllamaAssistantExtra,
 ): StreamEvent {
   return {
     id,
@@ -41,10 +48,61 @@ export function makeAssistantEvent(
     raw: text,
     kind: {
       type: 'assistant',
-      info: { model, text, toolUses: [], thinking: [] },
+      info: {
+        model,
+        text,
+        toolUses: [],
+        thinking: extra?.thinking ? [extra.thinking] : [],
+        ...(extra?.usage ? { usage: extra.usage } : {}),
+        ...(extra?.isPartial ? { isPartial: true } : {}),
+      },
     },
     revision,
   };
+}
+
+/// Translate Ollama's terminal-frame counters into the ModelUsage shape
+/// the rest of the app sums over. Ollama has no prompt cache to report, so
+/// the cache fields are always zero. Returns undefined when the frame
+/// carried no counts, so callers can omit `usage` entirely rather than
+/// publishing a misleading zero.
+export function ollamaUsage(counts?: {
+  promptEvalCount?: number;
+  evalCount?: number;
+}): ModelUsage | undefined {
+  if (!counts) return undefined;
+  const inputTokens = counts.promptEvalCount ?? 0;
+  const outputTokens = counts.evalCount ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return undefined;
+  return {
+    inputTokens,
+    outputTokens,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+  };
+}
+
+/// Optional extras on an Ollama assistant snapshot.
+///
+/// `thinking` is the round's accumulated reasoning from Ollama's separate
+/// `message.thinking` channel — passed as one blob (not per-delta) because
+/// the renderer's ThinkingBlock takes whole strings and each emit replaces
+/// the previous snapshot in place.
+///
+/// `usage` comes from the terminal `done` frame's `prompt_eval_count` /
+/// `eval_count`. Without it the flow header's "local" token chip reads
+/// zero for every Ollama step, which reads as "nothing happened".
+export interface OllamaAssistantExtra {
+  thinking?: string;
+  usage?: ModelUsage;
+  /// Mark mid-stream snapshots. `isPartial` means "cumulative snapshot of
+  /// the message currently streaming — replace what you had"; its absence
+  /// means "a message finished — append it". Every Ollama delta carries the
+  /// round's cumulative text, so emitting them unmarked made consumers that
+  /// append (the flow's step buffer, the one-shot waiter) accumulate the
+  /// message once per token. Exactly one settled event per round should go
+  /// out unmarked.
+  isPartial?: boolean;
 }
 
 /// Same as `makeAssistantEvent` but attaches pending tool uses so the UI
@@ -56,6 +114,7 @@ export function makeAssistantEventWithTools(
   id: string,
   revision: number,
   toolCalls: OllamaToolCall[],
+  extra?: OllamaAssistantExtra,
 ): StreamEvent {
   const toolUses: ToolUseBlock[] = toolCalls.map((c) => ({
     id: c.id,
@@ -68,7 +127,14 @@ export function makeAssistantEventWithTools(
     raw: text,
     kind: {
       type: 'assistant',
-      info: { model, text, toolUses, thinking: [] },
+      info: {
+        model,
+        text,
+        toolUses,
+        thinking: extra?.thinking ? [extra.thinking] : [],
+        ...(extra?.usage ? { usage: extra.usage } : {}),
+        ...(extra?.isPartial ? { isPartial: true } : {}),
+      },
     },
     revision,
   };
