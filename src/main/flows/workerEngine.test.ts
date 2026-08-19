@@ -37,6 +37,7 @@ import {
 } from './workerEngine';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
+import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 import { compactionCutoff } from '../../shared/flows/workerCompaction';
 
@@ -1338,3 +1339,253 @@ describe('WorkerEngine memory reset', () => {
     expect(h.engine.resetMemory('nobody')).toEqual({ ok: false, error: 'Worker not found.' });
   });
 });
+
+describe('WorkerEngine delegation', () => {
+  const CHIEF = 'worker-1';
+
+  function delegationHarness(over: { chief?: Partial<Worker>; roster?: Worker[] } = {}) {
+    const chief = seedWorker({
+      name: 'Chief of Staff',
+      trust: 'autonomous',
+      caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+      ...over.chief,
+    });
+    const triage = seedWorker({
+      id: 'triage',
+      name: 'Triage',
+      jobDescription:
+        'You are the Ticket Triage Worker. Every weekday morning, find and solve the open tickets.',
+      trust: 'trusted',
+    });
+    const h = makeHarness({ seed: [chief, ...(over.roster ?? [triage])] });
+    // A shift that proposed nothing still has item budget for a referral,
+    // which is the case the handoff path exists for.
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    return h;
+  }
+
+  function seedReply(h: ReturnType<typeof makeHarness>, reply: string): void {
+    h.orchestrations.set(
+      'orch-1',
+      workerBatch({ producer: { prompt: 'plan the shift', reply } }),
+    );
+  }
+
+  it('sends a shift handoff on as an errand stamped with the sender', async () => {
+    const h = delegationHarness();
+    seedReply(
+      h,
+      'Nothing for me today.\n<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>',
+    );
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    const errand = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand');
+    expect(errand).toBeDefined();
+    expect(errand!.origin).toMatchObject({
+      workerId: 'triage',
+      task: 'errand',
+      errand: 'RED-6814 bundles six issues. Split it.',
+      from: { workerId: CHIEF, workerName: 'Chief of Staff' },
+    });
+
+    const handed = h.journal.find((e) => e.kind === 'delegated');
+    expect(handed?.workerId).toBe(CHIEF);
+    expect(handed?.note).toContain('Handed to Triage');
+    expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain('Handed on to Triage.');
+  });
+
+  /// The whole of the depth limit: a worker that cannot see its colleagues
+  /// cannot pass the parcel on to them.
+  it('shows a delegated errand no roster, so referrals cannot chain', async () => {
+    const h = delegationHarness({
+      roster: [
+        seedWorker({
+          id: 'triage',
+          name: 'Triage',
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+        }),
+      ],
+    });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    const errand = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand');
+    expect(errand!.prompt).not.toContain('YOUR COLLEAGUES');
+    expect(errand!.prompt).toContain('A COLLEAGUE — "Chief of Staff"');
+  });
+
+  it('reports a handoff aimed at nobody instead of dropping it', async () => {
+    const h = delegationHarness();
+    seedReply(h, '<handoff to="Ticket Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
+      false,
+    );
+    const handed = h.journal.find((e) => e.kind === 'delegated');
+    expect(handed?.note).toContain('"Ticket Triage", who is not a colleague');
+    expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain('matched no colleague');
+  });
+
+  it('never offers, and never reaches, a colleague on another project', async () => {
+    const h = delegationHarness({
+      roster: [seedWorker({ id: 'triage', name: 'Triage', projectPath: '/other-workspace' })],
+    });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
+      false,
+    );
+  });
+
+  it('gives no roster to a worker without the capability', async () => {
+    const h = delegationHarness({
+      chief: { caps: { maxItemsPerShift: 3, runIn: 'worktree' } },
+    });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
+    expect(h.journal.some((e) => e.kind === 'delegated')).toBe(false);
+  });
+
+  it('gives no roster to a delegating worker still on probation', async () => {
+    const h = delegationHarness({ chief: { trust: 'probation' } });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
+    expect(h.journal.some((e) => e.kind === 'delegated')).toBe(false);
+  });
+
+  /// A dropped referral must not read, to its author, exactly like a sent one.
+  it('drops handoffs past the turn item budget and says so', async () => {
+    const h = delegationHarness({ chief: { caps: { maxItemsPerShift: 1, runIn: 'worktree', canDelegate: true } } });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 1, queued: 0, excluded: 0 });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
+      false,
+    );
+    expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain(
+      '1 more handoff dropped — no item budget left this turn.',
+    );
+  });
+
+  it('caps how many colleagues one turn may commission', async () => {
+    const h = delegationHarness({
+      roster: [
+        seedWorker({ id: 'a', name: 'Alpha' }),
+        seedWorker({ id: 'b', name: 'Bravo' }),
+        seedWorker({ id: 'c', name: 'Charlie' }),
+      ],
+    });
+    seedReply(
+      h,
+      [
+        '<handoff to="Alpha">one</handoff>',
+        '<handoff to="Bravo">two</handoff>',
+        '<handoff to="Charlie">three</handoff>',
+      ].join('\n'),
+    );
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.journal.filter((e) => e.kind === 'delegated')).toHaveLength(
+      WORKER_MAX_HANDOFFS_PER_TURN,
+    );
+  });
+
+  /// Without this the same unresolved finding is re-read and re-sent every
+  /// morning, and the receiver has no way to notice: each arrival looks new.
+  it('tells the next shift what it already handed over', async () => {
+    const h = delegationHarness();
+    seedReply(h, '<handoff to="Triage">Split RED-6814 into its six issues.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    h.parked.length = 0;
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    expect(h.parked[0].prompt).toContain('ALREADY HANDED OVER');
+    expect(h.parked[0].prompt).toContain('Split RED-6814 into its six issues.');
+  });
+
+  /// A narrowing that names a worker who has been deleted or moved is a
+  /// narrowing the roster no longer supports. Pruning it to nothing restores
+  /// the "any colleague" default, which the editor states in words — the other
+  /// reading, "delegates to nobody", would switch delegation off in silence
+  /// the day the one chosen colleague was let go.
+  it('prunes handoff targets that are gone or have moved project', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'triage', name: 'Triage' }),
+        seedWorker({ id: 'far', name: 'Far', projectPath: '/other' }),
+      ],
+    });
+    h.engine.start();
+
+    const chief = seedWorker({
+      id: 'chief',
+      name: 'Chief of Staff',
+      caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+      delegatesTo: ['triage', 'far', 'deleted'],
+    });
+    const kept = h.engine.save(chief);
+    expect(kept.ok && kept.worker.delegatesTo).toEqual(['triage']);
+
+    const emptied = h.engine.save({ ...chief, delegatesTo: ['far', 'deleted'] });
+    expect(emptied.ok && emptied.worker.delegatesTo).toBeUndefined();
+  });
+
+  /// A referral that died on someone else's spent budget has to be visible
+  /// from the sender's desk — otherwise the sender records that it handed the
+  /// work over, and nothing ever happens to it.
+  it('tells the sender when the receiver cannot take the work', async () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({
+          name: 'Chief of Staff',
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+          budgetUSDPerMonth: 1000,
+        }),
+        seedWorker({ id: 'triage', name: 'Triage', trust: 'trusted', budgetUSDPerMonth: 1 }),
+      ],
+      spend: 500,
+      pool: 100_000,
+    });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
+    h.engine.start();
+    await h.engine.workShiftNow(CHIEF);
+    await h.flush();
+
+    const failed = h.journal.find((e) => e.kind === 'delegated' && e.id.endsWith(':failed'));
+    expect(failed?.workerId).toBe(CHIEF);
+    expect(failed?.note).toContain('Triage could not take it');
+    expect(h.notifications.some((n) => n.title.includes('could not take'))).toBe(true);
+  });
+});
+

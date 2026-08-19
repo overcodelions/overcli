@@ -1198,6 +1198,16 @@ function WorkerSettings({
                   : "approval required"}
               </dd>
             </div>
+            <div className="flex items-baseline justify-between py-1.5">
+              <dt className="text-xs text-ink-muted">Delegation</dt>
+              <dd className="text-sm text-ink">
+                {!worker.caps.canDelegate
+                  ? "cannot hand work on"
+                  : worker.trust === "probation"
+                    ? "blocked while on probation"
+                    : "may hand work to colleagues"}
+              </dd>
+            </div>
             {/* The flows are the machinery this worker is allowed to launch —
                 the hard bound on what any errand can turn into. Reading the
                 contract without being able to open them means taking the
@@ -2096,6 +2106,16 @@ function WorkerTimeline({
         const launched = item.running + item.done + item.failed;
         return (
           <div key={id} ref={anchor} className="flex flex-col gap-2">
+            {/* An errand a colleague sent still renders in the message
+                position, because that is where the ask belongs — but the
+                bubble reads as YOUR words, and these are not. Attribute it
+                rather than moving it: the thread is what this worker was
+                asked, not what you personally typed. */}
+            {item.from && (
+              <div className="self-end text-[11px] text-teal-500">
+                handed over by {item.from}
+              </div>
+            )}
             <UserBubble text={item.ask || item.title} />
             <WorkerReply
               worker={worker}
@@ -2594,6 +2614,7 @@ const KIND_LABEL: Record<
   completed: { text: "completed", cls: "text-emerald-600" },
   failed: { text: "failed", cls: "text-red-600" },
   errand: { text: "errand", cls: "text-sky-600" },
+  delegated: { text: "handed on", cls: "text-teal-500" },
   demoted: { text: "demoted", cls: "text-amber-600" },
   compacted: { text: "compacted", cls: "text-ink-faint" },
 };
@@ -3136,6 +3157,20 @@ function WorkerEditor() {
   const heartbeatBackend = heartbeatBackendOf(draft.heartbeatBackend, preferredBackend);
   const heartbeatModels = PREMIUM_MODELS[heartbeatBackend];
 
+  // Who this worker could hand work to: the same bound the engine enforces,
+  // mirrored here so the editor cannot offer a colleague a handoff would never
+  // actually reach. Off-project workers are excluded outright — two workspaces
+  // can each employ a "Triage", and a name is all a handoff has to go on.
+  const colleagues = useMemo(
+    () =>
+      sortRoster(
+        Object.values(workers).filter(
+          (w) => w.id !== draft.id && w.projectPath === draft.projectPath,
+        ),
+      ),
+    [workers, draft.id, draft.projectPath],
+  );
+
   // Trust isn't editable here (hires start on probation; promotion is a
   // roster action), but validation needs it to judge the cwd rule.
   const problem = validateWorker({
@@ -3458,6 +3493,74 @@ function WorkerEditor() {
                 </span>
               </span>
             </label>
+
+            <label className="flex items-start gap-2 rounded-lg border border-teal-400/30 bg-teal-400/5 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={draft.caps.canDelegate === true}
+                onChange={(e) =>
+                  patch({
+                    caps: {
+                      ...draft.caps,
+                      canDelegate: e.target.checked,
+                    },
+                  })
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block text-sm text-ink">
+                  Let this worker hand work to colleagues
+                </span>
+                <span className="block text-[11px] leading-relaxed text-ink-faint">
+                  Shows it the other workers on this project, and lets it pass anything
+                  outside its own remit to one of them as an errand — spending their budget,
+                  not yours. Off for workers on probation, whatever this says.
+                </span>
+              </span>
+            </label>
+
+            {/* Narrowing, not an org chart. It only appears once delegation is
+                on and there is someone to narrow to, because the useful default
+                is "whoever fits" — you come here after seeing a handoff land
+                somewhere you didn't want, not before. */}
+            {draft.caps.canDelegate && colleagues.length > 0 && (
+              <div className="rounded-lg border border-line px-3 py-2.5">
+                <div className="text-sm text-ink">Who it may hand work to</div>
+                <div className="mb-2 text-[11px] leading-relaxed text-ink-faint">
+                  {(draft.delegatesTo ?? []).length === 0
+                    ? "Any colleague on this project — it picks by reading their job descriptions. Tick names to restrict it."
+                    : "Restricted to the ticked colleagues. Untick them all to go back to the whole roster."}
+                </div>
+                <div className="flex flex-col gap-1">
+                  {colleagues.map((c) => {
+                    const picked = (draft.delegatesTo ?? []).includes(c.id);
+                    return (
+                      <label
+                        key={c.id}
+                        className="flex items-start gap-2 text-[12px] text-ink-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={picked}
+                          onChange={(e) => {
+                            const cur = draft.delegatesTo ?? [];
+                            const next = e.target.checked
+                              ? [...cur, c.id]
+                              : cur.filter((id) => id !== c.id);
+                            patch({
+                              delegatesTo: next.length > 0 ? next : undefined,
+                            });
+                          }}
+                          className="mt-0.5"
+                        />
+                        <span className="truncate">{c.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {(problem || error) && (

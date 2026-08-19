@@ -42,6 +42,9 @@ export interface WorkerDraft {
   heartbeatBackend?: Backend;
   flowIds: string[];
   enabled: boolean;
+  /// Narrowed handoff targets. Absent/empty means every colleague on the
+  /// same project, which is the default the editor writes.
+  delegatesTo?: UUID[];
 }
 
 interface WorkersState {
@@ -194,7 +197,7 @@ export function newWorkerDraft(projectPath: string): WorkerDraft {
     jobDescription: '',
     projectPath,
     cadence: { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] },
-    caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: false },
+    caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: false, canDelegate: false },
     budgetUSDPerMonth: 10,
     heartbeatModel: '',
     flowIds: [],
@@ -210,6 +213,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     projectPath: w.projectPath,
     cadence: structuredClone(w.cadence),
     caps: { ...w.caps },
+    delegatesTo: w.delegatesTo ? [...w.delegatesTo] : undefined,
     budgetUSDPerMonth: w.budgetUSDPerMonth,
     heartbeatModel: w.heartbeatModel,
     heartbeatBackend: w.heartbeatBackend,
@@ -234,6 +238,7 @@ export function draftFromContract(
       maxItemsPerShift: contract.maxItemsPerShift,
       runIn: 'worktree',
       allowExternalActions: false,
+      canDelegate: false,
     },
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
@@ -264,8 +269,10 @@ export function draftFromPortable(
     projectPath,
     cadence: structuredClone(worker.cadence),
     // External authority is local employment state, like trust and cwd
-    // access. A shared worker file cannot arrive pre-authorized.
-    caps: { ...worker.caps, allowExternalActions: false },
+    // access. A shared worker file cannot arrive pre-authorized — and that
+    // covers delegation too: an imported worker knows nothing about who else
+    // this install employs, and must not arrive able to commission them.
+    caps: { ...worker.caps, allowExternalActions: false, canDelegate: false },
     budgetUSDPerMonth: worker.budgetUSDPerMonth,
     heartbeatModel: worker.heartbeatModel,
     heartbeatBackend: worker.heartbeatBackend,

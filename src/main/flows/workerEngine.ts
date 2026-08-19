@@ -40,16 +40,24 @@ import {
   WORKER_DEMOTE_REJECTION_STREAK,
   WORKER_AUTO_RENDER_NEWEST,
   WORKER_FIRST_RUN_WINDOW_DAYS,
+  WORKER_MAX_HANDOFFS_PER_TURN,
+  canDelegate,
   computeWorkerScorecard,
+  delegationTargets,
   demotedTrust,
   rejectionStreak,
+  parseHandoffs,
   parseWorkerSubject,
+  resolveHandoffTarget,
+  rosterLine,
+  stripHandoffs,
   stripWorkerSubject,
   validateWorker,
   workerAutoApproveCap,
   workerOrigin,
   type Worker,
   type WorkerErrandResult,
+  type WorkerHandoff,
   type WorkerJournalEntry,
   type WorkerScorecard,
   type WorkerTrustLevel,
@@ -445,6 +453,20 @@ export class WorkerEngine {
     if (candidate.trust !== 'autonomous' && candidate.caps.runIn === 'cwd') {
       candidate.caps = { ...candidate.caps, runIn: 'worktree' };
     }
+    // Drop handoff targets that are gone or have moved to another project.
+    // They are already unreachable — `delegationTargets` re-checks both — so
+    // this is only about not carrying a list that says something the roster
+    // no longer supports. An emptied list falls back to "every colleague",
+    // which is what an absent one means, and the editor shows that in words:
+    // the alternative reading, "delegates to nobody", would switch the
+    // feature off silently the day the one chosen colleague was deleted.
+    if (candidate.delegatesTo) {
+      const reachable = candidate.delegatesTo.filter((id) => {
+        const t = this.workers.get(id);
+        return !!t && t.id !== candidate.id && t.projectPath === candidate.projectPath;
+      });
+      candidate.delegatesTo = reachable.length > 0 ? reachable : undefined;
+    }
     const invalid = validateWorker(candidate);
     if (invalid) return { ok: false, error: invalid };
 
@@ -756,7 +778,12 @@ export class WorkerEngine {
   /// nothing a person typed is refused for being second in line.
   private async fire(
     w: Worker,
-    opts: { manual?: boolean; errand?: string; attachments?: Attachment[] },
+    opts: {
+      manual?: boolean;
+      errand?: string;
+      attachments?: Attachment[];
+      from?: { workerId: UUID; workerName: string };
+    },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     return this.enqueue(w.id, async () => {
       // The wait can be minutes; the worker may have been edited meanwhile.
@@ -773,7 +800,12 @@ export class WorkerEngine {
 
   private async fireInner(
     w: Worker,
-    opts: { manual?: boolean; errand?: string; attachments?: Attachment[] },
+    opts: {
+      manual?: boolean;
+      errand?: string;
+      attachments?: Attachment[];
+      from?: { workerId: UUID; workerName: string };
+    },
   ): Promise<{ ok: true; errand?: WorkerErrandResult } | { ok: false; error: string }> {
     const now = this.now();
 
@@ -824,7 +856,8 @@ export class WorkerEngine {
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
-    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments);
+    if (opts.errand)
+      return await this.fireErrand(w, opts.errand, opts.attachments, opts.from);
 
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
@@ -873,13 +906,23 @@ export class WorkerEngine {
       return { ok: false, error: res.error };
     }
 
+    // Before the shift note, so what it says about referrals is part of the
+    // one line the desk shows for this shift rather than a second row.
+    const handoffs = this.dispatchHandoffs(
+      fresh,
+      this.deps.parker.get(res.orchestrationId)?.producer?.reply ?? '',
+      res.count,
+      this.now(),
+    );
     this.journal.append({
       id: `shift-${w.id}-${sequence}`,
       workerId: w.id,
       kind: 'shift',
       at: this.now(),
       title: `Shift ${sequence}`,
-      note: describeShift(res.count, res.queued, res.excluded),
+      note: [describeShift(res.count, res.queued, res.excluded), handoffs]
+        .filter(Boolean)
+        .join(' '),
       orchestrationId: res.orchestrationId,
     });
     this.emitWorker(fresh);
@@ -922,6 +965,7 @@ export class WorkerEngine {
     w: Worker,
     errand: string,
     attachments?: Attachment[],
+    from?: { workerId: UUID; workerName: string },
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
     const at = this.now();
     const rejected = this.journal.rejectedTitles(w.id);
@@ -936,9 +980,9 @@ export class WorkerEngine {
     let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
     try {
       res = await this.deps.parker.parkProposal({
-        origin: workerOrigin(w, 'errand', errand),
+        origin: workerOrigin(w, 'errand', errand, from),
         projectPath: w.projectPath,
-        prompt: this.buildErrandPrompt(w, errand, rejected),
+        prompt: this.buildErrandPrompt(w, errand, rejected, from),
         ...(priorTurns.length > 0 ? { priorTurns } : {}),
         attachments,
         flowId: w.flowIds[0],
@@ -978,6 +1022,10 @@ export class WorkerEngine {
     // is what every errand was called before — a worker that skips the tag
     // must not end up with an unnamed row.
     const subject = parseWorkerSubject(rawReply) ?? errandLabel(errand);
+    // A delegated errand never gets a roster block, so it should never emit a
+    // handoff; guarding on `from` as well means a turn that invented one
+    // anyway cannot bounce the parcel onward.
+    const handoffs = from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at);
     // Path 3: the worker judged the errand too big for a prose answer and
     // found nothing on its contract that fits, so it asked for machinery. Only
     // honored when it proposed nothing — a turn that did both is confused, and
@@ -992,7 +1040,7 @@ export class WorkerEngine {
           kind: 'errand',
           at,
           title: subject,
-          note: `Drafted a flow to answer this — ${built.flowId}. ${reply}`.trim(),
+          note: `Drafted a flow to answer this — ${built.flowId}. ${reply} ${handoffs}`.trim(),
           orchestrationId: built.orchestrationId,
         });
         this.emitWorker(fresh);
@@ -1034,9 +1082,14 @@ export class WorkerEngine {
       kind: 'errand',
       at,
       title: subject,
-      note: launchedNothing
-        ? `Nothing launched — ${reply || 'the worker proposed nothing.'}`
-        : describeShift(res.count, res.queued, res.excluded),
+      note: [
+        launchedNothing
+          ? `Nothing launched — ${reply || 'the worker proposed nothing.'}`
+          : describeShift(res.count, res.queued, res.excluded),
+        handoffs,
+      ]
+        .filter(Boolean)
+        .join(' '),
       orchestrationId: res.orchestrationId,
     });
     this.emitWorker(fresh);
@@ -1079,6 +1132,7 @@ export class WorkerEngine {
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       digest || '(first shift — no journal yet)',
       ...this.filesBlock(w),
+      ...this.delegationBlock(w),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -1205,9 +1259,209 @@ export class WorkerEngine {
     ];
   }
 
-  private buildErrandPrompt(w: Worker, errand: string, rejected: string[]): string {
+  /// The roster block, and the permission to use it.
+  ///
+  /// Present only for a worker that may actually delegate, because it is not
+  /// free: eleven colleagues is eleven lines of prompt in every planning turn,
+  /// and a worker with no business commissioning anyone should not be spending
+  /// that or thinking about it. Absent, the existing "say who should do it
+  /// instead" instruction still stands — a worker without the roster names an
+  /// owner for you to route by hand, which is what every worker did before.
+  private delegationBlock(w: Worker): string[] {
+    if (!canDelegate(w)) return [];
+    const targets = delegationTargets(w, this.roster());
+    if (targets.length === 0) return [];
+    const handedOff = this.handedOffTitles(w.id);
     const parts = [
-      `You are "${w.name}", a standing worker on this project. Your manager has handed you a ONE-OFF ERRAND — not your usual shift.`,
+      '',
+      'YOUR COLLEAGUES',
+      'Other standing workers on this project. They have their own job descriptions,',
+      'their own flows and their own budgets; you cannot see their work and they',
+      'cannot see yours.',
+      ...targets.map((t) => `  - ${rosterLine(t)}`),
+      '',
+      'HANDING WORK OVER',
+      'When your work turns up something real that is plainly one of THEIR jobs and not',
+      'yours, hand it over instead of dropping it or doing it badly. End your reply with:',
+      '',
+      '     <handoff to="Exact Colleague Name">',
+      '     The errand, written to them: what you found, what you want done, and every',
+      '     reference they need to act on it. They cannot see your reply, your files or',
+      '     your journal — only this text — so a handoff that says "the ticket above" is',
+      '     a handoff they cannot action.',
+      '     </handoff>',
+      '',
+      `At most ${WORKER_MAX_HANDOFFS_PER_TURN} per turn, and they count against your item budget for this turn.`,
+      'Use the name exactly as written above; a name that matches nobody is dropped and',
+      'reported to your manager as a failed handoff.',
+      '',
+      'This is for work that is genuinely theirs, not for work you would rather not do.',
+      'Your own job is still yours. A handoff is not a proposal and nobody approves it —',
+      'it starts on their desk, spends their budget, and lands in their queue behind',
+      'whatever they are already doing, so hand over things that are worth their shift.',
+    ];
+    if (handedOff.length > 0) {
+      parts.push(
+        '',
+        'ALREADY HANDED OVER — you have sent these on before. Do not send them again,',
+        'to anyone, unless something has genuinely changed:',
+        ...handedOff.slice(0, PROMPT_REJECTED_LIMIT).map((t) => `  - ${t}`),
+      );
+    }
+    return parts;
+  }
+
+  private roster(): Worker[] {
+    return [...this.workers.values()];
+  }
+
+  /// Act on the `<handoff>` blocks a planning turn emitted, and describe what
+  /// happened for the sender's journal.
+  ///
+  /// Fire-and-forget by design. The referral is queued on the RECEIVER's own
+  /// turn queue, behind whatever it is already doing — which can be a shift
+  /// that runs for minutes — and awaiting that here would hold the sender's
+  /// queue slot the whole time, so a handoff would lock its author out of
+  /// being sent an errand by the user. A referral is a referral: the sender
+  /// records that it made one, and the outcome belongs to the receiver's desk.
+  private dispatchHandoffs(sender: Worker, rawReply: string, proposed: number, at: number): string {
+    if (!canDelegate(sender)) return '';
+    const requested = parseHandoffs(rawReply);
+    if (requested.length === 0) return '';
+
+    const targets = delegationTargets(sender, this.roster());
+    // Referrals are items: a shift that already proposed its full cap has
+    // spent the attention this worker is allowed to ask for in one turn, and
+    // must not top it up by commissioning more work elsewhere.
+    const room = Math.max(0, sender.caps.maxItemsPerShift - proposed);
+    const allowed = Math.min(room, WORKER_MAX_HANDOFFS_PER_TURN);
+
+    const sent: string[] = [];
+    const failed: string[] = [];
+    requested.slice(0, allowed).forEach((h, i) => {
+      const outcome = this.dispatchOne(sender, h, targets, `handoff-${sender.id}-${at}-${i}`, at);
+      (outcome.ok ? sent : failed).push(outcome.summary);
+    });
+
+    const dropped = requested.length - Math.min(requested.length, allowed);
+    const notes: string[] = [];
+    if (sent.length > 0) notes.push(`Handed on to ${sent.join(', ')}.`);
+    if (failed.length > 0) notes.push(`Could not hand on: ${failed.join('; ')}.`);
+    // Never silent: a turn whose referral was dropped for want of item budget
+    // read, to its author, exactly like one that was sent.
+    if (dropped > 0) {
+      notes.push(
+        `${dropped} more handoff${dropped === 1 ? '' : 's'} dropped — no item budget left this turn.`,
+      );
+    }
+    return notes.join(' ');
+  }
+
+  /// One referral: resolve the name, journal it on the sender, start it on the
+  /// receiver. Returns a fragment for the sender's shift/errand note.
+  private dispatchOne(
+    sender: Worker,
+    h: WorkerHandoff,
+    targets: Worker[],
+    entryId: string,
+    at: number,
+  ): { ok: boolean; summary: string } {
+    const title = errandLabel(h.instruction);
+    const target = resolveHandoffTarget(h.to, targets);
+
+    // A failed referral is journaled as `delegated` too, so it lands on the
+    // ALREADY HANDED OVER list. Deliberate: the alternative is a worker that
+    // re-reads the same unresolved finding every morning and re-sends it to
+    // the same name that matched nobody, forever. One visible failure the user
+    // can act on beats a silent daily retry.
+    if (!target) {
+      this.journal.append({
+        workerId: sender.id,
+        id: entryId,
+        kind: 'delegated',
+        at,
+        title,
+        note: `Tried to hand this to "${h.to}", who is not a colleague on this project.`,
+      });
+      return { ok: false, summary: `"${h.to}" matched no colleague` };
+    }
+
+    this.journal.append({
+      workerId: sender.id,
+      id: entryId,
+      kind: 'delegated',
+      at,
+      title,
+      note: `Handed to ${target.name}: ${h.instruction}`,
+    });
+
+    // `manual` so the receiver's funding gate reports back as an error rather
+    // than swallowing the errand and stamping cadence — a referral that died
+    // on someone else's spent budget has to be visible from the sender's desk.
+    void this.fire(target, {
+      manual: true,
+      errand: h.instruction,
+      from: { workerId: sender.id, workerName: sender.name },
+    })
+      // A referral that threw is a referral that did not happen, so it is
+      // reported exactly like one that was refused. Swallowing the throw
+      // would leave the sender's journal claiming it handed the work over
+      // and nothing on either desk to say it never arrived.
+      .then((res) => (res.ok ? null : res.error))
+      .catch((err) => String(err))
+      .then((error) => {
+        if (!error) return;
+        this.journal.append({
+          workerId: sender.id,
+          id: `${entryId}:failed`,
+          kind: 'delegated',
+          at: this.now(),
+          title,
+          note: `${target.name} could not take it: ${error}`,
+        });
+        this.emitWorker(this.workers.get(sender.id) ?? sender);
+        this.deps.notify({
+          title: `${target.name} could not take ${sender.name}'s handoff`,
+          body: error,
+        });
+      });
+
+    return { ok: true, summary: target.name };
+  }
+
+  /// What this worker has already referred on. The delegation counterpart to
+  /// `rejectedTitles`, and needed for the same reason: a shift plans fresh
+  /// every morning from a job description that has not changed, so without a
+  /// record of what it already handed over, a worker re-reads the same
+  /// unresolved ticket tomorrow and refers it again, and the day after that.
+  /// The receiver has no way to notice — each arrival looks like a first ask.
+  private handedOffTitles(workerId: string): string[] {
+    const titles = this.journal
+      .load(workerId)
+      .filter((e) => e.kind === 'delegated')
+      .map((e) => e.title.trim())
+      .filter(Boolean);
+    return Array.from(new Set(titles));
+  }
+
+  /// `from` names the colleague that sent this errand, when one did.
+  ///
+  /// A delegated errand gets NO roster block, and that omission is the whole
+  /// of the depth limit: referrals go one hop, and a worker that cannot see
+  /// its colleagues cannot pass the parcel on to them. Enforced by absence
+  /// rather than by a cycle detector because absence cannot be argued with —
+  /// there is no instruction here for a confused turn to misread, and no
+  /// depth counter to get the arithmetic wrong on.
+  private buildErrandPrompt(
+    w: Worker,
+    errand: string,
+    rejected: string[],
+    from?: { workerName: string },
+  ): string {
+    const parts = [
+      from
+        ? `You are "${w.name}", a standing worker on this project. A COLLEAGUE — "${from.workerName}" — hit something in their own work that they judged to be your job, not theirs, and passed it to you as a ONE-OFF ERRAND.`
+        : `You are "${w.name}", a standing worker on this project. Your manager has handed you a ONE-OFF ERRAND — not your usual shift.`,
       '',
       'YOUR JOB DESCRIPTION',
       w.jobDescription,
@@ -1215,6 +1469,7 @@ export class WorkerEngine {
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       this.journal.digest(w.id) || '(no journal yet)',
       ...this.filesBlock(w),
+      ...(from ? [] : this.delegationBlock(w)),
     ];
     if (rejected.length > 0) {
       parts.push(
@@ -1274,6 +1529,16 @@ export class WorkerEngine {
       'no flow request, and say in your own words what you understood the ask to be,',
       'why it is not yours, and who or what should do it instead.',
     );
+    if (from) {
+      parts.push(
+        '',
+        `"${from.workerName}" routed this to you by reading one line of your job description,`,
+        'so they may simply have picked wrong. Refusing a misrouted errand is the correct',
+        'outcome and costs almost nothing — say plainly that it is not yours and who should',
+        'have it. Do NOT stretch your remit to cover it because a colleague asked; they have',
+        'no authority over what your job is.',
+      );
+    }
     return parts.join('\n');
   }
 
@@ -1567,9 +1832,10 @@ export function parseFlowRequest(reply: string): string | null {
 }
 
 function errandReply(reply: string): string {
-  const prose = stripWorkerSubject(reply)
-    .replace(/<candidates>[\s\S]*$/i, '')
-    .replace(/<flow_request>[\s\S]*?<\/flow_request>/gi, '')
-    .trim();
+  const prose = stripHandoffs(
+    stripWorkerSubject(reply)
+      .replace(/<candidates>[\s\S]*$/i, '')
+      .replace(/<flow_request>[\s\S]*?<\/flow_request>/gi, ''),
+  ).trim();
   return prose.length > 600 ? `${prose.slice(0, 599)}…` : prose;
 }
