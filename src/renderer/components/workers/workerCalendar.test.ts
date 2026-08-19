@@ -1,15 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Orchestration } from '@shared/flows/orchestration';
+import type { Schedule } from '@shared/flows/schedule';
 import type { Worker } from '@shared/flows/worker';
 
 import {
   SHIFT_MINUTES,
   calendarWindow,
   dayLoad,
+  entryKey,
+  isNextUp,
   layoutDay,
   minutesIntoDay,
   projectShifts,
+  scheduleFirings,
   startOfDay,
   workedShifts,
   workerCalendar,
@@ -105,6 +109,22 @@ describe('projectShifts', () => {
   });
 });
 
+function makeSchedule(overrides: Record<string, unknown> = {}): Schedule {
+  return {
+    id: 's1',
+    name: 'Morning triage',
+    enabled: true,
+    projectPath: '/repo',
+    target: { kind: 'flow', flowId: 'f1', prompt: 'go' },
+    trigger: { kind: 'daily', time: '07:00' },
+    onOverlap: 'skip',
+    catchUp: 'skip',
+    createdAt: MONDAY_9AM - DAY,
+    history: [],
+    ...overrides,
+  } as unknown as Schedule;
+}
+
 describe('workedShifts', () => {
   const workers = { w1: makeWorker() };
 
@@ -112,7 +132,7 @@ describe('workedShifts', () => {
     const { start, end } = calendarWindow(MONDAY_9AM, 7);
     const found = workedShifts({ o1: makeOrchestration() }, workers, start, end);
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ kind: 'worked', workerId: 'w1' });
+    expect(found[0]).toMatchObject({ kind: 'worked', source: 'worker', subjectId: 'w1' });
   });
 
   it('drops errands — they say nothing about cadence', () => {
@@ -177,15 +197,16 @@ describe('workerCalendar', () => {
     const days = workerCalendar({ ...base, workers: { w2: busy }, orchestrations: {} });
     const tomorrow = days[1];
     expect(dayLoad(tomorrow)).toBe(48);
-    expect(tomorrow.entries.every((e) => e.workerId === 'w2')).toBe(true);
+    expect(tomorrow.entries.every((e) => e.subjectId === 'w2')).toBe(true);
   });
 });
 
 describe('layoutDay', () => {
   function entry(hour: number, minute = 0, workerId = 'w1'): CalendarEntry {
     return {
-      workerId,
-      workerName: workerId,
+      source: 'worker',
+      subjectId: workerId,
+      subjectName: workerId,
       trust: 'trusted',
       kind: 'planned',
       at: new Date(2026, 7, 17, hour, minute).getTime(),
@@ -225,6 +246,145 @@ describe('layoutDay', () => {
 
   it('reads local wall-clock minutes', () => {
     expect(minutesIntoDay(new Date(2026, 7, 17, 6, 45).getTime())).toBe(6 * 60 + 45);
+  });
+});
+
+describe('scheduleFirings', () => {
+  const { start, end } = calendarWindow(MONDAY_9AM, 7);
+
+  it('draws a firing the schedule actually did', () => {
+    const s = makeSchedule({
+      history: [{ at: MONDAY_9AM, outcome: 'done', runId: 'r1' }],
+    });
+    const found = scheduleFirings({ s1: s }, {}, start, end);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      source: 'schedule',
+      subjectId: 's1',
+      kind: 'worked',
+      runId: 'r1',
+      outcome: 'done',
+    });
+    // A schedule has no standing, so it must not borrow the trust ladder.
+    expect(found[0].trust).toBeUndefined();
+  });
+
+  it('leaves a skip off the grid — a block would claim it ran', () => {
+    const s = makeSchedule({
+      history: [{ at: MONDAY_9AM, outcome: 'skipped', note: 'still running' }],
+    });
+    expect(scheduleFirings({ s1: s }, {}, start, end)).toEqual([]);
+  });
+
+  it('ignores firings outside the window', () => {
+    const s = makeSchedule({ history: [{ at: MONDAY_9AM - 30 * DAY, outcome: 'done' }] });
+    expect(scheduleFirings({ s1: s }, {}, start, end)).toEqual([]);
+  });
+
+  it('flags a parked batch the firing is waiting on', () => {
+    const s = makeSchedule({
+      history: [{ at: MONDAY_9AM, outcome: 'launched', orchestrationId: 'o9' }],
+    });
+    const parked = makeOrchestration({
+      id: 'o9',
+      origin: { kind: 'schedule', scheduleId: 's1', scheduleName: 'Morning triage' },
+      items: [{ candidate: { id: 'c1', title: 't' }, status: 'proposed' }],
+    });
+    expect(scheduleFirings({ s1: s }, { o9: parked }, start, end)[0].needsReview).toBe(true);
+  });
+});
+
+describe('workerCalendar with schedules', () => {
+  const base = {
+    workers: { w1: makeWorker() },
+    orchestrations: {},
+    nextShiftAt: {},
+    from: MONDAY_9AM,
+    days: 7,
+    now: MONDAY_9AM + HOUR,
+  };
+
+  it('projects schedules onto the same columns as shifts', () => {
+    const days = workerCalendar({
+      ...base,
+      schedules: { s1: makeSchedule() },
+      nextFireAt: {},
+    });
+    const tomorrow = days[1].entries;
+    expect(tomorrow.map((e) => e.source)).toEqual(['schedule', 'worker']);
+    // 07:00 before 09:00 — the grid is in clock order regardless of species.
+    expect(tomorrow[0].subjectName).toBe('Morning triage');
+  });
+
+  it('leaves a paused schedule off, the way it leaves a paused worker off', () => {
+    const days = workerCalendar({
+      ...base,
+      schedules: { s1: makeSchedule({ enabled: false }) },
+      nextFireAt: {},
+    });
+    expect(days.flatMap((d) => d.entries).some((e) => e.source === 'schedule')).toBe(false);
+  });
+
+  it('draws workers alone when no schedules are handed in', () => {
+    const days = workerCalendar(base);
+    expect(days.flatMap((d) => d.entries).every((e) => e.source === 'worker')).toBe(true);
+  });
+
+  it('honours the engine seed for a schedule, as it does for a shift', () => {
+    const seed = MONDAY_9AM + 3 * HOUR;
+    const days = workerCalendar({
+      ...base,
+      workers: {},
+      schedules: { s1: makeSchedule() },
+      nextFireAt: { s1: seed },
+    });
+    expect(days[0].entries[0].at).toBe(seed);
+  });
+});
+
+describe('isNextUp', () => {
+  const planned: CalendarEntry = {
+    source: 'worker',
+    subjectId: 'w1',
+    subjectName: 'Fielder',
+    kind: 'planned',
+    at: MONDAY_9AM,
+  };
+
+  it('rings the projection the strip is counting down to', () => {
+    expect(isNextUp(planned, { source: 'worker', id: 'w1', at: MONDAY_9AM })).toBe(true);
+  });
+
+  it('does not ring the same worker at a different hour', () => {
+    expect(isNextUp(planned, { source: 'worker', id: 'w1', at: MONDAY_9AM + HOUR })).toBe(false);
+  });
+
+  it('does not ring a schedule that shares an id with a worker', () => {
+    expect(isNextUp(planned, { source: 'schedule', id: 'w1', at: MONDAY_9AM })).toBe(false);
+  });
+
+  it('never rings history — a countdown is about what has not happened', () => {
+    expect(
+      isNextUp({ ...planned, kind: 'worked' }, { source: 'worker', id: 'w1', at: MONDAY_9AM }),
+    ).toBe(false);
+  });
+
+  it('rings nothing when nothing is next', () => {
+    expect(isNextUp(planned, null)).toBe(false);
+  });
+});
+
+describe('entryKey', () => {
+  it('keeps a worker and a schedule at the same instant apart', () => {
+    const at = MONDAY_9AM;
+    const worker: CalendarEntry = {
+      source: 'worker',
+      subjectId: 'x',
+      subjectName: 'x',
+      kind: 'planned',
+      at,
+    };
+    expect(entryKey(worker)).not.toBe(entryKey({ ...worker, source: 'schedule' }));
   });
 });
 
