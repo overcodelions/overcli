@@ -8,6 +8,7 @@ import {
   WORKER_AUTO_RENDER_OFF,
   isRenderableOutput,
   parseWorkerSubject,
+  stripHandoffs,
   stripWorkerSubject,
 } from '@shared/flows/worker';
 import { flowRunMatchesQuery, runIsLive } from '../flows/FlowRunSidebarRow';
@@ -98,6 +99,11 @@ export interface WorkerActivity {
   /// worker's: a chat that rewrites what you typed is not a transcript.
   /// Empty for a shift — nobody asked for it.
   ask: string;
+  /// The colleague that sent this errand, when a worker sent it rather than
+  /// the user. The desk renders `ask` as YOUR message bubble, which is a lie
+  /// for an errand you never typed — this is what lets it say whose words
+  /// they actually are. Absent on shifts and on errands the user sent.
+  from?: string;
   /// The planning turn's prose with the machine payload stripped — the whole
   /// content of a batch that launched nothing.
   reply: string;
@@ -150,9 +156,9 @@ function errandAsk(orchestration: Orchestration): string {
 function producerProse(orchestration: Orchestration): string {
   // The subject block is a label, and it is already rendered as one — leaving
   // it in the prose shows the reader the same words twice, once as XML.
-  return stripWorkerSubject(orchestration.producer?.reply ?? '')
-    .replace(/<candidates>[\s\S]*$/i, '')
-    .trim();
+  return stripHandoffs(
+    stripWorkerSubject(orchestration.producer?.reply ?? '').replace(/<candidates>[\s\S]*$/i, ''),
+  ).trim();
 }
 
 /// Shift or errand. `origin.task` is authoritative, but batches written before
@@ -185,6 +191,9 @@ export function toWorkerActivity(orchestration: Orchestration): WorkerActivity {
     at: orchestration.createdAt,
     title: activityTitle(orchestration, task),
     ask: task === 'errand' ? errandAsk(orchestration) : '',
+    ...(task === 'errand' && orchestration.origin?.kind === 'worker' && orchestration.origin.from
+      ? { from: orchestration.origin.from.workerName }
+      : {}),
     reply: producerProse(orchestration),
     proposed,
     running,

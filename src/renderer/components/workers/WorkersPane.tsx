@@ -1198,6 +1198,16 @@ function WorkerSettings({
                   : "approval required"}
               </dd>
             </div>
+            <div className="flex items-baseline justify-between py-1.5">
+              <dt className="text-xs text-ink-muted">Delegation</dt>
+              <dd className="text-sm text-ink">
+                {!worker.caps.canDelegate
+                  ? "cannot hand work on"
+                  : worker.trust === "probation"
+                    ? "blocked while on probation"
+                    : "may hand work to colleagues"}
+              </dd>
+            </div>
             {/* The flows are the machinery this worker is allowed to launch —
                 the hard bound on what any errand can turn into. Reading the
                 contract without being able to open them means taking the
@@ -2089,13 +2099,28 @@ function WorkerTimeline({
         if (item.task === "shift") {
           return (
             <div key={id} ref={anchor}>
-              <ShiftRule item={item} open={open} onToggle={toggle} />
+              <ShiftRule
+                worker={worker}
+                item={item}
+                open={open}
+                onToggle={toggle}
+              />
             </div>
           );
         }
         const launched = item.running + item.done + item.failed;
         return (
           <div key={id} ref={anchor} className="flex flex-col gap-2">
+            {/* An errand a colleague sent still renders in the message
+                position, because that is where the ask belongs — but the
+                bubble reads as YOUR words, and these are not. Attribute it
+                rather than moving it: the thread is what this worker was
+                asked, not what you personally typed. */}
+            {item.from && (
+              <div className="self-end text-[11px] text-teal-500">
+                handed over by {item.from}
+              </div>
+            )}
             <UserBubble text={item.ask || item.title} />
             <WorkerReply
               worker={worker}
@@ -2306,10 +2331,12 @@ function WorkerReply({
 /// A shift is something the worker did unprompted, so it reads as a rule
 /// across the thread rather than a message — the way a chat marks a day break.
 function ShiftRule({
+  worker,
   item,
   open,
   onToggle,
 }: {
+  worker: Worker;
   item: WorkerActivity;
   open: boolean;
   onToggle: () => void;
@@ -2341,7 +2368,95 @@ function ShiftRule({
           {awaiting && (
             <WorkerPendingProposal orchestration={item.orchestration} />
           )}
+          <ShiftActions worker={worker} item={item} />
         </div>
+      )}
+    </div>
+  );
+}
+
+/// Undo, for a shift. Two acts that share almost all their machinery and read
+/// very differently, so they get two buttons rather than one with a checkbox:
+///
+///   RE-RUN — the shift went wrong (the worker misread the window, a flow was
+///   broken, you fixed something it depended on) and you want THAT shift done
+///   again rather than a new one stacked on top. It rubs out what the shift
+///   did, hands its number back, and plans it afresh over the same window.
+///   Offered only on the most recent shift, because an older one cannot have
+///   its number back — main refuses it, and an enabled button that always
+///   errors is worse than an absent one.
+///
+///   DELETE — the shift should never have happened. Same removal, no re-run.
+///
+/// Both are permanent and both take out real files and flow runs, so delete
+/// confirms in place. Re-run does not: what it removes it immediately replaces,
+/// and it is the button you reach for when you already know the shift was wrong.
+function ShiftActions({
+  worker,
+  item,
+}: {
+  worker: Worker;
+  item: WorkerActivity;
+}) {
+  const deleteActivity = useWorkersStore((s) => s.deleteActivity);
+  const redoShift = useWorkersStore((s) => s.redoShift);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState<"redo" | "delete" | null>(null);
+
+  // `[Shift 7]` against the worker's running count — the same test main makes.
+  // Kept in sync by construction: both read the number off the ledger title.
+  const number = /^Shift\s+(\d+)$/.exec(item.title)?.[1];
+  const isLatest = !!number && Number(number) === (worker.shiftCount ?? 0);
+  const live = item.running > 0;
+
+  const run = async (which: "redo" | "delete") => {
+    setBusy(which);
+    if (which === "redo") await redoShift(worker.id, item.orchestration.id);
+    else await deleteActivity(worker.id, item.orchestration.id);
+    setBusy(null);
+    setConfirming(false);
+  };
+
+  return (
+    <div className="mt-2 flex items-center gap-3 border-t border-card-strong pt-2">
+      {isLatest && (
+        <button
+          onClick={() => void run("redo")}
+          disabled={!!busy}
+          className="text-[11px] text-ink-faint hover:text-accent disabled:opacity-50 focus:outline-none"
+        >
+          {busy === "redo" ? "Re-running\u2026" : "Re-run this shift"}
+        </button>
+      )}
+      {confirming ? (
+        <span className="flex items-center gap-2">
+          <span className="text-[11px] text-ink-muted">
+            Deletes this shift{live ? ", stops the work still running," : ","}{" "}
+            its flow runs, the files it filed, and its journal entries.
+            {isLatest ? " Shift " + number + " will be given back." : ""}
+          </span>
+          <button
+            onClick={() => void run("delete")}
+            disabled={!!busy}
+            className="rounded bg-red-500/80 px-2 py-0.5 text-[11px] text-white disabled:opacity-50"
+          >
+            {busy === "delete" ? "Deleting\u2026" : "Delete"}
+          </button>
+          <button
+            onClick={() => setConfirming(false)}
+            className="text-[11px] text-ink-faint hover:text-ink"
+          >
+            Cancel
+          </button>
+        </span>
+      ) : (
+        <button
+          onClick={() => setConfirming(true)}
+          disabled={!!busy}
+          className="text-[11px] text-ink-faint hover:text-red-400 disabled:opacity-50 focus:outline-none"
+        >
+          Delete this shift
+        </button>
       )}
     </div>
   );
@@ -2594,6 +2709,7 @@ const KIND_LABEL: Record<
   completed: { text: "completed", cls: "text-emerald-600" },
   failed: { text: "failed", cls: "text-red-600" },
   errand: { text: "errand", cls: "text-sky-600" },
+  delegated: { text: "handed on", cls: "text-teal-500" },
   demoted: { text: "demoted", cls: "text-amber-600" },
   compacted: { text: "compacted", cls: "text-ink-faint" },
 };
@@ -3136,6 +3252,20 @@ function WorkerEditor() {
   const heartbeatBackend = heartbeatBackendOf(draft.heartbeatBackend, preferredBackend);
   const heartbeatModels = PREMIUM_MODELS[heartbeatBackend];
 
+  // Who this worker could hand work to: the same bound the engine enforces,
+  // mirrored here so the editor cannot offer a colleague a handoff would never
+  // actually reach. Off-project workers are excluded outright — two workspaces
+  // can each employ a "Triage", and a name is all a handoff has to go on.
+  const colleagues = useMemo(
+    () =>
+      sortRoster(
+        Object.values(workers).filter(
+          (w) => w.id !== draft.id && w.projectPath === draft.projectPath,
+        ),
+      ),
+    [workers, draft.id, draft.projectPath],
+  );
+
   // Trust isn't editable here (hires start on probation; promotion is a
   // roster action), but validation needs it to judge the cwd rule.
   const problem = validateWorker({
@@ -3458,6 +3588,74 @@ function WorkerEditor() {
                 </span>
               </span>
             </label>
+
+            <label className="flex items-start gap-2 rounded-lg border border-teal-400/30 bg-teal-400/5 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={draft.caps.canDelegate === true}
+                onChange={(e) =>
+                  patch({
+                    caps: {
+                      ...draft.caps,
+                      canDelegate: e.target.checked,
+                    },
+                  })
+                }
+                className="mt-0.5"
+              />
+              <span>
+                <span className="block text-sm text-ink">
+                  Let this worker hand work to colleagues
+                </span>
+                <span className="block text-[11px] leading-relaxed text-ink-faint">
+                  Shows it the other workers on this project, and lets it pass anything
+                  outside its own remit to one of them as an errand — spending their budget,
+                  not yours. Off for workers on probation, whatever this says.
+                </span>
+              </span>
+            </label>
+
+            {/* Narrowing, not an org chart. It only appears once delegation is
+                on and there is someone to narrow to, because the useful default
+                is "whoever fits" — you come here after seeing a handoff land
+                somewhere you didn't want, not before. */}
+            {draft.caps.canDelegate && colleagues.length > 0 && (
+              <div className="rounded-lg border border-line px-3 py-2.5">
+                <div className="text-sm text-ink">Who it may hand work to</div>
+                <div className="mb-2 text-[11px] leading-relaxed text-ink-faint">
+                  {(draft.delegatesTo ?? []).length === 0
+                    ? "Any colleague on this project — it picks by reading their job descriptions. Tick names to restrict it."
+                    : "Restricted to the ticked colleagues. Untick them all to go back to the whole roster."}
+                </div>
+                <div className="flex flex-col gap-1">
+                  {colleagues.map((c) => {
+                    const picked = (draft.delegatesTo ?? []).includes(c.id);
+                    return (
+                      <label
+                        key={c.id}
+                        className="flex items-start gap-2 text-[12px] text-ink-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={picked}
+                          onChange={(e) => {
+                            const cur = draft.delegatesTo ?? [];
+                            const next = e.target.checked
+                              ? [...cur, c.id]
+                              : cur.filter((id) => id !== c.id);
+                            patch({
+                              delegatesTo: next.length > 0 ? next : undefined,
+                            });
+                          }}
+                          className="mt-0.5"
+                        />
+                        <span className="truncate">{c.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {(problem || error) && (
