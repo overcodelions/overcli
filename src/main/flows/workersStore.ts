@@ -13,6 +13,7 @@ function dir(): string {
 }
 
 function pathFor(id: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(id)) throw new Error(`Unsafe worker id: ${id}`);
   return path.join(dir(), `${id}.json`);
 }
 

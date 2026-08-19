@@ -303,6 +303,12 @@ export class WorkerEngine {
       .map((w) => this.snapshot(w));
   }
 
+  /// Ids only. `list()` builds a scorecard per worker — two whole-file log
+  /// reads each — which is far too much for a caller that just needs ids.
+  workerIds(): UUID[] {
+    return [...this.workers.keys()];
+  }
+
   get(id: UUID): Worker | null {
     return this.workers.get(id) ?? null;
   }
@@ -359,6 +365,7 @@ export class WorkerEngine {
       [...this.workers.values()],
       (id) => spend.get(id) ?? 0,
       this.pool.monthlyUSD,
+      [...spend.values()].reduce((t, s) => t + Math.max(0, s), 0),
     );
   }
 
@@ -535,14 +542,15 @@ export class WorkerEngine {
     if (!cleared.ok) return { ok: false, error: cleared.error };
     const files = cleared.removed;
 
-    const activity = this.deps.clearActivity?.(id) ?? { shifts: 0, errands: 0, runs: 0 };
-
     let entries = 0;
     try {
       entries = this.journal.clear(id);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
+
+    const activity = this.deps.clearActivity?.(id) ?? { shifts: 0, errands: 0, runs: 0 };
+
     w.shiftCount = undefined;
     w.lastShiftAt = undefined;
     w.lastPlannedAt = undefined;

@@ -56,6 +56,7 @@ function makeHarness(
     pool?: number;
     generatedFlow?: WorkerEngineDeps['generatedFlow'];
     clearActivity?: WorkerEngineDeps['clearActivity'];
+    journalClear?: (workerId: string) => number;
     supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
   } = {},
 ) {
@@ -131,6 +132,7 @@ function makeHarness(
           .map((e) => `${e.kind}: ${e.title || e.note || ''}`)
           .join('\n'),
       clear: (workerId) => {
+        if (opts.journalClear) return opts.journalClear(workerId);
         const before = journal.length;
         for (let i = journal.length - 1; i >= 0; i--) {
           if (journal[i].workerId === workerId) journal.splice(i, 1);
@@ -1260,6 +1262,32 @@ describe('WorkerEngine memory reset', () => {
       runs: 4,
     });
     expect(cleared).toEqual(['worker-1']);
+  });
+
+  it('leaves activity intact when the journal rewrite fails', () => {
+    // The journal rewrite is the fallible step, and it is the one that is
+    // harmless to retry — so it has to run BEFORE the irreversible activity
+    // clear. Reversed, a failed reset reported {ok:false} while the activity
+    // was already gone, and no retry could recover it.
+    const cleared: string[] = [];
+    const h = makeHarness({
+      seed: [seedWorker()],
+      clearActivity: (workerId) => {
+        cleared.push(workerId);
+        return { shifts: 3, errands: 2, runs: 4 };
+      },
+      journalClear: () => {
+        throw new Error('read-only file system');
+      },
+    });
+    h.engine.start();
+
+    const res = h.engine.resetMemory('worker-1');
+
+    expect(res).toEqual({ ok: false, error: 'read-only file system' });
+    expect(cleared).toEqual([]);
+    // The worker record is untouched, so the same reset can simply be retried.
+    expect(h.engine.get('worker-1')!.anchorAt).toBeUndefined();
   });
 
   it('does not fire the moment the reset lands', async () => {

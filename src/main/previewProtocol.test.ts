@@ -89,6 +89,25 @@ describe('the policy a served document carries', () => {
     expect(csp).not.toContain("'unsafe-eval'");
   });
 
+  it('gives an untrusted document no way to send what it can see', async () => {
+    const published = publishPreviewDocument('<html></html>', 'document');
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    const csp = (await fetchPreview(published.url)).headers.get('content-security-policy') ?? '';
+    // `document` runs REMOTE script, so egress is the whole exposure: a page
+    // that inlines a local file must not be able to POST it anywhere.
+    expect(csp).toContain("connect-src 'none'");
+    expect(csp).not.toContain('connect-src https:');
+  });
+
+  it('still lets a bundle Overcli compiled itself reach the network', async () => {
+    const published = publishPreviewDocument('<html></html>');
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    const csp = (await fetchPreview(published.url)).headers.get('content-security-policy') ?? '';
+    expect(csp).toContain('connect-src https:');
+  });
+
   it('never grants a preview anything by default', async () => {
     const published = publishPreviewDocument('<html></html>', 'document');
     if (!published.ok) return;

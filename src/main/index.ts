@@ -1909,9 +1909,9 @@ function registeredRoots(): string[] {
   // itself would make every colleague's directory legal to read through a
   // path that merely resolves inside it.
   if (workerEngine) {
-    for (const row of workerEngine.list()) {
+    for (const workerId of workerEngine.workerIds()) {
       try {
-        roots.add(workerFilesDir(row.worker.id));
+        roots.add(workerFilesDir(workerId));
       } catch {
         // An id that isn't path-safe can't have a directory to register.
       }
@@ -1929,7 +1929,7 @@ function registeredRoots(): string[] {
 // `realpath` of a registered directory is effectively immutable for the app's
 // lifetime, so memoize it per raw path. The root *set* is NOT cached —
 // `registeredRoots()` is recomputed fresh each call (cheap: in-memory store
-// state + a list walk, no syscalls) — so a newly-added project or flow-run
+// state only, no syscalls) — so a newly-added project or flow-run
 // worktree is recognized immediately and a removed one drops out at once.
 // Only successful realpaths are memoized; a root not yet on disk (a worktree
 // registered just before it's created) is retried each call until it exists.

@@ -29,6 +29,7 @@ function dir(): string {
 }
 
 function pathFor(runId: string): string {
+  if (!/^[A-Za-z0-9._-]+$/.test(runId)) throw new Error(`Unsafe run id: ${runId}`);
   return path.join(dir(), `${runId}.json`);
 }
 
