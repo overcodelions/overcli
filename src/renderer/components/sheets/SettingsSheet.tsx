@@ -14,6 +14,7 @@ import {
   latestAtTier,
   type ModelSpeed,
 } from '@shared/modelCatalog';
+import { EFFORT_BACKENDS } from '@shared/effort';
 import { Group, SheetActionButton } from './settingsChrome';
 import { StoragePane } from './StoragePane';
 import { ConversationsPane } from './ConversationsPane';
@@ -399,6 +400,10 @@ function BackendsPane({
   );
 }
 
+/// Sentinel for the per-backend effort select's "follow default" option.
+/// Can't be '' — that's a real EffortLevel meaning Auto.
+const FOLLOW_DEFAULT = '\u0000follow';
+
 function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
   return (
     <div>
@@ -427,7 +432,10 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
           </Row>
         ))}
       </Group>
-      <Group title="Reasoning effort" description="Applies to Claude and Codex. Auto uses the CLI/model default; higher effort means deeper thinking and more tokens.">
+      <Group
+        title="Reasoning effort"
+        description="Higher effort means deeper thinking, more output tokens, and slower turns — it is usually the largest single lever on latency. Auto is not a middle setting: it defers to each CLI's own default, and those differ by backend, so pin a backend below if you want to tune one without moving the other."
+      >
         <Row label="Default">
           <select
             value={local.defaultEffort}
@@ -441,6 +449,31 @@ function ModelsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
             <option value="max">Max</option>
           </select>
         </Row>
+        {EFFORT_BACKENDS.map((b) => (
+          <Row key={b} label={b}>
+            <select
+              value={local.backendDefaultEfforts?.[b] ?? FOLLOW_DEFAULT}
+              onChange={(e) => {
+                const next = { ...(local.backendDefaultEfforts ?? {}) };
+                // "Follow default" is a *missing* entry, not an entry
+                // holding Auto — Auto is itself a real choice ('') that
+                // must be able to override a non-Auto Default. Hence the
+                // sentinel: the two cases can't share the empty string.
+                if (e.target.value === FOLLOW_DEFAULT) delete next[b];
+                else next[b] = e.target.value as EffortLevel;
+                patch({ backendDefaultEfforts: next });
+              }}
+              className="field px-2 py-1 text-xs"
+            >
+              <option value={FOLLOW_DEFAULT}>Follow default</option>
+              <option value="">Auto (CLI/model default)</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="max">Max</option>
+            </select>
+          </Row>
+        ))}
       </Group>
     </div>
   );
