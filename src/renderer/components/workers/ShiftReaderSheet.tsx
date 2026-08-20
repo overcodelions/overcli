@@ -90,6 +90,15 @@ export function ShiftReaderSheet({
   // on match 9 of 4.
   useEffect(() => setCurrent(0), [query]);
 
+  // Debounced so a fast typist doesn't re-walk the whole transcript on every
+  // keystroke — only once they pause.
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  useEffect(() => {
+    if (query.length < 2) { setDebouncedQuery(''); return; }
+    const t = window.setTimeout(() => setDebouncedQuery(query), 150);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
   // Layout effect, not effect: highlights are painted, and computing them
   // after the browser has already shown the frame flashes the un-highlighted
   // text on every keystroke.
@@ -97,7 +106,7 @@ export function ShiftReaderSheet({
     const root = body.current;
     const store = highlightStore();
     if (!root || !store) return;
-    const ranges = findRanges(root, query);
+    const ranges = findRanges(root, debouncedQuery);
     setTotal(ranges.length);
     if (ranges.length === 0) {
       store.delete(HL_ALL);
@@ -118,7 +127,7 @@ export function ShiftReaderSheet({
     };
     // `prose` and `notes.length` are here because the ranges are DOM ranges:
     // they go stale the moment the rendered content changes under them.
-  }, [query, current, prose, notes.length]);
+  }, [debouncedQuery, current, prose, notes.length]);
 
   // ⌘F is the muscle memory for "find in this thing I am reading", and the
   // app's own ⌘F belongs to the file finder — which is not what someone

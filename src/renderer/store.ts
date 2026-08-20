@@ -856,6 +856,10 @@ export function noBackendReady(backendHealth: Record<string, BackendHealth>): bo
   return backendHealthLoaded(backendHealth) && !anyBackendReady(backendHealth);
 }
 
+const PREWARM_FLEET_CAP = 3;
+const PREWARM_MIN_CHARS = 8;
+const prewarmed = new Set<string>();
+
 export const useStore = create<StoreState>((set, get) => ({
   projects: [],
   workspaces: [],
@@ -1125,13 +1129,27 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   setDraft(id, text) {
-    const wasEmpty = (get().conversationDrafts[id] ?? '').length === 0;
     set((s) => ({ conversationDrafts: { ...s.conversationDrafts, [id]: text } }));
     // Empty → non-empty is the earliest honest signal that a turn is coming.
     // Warming here hides CLI boot, MCP registration and session resume behind
     // the seconds the user spends typing. Synthetic draft keys (flow hijack,
-    // `__`-prefixed panes) are not conversations.
-    if (wasEmpty && text.length > 0 && !id.startsWith('__') && !id.includes(':')) {
+    // `__`-prefixed panes) are not conversations. Capped and delayed past the
+    // first couple keystrokes so a whole fleet of idle drafts doesn't spawn a
+    // CLI process each — and the cap is an LRU, not a one-shot allowance:
+    // `Set` iterates in insertion order, so the oldest id is evicted to make
+    // room rather than prewarm going permanently dead after the fleet cap is
+    // first reached.
+    if (
+      text.length >= PREWARM_MIN_CHARS &&
+      !prewarmed.has(id) &&
+      !id.startsWith('__') &&
+      !id.includes(':')
+    ) {
+      if (prewarmed.size >= PREWARM_FLEET_CAP) {
+        const oldest = prewarmed.values().next().value;
+        if (oldest !== undefined) prewarmed.delete(oldest);
+      }
+      prewarmed.add(id);
       get().prewarmConversation(id);
     }
   },

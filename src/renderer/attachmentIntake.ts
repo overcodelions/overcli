@@ -145,10 +145,17 @@ export async function intakeAttachments(
       );
       continue;
     }
+    let dataBase64: string;
+    try {
+      dataBase64 = await fileToBase64(f);
+    } catch {
+      rejections.push(`Couldn't read ${f.name || 'file'}.`);
+      continue;
+    }
     attachments.push({
       id: attachmentId(),
       mimeType: f.type || guessMimeFromName(f.name) || 'application/octet-stream',
-      dataBase64: await fileToBase64(f),
+      dataBase64,
       label: f.name,
       size: f.size,
     });

@@ -18,6 +18,11 @@ import type { Orchestration } from '../../shared/flows/orchestration';
 /// at hydrate time — the worker journal keeps the durable history.
 const MAX_RETAINED_ORCHESTRATIONS = 600;
 
+/// Throttle for the write-time prune below — a burst of saves (a shift
+/// dispatching several items in a row) should not re-scan and re-evict the
+/// whole directory on every single one of them.
+let lastPruneAt = 0;
+
 function dir(): string {
   return path.join(app.getPath('userData'), 'orchestrations');
 }
@@ -51,6 +56,13 @@ export function saveOrchestration(o: Orchestration): void {
     } catch {
       // ignore
     }
+  }
+  // Evicted at boot already, but a long-running session that never restarts
+  // would otherwise grow this directory without bound. At most once a minute.
+  const now = Date.now();
+  if (now - lastPruneAt > 60_000) {
+    lastPruneAt = now;
+    pruneOrchestrations(loadAllOrchestrations());
   }
 }
 
@@ -108,17 +120,24 @@ export function loadAllOrchestrations(): Orchestration[] {
     }
   }
   out.sort((a, b) => b.createdAt - a.createdAt);
-  if (out.length <= MAX_RETAINED_ORCHESTRATIONS) return out;
+  return pruneOrchestrations(out);
+}
+
+/// Evict completed batches past `MAX_RETAINED_ORCHESTRATIONS`, oldest first.
+/// Never evicts a batch still holding proposals or live items. Shared by the
+/// loader (every boot) and `saveOrchestration` (every write, throttled), so a
+/// session that never restarts still gets bounded.
+export function pruneOrchestrations(all: Orchestration[]): Orchestration[] {
+  if (all.length <= MAX_RETAINED_ORCHESTRATIONS) return all;
   const kept: Orchestration[] = [];
-  out.forEach((o, index) => {
-    // Never evict a batch still holding proposals or live items.
+  all.forEach((o, index) => {
     if (index < MAX_RETAINED_ORCHESTRATIONS || !o.completedAt) {
       kept.push(o);
       return;
     }
     deleteOrchestration(o.id);
   });
-  log('info', 'orchestrations', `Pruned ${out.length - kept.length} completed batches`);
+  log('info', 'orchestrations', `Pruned ${all.length - kept.length} completed batches`);
   return kept;
 }
 

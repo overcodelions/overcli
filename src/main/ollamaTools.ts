@@ -621,6 +621,11 @@ function editFileTool(
     };
   }
   const original = fs.readFileSync(full, 'utf-8');
+  const usesCrlf = original.includes('\r\n');
+  if (usesCrlf) {
+    oldString = oldString.replace(/\r?\n/g, '\r\n');
+    newString = newString.replace(/\r?\n/g, '\r\n');
+  }
   if (!oldString) {
     return { content: 'edit_file: old_string cannot be empty.', isError: true };
   }
@@ -1217,6 +1222,7 @@ export async function runOllamaToolLoop(
         model: args.model,
         messages: wireMessages,
         tools: nativeTools,
+        keepAlive: '30m',
         signal: roundAbort.signal,
       },
       (ev) => {
@@ -1351,8 +1357,9 @@ export async function runOllamaToolLoop(
         }
         args.messages.push({
           role: 'system',
-          content:
-            'You described what you would do but did not call a tool. Call the tool now using a <tool_call>{"name":"…","arguments":{…}}</tool_call> block. Do not narrate again — emit only the tool_call.',
+          content: nativeTools && nativeTools.length > 0
+            ? 'You described what you would do but did not call a tool. Call the tool now through the tool-calling API. Do not narrate again.'
+            : 'You described what you would do but did not call a tool. Call the tool now using a <tool_call>{"name":"…","arguments":{…}}</tool_call> block. Do not narrate again — emit only the tool_call.',
         });
         continue;
       }

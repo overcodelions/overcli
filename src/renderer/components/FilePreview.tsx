@@ -212,6 +212,11 @@ export function FilePreview({
 /// serves the document over `overcli-preview://` with its own policy and we
 /// point a scripts-enabled frame at it. The frame is still not same-origin,
 /// so the page can run but cannot reach the app around it.
+///
+/// Popups are withheld from this document-policy frame: `window.open` reaches
+/// `shell.openExternal`, and untrusted document content plus a live click
+/// path to launching an external URL is an exfiltration channel this preview
+/// has no reason to keep open.
 function HtmlPreview({ path, document: html }: { path: string; document: string }) {
   const [frameUrl, setFrameUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -245,7 +250,7 @@ function HtmlPreview({ path, document: html }: { path: string; document: string 
   return (
     <iframe
       title={`${path} preview`}
-      sandbox="allow-scripts allow-popups"
+      sandbox="allow-scripts"
       src={frameUrl}
       className="block w-full h-full border-0 bg-transparent"
     />
