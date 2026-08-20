@@ -35,7 +35,7 @@ import { useOrchestratorStore } from "../../orchestratorStore";
 import { useRunningMap } from "../../runnersStore";
 import { useStore } from "../../store";
 import { newWorkerDraft, useWorkersStore } from "../../workersStore";
-import { sortRoster, type Worker } from "@shared/flows/worker";
+import { sortRoster, workerTagline, type Worker } from "@shared/flows/worker";
 import type { TreasuryAllocation } from "@shared/flows/treasury";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { TRUST_LABEL } from "./WorkerRowParts";
@@ -496,6 +496,7 @@ function RosterRow({
 
   // Only what is true RIGHT NOW. Totals are history and live in Stats; putting
   // "11 done" here made an idle worker look busy.
+  const tagline = workerTagline(worker);
   const status = !worker.enabled
     ? "paused"
     : shift
@@ -516,7 +517,7 @@ function RosterRow({
           "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
           (selected ? "sidebar-row-selected text-ink" : "text-ink-muted")
         }
-        title={`${worker.name} · ${TRUST_LABEL[worker.trust].text}${
+        title={`${worker.name}${tagline ? ` — ${tagline}` : ''} · ${TRUST_LABEL[worker.trust].text}${
           summary.needReview > 0
             ? ` · ${summary.needReview} waiting for your review`
             : ""
@@ -557,9 +558,14 @@ function RosterRow({
           <span className="block truncate text-[13px] font-medium leading-tight">
             {worker.name}
           </span>
-          {status && (
+          {/* One second line, and what is happening beats what the worker is:
+              a tagline is true all day, so it must not sit on top of "working
+              a shift". Idle rows — most of the roster, most of the time — get
+              the tagline, which is the only thing telling six personas apart
+              at a glance. */}
+          {(status || tagline) && (
             <span className="block truncate text-[10px] font-normal leading-4 text-ink-faint">
-              {status}
+              {status ?? tagline}
             </span>
           )}
         </span>

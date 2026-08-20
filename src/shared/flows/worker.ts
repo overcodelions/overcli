@@ -35,6 +35,16 @@ export interface WorkerCaps {
 export interface Worker {
   id: UUID;
   name: string;
+  /// One line under the name: what this worker IS, in the roster's own words
+  /// ("the overcli innovator", "watches CI and files the flakes"). A roster of
+  /// six personas is a list of names you have to remember the meaning of, and
+  /// the job description is far too long to sit in a sidebar row.
+  ///
+  /// Optional because every worker hired before this field existed has none —
+  /// `workerTagline` derives a stand-in from the job description rather than
+  /// leaving those rows blank. Not used for planning: this is a label for the
+  /// human, and nothing in a shift prompt reads it.
+  tagline?: string;
   jobDescription: string;
   projectPath: string;
   cadence: ScheduleTrigger;
@@ -208,6 +218,13 @@ export type WorkerJournalKind =
   /// rejection streak must treat it as a terminator — the rejections that
   /// caused a demotion are spent, and must not count toward the next one.
   | 'demoted'
+  /// A note the USER wrote against a turn — the one journal kind nothing
+  /// automatic ever writes. It is memory, not decoration: the digest fed
+  /// into every planning turn carries it, so "the Panasonic ticket is
+  /// blocked on their side, stop re-proposing it" reaches the worker the
+  /// same way its own history does. Carries the orchestrationId of the turn
+  /// it was written against, so the desk can show it where it was left.
+  | 'note'
   /// A weekly compaction pass ran and archived some of this worker's older
   /// filed work. Journal entries themselves are never folded — see
   /// `WorkerEngine.compactIfDue`.
@@ -233,6 +250,12 @@ export interface WorkerJournalEntry {
 /// its data source. Long enough that a first report has a trend in it, short
 /// enough that shift #1 doesn't cost more than the next fifty combined.
 export const WORKER_FIRST_RUN_WINDOW_DAYS = 90;
+
+/// A note is a line to a worker, not a brief. It rides in every planning
+/// digest from here on, so an essay pasted here costs prompt budget on every
+/// shift forever — and the thing you wanted to say is nearly always one
+/// sentence.
+export const WORKER_NOTE_MAX = 600;
 
 export const WORKER_MAX_ITEMS_PER_SHIFT = 5;
 export const WORKER_MIN_JOB_DESCRIPTION = 20;
@@ -380,6 +403,50 @@ export function validateWorker(w: Partial<Worker>): string | null {
   return null;
 }
 
+/// How long a tagline may be. A sidebar row truncates anything longer, so a
+/// paragraph pasted here would read as a name that trails off — clamp at the
+/// point where it still fits the column it was written for.
+export const WORKER_TAGLINE_MAX = 72;
+
+/// Openers a job description almost always starts with, which say nothing
+/// once the text is sitting under the worker's own name.
+const TAGLINE_PREAMBLE = /^(?:you(?:'re| are)\s+)?(?:the|a|an)\s+/i;
+
+/// The line to show under a worker's name. Explicit tagline when it has one;
+/// otherwise the opening of its job description, which is where a hired
+/// worker's "what it is" already lives. Returns '' when there is nothing to
+/// say — callers render no second line at all rather than an empty one.
+export function workerTagline(worker: Pick<Worker, 'tagline' | 'jobDescription'>): string {
+  const explicit = worker.tagline?.trim();
+  if (explicit) return clampTagline(explicit);
+  return clampTagline(deriveTagline(worker.jobDescription ?? ''));
+}
+
+function deriveTagline(job: string): string {
+  const first = job
+    .trim()
+    // Only the first line matters: job descriptions are written as briefs, and
+    // a bulleted one whose opening line is "Your job:" says more in that line
+    // than in the paragraph it introduces.
+    .split(/\n/)[0]
+    // The first sentence, or the first clause when the opening sentence is a
+    // colon-introduced list ("You're the Support Triage Worker: read new
+    // tickets…" — the half before the colon is the persona).
+    .split(/(?<=[.!?])\s|:\s/)[0]
+    .trim();
+  return first.replace(TAGLINE_PREAMBLE, '').replace(/[.,;:]+$/, '');
+}
+
+function clampTagline(text: string): string {
+  const one = text.replace(/\s+/g, ' ').trim();
+  if (one.length <= WORKER_TAGLINE_MAX) return one;
+  // Cut on a word so the ellipsis reads as "there is more" rather than as a
+  // typo in the middle of a word.
+  const cut = one.slice(0, WORKER_TAGLINE_MAX);
+  const space = cut.lastIndexOf(' ');
+  return `${(space > WORKER_TAGLINE_MAX / 2 ? cut.slice(0, space) : cut).trimEnd()}\u2026`;
+}
+
 // ---- Hire contract ------------------------------------------------------
 
 /// What the hire drafter proposes and the user reviews before clicking Hire.
@@ -387,6 +454,8 @@ export function validateWorker(w: Partial<Worker>): string | null {
 /// optional request to draft a new flow when none of the existing ones fit.
 export interface WorkerContract {
   name: string;
+  /// The one-line "what this is" shown under the name on the roster.
+  tagline?: string;
   jobDescription: string;
   cadence: ScheduleTrigger;
   maxItemsPerShift: number;
@@ -437,6 +506,8 @@ export function parseWorkerContract(
   const e = parsed as Record<string, unknown>;
 
   const name = typeof e.name === 'string' ? e.name.trim() : '';
+  const tagline =
+    typeof e.tagline === 'string' && e.tagline.trim() ? clampTagline(e.tagline) : undefined;
   const jobDescription = typeof e.jobDescription === 'string' ? e.jobDescription.trim() : '';
   if (!name && !jobDescription) return null;
 
@@ -464,6 +535,7 @@ export function parseWorkerContract(
 
   return {
     name: name || 'Worker',
+    tagline,
     jobDescription,
     cadence: coerceCadence(e.cadence),
     maxItemsPerShift,

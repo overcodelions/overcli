@@ -91,10 +91,11 @@ import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
-import { TURBO_SYSTEM_PROMPT, resolveTurboEffort } from './backends/turbo';
+import { withBatchingDirective, resolveTurboEffort } from './backends/turbo';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
+import { effortSupported } from '../shared/effort';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -209,6 +210,30 @@ export function canPrewarm(args: {
     return args.claudeTransport !== 'sdk' && !args.claudeSdkFallback;
   }
   return args.backend === 'codex';
+}
+
+/// The turn state the idle reap should judge a subprocess by.
+///
+/// `turnInFlight` is undefined for two unrelated reasons: a transport that
+/// cannot report turn state (ollama, gemini ACP — treated as "still
+/// working"), and a process on which no turn has ever *started*. `spawnFor`
+/// never stamps the field and a prewarm never writes stdin, so an unused
+/// prewarm sits at undefined for its whole life. Left as-is, that trips
+/// `shouldReapIdle`'s first guard before `canResume` is ever read — which
+/// made the reap's `unusedPrewarm` allowance dead code, and an unused
+/// prewarm immortal: exactly the leak that allowance was written to close.
+///
+/// A never-used prewarm has no turn by definition, so resolve it here
+/// rather than flipping the stamp in `spawnFor`: `hasWorkInFlight` and
+/// `staleRunningReason` read the same field and want the conservative
+/// "assume busy" reading for a freshly spawned process.
+export function reapTurnInFlight(args: {
+  /// Spawned by `prewarm` and not yet used for a real turn.
+  prewarmed?: boolean;
+  turnInFlight?: boolean;
+}): boolean | undefined {
+  if (args.prewarmed) return false;
+  return args.turnInFlight;
 }
 
 export function shouldReapIdle(args: {
@@ -942,7 +967,9 @@ export class RunnerManager {
       const unusedPrewarm = !!active.prewarmed;
       if (
         !shouldReapIdle({
-          turnInFlight: active.turnInFlight,
+          // See `reapTurnInFlight`: an unused prewarm reads as undefined
+          // here, which would reject it before `canResume` below is read.
+          turnInFlight: reapTurnInFlight(active),
           hasPendingPrompts,
           canResume: !!active.sessionId || codexExec || unusedPrewarm,
           lastActivityAt: active.lastActivityAt,
@@ -2029,12 +2056,16 @@ export class RunnerManager {
 
     try {
       const existing = this.procs.get(convId);
+      // The user's configured tier, kept separate from anything a future
+      // caller might substitute, so `paramsChanged` and the launch stamp
+      // always compare against what the user actually chose.
+      const configuredEffort = args.effortLevel ?? '';
       const paramsChanged =
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
-          existing.launchEffort !== args.effortLevel ||
+          existing.launchEffort !== configuredEffort ||
           existing.cwd !== args.cwd);
       // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
       // per turn via turn/start params, so a permission-mode (or model/cwd) change
@@ -2053,14 +2084,20 @@ export class RunnerManager {
         if (resumeId !== args.sessionId) args = { ...args, sessionId: resumeId };
         this.killProc(convId);
       }
+      const spawnedNow = !this.procs.get(convId);
       const active = this.procs.get(convId) ?? this.spawnFor(args);
+      // spawnFor stamps whatever effort argv got, which under auto-effort is
+      // this turn's classified tier. The stamp has to hold the *configured*
+      // tier instead or the next turn reads its own auto-lowering back as a
+      // user-initiated change and respawns.
+      if (spawnedNow) active.launchEffort = configuredEffort;
       // App-server hot-swap: refresh the launch stamp so subsequent
       // sends compare against the latest params, and re-emit codexRuntimeMode
       // so the header shows the new sandbox/approval pair immediately.
       if (canHotSwap && paramsChanged) {
         active.launchPermissionMode = args.permissionMode;
         active.launchModel = args.model;
-        active.launchEffort = args.effortLevel;
+        active.launchEffort = configuredEffort;
         const perms = codexTransportPermissions(args.permissionMode);
         this.emit({
           type: 'codexRuntimeMode',
@@ -3985,11 +4022,10 @@ export class RunnerManager {
   ): Promise<void> {
     try {
       const transport = codexTransportPermissions(args.permissionMode);
-      // The app-server transport bypasses `buildEnvelope`, so turbo's
+      // The app-server transport bypasses `buildEnvelope`, so the batching
       // directive has to be prepended here too or it would apply on the
       // exec transport only.
-      const turboPrompt = args.turbo ? `${TURBO_SYSTEM_PROMPT}\n\n${args.prompt}` : args.prompt;
-      const result = await active.codexAppServer!.sendUserInput(turboPrompt, {
+      const result = await active.codexAppServer!.sendUserInput(withBatchingDirective(args.prompt), {
         cwd: args.cwd,
         model: args.model,
         sandbox: transport.sandbox as CodexAppServerSandboxMode,

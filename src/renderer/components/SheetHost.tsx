@@ -22,6 +22,7 @@ import { FlowRunReviewSheet } from './sheets/FlowRunReviewSheet';
 import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
 import { ArchiveAllSheet } from './sheets/ArchiveAllSheet';
 import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSheet';
+import { ShiftReaderSheet } from './workers/ShiftReaderSheet';
 
 /// The diff sheets need much more horizontal room than everything else
 /// (sidebar + full-width diff body), so we widen the container frame
@@ -39,6 +40,9 @@ const WIDE_SHEETS = new Set<string>([
   'colosseumCompare',
   'bulkConversationActions',
   'capabilities',
+  // A planning turn is a document. The whole point of opening it here is the
+  // room the desk could not give it.
+  'shiftReader',
 ]);
 
 /// Sheets that already render as their own floating card. They get the
@@ -115,6 +119,12 @@ export function SheetHost() {
           <WorkspaceAgentReviewSheet coordinatorId={sheet.coordinatorId} />
         )}
         {sheet.type === 'flowRunReview' && <FlowRunReviewSheet runId={sheet.runId} />}
+        {sheet.type === 'shiftReader' && (
+          <ShiftReaderSheet
+            workerId={sheet.workerId}
+            orchestrationId={sheet.orchestrationId}
+          />
+        )}
         {sheet.type === 'archiveConversation' && (
           <ArchiveConversationSheet convId={sheet.convId} />
         )}

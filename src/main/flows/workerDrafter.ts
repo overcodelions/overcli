@@ -7,7 +7,7 @@
 // the flow builder uses. Nothing is saved here: the renderer shows the
 // contract, the user adjusts, and only the Hire click persists anything.
 
-import type { Backend } from '../../shared/types';
+import type { Attachment, Backend } from '../../shared/types';
 import type { FlowModelDefaults } from '../../shared/modelCatalog';
 import type { Flow } from '../../shared/flows/schema';
 import { drafterModelHints } from '../../shared/flows/drafterBackend';
@@ -61,6 +61,7 @@ function hireSystemPrompt(
     '<worker>',
     '{',
     '  "name": "short persona name, e.g. Scout",',
+    '  "tagline": "one line under the name — what this worker IS, e.g. \'the overcli innovator\' or \'watches CI and files the flakes\'",',
     '  "jobDescription": "the job, rewritten to be self-contained and explicit — the worker plans every shift from ONLY this text plus its own journal",',
     '  "cadence": { "kind": "daily", "time": "09:00", "days": [1, 2, 3, 4, 5] },',
     `  "maxItemsPerShift": ${Math.min(3, WORKER_MAX_ITEMS_PER_SHIFT)},`,
@@ -90,7 +91,27 @@ function hireSystemPrompt(
     '  - projectPath is optional and must be an exact path from the projects list when clear.',
     '  - Budget: modest by default ($5–$25/month) unless the description implies heavy work.',
     '  - Days use 0 = Sunday … 6 = Saturday.',
+    '  - Tagline: at most 70 characters, no trailing period, and it must say what the worker',
+    '    IS rather than repeat its name — it sits under the name on the roster.',
     '  - Do not invent fields. Do not write anything after </worker>.',
+  ].join('\n');
+}
+
+/// Attached files reach the CLI through its own attachment channel, which
+/// for most backends means "written to disk, path inlined" — the model sees
+/// them, but nothing in the prompt says they are the user's, or that they
+/// are meant to be read. This names them so a drafting turn treats them as
+/// source material rather than stray context.
+function attachmentAwareMessage(message: string, attachments?: Attachment[]): string {
+  if (!attachments || attachments.length === 0) return message;
+  const names = attachments.map((a) => a.label ?? 'an attached file');
+  return [
+    message,
+    '',
+    `ATTACHED FILES (${names.length}): ${names.join(', ')}`,
+    'The user attached these to this request. Read them and treat them as source material —',
+    'a spec, an example of the deliverable, or data the work is about. Where they conflict',
+    'with the prose above, ask yourself which is more specific and follow that.',
   ].join('\n');
 }
 
@@ -98,7 +119,15 @@ function hireSystemPrompt(
 /// plus a drafted Flow when the contract asked for one. The contract's
 /// summary prose rides along for the review screen.
 export async function draftWorkerFromPrompt(
-  args: { jobDescription: string; flows: HireFlowOption[]; projects: HireProjectOption[] },
+  args: {
+    jobDescription: string;
+    flows: HireFlowOption[];
+    projects: HireProjectOption[];
+    /// Files the user attached to the hire — a spec for the job, an example
+    /// of the deliverable, a screenshot of the board to work from. They ride
+    /// with BOTH turns: the contract turn and, when one runs, the flow draft.
+    attachments?: Attachment[];
+  },
   deps: DraftDeps,
 ): Promise<
   | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow; flowError?: string }
@@ -110,7 +139,8 @@ export async function draftWorkerFromPrompt(
   const out = await oneShotDraftText(deps, {
     buildSystemPrompt: (backend) =>
       hireSystemPrompt(backend, args.flows, args.projects, deps.settings.flowModelDefaults),
-    userMessage: `JOB DESCRIPTION:\n${jobDescription}`,
+    userMessage: attachmentAwareMessage(`JOB DESCRIPTION:\n${jobDescription}`, args.attachments),
+    attachments: args.attachments,
     verb: 'hire',
   });
   if (!out.ok) return out;
@@ -153,7 +183,10 @@ export async function draftWorkerFromPrompt(
   if (!flowRequest) return { ok: true, contract, summary };
 
   const drafted = await draftFlowFromPrompt(
-    { description: flowDraftDescription(flowRequest, contract.jobDescription) },
+    {
+      description: flowDraftDescription(flowRequest, contract.jobDescription),
+      attachments: args.attachments,
+    },
     deps,
   );
   if (!drafted.ok) {
@@ -251,6 +284,10 @@ export async function reviseWorkerFromPrompt(
     /// The worker's primary flow, when it has one — full Flow so the reviser
     /// can hand its YAML to the flow editor.
     flow?: Flow;
+    /// Files attached to the instruction. They ride with the routing turn AND
+    /// with the flow edit it delegates to: "make the report look like this
+    /// example" is unanswerable by the flow editor without the example.
+    attachments?: Attachment[];
   },
   deps: DraftDeps,
 ): Promise<
@@ -280,7 +317,8 @@ export async function reviseWorkerFromPrompt(
 
   const out = await oneShotDraftText(deps, {
     buildSystemPrompt: () => reviseSystemPrompt(),
-    userMessage,
+    userMessage: attachmentAwareMessage(userMessage, args.attachments),
+    attachments: args.attachments,
     verb: 'revise',
   });
   if (!out.ok) return out;
@@ -318,7 +356,10 @@ export async function reviseWorkerFromPrompt(
   // flow picker.
   if (!args.flow) {
     const drafted = await draftFlowFromPrompt(
-      { description: flowDraftDescription(flowInstruction, jobDescription ?? args.jobDescription) },
+      {
+        description: flowDraftDescription(flowInstruction, jobDescription ?? args.jobDescription),
+        attachments: args.attachments,
+      },
       deps,
     );
     if (!drafted.ok) {
@@ -336,7 +377,12 @@ export async function reviseWorkerFromPrompt(
   // schema prompt, repairs, validation — so an AI worker revision can't
   // produce a flow state a hand edit couldn't.
   const revised = await reviseFlowFromPrompt(
-    { yaml: serializeFlow(args.flow), instruction: flowInstruction, id: args.flow.id },
+    {
+      yaml: serializeFlow(args.flow),
+      instruction: flowInstruction,
+      id: args.flow.id,
+      attachments: args.attachments,
+    },
     deps,
   );
   if (!revised.ok) {

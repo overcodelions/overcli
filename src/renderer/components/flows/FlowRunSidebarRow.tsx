@@ -122,6 +122,20 @@ export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
   );
 }
 
+/// Whether a WORKER's run earns a slot in Active. Stricter than
+/// `runIsActive` on purpose: a worker run is machine-started, and the Active
+/// section is the user's own workbench. It gets in while it is genuinely
+/// happening — orchestrating, or stopped waiting for the user — and leaves
+/// the moment it stops, with no recency grace and no backfill. The worker's
+/// desk remains the place to read a finished one.
+export function workerRunIsActive(
+  run: FlowRun,
+  runners: Record<string, { isRunning: boolean } | undefined>,
+): boolean {
+  if (run.state.kind === 'archived' || run.state.kind === 'done') return false;
+  return runIsLive(run, runners) || run.state.kind === 'paused' || run.state.kind === 'watching';
+}
+
 /// Top-active row designed to be a visual sibling of RecentConversationRow:
 /// left marker (pulsing while live, ✓ when done, dot otherwise), title +
 /// quiet owner subtitle. No monogram, no right-side state badge — the
@@ -140,7 +154,7 @@ export function ActiveFlowRow({
   run: FlowRun;
   isLive: boolean;
   ownerName: string;
-  ownerKind: 'project' | 'workspace' | 'unknown';
+  ownerKind: 'project' | 'workspace' | 'unknown' | 'worker';
   onClick: () => void;
 }) {
   const renameRun = useFlowsStore((s) => s.renameRun);
@@ -200,7 +214,9 @@ export function ActiveFlowRow({
         <span className="block truncate">{runTitle(run)}</span>
         <span className="block truncate text-[9px] leading-3.5 text-ink-faint">
           {ownerKind === 'workspace' ? 'workspace · ' : ''}
-          {ownerName}
+          {/* Named for its WORKER, not its project: this run is one nobody
+              started by hand, and the row has to say so before you click it. */}
+          {ownerKind === 'worker' ? `${ownerName} · worker` : ownerName}
         </span>
       </span>
     </button>

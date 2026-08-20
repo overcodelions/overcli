@@ -33,6 +33,9 @@ import type { ScheduleTrigger } from '@shared/flows/schedule';
 export interface WorkerDraft {
   id?: UUID;
   name: string;
+  /// The one-line "what this is" under the name on the roster. Blank is
+  /// allowed — the roster falls back to the job description's opening.
+  tagline?: string;
   jobDescription: string;
   projectPath: string;
   cadence: ScheduleTrigger;
@@ -115,9 +118,105 @@ interface WorkersState {
   /// can be LOOKED at — the one screen you cannot reach once the feature is
   /// working, and therefore the one that rots. Gated behind the debug setting.
   previewEmpty: boolean;
+  /// A short, modal act the editor is in the middle of: saving a contract, or
+  /// reading an import off disk. Deliberately NOT "a worker is doing
+  /// something" — `workers:workShiftNow` does not resolve until the whole
+  /// planning turn has run, which is minutes, and holding one app-wide flag
+  /// across that made clicking Work now on one worker disable Save on every
+  /// worker's editor until the shift finished. Per-worker work is tracked per
+  /// worker: `shiftStarting`, `shiftProgress`, `errandBusy`.
   busy: boolean;
+  /// Workers whose manual shift has been asked for but has not yet been
+  /// announced as running. It is the gap between the click and the engine's
+  /// first `workerShiftProgress` event — without it the button stays live
+  /// through that gap and a second click earns "A shift is already starting."
+  shiftStarting: Record<string, boolean>;
+  error: string | null;
+  /// The hire screen, hoisted out of the pane component.
+  ///
+  /// Drafting a contract is two full CLI turns and can run for minutes, and
+  /// the pane unmounts the moment you switch tabs or open a worker — which
+  /// used to throw away the typed job description AND the reply that was
+  /// still on its way. Living here, the turn keeps running, the result lands
+  /// wherever the user happens to be, and coming back shows either the form
+  /// as it was left or the editor the draft opened.
+  hire: HireState;
+  /// AI revisions, keyed by the worker each one is about (`draft:<seq>` for
+  /// a hire draft with no id yet).
+  ///
+  /// Per worker, not one global box: a revision runs for minutes and you can
+  /// open anyone else's editor while it does, and a single shared box put
+  /// Prometheus's instruction and its "Revising…" spinner inside Chief of
+  /// Staff's editor — which reads as the app having lost track of which
+  /// worker you are editing. Each editor now shows only its own.
+  revise: Record<string, ReviseState>;
+  /// Bumped every time the editor opens on something. A revision that lands
+  /// after the user moved on compares this against the value it started with,
+  /// so it can't rewrite a different worker's job description. Ids can't do
+  /// that job — an unsaved hire draft doesn't have one yet.
+  draftSeq: number;
+}
+
+export interface HireState {
+  /// Whether the hire screen is what the Workers tab should show.
+  open: boolean;
+  jobDescription: string;
+  projectPath: string;
+  /// Whether the user picked the project themselves. An explicit choice beats
+  /// the drafter's suggestion; the untouched default loses to it.
+  projectTouched: boolean;
+  /// Files attached to the job description — a spec, an example of the
+  /// deliverable, a screenshot of the board the worker will work from.
+  attachments: Attachment[];
+  /// Epoch ms the in-flight drafting turn started, or null when idle. Stored
+  /// rather than derived so the elapsed counter doesn't restart at zero every
+  /// time the screen remounts.
+  startedAt: number | null;
   error: string | null;
 }
+
+export interface ReviseState {
+  instruction: string;
+  attachments: Attachment[];
+  startedAt: number | null;
+  error: string | null;
+  /// The reviser's prose read on what it changed, kept until dismissed.
+  note: string | null;
+  /// Which worker the running revision is about, so the tab can say whose it
+  /// is while the editor is closed. Null for a hire draft not yet saved.
+  targetWorkerId: string | null;
+  /// A finished revision with nowhere to go yet: it landed while the editor
+  /// was closed, or on somebody else. Held rather than dropped — the turn
+  /// took minutes, and "you clicked away, so it was thrown out" is the exact
+  /// failure this whole background-drafting change exists to prevent. It is
+  /// applied the next time that worker's editor opens.
+  pending: {
+    workerId: string;
+    jobDescription?: string;
+    flow?: Flow;
+    note: string;
+  } | null;
+}
+
+const IDLE_HIRE: HireState = {
+  open: false,
+  jobDescription: '',
+  projectPath: '',
+  projectTouched: false,
+  attachments: [],
+  startedAt: null,
+  error: null,
+};
+
+export const IDLE_REVISE: ReviseState = {
+  instruction: '',
+  attachments: [],
+  startedAt: null,
+  error: null,
+  note: null,
+  targetWorkerId: null,
+  pending: null,
+};
 
 interface WorkersActions {
   reload(): Promise<void>;
@@ -131,6 +230,19 @@ interface WorkersActions {
   ): void;
   closeEditor(): void;
   patchDraft(patch: Partial<WorkerDraft>): void;
+  /// Open the hire screen, seeded with the project to work against. A hire
+  /// already in flight is never disturbed — reopening returns you to it.
+  openHire(defaultProjectPath: string): void;
+  closeHire(): void;
+  patchHire(patch: Partial<HireState>): void;
+  /// Run the hire drafter. Resolves when the turn lands; the result is
+  /// applied to the store either way, so nothing depends on the caller still
+  /// being mounted.
+  startHire(): Promise<void>;
+  patchRevise(patch: Partial<ReviseState>): void;
+  /// Run one AI revision against the open draft. Same deal: the result lands
+  /// on the store, not on a component.
+  startRevise(): Promise<void>;
   /// Land an AI revision on the open draft: new job description text and/or
   /// a revised flow that will save alongside the worker.
   applyRevision(patch: { jobDescription?: string; flow?: Flow }): void;
@@ -165,6 +277,11 @@ interface WorkersActions {
   runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
   clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
+  /// Leave a note against one of this worker's turns. It becomes a journal
+  /// entry, so the worker reads it before planning its next shift. Resolves
+  /// true when it landed; the journal is reloaded either way, since it is what
+  /// every surface showing notes reads from.
+  addNote(id: string, orchestrationId: string, note: string): Promise<boolean>;
   /// Return this worker to a just-hired clean slate. Resolves to what was
   /// thrown away so the caller can say it out loud, or null on failure.
   resetMemory(id: string): Promise<{
@@ -210,6 +327,7 @@ interface WorkersActions {
 export function newWorkerDraft(projectPath: string): WorkerDraft {
   return {
     name: '',
+    tagline: '',
     jobDescription: '',
     projectPath,
     cadence: { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] },
@@ -225,6 +343,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
   return {
     id: w.id,
     name: w.name,
+    tagline: w.tagline ?? '',
     jobDescription: w.jobDescription,
     projectPath: w.projectPath,
     cadence: structuredClone(w.cadence),
@@ -247,6 +366,7 @@ export function draftFromContract(
 ): WorkerDraft {
   return {
     name: contract.name,
+    tagline: contract.tagline ?? '',
     jobDescription: contract.jobDescription,
     projectPath,
     cadence: structuredClone(contract.cadence),
@@ -281,6 +401,9 @@ export function draftFromPortable(
   const available = new Set(availableFlowIds);
   return {
     name: worker.name,
+    // The share file's description IS the arriving worker's tagline — see
+    // `buildWorkerShare`, which writes one from the other.
+    tagline: worker.description ?? '',
     jobDescription: worker.jobDescription,
     projectPath,
     cadence: structuredClone(worker.cadence),
@@ -328,6 +451,36 @@ async function applyRosterOrder(
   await window.overcli.invoke('workers:reorder', { ids });
 }
 
+/// Where the open draft's revision state lives. A saved worker is keyed by
+/// its id, which survives the editor being closed and reopened; a hire draft
+/// has no id yet, so it is keyed by the editor opening that produced it and
+/// is therefore gone for good once you leave it — which is correct, since so
+/// is the draft.
+function reviseKey(draft: WorkerDraft | null, draftSeq: number): string | null {
+  if (!draft) return null;
+  return draft.id ?? `draft:${draftSeq}`;
+}
+
+/// Drop the open editor's revision entry when it has nothing left to do — a
+/// finished, read box shouldn't outlive the editor it belongs to. One still
+/// running, or holding a result, is kept.
+function forgetIdleRevision(st: WorkersState): Record<string, ReviseState> {
+  const key = reviseKey(st.draft, st.draftSeq);
+  const entry = key ? st.revise[key] : undefined;
+  if (!key || !entry || entry.startedAt || entry.pending) return st.revise;
+  const next = { ...st.revise };
+  delete next[key];
+  return next;
+}
+
+/// The revision state for whatever editor is open. Returns the shared idle
+/// object rather than a fresh one, so a selector on it doesn't re-render on
+/// every store tick.
+export function selectRevise(s: WorkersState): ReviseState {
+  const key = reviseKey(s.draft, s.draftSeq);
+  return (key ? s.revise[key] : undefined) ?? IDLE_REVISE;
+}
+
 export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) => ({
   loaded: false,
   workers: {},
@@ -351,7 +504,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   deskFocus: null,
   previewEmpty: false,
   busy: false,
+  shiftStarting: {},
   error: null,
+  hire: IDLE_HIRE,
+  revise: {},
+  draftSeq: 0,
 
   async reload() {
     const [rows, funds] = await Promise.all([
@@ -428,6 +585,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const scorecards = { ...s.scorecards };
       const journals = { ...s.journals };
       const shiftProgress = { ...s.shiftProgress };
+      const shiftStarting = { ...s.shiftStarting };
       const errandBusy = { ...s.errandBusy };
       const errandSending = { ...s.errandSending };
       const errandError = { ...s.errandError };
@@ -437,6 +595,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       delete scorecards[id];
       delete journals[id];
       delete shiftProgress[id];
+      delete shiftStarting[id];
       delete errandBusy[id];
       delete errandSending[id];
       delete errandError[id];
@@ -447,6 +606,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         scorecards,
         journals,
         shiftProgress,
+        shiftStarting,
         errandBusy,
         errandSending,
         errandError,
@@ -510,21 +670,210 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   openEditor(draft, extras) {
-    set({
-      draft,
-      draftedFlow: extras?.draftedFlow ?? null,
-      hireSummary: extras?.hireSummary ?? null,
-      hireFlowError: extras?.hireFlowError ?? null,
-      error: null,
+    set((st) => {
+      const draftSeq = st.draftSeq + 1;
+      // A revision that finished while this worker's editor was closed has
+      // been waiting for exactly this moment.
+      const key = reviseKey(draft, draftSeq)!;
+      const held = st.revise[key]?.pending ?? null;
+      return {
+        draft: held?.jobDescription
+          ? { ...draft, jobDescription: held.jobDescription }
+          : draft,
+        draftedFlow: held?.flow ?? extras?.draftedFlow ?? null,
+        hireSummary: extras?.hireSummary ?? null,
+        hireFlowError: held?.flow ? null : (extras?.hireFlowError ?? null),
+        error: null,
+        draftSeq,
+        revise: held
+          ? {
+              ...st.revise,
+              [key]: {
+                ...IDLE_REVISE,
+                note: `${held.note}\n\n(That revision finished while this editor was closed, and has been applied to the draft now.)`,
+              },
+            }
+          : st.revise,
+      };
     });
   },
 
   closeEditor() {
-    set({ draft: null, draftedFlow: null, hireSummary: null, hireFlowError: null, error: null });
+    set((st) => ({
+      draft: null,
+      draftedFlow: null,
+      hireSummary: null,
+      hireFlowError: null,
+      error: null,
+      // A revision still running (or one holding a result) keeps its entry so
+      // it has somewhere to land; a finished, read box is forgotten.
+      revise: forgetIdleRevision(st),
+    }));
   },
 
   patchDraft(patch) {
     set((s) => (s.draft ? { draft: { ...s.draft, ...patch }, error: null } : {}));
+  },
+
+  openHire(defaultProjectPath) {
+    set((st) => ({
+      hire: st.hire.startedAt
+        ? { ...st.hire, open: true }
+        : { ...st.hire, open: true, projectPath: st.hire.projectPath || defaultProjectPath },
+    }));
+  },
+
+  closeHire() {
+    // Closing is "put this screen away", not "cancel the draft". A turn in
+    // flight keeps running and still lands in the editor when it returns —
+    // so the form it was launched from is kept exactly as it was.
+    set((st) => ({
+      hire: st.hire.startedAt ? { ...st.hire, open: false } : { ...IDLE_HIRE },
+    }));
+  },
+
+  patchHire(patch) {
+    set((st) => ({ hire: { ...st.hire, ...patch } }));
+  },
+
+  async startHire() {
+    const { hire } = get();
+    if (hire.startedAt) return; // already drafting — one turn at a time
+    const jobDescription = hire.jobDescription.trim();
+    if (!jobDescription) {
+      set((st) => ({
+        hire: {
+          ...st.hire,
+          error: 'Describe the job first — the worker plans every shift from it.',
+        },
+      }));
+      return;
+    }
+    set((st) => ({ hire: { ...st.hire, startedAt: Date.now(), error: null } }));
+    try {
+      const result = await window.overcli.invoke('workers:draftFromPrompt', {
+        jobDescription,
+        attachments: hire.attachments.length > 0 ? hire.attachments : undefined,
+      });
+      if (!result.ok) {
+        set((st) => ({ hire: { ...st.hire, startedAt: null, error: result.error } }));
+        return;
+      }
+      // The picker may have moved while the turn ran; read it fresh.
+      const current = get().hire;
+      const chosenPath = current.projectTouched
+        ? current.projectPath
+        : (result.contract.projectPath ?? current.projectPath);
+      get().openEditor(
+        draftFromContract(result.contract, chosenPath, result.contract.flowId),
+        {
+          draftedFlow: result.draftedFlow,
+          hireSummary: result.summary || undefined,
+          hireFlowError: result.flowError,
+        },
+      );
+      // The hire's own form is done with; other workers' revisions are not
+      // this hire's business and keep running.
+      set({ hire: { ...IDLE_HIRE } });
+    } catch (err) {
+      set((st) => ({
+        hire: {
+          ...st.hire,
+          startedAt: null,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }));
+    }
+  },
+
+  patchRevise(patch) {
+    set((st) => {
+      const key = reviseKey(st.draft, st.draftSeq);
+      if (!key) return {};
+      return {
+        revise: { ...st.revise, [key]: { ...(st.revise[key] ?? IDLE_REVISE), ...patch } },
+      };
+    });
+  },
+
+  async startRevise() {
+    const { draft, draftedFlow, draftSeq } = get();
+    const key = reviseKey(draft, draftSeq);
+    if (!draft || !key) return;
+    const entry = get().revise[key] ?? IDLE_REVISE;
+    if (entry.startedAt) return;
+    const instruction = entry.instruction.trim();
+    if (!instruction) return;
+    // A ride-along flow (hire-drafted or already revised) is unsaved — main
+    // can't load it by id, so ship the object; it's also the freshest state
+    // when the flow was revised before. But only when it's still the SELECTED
+    // flow — after a manual re-pick, the saved pick wins.
+    const rideAlong =
+      draftedFlow && (draft.flowIds.length === 0 || draft.flowIds[0] === draftedFlow.id)
+        ? draftedFlow
+        : undefined;
+    const editedWorkerId = draft.id ?? null;
+    const patchEntry = (patch: Partial<ReviseState>) =>
+      set((st) => ({
+        revise: { ...st.revise, [key]: { ...(st.revise[key] ?? IDLE_REVISE), ...patch } },
+      }));
+
+    patchEntry({
+      startedAt: Date.now(),
+      error: null,
+      targetWorkerId: editedWorkerId,
+      pending: null,
+    });
+    try {
+      const res = await window.overcli.invoke('workers:reviseFromPrompt', {
+        jobDescription: draft.jobDescription,
+        flow: rideAlong,
+        flowId: rideAlong ? undefined : draft.flowIds[0],
+        instruction,
+        attachments: entry.attachments.length > 0 ? entry.attachments : undefined,
+      });
+      if (!res.ok) {
+        patchEntry({ startedAt: null, error: res.error });
+        return;
+      }
+      // The editor may have been closed, or swapped to another worker, while
+      // the turn ran — clicking any worker in the roster closes it. The result
+      // belongs to the worker it was asked about and to no other, so it lands
+      // only when that same editor is what's open.
+      if (reviseKey(get().draft, get().draftSeq) === key) {
+        get().applyRevision({ jobDescription: res.jobDescription, flow: res.flow });
+        set((st) => ({ revise: { ...st.revise, [key]: { ...IDLE_REVISE, note: res.note } } }));
+        return;
+      }
+      if (editedWorkerId) {
+        // Hold it for that worker rather than throwing minutes of work away;
+        // opening its editor again applies it.
+        set((st) => ({
+          revise: {
+            ...st.revise,
+            [key]: {
+              ...IDLE_REVISE,
+              pending: {
+                workerId: editedWorkerId,
+                jobDescription: res.jobDescription,
+                flow: res.flow,
+                note: res.note,
+              },
+            },
+          },
+        }));
+        return;
+      }
+      // A hire draft that was discarded mid-revision: there is nothing left
+      // to apply it to, and nothing that could ever reopen it.
+      set((st) => {
+        const next = { ...st.revise };
+        delete next[key];
+        return { revise: next };
+      });
+    } catch (err) {
+      patchEntry({ startedAt: null, error: err instanceof Error ? err.message : String(err) });
+    }
   },
 
   applyRevision(patch) {
@@ -564,14 +913,23 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         await useFlowsStore.getState().reload(projectPaths);
       }
       const res = await window.overcli.invoke('workers:save', {
-        worker: { ...draft, flowIds },
+        // An emptied tagline field is "no tagline", not a blank one: the
+        // roster falls back to the job description only when the field is
+        // absent, and a stored '' would render an empty second line forever.
+        worker: { ...draft, tagline: draft.tagline?.trim() || undefined, flowIds },
       });
       if (!res.ok) {
         set({ error: res.error });
         return false;
       }
       // The `workerUpdate` push has already landed the record; just close.
-      set({ draft: null, draftedFlow: null, hireSummary: null, hireFlowError: null });
+      set((st) => ({
+        draft: null,
+        draftedFlow: null,
+        hireSummary: null,
+        hireFlowError: null,
+        revise: forgetIdleRevision(st),
+      }));
       return true;
     } finally {
       set({ busy: false });
@@ -599,12 +957,19 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async workShiftNow(id) {
-    set({ busy: true, error: null });
+    set((s) => ({ shiftStarting: { ...s.shiftStarting, [id]: true }, error: null }));
     try {
       const res = await window.overcli.invoke('workers:workShiftNow', { id });
       if (!res.ok) set({ error: res.error });
     } finally {
-      set({ busy: false });
+      // This resolves when the whole shift has been planned, not when it
+      // started — by then `shiftProgress` has long since taken over saying
+      // the worker is busy, and this flag has nothing left to hold.
+      set((s) => {
+        const shiftStarting = { ...s.shiftStarting };
+        delete shiftStarting[id];
+        return { shiftStarting };
+      });
     }
   },
 
@@ -651,6 +1016,16 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       delete errandResult[id];
       return { errandError, errandResult };
     });
+  },
+
+  async addNote(id, orchestrationId, note) {
+    const res = await window.overcli.invoke('workers:note', { id, orchestrationId, note });
+    if (!res.ok) {
+      set({ error: res.error });
+      return false;
+    }
+    await get().loadJournal(id);
+    return true;
   },
 
   async loadJournal(id) {

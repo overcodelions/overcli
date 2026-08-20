@@ -66,20 +66,86 @@ const order = (projects: Project[], runs: FlowRun[], runners: any, selection: an
   ).map((c) => (c.entry.kind === 'flow' ? c.entry.run.id : c.entry.conv.id));
 
 describe('collectActiveCandidates', () => {
-  it('never puts a worker run in the Active pool', () => {
-    const userRun = run('user-run');
-    const workerRun = run('worker-run', { workerId: 'worker-1' } as Partial<FlowRun>);
-    expect(order([project('a', [])], [userRun, workerRun], {}, {})).toEqual(['user-run']);
+  // A worker run lives at its worker's desk, not in the project's flow list.
+  // Active is the exception, and only while the run is actually happening:
+  // this section answers "what is going on right now", and a run nobody
+  // started that is spending money is exactly that.
+  it('shows a worker run while it is running, and drops it when it finishes', () => {
+    const userRun = run('user-run', { createdAt: NOW - MIN });
+    const working = run('worker-run', {
+      workerId: 'worker-1',
+      createdAt: NOW - 2 * MIN,
+    } as Partial<FlowRun>);
+    expect(order([project('a', [])], [userRun, working], {}, {})).toEqual([
+      'user-run',
+      'worker-run',
+    ]);
+
+    const finished = run('worker-run', {
+      workerId: 'worker-1',
+      createdAt: NOW - 2 * MIN,
+      state: { kind: 'done' },
+    } as Partial<FlowRun>);
+    expect(order([project('a', [])], [userRun, finished], {}, {})).toEqual(['user-run']);
   });
 
-  it('does not let excluded worker runs change the Active floor', () => {
+  it('keeps a worker run that is waiting on you', () => {
+    const paused = run('worker-run', {
+      workerId: 'worker-1',
+      state: { kind: 'paused' },
+    } as Partial<FlowRun>);
+    expect(order([project('a', [])], [paused], {}, {})).toContain('worker-run');
+  });
+
+  it('does not let finished worker runs change the Active floor', () => {
     const projects = [project('a', [conv('chat', { lastPromptAt: NOW - MIN })])];
     const userRuns = [run('user-run', { createdAt: NOW - 2 * MIN })];
+    const done = { kind: 'done' } as FlowRun['state'];
     const workerRuns = [
-      run('worker-1', { workerId: 'worker-1' } as Partial<FlowRun>),
-      run('worker-2', { workerId: 'worker-2' } as Partial<FlowRun>),
+      run('worker-1', { workerId: 'worker-1', state: done } as Partial<FlowRun>),
+      run('worker-2', { workerId: 'worker-2', state: done } as Partial<FlowRun>),
     ];
     expect(order(projects, [...userRuns, ...workerRuns], {}, {})).toEqual(order(projects, userRuns, {}, {}));
+  });
+
+  it('caps how many worker runs a waking roster can put in Active', () => {
+    // Six workers firing at once must not evict the work you are doing.
+    const workerRuns = [1, 2, 3, 4, 5, 6].map((n) =>
+      run(`worker-${n}`, {
+        workerId: `w${n}`,
+        createdAt: NOW - n * MIN,
+      } as Partial<FlowRun>),
+    );
+    const shown = order([project('a', [])], workerRuns, {}, {});
+    expect(shown).toEqual(['worker-1', 'worker-2', 'worker-3']); // newest first
+  });
+
+  it('cannot evict the chat you are reading, however many workers wake up', () => {
+    const chats = [1, 2, 3, 4, 5, 6].map((n) =>
+      conv(`chat-${n}`, { lastPromptAt: NOW - n * MIN, lastActiveAt: NOW - n * MIN }),
+    );
+    const workerRuns = [1, 2, 3, 4, 5].map((n) =>
+      run(`worker-${n}`, { workerId: `w${n}`, createdAt: NOW - n } as Partial<FlowRun>),
+    );
+    const shown = order([project('a', chats)], workerRuns, {}, {
+      openedConversationId: 'chat-6' as UUID,
+      lastSelectedAt: { 'chat-6': NOW } as Record<UUID, number>,
+    });
+    expect(shown).toContain('chat-6');
+  });
+
+  it('names a worker run after its worker, not its project', () => {
+    const candidates = collectActiveCandidates(
+      [project('a', [])],
+      [],
+      { r: run('r', { workerId: 'w1' } as Partial<FlowRun>) } as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+      { w1: { name: 'Chief of Staff' } },
+    );
+    const entry = candidates.find((c) => c.entry.kind === 'flow')!.entry;
+    expect(entry).toMatchObject({ ownerKind: 'worker', ownerName: 'Chief of Staff' });
   });
 
   it('does not move a row when you open it', () => {

@@ -539,6 +539,7 @@ function registerIpc(): void {
   ipcMain.handle('app:version', () => app.getVersion());
 
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
+  ipcMain.handle('runner:prewarm', (_e, args) => runner!.prewarm({ ...args, prompt: '' }));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
   ipcMain.handle('runner:newConversation', (_e, { conversationId }) =>
     runner!.newConversation(conversationId),
@@ -1338,6 +1339,11 @@ function registerIpc(): void {
       ? workerEngine.save(worker)
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
+  ipcMain.handle('workers:note', (_e, { id, orchestrationId, note }) =>
+    workerEngine
+      ? workerEngine.note(id, orchestrationId, note)
+      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
   ipcMain.handle('workers:setEnabled', (_e, { id, enabled }) =>
     workerEngine
       ? workerEngine.setEnabled(id, enabled)
@@ -1476,11 +1482,12 @@ function registerIpc(): void {
       ? workerEngine.resetMemory(id)
       : ({ ok: false, error: 'Workers are not running.' } as const),
   );
-  ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription }) => {
+  ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription, attachments }) => {
     const store = Store.load();
     return draftWorkerFromPrompt(
       {
         jobDescription,
+        attachments,
         flows: loadAllFlows({
           projectPaths: store.projects.map((p) => p.path),
         }).map((f) => ({ id: f.id, name: f.name, description: f.description })),
@@ -1504,7 +1511,7 @@ function registerIpc(): void {
   });
   ipcMain.handle(
     'workers:reviseFromPrompt',
-    (_e, { jobDescription, flowId, flow: unsavedFlow, instruction }) => {
+    (_e, { jobDescription, flowId, flow: unsavedFlow, instruction, attachments }) => {
       const store = Store.load();
       // An unsaved ride-along flow (hire-drafted, or already revised once)
       // is the freshest state and can't be found on disk — prefer it.
@@ -1516,7 +1523,7 @@ function registerIpc(): void {
             )
           : undefined);
       return reviseWorkerFromPrompt(
-        { jobDescription, instruction, flow },
+        { jobDescription, instruction, flow, attachments },
         { settings: store.settings, runner: runner! },
       );
     },

@@ -578,6 +578,19 @@ describe('WorkerEngine errands', () => {
     expect(h.parked[0].prompt).toContain('outside your job description');
   });
 
+  it('states context discipline in both the shift and the errand prompt', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'audit the flaky specs');
+    await h.engine.workShiftNow('worker-1');
+
+    expect(h.parked).toHaveLength(2);
+    for (const parked of h.parked) {
+      expect(parked.prompt).toContain('KEEPING YOUR CONTEXT FOR THE WORK');
+      expect(parked.prompt).toContain('Read those through a subagent');
+    }
+  });
+
   it('uses only the first errand line as the batch and journal title', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.engine.start();
@@ -764,6 +777,46 @@ describe('WorkerEngine hiring and trust', () => {
     const res = h.engine.setTrust('worker-1', 'trusted');
     expect(res.ok).toBe(true);
     expect(h.engine.get('worker-1')?.caps.runIn).toBe('worktree');
+  });
+});
+
+describe('WorkerEngine notes', () => {
+  it('writes a note against a turn, into the journal the worker plans from', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.note('worker-1', 'orch-1', '  Panasonic is blocked their side.  ')).toEqual({
+      ok: true,
+    });
+    const notes = h.journal.filter((e) => e.kind === 'note');
+    expect(notes).toHaveLength(1);
+    expect(notes[0].note).toBe('Panasonic is blocked their side.');
+    expect(notes[0].orchestrationId).toBe('orch-1');
+    // The point of storing it as a journal entry rather than a UI annotation:
+    // the digest is what the next planning turn reads.
+    expect(h.journal.map((e) => `${e.kind}: ${e.note}`)).toContain(
+      'note: Panasonic is blocked their side.',
+    );
+  });
+
+  it('takes two identical notes on one turn as two things the user said', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    h.setNow(1_000);
+    expect(h.engine.note('worker-1', 'orch-1', 'same').ok).toBe(true);
+    h.setNow(2_000);
+    expect(h.engine.note('worker-1', 'orch-1', 'same').ok).toBe(true);
+    expect(h.journal.filter((e) => e.kind === 'note')).toHaveLength(2);
+  });
+
+  it('refuses an empty note, an oversized one, and an unknown worker', () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    expect(h.engine.note('worker-1', 'orch-1', '   ')).toEqual({
+      ok: false,
+      error: 'Write the note first.',
+    });
+    expect(h.engine.note('worker-1', 'orch-1', 'x'.repeat(601)).ok).toBe(false);
+    expect(h.engine.note('nobody', 'orch-1', 'hello').ok).toBe(false);
   });
 });
 
