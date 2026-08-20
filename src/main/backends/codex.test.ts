@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { withBatchingDirective } from './turbo';
 import { codexBackend } from './codex';
 import type { BackendCtx, BackendSendArgs } from './types';
 
@@ -90,16 +91,22 @@ describe('codexBackend.buildArgs', () => {
 });
 
 describe('codexBackend.buildEnvelope', () => {
-  it('returns the bare prompt when there is no prior transcript', () => {
-    expect(codexBackend.buildEnvelope(baseArgs, noTranscriptCtx)).toBe('do the thing');
+  // Codex has no `--append-system-prompt`, so the batching directive rides in
+  // the envelope on every turn — the counterpart to the flag claude passes on
+  // every spawn. The prompt itself must still come through untouched, which
+  // is what these two pin.
+  it('carries only the directive and the prompt when there is no prior transcript', () => {
+    const env = codexBackend.buildEnvelope(baseArgs, noTranscriptCtx);
+    expect(env).toBe(withBatchingDirective('do the thing'));
+    expect(env.endsWith('do the thing')).toBe(true);
   });
 
-  it('returns the bare prompt when transcript is empty', () => {
+  it('carries only the directive and the prompt when transcript is empty', () => {
     const ctx: BackendCtx = {
       mcpConfigPathFor: () => undefined,
       codexExecTranscriptFor: () => [],
     };
-    expect(codexBackend.buildEnvelope(baseArgs, ctx)).toBe('do the thing');
+    expect(codexBackend.buildEnvelope(baseArgs, ctx)).toBe(withBatchingDirective('do the thing'));
   });
 
   it('prepends prior turns when transcript exists', () => {

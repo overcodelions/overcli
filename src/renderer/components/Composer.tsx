@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../store';
 import { useRunnerEvents, useRunnersStore } from '../runnersStore';
 import { Attachment, StreamEvent } from '@shared/types';
+import { ATTACHMENT_ACCEPT, intakeAttachments } from '../attachmentIntake';
+import { AttachmentChip } from './AttachmentChip';
 
 export interface ComposerProps {
   /// Key into the store's drafts + attachments maps. Use the conversation
@@ -58,7 +60,6 @@ export interface SlashCommandEntry {
   source?: string;
 }
 
-const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB; matches the Claude API document/image cap
 const KONAMI_HINT_TOKENS = ['↑', '↑', '↓', '↓', '←', '→', '←', '→', 'B', 'A', 'Enter'];
 const KONAMI_TRIGGER_KEYS = [
   'ArrowUp',
@@ -89,85 +90,6 @@ function pickOwenLine(): string {
   return OWEN_LINES[Math.floor(Math.random() * OWEN_LINES.length)];
 }
 
-/// Non-image MIME prefixes / extensions we accept and forward to the
-/// backend by writing to disk + inlining the path. Anything else gets
-/// rejected with a toast so the user understands why.
-const TEXT_LIKE_EXTS = new Set([
-  'txt', 'md', 'csv', 'tsv', 'json', 'yaml', 'yml', 'toml', 'xml',
-  'log', 'ini', 'env', 'conf', 'sql',
-]);
-
-const DOCUMENT_EXTS = new Set([
-  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'rtf',
-]);
-
-const DOCUMENT_MIMES = new Set([
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-powerpoint',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/vnd.oasis.opendocument.text',
-  'application/vnd.oasis.opendocument.spreadsheet',
-  'application/vnd.oasis.opendocument.presentation',
-  'application/rtf',
-]);
-
-function guessMimeFromName(name: string): string | null {
-  const dot = name.lastIndexOf('.');
-  if (dot < 0) return null;
-  const ext = name.slice(dot + 1).toLowerCase();
-  switch (ext) {
-    case 'csv': return 'text/csv';
-    case 'tsv': return 'text/tab-separated-values';
-    case 'json': return 'application/json';
-    case 'yaml':
-    case 'yml': return 'application/x-yaml';
-    case 'xml': return 'application/xml';
-    case 'md': return 'text/markdown';
-    case 'pdf': return 'application/pdf';
-    case 'doc': return 'application/msword';
-    case 'docx':
-      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    case 'xls': return 'application/vnd.ms-excel';
-    case 'xlsx':
-      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    case 'ppt': return 'application/vnd.ms-powerpoint';
-    case 'pptx':
-      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-    case 'odt': return 'application/vnd.oasis.opendocument.text';
-    case 'ods': return 'application/vnd.oasis.opendocument.spreadsheet';
-    case 'odp': return 'application/vnd.oasis.opendocument.presentation';
-    case 'rtf': return 'application/rtf';
-    case 'log':
-    case 'txt':
-    case 'ini':
-    case 'env':
-    case 'conf':
-    case 'toml':
-    case 'sql':
-    default:
-      return 'text/plain';
-  }
-}
-
-function isAcceptedAttachment(f: File): boolean {
-  if (f.type.startsWith('image/')) return true;
-  if (f.type.startsWith('text/')) return true;
-  if (f.type === 'application/json') return true;
-  if (f.type === 'application/xml') return true;
-  if (f.type === 'application/x-yaml') return true;
-  if (DOCUMENT_MIMES.has(f.type)) return true;
-  const dot = f.name.lastIndexOf('.');
-  if (dot > 0) {
-    const ext = f.name.slice(dot + 1).toLowerCase();
-    if (TEXT_LIKE_EXTS.has(ext)) return true;
-    if (DOCUMENT_EXTS.has(ext)) return true;
-  }
-  return false;
-}
 
 /// Stable empty-array reference used by the attachments selector below.
 /// Returning a fresh `[]` from the selector made Zustand think the value
@@ -384,31 +306,9 @@ export function Composer({
   const handleFiles = useCallback(
     async (files: FileList | File[]) => {
       setRejection(null);
-      const list = Array.from(files);
-      for (const f of list) {
-        if (!isAcceptedAttachment(f)) {
-          setRejection(
-            `Skipped ${f.name || 'file'} — supported: images, text files (csv, json, md, log, …), and documents (pdf, docx, xlsx, pptx, …).`,
-          );
-          continue;
-        }
-        if (f.size > MAX_ATTACHMENT_BYTES) {
-          setRejection(`${f.name || 'file'} is ${Math.round(f.size / 1024 / 1024)} MB; max is 25 MB.`);
-          continue;
-        }
-        const dataBase64 = await fileToBase64(f);
-        const id =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : Math.random().toString(36).slice(2);
-        addAttachment(draftKey, {
-          id,
-          mimeType: f.type || guessMimeFromName(f.name) || 'application/octet-stream',
-          dataBase64,
-          label: f.name,
-          size: f.size,
-        });
-      }
+      const { attachments: picked, rejections } = await intakeAttachments(files);
+      for (const a of picked) addAttachment(draftKey, a);
+      setRejection(rejections.at(-1) ?? null);
     },
     [addAttachment, draftKey],
   );
@@ -757,7 +657,7 @@ export function Composer({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/*,text/*,application/json,application/xml,application/x-yaml,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/rtf,.csv,.tsv,.md,.yaml,.yml,.toml,.log,.ini,.env,.conf,.sql,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf"
+          accept={ATTACHMENT_ACCEPT}
           multiple
           className="hidden"
           onChange={(e) => {
@@ -795,46 +695,6 @@ export function Composer({
   );
 }
 
-function AttachmentChip({ attachment, onRemove }: { attachment: Attachment; onRemove: () => void }) {
-  const isImage = attachment.mimeType.startsWith('image/');
-  const src = `data:${attachment.mimeType};base64,${attachment.dataBase64}`;
-  return (
-    <div className="relative group w-16 h-16 rounded-lg overflow-hidden border border-card-strong bg-black/30">
-      {isImage ? (
-        <img src={src} alt={attachment.label ?? ''} className="w-full h-full object-cover" />
-      ) : (
-        <div
-          className="w-full h-full flex flex-col items-center justify-center gap-1 px-1 text-center"
-          title={attachment.label ?? ''}
-        >
-          <span className="text-[9px] uppercase tracking-wider text-ink-faint font-mono">
-            {fileExtLabel(attachment)}
-          </span>
-          <span className="text-[9px] leading-tight text-ink-muted truncate w-full">
-            {attachment.label ?? 'file'}
-          </span>
-        </div>
-      )}
-      <button
-        onClick={onRemove}
-        className="absolute top-0.5 right-0.5 w-4 h-4 text-[10px] bg-black/70 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100"
-        title="Remove"
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
-function fileExtLabel(a: Attachment): string {
-  if (a.label) {
-    const dot = a.label.lastIndexOf('.');
-    if (dot > 0 && dot < a.label.length - 1) return a.label.slice(dot + 1).toLowerCase();
-  }
-  const slash = a.mimeType.indexOf('/');
-  if (slash > 0) return a.mimeType.slice(slash + 1).toLowerCase();
-  return 'file';
-}
 
 function MentionPopover({
   variant,
@@ -987,18 +847,3 @@ function rankMentionMatches(files: string[], query: string, root: string): strin
   return scored.map((x) => x[0]);
 }
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      // FileReader.readAsDataURL returns `data:image/png;base64,xxx` — we
-      // only want the raw base64 body, not the data-URL prefix, because
-      // claude's wire format supplies media_type separately.
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}

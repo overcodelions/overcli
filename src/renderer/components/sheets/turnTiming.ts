@@ -25,6 +25,28 @@ import type { ModelUsage, StreamEvent } from '../../../shared/types';
 /// never in the totals. 4 is the usual English/code approximation.
 const CHARS_PER_TOKEN = 4;
 
+/// Per-tool-name slice of a turn's tool time, so a slow turn can be blamed
+/// on `Bash` or on an MCP call rather than on "tools" as an undifferentiated
+/// mass.
+export interface ToolTiming {
+  /// Tool name exactly as the backend reported it (`Bash`, `mcp__slack__…`).
+  name: string;
+  calls: number;
+  /// Sum of this tool's own call durations. Overlapping calls are counted
+  /// once each, so across all tools this can exceed the turn's `toolMs`.
+  busyMs: number;
+  /// `busyMs` rescaled so every tool's share adds up to `toolMs` exactly.
+  /// Wall clock can't be attributed exactly when calls run in parallel —
+  /// four concurrent greps cost one grep of wall clock — so the merged
+  /// total is split in proportion to how long each tool was actually busy.
+  /// Use this for bar widths; use `busyMs` for "how slow is this tool".
+  ms: number;
+  /// Longest single call. A tool with one 30s call and a tool with thirty
+  /// 1s calls have the same `busyMs` and want different fixes.
+  slowestMs: number;
+  errors: number;
+}
+
 export interface TurnTiming {
   /// Stream-event id of the `localUser` event that opened the turn — stable
   /// React key, and lets a caller scroll the Stream tab to the same turn.
@@ -44,6 +66,8 @@ export interface TurnTiming {
   /// Non-partial assistant messages — i.e. API requests that reported usage.
   requests: number;
   toolCalls: number;
+  /// Tool time broken out by tool name, slowest first.
+  tools: ToolTiming[];
   outputTokens: number;
   /// Visible prose the model produced, estimated from character count.
   textTokensEst: number;
@@ -110,6 +134,7 @@ export function totalTiming(turns: TurnTiming[]): TurnTiming | null {
     toolMs: sum((t) => t.toolMs),
     requests: sum((t) => t.requests),
     toolCalls: sum((t) => t.toolCalls),
+    tools: mergeToolTimings(turns),
     outputTokens,
     textTokensEst: sum((t) => t.textTokensEst),
     toolArgTokensEst: sum((t) => t.toolArgTokensEst),
@@ -127,7 +152,7 @@ function measureTurn(events: StreamEvent[]): TurnTiming {
   const prompt = first.kind.type === 'localUser' ? first.kind.text : '';
 
   const wallMs = events[events.length - 1].timestamp - first.timestamp;
-  const toolMs = measureToolTime(events);
+  const { toolMs, tools } = measureTools(events);
   // Whatever wasn't a tool was the model: waiting on the API, or streaming
   // a response out. Deriving it by subtraction rather than by summing gaps
   // guarantees the two shares add up to the wall clock exactly.
@@ -177,6 +202,7 @@ function measureTurn(events: StreamEvent[]): TurnTiming {
     toolMs,
     requests,
     toolCalls,
+    tools,
     outputTokens,
     textTokensEst,
     toolArgTokensEst,
@@ -203,7 +229,7 @@ function isColdResume(first: ModelUsage | undefined): boolean {
 }
 
 
-/// Wall-clock time this turn spent inside tools.
+/// Wall-clock time this turn spent inside tools, and how it splits by tool.
 ///
 /// Correlates each `tool_result` block back to the assistant message that
 /// requested it, by tool-use id, rather than assuming the result event sits
@@ -214,9 +240,12 @@ function isColdResume(first: ModelUsage | undefined): boolean {
 /// Intervals are merged rather than summed, because parallel tool calls
 /// overlap — issuing four greps at once costs one grep of wall clock, and
 /// adding the four durations would report more tool time than the turn took.
-function measureToolTime(events: StreamEvent[]): number {
-  const requestedAt = new Map<string, number>();
+/// The per-tool split then divides that merged total in proportion to each
+/// tool's own busy time, so the slices always sum back to `toolMs`.
+function measureTools(events: StreamEvent[]): { toolMs: number; tools: ToolTiming[] } {
+  const pending = new Map<string, { at: number; name: string }>();
   const spans: Array<[number, number]> = [];
+  const byName = new Map<string, ToolTiming>();
 
   for (const e of events) {
     if (e.kind.type === 'assistant') {
@@ -224,22 +253,48 @@ function measureToolTime(events: StreamEvent[]): number {
         // A partial snapshot can carry the tool call before the message is
         // complete; the tool cannot start until it is, so keep the latest
         // sighting rather than the first.
-        requestedAt.set(use.id, e.timestamp);
+        pending.set(use.id, { at: e.timestamp, name: use.name });
       }
     } else if (e.kind.type === 'toolResult') {
       for (const r of e.kind.results) {
-        const start = requestedAt.get(r.id);
-        if (start === undefined || e.timestamp <= start) continue;
-        spans.push([start, e.timestamp]);
+        const started = pending.get(r.id);
+        if (!started || e.timestamp <= started.at) continue;
+        spans.push([started.at, e.timestamp]);
+        const ms = e.timestamp - started.at;
+        const entry = byName.get(started.name) ?? {
+          name: started.name,
+          calls: 0,
+          busyMs: 0,
+          ms: 0,
+          slowestMs: 0,
+          errors: 0,
+        };
+        entry.calls += 1;
+        entry.busyMs += ms;
+        entry.slowestMs = Math.max(entry.slowestMs, ms);
+        if (r.isError) entry.errors += 1;
+        byName.set(started.name, entry);
       }
     }
   }
 
-  spans.sort((a, b) => a[0] - b[0]);
+  const toolMs = mergedSpanTotal(spans);
+  const busyTotal = Array.from(byName.values()).reduce((n, t) => n + t.busyMs, 0);
+  const tools = Array.from(byName.values()).map((t) => ({
+    ...t,
+    ms: busyTotal > 0 ? (t.busyMs / busyTotal) * toolMs : 0,
+  }));
+  tools.sort((a, b) => b.ms - a.ms || a.name.localeCompare(b.name));
+  return { toolMs, tools };
+}
+
+/// Union of a set of intervals, in ms.
+function mergedSpanTotal(spans: Array<[number, number]>): number {
+  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
   let total = 0;
   let openFrom = 0;
   let openTo = 0;
-  for (const [from, to] of spans) {
+  for (const [from, to] of sorted) {
     if (from > openTo) {
       total += openTo - openFrom;
       openFrom = from;
@@ -249,6 +304,26 @@ function measureToolTime(events: StreamEvent[]): number {
     }
   }
   return total + (openTo - openFrom);
+}
+
+/// Fold every turn's per-tool slices into one conversation-wide ranking.
+function mergeToolTimings(turns: TurnTiming[]): ToolTiming[] {
+  const byName = new Map<string, ToolTiming>();
+  for (const turn of turns) {
+    for (const t of turn.tools) {
+      const entry = byName.get(t.name);
+      if (!entry) {
+        byName.set(t.name, { ...t });
+        continue;
+      }
+      entry.calls += t.calls;
+      entry.busyMs += t.busyMs;
+      entry.ms += t.ms;
+      entry.slowestMs = Math.max(entry.slowestMs, t.slowestMs);
+      entry.errors += t.errors;
+    }
+  }
+  return Array.from(byName.values()).sort((a, b) => b.ms - a.ms || a.name.localeCompare(b.name));
 }
 
 export function formatSeconds(ms: number): string {

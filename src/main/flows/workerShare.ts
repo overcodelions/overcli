@@ -48,7 +48,11 @@ export function buildWorkerShare(args: {
     yaml: serializeWorker({
       worker: args.worker,
       flows,
-      description: args.description,
+      // The worker's own tagline travels as the file's description when the
+      // sharer didn't write one: it is already the line that says why this
+      // worker exists, and a share with a blank description makes the
+      // receiver guess at what they are hiring.
+      description: args.description ?? args.worker.tagline,
     }),
     filename: workerShareFilename(args.worker.name),
     missingFlowIds: args.worker.flowIds.filter((id) => !byId.has(id)),

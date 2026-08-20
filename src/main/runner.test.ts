@@ -18,6 +18,7 @@ import {
   makeIdleWatchdog,
   resumeSessionAfterParamChange,
   canPrewarm,
+  reapTurnInFlight,
   shouldReapIdle,
   shouldSkipIdleOnClose,
   spawnFailureMessage,
@@ -745,7 +746,7 @@ describe('shouldReapIdle — unused prewarm', () => {
   it('collects an unused prewarm once idle', () => {
     expect(
       shouldReapIdle({
-        turnInFlight: false,
+        turnInFlight: reapTurnInFlight({ prewarmed: true }),
         hasPendingPrompts: false,
         canResume: true,
         lastActivityAt: 0,
@@ -766,5 +767,38 @@ describe('shouldReapIdle — unused prewarm', () => {
         now: 31 * 60_000,
       }),
     ).toBe(false);
+  });
+
+  // Regression: this suite used to hand `shouldReapIdle` a literal
+  // `turnInFlight: false`, a state a prewarm can never actually reach.
+  // `spawnFor` never stamps the field and a prewarm never writes stdin, so
+  // the real value is undefined — which the first guard rejects, leaving the
+  // reap's `unusedPrewarm` allowance dead and the process immortal. The
+  // suite was green over the bug because it asserted the intended policy
+  // against a state the runtime does not produce.
+  it('reads a real prewarm as having no turn in flight', () => {
+    expect(reapTurnInFlight({ prewarmed: true, turnInFlight: undefined })).toBe(false);
+  });
+
+  it('would not be reaped without that mapping', () => {
+    expect(
+      shouldReapIdle({
+        turnInFlight: undefined,
+        hasPendingPrompts: false,
+        canResume: true,
+        lastActivityAt: 0,
+        timeoutMinutes: 30,
+        now: 31 * 60_000,
+      }),
+    ).toBe(false);
+  });
+
+  it('leaves a live turn alone even on a process still flagged prewarmed', () => {
+    expect(reapTurnInFlight({ prewarmed: false, turnInFlight: true })).toBe(true);
+  });
+
+  // ollama / gemini ACP report no turn state and must keep reading as busy.
+  it('passes undefined through for a non-prewarmed process', () => {
+    expect(reapTurnInFlight({ turnInFlight: undefined })).toBeUndefined();
   });
 });

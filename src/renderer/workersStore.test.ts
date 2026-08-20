@@ -12,6 +12,7 @@ import {
   draftFromPortable,
   draftFromWorker,
   newWorkerDraft,
+  selectRevise,
   useWorkersStore,
 } from './workersStore';
 import { useFlowsStore } from './flowsStore';
@@ -85,6 +86,7 @@ afterEach(() => {
     scorecards: {},
     journals: {},
     shiftProgress: {},
+    shiftStarting: {},
     errandBusy: {},
     errandSending: {},
     errandError: {},
@@ -97,6 +99,17 @@ afterEach(() => {
     view: 'worker',
     busy: false,
     error: null,
+    hire: {
+      open: false,
+      jobDescription: '',
+      projectPath: '',
+      projectTouched: false,
+      attachments: [],
+      startedAt: null,
+      error: null,
+    },
+    revise: {},
+    draftSeq: 0,
   });
 });
 
@@ -596,5 +609,183 @@ describe('sharing a worker', () => {
     expect(opened).toBe(false);
     expect(useWorkersStore.getState().draft).toBeNull();
     expect(useWorkersStore.getState().error).toBe("That's a flow, not a worker.");
+  });
+});
+
+/// Drafting a contract and revising a worker are minutes-long CLI turns, and
+/// the screens they were launched from unmount on every tab switch. Both live
+/// on the store precisely so leaving is free — these are the tests that the
+/// leaving is actually free.
+describe('hiring in the background', () => {
+  const CONTRACT = {
+    name: 'Scout',
+    jobDescription: 'Find valuable maintenance work each morning and propose it.',
+    cadence: { kind: 'daily' as const, time: '09:00' },
+    maxItemsPerShift: 3,
+    budgetUSDPerMonth: 20,
+    heartbeatModel: 'cheap-model',
+  };
+
+  it('keeps the form and the in-flight turn when the screen is closed', async () => {
+    let land: (v: unknown) => void = () => {};
+    mockInvoke.mockReturnValueOnce(new Promise((r) => (land = r)));
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({ jobDescription: 'Watch the tickets.' });
+    const task = useWorkersStore.getState().startHire();
+    expect(useWorkersStore.getState().hire.startedAt).not.toBeNull();
+
+    // The user walks away mid-draft: the screen goes, the turn stays.
+    useWorkersStore.getState().closeHire();
+    expect(useWorkersStore.getState().hire.open).toBe(false);
+    expect(useWorkersStore.getState().hire.startedAt).not.toBeNull();
+    expect(useWorkersStore.getState().hire.jobDescription).toBe('Watch the tickets.');
+
+    land({ ok: true, contract: CONTRACT, summary: 'A ticket watcher.' });
+    await task;
+    // It landed in the editor with nobody watching.
+    expect(useWorkersStore.getState().draft?.name).toBe('Scout');
+    expect(useWorkersStore.getState().hireSummary).toBe('A ticket watcher.');
+    expect(useWorkersStore.getState().hire.startedAt).toBeNull();
+  });
+
+  it('sends attached files with the job description', async () => {
+    mockInvoke.mockResolvedValueOnce({ ok: true, contract: CONTRACT, summary: '' });
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({
+      jobDescription: 'Build what the spec says.',
+      attachments: [{ id: 'a1', mimeType: 'application/pdf', dataBase64: 'x', label: 'spec.pdf' }],
+    });
+    await useWorkersStore.getState().startHire();
+    expect(mockInvoke).toHaveBeenCalledWith('workers:draftFromPrompt', {
+      jobDescription: 'Build what the spec says.',
+      attachments: [{ id: 'a1', mimeType: 'application/pdf', dataBase64: 'x', label: 'spec.pdf' }],
+    });
+  });
+
+  it('will not start a second draft while one is running', async () => {
+    mockInvoke.mockReturnValueOnce(new Promise(() => {}));
+    useWorkersStore.getState().openHire('/repo');
+    useWorkersStore.getState().patchHire({ jobDescription: 'Watch the tickets.' });
+    void useWorkersStore.getState().startHire();
+    await useWorkersStore.getState().startHire();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('revising in the background', () => {
+  it('applies a revision that lands after the editor was left and reopened', async () => {
+    let land: (v: unknown) => void = () => {};
+    mockInvoke.mockReturnValueOnce(new Promise((r) => (land = r)));
+    useWorkersStore.getState().openEditor(newWorkerDraft('/repo'));
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    const task = useWorkersStore.getState().startRevise();
+    expect(useWorkersStore.getState().revise.startedAt).not.toBeNull();
+
+    land({ ok: true, jobDescription: 'Twice daily now.', note: 'Cadence doubled.' });
+    await task;
+    expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
+    expect(selectRevise(useWorkersStore.getState()).note).toBe('Cadence doubled.');
+    expect(selectRevise(useWorkersStore.getState()).instruction).toBe('');
+  });
+
+  it('holds a revision that finishes while the editor is closed, and lands it on reopen', async () => {
+    // Clicking any worker in the roster closes the editor, so this is the
+    // ordinary way to wait out a revision — not an edge case.
+    let land: (v: unknown) => void = () => {};
+    mockInvoke.mockReturnValueOnce(new Promise((r) => (land = r)));
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    const task = useWorkersStore.getState().startRevise();
+
+    useWorkersStore.getState().closeEditor();
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/other'), id: 'worker-2' });
+
+    land({ ok: true, jobDescription: 'Twice daily now.', note: 'Cadence doubled.' });
+    await task;
+    // Not on the worker that happens to be open…
+    expect(useWorkersStore.getState().draft?.jobDescription).not.toBe('Twice daily now.');
+    expect(useWorkersStore.getState().revise['worker-1']?.pending?.workerId).toBe('worker-1');
+
+    // …and waiting for the one it was about.
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
+    expect(selectRevise(useWorkersStore.getState()).note).toMatch(/Cadence doubled/);
+    expect(selectRevise(useWorkersStore.getState()).pending).toBeNull();
+  });
+
+  it('lands on the same worker even after its editor was closed and reopened', async () => {
+    let land: (v: unknown) => void = () => {};
+    mockInvoke.mockReturnValueOnce(new Promise((r) => (land = r)));
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    const task = useWorkersStore.getState().startRevise();
+
+    // Away and back to the same worker: reopening is not "moving on".
+    useWorkersStore.getState().closeEditor();
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+
+    land({ ok: true, jobDescription: 'Twice daily now.', note: 'Cadence doubled.' });
+    await task;
+    expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
+    expect(selectRevise(useWorkersStore.getState()).error).toBeNull();
+  });
+
+  it('sends attached files with the instruction', async () => {
+    mockInvoke.mockResolvedValueOnce({ ok: true, note: 'Done.' });
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), flowIds: ['fix-it'] });
+    useWorkersStore.getState().patchRevise({
+      instruction: 'Make the report look like this.',
+      attachments: [{ id: 'a1', mimeType: 'image/png', dataBase64: 'x', label: 'shot.png' }],
+    });
+    await useWorkersStore.getState().startRevise();
+    expect(mockInvoke).toHaveBeenCalledWith(
+      'workers:reviseFromPrompt',
+      expect.objectContaining({
+        instruction: 'Make the report look like this.',
+        attachments: [{ id: 'a1', mimeType: 'image/png', dataBase64: 'x', label: 'shot.png' }],
+      }),
+    );
+  });
+  it("keeps each worker's revision to its own editor", async () => {
+    // Opening somebody else mid-revision used to show THEIR editor the other
+    // worker's instruction and spinner.
+    mockInvoke.mockReturnValueOnce(new Promise(() => {}));
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    void useWorkersStore.getState().startRevise();
+
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/other'), id: 'worker-2' });
+    const open = selectRevise(useWorkersStore.getState());
+    expect(open.instruction).toBe('');
+    expect(open.startedAt).toBeNull();
+    // …while the first one is still going, under its own key.
+    expect(useWorkersStore.getState().revise['worker-1'].startedAt).not.toBeNull();
+  });
+});
+
+describe('working a shift by hand', () => {
+  it('does not hold the editor busy while the shift plans', async () => {
+    // `workers:workShiftNow` resolves when the WHOLE planning turn is done —
+    // minutes. Holding the one app-wide busy flag across that disabled Save
+    // on every worker's editor until the shift finished.
+    let finish!: (v: { ok: true }) => void;
+    mockInvoke.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const pending = useWorkersStore.getState().workShiftNow('worker-1');
+
+    expect(useWorkersStore.getState().busy).toBe(false);
+    // The one thing it does hold, so the button can't be clicked twice before
+    // the engine announces the shift.
+    expect(useWorkersStore.getState().shiftStarting['worker-1']).toBe(true);
+
+    finish({ ok: true });
+    await pending;
+    expect(useWorkersStore.getState().shiftStarting['worker-1']).toBeUndefined();
+  });
+
+  it('releases the worker and reports the error when the shift is refused', async () => {
+    mockInvoke.mockResolvedValueOnce({ ok: false, error: 'A shift is already starting.' });
+    await useWorkersStore.getState().workShiftNow('worker-1');
+    expect(useWorkersStore.getState().shiftStarting['worker-1']).toBeUndefined();
+    expect(useWorkersStore.getState().error).toBe('A shift is already starting.');
   });
 });

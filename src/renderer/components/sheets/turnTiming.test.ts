@@ -296,3 +296,65 @@ describe('tool time', () => {
     expect(turn.toolMs).toBe(0);
   });
 });
+
+describe('per-tool breakdown', () => {
+  it('attributes tool time to each tool name', () => {
+    const turns = summarizeTurns([
+      user(0, 'go'),
+      assistant(1000, {
+        toolUses: [
+          { id: 'a', name: 'Bash', inputJSON: '{}' },
+          { id: 'b', name: 'Read', inputJSON: '{}' },
+        ],
+      }),
+      toolResult(2000, 'b'),
+      toolResult(9000, 'a'),
+    ]);
+    const [turn] = turns;
+    expect(turn.toolMs).toBe(8000);
+    expect(turn.tools.map((t) => t.name)).toEqual(['Bash', 'Read']);
+    expect(turn.tools[0].busyMs).toBe(8000);
+    expect(turn.tools[1].busyMs).toBe(1000);
+    // Overlapping calls: slices are rescaled so they add up to toolMs.
+    expect(turn.tools.reduce((n, t) => n + t.ms, 0)).toBeCloseTo(turn.toolMs);
+  });
+
+  it('aggregates calls, slowest call and errors per tool', () => {
+    const [turn] = summarizeTurns([
+      user(0, 'go'),
+      assistant(1000, { toolUses: [{ id: 'a', name: 'Bash', inputJSON: '{}' }] }),
+      toolResult(2000, 'a'),
+      assistant(3000, { toolUses: [{ id: 'b', name: 'Bash', inputJSON: '{}' }] }),
+      ev(8000, {
+        type: 'toolResult',
+        results: [{ id: 'b', content: 'boom', isError: true }],
+      }),
+    ]);
+    expect(turn.tools).toHaveLength(1);
+    expect(turn.tools[0]).toMatchObject({
+      name: 'Bash',
+      calls: 2,
+      busyMs: 6000,
+      slowestMs: 5000,
+      errors: 1,
+    });
+  });
+
+  it('merges per-tool timings across turns in the total', () => {
+    const turns = summarizeTurns([
+      user(0, 'one'),
+      assistant(1000, { toolUses: [{ id: 'a', name: 'Bash', inputJSON: '{}' }] }),
+      toolResult(2000, 'a'),
+      user(3000, 'two'),
+      assistant(4000, { toolUses: [{ id: 'b', name: 'Bash', inputJSON: '{}' }] }),
+      toolResult(7000, 'b'),
+      assistant(7500, { toolUses: [{ id: 'c', name: 'Grep', inputJSON: '{}' }] }),
+      toolResult(8000, 'c'),
+    ]);
+    const total = totalTiming(turns)!;
+    expect(total.tools.map((t) => [t.name, t.calls, t.busyMs])).toEqual([
+      ['Bash', 2, 4000],
+      ['Grep', 1, 500],
+    ]);
+  });
+});

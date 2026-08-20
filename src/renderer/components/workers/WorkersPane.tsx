@@ -10,7 +10,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { Backend } from "@shared/types";
+import type { Attachment, Backend } from "@shared/types";
 import { PREMIUM_MODELS, friendlyModelLabel } from "@shared/modelCatalog";
 import { resolveProducerModel } from "@shared/flows/drafterBackend";
 
@@ -36,6 +36,7 @@ import { useStore } from "../../store";
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
 import {
+  selectRevise,
   draftFromContract,
   draftFromWorker,
   newWorkerDraft,
@@ -51,6 +52,8 @@ import {
   WORKER_AUTO_RENDER_OFF,
   validateWorker,
   workerAutoApproveCap,
+  WORKER_TAGLINE_MAX,
+  workerTagline,
   type Worker,
   type WorkerJournalEntry,
   type WorkerScorecard,
@@ -68,6 +71,8 @@ import {
   type Orchestration,
   type OrchestrationItem,
 } from "@shared/flows/orchestration";
+import { ATTACHMENT_ACCEPT, intakeAttachments } from "../../attachmentIntake";
+import { AttachmentChip } from "../AttachmentChip";
 import { Markdown } from "../Markdown";
 import { UserBubble } from "../UserBubble";
 import { FlowMonogram } from "../flows/FlowMonogram";
@@ -101,6 +106,7 @@ import {
   type WorkerActivity,
 } from "./workerDeskSelectors";
 import { TRUST_LABEL, WorkerPendingProposal } from "./WorkerRowParts";
+import { pinnedToBottom, shouldFollowLive } from "./deskFollow";
 
 export function WorkersPane() {
   const projects = useStore((s) => s.projects);
@@ -121,7 +127,10 @@ export function WorkersPane() {
   const activeRun = useFlowsStore((s) =>
     s.activeRunId ? s.runs[s.activeRunId] : undefined,
   );
-  const [hiring, setHiring] = useState(false);
+  const hiring = useWorkersStore((st) => st.hire.open);
+  const hireRunning = useWorkersStore((st) => st.hire.startedAt !== null);
+  const openHire = useWorkersStore((st) => st.openHire);
+  const revisions = useWorkersStore((st) => st.revise);
 
   useEffect(() => {
     void reload();
@@ -179,13 +188,7 @@ export function WorkersPane() {
     return <FlowRunPane key={activeRun.id} runId={activeRun.id} />;
   }
 
-  if (hiring)
-    return (
-      <HireWorker
-        defaultProjectPath={defaultProjectPath}
-        onClose={() => setHiring(false)}
-      />
-    );
+  if (hiring) return <HireWorker defaultProjectPath={defaultProjectPath} />;
 
   return (
     // A column, not a scroll box. The desk is a conversation: its transcript
@@ -238,25 +241,61 @@ export function WorkersPane() {
           </button>
           <button
             disabled={!canHire}
-            onClick={() => setHiring(true)}
+            onClick={() => openHire(defaultProjectPath)}
             className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
           >
             ✨ Hire a worker
           </button>
         </div>
-        <div className="text-xs text-ink-muted mb-4">
-          Standing personas on a clock — each shift they plan their own batch of
-          work and file it for your approval.
-        </div>
 
-        {error && (
-          <div
-            onClick={clearError}
-            className="mb-4 text-sm text-red-700 dark:text-red-300 bg-red-500/15 border border-red-400/40 rounded px-3 py-2 cursor-pointer"
+        {/* A hire drafts for minutes and you are not expected to sit there —
+            so when you have walked away from it, the tab says so and takes
+            you back. The turn itself is running in main either way. */}
+        {hireRunning && (
+          <button
+            onClick={() => openHire(defaultProjectPath)}
+            className="mb-3 flex w-full items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-left text-[11px] hover:bg-accent/10"
           >
-            {error}
-          </div>
+            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
+            <span className="text-ink-muted">
+              Still drafting a contract — you can keep working; it lands in the
+              editor when it&apos;s done.
+            </span>
+            <span className="ml-auto shrink-0 text-ink-faint">Show me →</span>
+          </button>
         )}
+
+        {/* Same for a revision, which is easier to lose track of: clicking
+            any worker in the roster closes the editor it was started from.
+            One line per worker being revised — they are independent, and a
+            second one starting must not hide the first. */}
+        {Object.entries(revisions)
+          .filter(([, r]) => r.startedAt !== null || r.pending)
+          .map(([id, r]) => ({ worker: workers[id], done: r.pending != null }))
+          .filter((row) => row.worker)
+          .map(({ worker, done }) => (
+            <button
+              key={worker.id}
+              onClick={() => openEditor(draftFromWorker(worker))}
+              className="mb-3 flex w-full items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-left text-[11px] hover:bg-accent/10"
+            >
+              <span
+                className={
+                  "h-1.5 w-1.5 shrink-0 rounded-full bg-accent " +
+                  (done ? "" : "animate-pulse")
+                }
+              />
+              <span className="text-ink-muted">
+                {done
+                  ? `A revision for ${worker.name} is ready — open it to review the change.`
+                  : `Still revising ${worker.name} — it lands on that draft when it's done, wherever you are.`}
+              </span>
+              <span className="ml-auto shrink-0 text-ink-faint">
+                Open the editor →
+              </span>
+            </button>
+          ))}
+
       </div>
 
       {!loaded ? (
@@ -269,7 +308,7 @@ export function WorkersPane() {
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
           <WorkersEmptyState
             canHire={canHire}
-            onHire={() => setHiring(true)}
+            onHire={() => openHire(defaultProjectPath)}
             onAddByHand={() => openEditor(newWorkerDraft(defaultProjectPath))}
             onImport={() =>
               void importFromFile({
@@ -717,7 +756,7 @@ function WorkerRow({
   const nextShiftAt = useWorkersStore((s) => s.nextShiftAt[worker.id] ?? null);
   const scorecard = useWorkersStore((s) => s.scorecards[worker.id]);
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
-  const busy = useWorkersStore((s) => s.busy);
+  const starting = useWorkersStore((s) => !!s.shiftStarting[worker.id]);
   const workShiftNow = useWorkersStore((s) => s.workShiftNow);
   const [tab, setTab] = useState<
     "desk" | "shift" | "files" | "journal" | "stats" | "settings"
@@ -821,14 +860,49 @@ function WorkerRow({
   const dayItems = useMemo(() => deskTimeline(activity, day), [activity, day]);
   const timelineCount = dayItems.length;
 
+  const headerTagline = workerTagline(worker);
+
   // Park the transcript at the newest message when you arrive, and keep it
   // there as turns land — a conversation you open half-scrolled reads as
   // broken, and the last thing said is the thing you came for.
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scroller.current;
-    if (el) el.scrollTop = el.scrollHeight;
+    if (el && tab === "desk") el.scrollTop = el.scrollHeight;
   }, [tab, worker.id, timelineCount, day]);
+
+  // A shift the worker is working right now writes into the bottom of the
+  // desk as it goes, and the desk follows it — but only while you are already
+  // standing at the bottom. Someone who has scrolled up to read yesterday's
+  // proposal is reading, and yanking them back down every time a token lands
+  // is the transcript fighting its reader. See `deskFollow` for the rule.
+  const live = useWorkersStore((s) => s.shiftProgress[worker.id]);
+  const pinned = useRef(true);
+  const wasLive = useRef(false);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || tab !== "desk") return;
+    const follow = shouldFollowLive({
+      live: !!live,
+      wasLive: wasLive.current,
+      pinned: pinned.current,
+    });
+    wasLive.current = !!live;
+    if (!follow) return;
+    pinned.current = true;
+    el.scrollTop = el.scrollHeight;
+  }, [tab, live?.text, live?.tools.length, !!live]);
+
+  // Every other tab is a DOCUMENT, not a conversation, and it opens at the
+  // top. They share this scroller with the desk, so parking at the bottom
+  // unconditionally sent Settings straight past the Edit button on its first
+  // line — and Journal and Stats to their oldest, least interesting end.
+  // Deliberately not keyed on the timeline: a shift landing while you read
+  // the settings form must not yank you back to the top of it.
+  useEffect(() => {
+    const el = scroller.current;
+    if (el && tab !== "desk") el.scrollTop = 0;
+  }, [tab, worker.id]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -840,6 +914,14 @@ function WorkerRow({
             <div className="text-2xl font-semibold tracking-tight text-ink">
               {worker.name}
             </div>
+            {/* The same line the roster shows, so opening a worker confirms
+                the row you clicked rather than making you re-read the job
+                description to check you are in the right place. */}
+            {headerTagline && (
+              <div className="mt-0.5 truncate text-[13px] text-ink-muted">
+                {headerTagline}
+              </div>
+            )}
             <div className="mt-1 text-xs text-ink-muted">
               <span
                 className={TRUST_LABEL[worker.trust].cls
@@ -858,7 +940,7 @@ function WorkerRow({
             </div>
           </div>
           <button
-            disabled={busy || !!shift}
+            disabled={starting || !!shift}
             onClick={() => void workShiftNow(worker.id)}
             title="Work one shift now, out of band. Does not change the schedule."
             className="shrink-0 rounded-md border border-card-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
@@ -917,6 +999,10 @@ function WorkerRow({
           <CarriedOver items={activity} day={day} onSet={setDay} />
           <div
             ref={scroller}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              pinned.current = pinnedToBottom(el);
+            }}
             className="min-h-0 flex-1 overflow-y-auto px-6 py-4"
           >
             <WorkerTimeline
@@ -1935,7 +2021,7 @@ function WorkerShiftPane({
 }) {
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const workShiftNow = useWorkersStore((s) => s.workShiftNow);
-  const busy = useWorkersStore((s) => s.busy);
+  const starting = useWorkersStore((s) => !!s.shiftStarting[worker.id]);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
 
@@ -1967,7 +2053,7 @@ function WorkerShiftPane({
             : "paused — no shifts until you resume it"}
         </span>
         <button
-          disabled={busy || !!shift}
+          disabled={starting || !!shift}
           onClick={() => void workShiftNow(worker.id)}
           title="Work one shift now, out of band. Does not change the schedule."
           className="ml-auto shrink-0 rounded-md border border-card-strong px-2.5 py-1 text-xs text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
@@ -2024,6 +2110,9 @@ function WorkerShiftPane({
             <span className="text-[11px] text-ink-faint">
               {describeActivity(latest)} · {relativeTime(latest.at)}
             </span>
+            <span className="ml-auto">
+              <ReadInFull worker={worker} item={latest} />
+            </span>
           </div>
           <ShiftPlan orchestration={latest.orchestration} />
           {isOrchestrationAwaitingApproval(latest.orchestration) && (
@@ -2078,6 +2167,7 @@ function WorkerTimeline({
   focusId: string | null;
 }) {
   const sending = useWorkersStore((s) => s.errandSending[worker.id]);
+  const live = useWorkersStore((s) => s.shiftProgress[worker.id]);
   // Expansion follows the work by default, and a click overrides it. A turn
   // that PRODUCED something — launched, queued, waiting on your approval,
   // failed — opens itself, because the work is the answer to why you are
@@ -2095,7 +2185,11 @@ function WorkerTimeline({
     if (focusId) focused.current?.scrollIntoView({ block: "center" });
   }, [focusId, items.length]);
 
-  if (items.length === 0 && !(sending && sending.length > 0 && isToday)) {
+  // A day whose only content is the turn in flight is not an empty day. The
+  // first shift of the morning starts on a cleared desk, which is exactly when
+  // "nothing here" would be the most wrong thing the page could say.
+  const pending = isToday && ((sending && sending.length > 0) || !!live);
+  if (items.length === 0 && !pending) {
     return <EmptyDesk worker={worker} day={day} days={days} onSet={onSet} />;
   }
 
@@ -2160,6 +2254,7 @@ function WorkerTimeline({
             />
             {open && (
               <div className="rounded-xl border border-card-strong px-3 pb-2">
+                <ReadInFull worker={worker} item={item} />
                 <ShiftPlan
                   orchestration={item.orchestration}
                   showProse={false}
@@ -2179,6 +2274,89 @@ function WorkerTimeline({
         sending?.map((pending) => (
           <UserBubble key={pending.id} text={pending.text} />
         ))}
+      {/* The turn happening RIGHT NOW, at the bottom where the next thing
+          always goes. Today only: a live shift belongs on today's page, and
+          appending it to a day you have paged back to would be the desk
+          claiming work happened on a day it did not. */}
+      {isToday && live && <LiveTurn worker={worker} tint={tint} live={live} />}
+    </div>
+  );
+}
+
+/// The shift or errand in flight, written into the transcript as it happens.
+///
+/// The desk used to say nothing at all while a worker worked — one word in the
+/// activity strip above the composer ("Read", "Bash") and an empty page under
+/// it, so the moment you most wanted to watch was the moment the desk was
+/// blankest. The Shift tab had the streaming planning turn all along; this is
+/// that panel, in the desk's own clothes, in the one position that means
+/// "now".
+///
+/// It keeps each task's grammar: a shift announces itself with a rule, the way
+/// every other shift on this page does, because it is the worker's own clock
+/// rather than something you asked for. An errand doesn't — its ask is already
+/// sitting above it as your message.
+function LiveTurn({
+  worker,
+  tint,
+  live,
+}: {
+  worker: Worker;
+  tint: string;
+  live: { text: string; tools: string[]; task: "shift" | "errand" };
+}) {
+  const tool = live.tools[live.tools.length - 1];
+  // The engine stamps `shiftCount` before the planning turn starts, so the
+  // number is already this shift's — not the last one's.
+  const label =
+    live.task === "shift"
+      ? `Shift ${worker.shiftCount ?? 1} · starting`
+      : null;
+
+  return (
+    <div>
+      {label && (
+        <div className="flex items-center gap-3 py-1">
+          <span className="h-px flex-1 bg-card-strong" />
+          <span className="shrink-0 text-[11px] text-sky-500">{label}</span>
+          <span className="h-px flex-1 bg-card-strong" />
+        </div>
+      )}
+      <div
+        className="relative mt-2 overflow-hidden rounded-xl"
+        style={{
+          background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
+        }}
+      >
+        <div
+          className="absolute bottom-0 left-0 top-0 w-[2px]"
+          style={{ background: tint + "cc" }}
+        />
+        <div className="px-4 py-2.5 pl-[14px]">
+          <div className="mb-1 flex items-center gap-2 text-[10px] font-medium">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
+              <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
+            </span>
+            <span style={{ color: tint }}>{worker.name}</span>
+            <span className="text-ink-faint">
+              {live.task === "shift" ? "planning its shift" : "on your errand"}
+            </span>
+            {/* What it is doing this second. The activity strip above the
+                composer says the same word, but that strip is about the
+                composer being busy; this one is part of the turn. */}
+            {tool && <span className="truncate text-ink-faint">· {tool}</span>}
+          </div>
+          {live.text ? (
+            <Markdown source={live.text} />
+          ) : (
+            <div className="text-xs text-ink-faint">
+              Reading its job description and journal…
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -2469,6 +2647,7 @@ function ShiftRule({
       </button>
       {open && (
         <div className="mt-2 rounded-xl border border-card-strong px-3 pb-2">
+          <ReadInFull worker={worker} item={item} />
           <ShiftPlan orchestration={item.orchestration} />
           {awaiting && (
             <WorkerPendingProposal orchestration={item.orchestration} />
@@ -2476,6 +2655,37 @@ function ShiftRule({
           <ShiftActions worker={worker} item={item} />
         </div>
       )}
+    </div>
+  );
+}
+
+/// The way into the reader. A planning turn is a document rendered in a
+/// message slot — 12px type, full window width, a scrollbar inside a
+/// scrollbar — and past a few hundred words that stops being readable at all.
+/// This opens the same turn at reading size, with find and notes.
+function ReadInFull({
+  worker,
+  item,
+}: {
+  worker: Worker;
+  item: WorkerActivity;
+}) {
+  const openSheet = useStore((s) => s.openSheet);
+  return (
+    <div className="mt-2 flex justify-end">
+      <button
+        onClick={() =>
+          openSheet({
+            type: "shiftReader",
+            workerId: worker.id,
+            orchestrationId: item.orchestration.id,
+          })
+        }
+        title="Open this turn at reading size — with find, and somewhere to leave a note"
+        className="text-[11px] text-ink-faint hover:text-accent focus:outline-none"
+      >
+        Read in full ⤢
+      </button>
     </div>
   );
 }
@@ -2949,6 +3159,9 @@ const KIND_LABEL: Record<
   completed: { text: "completed", cls: "text-emerald-600" },
   failed: { text: "failed", cls: "text-red-600" },
   errand: { text: "errand", cls: "text-sky-600" },
+  // Amber, alone among the kinds, because it is the only line in the journal
+  // a person wrote — everything else is the worker's own record of itself.
+  note: { text: "your note", cls: "text-amber-500" },
   delegated: { text: "handed on", cls: "text-teal-500" },
   demoted: { text: "demoted", cls: "text-amber-600" },
   compacted: { text: "compacted", cls: "text-ink-faint" },
@@ -3213,23 +3426,20 @@ function LifecycleArrow() {
   );
 }
 
-function HireWorker({
-  defaultProjectPath,
-  onClose,
-}: {
-  defaultProjectPath: string;
-  onClose: () => void;
-}) {
-  const openEditor = useWorkersStore((s) => s.openEditor);
+function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
-  const [jobDescription, setJobDescription] = useState("");
-  const [projectPath, setProjectPath] = useState(defaultProjectPath);
-  // Whether the user picked the project themselves. An explicit choice beats
-  // the drafter's suggestion; the untouched default loses to it.
-  const [projectTouched, setProjectTouched] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // The whole form lives in the store: drafting takes minutes and this screen
+  // unmounts the moment you switch tabs, so nothing typed here — and nothing
+  // still in flight — can be allowed to belong to the component.
+  const hire = useWorkersStore((s) => s.hire);
+  const patchHire = useWorkersStore((s) => s.patchHire);
+  const startHire = useWorkersStore((s) => s.startHire);
+  const closeHire = useWorkersStore((s) => s.closeHire);
+  const jobDescription = hire.jobDescription;
+  const projectPath = hire.projectPath || defaultProjectPath;
+  const loading = hire.startedAt !== null;
+  const error = hire.error;
 
   const targets = [
     ...workspaces.map((w) => ({
@@ -3245,47 +3455,11 @@ function HireWorker({
     (p) => p.job === jobDescription.trim(),
   )?.name;
 
-  async function handleDraft(): Promise<void> {
-    if (!jobDescription.trim()) {
-      setError(
-        "Describe the job first — the worker plans every shift from it.",
-      );
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const result = await window.overcli.invoke("workers:draftFromPrompt", {
-        jobDescription,
-      });
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      // The drafter may recognize which project the job is about; honor that
-      // only when the user left the picker on its default.
-      const chosenPath = projectTouched
-        ? projectPath
-        : (result.contract.projectPath ?? projectPath);
-      openEditor(
-        draftFromContract(result.contract, chosenPath, result.contract.flowId),
-        {
-          draftedFlow: result.draftedFlow,
-          hireSummary: result.summary || undefined,
-          hireFlowError: result.flowError,
-        },
-      );
-      onClose();
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <div className="flex-1 overflow-y-auto p-6">
       <div className="flex items-center gap-3 mb-1">
         <button
-          onClick={onClose}
+          onClick={closeHire}
           className="text-xs text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5"
         >
           ← Workers
@@ -3318,10 +3492,7 @@ function HireWorker({
                 return (
                   <button
                     key={p.name}
-                    onClick={() => {
-                      setJobDescription(p.job);
-                      setError(null);
-                    }}
+                    onClick={() => patchHire({ jobDescription: p.job, error: null })}
                     className={
                       "text-left rounded-lg border p-3 transition-colors " +
                       (selected
@@ -3362,10 +3533,9 @@ function HireWorker({
             >
               <select
                 value={projectPath}
-                onChange={(e) => {
-                  setProjectPath(e.target.value);
-                  setProjectTouched(true);
-                }}
+                onChange={(e) =>
+                  patchHire({ projectPath: e.target.value, projectTouched: true })
+                }
                 className="w-full max-w-[360px] bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
               >
                 {targets.map((t) => (
@@ -3389,14 +3559,20 @@ function HireWorker({
               <textarea
                 rows={9}
                 value={jobDescription}
-                onChange={(e) => {
-                  setJobDescription(e.target.value);
-                  setError(null);
-                }}
+                onChange={(e) =>
+                  patchHire({ jobDescription: e.target.value, error: null })
+                }
                 placeholder={`You're the …\n\nSay what it should look at, how often, what a good proposal looks like, and what it must never do.`}
                 className="w-full bg-card border border-card-strong rounded p-3 text-sm text-ink leading-relaxed"
               />
             </div>
+
+            <AttachmentField
+              attachments={hire.attachments}
+              disabled={loading}
+              onChange={(next) => patchHire({ attachments: next, error: null })}
+              hint="a spec, an example of the deliverable, a screenshot of the board it works from — the drafter reads them"
+            />
 
             {error && (
               <div className="text-sm text-red-700 dark:text-red-300 bg-red-500/15 border border-red-400/40 rounded px-3 py-2">
@@ -3411,14 +3587,17 @@ function HireWorker({
               </span>
               <button
                 disabled={loading || !jobDescription.trim()}
-                onClick={() => void handleDraft()}
+                onClick={() => void startHire()}
                 className="ml-auto shrink-0 text-xs px-4 py-2 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
               >
                 {loading ? "Drafting the contract…" : "✨ Draft the contract"}
               </button>
             </div>
             {loading && (
-              <WorkingStrip message="Drafting — one turn writes the contract (persona, cadence, caps, budget); if no existing flow fits, a second turn drafts the flow too. Two full turns, so give it a few minutes." />
+              <WorkingStrip
+                startedAt={hire.startedAt}
+                message="Drafting — one turn writes the contract (persona, cadence, caps, budget); if no existing flow fits, a second turn drafts the flow too. Two full turns, so give it a few minutes. Leave this page if you like: it keeps running and lands in the editor when it's done."
+              />
             )}
           </div>
 
@@ -3614,6 +3793,25 @@ function WorkerEditor() {
                 value={draft.name}
                 onChange={(e) => patch({ name: e.target.value })}
                 placeholder="Scout"
+                className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+              />
+            </Field>
+            {/* Short on purpose: this is the line the roster shows under the
+                name, and anything longer is truncated where it is read. Left
+                empty, the roster falls back to the job description's opening
+                — so this is a correction, not a chore. */}
+            <Field
+              label="Tagline"
+              hint="one line under the name on the roster — what this worker is"
+            >
+              <input
+                value={draft.tagline ?? ""}
+                maxLength={WORKER_TAGLINE_MAX}
+                onChange={(e) => patch({ tagline: e.target.value })}
+                placeholder={
+                  workerTagline({ jobDescription: draft.jobDescription }) ||
+                  "the overcli innovator"
+                }
                 className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
               />
             </Field>
@@ -3995,16 +4193,28 @@ function WorkerHelpRail({
 /// Feedback for the long drafting turns (hire, revise): a greyed button
 /// alone reads as "stuck" by second 20. Pulsing dot, honest copy about what
 /// is actually running, and an elapsed counter so time visibly passes.
-function WorkingStrip({ message }: { message: string }) {
-  const [elapsed, setElapsed] = useState(0);
+/// `startedAt` is when the turn actually began, not when this strip mounted.
+/// The two differ whenever the user leaves and comes back mid-draft, and a
+/// counter that restarts at 0 on return is a lie about how long is left.
+function WorkingStrip({
+  message,
+  startedAt,
+}: {
+  message: string;
+  startedAt?: number | null;
+}) {
+  const [elapsed, setElapsed] = useState(() =>
+    startedAt ? Math.floor((Date.now() - startedAt) / 1000) : 0,
+  );
   useEffect(() => {
-    const started = Date.now();
+    const started = startedAt ?? Date.now();
+    setElapsed(Math.floor((Date.now() - started) / 1000));
     const t = setInterval(
       () => setElapsed(Math.floor((Date.now() - started) / 1000)),
       1000,
     );
     return () => clearInterval(t);
-  }, []);
+  }, [startedAt]);
   return (
     <div className="mt-2 flex items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-[11px]">
       <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />
@@ -4012,6 +4222,135 @@ function WorkingStrip({ message }: { message: string }) {
       <span className="ml-auto text-ink-faint tabular-nums shrink-0">
         {elapsed}s
       </span>
+    </div>
+  );
+}
+
+/// Files attached to a drafting turn, with a picker and a drop target.
+///
+/// The drafting CLIs already take attachments — this is the same intake the
+/// chat composer uses, so what counts as attachable can't drift between the
+/// two. Owned by the caller rather than the store's conversation map: these
+/// belong to one hire or one revision, not to a conversation.
+function AttachmentField({
+  attachments,
+  onChange,
+  disabled,
+  hint,
+  compact,
+}: {
+  attachments: Attachment[];
+  onChange: (next: Attachment[]) => void;
+  disabled?: boolean;
+  hint?: string;
+  /// Trim the chrome down to a single button, for the one-line AI box.
+  compact?: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [rejection, setRejection] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  async function take(files: FileList | File[]): Promise<void> {
+    const { attachments: picked, rejections } = await intakeAttachments(files);
+    setRejection(rejections.at(-1) ?? null);
+    if (picked.length > 0) onChange([...attachments, ...picked]);
+  }
+
+  const picker = (
+    <input
+      ref={inputRef}
+      type="file"
+      multiple
+      accept={ATTACHMENT_ACCEPT}
+      className="hidden"
+      onChange={(e) => {
+        if (e.target.files?.length) void take(e.target.files);
+        // Same file twice in a row fires no change event unless the input is
+        // cleared — the second attach would silently do nothing.
+        e.target.value = "";
+      }}
+    />
+  );
+
+  const chips = attachments.length > 0 && (
+    <div className="flex flex-wrap gap-2">
+      {attachments.map((a) => (
+        <AttachmentChip
+          key={a.id}
+          attachment={a}
+          onRemove={() => onChange(attachments.filter((x) => x.id !== a.id))}
+        />
+      ))}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <>
+        {picker}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => inputRef.current?.click()}
+          title="Attach files — the reviser reads them"
+          className="self-center shrink-0 flex h-6 items-center justify-center gap-1 rounded-full px-2 text-sm text-ink-muted hover:bg-card-strong hover:text-ink disabled:opacity-40"
+        >
+          +
+          {attachments.length > 0 && (
+            <span className="text-[10px] tabular-nums">{attachments.length}</span>
+          )}
+        </button>
+      </>
+    );
+  }
+
+  return (
+    <div>
+      <div className="mb-2 flex items-baseline gap-2">
+        <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+          Attachments
+        </span>
+        {hint && (
+          <span className="text-[11px] text-ink-faint normal-case">{hint}</span>
+        )}
+      </div>
+      {picker}
+      <div
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={(e) => {
+          if (e.currentTarget === e.target) setDragging(false);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragging(false);
+          if (e.dataTransfer.files.length) void take(e.dataTransfer.files);
+        }}
+        className={
+          "rounded-lg border border-dashed p-3 transition-colors " +
+          (dragging ? "border-accent bg-accent/10" : "border-card-strong")
+        }
+      >
+        {chips}
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => inputRef.current?.click()}
+          className={
+            "text-[11px] text-ink-faint hover:text-ink disabled:opacity-40 " +
+            (attachments.length > 0 ? "mt-2" : "")
+          }
+        >
+          Attach files… <span className="text-ink-faint">or drop them here</span>
+        </button>
+      </div>
+      {rejection && (
+        <div className="mt-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+          {rejection}
+        </div>
+      )}
     </div>
   );
 }
@@ -4034,51 +4373,23 @@ const REVISE_EXAMPLES = [
 /// never outweighs the contract it edits, expanding only while in use.
 function WorkerAiRevise() {
   const draft = useWorkersStore((s) => s.draft);
-  const draftedFlow = useWorkersStore((s) => s.draftedFlow);
-  const applyRevision = useWorkersStore((s) => s.applyRevision);
-  const [instruction, setInstruction] = useState("");
-  const [busy, setBusy] = useState(false);
+  // Store-owned, like the hire form: a revision is a routing turn plus (often)
+  // a whole flow edit, and the editor unmounts as soon as you go look at
+  // something else. Leaving now costs you nothing — the result lands on the
+  // draft when it returns, and this box shows it whenever you come back.
+  // Only THIS worker's revision — another worker's in-flight instruction
+  // showing up in this editor is the app looking like it lost track of which
+  // worker you opened.
+  const revise = useWorkersStore(selectRevise);
+  const patchRevise = useWorkersStore((s) => s.patchRevise);
+  const startRevise = useWorkersStore((s) => s.startRevise);
   const [focused, setFocused] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
 
-  const expanded = focused || instruction.length > 0;
+  const instruction = revise.instruction;
+  const busy = revise.startedAt !== null;
+  const expanded = focused || instruction.length > 0 || revise.attachments.length > 0;
 
   if (!draft) return null;
-
-  async function handleRevise(): Promise<void> {
-    if (!draft || busy) return;
-    const text = instruction.trim();
-    if (!text) return;
-    setBusy(true);
-    setError(null);
-    try {
-      // A ride-along flow (hire-drafted or already revised) is unsaved —
-      // main can't load it by id, so ship the object; it's also the freshest
-      // state when the flow was revised before. But only when it's still the
-      // SELECTED flow — after a manual re-pick, the saved pick wins.
-      const rideAlong =
-        draftedFlow &&
-        (draft.flowIds.length === 0 || draft.flowIds[0] === draftedFlow.id)
-          ? draftedFlow
-          : undefined;
-      const res = await window.overcli.invoke("workers:reviseFromPrompt", {
-        jobDescription: draft.jobDescription,
-        flow: rideAlong,
-        flowId: rideAlong ? undefined : draft.flowIds[0],
-        instruction: text,
-      });
-      if (!res.ok) {
-        setError(res.error);
-        return;
-      }
-      applyRevision({ jobDescription: res.jobDescription, flow: res.flow });
-      setNote(res.note);
-      setInstruction("");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   return (
     <div>
@@ -4091,18 +4402,28 @@ function WorkerAiRevise() {
         </span>
         <textarea
           value={instruction}
-          onChange={(e) => {
-            setInstruction(e.target.value);
-            setError(null);
-          }}
+          onChange={(e) =>
+            patchRevise({ instruction: e.target.value, error: null })
+          }
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
+          onPaste={(e) => {
+            // A screenshot pasted straight in is the whole point of "make it
+            // look like this" — treat it as an attachment, not as nothing.
+            const files = Array.from(e.clipboardData.files);
+            if (files.length === 0) return;
+            e.preventDefault();
+            void intakeAttachments(files).then(({ attachments: picked }) => {
+              if (picked.length > 0)
+                patchRevise({ attachments: [...revise.attachments, ...picked] });
+            });
+          }}
           onKeyDown={(e) => {
             // ⌘/Ctrl+Enter submits — Enter alone stays a newline so a
             // multi-sentence instruction doesn't fire off half-written.
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
-              void handleRevise();
+              void startRevise();
             }
           }}
           rows={1}
@@ -4113,9 +4434,15 @@ function WorkerAiRevise() {
           placeholder="Change this worker with AI — the change lands on the job description, the flow, or both…"
           className="flex-1 bg-transparent text-sm text-ink placeholder:text-ink-faint focus:outline-none resize-none leading-6 disabled:opacity-60"
         />
+        <AttachmentField
+          compact
+          disabled={busy}
+          attachments={revise.attachments}
+          onChange={(next) => patchRevise({ attachments: next, error: null })}
+        />
         {(busy || instruction.trim()) && (
           <button
-            onClick={() => void handleRevise()}
+            onClick={() => void startRevise()}
             disabled={busy || !instruction.trim()}
             className="text-xs px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap self-center"
             title="⌘↵"
@@ -4124,6 +4451,22 @@ function WorkerAiRevise() {
           </button>
         )}
       </div>
+
+      {revise.attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2 mt-2 px-1">
+          {revise.attachments.map((a) => (
+            <AttachmentChip
+              key={a.id}
+              attachment={a}
+              onRemove={() =>
+                patchRevise({
+                  attachments: revise.attachments.filter((x) => x.id !== a.id),
+                })
+              }
+            />
+          ))}
+        </div>
+      )}
 
       {expanded && !busy && (
         <div className="flex flex-wrap items-center gap-1.5 mt-1.5 px-1">
@@ -4134,36 +4477,40 @@ function WorkerAiRevise() {
                 // Blur fires before click, and blur collapses this row — so
                 // claim the press before the row can disappear under it.
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => setInstruction(ex)}
+                onClick={() => patchRevise({ instruction: ex })}
                 className="text-[11px] px-2 py-0.5 rounded-full border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
               >
                 {ex}
               </button>
             ))}
           <span className="ml-auto text-[10px] text-ink-faint">
-            ⌘↵ to apply · you review before saving
+            ⌘↵ to apply · + to attach a spec or screenshot · you review before
+            saving
           </span>
         </div>
       )}
 
       {busy && (
-        <WorkingStrip message="Revising — one drafting turn decides what changes (job description, flow, or both); a flow change runs a second pass through the flow editor. Usually under two minutes." />
+        <WorkingStrip
+          startedAt={revise.startedAt}
+          message="Revising — one drafting turn decides what changes (job description, flow, or both); a flow change runs a second pass through the flow editor. Usually under two minutes, and you can leave this page while it runs."
+        />
       )}
 
-      {error && (
+      {revise.error && (
         <div className="text-xs text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/20 rounded p-2.5 mt-2">
-          {error}
+          {revise.error}
         </div>
       )}
 
-      {note && (
+      {revise.note && (
         <div className="flex items-start gap-2 text-xs text-emerald-800 dark:text-emerald-200 bg-emerald-500/10 border border-emerald-500/20 rounded p-2 mt-2">
           <div className="min-w-0 flex-1 whitespace-pre-wrap">
-            {note}
+            {revise.note}
             {"\n"}Nothing is saved until you hit Save.
           </div>
           <button
-            onClick={() => setNote(null)}
+            onClick={() => patchRevise({ note: null })}
             aria-label="Dismiss"
             className="opacity-60 hover:opacity-100 leading-none"
           >

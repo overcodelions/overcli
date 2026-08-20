@@ -1,0 +1,157 @@
+// Turning dropped/picked `File`s into `Attachment`s, in one place.
+//
+// This started life inside the Composer, which was the only surface that
+// took files. It isn't any more: the worker hire screen and the worker AI
+// edit box both send attachments alongside a drafting turn, and a second
+// copy of "which extensions do we accept" would have drifted from the first
+// the moment either changed.
+
+import type { Attachment } from '@shared/types';
+
+/// 25 MB; matches the Claude API document/image cap.
+export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/// Non-image MIME prefixes / extensions we accept and forward to the
+/// backend by writing to disk + inlining the path. Anything else gets
+/// rejected with a message so the user understands why.
+const TEXT_LIKE_EXTS = new Set([
+  'txt', 'md', 'csv', 'tsv', 'json', 'yaml', 'yml', 'toml', 'xml',
+  'log', 'ini', 'env', 'conf', 'sql',
+]);
+
+const DOCUMENT_EXTS = new Set([
+  'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'rtf',
+]);
+
+const DOCUMENT_MIMES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.oasis.opendocument.presentation',
+  'application/rtf',
+]);
+
+/// The `accept` attribute for a file input that mirrors `isAcceptedAttachment`.
+export const ATTACHMENT_ACCEPT = [
+  'image/*',
+  'text/*',
+  'application/json',
+  'application/xml',
+  'application/x-yaml',
+  ...DOCUMENT_MIMES,
+  ...[...TEXT_LIKE_EXTS, ...DOCUMENT_EXTS].map((e) => `.${e}`),
+].join(',');
+
+export function guessMimeFromName(name: string): string | null {
+  const dot = name.lastIndexOf('.');
+  if (dot < 0) return null;
+  const ext = name.slice(dot + 1).toLowerCase();
+  switch (ext) {
+    case 'csv': return 'text/csv';
+    case 'tsv': return 'text/tab-separated-values';
+    case 'json': return 'application/json';
+    case 'yaml':
+    case 'yml': return 'application/x-yaml';
+    case 'xml': return 'application/xml';
+    case 'md': return 'text/markdown';
+    case 'pdf': return 'application/pdf';
+    case 'doc': return 'application/msword';
+    case 'docx':
+      return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    case 'xls': return 'application/vnd.ms-excel';
+    case 'xlsx':
+      return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case 'ppt': return 'application/vnd.ms-powerpoint';
+    case 'pptx':
+      return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    case 'odt': return 'application/vnd.oasis.opendocument.text';
+    case 'ods': return 'application/vnd.oasis.opendocument.spreadsheet';
+    case 'odp': return 'application/vnd.oasis.opendocument.presentation';
+    case 'rtf': return 'application/rtf';
+    case 'log':
+    case 'txt':
+    case 'ini':
+    case 'env':
+    case 'conf':
+    case 'toml':
+    case 'sql':
+    default:
+      return 'text/plain';
+  }
+}
+
+export function isAcceptedAttachment(f: File): boolean {
+  if (f.type.startsWith('image/')) return true;
+  if (f.type.startsWith('text/')) return true;
+  if (f.type === 'application/json') return true;
+  if (f.type === 'application/xml') return true;
+  if (f.type === 'application/x-yaml') return true;
+  if (DOCUMENT_MIMES.has(f.type)) return true;
+  const dot = f.name.lastIndexOf('.');
+  if (dot > 0) {
+    const ext = f.name.slice(dot + 1).toLowerCase();
+    if (TEXT_LIKE_EXTS.has(ext)) return true;
+    if (DOCUMENT_EXTS.has(ext)) return true;
+  }
+  return false;
+}
+
+export function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // FileReader.readAsDataURL returns `data:image/png;base64,xxx` — we
+      // only want the raw base64 body, not the data-URL prefix, because
+      // claude's wire format supplies media_type separately.
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function attachmentId(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : Math.random().toString(36).slice(2);
+}
+
+/// Read a picked/dropped file list into attachments. Unsupported and
+/// oversized files are skipped with a reason rather than failing the batch —
+/// dropping four files where one is a 40 MB video should still attach three.
+export async function intakeAttachments(
+  files: FileList | File[],
+): Promise<{ attachments: Attachment[]; rejections: string[] }> {
+  const attachments: Attachment[] = [];
+  const rejections: string[] = [];
+  for (const f of Array.from(files)) {
+    if (!isAcceptedAttachment(f)) {
+      rejections.push(
+        `Skipped ${f.name || 'file'} — supported: images, text files (csv, json, md, log, …), and documents (pdf, docx, xlsx, pptx, …).`,
+      );
+      continue;
+    }
+    if (f.size > MAX_ATTACHMENT_BYTES) {
+      rejections.push(
+        `${f.name || 'file'} is ${Math.round(f.size / 1024 / 1024)} MB; max is 25 MB.`,
+      );
+      continue;
+    }
+    attachments.push({
+      id: attachmentId(),
+      mimeType: f.type || guessMimeFromName(f.name) || 'application/octet-stream',
+      dataBase64: await fileToBase64(f),
+      label: f.name,
+      size: f.size,
+    });
+  }
+  return { attachments, rejections };
+}

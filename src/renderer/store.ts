@@ -108,6 +108,10 @@ export type ActiveSheet =
   /// Renders bare — the launcher panel is already a floating card, so the
   /// sheet host must not wrap it in a second one.
   | { type: 'flowLaunch'; flowId: string }
+  /// One worker turn, at reading size, with find and notes. Carries both ids
+  /// rather than the turn itself: a sheet holding a copy of an orchestration
+  /// would keep rendering it after the desk deleted it.
+  | { type: 'shiftReader'; workerId: UUID; orchestrationId: string }
   | { type: 'shortcutsHelp' }
   | { type: 'whatsNew' };
 
@@ -413,6 +417,7 @@ interface StoreState {
 
   // Runner
   send(conversationId: UUID, prompt: string): Promise<void>;
+  prewarmConversation(conversationId: UUID): void;
   stop(conversationId: UUID): Promise<void>;
   resetConversation(conversationId: UUID): Promise<void>;
   respondPermission(
@@ -1120,7 +1125,15 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   setDraft(id, text) {
+    const wasEmpty = (get().conversationDrafts[id] ?? '').length === 0;
     set((s) => ({ conversationDrafts: { ...s.conversationDrafts, [id]: text } }));
+    // Empty → non-empty is the earliest honest signal that a turn is coming.
+    // Warming here hides CLI boot, MCP registration and session resume behind
+    // the seconds the user spends typing. Synthetic draft keys (flow hijack,
+    // `__`-prefixed panes) are not conversations.
+    if (wasEmpty && text.length > 0 && !id.startsWith('__') && !id.includes(':')) {
+      get().prewarmConversation(id);
+    }
   },
 
   addAttachment(key, attachment) {
@@ -2454,6 +2467,39 @@ export const useStore = create<StoreState>((set, get) => ({
   async renameConversation(id, name) {
     mutateConversation(set, get, id, (c) => ({ ...c, name }));
     await saveConversationState(get);
+  },
+
+  prewarmConversation(conversationId) {
+    const state = get();
+    const conv = findConversation(state, conversationId);
+    if (!conv) return;
+    if (useRunnersStore.getState().runners[conversationId]?.isRunning) return;
+    const cwd = findContainerPath(state, conversationId);
+    if (!cwd) return;
+    const backend = conv.primaryBackend ?? pickDefaultBackend(state.settings, state.backendHealth);
+    // canPrewarm in the runner rejects everything else anyway; bailing here
+    // saves the IPC hop.
+    if (backend !== 'claude' && backend !== 'codex') return;
+    if (!isBackendEnabled(state.settings, backend)) return;
+    let model = backend === 'codex' ? conv.codexModel ?? conv.currentModel : conv.claudeModel ?? conv.currentModel;
+    if (!model) {
+      model = state.settings.backendDefaultModels?.[backend] ?? premiumModelsForBackend(backend)[0] ?? '';
+    }
+    void window.overcli.invoke('runner:prewarm', {
+      conversationId,
+      backend,
+      cwd,
+      model,
+      permissionMode: conv.pendingPermissionMode ?? conv.permissionMode ?? 'default',
+      // Load-bearing: paramsChanged does not compare sessionId, so a warm
+      // process spawned without it would swallow the next turn into a
+      // brand-new, context-free session.
+      sessionId: conv.sessionId,
+      effortLevel: conv.effortLevel ?? effortForBackend(state.settings, backend),
+      turbo: conv.turbo,
+      allowedDirs: backend === 'claude' ? computeAllowedDirs(state, conversationId) : undefined,
+      claudeTransport: backend === 'claude' ? state.settings.claudeTransport ?? 'cli' : undefined,
+    });
   },
 
   async send(conversationId, prompt) {
