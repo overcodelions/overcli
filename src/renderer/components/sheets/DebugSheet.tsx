@@ -11,14 +11,14 @@ import {
   totalTiming,
 } from './turnTiming';
 
-type Tab = 'stream' | 'timing' | 'diagnostics';
+type Tab = 'timing' | 'stream' | 'diagnostics';
 
 export function DebugSheet() {
   const selectedId = useStore((s) => s.selectedConversationId);
   const runner = useRunner(selectedId);
   const events = runner?.events ?? [];
 
-  const [tab, setTab] = useState<Tab>('stream');
+  const [tab, setTab] = useState<Tab>('timing');
   const [query, setQuery] = useState('');
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -84,15 +84,6 @@ export function DebugSheet() {
     <div className="flex flex-col h-full min-h-0">
       <div className="px-5 pt-4 pb-2 border-b border-card flex items-center gap-3 text-xs">
         <button
-          onClick={() => setTab('stream')}
-          className={
-            'px-2 py-1 rounded font-medium transition-colors ' +
-            (tab === 'stream' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
-          }
-        >
-          Stream
-        </button>
-        <button
           onClick={() => setTab('timing')}
           className={
             'px-2 py-1 rounded font-medium transition-colors ' +
@@ -100,6 +91,15 @@ export function DebugSheet() {
           }
         >
           Timing
+        </button>
+        <button
+          onClick={() => setTab('stream')}
+          className={
+            'px-2 py-1 rounded font-medium transition-colors ' +
+            (tab === 'stream' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+          }
+        >
+          Stream
         </button>
         <button
           onClick={() => setTab('diagnostics')}
