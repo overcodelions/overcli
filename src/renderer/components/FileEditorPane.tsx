@@ -681,6 +681,7 @@ export const FileEditorPane = memo(function FileEditorPane({
             {!missingFile && (
               <button
                 onClick={async () => {
+                  if (dirty) { await save(); }
                   const res = await window.overcli.invoke('fs:saveToDownloads', path);
                   if (!res.ok) {
                     setDownloadState('failed');

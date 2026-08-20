@@ -239,6 +239,8 @@ interface WorkersActions {
   /// applied to the store either way, so nothing depends on the caller still
   /// being mounted.
   startHire(): Promise<void>;
+  /// Clear a hire draft stuck mid-turn so the user can start a fresh one.
+  cancelHire(): void;
   patchRevise(patch: Partial<ReviseState>): void;
   /// Run one AI revision against the open draft. Same deal: the result lands
   /// on the store, not on a component.
@@ -736,9 +738,15 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set((st) => ({ hire: { ...st.hire, ...patch } }));
   },
 
+  cancelHire() {
+    set((st) => ({ hire: { ...st.hire, startedAt: null, error: null } }));
+  },
+
   async startHire() {
     const { hire } = get();
-    if (hire.startedAt) return; // already drafting — one turn at a time
+    // Already drafting — one turn at a time, unless the last one has been
+    // stuck long enough that it is more likely wedged than actually working.
+    if (hire.startedAt && Date.now() - hire.startedAt <= 10 * 60_000) return;
     const jobDescription = hire.jobDescription.trim();
     if (!jobDescription) {
       set((st) => ({
@@ -905,7 +913,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           set({ error: savedFlow.error });
           return false;
         }
-        if (!flowIds.includes(draftedFlow.id)) flowIds = [draftedFlow.id];
+        if (!flowIds.includes(draftedFlow.id)) flowIds = [...flowIds, draftedFlow.id];
         // `flows:save` writes the file; the library every flow-reading pane
         // binds to is a renderer mirror that knows nothing about it. Without
         // this the worker's Settings tab kept rendering the flow's

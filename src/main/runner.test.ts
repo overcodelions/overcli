@@ -10,6 +10,7 @@ import {
 } from './permissionRules';
 import { summarizeToolUse } from './toolDescription';
 import { collapsePartialAssistants, extractCodexExecSnapshot } from './streamSnapshot';
+import os from 'node:os';
 import {
   AGENT_WORKING_LABEL,
   askUserQuestionHasData,
@@ -17,6 +18,7 @@ import {
   isStaleSessionError,
   makeIdleWatchdog,
   resumeSessionAfterParamChange,
+  safeAttachmentBase,
   canPrewarm,
   reapTurnInFlight,
   shouldReapIdle,
@@ -800,5 +802,34 @@ describe('shouldReapIdle — unused prewarm', () => {
   // ollama / gemini ACP report no turn state and must keep reading as busy.
   it('passes undefined through for a non-prewarmed process', () => {
     expect(reapTurnInFlight({ turnInFlight: undefined })).toBeUndefined();
+  });
+});
+
+describe('safeAttachmentBase', () => {
+  // Regression: an attachment id like "../../.claude/settings" was joined
+  // straight into the attachments dir, writing outside it. A traversal id
+  // must fall back to a fresh uuid and land back inside the dir. Exercised
+  // directly, on an in-memory dir string, rather than through
+  // `writeAttachmentFile` — that path touches the real
+  // `~/.overcli/attachments` on disk (and sweeps it), which a unit test
+  // must not do.
+  const dir = path.join(os.tmpdir(), 'overcli-attachments-test');
+
+  it('rejects a traversal id and falls back to a uuid inside the dir', () => {
+    const file = safeAttachmentBase('../../evil', dir, '.json');
+    expect(file.startsWith(dir + path.sep)).toBe(true);
+    expect(file).not.toContain('../../evil');
+    expect(file).not.toContain('..');
+  });
+
+  it('keeps a safe id as the filename', () => {
+    const file = safeAttachmentBase('att-123', dir, '.json');
+    expect(file).toBe(path.join(dir, 'att-123.json'));
+  });
+
+  it('falls back to a fresh uuid when no id is given', () => {
+    const file = safeAttachmentBase(undefined, dir, '.json');
+    expect(file.startsWith(dir + path.sep)).toBe(true);
+    expect(file.endsWith('.json')).toBe(true);
   });
 });

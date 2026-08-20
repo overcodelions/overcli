@@ -701,10 +701,9 @@ function splitSentences(text: string): string[] {
 /// reachable. Same reason disabled workers are excluded: a paused worker is
 /// one the user switched off, and a colleague must not be able to switch it
 /// back on by sending it work.
-export function delegationTargets<T extends Pick<Worker, 'id' | 'order' | 'createdAt' | 'enabled' | 'projectPath'>>(
-  sender: Worker,
-  roster: T[],
-): T[] {
+export function delegationTargets<
+  T extends Pick<Worker, 'id' | 'order' | 'createdAt' | 'enabled' | 'projectPath' | 'caps'>,
+>(sender: Worker, roster: T[]): T[] {
   if (!canDelegate(sender)) return [];
   const narrowed =
     sender.delegatesTo && sender.delegatesTo.length > 0 ? new Set(sender.delegatesTo) : null;
@@ -714,7 +713,8 @@ export function delegationTargets<T extends Pick<Worker, 'id' | 'order' | 'creat
         t.id !== sender.id &&
         t.enabled &&
         t.projectPath === sender.projectPath &&
-        (!narrowed || narrowed.has(t.id)),
+        (!narrowed || narrowed.has(t.id)) &&
+        (sender.caps.allowExternalActions || !t.caps.allowExternalActions),
     ),
   );
 }

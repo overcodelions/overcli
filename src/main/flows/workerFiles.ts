@@ -31,6 +31,21 @@ import { isSafeIdSegment } from '../../shared/flows/safeId';
 /// viewer refuses rather than shipping 40MB over IPC.
 export const WORKER_FILE_MAX_BYTES = 2 * 1024 * 1024;
 
+/// Short-lived cache of directory scans, so a Files tab or desk that reads
+/// `deliverableFiles` for several items in a row doesn't re-stat the same
+/// job folder over and over. Cleared on any write so a fresh delete/archive
+/// can't be masked by a stale listing.
+const DIR_CACHE_MS = 5000;
+const dirCache = new Map<string, { at: number; entries: fs.Dirent[] }>();
+function readdirCached(dir: string): fs.Dirent[] {
+  const hit = dirCache.get(dir);
+  const now = Date.now();
+  if (hit && now - hit.at < DIR_CACHE_MS) return hit.entries;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  dirCache.set(dir, { at: now, entries });
+  return entries;
+}
+
 export interface WorkerFileEntry {
   /// Path relative to the worker's root, POSIX-separated. Doubles as the id.
   name: string;
@@ -191,6 +206,11 @@ export function fileWorkerDeliverable(args: {
   artifacts: Array<{ name: string; body?: string; sourcePath?: string }>;
 }): { written: boolean; name: string } {
   if (args.artifacts.length === 0) return { written: false, name: '' };
+  // A write path too, same as deleteDeliverable/archiveWorkerFiles: without
+  // this, the existingJobStem pre-write check below would cache the
+  // directory as it looked BEFORE this file lands, and a `deliverableFiles`
+  // read moments later (same 5s window) would miss it.
+  dirCache.clear();
   const dir = ensureWorkerFilesDir(args.workerId);
   // Compaction may already have archived this job. Check there too before
   // deciding this is new work — otherwise a re-fold (every orchestration
@@ -207,7 +227,11 @@ export function fileWorkerDeliverable(args: {
   if (args.artifacts.length === 1) {
     const only = args.artifacts[0];
     const name = `${stem}${extensionOf(only.name)}`;
-    return fileOnce(path.join(root, name), only, name);
+    const result = fileOnce(path.join(root, name), only, name);
+    // Clear again after writing: a `deliverableFiles` read moments later must
+    // not still see the pre-write listing this call itself just cached.
+    dirCache.clear();
+    return result;
   }
 
   const folder = path.join(root, stem);
@@ -222,6 +246,7 @@ export function fileWorkerDeliverable(args: {
     }
     if (fileOnce(path.join(folder, base), artifact, base).written) wroteAny = true;
   }
+  dirCache.clear();
   return { written: wroteAny, name: stem };
 }
 
@@ -244,7 +269,7 @@ function existingJobStem(
 ): string | null {
   const want = deliverableName({ ...args, extension: '' });
   try {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of readdirCached(dir)) {
       const base = entry.isDirectory()
         ? entry.name
         : entry.name.lastIndexOf('.') > 0
@@ -259,7 +284,8 @@ function existingJobStem(
       if (
         longer.startsWith(shorter) &&
         longer[shorter.length] === '-' &&
-        shorterSlug.length >= TRUNCATED_SLUG_MIN
+        shorterSlug.length >= TRUNCATED_SLUG_MIN &&
+        longer.length - shorter.length <= 8
       ) {
         return base;
       }
@@ -430,7 +456,7 @@ function deliverablesUnder(
   const out: WorkerFileEntry[] = [];
   try {
     if (fs.existsSync(folder) && fs.statSync(folder).isDirectory()) {
-      for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
+      for (const entry of readdirCached(folder)) {
         if (!entry.isFile() || entry.name.startsWith('.')) continue;
         const full = path.join(folder, entry.name);
         const stat = fs.statSync(full);
@@ -445,7 +471,7 @@ function deliverablesUnder(
     }
     // A single-artifact run is filed as one file, not a folder — its extension
     // came from the artifact's own name, so look for any of them.
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    for (const entry of readdirCached(root)) {
       if (!entry.isFile()) continue;
       if (entry.name !== stem && !entry.name.startsWith(`${stem}.`)) continue;
       const full = path.join(root, entry.name);
@@ -486,6 +512,7 @@ export function deleteWorkerFile(
   workerId: string,
   name: string,
 ): { ok: true; removed: string } | { ok: false; error: string } {
+  dirCache.clear();
   const root = workerFilesDir(workerId);
   const full = containedPath(root, name);
   if (!full) {
@@ -521,6 +548,7 @@ export function deleteDeliverable(args: {
   title: string;
   at: number;
 }): { removed: number } {
+  dirCache.clear();
   const root = workerFilesDir(args.workerId);
   let removed = 0;
   for (const relRoot of ['', WORKER_ARCHIVE_DIR]) {
@@ -568,6 +596,7 @@ function countFilesUnder(dir: string): number {
 /// Move filed deliverables older than `cutoffAt` into `archive/`. Nothing is
 /// deleted, and nothing the worker wrote itself is touched.
 export function archiveWorkerFiles(workerId: string, cutoffAt: number): { moved: number } {
+  dirCache.clear();
   const root = workerFilesDir(workerId);
   if (!fs.existsSync(root)) return { moved: 0 };
   let entries: fs.Dirent[];

@@ -23,10 +23,14 @@ vi.mock('./runSummaryLog', () => ({
 // Partial: only the archiving call is stubbed, so the weekly pass is
 // observable without touching the disk. `archiveWorkerFiles` has its own
 // tests; what is unproven here is that the engine calls it at all.
-const { archiveMock } = vi.hoisted(() => ({ archiveMock: vi.fn(() => ({ moved: 0 })) }));
+const { archiveMock, deleteDeliverableMock } = vi.hoisted(() => ({
+  archiveMock: vi.fn(() => ({ moved: 0 })),
+  deleteDeliverableMock: vi.fn(() => ({ removed: 0 })),
+}));
 vi.mock('./workerFiles', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./workerFiles')>()),
   archiveWorkerFiles: archiveMock,
+  deleteDeliverable: deleteDeliverableMock,
 }));
 
 import {
@@ -783,6 +787,7 @@ describe('WorkerEngine hiring and trust', () => {
 describe('WorkerEngine notes', () => {
   it('writes a note against a turn, into the journal the worker plans from', () => {
     const h = makeHarness({ seed: [seedWorker()] });
+    h.orchestrations.set('orch-1', workerBatch({ title: '[Shift 1] Scout' }));
     h.engine.start();
     expect(h.engine.note('worker-1', 'orch-1', '  Panasonic is blocked their side.  ')).toEqual({
       ok: true,
@@ -800,6 +805,7 @@ describe('WorkerEngine notes', () => {
 
   it('takes two identical notes on one turn as two things the user said', () => {
     const h = makeHarness({ seed: [seedWorker()] });
+    h.orchestrations.set('orch-1', workerBatch({ title: '[Shift 1] Scout' }));
     h.engine.start();
     h.setNow(1_000);
     expect(h.engine.note('worker-1', 'orch-1', 'same').ok).toBe(true);
@@ -810,6 +816,7 @@ describe('WorkerEngine notes', () => {
 
   it('refuses an empty note, an oversized one, and an unknown worker', () => {
     const h = makeHarness({ seed: [seedWorker()] });
+    h.orchestrations.set('orch-1', workerBatch({ title: '[Shift 1] Scout' }));
     h.engine.start();
     expect(h.engine.note('worker-1', 'orch-1', '   ')).toEqual({
       ok: false,
@@ -1776,5 +1783,30 @@ describe('WorkerEngine re-running and deleting one shift', () => {
     // The irreversible half never ran, so the same delete can be retried.
     expect(deleted).toEqual([]);
     expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
+  });
+
+  it('forgetActivity deletes filed deliverables', async () => {
+    deleteDeliverableMock.mockReturnValueOnce({ removed: 1 });
+    const { h } = await afterOneShift();
+    h.orchestrations.set(
+      'orch-1',
+      workerBatch({
+        title: '[Shift 1] Scout',
+        items: [
+          {
+            candidate: { id: 'c1', title: 'Repair CI spec', prompt: 'p' },
+            flowId: 'fix-it',
+            status: 'done',
+            runId: 'run-1',
+            finishedAt: 10,
+          },
+        ],
+      }),
+    );
+
+    const res = h.engine.forgetActivity('worker-1', 'orch-1');
+
+    expect(res).toMatchObject({ ok: true });
+    expect((res as { files: number }).files).toBeGreaterThan(0);
   });
 });

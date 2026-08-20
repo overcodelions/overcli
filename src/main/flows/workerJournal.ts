@@ -85,7 +85,10 @@ export function workerRejectedTitles(workerId: string): string[] {
 }
 
 export function digestWorkerJournal(workerId: string): string {
-  const entries = loadWorkerJournal(workerId).slice(0, WORKER_JOURNAL_DIGEST_LIMIT);
+  const all = loadWorkerJournal(workerId);
+  const recent = all.slice(0, WORKER_JOURNAL_DIGEST_LIMIT);
+  const olderNotes = all.slice(WORKER_JOURNAL_DIGEST_LIMIT).filter((e) => e.kind === 'note');
+  const entries = [...recent, ...olderNotes].sort((a, b) => b.at - a.at);
   if (entries.length === 0) return '';
   return entries
     .map((entry) => `${new Date(entry.at).toISOString().slice(0, 10)} ${entry.kind}: ${entry.title || entry.note || ''}`)

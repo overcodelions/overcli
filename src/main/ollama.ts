@@ -1206,7 +1206,7 @@ const DEFAULT_CHAT_OPTIONS: Record<string, unknown> = {
 /// the next Ollama step pays a full reload — for gemma4:26b that is 17.6
 /// GB off disk before the first token. Holding it for the length of a
 /// realistic step gap trades idle VRAM for removing that stall.
-const DEFAULT_KEEP_ALIVE = '30m';
+const DEFAULT_KEEP_ALIVE = '5m';
 
 /// Cache of `/api/show` capability lookups, keyed by model tag. Capabilities
 /// are a static property of the pulled model, so one probe per tag per
@@ -1224,15 +1224,14 @@ const capabilityCache = new Map<string, Set<string>>();
 /// Returns an empty set when Ollama is unreachable or the model is unknown,
 /// so callers fall back to the in-prompt protocol rather than failing.
 export async function modelCapabilities(tag: string): Promise<Set<string>> {
-  const cached = capabilityCache.get(tag);
-  if (cached) return cached;
+  if (capabilityCache.has(tag)) return capabilityCache.get(tag)!;
   const res = await httpPostJson<{ capabilities?: unknown }>('/api/show', { model: tag });
   const caps = new Set<string>(
     Array.isArray(res?.capabilities) ? res!.capabilities.filter((c): c is string => typeof c === 'string') : [],
   );
   // Only cache a real answer — a failed probe shouldn't pin the model as
   // capability-less for the rest of the session.
-  if (caps.size > 0) capabilityCache.set(tag, caps);
+  if (res !== null) capabilityCache.set(tag, caps);
   return caps;
 }
 
