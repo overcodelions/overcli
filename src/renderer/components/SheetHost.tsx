@@ -27,6 +27,10 @@ import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSh
 /// (sidebar + full-width diff body), so we widen the container frame
 /// based on sheet type. Anything else keeps the default 680px shell.
 const WIDE_SHEETS = new Set<string>([
+  // Debug is wide for the Timing tab: a turn row carries a prompt, a
+  // model/tool bar and a run of token counters on one line, which the
+  // default 680px shell truncates into uselessness.
+  'debug',
   'worktreeDiff',
   'projectDiff',
   'workspaceDiff',

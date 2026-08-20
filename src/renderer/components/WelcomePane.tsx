@@ -29,6 +29,7 @@ import {
 import { PERSONA_REQUIRES_CODE_CHANGES, PRESETS, TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { PREMIUM_MODELS } from '@shared/modelCatalog';
 import { pathBasename } from '@shared/workspaceNames';
+import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useSlashCommands } from '../hooks';
@@ -99,7 +100,10 @@ export function WelcomePane() {
   const [permissionMode, setLocalPermissionMode] = useState<PermissionMode>(
     settings.defaultPermissionMode,
   );
-  const [effort, setEffort] = useState<EffortLevel>(settings.defaultEffort);
+  const [effort, setEffort] = useState<EffortLevel>(effortForBackend(settings, backend));
+  // Same bargain as `backendPicked`: effort follows the chosen backend's
+  // default until the user states a preference, then it's theirs to keep.
+  const [effortPicked, setEffortPicked] = useState(false);
   const [model, setModel] = useState<string>('');
   const [reviewPreset, setLocalReviewPreset] = useState<ReviewPreset | 'off'>('off');
   const [branch, setBranch] = useState<string>('');
@@ -488,6 +492,10 @@ export function WelcomePane() {
                   const next = v as Backend;
                   setBackend(next);
                   setBackendPicked(true);
+                  // Backends disagree on what their default effort is, so an
+                  // untouched picker re-seeds rather than carrying the old
+                  // backend's default across.
+                  if (!effortPicked) setEffort(effortForBackend(settings, next));
                   // `auto` is Claude-only; demote to default when leaving Claude
                   // so the picker label and the eventual mapped behaviour agree.
                   if (next !== 'claude' && permissionMode === 'auto') {
@@ -531,7 +539,10 @@ export function WelcomePane() {
                     { value: 'high' as EffortLevel, label: 'High' },
                     { value: 'max' as EffortLevel, label: 'Max' },
                   ]).map((o) => ({ value: o.value, label: o.label }))}
-                  onPick={(v) => setEffort(v as EffortLevel)}
+                  onPick={(v) => {
+                    setEffort(v as EffortLevel);
+                    setEffortPicked(true);
+                  }}
                 />
               )}
               <Pill

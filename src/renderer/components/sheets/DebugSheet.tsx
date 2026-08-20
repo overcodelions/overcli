@@ -2,15 +2,23 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { useRunner } from '../../runnersStore';
 import type { SilentLogEntry, StreamEvent } from '../../../shared/types';
+import {
+  TurnTiming,
+  formatSeconds,
+  formatTokens,
+  shareOfWork,
+  summarizeTurns,
+  totalTiming,
+} from './turnTiming';
 
-type Tab = 'stream' | 'diagnostics';
+type Tab = 'timing' | 'stream' | 'diagnostics';
 
 export function DebugSheet() {
   const selectedId = useStore((s) => s.selectedConversationId);
   const runner = useRunner(selectedId);
   const events = runner?.events ?? [];
 
-  const [tab, setTab] = useState<Tab>('stream');
+  const [tab, setTab] = useState<Tab>('timing');
   const [query, setQuery] = useState('');
   const [activeTypes, setActiveTypes] = useState<Set<string>>(new Set());
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -73,8 +81,17 @@ export function DebugSheet() {
   };
 
   return (
-    <div className="flex flex-col max-h-[85vh] min-h-[60vh]">
+    <div className="flex flex-col h-full min-h-0">
       <div className="px-5 pt-4 pb-2 border-b border-card flex items-center gap-3 text-xs">
+        <button
+          onClick={() => setTab('timing')}
+          className={
+            'px-2 py-1 rounded font-medium transition-colors ' +
+            (tab === 'timing' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+          }
+        >
+          Timing
+        </button>
         <button
           onClick={() => setTab('stream')}
           className={
@@ -94,7 +111,9 @@ export function DebugSheet() {
           Diagnostics
         </button>
       </div>
-      {tab === 'diagnostics' ? <DiagnosticsTab /> : (
+      {tab === 'diagnostics' ? <DiagnosticsTab /> : tab === 'timing' ? (
+        <TimingTab events={events} />
+      ) : (
       <>
       <div className="px-5 pt-4 pb-3 border-b border-card">
         <div className="flex items-baseline justify-between mb-2">
@@ -184,6 +203,155 @@ export function DebugSheet() {
       </div>
       </>
       )}
+    </div>
+  );
+}
+
+/// Where a conversation's wall clock actually went, per turn.
+///
+/// Everything here is derived from `events` in the renderer — see
+/// `turnTiming.ts`. Nothing is persisted and nothing new crosses IPC, so
+/// this tab costs nothing until someone opens it.
+function TimingTab({ events }: { events: StreamEvent[] }) {
+  const turns = useMemo(() => summarizeTurns(events), [events]);
+  const total = useMemo(() => totalTiming(turns), [turns]);
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    const header = 'turn\twall\tmodel\ttools\tout_tok\treasoning_est\tdecode_tok_s\tcache_write';
+    const body = turns.map((t, i) =>
+      [
+        i + 1,
+        formatSeconds(t.wallMs),
+        formatSeconds(t.modelMs),
+        formatSeconds(t.toolMs),
+        t.outputTokens,
+        t.reasoningTokensEst,
+        t.decodeTokensPerSec?.toFixed(0) ?? '',
+        t.cacheCreationTokens,
+      ].join('\t'),
+    );
+    navigator.clipboard.writeText([header, ...body].join('\n'));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="px-5 pt-4 pb-3 border-b border-card">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <div className="text-lg font-semibold">Turn timing</div>
+            <div className="text-xs text-ink-faint">
+              Where this conversation spent its time. Model time is everything that isn&apos;t
+              waiting on a tool; reasoning is estimated as output tokens minus visible prose and
+              tool arguments.
+            </div>
+          </div>
+          <button
+            onClick={copy}
+            disabled={turns.length === 0}
+            className="px-2 py-1 rounded bg-card hover:bg-card-strong text-ink-muted hover:text-ink text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {copied ? 'copied' : 'copy tsv'}
+          </button>
+        </div>
+        {total && (
+          <div className="mt-3 grid grid-cols-5 gap-2 text-center">
+            <Stat label="model" value={`${shareOfWork(total.modelMs, total).toFixed(0)}%`} sub={formatSeconds(total.modelMs)} />
+            <Stat label="tools" value={`${shareOfWork(total.toolMs, total).toFixed(0)}%`} sub={formatSeconds(total.toolMs)} />
+            <Stat
+              label="reasoning"
+              value={
+                total.outputTokens > 0
+                  ? `${((total.reasoningTokensEst / total.outputTokens) * 100).toFixed(0)}%`
+                  : '—'
+              }
+              sub={`${formatTokens(total.reasoningTokensEst)} tok`}
+            />
+            <Stat
+              label="decode"
+              value={total.decodeTokensPerSec ? `${total.decodeTokensPerSec.toFixed(0)}` : '—'}
+              sub="tok/s"
+            />
+            <Stat
+              label="cache write"
+              value={formatTokens(total.cacheCreationTokens)}
+              sub={`${formatTokens(total.cacheReadTokens)} read`}
+            />
+          </div>
+        )}
+      </div>
+      <div className="overflow-y-auto px-5 py-2 flex-1 text-[11px]">
+        {turns.length === 0 ? (
+          <div className="text-ink-faint py-3">
+            No turns yet. Send a message and the breakdown appears here.
+          </div>
+        ) : (
+          turns.map((t, i) => <TurnRow key={t.id} turn={t} index={i + 1} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+  return (
+    <div className="bg-card rounded py-1.5">
+      <div className="text-[10px] uppercase tracking-wide text-ink-faint">{label}</div>
+      <div className="text-sm font-semibold text-ink tabular-nums">{value}</div>
+      <div className="text-[10px] text-ink-faint tabular-nums">{sub}</div>
+    </div>
+  );
+}
+
+function TurnRow({ turn, index }: { turn: TurnTiming; index: number }) {
+  const modelPct = shareOfWork(turn.modelMs, turn);
+  const toolPct = shareOfWork(turn.toolMs, turn);
+  const reprefilled = turn.resumedColdCache;
+
+  return (
+    <div className="border-b border-card last:border-b-0 py-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="text-ink-faint shrink-0 tabular-nums w-5 text-right">{index}</span>
+        <span className="text-ink-muted truncate flex-1">{turn.prompt || '(empty prompt)'}</span>
+        <span className="text-ink font-medium tabular-nums shrink-0">
+          {formatSeconds(turn.modelMs + turn.toolMs)}
+        </span>
+      </div>
+      <div className="flex items-center gap-2 pl-7 pt-1">
+        <div className="flex h-1.5 flex-1 overflow-hidden rounded-full bg-card">
+          <div className="bg-accent" style={{ width: `${modelPct}%` }} title={`model ${formatSeconds(turn.modelMs)}`} />
+          <div
+            className="bg-ink-faint"
+            style={{ width: `${toolPct}%` }}
+            title={`tools ${formatSeconds(turn.toolMs)}`}
+          />
+        </div>
+        <span className="text-ink-faint tabular-nums shrink-0 font-mono">
+          model {modelPct.toFixed(0)}% · tools {toolPct.toFixed(0)}%
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-x-3 pl-7 pt-1 text-ink-faint font-mono">
+        <span>{turn.requests} req</span>
+        <span>{turn.toolCalls} tools</span>
+        <span>{formatTokens(turn.outputTokens)} out</span>
+        <span>
+          reasoning ~
+          {turn.outputTokens > 0
+            ? `${((turn.reasoningTokensEst / turn.outputTokens) * 100).toFixed(0)}%`
+            : '—'}
+        </span>
+        {turn.decodeTokensPerSec !== null && (
+          <span>{turn.decodeTokensPerSec.toFixed(0)} tok/s</span>
+        )}
+        {reprefilled && (
+          <span className="text-amber-400" title="This turn opened on a cold cache — the backend respawned and resumed, re-prefilling the whole prefix.">
+            cold resume {formatTokens(turn.cacheCreationTokens)}
+          </span>
+        )}
+        {turn.models.length > 0 && <span>{turn.models.join(', ')}</span>}
+      </div>
     </div>
   );
 }
