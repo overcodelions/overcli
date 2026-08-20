@@ -16,6 +16,7 @@ import { ExplorerPane } from './components/ExplorerPane';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
+import { focusedFlowConversationId } from './flowFocus';
 import { useFlowsStore } from './flowsStore';
 import { useOrchestratorStore } from './orchestratorStore';
 import { SheetHost } from './components/SheetHost';
@@ -71,6 +72,9 @@ export function App() {
     (s) => (s.selectedWorkerId ? (s.filesRoot[s.selectedWorkerId] ?? null) : null),
   );
   const [sideFileWidth, setSideFileWidth] = useState(SIDE_FILE_DEFAULT);
+  // Whether the user has sized this pane themselves this session. An explicit
+  // drag outranks any default, so the next report opening must not undo it.
+  const sideFileDragged = useRef(false);
   const windowWidth = useWindowWidth();
   // The three resizable panels, handed to their dividers so a drag can move
   // them directly. A width is pure layout: making it React state mid-gesture
@@ -88,23 +92,11 @@ export function App() {
   // inside a flow step (e.g. the Task tool spawning an Explore agent)
   // can open the SubagentDrawer — without this fallback the drawer
   // gating on `selectedConversationId` no-ops in the flows detail mode.
-  const activeFlowRunId = useFlowsStore((s) => s.activeRunId);
   const activeFlowRun = useFlowsStore((s) =>
     s.activeRunId ? s.runs[s.activeRunId] : undefined,
   );
-  const flowDrawerConvId = (() => {
-    if (detailMode !== 'flows' || !activeFlowRun) return null;
-    const st = activeFlowRun.state;
-    const currentStepId =
-      st.kind === 'running'
-        ? st.currentStepId
-        : st.kind === 'paused'
-          ? st.nextStepId
-          : activeFlowRun.attempts[activeFlowRun.attempts.length - 1]?.stepId;
-    if (!currentStepId) return null;
-    const step = activeFlowRun.flowSnapshot.steps.find((s) => s.id === currentStepId);
-    return step ? activeFlowRun.conversationIds[step.participantId] ?? null : null;
-  })();
+  const flowDrawerConvId =
+    detailMode === 'flows' && activeFlowRun ? focusedFlowConversationId(activeFlowRun) : null;
   // The drawer renders when EITHER a regular conversation is selected
   // OR we're inside a flow run with a known conv. Prefer the conv id
   // recorded by the inline SubagentCard at click time — the card knows
@@ -338,6 +330,20 @@ export function App() {
     setSideFileWidth((w) => Math.min(w, sideFileMax));
   }, [sideFileMax]);
 
+  // A worker's report opens at half the content width, not at the 640px
+  // default that suits a file peeked at beside a chat. Selecting a worker
+  // renders its report automatically — the page IS what you came to look at,
+  // and at 640px on a wide screen that's a quarter of the window, so every
+  // arrival started with the same drag. Split the space with the desk instead.
+  // Only until the user drags it: their width then holds for the session.
+  useEffect(() => {
+    if (!sideFileVisible || detailMode !== 'workers' || sideFileDragged.current) return;
+    const content = windowWidth - (showSidebar ? sidebarWidth : 0);
+    setSideFileWidth(
+      Math.max(SIDE_FILE_MIN, Math.min(Math.round(content / 2), sideFileMax)),
+    );
+  }, [sideFileVisible, detailMode, windowWidth, showSidebar, sidebarWidth, sideFileMax]);
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden">
       <TitleBar />
@@ -405,7 +411,10 @@ export function App() {
             <ResizableDivider
               panel={sideFilePanel}
               width={sideFileWidth}
-              onChange={setSideFileWidth}
+              onChange={(w) => {
+                sideFileDragged.current = true;
+                setSideFileWidth(w);
+              }}
               minWidth={SIDE_FILE_MIN}
               maxWidth={sideFileMax}
               side="right"

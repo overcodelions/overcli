@@ -22,12 +22,18 @@ import {
   resolveOwner as resolveFlowOwner,
   runIsActive as flowRunIsActive,
   runIsLive as flowRunIsLive,
+  workerRunIsActive,
 } from './flows/FlowRunSidebarRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
 import { WorkersSidebar } from './workers/WorkersSidebar';
 import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
 
 const WORKERS_EXPANDED_KEY = 'sidebar.workersExpanded';
+
+/// How many worker runs the Active section will show at once. Three of seven
+/// slots: enough to see a roster waking up, few enough that your own work
+/// keeps the rest.
+const ACTIVE_WORKER_RUN_LIMIT = 3;
 
 /// Which workers the user has opened in the roster. Persisted, unlike the
 /// project tree's in-memory collapse set, because the roster folds by
@@ -80,6 +86,7 @@ export function Sidebar() {
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
   const workers = useWorkersStore((s) => s.workers);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const lastSelectedAt = useStore((s) => s.lastSelectedAt);
   const lastOpenedAtByRun = useFlowsStore((s) => s.lastOpenedAtByRun);
@@ -247,12 +254,20 @@ export function Sidebar() {
   const activeEntries = useMemo(
     () =>
       selectActiveEntries(
-        collectActiveCandidates(projects, workspaces, flowRuns, runners, {
-          openedConversationId: selectedId,
-          lastSelectedAt,
-          openedRunId,
-          lastOpenedAtByRun,
-        }),
+        collectActiveCandidates(
+          projects,
+          workspaces,
+          flowRuns,
+          runners,
+          {
+            openedConversationId: selectedId,
+            lastSelectedAt,
+            openedRunId,
+            lastOpenedAtByRun,
+          },
+          Date.now(),
+          workers,
+        ),
       ),
     [
       flowRuns,
@@ -263,6 +278,7 @@ export function Sidebar() {
       lastSelectedAt,
       openedRunId,
       lastOpenedAtByRun,
+      workers,
     ],
   );
   const sortedProjects = useMemo(
@@ -402,6 +418,15 @@ export function Sidebar() {
                   ownerName={entry.ownerName}
                   ownerKind={entry.ownerKind}
                   onClick={() => {
+                    // A worker's run keeps its one home: this row is a route
+                    // to the desk it belongs to, not a second copy of it.
+                    // `selectWorker` clears the active run, so it goes first.
+                    if (entry.run.workerId) {
+                      selectWorker(entry.run.workerId);
+                      setActiveRun(entry.run.id);
+                      setDetailMode('workers');
+                      return;
+                    }
                     setActiveRun(entry.run.id);
                     setDetailMode('flows');
                   }}
@@ -576,7 +601,7 @@ interface ActiveFlowItem {
   kind: 'flow';
   run: FlowRun;
   ownerName: string;
-  ownerKind: 'project' | 'workspace' | 'unknown';
+  ownerKind: 'project' | 'workspace' | 'unknown' | 'worker';
   /// Drives the row's live indicator only. Liveness deliberately has no say
   /// in where the row sits — see selectActiveEntries.
   isLive: boolean;
@@ -601,6 +626,9 @@ interface ActiveSelection {
 /// make the cut. Hidden conversations and archived runs are left out: the user
 /// has explicitly put those away, so they shouldn't be dragged back in by the
 /// section's floor.
+///
+/// Worker runs are the one entry here nobody started by hand, and they follow
+/// their own rule — see `pushWorkerRuns`.
 export function collectActiveCandidates(
   projects: Project[],
   workspaces: Workspace[],
@@ -608,6 +636,9 @@ export function collectActiveCandidates(
   runners: Record<UUID, { isRunning: boolean } | undefined>,
   selection: ActiveSelection,
   now: number = Date.now(),
+  /// The roster, for naming a worker run after its worker. Optional so the
+  /// section still builds before the workers store has loaded.
+  workers: Record<string, { name: string }> = {},
 ): ActiveCandidate<ActiveItem>[] {
   const cutoff = now - ACTIVE_CONVERSATION_WINDOW_MS;
   const out: ActiveCandidate<ActiveItem>[] = [];
@@ -642,6 +673,33 @@ export function collectActiveCandidates(
     for (const conv of workspace.conversations ?? []) {
       pushConversation(conv, workspace.name, 'workspace');
     }
+  }
+
+  // A worker's runs are shown at its desk, not in the project's flow list —
+  // a worker on an hourly clock would bury the runs you started yourself.
+  // The exception is HERE, and only while the run is happening: this section
+  // answers "what is going on right now", and an unattended run spending
+  // money is exactly that. Capped, newest first, so a roster firing at once
+  // cannot evict the chat you are reading; the Workers tab has them all.
+  const liveWorkerRuns = Object.values(flowRuns)
+    .filter((run) => isWorkerRun(run) && workerRunIsActive(run, runners))
+    .sort((a, b) => flowRunPromptedAt(b) - flowRunPromptedAt(a))
+    .slice(0, ACTIVE_WORKER_RUN_LIMIT);
+  for (const run of liveWorkerRuns) {
+    out.push({
+      entry: {
+        kind: 'flow',
+        run,
+        ownerName: workers[run.workerId!]?.name ?? 'a worker',
+        ownerKind: 'worker',
+        isLive: flowRunIsLive(run, runners),
+      },
+      active: true,
+      promptedAt: flowRunPromptedAt(run),
+      // Never held by a past touch: a worker run leaves this section when it
+      // stops, however recently you looked at it.
+      touchedAt: flowRunPromptedAt(run),
+    });
   }
 
   for (const run of Object.values(flowRuns)) {

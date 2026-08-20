@@ -270,6 +270,14 @@ export class FlowRuntimeImpl {
   /// Track how many `goto` retries each step has consumed in a run, so
   /// `on_fail.goto.maxRetries` is respected.
   private retryCounts = new Map<string, number>(); // `${runId}:${stepId}` → count
+  /// How many times the current attempt at a step has been nudged to
+  /// re-emit a missing `<output>` block. `${runId}:${stepId}` → count,
+  /// cleared by `executeStep` so every fresh attempt gets its own nudge.
+  private reaskCounts = new Map<string, number>();
+  /// One nudge per attempt. A model that ignores a direct "emit only the
+  /// block" instruction twice is not one turn away from complying, and each
+  /// round costs the user real tokens.
+  private static readonly MAX_MISSING_OUTPUT_REASKS = 1;
   /// Feedback owed to the NEXT execution of a `on_fail.goto` target: why it
   /// got sent back and which artifact holds the details. Set when the jump
   /// is scheduled, consumed (and cleared) by that step's `executeStep`.
@@ -993,6 +1001,9 @@ export class FlowRuntimeImpl {
       for (const key of this.retryCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.retryCounts.delete(key);
       }
+      for (const key of this.reaskCounts.keys()) {
+        if (key.startsWith(`${victim.id}:`)) this.reaskCounts.delete(key);
+      }
       deleteRunFromDisk(victim.id);
       clearAttachments(victim.id);
     }
@@ -1217,6 +1228,9 @@ export class FlowRuntimeImpl {
     // first pass would refuse to loop on this one.
     for (const key of Array.from(this.retryCounts.keys())) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
+    }
+    for (const key of Array.from(this.reaskCounts.keys())) {
+      if (key.startsWith(`${args.runId}:`)) this.reaskCounts.delete(key);
     }
     // A manual rewind isn't a rejection — don't hand the step a stale
     // "you were sent back" notice from an earlier automatic retry.
@@ -1530,6 +1544,9 @@ export class FlowRuntimeImpl {
     this.watchBuffers.delete(args.runId);
     for (const key of this.retryCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
+    }
+    for (const key of this.reaskCounts.keys()) {
+      if (key.startsWith(`${args.runId}:`)) this.reaskCounts.delete(key);
     }
     for (const key of this.latestAssistantTextByParticipant.keys()) {
       if (key.startsWith(`${args.runId}:`)) {
@@ -2209,6 +2226,8 @@ export class FlowRuntimeImpl {
     // Fresh buffer for this step's turn — the conv may already have
     // earlier steps' transcripts inside it, but artifact extraction
     // should only see what THIS step produces.
+    // Every fresh attempt at a step gets its own missing-`<output>` nudge.
+    this.reaskCounts.delete(`${runId}:${step.id}`);
     this.stepBuffers.set(runId, {
       assistantText: '',
       usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
@@ -2466,6 +2485,12 @@ export class FlowRuntimeImpl {
         void this.resolveWorkerQuestion(run, step, exchange);
         return;
       }
+      // Before failing on a formatting slip, ask once for the block itself.
+      // The work is usually DONE at this point — written to a file, or
+      // narrated in the reply — and only the wrapper is missing, so pausing
+      // the run here spends the user's attention on something the model can
+      // fix in one cheap turn.
+      if (this.reaskMissingOutput(run, step, text)) return;
       // No <output> block — treat as failure so onFail policy decides.
       this.finishAttempt(run, step.id, {
         outcome: 'error',
@@ -2648,6 +2673,72 @@ export class FlowRuntimeImpl {
     run.state = { kind: 'running', currentStepId: next.id };
     this.emitRunUpdate(run);
     void this.executeStep(runId, next.id);
+  }
+
+  /// A step finished without the `<output name="…">` wrapper. Ask its
+  /// participant, once per attempt, to re-emit the deliverable properly
+  /// before treating the step as failed.
+  ///
+  /// Nearly every one of these is a formatting slip rather than a failure of
+  /// the work: the model wrote the file to disk and reported on it, wrapped
+  /// the block in a code fence, or simply forgot the tag. The context that
+  /// produced the deliverable is still live in the participant's
+  /// conversation, so one short follow-up turn recovers it — where pausing
+  /// costs a human round trip and re-running the step redoes minutes of
+  /// correct work.
+  ///
+  /// Returns true when a nudge was sent, in which case the step stays in
+  /// flight: the follow-up turn's `running: false` re-enters
+  /// `onStepFinished` on the same step, extracting from a buffer that now
+  /// holds only the nudge's reply.
+  private reaskMissingOutput(run: FlowRun, step: FlowStep, priorText: string): boolean {
+    const key = `${run.id}:${step.id}`;
+    const used = this.reaskCounts.get(key) ?? 0;
+    if (used >= FlowRuntimeImpl.MAX_MISSING_OUTPUT_REASKS) return false;
+
+    const participantId = stepParticipantKey(step);
+    const convId = run.conversationIds[participantId];
+    // No conversation means the turn never really happened — nothing to
+    // follow up on, and a nudge would open a context-free session.
+    if (!convId) return false;
+
+    const stepModel = resolveRunStepModel(run, step);
+    const buf = this.stepBuffers.get(run.id);
+    // The nudge's reply is the only text that should be extracted from.
+    // Usage and cost stay — they belong to this attempt either way.
+    if (buf) buf.assistantText = '';
+
+    const sendResult = this.runner.send({
+      conversationId: convId,
+      prompt: missingOutputReaskPrompt(step.output),
+      displayText: `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
+      backend: stepModel.backend,
+      cwd: run.projectPath,
+      allowedDirs: this.runAllowedDirs(run),
+      model: stepModel.model,
+      permissionMode: this.resolvePermissionMode(run, step),
+      flowStep: true,
+      reviewBackend: null,
+      reviewMode: null,
+      reviewModel: null,
+      reviewPersona: null,
+      // Ollama dispatches tools itself, and this turn wants prose only —
+      // a local model handed tools here tends to go back to work instead
+      // of answering.
+      enabledTools: stepModel.backend === 'ollama' ? [] : undefined,
+    });
+    if (!sendResult.ok) {
+      // Put the original text back so the caller fails against what the
+      // step actually said.
+      if (buf) buf.assistantText = priorText;
+      return false;
+    }
+
+    this.reaskCounts.set(key, used + 1);
+    // The step is live again — don't let the silence watchdog count the
+    // time already spent on the failed turn against it.
+    this.markStepActivity(run.id);
+    return true;
   }
 
   private handleStepFailure(runId: UUID, step: FlowStep, message: string): void {
@@ -3521,6 +3612,28 @@ export function summarizeReviewRejection(reviewBody: string): string | null {
     if (line.length > 0) return cap(line);
   }
   return null;
+}
+
+/// The follow-up turn sent when a step's reply carried no `<output>` block
+/// (see `reaskMissingOutput`). Deliberately short: it is read in a context
+/// that already contains the full step contract, so restating the rules
+/// competes with the deliverable for the model's attention. It names the two
+/// recoverable cases explicitly — the artifact was written to a file, or it
+/// was narrated in chat — because in both the model tends to answer "I
+/// already did that" unless told the block itself is the missing part.
+export function missingOutputReaskPrompt(outputName: string): string {
+  return [
+    `Your last reply did not contain an <output name="${outputName}"> block, so this step has nothing to hand to the next one.`,
+    '',
+    'Do not redo the work. Emit the deliverable you already produced:',
+    `  - If you wrote it to a file, read that file back and paste its full contents inside the block.`,
+    '  - If you described it in your reply, restate it in full inside the block.',
+    '',
+    `Reply with ONLY this, and nothing else — no preamble, no commentary:`,
+    `<output name="${outputName}">`,
+    '... the complete deliverable ...',
+    '</output>',
+  ].join('\n');
 }
 
 /// Pull the artifact body out of an assistant turn. Robust against the

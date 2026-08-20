@@ -21,6 +21,8 @@ import {
   rosterLine,
   stripHandoffs,
   WORKER_ROSTER_LINE_MAX,
+  WORKER_TAGLINE_MAX,
+  workerTagline,
   type Worker,
   type WorkerJournalEntry,
 } from './worker';
@@ -562,5 +564,62 @@ describe('delegation', () => {
     const from = { workerId: 'boss', workerName: 'Chief of Staff' };
     expect(workerOrigin(makeWorker(), 'errand', 'do it', from).from).toEqual(from);
     expect('from' in workerOrigin(makeWorker(), 'errand', 'do it')).toBe(false);
+  });
+});
+
+describe('workerTagline', () => {
+  it('prefers the worker\'s own tagline', () => {
+    expect(workerTagline(makeWorker({ tagline: 'the overcli innovator' }))).toBe(
+      'the overcli innovator',
+    );
+  });
+
+  it('derives one from the job description when the worker has none', () => {
+    expect(
+      workerTagline(
+        makeWorker({
+          jobDescription: 'You are the release warden. Each morning, check the tag pipeline.',
+        }),
+      ),
+    ).toBe('release warden');
+  });
+
+  it('takes the persona half of a colon-introduced brief', () => {
+    expect(
+      workerTagline(
+        makeWorker({
+          jobDescription:
+            "You're the Support Triage Worker: read new tickets each morning and reproduce what you can.",
+        }),
+      ),
+    ).toBe('Support Triage Worker');
+  });
+
+  it('reads only the first line of a multi-line brief', () => {
+    expect(
+      workerTagline(makeWorker({ jobDescription: 'Watch CI for flakes\n\n- file each one' })),
+    ).toBe('Watch CI for flakes');
+  });
+
+  it('clamps a long tagline on a word boundary', () => {
+    const long = workerTagline(makeWorker({ tagline: 'a '.repeat(60) + 'end' }));
+    expect(long.length).toBeLessThanOrEqual(WORKER_TAGLINE_MAX + 1);
+    expect(long.endsWith('\u2026')).toBe(true);
+    expect(long).not.toContain('  ');
+  });
+
+  it('says nothing when there is nothing to say', () => {
+    expect(workerTagline({ jobDescription: '' })).toBe('');
+    expect(workerTagline({ tagline: '   ', jobDescription: '  ' })).toBe('');
+  });
+
+  it('carries a tagline through a parsed hire contract', () => {
+    const reply = `<worker>${JSON.stringify({
+      name: 'Prometheus',
+      tagline: 'the overcli innovator',
+      jobDescription: 'Propose one capability a shift.',
+    })}</worker>`;
+    expect(parseWorkerContract(reply, { knownFlowIds: [], defaultHeartbeatModel: 'm' })?.tagline)
+      .toBe('the overcli innovator');
   });
 });

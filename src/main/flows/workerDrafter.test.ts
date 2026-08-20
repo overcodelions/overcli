@@ -300,3 +300,79 @@ describe('reviseWorkerFromPrompt', () => {
     );
   });
 });
+
+/// Files the user attached ride BOTH turns of a hire, and take the runner
+/// path even when the SDK transport is on — the SDK call sends a plain string
+/// prompt with nowhere to put them, so taking it would drop them silently.
+describe('attachments', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockLog.mockReset();
+  });
+
+  const SPEC = {
+    id: 'a1',
+    mimeType: 'application/pdf',
+    dataBase64: 'x',
+    label: 'spec.pdf',
+  };
+
+  it('sends a hire attachment to the contract turn and the flow draft', async () => {
+    const deps = claudeDeps();
+    const oneShot = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, text: hireReply('A weekly report flow.') })
+      .mockResolvedValueOnce({ ok: true, text: VALID_YAML });
+    deps.runner = { oneShot } as unknown as DraftDeps['runner'];
+
+    const result = await draftWorkerFromPrompt(
+      { jobDescription: JOB, flows: [], projects: [], attachments: [SPEC] },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mockQuery).not.toHaveBeenCalled(); // never the SDK path
+    expect(oneShot).toHaveBeenCalledTimes(2);
+    expect(oneShot.mock.calls[0][0].attachments).toEqual([SPEC]);
+    expect(oneShot.mock.calls[1][0].attachments).toEqual([SPEC]);
+    // Named in the prompt too, so the model treats them as source material
+    // rather than as stray files it happened to be handed.
+    expect(oneShot.mock.calls[0][0].prompt).toContain('spec.pdf');
+  });
+
+  it('sends a revision attachment to the routing turn and the flow edit', async () => {
+    const deps = claudeDeps();
+    const revision = JSON.stringify({
+      jobDescription: null,
+      flowInstruction: 'Format the report like the attached example.',
+    });
+    const oneShot = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, text: `Changed the flow.\n<revision>${revision}</revision>` })
+      .mockResolvedValueOnce({ ok: true, text: VALID_YAML });
+    deps.runner = { oneShot } as unknown as DraftDeps['runner'];
+
+    const result = await reviseWorkerFromPrompt(
+      {
+        jobDescription: JOB,
+        instruction: 'Make the report look like this.',
+        flow: {
+          id: 'sprint-report',
+          name: 'Sprint Report',
+          input: 'user_prompt',
+          participants: [],
+          steps: [],
+          source: 'user',
+          filePath: '',
+        } as never,
+        attachments: [SPEC],
+      },
+      deps,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(oneShot).toHaveBeenCalledTimes(2);
+    expect(oneShot.mock.calls[0][0].attachments).toEqual([SPEC]);
+    expect(oneShot.mock.calls[1][0].attachments).toEqual([SPEC]);
+  });
+});
