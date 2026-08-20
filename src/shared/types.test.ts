@@ -10,6 +10,7 @@ describe('DEFAULT_SETTINGS', () => {
       disabledBackends: {},
       defaultPermissionMode: 'plan',
       defaultEffort: '',
+      backendDefaultEfforts: {},
       agentBranchPrefix: 'agent/',
       showCost: false,
       defaultShowToolActivity: false,

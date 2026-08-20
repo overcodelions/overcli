@@ -540,6 +540,13 @@ interface ActiveProcess {
   /// inherit the wrong launch args without this in the change check.
   launchTurbo: boolean;
   launchPermissionMode: PermissionMode;
+  /// Effort this process was spawned with. Claude bakes `--effort` into its
+  /// argv and codex into `-c model_reasoning_effort`, so neither can be
+  /// changed on a live subprocess — without this stamp a mid-conversation
+  /// effort change silently did nothing while the header claimed otherwise.
+  /// The codex app-server transport passes effort per turn and hot-swaps
+  /// instead of respawning; see `canHotSwap`.
+  launchEffort?: EffortLevel;
   stdoutBuffer: string;
   stderrBuffer: string;
   codexAppServerState?: CodexAppServerParserState;
@@ -1390,6 +1397,7 @@ export class RunnerManager {
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchModel !== args.model ||
+          existing.launchEffort !== args.effortLevel ||
           existing.cwd !== args.cwd ||
           existing.claudeTransport !== 'sdk');
       if (paramsChanged) {
@@ -1461,6 +1469,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
+      launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',
       recentStderr: '',
@@ -2025,6 +2034,7 @@ export class RunnerManager {
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
+          existing.launchEffort !== args.effortLevel ||
           existing.cwd !== args.cwd);
       // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
       // per turn via turn/start params, so a permission-mode (or model/cwd) change
@@ -2050,6 +2060,7 @@ export class RunnerManager {
       if (canHotSwap && paramsChanged) {
         active.launchPermissionMode = args.permissionMode;
         active.launchModel = args.model;
+        active.launchEffort = args.effortLevel;
         const perms = codexTransportPermissions(args.permissionMode);
         this.emit({
           type: 'codexRuntimeMode',
@@ -3313,6 +3324,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
+      launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',
       recentStderr: '',
@@ -3913,6 +3925,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
+      launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',
       recentStderr: '',

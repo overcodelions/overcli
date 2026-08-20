@@ -28,6 +28,7 @@ import {
 } from '@shared/reboundPresets';
 import { pathBasename } from '@shared/workspaceNames';
 import { turboSummary, turboSupported } from '@shared/turbo';
+import { effortForBackend } from '@shared/effort';
 import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation, useConversationRoot } from '../hooks';
@@ -311,7 +312,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
         {(backend === 'claude' || backend === 'codex') && (
           <IconPicker
             icon={<BrainIcon />}
-            label={effortLabel(conv.effortLevel ?? settings.defaultEffort)}
+            label={effortLabel(conv.effortLevel ?? effortForBackend(settings, backend))}
             iconOnly={iconsOnly}
             items={([
               { value: '', label: 'Auto (model default)' },

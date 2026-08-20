@@ -896,7 +896,16 @@ export interface AppSettings {
   /// or disabled, falls back to the first enabled backend.
   preferredBackend?: Backend;
   defaultPermissionMode: PermissionMode;
+  /// Fallback reasoning effort for backends with no explicit entry in
+  /// `backendDefaultEfforts`.
   defaultEffort: EffortLevel;
+  /// Per-backend reasoning effort, overriding `defaultEffort`. Exists
+  /// because "Auto" is not neutral: it defers to each CLI's own default,
+  /// and those differ sharply — a Claude model can land on `high` while
+  /// codex lands on its own middle tier. Tuning one backend's latency
+  /// used to mean moving the other's at the same time.
+  /// See `effortForBackend`.
+  backendDefaultEfforts?: Partial<Record<Backend, EffortLevel>>;
   agentBranchPrefix: string;
   showCost: boolean;
   /// Initial value for the chat's "show tool activity" toggle at app
@@ -2544,6 +2553,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   disabledBackends: {},
   defaultPermissionMode: 'plan',
   defaultEffort: '',
+  backendDefaultEfforts: {},
   agentBranchPrefix: 'agent/',
   showCost: false,
   defaultShowToolActivity: false,
