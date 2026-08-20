@@ -154,6 +154,7 @@ export const FileEditorPane = memo(function FileEditorPane({
   const clearFileDirty = useStore((s) => s.clearFileDirty);
   const dirty = useStore((s) => (path ? !!s.dirtyFiles[path] : false));
   const [copiedPath, setCopiedPath] = useState(false);
+  const [downloadState, setDownloadState] = useState<'idle' | 'saved' | 'failed'>('idle');
   const [reverting, setReverting] = useState(false);
   // True when the diff is a brand-new untracked file — it has no HEAD
   // version to revert to, so we hide the Revert action for it.
@@ -675,6 +676,28 @@ export const FileEditorPane = memo(function FileEditorPane({
                 title="Open in default app (e.g. VS Code)"
               >
                 Open
+              </button>
+            )}
+            {!missingFile && (
+              <button
+                onClick={async () => {
+                  const res = await window.overcli.invoke('fs:saveToDownloads', path);
+                  if (!res.ok) {
+                    setDownloadState('failed');
+                    window.setTimeout(() => setDownloadState('idle'), 2400);
+                    return;
+                  }
+                  setDownloadState('saved');
+                  window.setTimeout(() => setDownloadState('idle'), 1600);
+                }}
+                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
+                title="Copy this file into your Downloads folder"
+              >
+                {downloadState === 'saved'
+                  ? 'Saved'
+                  : downloadState === 'failed'
+                    ? 'Failed'
+                    : 'Download'}
               </button>
             )}
             {missingFile && (

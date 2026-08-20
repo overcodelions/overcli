@@ -1244,6 +1244,11 @@ export interface IPCInvokeMap {
   'fs:unwatchTree': (root: string) => void;
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Copy a previewed file into the OS Downloads folder (macOS/Windows/Linux
+  /// via Electron's `app.getPath('downloads')`). Never overwrites: a name
+  /// clash gets ` (2)`, ` (3)`, … before the extension. `savedPath` is the
+  /// file that was actually written.
+  'fs:saveToDownloads': (path: string) => { ok: true; savedPath: string } | { ok: false; error: string };
   /// Resolve a clicked symbol to its definition site(s). Runs entirely off
   /// the conversation — ripgrep first, then a one-shot fast-model query if
   /// that's ambiguous. See src/main/symbolLookup.ts.

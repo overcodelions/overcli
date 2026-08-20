@@ -743,6 +743,29 @@ function registerIpc(): void {
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
   });
+  ipcMain.handle('fs:saveToDownloads', async (_e, p: string) => {
+    const resolved = resolveFilePath(p);
+    if (!resolved || !isReadablePath(resolved)) {
+      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    }
+    try {
+      const downloads = app.getPath('downloads');
+      const parsed = path.parse(resolved);
+      // Never clobber an existing download — same convention browsers use.
+      let target = path.join(downloads, parsed.base);
+      let n = 2;
+      while (fs.existsSync(target)) {
+        target = path.join(downloads, `${parsed.name} (${n})${parsed.ext}`);
+        n += 1;
+      }
+      // Async copy, not copyFileSync: a large artifact would otherwise
+      // freeze every IPC channel and the window for the whole copy.
+      await fs.promises.copyFile(resolved, target);
+      return { ok: true, savedPath: target };
+    } catch (err: any) {
+      return { ok: false, error: err?.message ?? 'Could not save to Downloads' };
+    }
+  });
   /// Shared guard for both symbol entry points: the file and the project
   /// root both have to be inside something the user registered.
   const resolveSymbolArgs = (
