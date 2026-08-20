@@ -2,8 +2,68 @@
 // RunnerManager (which would need an Electron app context). The full
 // orchestration is exercised manually by running a flow end-to-end.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
+
+// Only the one integration-style suite below (`FlowRuntimeImpl — diff
+// rescue`) needs these; everything else in this file exercises pure
+// functions with no Electron/git dependency. See that suite for why.
+vi.mock('./runsStore', () => ({
+  loadAllRuns: () => [],
+  saveRun: vi.fn(),
+  deleteRun: vi.fn(),
+}));
+
+vi.mock('./storage', () => ({
+  loadAllFlows: () => [
+    {
+      id: 'diff-flow',
+      name: 'Diff flow',
+      input: 'user_prompt',
+      participants: [
+        { id: 'primary', name: 'Primary', backend: 'ollama', model: 'qwen2.5-coder', kind: 'primary' },
+      ],
+      steps: [
+        {
+          id: 'build',
+          participantId: 'primary',
+          role: 'implementer',
+          inputs: [],
+          tools: ['Bash'],
+          output: 'diff',
+        },
+      ],
+      source: 'user',
+      filePath: '/tmp/diff-flow.yaml',
+    },
+  ],
+}));
+
+vi.mock('./preflight', () => ({
+  preflightRun: async () => ({ ok: true, problems: [] }),
+  formatPreflight: () => '',
+}));
+
+vi.mock('../git', () => ({
+  baseBranchExistsAsync: vi.fn(),
+  createWorktreeAsync: vi.fn(),
+  detectBaseBranchAsync: vi.fn(),
+  removeWorktreeAsync: vi.fn(),
+  worktreeNameTaken: () => false,
+  runGitAsync: async (args: string[]) =>
+    args[0] === 'rev-parse' && args[1] === 'HEAD'
+      ? { stdout: 'baseline-sha\n', stderr: '', exitCode: 0 }
+      : { stdout: '', stderr: '', exitCode: 0 },
+  // Branches so the diff-rescue suite can drive a real "the tree changed"
+  // result off `git status --porcelain` (step 30's cheap pre-check) through
+  // to a non-empty `git diff` (the incremental-diff synthesis itself).
+  runGit: (args: string[]) => {
+    if (args[0] === 'status') return { stdout: ' M file.txt\n', stderr: '', exitCode: 0 };
+    if (args[0] === 'write-tree') return { stdout: 'tree-sha\n', stderr: '', exitCode: 0 };
+    if (args[0] === 'diff') return { stdout: 'diff --git a/x b/x\n+added\n', stderr: '', exitCode: 0 };
+    return { stdout: '', stderr: '', exitCode: 0 };
+  },
+}));
 
 import {
   buildWorkerRunBoundary,
@@ -25,6 +85,7 @@ import {
   canSynthesizeDiffFromTree,
   treeChanged,
   ollamaConvNeedsReset,
+  FlowRuntimeImpl,
 } from './runtime';
 
 describe('rebindRunToLocalProject', () => {
@@ -329,6 +390,30 @@ describe('worker effect boundary', () => {
       pauseReasonBeforeStep(run, step('Push the branch.', { pauseBefore: true })),
     ).toBe('preStep');
   });
+
+  // Regression: the fail-closed tool allowlist only listed Claude-style tool
+  // names, so the Ollama built-in kit (read_file/list_dir/write_file/
+  // edit_file — see ollamaTools.ts) fell through as "unknown" and every
+  // shipped template's `build`/`tests` step (templates.ts's
+  // SOLVE_TICKET_YAML, among others) paused an unattended worker for
+  // approval on an ordinary local edit.
+  it('does not fail closed on the Ollama built-in tool kit shipped templates use', () => {
+    expect(
+      resolveStepEffect(
+        step('Implement the plan locally.', {
+          tools: ['read_file', 'list_dir', 'grep', 'write_file', 'edit_file'],
+        }),
+      ),
+    ).toBe('local');
+    expect(
+      pauseReasonBeforeStep(
+        { workerId: 'worker-1' },
+        step('Implement the plan locally.', {
+          tools: ['read_file', 'list_dir', 'grep', 'write_file', 'edit_file'],
+        }),
+      ),
+    ).toBeNull();
+  });
 });
 
 describe('extractWorkerQuestion', () => {
@@ -622,5 +707,65 @@ describe('ollamaConvNeedsReset', () => {
     expect(
       ollamaConvNeedsReset({ backend: 'ollama', openedFor: undefined, wantedFor: 'impl:build' }),
     ).toBe(false);
+  });
+});
+
+describe('FlowRuntimeImpl — diff rescue', () => {
+  // Regression: the diff-rescue path (an Ollama diff step with no <output>
+  // block, synthesized from the worktree) used to overwrite `artifactBody`
+  // with the diff before a worker's <worker_question> in the same reply was
+  // ever read, so the question never reached the worker's journal.
+  it('a worker question survives the diff rescue', async () => {
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+    // Never resolves — the assertion below reads the exchange the instant
+    // it's raised, before any answer could possibly land.
+    runtime.setWorkerSupervisor(() => new Promise(() => {}));
+
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      workerId: 'worker-1',
+      workerName: 'Scout',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+    const run = runtime.getRun(result.runId)!;
+    const conversationId = run.conversationIds.primary;
+
+    runtime.observeEvent({
+      type: 'stream',
+      conversationId,
+      events: [
+        {
+          id: 'answer-1',
+          timestamp: Date.now(),
+          raw: '',
+          revision: 0,
+          kind: {
+            type: 'assistant',
+            info: {
+              model: 'qwen2.5-coder',
+              text: '<worker_question>Which branch?</worker_question>',
+              toolUses: [],
+              thinking: [],
+            },
+          },
+        },
+      ],
+    });
+    // Tree genuinely changed (`git status --porcelain` and `git diff` are
+    // both mocked non-empty above), so the diff-rescue path fires and would
+    // previously have clobbered the question with the synthesized diff.
+    runtime.observeEvent({ type: 'running', conversationId, isRunning: false });
+
+    expect(run.workerExchanges).toMatchObject([
+      { stepId: 'build', question: 'Which branch?', status: 'asking' },
+    ]);
   });
 });

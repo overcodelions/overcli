@@ -72,7 +72,7 @@ export function StatsPage() {
           </div>
           <button
             onClick={reload}
-            disabled={loading}
+            disabled={loading || refreshingLimits}
             className="ml-auto text-xs text-ink-muted hover:text-ink bg-card hover:bg-card-strong border border-card px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-50"
           >
             {loading ? 'Refreshing…' : '↻ Refresh'}

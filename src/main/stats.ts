@@ -369,6 +369,15 @@ interface CodexParsedFile {
   sessionLinesAdded: number;
   sessionLinesDeleted: number;
   events: CodexCachedEvent[];
+  /// The last (i.e. most recent — rollout lines are chronological) rate-limit
+  /// snapshot this file carries, if any. `readCodexQuota` reads this off the
+  /// same mtime-checked cache instead of re-reading and re-scanning the file
+  /// itself. Deliberately NOT the file's raw text: `codexFileCache` has no
+  /// eviction, so caching full multi-MB rollout contents for the process
+  /// lifetime would trade one transient read for permanent retention of every
+  /// rollout ever parsed. This one small object is the only piece of the raw
+  /// text any caller actually needs.
+  lastRateLimit: CodexQuotaSnapshot | null;
 }
 
 const codexFileCache = new Map<string, { mtimeMs: number; parsed: CodexParsedFile }>();
@@ -386,6 +395,7 @@ function emptyCodexParsed(): CodexParsedFile {
     sessionLinesAdded: 0,
     sessionLinesDeleted: 0,
     events: [],
+    lastRateLimit: null,
   };
 }
 
@@ -417,6 +427,12 @@ export function parseCodexFileCached(filePath: string): CodexParsedFile {
 
   for (const line of raw.split('\n')) {
     if (!line) continue;
+    // Rollout lines are chronological, so the last match overwrites the
+    // earlier one and `out.lastRateLimit` ends up holding the newest.
+    if (line.includes('"rate_limits"')) {
+      const snap = parseCodexRateLimitLine(line);
+      if (snap) out.lastRateLimit = snap;
+    }
     let json: any;
     try {
       json = JSON.parse(line);
@@ -1357,20 +1373,20 @@ export function parseCodexRateLimitLine(line: string): CodexQuotaSnapshot | null
   };
 }
 
-/// Newest rollout wins. Scans at most the 20 most recent files, each
-/// from the last line backwards, so this stays cheap.
+/// Newest rollout wins. Scans at most the 20 most recent files. Routed
+/// through `parseCodexFileCached` (same mtime-checked cache the usage scan
+/// uses) rather than a plain read + backward line scan, so a warm cache
+/// answers instantly; a fully cold call still does one JSON.parse per line
+/// per file, which is more work than the old plain read but is what makes
+/// the result reusable without retaining any file's raw text (see
+/// `CodexParsedFile.lastRateLimit`).
 export function readCodexQuota(): CodexQuotaSnapshot | null {
   const root = path.join(os.homedir(), '.codex', 'sessions');
   if (!fs.existsSync(root)) return null;
   const files = walkCodexRollouts(root).sort();
   for (let i = files.length - 1; i >= 0 && i >= files.length - 20; i--) {
-    const text = readFileSafe(files[i]);
-    if (!text) continue;
-    const lines = text.split('\n');
-    for (let j = lines.length - 1; j >= 0; j--) {
-      const snap = parseCodexRateLimitLine(lines[j]);
-      if (snap) return snap;
-    }
+    const snap = parseCodexFileCached(files[i]).lastRateLimit;
+    if (snap) return snap;
   }
   return null;
 }
