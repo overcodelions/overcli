@@ -1001,6 +1001,9 @@ export class FlowRuntimeImpl {
       for (const key of this.retryCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.retryCounts.delete(key);
       }
+      for (const key of this.ollamaConvStepKeys.keys()) {
+        if (key.startsWith(`${victim.id}:`)) this.ollamaConvStepKeys.delete(key);
+      }
       for (const key of this.reaskCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.reaskCounts.delete(key);
       }
@@ -1228,6 +1231,9 @@ export class FlowRuntimeImpl {
     // first pass would refuse to loop on this one.
     for (const key of Array.from(this.retryCounts.keys())) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
+    }
+    for (const key of Array.from(this.ollamaConvStepKeys.keys())) {
+      if (key.startsWith(`${args.runId}:`)) this.ollamaConvStepKeys.delete(key);
     }
     for (const key of Array.from(this.reaskCounts.keys())) {
       if (key.startsWith(`${args.runId}:`)) this.reaskCounts.delete(key);
@@ -1544,6 +1550,9 @@ export class FlowRuntimeImpl {
     this.watchBuffers.delete(args.runId);
     for (const key of this.retryCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
+    }
+    for (const key of this.ollamaConvStepKeys.keys()) {
+      if (key.startsWith(`${args.runId}:`)) this.ollamaConvStepKeys.delete(key);
     }
     for (const key of this.reaskCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.reaskCounts.delete(key);
@@ -2427,6 +2436,7 @@ export class FlowRuntimeImpl {
     // The body assigned here is only a placeholder — the diff-kind branch
     // below overwrites it with the real filesystem diff, which is what the
     // artifact would have carried even had the model emitted a perfect block.
+    const pendingQuestion = artifactBody === null && run.workerId ? extractWorkerQuestion(text) : null;
     if (
       canSynthesizeDiffFromTree({
         hasOutputBlock: artifactBody !== null,
@@ -2434,12 +2444,14 @@ export class FlowRuntimeImpl {
         backend: resolveRunStepModel(run, step).backend,
       })
     ) {
-      incrementalDiff = this.computeIncrementalDiffForRun(run);
+      const porcelain = runGit(['status', '--porcelain'], run.projectPath);
+      if (porcelain.exitCode === 0 && porcelain.stdout.trim() === '') { incrementalDiff = null; }
+      else { incrementalDiff = this.computeIncrementalDiffForRun(run); }
       if (treeChanged(incrementalDiff)) artifactBody = '';
     }
 
-    if (artifactBody === null) {
-      const question = run.workerId ? extractWorkerQuestion(text) : null;
+    if (artifactBody === null || (pendingQuestion && artifactBody === '')) {
+      const question = pendingQuestion;
       if (question && this.workerSupervisor) {
         const usageTotals = buf
           ? {
@@ -3364,9 +3376,20 @@ export function resolveStepEffect(
     /\b(?:send|post|reply|respond|message|dm|deliver)\b[^.\n]{0,100}\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b|\b(?:slack|teams|email|e-mail|message|dm|channel|thread|recipient|inbox)\b[^.\n]{0,100}\b(?:send|post|reply|respond|message|deliver)\b/i;
   const serviceWrite =
     /\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b[^.\n]{0,110}\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm|record)\b|\b(?:jira|productboard|zendesk|salesforce|linear|asana|trello|ticket|issue|insight|card|calendar|event|crm)\b[^.\n]{0,110}\b(?:create|update|edit|change|delete|remove|close|transition|assign|comment|add|record|schedule|invite|upload)\b/i;
-  return directExternal.test(actionableText) || prWrite.test(actionableText) || messageWrite.test(actionableText) || serviceWrite.test(actionableText)
-    ? 'external'
-    : 'local';
+  if (directExternal.test(actionableText) || prWrite.test(actionableText) || messageWrite.test(actionableText) || serviceWrite.test(actionableText)) {
+    return 'external';
+  }
+  // Fail closed: a step that reaches for a tool we don't recognise as read-only
+  // is treated as external, so an unattended worker pauses rather than acting.
+  // Covers both the Claude-style tool names and the Ollama built-in kit
+  // (read_file/list_dir/write_file/edit_file/grep/bash — see ollamaTools.ts)
+  // used by the shipped templates' `build`/`tests` steps.
+  const LOCAL_TOOLS = new Set([
+    'read', 'grep', 'glob', 'ls', 'bash', 'edit', 'write', 'notebookedit', 'todowrite', 'task', 'websearch', 'webfetch',
+    'read_file', 'list_dir', 'write_file', 'edit_file',
+  ]);
+  const hasUnknownTool = (step.tools ?? []).some((t) => !LOCAL_TOOLS.has(t.toLowerCase().split('__')[0]));
+  return hasUnknownTool ? 'external' : 'local';
 }
 
 export function pauseReasonBeforeStep(
@@ -3850,8 +3873,9 @@ function computeRunDiff(cwd: string, baselineCommit: string): string | null {
       ? untrackedList.stdout.split('\n').map((s) => s.trim()).filter(Boolean)
       : [];
 
+  const UNTRACKED_DIFF_MAX = 50;
   const newFileBlocks: string[] = [];
-  for (const p of untrackedPaths) {
+  for (const p of untrackedPaths.slice(0, UNTRACKED_DIFF_MAX)) {
     if (isNoisyPath(p)) continue;
     // `git diff --no-index` exits 1 when the files differ — that's the
     // normal case here (we're diffing against /dev/null), so don't
@@ -3861,6 +3885,9 @@ function computeRunDiff(cwd: string, baselineCommit: string): string | null {
     if (r.exitCode === 0 || r.exitCode === 1) {
       if (r.stdout) newFileBlocks.push(r.stdout);
     }
+  }
+  if (untrackedPaths.length > UNTRACKED_DIFF_MAX) {
+    newFileBlocks.push(`\n… ${untrackedPaths.length - UNTRACKED_DIFF_MAX} more untracked files not shown.\n`);
   }
 
   const combined = [tracked.stdout, ...newFileBlocks].filter(Boolean).join('');

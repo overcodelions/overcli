@@ -2703,9 +2703,8 @@ function ReadInFull({
 ///
 ///   DELETE — the shift should never have happened. Same removal, no re-run.
 ///
-/// Both are permanent and both take out real files and flow runs, so delete
-/// confirms in place. Re-run does not: what it removes it immediately replaces,
-/// and it is the button you reach for when you already know the shift was wrong.
+/// Both are permanent and both take out real files and flow runs, so both
+/// confirm in place.
 function ShiftActions({
   worker,
   item,
@@ -2716,6 +2715,7 @@ function ShiftActions({
   const deleteActivity = useWorkersStore((s) => s.deleteActivity);
   const redoShift = useWorkersStore((s) => s.redoShift);
   const [confirming, setConfirming] = useState(false);
+  const [confirmingRedo, setConfirmingRedo] = useState(false);
   const [busy, setBusy] = useState<"redo" | "delete" | null>(null);
 
   // `[Shift 7]` against the worker's running count — the same test main makes.
@@ -2736,12 +2736,21 @@ function ShiftActions({
     <div className="mt-2 flex items-center gap-3 border-t border-card-strong pt-2">
       {isLatest && (
         <button
-          onClick={() => void run("redo")}
+          onClick={() => setConfirmingRedo(true)}
           disabled={!!busy}
           className="text-[11px] text-ink-faint hover:text-accent disabled:opacity-50 focus:outline-none"
         >
           {busy === "redo" ? "Re-running\u2026" : "Re-run this shift"}
         </button>
+      )}
+      {confirmingRedo && (
+        <span className="flex items-center gap-2">
+          <span className="text-[11px] text-ink-muted">
+            Deletes this shift, its flow runs, the files it filed, and your notes on it — then runs it again.
+          </span>
+          <button onClick={() => { setConfirmingRedo(false); void run("redo"); }} className="text-[11px] text-red-300 hover:text-red-200">Re-run</button>
+          <button onClick={() => setConfirmingRedo(false)} className="text-[11px] text-ink-faint hover:text-ink">Cancel</button>
+        </span>
       )}
       {confirming ? (
         <span className="flex items-center gap-2">
@@ -2927,10 +2936,11 @@ function PlanItemRow({
     const res = await deleteFlowRunWithDirtyGuard(item.runId);
     if (res.deleted) {
       removeRun(item.runId);
-      await window.overcli.invoke("orchestrator:rejectItem", {
+      const r = await window.overcli.invoke("orchestrator:rejectItem", {
         id: orchestration.id,
         candidateId: item.candidate.id,
       });
+      if (r && r.ok === false) window.alert(`Couldn't decline this item: ${r.error}`);
     }
     setRejecting(false);
     setConfirmingReject(false);
@@ -4250,10 +4260,13 @@ function AttachmentField({
   const [rejection, setRejection] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
 
+  const attachmentsRef = useRef(attachments);
+  attachmentsRef.current = attachments;
+
   async function take(files: FileList | File[]): Promise<void> {
     const { attachments: picked, rejections } = await intakeAttachments(files);
     setRejection(rejections.at(-1) ?? null);
-    if (picked.length > 0) onChange([...attachments, ...picked]);
+    if (picked.length > 0) onChange([...attachmentsRef.current, ...picked]);
   }
 
   const picker = (

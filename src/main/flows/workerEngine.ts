@@ -113,6 +113,11 @@ const MAX_TIMER_MS = 60_000;
 /// be big enough to steer the model away from re-treading old ground.
 const PROMPT_REJECTED_LIMIT = 30;
 
+/// How many referrals may sit unanswered on one colleague's desk at once,
+/// from any number of senders. Without a cap a busy roster can pile an
+/// unbounded queue of handoffs onto whichever worker keeps getting named.
+const MAX_PENDING_REFERRALS = 3;
+
 /// How many past errand exchanges ride along as conversation context, and how
 /// much of each reply. Enough that a follow-up three turns later still lands;
 /// bounded so the thread can't crowd out the job description and journal that
@@ -244,6 +249,9 @@ export class WorkerEngine {
   /// worker — a producer turn can take minutes, and a second one against the
   /// same journal would propose the same things twice.
   private firing = new Set<UUID>();
+  /// Referrals currently in flight per receiver id, so one colleague can't be
+  /// buried under an unbounded queue of handoffs. See `MAX_PENDING_REFERRALS`.
+  private pendingReferrals = new Map<string, number>();
   /// One promise chain per worker, so errands sent while the worker is mid-turn
   /// WAIT rather than bounce. A worker can only hold one planning turn at a
   /// time — they share a journal, a budget gate and cadence bookkeeping — but
@@ -545,13 +553,18 @@ export class WorkerEngine {
   ): { ok: true } | { ok: false; error: string } {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
+    const owner = this.deps.parker.get(orchestrationId);
+    if (!owner) return { ok: false, error: 'That turn is already gone.' };
+    if (owner.origin?.kind !== 'worker' || owner.origin.workerId !== id) {
+      return { ok: false, error: 'That turn belongs to a different worker.' };
+    }
     const text = (note ?? '').trim();
     if (!text) return { ok: false, error: 'Write the note first.' };
     if (text.length > WORKER_NOTE_MAX) {
       return { ok: false, error: `A note is at most ${WORKER_NOTE_MAX} characters.` };
     }
     const at = this.now();
-    this.journal.append({
+    const wrote = this.journal.append({
       id: `note-${w.id}-${at}`,
       workerId: w.id,
       kind: 'note',
@@ -562,6 +575,7 @@ export class WorkerEngine {
     });
     // No persistAndEmit: nothing on the worker record changed. The desk
     // re-reads the journal, which is where the note actually lives.
+    if (!wrote) return { ok: false, error: "Couldn't save that note." };
     return { ok: true };
   }
 
@@ -756,6 +770,14 @@ export class WorkerEngine {
         ok: false,
         error: 'Only the most recent shift can be re-run — an older one cannot have its number back.',
       };
+    }
+    if (this.firing.has(id)) {
+      return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then try again.' };
+    }
+    const allocation = this.allocate(this.now());
+    const funding = fundingFor(allocation, id);
+    if (funding && !funding.funded) {
+      return { ok: false, error: describeFundingBlock(funding, allocation) };
     }
     const forgotten = this.forgetActivity(id, orchestrationId);
     if (!forgotten.ok) return forgotten;
@@ -1083,6 +1105,7 @@ export class WorkerEngine {
       this.deps.parker.get(res.orchestrationId)?.producer?.reply ?? '',
       res.count,
       this.now(),
+      res.orchestrationId,
     );
     this.journal.append({
       id: `shift-${w.id}-${sequence}`,
@@ -1195,7 +1218,7 @@ export class WorkerEngine {
     // A delegated errand never gets a roster block, so it should never emit a
     // handoff; guarding on `from` as well means a turn that invented one
     // anyway cannot bounce the parcel onward.
-    const handoffs = from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at);
+    const handoffs = from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
     // Path 3: the worker judged the errand too big for a prose answer and
     // found nothing on its contract that fits, so it asked for machinery. Only
     // honored when it proposed nothing — a turn that did both is confused, and
@@ -1477,7 +1500,7 @@ export class WorkerEngine {
       'Other standing workers on this project. They have their own job descriptions,',
       'their own flows and their own budgets; you cannot see their work and they',
       'cannot see yours.',
-      ...targets.map((t) => `  - ${rosterLine(t)}`),
+      ...targets.slice(0, PROMPT_REJECTED_LIMIT).map((t) => `  - ${rosterLine(t)}`),
       '',
       'HANDING WORK OVER',
       'When your work turns up something real that is plainly one of THEIR jobs and not',
@@ -1523,7 +1546,13 @@ export class WorkerEngine {
   /// queue slot the whole time, so a handoff would lock its author out of
   /// being sent an errand by the user. A referral is a referral: the sender
   /// records that it made one, and the outcome belongs to the receiver's desk.
-  private dispatchHandoffs(sender: Worker, rawReply: string, proposed: number, at: number): string {
+  private dispatchHandoffs(
+    sender: Worker,
+    rawReply: string,
+    proposed: number,
+    at: number,
+    orchestrationId: string | undefined,
+  ): string {
     if (!canDelegate(sender)) return '';
     const requested = parseHandoffs(rawReply);
     if (requested.length === 0) return '';
@@ -1538,7 +1567,14 @@ export class WorkerEngine {
     const sent: string[] = [];
     const failed: string[] = [];
     requested.slice(0, allowed).forEach((h, i) => {
-      const outcome = this.dispatchOne(sender, h, targets, `handoff-${sender.id}-${at}-${i}`, at);
+      const outcome = this.dispatchOne(
+        sender,
+        h,
+        targets,
+        `handoff-${sender.id}-${at}-${i}`,
+        at,
+        orchestrationId,
+      );
       (outcome.ok ? sent : failed).push(outcome.summary);
     });
 
@@ -1564,6 +1600,7 @@ export class WorkerEngine {
     targets: Worker[],
     entryId: string,
     at: number,
+    orchestrationId: string | undefined,
   ): { ok: boolean; summary: string } {
     const title = errandLabel(h.instruction);
     const target = resolveHandoffTarget(h.to, targets);
@@ -1581,9 +1618,20 @@ export class WorkerEngine {
         at,
         title,
         note: `Tried to hand this to "${h.to}", who is not a colleague on this project.`,
+        orchestrationId,
       });
       return { ok: false, summary: `"${h.to}" matched no colleague` };
     }
+
+    // Checked BEFORE the "Handed to" note lands: journaling the handoff and
+    // then refusing to send it would tell the sender's own history a referral
+    // happened that never did, and — because that title now reads as already
+    // handed off (see `handedOffTitles`) — bury the errand for good.
+    const pending = this.pendingReferrals.get(target.id) ?? 0;
+    if (pending >= MAX_PENDING_REFERRALS) {
+      return { ok: false, summary: `"${h.to}" already has ${pending} referrals waiting` };
+    }
+    this.pendingReferrals.set(target.id, pending + 1);
 
     this.journal.append({
       workerId: sender.id,
@@ -1592,6 +1640,7 @@ export class WorkerEngine {
       at,
       title,
       note: `Handed to ${target.name}: ${h.instruction}`,
+      orchestrationId,
     });
 
     // `manual` so the receiver's funding gate reports back as an error rather
@@ -1609,6 +1658,7 @@ export class WorkerEngine {
       .then((res) => (res.ok ? null : res.error))
       .catch((err) => String(err))
       .then((error) => {
+        this.pendingReferrals.set(target.id, Math.max(0, (this.pendingReferrals.get(target.id) ?? 1) - 1));
         if (!error) return;
         this.journal.append({
           workerId: sender.id,
@@ -1617,6 +1667,7 @@ export class WorkerEngine {
           at: this.now(),
           title,
           note: `${target.name} could not take it: ${error}`,
+          orchestrationId,
         });
         this.emitWorker(this.workers.get(sender.id) ?? sender);
         this.deps.notify({

@@ -96,6 +96,7 @@ import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
+import { isSafeIdSegment } from '../shared/flows/safeId';
 
 type Emit = (event: MainToRendererEvent) => void;
 
@@ -4379,7 +4380,7 @@ export class RunnerManager {
 /// tool its CLI exposes — uniform across Claude / Codex / Gemini / Ollama.
 /// Image attachments pass through unchanged so the existing typed-block
 /// envelopes keep working.
-function materializeNonImageAttachments(args: SendArgs): SendArgs {
+export function materializeNonImageAttachments(args: SendArgs): SendArgs {
   const attachments = args.attachments ?? [];
   if (attachments.length === 0) return args;
   const imageOnly: Attachment[] = [];
@@ -4405,12 +4406,35 @@ function materializeNonImageAttachments(args: SendArgs): SendArgs {
   return { ...args, prompt, attachments: imageOnly.length > 0 ? imageOnly : undefined };
 }
 
-function writeAttachmentFile(a: Attachment): string {
+const ATTACHMENT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let lastSweepAt = 0;
+function sweepOldAttachments(dir: string): void {
+  const now = Date.now();
+  if (now - lastSweepAt < 60 * 60 * 1000) return;
+  lastSweepAt = now;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const p = path.join(dir, name);
+      if (now - fs.statSync(p).mtimeMs > ATTACHMENT_MAX_AGE_MS) fs.rmSync(p, { force: true });
+    }
+  } catch { /* best effort */ }
+}
+
+export function safeAttachmentBase(id: string | undefined, dir: string, ext: string): string {
+  const base = id && isSafeIdSegment(id) ? id : randomUUID();
+  const file = path.join(dir, `${base}${ext}`);
+  if (!path.resolve(file).startsWith(path.resolve(dir) + path.sep)) {
+    throw new Error('Unsafe attachment path');
+  }
+  return file;
+}
+
+export function writeAttachmentFile(a: Attachment): string {
   const dir = path.join(os.homedir(), '.overcli', 'attachments');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  sweepOldAttachments(dir);
   const ext = attachmentExtension(a);
-  const base = a.id || randomUUID();
-  const file = path.join(dir, `${base}${ext}`);
+  const file = safeAttachmentBase(a.id, dir, ext);
   fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
   return file;
 }
@@ -4646,7 +4670,7 @@ function writeAttachmentToTemp(a: Attachment): string {
   const dir = path.join(os.homedir(), '.overcli', 'attachments');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const ext = mimeToExt(a.mimeType);
-  const file = path.join(dir, `${a.id || randomUUID()}${ext}`);
+  const file = safeAttachmentBase(a.id, dir, ext);
   fs.writeFileSync(file, Buffer.from(a.dataBase64, 'base64'), { mode: 0o600 });
   return file;
 }

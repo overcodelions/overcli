@@ -144,7 +144,7 @@ function runUsage(): Promise<string | null> {
         cwd: os.homedir(),
         env: buildBackendEnv(process.env, binary),
         shell: backendNeedsShell(binary),
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['ignore', 'pipe', 'ignore'],
       });
     } catch (e) {
       logSilent('claudeUsage.spawn', e);

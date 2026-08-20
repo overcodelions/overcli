@@ -540,6 +540,8 @@ async function draftViaClaudeSdk(
 ): Promise<OneShotResult> {
   const executable = claudeSdkExecutablePath(claudeBinOverride);
   let collected = '';
+  const controller = new AbortController();
+  const budget = setTimeout(() => controller.abort(), 10 * 60_000);
   try {
     const stream = query({
       prompt: userMessage,
@@ -555,6 +557,7 @@ async function draftViaClaudeSdk(
         // No tools — this is text generation only. We explicitly forbid
         // them rather than relying on the model not to ask.
         allowedTools: [],
+        abortController: controller,
         ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       },
     });
@@ -567,10 +570,15 @@ async function draftViaClaudeSdk(
       if (event.type === 'result') break;
     }
   } catch (err) {
+    if (controller.signal.aborted) {
+      return { ok: false, error: 'Claude SDK draft timed out after 10 minutes.' };
+    }
     return {
       ok: false,
       error: `Claude SDK call failed: ${err instanceof Error ? err.message : String(err)}`,
     };
+  } finally {
+    clearTimeout(budget);
   }
   return { ok: true, text: collected };
 }
