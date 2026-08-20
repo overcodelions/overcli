@@ -7,7 +7,7 @@
 import { ClaudeParserState, makeClaudeParserState, parseClaudeLine } from '../parsers/claude';
 import { normalizeAllowedDirs } from '../permissionRules';
 import type { BackendCtx, BackendSendArgs, BackendSpec, ParseChunkResult } from './types';
-import { TURBO_SYSTEM_PROMPT } from './turbo';
+import { BATCHING_DIRECTIVE } from './turbo';
 
 interface ClaudeStreamState {
   /// Partial line carried from the previous chunk — claude emits
@@ -70,8 +70,12 @@ export const claudeBackend: BackendSpec = {
     // which is what makes the flag safe to set unconditionally here.
     if (args.turbo) {
       a.push('--strict-mcp-config');
-      a.push('--append-system-prompt', TURBO_SYSTEM_PROMPT);
     }
+    // Unconditional, not turbo-gated: consolidating tool calls costs nothing
+    // in answer quality, so there is no reason to make the user opt in. Safe
+    // as argv precisely because it never varies — `paramsChanged` can't see
+    // a value that is the same on every spawn, so this forces no respawns.
+    a.push('--append-system-prompt', BATCHING_DIRECTIVE);
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);
     }

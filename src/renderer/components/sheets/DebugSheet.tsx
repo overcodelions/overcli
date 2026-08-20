@@ -1,8 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { useRunner } from '../../runnersStore';
+import { useFlowsStore } from '../../flowsStore';
+import { flowConversationSources, focusedParticipantId } from '../../flowFocus';
 import type { SilentLogEntry, StreamEvent } from '../../../shared/types';
+import { UNRANKED_TOOL_COLOR, shortToolName, toolColorRamp } from './toolColors';
 import {
+  ToolTiming,
   TurnTiming,
   formatSeconds,
   formatTokens,
@@ -15,7 +19,34 @@ type Tab = 'timing' | 'stream' | 'diagnostics';
 
 export function DebugSheet() {
   const selectedId = useStore((s) => s.selectedConversationId);
-  const runner = useRunner(selectedId);
+  // Flows and Workers never set `selectedConversationId` — a run is picked
+  // through `useFlowsStore.setActiveRun`, and the conversation stays
+  // whatever chat was open last. Without this the sheet would answer a
+  // question about a flow run with some unrelated chat's numbers, which is
+  // worse than answering nothing. A run has no single transcript either:
+  // each participant keeps its own conversation across every step it runs,
+  // so the sheet offers them and defaults to the one the run is at.
+  const detailMode = useStore((s) => s.detailMode);
+  const activeRun = useFlowsStore((s) => (s.activeRunId ? s.runs[s.activeRunId] : undefined));
+  const inRun = (detailMode === 'flows' || detailMode === 'workers') && !!activeRun;
+  const sources = useMemo(
+    () => (inRun && activeRun ? flowConversationSources(activeRun) : []),
+    [inRun, activeRun],
+  );
+  // Keyed by run id so switching runs falls back to the new run's focused
+  // participant instead of holding a selection that belongs to another run.
+  const [picked, setPicked] = useState<{ runId: string; participantId: string } | null>(null);
+  const activeParticipantId =
+    (picked && activeRun && picked.runId === activeRun.id
+      ? sources.find((s) => s.participantId === picked.participantId)?.participantId
+      : undefined) ??
+    (activeRun ? focusedParticipantId(activeRun) : null) ??
+    sources[0]?.participantId ??
+    null;
+  const runConvId =
+    sources.find((s) => s.participantId === activeParticipantId)?.conversationId ?? null;
+
+  const runner = useRunner(inRun ? runConvId : selectedId);
   const events = runner?.events ?? [];
 
   const [tab, setTab] = useState<Tab>('timing');
@@ -110,9 +141,35 @@ export function DebugSheet() {
         >
           Diagnostics
         </button>
+        {inRun && tab !== 'diagnostics' && (
+          <div className="ml-auto flex items-center gap-1 min-w-0">
+            <span className="text-ink-faint shrink-0">participant</span>
+            {sources.length === 0 ? (
+              <span className="text-ink-faint">none yet</span>
+            ) : (
+              sources.map((s) => (
+                <button
+                  key={s.participantId}
+                  onClick={() =>
+                    activeRun &&
+                    setPicked({ runId: activeRun.id, participantId: s.participantId })
+                  }
+                  className={
+                    'px-2 py-1 rounded transition-colors truncate ' +
+                    (s.participantId === activeParticipantId
+                      ? 'bg-card-strong text-ink'
+                      : 'text-ink-muted hover:text-ink')
+                  }
+                >
+                  {s.name}
+                </button>
+              ))
+            )}
+          </div>
+        )}
       </div>
       {tab === 'diagnostics' ? <DiagnosticsTab /> : tab === 'timing' ? (
-        <TimingTab events={events} />
+        <TimingTab events={events} inRun={inRun} />
       ) : (
       <>
       <div className="px-5 pt-4 pb-3 border-b border-card">
@@ -212,19 +269,24 @@ export function DebugSheet() {
 /// Everything here is derived from `events` in the renderer — see
 /// `turnTiming.ts`. Nothing is persisted and nothing new crosses IPC, so
 /// this tab costs nothing until someone opens it.
-function TimingTab({ events }: { events: StreamEvent[] }) {
+function TimingTab({ events, inRun }: { events: StreamEvent[]; inRun: boolean }) {
   const turns = useMemo(() => summarizeTurns(events), [events]);
   const total = useMemo(() => totalTiming(turns), [turns]);
+  // Ranked once across the whole conversation so a tool holds one color in
+  // every turn, rather than being recoloured by each turn's local ordering.
+  const colors = useMemo(() => toolColorRamp((total?.tools ?? []).map((t) => t.name)), [total]);
   const [copied, setCopied] = useState(false);
 
   const copy = () => {
-    const header = 'turn\twall\tmodel\ttools\tout_tok\treasoning_est\tdecode_tok_s\tcache_write';
+    const header =
+      'turn\twall\tmodel\ttools\ttop_tool\tout_tok\treasoning_est\tdecode_tok_s\tcache_write';
     const body = turns.map((t, i) =>
       [
         i + 1,
         formatSeconds(t.wallMs),
         formatSeconds(t.modelMs),
         formatSeconds(t.toolMs),
+        t.tools[0] ? `${t.tools[0].name} ${formatSeconds(t.tools[0].busyMs)}` : '',
         t.outputTokens,
         t.reasoningTokensEst,
         t.decodeTokensPerSec?.toFixed(0) ?? '',
@@ -281,14 +343,26 @@ function TimingTab({ events }: { events: StreamEvent[] }) {
             />
           </div>
         )}
+        {total && total.tools.length > 0 && (
+          <div className="mt-2">
+            <ToolBar tools={total.tools} toolMs={total.toolMs} colors={colors} />
+            <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1.5 text-[10px] font-mono text-ink-faint">
+              {total.tools.map((t) => (
+                <ToolLegendItem key={t.name} tool={t} colors={colors} />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <div className="overflow-y-auto px-5 py-2 flex-1 text-[11px]">
         {turns.length === 0 ? (
           <div className="text-ink-faint py-3">
-            No turns yet. Send a message and the breakdown appears here.
+            {inRun
+              ? 'No turns yet. This participant gets a transcript once the run reaches one of its steps.'
+              : 'No turns yet. Send a message and the breakdown appears here.'}
           </div>
         ) : (
-          turns.map((t, i) => <TurnRow key={t.id} turn={t} index={i + 1} />)
+          turns.map((t, i) => <TurnRow key={t.id} turn={t} index={i + 1} colors={colors} />)
         )}
       </div>
     </div>
@@ -305,7 +379,15 @@ function Stat({ label, value, sub }: { label: string; value: string; sub: string
   );
 }
 
-function TurnRow({ turn, index }: { turn: TurnTiming; index: number }) {
+function TurnRow({
+  turn,
+  index,
+  colors,
+}: {
+  turn: TurnTiming;
+  index: number;
+  colors: Map<string, string>;
+}) {
   const modelPct = shareOfWork(turn.modelMs, turn);
   const toolPct = shareOfWork(turn.toolMs, turn);
   const reprefilled = turn.resumedColdCache;
@@ -322,11 +404,25 @@ function TurnRow({ turn, index }: { turn: TurnTiming; index: number }) {
       <div className="flex items-center gap-2 pl-7 pt-1">
         <div className="flex h-1.5 flex-1 overflow-hidden rounded-full bg-card">
           <div className="bg-accent" style={{ width: `${modelPct}%` }} title={`model ${formatSeconds(turn.modelMs)}`} />
-          <div
-            className="bg-ink-faint"
-            style={{ width: `${toolPct}%` }}
-            title={`tools ${formatSeconds(turn.toolMs)}`}
-          />
+          {/* The tool share is split by tool name rather than drawn as one
+              block, so the widest slice names the tool to go fix. */}
+          {turn.tools.map((t) => (
+            <div
+              key={t.name}
+              style={{
+                width: `${shareOfWork(t.ms, turn)}%`,
+                backgroundColor: colors.get(t.name) ?? UNRANKED_TOOL_COLOR,
+              }}
+              title={`${shortToolName(t.name)} — ${formatSeconds(t.busyMs)} over ${t.calls} call${t.calls === 1 ? '' : 's'}, slowest ${formatSeconds(t.slowestMs)}`}
+            />
+          ))}
+          {turn.tools.length === 0 && (
+            <div
+              className="bg-ink-faint"
+              style={{ width: `${toolPct}%` }}
+              title={`tools ${formatSeconds(turn.toolMs)}`}
+            />
+          )}
         </div>
         <span className="text-ink-faint tabular-nums shrink-0 font-mono">
           model {modelPct.toFixed(0)}% · tools {toolPct.toFixed(0)}%
@@ -352,7 +448,62 @@ function TurnRow({ turn, index }: { turn: TurnTiming; index: number }) {
         )}
         {turn.models.length > 0 && <span>{turn.models.join(', ')}</span>}
       </div>
+      {turn.tools.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-7 pt-1 text-ink-faint font-mono">
+          {turn.tools.map((t) => (
+            <ToolLegendItem key={t.name} tool={t} colors={colors} />
+          ))}
+        </div>
+      )}
     </div>
+  );
+}
+
+/// One tool's slice of the whole conversation's tool time.
+function ToolBar({
+  tools,
+  toolMs,
+  colors,
+}: {
+  tools: ToolTiming[];
+  toolMs: number;
+  colors: Map<string, string>;
+}) {
+  if (toolMs <= 0) return null;
+  return (
+    <div className="flex h-1.5 overflow-hidden rounded-full bg-card">
+      {tools.map((t) => (
+        <div
+          key={t.name}
+          style={{
+            width: `${(t.ms / toolMs) * 100}%`,
+            backgroundColor: colors.get(t.name) ?? UNRANKED_TOOL_COLOR,
+          }}
+          title={`${shortToolName(t.name)} — ${formatSeconds(t.busyMs)}`}
+        />
+      ))}
+    </div>
+  );
+}
+
+/// Color swatch + name + time. `busyMs` is shown rather than the rescaled
+/// `ms` because "how long was this tool actually running" is the question
+/// being asked; the rescaled value only exists to make bar widths add up.
+function ToolLegendItem({ tool, colors }: { tool: ToolTiming; colors: Map<string, string> }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1"
+      title={`${tool.name} — ${tool.calls} call${tool.calls === 1 ? '' : 's'}, slowest ${formatSeconds(tool.slowestMs)}${tool.errors > 0 ? `, ${tool.errors} error${tool.errors === 1 ? '' : 's'}` : ''}`}
+    >
+      <span
+        className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: colors.get(tool.name) ?? UNRANKED_TOOL_COLOR }}
+      />
+      <span className="text-ink-muted">{shortToolName(tool.name)}</span>
+      <span className="tabular-nums">{formatSeconds(tool.busyMs)}</span>
+      <span>×{tool.calls}</span>
+      {tool.errors > 0 && <span className="text-amber-400">!{tool.errors}</span>}
+    </span>
   );
 }
 

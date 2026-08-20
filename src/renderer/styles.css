@@ -720,3 +720,27 @@ body.konami-screen-ripple::after {
 body.dragging-divider iframe {
   pointer-events: none;
 }
+
+/* The shift reader's find box. Painted through the CSS custom-highlight
+ * registry rather than by wrapping matches in <mark>, because the prose it
+ * searches is React-rendered markdown — mutating that DOM behind React's back
+ * is how a find box ends up eating the content it searched. The two names are
+ * registered in ShiftReaderSheet.tsx. */
+::highlight(shift-find) {
+  background-color: color-mix(in srgb, var(--c-accent) 30%, transparent);
+}
+::highlight(shift-find-current) {
+  background-color: var(--c-accent);
+  color: #fff;
+}
+
+/* A planning turn read as a document rather than as a chat bubble: bigger
+ * type and a looser line, against the .md defaults tuned for message-sized
+ * prose. The measure is capped in the component, not here. */
+.shift-reader-prose .md {
+  font-size: 0.9375rem;
+  line-height: 1.7;
+}
+.shift-reader-prose .md p {
+  margin: 0.7rem 0;
+}

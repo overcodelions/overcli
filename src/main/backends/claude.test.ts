@@ -56,13 +56,26 @@ describe('claudeBackend.buildArgs', () => {
     expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--strict-mcp-config');
   });
 
-  it('turbo appends the fewer-larger-tool-calls directive', () => {
-    const a = claudeBackend.buildArgs({ ...baseArgs, turbo: true }, noMcpCtx);
-    const appended = a[a.indexOf('--append-system-prompt') + 1];
-    expect(appended).toMatch(/fewer, larger tool calls/i);
-    // The correctness caveat must survive any future edit to the wording.
-    expect(appended).toMatch(/never skip a check/i);
-    expect(claudeBackend.buildArgs(baseArgs, noMcpCtx)).not.toContain('--append-system-prompt');
+  it('appends the fewer-larger-tool-calls directive with or without turbo', () => {
+    // No longer turbo-gated. Batching does not trade away answer quality the
+    // way turbo's low-effort half does, so every conversation gets it — and
+    // because the value never varies, it never trips `paramsChanged` into a
+    // respawn the way a conditional flag would.
+    for (const turbo of [true, false]) {
+      const a = claudeBackend.buildArgs({ ...baseArgs, turbo }, noMcpCtx);
+      const appended = a[a.indexOf('--append-system-prompt') + 1];
+      expect(appended).toMatch(/fewer, larger tool calls/i);
+      // The correctness caveat must survive any future edit to the wording.
+      expect(appended).toMatch(/never skip a check/i);
+    }
+  });
+
+  it('passes an identical directive either way, so toggling turbo cannot respawn on it', () => {
+    const on = claudeBackend.buildArgs({ ...baseArgs, turbo: true }, noMcpCtx);
+    const off = claudeBackend.buildArgs({ ...baseArgs, turbo: false }, noMcpCtx);
+    expect(on[on.indexOf('--append-system-prompt') + 1]).toBe(
+      off[off.indexOf('--append-system-prompt') + 1],
+    );
   });
 
   it('turbo keeps the permission broker config while dropping the rest', () => {

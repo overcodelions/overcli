@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { TURBO_SYSTEM_PROMPT, resolveTurboEffort } from './turbo';
+import { BATCHING_DIRECTIVE, resolveTurboEffort, withBatchingDirective } from './turbo';
 
 describe('resolveTurboEffort', () => {
   it('pins low when turbo is on, overriding an explicit effort', () => {
@@ -16,9 +16,21 @@ describe('resolveTurboEffort', () => {
   });
 });
 
-describe('TURBO_SYSTEM_PROMPT', () => {
+describe('BATCHING_DIRECTIVE', () => {
   it('keeps the correctness caveat that stops it reading as skip-your-checks', () => {
-    expect(TURBO_SYSTEM_PROMPT).toMatch(/fewer, larger tool calls/i);
-    expect(TURBO_SYSTEM_PROMPT).toMatch(/never skip a check/i);
+    expect(BATCHING_DIRECTIVE).toMatch(/fewer, larger tool calls/i);
+    expect(BATCHING_DIRECTIVE).toMatch(/never skip a check/i);
+  });
+});
+
+describe('withBatchingDirective', () => {
+  // Unconditional by design: the directive is no longer turbo-gated, so
+  // there is no `turbo` argument to forget to pass. Batching costs nothing
+  // in answer quality, unlike the effort half `resolveTurboEffort` still
+  // guards.
+  it('prepends the directive and keeps the prompt intact', () => {
+    const out = withBatchingDirective('do the thing');
+    expect(out.startsWith(BATCHING_DIRECTIVE)).toBe(true);
+    expect(out.endsWith('do the thing')).toBe(true);
   });
 });

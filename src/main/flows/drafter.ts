@@ -26,7 +26,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { claudeSdkExecutablePath } from '../claudeSdkExecutable';
 
-import type { AppSettings, Backend } from '../../shared/types';
+import type { AppSettings, Attachment, Backend } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
 import { normalizeFlowTag } from '../../shared/flows/schema';
 import {
@@ -270,6 +270,11 @@ function systemPrompt(
     '  - the shape of the deliverable it must produce',
     'Do NOT mention the <output> wrapper or artifact names — that contract is appended',
     'automatically. Use YAML block scalars (`system_prompt: |`) for multi-line prompts.',
+    'Every step ends by emitting its deliverable, including read-only ones. Write the',
+    '"must NOT do" constraints so they restrict what the step CHANGES or DECIDES — never',
+    'phrase them as "produce nothing", "output nothing", "do not write anything" or',
+    '"just investigate", which read as permission to end the turn with no deliverable and',
+    'strand the flow.',
     '',
     'EXAMPLE — a step no preset covers:',
     '  - id: triage',
@@ -400,13 +405,13 @@ function systemPrompt(
 /// Returns the parsed Flow (validated) or a surfaced error the renderer can
 /// show. Times out at 120s.
 export async function draftFlowFromPrompt(
-  args: { description: string },
+  args: { description: string; attachments?: Attachment[] },
   deps: DraftDeps,
 ): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }> {
   const desc = args.description.trim();
   if (!desc) return { ok: false, error: 'Description is empty.' };
 
-  const out = await runDrafter(deps, 'draft', `USER REQUEST:\n${desc}`);
+  const out = await runDrafter(deps, 'draft', `USER REQUEST:\n${desc}`, args.attachments);
   if (!out.ok) return out;
   return finalizeDraft(out.text, out.label, {
     snapModels: deps.settings.flowModelDefaults ?? {},
@@ -423,7 +428,7 @@ export async function draftFlowFromPrompt(
 /// that touches `name` would re-slugify into a new id and the next save would
 /// fork a second file instead of updating the flow the user is editing.
 export async function reviseFlowFromPrompt(
-  args: { yaml: string; instruction: string; id?: string },
+  args: { yaml: string; instruction: string; id?: string; attachments?: Attachment[] },
   deps: DraftDeps,
 ): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }> {
   const instruction = args.instruction.trim();
@@ -441,7 +446,7 @@ export async function reviseFlowFromPrompt(
     instruction,
   ].join('\n');
 
-  const out = await runDrafter(deps, 'revise', message);
+  const out = await runDrafter(deps, 'revise', message, args.attachments);
   if (!out.ok) return out;
   return finalizeDraft(out.text, out.label, { id: args.id });
 }
@@ -453,10 +458,12 @@ async function runDrafter(
   deps: DraftDeps,
   mode: DraftMode,
   userMessage: string,
+  attachments?: Attachment[],
 ): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
   return oneShotDraftText(deps, {
     buildSystemPrompt: (backend) => systemPrompt(backend, mode, deps.settings.flowModelDefaults),
     userMessage,
+    attachments,
     verb: mode === 'revise' ? 'edit' : 'draft',
   });
 }
@@ -471,6 +478,10 @@ export async function oneShotDraftText(
   args: {
     buildSystemPrompt: (backend: Backend) => string;
     userMessage: string;
+    /// Files the user attached to the request — a spec, a screenshot of the
+    /// thing they want built, an export to work from. Handed to the CLI the
+    /// same way a chat turn's attachments are.
+    attachments?: Attachment[];
     /// Verb for the no-CLI error: "No CLI is signed in to <verb> with."
     verb: string;
   },
@@ -503,11 +514,18 @@ export async function oneShotDraftText(
   // one-shot like every other CLI — spawning the user's installed `claude`,
   // exactly as a normal chat does. (The hidden one-shot uses the 'cli'
   // transport since `oneShot` never sets claudeTransport.)
+  //
+  // Attachments force the runner path regardless: the SDK call below sends a
+  // plain string prompt with no attachment channel, so taking it would drop
+  // the user's files silently. The runner already knows how to encode them
+  // per backend.
   const useClaudeSdk =
-    backend === 'claude' && deps.settings.claudeTransport === 'sdk';
+    backend === 'claude' &&
+    deps.settings.claudeTransport === 'sdk' &&
+    !(args.attachments && args.attachments.length > 0);
   const text = useClaudeSdk
     ? await draftViaClaudeSdk(args.userMessage, model, sys, deps.settings.backendPaths.claude)
-    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage);
+    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage, args.attachments);
   if (!text.ok) return text;
   return { ok: true, text: text.text, label, backend };
 }
@@ -567,12 +585,14 @@ async function draftViaRunner(
   model: string,
   systemPromptText: string,
   userMessage: string,
+  attachments?: Attachment[],
 ): Promise<OneShotResult> {
   const prompt = `${systemPromptText}\n\n---\n\n${userMessage}`;
   return runner.oneShot({
     backend,
     model,
     prompt,
+    attachments,
     cwd: os.homedir(),
     // `oneShot`'s flat 120s default was killing healthy drafts. Drafting runs
     // the backend's STRONGEST model against a large schema prompt and asks it

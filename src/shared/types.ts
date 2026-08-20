@@ -1109,6 +1109,21 @@ export interface IPCInvokeMap {
     /// spawning `claude -p`. Ignored for non-claude backends.
     claudeTransport?: 'cli' | 'sdk';
   }) => { ok: true } | { ok: false; error: string };
+  /// Spawn a conversation's backend process before the user sends, so CLI
+  /// startup and session resume happen off the critical path. Best-effort:
+  /// the runner ignores it when a runtime already exists.
+  'runner:prewarm': (args: {
+    conversationId: UUID;
+    backend: Backend;
+    cwd: string;
+    model: string;
+    permissionMode: PermissionMode;
+    sessionId?: string;
+    effortLevel?: EffortLevel;
+    turbo?: boolean;
+    allowedDirs?: string[];
+    claudeTransport?: 'cli' | 'sdk';
+  }) => void;
   'runner:stop': (args: { conversationId: UUID }) => void;
   'runner:newConversation': (args: { conversationId: UUID }) => void;
   /// Tear down every runtime holding a conversation — subprocess, ollama
@@ -1873,6 +1888,12 @@ export interface IPCInvokeMap {
   'workers:save': (args: {
     worker: Omit<Worker, 'id' | 'createdAt' | 'trust'> & { id?: UUID };
   }) => { ok: true; worker: Worker } | { ok: false; error: string };
+  /// Write a note against one of a worker's turns. It lands in the worker's
+  /// journal, which means the worker reads it before planning its next shift
+  /// — a note is a word in its ear, not a sticky on the screen.
+  'workers:note': (args: { id: UUID; orchestrationId: string; note: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
   'workers:setEnabled': (args: { id: UUID; enabled: boolean }) =>
     | { ok: true }
     | { ok: false; error: string };
@@ -2005,7 +2026,12 @@ export interface IPCInvokeMap {
   /// `flowError` is set when a flow was asked for and the flow drafter
   /// failed: the contract is still reviewable, but the flow picker is empty
   /// on purpose and the review screen says why.
-  'workers:draftFromPrompt': (args: { jobDescription: string }) =>
+  'workers:draftFromPrompt': (args: {
+    jobDescription: string;
+    /// Files the user attached to the hire (a spec, an example deliverable,
+    /// a screenshot). Sent to the drafting CLI alongside the description.
+    attachments?: Attachment[];
+  }) =>
     | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow; flowError?: string }
     | { ok: false; error: string };
   /// One revision turn across a worker's two halves: the instruction is
@@ -2021,6 +2047,9 @@ export interface IPCInvokeMap {
     /// precedence over `flowId` — it's the freshest state of the same flow.
     flow?: Flow;
     instruction: string;
+    /// Files attached to the instruction — they ride with the routing turn
+    /// and with any flow edit it delegates to.
+    attachments?: Attachment[];
   }) =>
     | { ok: true; jobDescription?: string; flow?: Flow; note: string }
     | { ok: false; error: string };

@@ -52,4 +52,14 @@ describe('artifactInstruction', () => {
   it('warns models against nesting output tags', () => {
     expect(artifactInstruction('diff')).toContain('Do NOT nest');
   });
+
+  // A read-only step ("investigate, do not write anything") reads the block as
+  // a write it was just forbidden to make, ends its turn without one, and the
+  // run pauses on "produced no <output>". Saying the block is chat text —
+  // not a file — settles the conflict in the contract itself.
+  it('tells a read-only step the block is not a file it is forbidden to write', () => {
+    const instruction = artifactInstruction('findings.md');
+    expect(instruction).toContain('It is not a file');
+    expect(instruction).toContain('read-only step still emits its findings');
+  });
 });

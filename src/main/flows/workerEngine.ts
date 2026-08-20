@@ -55,6 +55,7 @@ import {
   validateWorker,
   workerAutoApproveCap,
   workerOrigin,
+  WORKER_NOTE_MAX,
   type Worker,
   type WorkerErrandResult,
   type WorkerHandoff,
@@ -523,6 +524,44 @@ export class WorkerEngine {
     if ((w.autoRender ?? WORKER_AUTO_RENDER_NEWEST) === next) return { ok: true };
     w.autoRender = next;
     this.persistAndEmit(w);
+    return { ok: true };
+  }
+
+  /// Write a note against one of this worker's turns.
+  ///
+  /// Deliberately a journal entry rather than a UI annotation: the journal
+  /// digest is what a worker reads before planning, so a note left on a shift
+  /// is the one way to tell a standing persona something without editing the
+  /// job description — which is the wrong instrument, because it is about
+  /// this piece of work rather than about the job.
+  ///
+  /// Not idempotent by content: two identical notes on the same turn are two
+  /// things the user chose to say, so the id carries the timestamp rather
+  /// than hashing the text.
+  note(
+    id: UUID,
+    orchestrationId: string,
+    note: string,
+  ): { ok: true } | { ok: false; error: string } {
+    const w = this.workers.get(id);
+    if (!w) return { ok: false, error: 'Worker not found.' };
+    const text = (note ?? '').trim();
+    if (!text) return { ok: false, error: 'Write the note first.' };
+    if (text.length > WORKER_NOTE_MAX) {
+      return { ok: false, error: `A note is at most ${WORKER_NOTE_MAX} characters.` };
+    }
+    const at = this.now();
+    this.journal.append({
+      id: `note-${w.id}-${at}`,
+      workerId: w.id,
+      kind: 'note',
+      at,
+      title: '',
+      note: text,
+      orchestrationId,
+    });
+    // No persistAndEmit: nothing on the worker record changed. The desk
+    // re-reads the journal, which is where the note actually lives.
     return { ok: true };
   }
 
@@ -1263,6 +1302,7 @@ export class WorkerEngine {
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       digest || '(first shift — no journal yet)',
       ...this.filesBlock(w),
+      ...this.contextBlock(),
       ...this.delegationBlock(w),
     ];
     if (rejected.length > 0) {
@@ -1387,6 +1427,34 @@ export class WorkerEngine {
       'forward silently loses the window it skipped, which is worse than doing the',
       'work twice. Your journal above is how you check: if it shows your last pass',
       'failed, treat the mark as suspect and resume from the one it replaced.',
+    ];
+  }
+
+  /// Context discipline, stated in every turn a worker takes.
+  ///
+  /// Workers reliably rediscover this on their own — a shift hits a sweep
+  /// whose payload dwarfs the answer, delegates it, and files a note so the
+  /// next one starts ahead. That rediscovery is the fragile part: it depends
+  /// on the shift both learning the lesson and remembering to write it down,
+  /// and a note that lands in a filed report rather than a self-written one
+  /// is in `archive/` two weeks later, behind an instruction not to read it.
+  /// Six lines here cost nothing per turn and start every worker where the
+  /// best one ended up.
+  ///
+  /// Deliberately not compaction. Compaction summarises what already entered
+  /// the window, so it pays for the bulk first and then discards the detail;
+  /// keeping the bulk out entirely is strictly cheaper, and only the shift
+  /// standing in front of the call knows which one it is about to make.
+  private contextBlock(): string[] {
+    return [
+      '',
+      'KEEPING YOUR CONTEXT FOR THE WORK',
+      'Some of what you need to look at is far bigger than the answer you want out',
+      'of it — paginated sweeps, long listings, records whose descriptions dwarf the',
+      'field you actually care about. Read those through a subagent and ask it for',
+      'only the summary you need. Reading them yourself spends the window you still',
+      'need for deciding, and you cannot get it back. Judge this BEFORE you make the',
+      'call: once the payload is in front of you, the cost is already paid.',
     ];
   }
 
@@ -1600,6 +1668,7 @@ export class WorkerEngine {
       'YOUR JOURNAL (newest first — what you already proposed and how it was received):',
       this.journal.digest(w.id) || '(no journal yet)',
       ...this.filesBlock(w),
+      ...this.contextBlock(),
       ...(from ? [] : this.delegationBlock(w)),
     ];
     if (rejected.length > 0) {
