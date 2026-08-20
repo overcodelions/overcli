@@ -37,6 +37,7 @@ import {
   LogLevel,
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
+import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
@@ -2645,7 +2646,7 @@ export const useStore = create<StoreState>((set, get) => ({
       // An explicit empty string is Auto and must win over a fixed global
       // default; undefined means this conversation predates the setting and
       // should inherit it.
-      effortLevel: conv.effortLevel ?? get().settings.defaultEffort,
+      effortLevel: conv.effortLevel ?? effortForBackend(get().settings, backend),
       // Undefined defers to the global setting in the runner, so an
       // untouched conversation follows Settings the way it always has.
       turbo: conv.turbo,
