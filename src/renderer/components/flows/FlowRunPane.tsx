@@ -13,6 +13,11 @@
 //   (they don't count toward step completion) so you can ask
 //   questions, redirect, or fork the participant's thinking from
 //   anywhere.
+//   The composer carries a second button beside Send — "Hold for <step>" —
+//   which parks the same draft until that step starts, then injects it at
+//   the top of its prompt. That reaches a step on a different participant
+//   which a hijack turn never would. The held step is marked ↯ in the
+//   pipeline above.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
@@ -912,6 +917,9 @@ function InlineStepPipeline({
   const activeStep = steps.find((s) => s.id === activeStepId) ?? null;
   const activeConvId = activeStep ? run.conversationIds[activeStep.participantId] : undefined;
   const activeConvIsRunning = useRunnerIsRunning(activeConvId);
+  // The step a held correction will land on. Marked here so the pipeline —
+  // not just the composer — shows that a step is already spoken for.
+  const steerTargetId = run.pendingSteer ? (steerRecipient(run)?.id ?? null) : null;
   return (
     <div className="flex items-center gap-1">
       {steps.map((step, idx) => {
@@ -933,6 +941,7 @@ function InlineStepPipeline({
               isCurrent={isCurrent}
               isResponding={isResponding}
               isPausedNext={isPausedNext}
+              steerTarget={step.id === steerTargetId}
               done={done}
               failed={!!failed}
               onClick={() => onPick(step.id)}
@@ -953,6 +962,7 @@ function InlineStepPill({
   isCurrent,
   isResponding,
   isPausedNext,
+  steerTarget,
   done,
   failed,
   onClick,
@@ -964,6 +974,8 @@ function InlineStepPill({
   isCurrent: boolean;
   isResponding: boolean;
   isPausedNext: boolean;
+  /// A correction is queued and this is the step that will receive it.
+  steerTarget: boolean;
   done: boolean;
   failed: boolean;
   onClick: () => void;
@@ -993,7 +1005,8 @@ function InlineStepPill({
       title={
         (participant ? `${participant.backend}:${participant.model}` : '') +
         (isActive ? ' (viewing)' : '') +
-        (isResponding ? ' — responding' : '')
+        (isResponding ? ' — responding' : '') +
+        (steerTarget ? ' — a course correction is held for this step' : '')
       }
     >
       <span
@@ -1009,6 +1022,11 @@ function InlineStepPill({
       {done && !pulsing && <span className="text-emerald-700 dark:text-emerald-300/80 text-[10px]">✓</span>}
       {failed && !pulsing && <span className="text-red-700 dark:text-red-300 text-[10px]">!</span>}
       {isPausedNext && <span className="text-amber-700 dark:text-amber-300 text-[10px]">⏸</span>}
+      {steerTarget && (
+        <span className="text-violet-700 dark:text-violet-300 text-[10px]" title="A course correction is held for this step">
+          ↯
+        </span>
+      )}
     </button>
   );
 }
@@ -1812,6 +1830,35 @@ function HijackComposer({
   const stop = useStore((s) => s.stop);
   const draftKey = `flow-hijack:${run.id}:${participant.id}`;
 
+  // Deferred steer. Deliberately NOT a second text box: a correction is the
+  // same words as a hijack turn, differing only in WHEN they land. So it is
+  // a second BUTTON on the one composer — Send speaks to this participant
+  // now, Hold parks the same draft for the next step. Reads the draft from
+  // the store, which is where Composer keeps it, so both buttons act on
+  // exactly the text on screen.
+  const steerRun = useFlowsStore((s) => s.steerRun);
+  const [steerError, setSteerError] = useState<string | null>(null);
+  // Short-lived acknowledgement on the button itself. The queued strip above
+  // the composer is the durable signal, but it appears away from the cursor —
+  // without this, a successful hold looks identical to a click that did
+  // nothing, which is exactly how this control first failed.
+  const [justHeld, setJustHeld] = useState(false);
+  const recipient = steerRecipient(run);
+  const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
+  const holdDraft = () => {
+    void steerRun(run.id, draft).then((res) => {
+      if (!res.ok) {
+        setSteerError(res.error ?? 'That correction did not queue — the run has moved on.');
+        return;
+      }
+      setSteerError(null);
+      setDraft(draftKey, '');
+      clearAttachments(draftKey);
+      setJustHeld(true);
+      window.setTimeout(() => setJustHeld(false), 1800);
+    });
+  };
+
   // Per-participant model override, persisted on the run. Lets the user
   // bump from a struggling small model to a stronger one mid-run — it
   // drives orchestration AND these hijack turns. Falls back to the
@@ -1874,6 +1921,22 @@ function HijackComposer({
           Thinking/Working/Reading… cue never shows while a step runs. */}
       {convId && <RunningIndicator conversationId={convId} />}
       <ChangesBar files={changes} baseRef={baseRef} />
+      {run.pendingSteer && (
+        <div className="flex items-center gap-2 text-[11px] min-w-0 rounded-md border border-violet-500/35 bg-violet-500/10 px-2 py-1">
+          <span aria-hidden className="shrink-0 text-violet-600 dark:text-violet-300">↯</span>
+          <span className="shrink-0 text-violet-700 dark:text-violet-200">
+            Held for <span className="font-mono">{recipient?.id ?? 'the next step'}</span>
+          </span>
+          <span className="flex-1 min-w-0 truncate text-ink-muted">{run.pendingSteer.text}</span>
+          <button
+            onClick={() => void steerRun(run.id, '')}
+            className="shrink-0 rounded px-1 text-violet-700/70 hover:text-violet-700 dark:text-violet-300/70 dark:hover:text-violet-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400"
+          >
+            Withdraw
+          </button>
+        </div>
+      )}
+      {steerError && <div className="text-[11px] text-amber-500 px-0.5">{steerError}</div>}
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
@@ -1883,7 +1946,29 @@ function HijackComposer({
         }}
         isRunning={isRunning}
         variant="compact"
+        onModEnter={recipient ? holdDraft : undefined}
         placeholder={`Ask ${friendlyModelLabel(participant.backend, effectiveModel)} anything — your messages don't advance the flow.`}
+        // Sits in the composer's own bottom row so the two deliveries of the
+        // same draft are adjacent: Send speaks to this participant now, Hold
+        // parks the words for the step that hasn't started. Absent on the
+        // final step — nothing left to hold them for.
+        footer={
+          recipient ? (
+            <button
+              onClick={holdDraft}
+              disabled={!draft.trim() && !justHeld}
+              title={`⌘⏎ — held until ${recipient.id} starts, then delivered at the top of its prompt, ahead of the inputs it overrides`}
+              className="ml-auto flex items-center gap-1.5 rounded-full border border-violet-500/45 bg-violet-500/15 px-2.5 py-1 text-[11px] text-violet-700 dark:text-violet-200 hover:bg-violet-500/25 disabled:opacity-30 disabled:hover:bg-violet-500/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400"
+            >
+              <span aria-hidden>↯</span>
+              {justHeld ? (
+                <>Held for <span className="font-mono">{recipient.id}</span> ✓</>
+              ) : (
+                <>Hold for <span className="font-mono">{recipient.id}</span></>
+              )}
+            </button>
+          ) : null
+        }
       />
       <FlowStatsFooter
         convId={convId}
@@ -2681,3 +2766,26 @@ function formatTokens(n: number): string {
 
 // Re-exported types referenced by sibling components in this folder.
 export type { FlowStepAttempt };
+
+/// The step a queued correction will actually reach.
+///   - running: the next step in order, which is how the runtime itself
+///     defines "next" (see `prewarmNextParticipant`).
+///   - paused: the step the run is parked in front of — known exactly, and
+///     the moment a correction is most likely to be worth typing.
+/// Null on the final step and on a finished run: there is nothing left to
+/// carry a correction, so the Hold button is not offered at all rather than
+/// taking words the run has nowhere to deliver.
+function steerRecipient(run: FlowRun): FlowStep | null {
+  const steps = run.flowSnapshot.steps;
+  if (run.state.kind === 'paused') {
+    const nextStepId = run.state.nextStepId;
+    return steps.find((s) => s.id === nextStepId) ?? null;
+  }
+  if (run.state.kind !== 'running') return null;
+  // Hoisted: narrowing doesn't survive into the findIndex closure.
+  const currentStepId = run.state.currentStepId;
+  const idx = steps.findIndex((s) => s.id === currentStepId);
+  if (idx < 0) return null;
+  return steps[idx + 1] ?? null;
+}
+
