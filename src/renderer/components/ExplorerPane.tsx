@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { FileTree } from './FileTree';
 import { FileEditorPane } from './FileEditorPane';
 import { CompareView } from './CompareView';
+import { nextComparePick } from '../comparePick';
 import { ResizableDivider } from './ResizableDivider';
 
 const TREE_MIN = 200;
@@ -51,20 +52,16 @@ export function ExplorerPane() {
   );
   const handleCompare = useCallback(
     (path: string) => {
-      if (!compareBase) {
-        setCompareBase(path);
-        return;
-      }
-      if (compareBase === path) {
-        setCompareBase(null); // ⌥-click the base again to cancel
-        return;
-      }
-      if (!confirmDiscard()) {
+      // Same state machine the flow run's tree drives (`nextComparePick`), so
+      // ⌥-click means one thing in the app. Only the discard guard is local:
+      // it belongs to the comparison this pane is showing.
+      const next = nextComparePick(compareBase, path);
+      if (next.pair && !confirmDiscard()) {
         setCompareBase(null);
         return;
       }
-      setComparePair({ a: compareBase, b: path });
-      setCompareBase(null);
+      setCompareBase(next.base);
+      if (next.pair) setComparePair(next.pair);
     },
     [compareBase, confirmDiscard],
   );

@@ -49,6 +49,31 @@ describe('matchWorkerExchangesToEvents', () => {
     expect(result.get('question-event')?.id).toBe('exchange-1');
   });
 
+  it('places the reply inline when the question spans several paragraphs', () => {
+    // Regression: the runtime records the LAST paragraph of an untagged
+    // question, but this matcher used to propose the WHOLE message. Any
+    // multi-paragraph question therefore failed to match, and its answer fell
+    // out of the transcript into the pane's trailing fallback list — where it
+    // sat at the bottom and drifted further down as new events arrived.
+    const asked = [
+      'No — not all of them. Of the 10 fix versions being set, 4 have release',
+      'dates already in the past.',
+      '',
+      'This was flagged as an advisory in an earlier pass but I dropped the',
+      'callout when I rewrote it.',
+      '',
+      'Want me to add it back to the report, and should I hold those writes?',
+    ].join('\n');
+    const recorded = 'Want me to add it back to the report, and should I hold those writes?';
+
+    const result = matchWorkerExchangesToEvents(
+      [assistant('question-event', 100, asked)],
+      [exchange('exchange-1', 110, recorded)],
+    );
+
+    expect(result.get('question-event')?.id).toBe('exchange-1');
+  });
+
   it('does not match tag-shaped text through the legacy plain-text fallback', () => {
     const result = matchWorkerExchangesToEvents(
       [

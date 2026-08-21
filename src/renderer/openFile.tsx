@@ -30,6 +30,24 @@ export function useOpenFile(): OpenFileFn {
   return override ?? storeOpen;
 }
 
+/// Open a path that may carry a `:NN` or `:NN-MM` line suffix, jumping to
+/// (and highlighting) those lines. Markdown codespans recognized as file paths
+/// arrive in that form — `runtime.ts:3540` — and opening the file at line 1
+/// throws away the only part of the reference the author cared about.
+///
+/// Shared because AssistantBubble and ToolResultCard each had a byte-identical
+/// private copy, and every new markdown surface was about to add a third.
+export function openPathWithHighlight(path: string, openFile: OpenFileFn): void {
+  const m = path.match(/^(.+?):(\d+)(?:[-:](\d+))?$/);
+  if (!m) {
+    openFile(path);
+    return;
+  }
+  const start = parseInt(m[2], 10);
+  const end = m[3] ? parseInt(m[3], 10) : start;
+  openFile(m[1], { startLine: start, endLine: end, requestId: crypto.randomUUID() });
+}
+
 /// Marks the descendant tree as rendering inside the SubagentDrawer.
 /// Tool cards read this to render their compact one-line variants —
 /// the drawer is narrow and we want the transcript dense, while the

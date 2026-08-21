@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ToolResultBlock, ToolUseBlock } from '@shared/types';
 import { Markdown } from './Markdown';
-import { useOpenFile } from '../openFile';
+import { openPathWithHighlight, useOpenFile } from '../openFile';
 
 export function ToolResultCard({ results, toolUseIndex }: { results: ToolResultBlock[]; toolUseIndex: Map<string, ToolUseBlock> }) {
   return (
@@ -80,7 +80,7 @@ function SingleResult({ result, source }: { result: ToolResultBlock; source?: To
       {showBody && (
         isAgent ? (
           <div className="mt-1 text-ink">
-            <Markdown source={content} onOpenPath={(p) => handleOpenPath(p, openFile)} />
+            <Markdown source={content} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
           </div>
         ) : (
           <pre className="mt-1 text-[11px] font-mono whitespace-pre-wrap overflow-x-auto select-text">
@@ -92,16 +92,3 @@ function SingleResult({ result, source }: { result: ToolResultBlock; source?: To
   );
 }
 
-function handleOpenPath(
-  path: string,
-  openFile: (p: string, highlight?: { startLine: number; endLine: number; requestId: string }) => void,
-) {
-  const m = path.match(/^(.+?):(\d+)(?:[-:](\d+))?$/);
-  if (m) {
-    const start = parseInt(m[2], 10);
-    const end = m[3] ? parseInt(m[3], 10) : start;
-    openFile(m[1], { startLine: start, endLine: end, requestId: crypto.randomUUID() });
-  } else {
-    openFile(path);
-  }
-}
