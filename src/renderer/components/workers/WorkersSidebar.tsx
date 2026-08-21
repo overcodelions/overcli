@@ -28,14 +28,20 @@
 //      status, it is noise. An absent line is the correct rendering of nothing
 //      happening.
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
 import { useRunningMap } from "../../runnersStore";
 import { useStore } from "../../store";
 import { newWorkerDraft, useWorkersStore } from "../../workersStore";
-import { sortRoster, workerTagline, type Worker } from "@shared/flows/worker";
+import {
+  benchRoster,
+  moveWithinGroup,
+  sortRoster,
+  workerTagline,
+  type Worker,
+} from "@shared/flows/worker";
 import type { TreasuryAllocation } from "@shared/flows/treasury";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { TRUST_LABEL } from "./WorkerRowParts";
@@ -114,6 +120,22 @@ export function WorkersSidebar({
         ),
       ),
     [workers, query, runs],
+  );
+  // Paused workers sink to a bench below the ones that run. `roster` stays
+  // the whole list — the empty state and the "needs you" block are about
+  // every worker you have, benched or not.
+  const { active, benched } = useMemo(() => benchRoster(roster), [roster]);
+  const dropWorker = useWorkersStore((s) => s.dropWorker);
+  // A nudge moves the worker within the group it is DRAWN in. Resolved
+  // against the full roster (not the search-filtered one) so ordering while a
+  // query is active can't reshuffle the workers the query hid.
+  const moveInGroup = useCallback(
+    (group: Worker[], id: string, direction: -1 | 1) => {
+      const all = sortRoster(Object.values(workers));
+      const insertBefore = moveWithinGroup(all, group, id, direction);
+      if (insertBefore !== null) void dropWorker(id, insertBefore);
+    },
+    [workers, dropWorker],
   );
   const hirePath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
 
@@ -281,21 +303,52 @@ export function WorkersSidebar({
           {query ? "No matching workers" : "Nobody works here yet"}
         </div>
       ) : (
-        roster.map((worker, index) => (
-          <RosterRow
-            key={worker.id}
-            worker={worker}
-            query={query}
-            selected={view === "worker" && worker.id === selectedWorkerId}
-            onSelect={() => selectWorker(worker.id)}
-            canMoveUp={index > 0}
-            canMoveDown={index < roster.length - 1}
-            // A search is a request to SEE things; honouring a fold while one
-            // is running would hide the row that matched it.
-            expanded={query !== "" || expanded.has(worker.id)}
-            onToggleExpanded={() => onToggleExpanded(worker.id)}
-          />
-        ))
+        <>
+          {active.map((worker, index) => (
+            <RosterRow
+              key={worker.id}
+              worker={worker}
+              query={query}
+              selected={view === "worker" && worker.id === selectedWorkerId}
+              onSelect={() => selectWorker(worker.id)}
+              canMoveUp={index > 0}
+              canMoveDown={index < active.length - 1}
+              onMove={(direction) => moveInGroup(active, worker.id, direction)}
+              // A search is a request to SEE things; honouring a fold while one
+              // is running would hide the row that matched it.
+              expanded={query !== "" || expanded.has(worker.id)}
+              onToggleExpanded={() => onToggleExpanded(worker.id)}
+            />
+          ))}
+          {/* The bench. Paused workers are still yours — you rename them,
+              re-enable them, read what they filed — but they do nothing
+              today, and interleaved with the ones working they made the
+              roster read as "here are your workers" when half of them
+              weren't. The move arrows are bounded WITHIN each group, so
+              nudging the last active worker down doesn't silently walk it
+              onto the bench. */}
+          {benched.length > 0 && (
+            <div className="mt-2 px-2 text-[10px] uppercase tracking-wider text-ink-faint">
+              Bench
+            </div>
+          )}
+          {benched.map((worker, index) => (
+            <RosterRow
+              key={worker.id}
+              worker={worker}
+              query={query}
+              selected={view === "worker" && worker.id === selectedWorkerId}
+              onSelect={() => selectWorker(worker.id)}
+              canMoveUp={index > 0}
+              canMoveDown={index < benched.length - 1}
+              onMove={(direction) => moveInGroup(benched, worker.id, direction)}
+              // Nothing to unfold, so the fold state is not consulted.
+              expanded={false}
+              onToggleExpanded={() => onToggleExpanded(worker.id)}
+              compact
+            />
+          ))}
+        </>
       )}
     </>
   );
@@ -433,8 +486,10 @@ function RosterRow({
   onSelect,
   canMoveUp,
   canMoveDown,
+  onMove,
   expanded,
   onToggleExpanded,
+  compact = false,
 }: {
   worker: Worker;
   query: string;
@@ -442,15 +497,22 @@ function RosterRow({
   onSelect: () => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  /// Supplied by the roster, because only IT knows which group this row is
+  /// drawn in — see `moveWithinGroup`.
+  onMove: (direction: -1 | 1) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
+  /// Bench rows. A paused worker has no work in flight, so the disclosure,
+  /// the turn rail and the today-count below it are all affordances for
+  /// something that isn't there — and "paused" under every name repeats the
+  /// heading the group already carries. One line, name and face.
+  compact?: boolean;
 }) {
   const runs = useFlowsStore((s) => s.runs);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const runners = useRunningMap();
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
-  const moveWorker = useWorkersStore((s) => s.moveWorker);
 
   const claimedRuns = useMemo(
     () => workerDeskRuns(runs, worker.id),
@@ -508,11 +570,12 @@ function RosterRow({
         : null;
 
   return (
-    <div className="group/row relative mt-1">
+    <div className={"group/row relative " + (compact ? "mt-0.5" : "mt-1")}>
       <button
         onClick={onSelect}
         className={
-          "sidebar-row flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+          "sidebar-row flex w-full items-center gap-2 rounded px-2 text-left " +
+          (compact ? "py-0.5 " : "py-1 ") +
           "hover:bg-card-strong hover:text-ink hover:border-card " +
           "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
           (selected ? "sidebar-row-selected text-ink" : "text-ink-muted")
@@ -523,6 +586,10 @@ function RosterRow({
             : ""
         }`}
       >
+        {compact ? (
+          // Spacer, so a bench face lines up with the faces above it.
+          <span aria-hidden className="w-[8px] shrink-0" />
+        ) : (
         <span
           role="button"
           tabIndex={0}
@@ -549,6 +616,7 @@ function RosterRow({
         >
           ▸
         </span>
+        )}
         <WorkerAvatar worker={worker} live={summary.live} />
         <span className="min-w-0 flex-1">
           {/* The name carries weight the child rows don't — in a folded roster
@@ -563,7 +631,7 @@ function RosterRow({
               a shift". Idle rows — most of the roster, most of the time — get
               the tagline, which is the only thing telling six personas apart
               at a glance. */}
-          {(status || tagline) && (
+          {!compact && (status || tagline) && (
             <span className="block truncate text-[10px] font-normal leading-4 text-ink-faint">
               {status ?? tagline}
             </span>
@@ -582,7 +650,7 @@ function RosterRow({
           )}
           {/* Folded away, the count of what is underneath is the only thing
               left saying this worker did anything today. */}
-          {!expanded && hidden > 0 && (
+          {!compact && !expanded && hidden > 0 && (
             <span className="shrink-0 text-[10px] font-normal tabular-nums text-ink-faint">
               {hidden}
             </span>
@@ -600,13 +668,13 @@ function RosterRow({
           label="Move up — funded before the workers below it"
           glyph="▲"
           disabled={!canMoveUp}
-          onClick={() => void moveWorker(worker.id, -1)}
+          onClick={() => onMove(-1)}
         />
         <MoveButton
           label="Move down — funded after the workers above it"
           glyph="▼"
           disabled={!canMoveDown}
-          onClick={() => void moveWorker(worker.id, 1)}
+          onClick={() => onMove(1)}
         />
       </div>
 
@@ -616,7 +684,7 @@ function RosterRow({
           still need a person are exactly the ones "Needs you" already lists,
           so putting a Flows group here listed the same work twice at the same
           level. */}
-      {expanded && (sending?.length || turns.length > 0) && (
+      {!compact && expanded && (sending?.length || turns.length > 0) && (
         <div className="ml-[13px] border-l border-card pl-2">
           {/* The errand you just sent, before any batch exists to represent it
               — the planning turn can take minutes, and a sidebar that shows
