@@ -3466,7 +3466,8 @@ export function pauseReasonBeforeStep(
 /// and report-update flows need that — but destinations must be relative to the
 /// disposable run root. This catches the concrete escape shape (`named
 /// /persistent/workspace/report.html`) without rejecting a plain `Read
-/// /persistent/workspace/prior.html` input.
+/// /persistent/workspace/prior.html` input, or a prompt that names the path
+/// only to exclude it (`write it to a relative path, never into /persistent/workspace`).
 export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: string): boolean {
   const normalizedPrompt = prompt.replace(/\\/g, '/').toLowerCase();
   const normalizedRoot = sourceRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -3493,6 +3494,19 @@ export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: s
       'i',
     );
     if (negated.test(before)) continue;
+
+    // The path is often quoted as a PROHIBITION — "write it to a relative path
+    // (never into /persistent/workspace)". The write verb earlier in the same
+    // sentence made that read as a destination and refused the launch. A
+    // negative direction that runs right up to the path is an exclusion, not a
+    // destination.
+    const excluded = new RegExp(
+      `\\b(?:never|not|avoid|rather than|instead of|outside(?:\\s+of)?|other than|excluding|except)\\s*` +
+        `(?:${writeVerb}|writing|saving|creating|placing|putting|copying|moving|publishing)?\\s*` +
+        `(?:back\\s+)?(?:into|inside|within|under|in|to|at)?\\s*[('"\`]*$`,
+      'i',
+    );
+    if (excluded.test(before)) continue;
 
     const destination = new RegExp(
       `(?:` +
