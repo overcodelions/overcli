@@ -24,6 +24,7 @@ import { TitleBar } from './components/TitleBar';
 import { ResizableDivider } from './components/ResizableDivider';
 import { SubagentDrawer } from './components/SubagentDrawer';
 import { FileEditorPane } from './components/FileEditorPane';
+import { CompareView } from './components/CompareView';
 import { useWorkersStore } from './workersStore';
 import { UpdateToast } from './components/UpdateToast';
 import { fileEditorRootFor } from './fileEditorRoot';
@@ -65,8 +66,14 @@ export function App() {
   //   - we're in the Flows view (FlowsLibraryPane has no built-in file
   //     editor mount, so file-link clicks would otherwise fall on the
   //     floor — wire them to this side pane instead).
+  const comparePair = useStore((s) => s.comparePair);
+  const closeCompare = useStore((s) => s.closeCompare);
+  const setCompareDirty = useStore((s) => s.setCompareDirty);
+  // A comparison holds the pane open on its own: it is picked from the tree
+  // without opening a file, so gating on `openFilePath` would pick two files
+  // and show nothing.
   const sideFileVisible =
-    !!openFilePath &&
+    (!!openFilePath || !!comparePair) &&
     (!!subagentDrawerParentId || detailMode === 'flows' || detailMode === 'workers');
   const workerFilesRoot = useWorkersStore(
     (s) => (s.selectedWorkerId ? (s.filesRoot[s.selectedWorkerId] ?? null) : null),
@@ -437,13 +444,33 @@ export function App() {
                   takes the same root — without this its files resolved
                   against the selected conversation and git ran in that
                   project instead of the run's. */}
-              <FileEditorPane
-                rootPathOverride={fileEditorRootFor({
-                  detailMode,
-                  runProjectPath: activeFlowRun?.projectPath ?? null,
-                  workerFilesRoot,
-                })}
-              />
+              {/* A two-file comparison picked from the tree takes this slot
+                  ahead of the editor — both answer "what am I looking at",
+                  and the comparison is the newer answer. Opening a file
+                  clears it (uiSlice.openFile), so the editor gets it back. */}
+              {comparePair ? (
+                <CompareView
+                  pathA={comparePair.a}
+                  pathB={comparePair.b}
+                  rootPath={
+                    fileEditorRootFor({
+                      detailMode,
+                      runProjectPath: activeFlowRun?.projectPath ?? null,
+                      workerFilesRoot,
+                    }) ?? ''
+                  }
+                  onClose={closeCompare}
+                  onDirtyChange={setCompareDirty}
+                />
+              ) : (
+                <FileEditorPane
+                  rootPathOverride={fileEditorRootFor({
+                    detailMode,
+                    runProjectPath: activeFlowRun?.projectPath ?? null,
+                    workerFilesRoot,
+                  })}
+                />
+              )}
             </div>
           </>
         )}

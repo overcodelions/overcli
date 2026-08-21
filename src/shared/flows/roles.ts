@@ -12,7 +12,22 @@ import type { FlowRolePreset } from './schema';
 /// chat output — any code shown in chat must be inside triple-backtick
 /// fences, since raw code lines get mangled by the markdown renderer
 /// (line-leading punctuation like `-` becomes a list bullet, etc.).
-export function artifactInstruction(outputName: string): string {
+export function artifactInstruction(outputName: string, allowFileRef = false): string {
+  const fileRefLines = allowFileRef
+    ? [
+        'CHEAPER ALTERNATIVE — if you have ALREADY written the complete deliverable to a file',
+        'inside the working directory, point at that file instead of re-typing it:',
+        `<output name="${outputName}" file="relative/path/to/the/file" />`,
+        'Rules for the pointer form:',
+        "  - Emit that tag alone: no body, no closing </output> tag — the trailing `/>` ends it.",
+        "  - The `file` path is relative to the step's working directory (or an absolute path",
+        '    inside it).',
+        '  - It must be a file YOU wrote or updated during THIS step. Pointing at an input, at',
+        '    an untouched file, or at an earlier step\'s file is rejected and costs you a turn.',
+        '  - Only use it when the file already contains the complete, final deliverable.',
+        '  - If the deliverable is not yet written to disk, use the inline block form instead.',
+      ]
+    : [`If you also wrote the deliverable to a file, still paste its full contents in the block.`];
   return [
     '',
     'IMPORTANT — output contract:',
@@ -22,8 +37,8 @@ export function artifactInstruction(outputName: string): string {
     'be read-only, to investigate only, to not write files, or to not change code — a',
     'read-only step still emits its findings in the block. It is the ONLY way your work',
     'reaches the next step: without it, this step is recorded as having produced nothing.',
-    `If you also wrote the deliverable to a file, still paste its full contents in the block.`,
-    'Rules:',
+    ...fileRefLines,
+    allowFileRef ? 'Rules for the inline block form:' : 'Rules:',
     `  - Emit the opening tag <output name="${outputName}"> once, the closing </output> once.`,
     '  - Do NOT nest <output …> tags inside the body. They are NOT a section marker — they',
     '    are a wrapper for the single final artifact only.',
@@ -389,10 +404,11 @@ export function resolveSystemPrompt(args: {
   role: FlowRolePreset;
   override?: string;
   outputName: string;
+  allowFileRef?: boolean;
 }): string {
   const base =
     args.role === 'custom'
       ? (args.override ?? '').trim() || '(no system prompt provided)'
       : ROLE_PROMPTS[args.role];
-  return `${base}\n${artifactInstruction(args.outputName)}`;
+  return `${base}\n${artifactInstruction(args.outputName, args.allowFileRef)}`;
 }

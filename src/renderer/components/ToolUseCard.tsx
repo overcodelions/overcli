@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ToolResultBlock, ToolUseBlock, UUID } from '@shared/types';
 import { useStore } from '../store';
-import { useInsideSubagentDrawer, useOpenFile } from '../openFile';
+import { openPathWithHighlight, useInsideSubagentDrawer, useOpenFile } from '../openFile';
 import { useRunnerEvents, useSubagentEvents, useTaskProgress } from '../runnersStore';
 import { Diff } from './DiffView';
+import { Markdown } from './Markdown';
+import { CopyActions } from './CopyActions';
 
 /// Generic card for a single tool_use block. Specialized renderings (file
 /// edits, bash commands, reads) branch by `use.name`. The optional
@@ -715,6 +717,8 @@ function ExitPlanModeCard({
   conversationId?: UUID;
 }) {
   const plan = typeof args.plan === 'string' ? args.plan : '';
+  const planRef = useRef<HTMLDivElement>(null);
+  const openFile = useOpenFile();
   const send = useStore((s) => s.send);
   const respondPermission = useStore((s) => s.respondPermission);
   const setPermissionMode = useStore((s) => s.setPermissionMode);
@@ -764,11 +768,26 @@ function ExitPlanModeCard({
 
   return (
     <div className="rounded-lg border border-emerald-500/35 bg-emerald-500/12 dark:bg-emerald-500/[0.10] text-xs">
-      <div className="px-3 py-1.5 border-b border-emerald-500/30 text-[10px] uppercase tracking-wide text-emerald-800 dark:text-emerald-200 font-semibold">
-        Plan — approval needed
+      <div className="px-3 py-1.5 border-b border-emerald-500/30 text-[10px] uppercase tracking-wide text-emerald-800 dark:text-emerald-200 font-semibold flex items-center justify-between gap-2">
+        <span>Plan — approval needed</span>
+        {plan && (
+          <CopyActions
+            getPlain={() => planRef.current?.innerText ?? plan}
+            raw={plan}
+            className="normal-case tracking-normal font-normal"
+          />
+        )}
       </div>
-      <div className="px-3 py-2">
-        <pre className="whitespace-pre-wrap font-sans select-text text-ink">{plan || '(plan streaming…)'}</pre>
+      {/* Markdown, not <pre>: a plan is written as markdown — headings,
+          bullets, a ticket link, fenced code — and this is the surface the
+          user has to READ it on before approving. Rendering it literally put
+          the asterisks and backticks between them and the decision. */}
+      <div className="px-3 py-2" ref={planRef}>
+        {plan ? (
+          <Markdown source={plan} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
+        ) : (
+          <span className="text-ink-muted">(plan streaming…)</span>
+        )}
       </div>
       <div className="flex justify-end gap-2 px-3 py-2 border-t border-emerald-500/30">
         {decided ? (

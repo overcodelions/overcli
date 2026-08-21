@@ -1,10 +1,19 @@
 import type { FlowWorkerExchange } from '@shared/flows/schema';
 import type { StreamEvent } from '@shared/types';
+import {
+  normalizedWorkerQuestion,
+  workerQuestionCandidates,
+} from '@shared/flows/workerQuestion';
 
 /// Pair persisted flow↔worker exchanges with the assistant event that asked
 /// the question. Question text is the stable key across live events and CLI
 /// history replay; timestamps disambiguate the rare case where a step asks the
 /// same question more than once.
+///
+/// The candidate strings come from `workerQuestionCandidates`, which is the
+/// same rule the runtime records by. Anything unmatched here renders in the
+/// pane's trailing fallback list rather than inline, so a mismatch does not
+/// lose the answer — it just strands it at the bottom of the transcript.
 export function matchWorkerExchangesToEvents(
   events: StreamEvent[],
   exchanges: FlowWorkerExchange[],
@@ -13,14 +22,15 @@ export function matchWorkerExchangesToEvents(
   const used = new Set<string>();
   for (const event of events) {
     if (event.kind.type !== 'assistant') continue;
-    const eventQuestions = workerQuestionsInAssistantText(event.kind.info.text);
+    const eventQuestions = workerQuestionCandidates(event.kind.info.text);
     if (eventQuestions.length === 0) continue;
     const candidates = exchanges
       .filter(
         (exchange) =>
           !used.has(exchange.id) &&
           eventQuestions.some(
-            (question) => normalizedQuestion(question) === normalizedQuestion(exchange.question),
+            (question) =>
+              normalizedWorkerQuestion(question) === normalizedWorkerQuestion(exchange.question),
           ),
       )
       .sort(
@@ -33,23 +43,4 @@ export function matchWorkerExchangesToEvents(
     matched.set(event.id, exchange);
   }
   return matched;
-}
-
-function workerQuestionsInAssistantText(text: string): string[] {
-  const tagged = [
-    ...text.matchAll(/<worker_question\b[^>]*>([\s\S]*?)<\/worker_question\s*>/gi),
-  ]
-    .map((match) => match[1]?.trim())
-    .filter((question): question is string => !!question);
-  if (tagged.length > 0) return tagged;
-  // Only support the legacy fallback for unmarked plain text. Removing tags
-  // with a regex would be incomplete sanitization and could also create a
-  // question that was never present as plain text in the transcript.
-  if (text.includes('<') || text.includes('>')) return [];
-  const cleaned = text.trim();
-  return cleaned.endsWith('?') ? [cleaned] : [];
-}
-
-function normalizedQuestion(question: string): string {
-  return question.replace(/\s+/g, ' ').trim().toLocaleLowerCase();
 }

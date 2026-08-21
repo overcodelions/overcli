@@ -362,3 +362,61 @@ describe('remembered view mode per extension', () => {
     expect(state.fileEditorSide).toBe('side');
   });
 });
+
+describe('two-file comparison', () => {
+  it('arms on the first pick and fires on the second', () => {
+    const { state, slice } = makeStub();
+    slice.pickCompare('a.ts');
+    expect(state.compareBase).toBe('a.ts');
+    expect(state.comparePair).toBeNull();
+    slice.pickCompare('b.ts');
+    expect(state.compareBase).toBeNull();
+    expect(state.comparePair).toEqual({ a: 'a.ts', b: 'b.ts' });
+  });
+
+  it('disarms when the armed file is picked again', () => {
+    const { state, slice } = makeStub();
+    slice.pickCompare('a.ts');
+    slice.pickCompare('a.ts');
+    expect(state.compareBase).toBeNull();
+    expect(state.comparePair).toBeNull();
+  });
+
+  it('starts a fresh pair clean, so a stale dirty flag cannot block it', () => {
+    const { state, slice } = makeStub();
+    slice.setCompareDirty(true);
+    slice.pickCompare('a.ts');
+    slice.pickCompare('b.ts');
+    expect(state.compareDirty).toBe(false);
+  });
+
+  it('closeCompare clears the pick, the pair and the dirty flag', () => {
+    const { state, slice } = makeStub();
+    slice.pickCompare('a.ts');
+    slice.pickCompare('b.ts');
+    slice.setCompareDirty(true);
+    slice.closeCompare();
+    expect(state.compareBase).toBeNull();
+    expect(state.comparePair).toBeNull();
+    expect(state.compareDirty).toBe(false);
+  });
+
+  it('opening a file retires the comparison — both want the same pane', () => {
+    const { state, slice } = makeStub();
+    slice.pickCompare('a.ts');
+    slice.pickCompare('b.ts');
+    slice.setCompareDirty(true);
+    slice.openFile('c.ts');
+    expect(state.comparePair).toBeNull();
+    expect(state.compareBase).toBeNull();
+    expect(state.compareDirty).toBe(false);
+    expect(state.openFilePath).toBe('c.ts');
+  });
+
+  it('an armed pick alone is cleared by opening a file', () => {
+    const { state, slice } = makeStub();
+    slice.pickCompare('a.ts');
+    slice.openFile('c.ts');
+    expect(state.compareBase).toBeNull();
+  });
+});

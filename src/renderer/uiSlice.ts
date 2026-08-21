@@ -11,6 +11,7 @@
 // capabilities), and a data slice (projects, workspaces, conversations
 // + persistence). Doing them in stages keeps each PR reviewable.
 
+import { nextComparePick } from './comparePick';
 import type { ActiveSheet, DetailMode, OpenFileHighlight } from './store';
 import {
   canPreviewFile,
@@ -62,6 +63,16 @@ export interface UiSliceState {
   /// active tab changes.
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
+  /// Two-file comparison picked from a file tree by ⌥-click. `compareBase`
+  /// is the armed first pick; `comparePair` is the completed A/B the editor
+  /// slot renders instead of the file editor. In the store rather than in a
+  /// component because the flow run's tree and the pane that shows the
+  /// comparison are not in the same subtree.
+  compareBase: string | null;
+  comparePair: { a: string; b: string } | null;
+  /// Unsaved moves in the open comparison, so a tree can guard navigation
+  /// away from it (`onBeforeOpen`).
+  compareDirty: boolean;
   openFileMode: FileViewMode;
   /// Last mode you chose per file extension, so previewing one README opens
   /// the next one rendered. Session-scoped: it is not persisted, so a fresh
@@ -143,6 +154,11 @@ export interface UiSliceActions {
   /// dirty files are deliberately kept, so reopening the file restores the
   /// unsaved work instead of silently losing it.
   closeFile(): void;
+  /// ⌥-click a file for comparison: arms the first pick, fires on the
+  /// second, disarms when the armed file is picked again.
+  pickCompare(path: string): void;
+  closeCompare(): void;
+  setCompareDirty(dirty: boolean): void;
   /// Point the editor at a different scope: the live tabs are saved under
   /// the outgoing key and the incoming scope's tabs are restored. Called
   /// by `useFileScope` whenever the user changes conversation, flow run or
@@ -169,6 +185,9 @@ export const uiSliceInitialState: UiSliceState = {
   activeSheet: null,
   openFilePath: null,
   openFileHighlight: null,
+  compareBase: null,
+  comparePair: null,
+  compareDirty: false,
   openFileMode: 'edit',
   fileViewModeByExt: {},
   tabs: [],
@@ -297,9 +316,15 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
       set({ activeSheet: sheet } as Partial<T>);
     },
     openFile(path, highlight, mode) {
+      // Opening a file retires any comparison: both want the same slot, and
+      // the explicit click is the newer intent. Trees that can lose unsaved
+      // moves this way guard the click first (`onBeforeOpen`).
       set(((s) => ({
         ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt)),
         fileEditorSide: 'inline',
+        compareBase: null,
+        comparePair: null,
+        compareDirty: false,
       })) as (s: T) => Partial<T>);
     },
     openSideFile(path, highlight, mode) {
@@ -307,6 +332,27 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
         ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt)),
         fileEditorSide: 'side',
       })) as (s: T) => Partial<T>);
+    },
+    pickCompare(path) {
+      set(((s) => {
+        const next = nextComparePick(s.compareBase, path);
+        return {
+          compareBase: next.base,
+          comparePair: next.pair,
+          // A fresh pair starts clean; keep the flag honest for the guard.
+          compareDirty: next.pair ? false : s.compareDirty,
+        } as Partial<T>;
+      }) as (s: T) => Partial<T>);
+    },
+    closeCompare() {
+      set(((_s: T) => ({
+        compareBase: null,
+        comparePair: null,
+        compareDirty: false,
+      })) as unknown as (s: T) => Partial<T>);
+    },
+    setCompareDirty(dirty) {
+      set(((_s: T) => ({ compareDirty: dirty })) as unknown as (s: T) => Partial<T>);
     },
     setOpenFileMode(mode) {
       // No need to touch `tabs`: commitActiveTab folds the live mode back
