@@ -46,6 +46,10 @@ export interface ComposerProps {
   /// filterable popover. Names are bare (no leading `/`).
   slashCommands?: SlashCommandEntry[];
   disabled?: boolean;
+  /// Optional secondary submit, bound to ⌘⏎ / Ctrl+⏎. Receives the trimmed
+  /// draft. Used by the flow composer's "Hold for <step>" action so the same
+  /// draft has two destinations without a second text box.
+  onModEnter?: (prompt: string) => void;
   /// Runner id whose past `localUser` messages feed the ArrowUp prompt
   /// history. Defaults to `draftKey`, which is correct for regular chat
   /// where the draft key IS the conversation id. Flows draw on a separate
@@ -113,6 +117,7 @@ export function Composer({
   slashCommands,
   disabled,
   historyConvId,
+  onModEnter,
 }: ComposerProps) {
   const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
   const setDraft = useStore((s) => s.setDraft);
@@ -602,7 +607,11 @@ export function Composer({
               return;
             }
           }
-          if (e.key === 'Enter' && !e.shiftKey) {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && onModEnter) {
+            e.preventDefault();
+            const text = draft.trim();
+            if (text) onModEnter(text);
+          } else if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             commit();
           } else if (e.key === 'Escape' && isRunning) {
