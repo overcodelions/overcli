@@ -19,7 +19,7 @@
 //   which a hijack turn never would. The held step is marked ↯ in the
 //   pipeline above.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
@@ -91,6 +91,21 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const [filesOpen, setFilesOpen] = useState(false);
   const [treeWidth, setTreeWidth] = useState(() =>
     Math.max(TREE_MIN, Math.min(TREE_MAX, settings.explorerTreeWidth ?? 280)),
+  );
+  // ⌥-click two files to compare them, the same gesture the standalone
+  // explorer has. State lives in the store because the comparison renders in
+  // the side editor pane (App.tsx), which is not below this component.
+  const compareBase = useStore((s) => s.compareBase);
+  const comparePair = useStore((s) => s.comparePair);
+  const compareDirty = useStore((s) => s.compareDirty);
+  const pickCompare = useStore((s) => s.pickCompare);
+  // Opening a file retires the comparison, so an open one with unsaved moves
+  // has to be confirmed away first. Stable identity: FileTree is memoized.
+  const confirmDiscardCompare = useCallback(
+    () =>
+      !(comparePair && compareDirty) ||
+      window.confirm('Discard unsaved changes to these files?'),
+    [comparePair, compareDirty],
   );
 
   useEffect(() => {
@@ -453,7 +468,12 @@ export function FlowRunPane({ runId }: { runId: string }) {
             style={{ width: treeWidth }}
             className="flex-shrink-0 h-full border-l border-card overflow-hidden"
           >
-            <FileTree rootPath={run.projectPath} />
+            <FileTree
+              rootPath={run.projectPath}
+              compareBase={compareBase}
+              onCompare={pickCompare}
+              onBeforeOpen={confirmDiscardCompare}
+            />
           </div>
         </>
       )}
