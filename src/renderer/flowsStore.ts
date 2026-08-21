@@ -112,6 +112,10 @@ interface FlowsActions {
   /// prompt-derived title. Optimistic, then reconciled by the main
   /// process's `flowRunUpdate`.
   renameRun(runId: string, title: string): Promise<void>;
+  /// Queue a course correction for the next step of a running flow. Pass an
+  /// empty string to withdraw one. Not optimistic — the main process guards
+  /// on run state and echoes the authoritative run back.
+  steerRun(runId: string, text: string): Promise<{ ok: boolean; error?: string }>;
   /// Persist an AI-drafted flow straight from a launch surface, bypassing
   /// the editor. The launch screens draft a flow and run it in one motion;
   /// routing that through the editor tab would make the user save, navigate
@@ -575,6 +579,22 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       return { runs: { ...s.runs, [runId]: { ...run, title: trimmed || undefined } } };
     });
     await window.overcli.invoke('flows:renameRun', { runId: runId as UUID, title: trimmed });
+  },
+
+  async steerRun(runId, text) {
+    try {
+      const res = await window.overcli.invoke('flows:steerRun', { runId: runId as UUID, text });
+      return res.ok ? { ok: true } : { ok: false, error: res.error };
+    } catch (err) {
+      // `ipcRenderer.invoke` REJECTS when no handler is registered — which is
+      // exactly what a renderer-only reload looks like, since the main process
+      // keeps running the build that predates this channel. Without this catch
+      // the rejection is swallowed and the button appears to do nothing at all.
+      const message = err instanceof Error ? err.message : String(err);
+      return message.includes('No handler registered')
+        ? { ok: false, error: 'Restart the app to pick up this feature — the main process is running an older build.' }
+        : { ok: false, error: message };
+    }
   },
 
   async saveDraftedFlow(flow, projectPaths) {

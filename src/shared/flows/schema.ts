@@ -461,6 +461,16 @@ export interface FlowRun {
     priorOutput: string;
     startedAt: number;
   };
+  /// A course correction the user typed while a step was running. Held
+  /// until the NEXT step starts, then injected at the top of that step's
+  /// prompt and cleared. Persisted (unlike `pendingContinue`): a
+  /// correction queued before a quit should still land after reload.
+  /// Setting it again replaces it; empty text withdraws it.
+  pendingSteer?: {
+    text: string;
+    at: number;
+    queuedDuringStepId?: string;
+  };
   /// Set when this run was launched as one item of an Orchestrator batch.
   /// Links the child run back to its parent orchestration so the batch
   /// ledger can group it and the runtime can notify the orchestrator to

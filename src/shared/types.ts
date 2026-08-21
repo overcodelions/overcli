@@ -1751,6 +1751,10 @@ export interface IPCInvokeMap {
     runId: UUID;
     title: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Queue a course correction to be injected at the top of the next step's
+  /// prompt. Empty `text` withdraws a queued steer.
+  'flows:steerRun': (args: { runId: UUID; text: string }) =>
+    { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
