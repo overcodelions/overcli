@@ -38,7 +38,7 @@ export function FlowOverviewPanel({
     // `top-[38px]` clears the custom title bar (TitleBar.tsx's `h-[38px]`)
     // instead of covering it — `top-0` would sit the drawer over the window
     // controls and the schedule/usage indicators.
-    <aside className="fixed top-[38px] right-0 bottom-0 z-40 w-[420px] border-l border-card bg-[var(--c-bg)] shadow-2xl overflow-y-auto p-5 flex flex-col gap-4">
+    <aside className="fixed top-[38px] right-0 bottom-0 z-40 w-[420px] border-l border-card bg-surface-elevated shadow-2xl overflow-y-auto p-5 flex flex-col gap-4">
       <div className="flex items-center gap-2">
         <div className="text-lg font-semibold flex-1 min-w-0 truncate">{flow.name}</div>
         <button
