@@ -55,6 +55,9 @@ import type { OneShotResult, RunnerManager } from '../runner';
 export interface DraftDeps {
   settings: AppSettings;
   runner: RunnerManager;
+  /// Rendered "PROVEN FLOWS" block from `renderProvenFlowsSection`. Empty
+  /// string or absent when the user has no flow with a track record yet.
+  provenFlows?: string;
 }
 
 /// Which job the CLI is being asked to do. Both share the schema prompt and
@@ -93,6 +96,7 @@ function systemPrompt(
   backend: Backend,
   mode: DraftMode = 'draft',
   modelDefaults?: FlowModelDefaults,
+  provenFlows?: string,
 ): string {
   const hints = drafterModelHints(backend, modelDefaults);
   const label = backendLabel(backend);
@@ -320,6 +324,34 @@ function systemPrompt(
     'outside-world mutation as effect: external. Worker runs automatically stop for approval at',
     'that boundary; pause_before remains available for additional human review checkpoints.',
     '',
+    'DEPTH BUDGET (a deep flow is a slow flow, not a thorough one)',
+    '=============================================================',
+    'Every step is a COLD model turn: it re-reads its inputs from scratch and knows',
+    'nothing of the reasoning that produced them. An extra step therefore costs a full',
+    'turn of latency and money and LOSES context — it does not add rigour.',
+    'Target 3–5 steps. Do not exceed 7 unless the user themselves enumerated more',
+    'phases than that. A 9-step flow for a request the user described in one sentence',
+    'is a bug.',
+    'Before you emit, delete any step where you cannot name what the FINAL deliverable',
+    'would lose without it. In particular:',
+    '  - Merge research into the step that uses it. A separate researcher step earns its',
+    '    place only when the facts span systems one step cannot reach in one turn.',
+    '  - ONE review step, not a panel. Add sibling review lenses only when the user asked',
+    '    for that specific kind of scrutiny (e.g. "security review too").',
+    '  - No formatting, polishing, or summarising step after a writing step — fold the',
+    '    format requirements into the writing step\'s own brief.',
+    '  - No step whose only job is to hand an artifact to the next step.',
+    'This budget never overrides ONE DELIVERABLE = ONE WRITING STEP above: two documents',
+    'for two audiences are two steps, and that is the shape, not padding.',
+    '',
+    'SPEED',
+    '=====',
+    `Put a step on ${hints.thinking} only if it plans or judges. Everything else — drafting`,
+    `from an artifact, extracting, summarising, formatting, mechanical checks — goes on`,
+    `${hints.fast}, with turbo: true when the work is mechanical rather than judgemental.`,
+    'The user is waiting on this flow every time it runs; the fastest flow that still',
+    'delivers the whole deliverable is the correct flow.',
+    '',
     'DELIVERABLE STEPS',
     '=================',
     'A step whose output a HUMAN reads is judged on how it reads, not only on whether it ran.',
@@ -367,6 +399,7 @@ function systemPrompt(
     `NOTE: the example above happens to use claude + ollama, but THIS user prefers ${label} —`,
     `use ${backend} models (as listed under CONVENTIONS) for the steps you generate, not claude.`,
     '',
+    ...(mode !== 'revise' && provenFlows ? [provenFlows, ''] : []),
     ...(mode === 'revise'
       ? [
           'REVISION RULES',
@@ -461,7 +494,8 @@ async function runDrafter(
   attachments?: Attachment[],
 ): Promise<{ ok: true; text: string; label: string } | { ok: false; error: string }> {
   return oneShotDraftText(deps, {
-    buildSystemPrompt: (backend) => systemPrompt(backend, mode, deps.settings.flowModelDefaults),
+    buildSystemPrompt: (backend) =>
+      systemPrompt(backend, mode, deps.settings.flowModelDefaults, deps.provenFlows),
     userMessage,
     attachments,
     verb: mode === 'revise' ? 'edit' : 'draft',
