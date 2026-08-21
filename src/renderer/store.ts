@@ -163,6 +163,10 @@ interface StoreState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
+  /// Two-file comparison picked by ⌥-click in a file tree. See uiSlice.
+  compareBase: string | null;
+  comparePair: { a: string; b: string } | null;
+  compareDirty: boolean;
   /// Last view mode chosen per file extension. See uiSlice.
   fileViewModeByExt: Record<string, FileViewMode>;
   /// Open editor tabs for the scope on screen, and the saved tabs for
@@ -257,6 +261,9 @@ interface StoreState {
   retargetTab(from: string, to: string): void;
   closeTab(path: string): void;
   closeFile(): void;
+  pickCompare(path: string): void;
+  closeCompare(): void;
+  setCompareDirty(dirty: boolean): void;
   switchFileScope(key: string | null): void;
   markFileDirty(path: string): void;
   clearFileDirty(path: string): void;

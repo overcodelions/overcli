@@ -23,6 +23,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, flushStoreSync } from './store';
+import { isAgentWrittenPath, recordWritesFromEvents } from './writtenPaths';
 import { RunnerManager } from './runner';
 import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
@@ -218,19 +219,16 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  // Lock the renderer to its initial origin. Any attempt to navigate (a
-  // rogue link, a redirect in an iframe, a window.open) is denied and
-  // bounced to the user's default browser if it's a plain http(s) URL.
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const current = mainWindow?.webContents.getURL();
-    if (url === current) return;
-    event.preventDefault();
-    if (isSafeExternalUrl(url)) shell.openExternal(url);
-  });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  // The navigate/window-open lock that keeps the renderer on its own origin
+  // and bounces external links to the browser is NOT installed here. It is
+  // installed once, for every webContents, by the `web-contents-created`
+  // handler in `whenReady` — which runs before this window exists.
+  //
+  // This function used to install its own copy as well. `setWindowOpenHandler`
+  // is a setter, so that one was harmlessly replaced; `will-navigate` is an
+  // event, so BOTH listeners fired and every link that took the navigate path
+  // was handed to `shell.openExternal` twice — two browser tabs per click.
+  // One registration, one tab.
 }
 
 // Allowlist for URLs handed to `shell.openExternal` — anywhere a URL
@@ -247,9 +245,20 @@ function isSafeExternalUrl(url: string): boolean {
 }
 
 function emitToRenderer(event: MainToRendererEvent): void {
+  noteAgentWrites(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('main:event', event);
   }
+}
+
+/// Watch the event stream for files agents write, so the viewer can open them
+/// again afterwards (see writtenPaths.ts). Every backend's events funnel
+/// through `emitToRenderer`, which makes it the one place that sees them all
+/// — parsing each CLI's own tool-call shape separately would leave whichever
+/// backend was added next silently unsupported.
+function noteAgentWrites(event: MainToRendererEvent): void {
+  if (event.type !== 'stream') return;
+  recordWritesFromEvents(event.events);
 }
 
 /// Native OS notification. The only way a scheduled run reaches the user when
@@ -2111,8 +2120,18 @@ function isReadablePlanPath(target: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+/// Readable is deliberately wider than writable. `isPathUnderRegisteredRoot`
+/// is the rule for changing a file; for SHOWING one it would hide an agent's
+/// own scratch output (a `/tmp` chunk it just wrote) behind an error, while
+/// protecting nothing — the run made that file and its contents already
+/// reached the user. `isAgentWrittenPath` opens exactly those, by provenance:
+/// a path this session watched a tool create. Writes keep the strict rule.
 function isReadablePath(target: string): boolean {
-  return isPathUnderRegisteredRoot(target) || isReadablePlanPath(target);
+  return (
+    isPathUnderRegisteredRoot(target) ||
+    isReadablePlanPath(target) ||
+    isAgentWrittenPath(target)
+  );
 }
 
 // `fs.realpathSync` throws if any segment is missing (e.g. a file about

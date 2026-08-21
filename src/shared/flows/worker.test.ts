@@ -7,6 +7,8 @@ import {
   placeInRoster,
   parseWorkerContract,
   parseWorkerSubject,
+  benchRoster,
+  moveWithinGroup,
   sortRoster,
   rejectionStreak,
   stripWorkerSubject,
@@ -311,6 +313,56 @@ describe('sortRoster', () => {
 
   it('leaves an unarranged roster in hire order', () => {
     expect(sortRoster([w('a', 1), w('b', 3), w('c', 2)]).map((x) => x.id)).toEqual(['b', 'c', 'a']);
+  });
+});
+
+describe('benchRoster', () => {
+  const w = (id: string, createdAt: number, enabled: boolean, order?: number) =>
+    ({ id, createdAt, enabled, order }) as unknown as Worker;
+
+  it('puts paused workers below the ones that run', () => {
+    const roster = [w('idle', 40, false), w('runs', 30, true), w('also-idle', 20, false)];
+    const { active, benched } = benchRoster(roster);
+    expect(active.map((x) => x.id)).toEqual(['runs']);
+    expect(benched.map((x) => x.id)).toEqual(['idle', 'also-idle']);
+  });
+
+  it('keeps the arranged order within each group', () => {
+    // Pausing a worker must not lose the position you dragged it to: `first`
+    // stays ahead of `second` on the bench.
+    const roster = [w('second', 10, false, 1), w('active', 20, true, 2), w('first', 30, false, 0)];
+    const { active, benched } = benchRoster(roster);
+    expect(benched.map((x) => x.id)).toEqual(['first', 'second']);
+    expect(active.map((x) => x.id)).toEqual(['active']);
+  });
+
+  it('handles an all-active and an all-benched roster', () => {
+    expect(benchRoster([w('a', 1, true)]).benched).toEqual([]);
+    expect(benchRoster([w('a', 1, false)]).active).toEqual([]);
+  });
+});
+
+describe('moveWithinGroup', () => {
+  const w = (id: string) => ({ id }) as unknown as Worker;
+  // Displayed as active [a, c] and bench [b, d].
+  const flat = [w('a'), w('b'), w('c'), w('d')];
+  const active = [w('a'), w('c')];
+  const bench = [w('b'), w('d')];
+
+  it('trades with the neighbour in the SAME group, not the flat list', () => {
+    // `d` up must land before `b` (its bench neighbour), not before `c`.
+    expect(moveWithinGroup(flat, bench, 'd', -1)).toBe(1);
+    // `a` down must land after `c`, skipping the benched `b` between them.
+    expect(moveWithinGroup(flat, active, 'a', 1)).toBe(3);
+  });
+
+  it('returns null at either end of a group', () => {
+    expect(moveWithinGroup(flat, bench, 'b', -1)).toBeNull();
+    expect(moveWithinGroup(flat, bench, 'd', 1)).toBeNull();
+  });
+
+  it('returns null for a worker that is not in the group', () => {
+    expect(moveWithinGroup(flat, bench, 'a', 1)).toBeNull();
   });
 });
 
