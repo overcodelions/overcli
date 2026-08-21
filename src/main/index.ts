@@ -136,6 +136,7 @@ import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury
 import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
 import { flushRuns } from './flows/runsStore';
 import { loadRunSummaries } from './flows/runSummaryLog';
+import { renderProvenFlowsSection } from './flows/provenFlows';
 import { emptyWorkerReportTotals } from '../shared/flows/workerReport';
 import { flowDeletionBlocker } from './flows/flowGuards';
 import {
@@ -146,7 +147,7 @@ import {
 import { listWatchSources } from './flows/watch/source';
 import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
-import { draftFlowFromPrompt, reviseFlowFromPrompt } from './flows/drafter';
+import { draftFlowFromPrompt, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
 import {
   ensureWorkspaceSymlinkRoot,
   removeWorkspaceSymlinkRoot,
@@ -282,6 +283,21 @@ function showDesktopNotification(args: { title: string; body: string }): void {
   } catch (err) {
     log('warn', 'schedules', `Notification failed: ${String(err)}`);
   }
+}
+
+/// Deps for every AI drafting call. Carries the user's proven flows so a
+/// draft copies the shape of what already works here instead of inventing a
+/// deeper one.
+function drafterDeps(): DraftDeps {
+  const store = Store.load();
+  return {
+    settings: store.settings,
+    runner: runner!,
+    provenFlows: renderProvenFlowsSection(
+      loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
+      loadRunSummaries(),
+    ),
+  };
 }
 
 function registerIpc(): void {
@@ -462,7 +478,7 @@ function registerIpc(): void {
             `edits, no writes, no commits, no pushes. The final step must output a ` +
             `written answer.`,
         },
-        { settings: Store.load().settings, runner: runner! },
+        drafterDeps(),
       );
       if (!drafted.ok) return drafted;
       // A distinct id per errand: these are single-use, and reusing one would
@@ -1213,10 +1229,10 @@ function registerIpc(): void {
   ipcMain.handle('flows:toolCatalog', (_e, args) => listToolCatalog(args));
   ipcMain.handle('flows:listTemplates', () => FLOW_TEMPLATES);
   ipcMain.handle('flows:draftFromPrompt', (_e, args) =>
-    draftFlowFromPrompt(args, { settings: Store.load().settings, runner: runner! }),
+    draftFlowFromPrompt(args, drafterDeps()),
   );
   ipcMain.handle('flows:reviseFromPrompt', (_e, args) =>
-    reviseFlowFromPrompt(args, { settings: Store.load().settings, runner: runner! }),
+    reviseFlowFromPrompt(args, drafterDeps()),
   );
   ipcMain.handle('flows:startRun', (_e, args) =>
     flowRuntime ? flowRuntime.startRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
@@ -1530,7 +1546,7 @@ function registerIpc(): void {
           })),
         ],
       },
-      { settings: store.settings, runner: runner! },
+      drafterDeps(),
     );
   });
   ipcMain.handle(
@@ -1548,7 +1564,7 @@ function registerIpc(): void {
           : undefined);
       return reviseWorkerFromPrompt(
         { jobDescription, instruction, flow, attachments },
-        { settings: store.settings, runner: runner! },
+        drafterDeps(),
       );
     },
   );

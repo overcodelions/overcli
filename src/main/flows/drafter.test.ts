@@ -728,3 +728,44 @@ describe('drafted models snap to their tier default', () => {
     expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-opus-4-8' });
   });
 });
+
+// ─── proven-flow exemplars ──────────────────────────────────────────────────
+
+describe('proven flow exemplars', () => {
+  beforeEach(() => {
+    mockQuery.mockClear();
+  });
+
+  it('includes the proven-flows block in a draft when deps carry one', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+    await draftFlowFromPrompt(
+      { description: 'Make a flow' },
+      { ...claudeDeps(), provenFlows: "PROVEN FLOWS IN THIS USER'S LIBRARY\n..." },
+    );
+
+    const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(sys).toContain("PROVEN FLOWS IN THIS USER'S LIBRARY");
+  });
+
+  it('omits the proven-flows block when deps carry none', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+    await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
+
+    const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(sys).not.toContain('PROVEN FLOWS');
+  });
+
+  it('never surfaces the proven-flows block when revising', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+    await reviseFlowFromPrompt(
+      { yaml: validYaml('Original'), instruction: 'tweak it' },
+      { ...claudeDeps(), provenFlows: "PROVEN FLOWS IN THIS USER'S LIBRARY\n..." },
+    );
+
+    const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(sys).not.toContain('PROVEN FLOWS');
+  });
+});
