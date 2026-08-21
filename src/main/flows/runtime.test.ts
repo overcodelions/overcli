@@ -78,6 +78,7 @@ import {
   extractWorkerQuestion,
   isGatingReviewStep,
   verdictGateStopsRun,
+  workspaceMembersMissingFromRun,
   isGatingReviewerRole,
   isReviewApproved,
   missingOutputReaskPrompt,
@@ -225,6 +226,34 @@ describe('extractOutputFileRef', () => {
 
   it('returns null when there is no output tag at all', () => {
     expect(extractOutputFileRef('no tags here', 'plan.md')).toBeNull();
+  });
+});
+
+describe('workspaceMembersMissingFromRun', () => {
+  it('returns members the run has no worktree for', () => {
+    expect(
+      workspaceMembersMissingFromRun(['/repo/a', '/repo/b', '/repo/c'], ['/repo/a', '/repo/c']),
+    ).toEqual(['/repo/b']);
+  });
+
+  it('returns nothing when the run already covers every member', () => {
+    expect(workspaceMembersMissingFromRun(['/repo/a'], ['/repo/a', '/repo/b'])).toEqual([]);
+  });
+
+  it('ignores members dropped from the workspace — adoption is additive only', () => {
+    // '/repo/b' is still in the run but no longer in the workspace. It must
+    // NOT be reported here: removing it would strand diffs measured from it.
+    expect(workspaceMembersMissingFromRun(['/repo/a'], ['/repo/a', '/repo/b'])).toEqual([]);
+  });
+
+  it('matches on path, so a project re-added under a new id is not re-minted', () => {
+    expect(workspaceMembersMissingFromRun(['/repo/a'], ['/repo/a'])).toEqual([]);
+  });
+
+  it('dedupes and skips empty paths', () => {
+    expect(workspaceMembersMissingFromRun(['/repo/b', '/repo/b', ''], ['/repo/a'])).toEqual([
+      '/repo/b',
+    ]);
   });
 });
 

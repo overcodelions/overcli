@@ -221,6 +221,30 @@ function uniqueWorktreeName(repoPaths: string[], base: string, branchPrefix: str
   return name;
 }
 
+/// Which of a workspace's current members a live run has no worktree for.
+///
+/// A workspace run resolves its members ONCE, at launch (see `startRun`), and
+/// the agent's cwd is a symlink farm built from exactly that set. Add a
+/// project to the workspace afterwards and the running flow simply cannot see
+/// it — which is worst precisely when a step has PAUSED asking for the repo
+/// that is missing, and adding it is the obvious fix.
+///
+/// Matching is by project path, not id, so a project re-added under a new id
+/// doesn't mint a second worktree over the same repo. Pure so the adoption
+/// rule can be tested without git.
+export function workspaceMembersMissingFromRun(
+  currentMemberPaths: readonly string[],
+  runMemberPaths: readonly string[],
+): string[] {
+  const have = new Set(runMemberPaths);
+  const out: string[] = [];
+  for (const p of currentMemberPaths) {
+    if (!p || have.has(p) || out.includes(p)) continue;
+    out.push(p);
+  }
+  return out;
+}
+
 export class FlowRuntimeImpl {
   private runs = new Map<UUID, FlowRun>();
   /// Reverse index: which run owns this conversation id. With participants,
@@ -1085,6 +1109,10 @@ export class FlowRuntimeImpl {
   }
 
   resumeRun(args: FlowRuntimeResumeArgs): { ok: true } | { ok: false; error: string } {
+    return this.withWorkspaceAdoption(args.runId, () => this.resumeRunInner(args));
+  }
+
+  private resumeRunInner(args: FlowRuntimeResumeArgs): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
     if (run.state.kind !== 'paused') {
@@ -1203,7 +1231,123 @@ export class FlowRuntimeImpl {
   /// Only valid from a settled state (paused / done / aborted). Refused
   /// while a step is actively running (it would race the live subprocess)
   /// or while the run is watching (archive it first).
+  /// Projects added to this run's workspace since it launched, as
+  /// `{ name, path }`. Empty for anything that isn't a workspace-worktree run.
+  private pendingWorkspaceMembers(run: FlowRun): Array<{ name: string; path: string }> {
+    const minted = run.workspaceWorktrees;
+    if (!minted || minted.length === 0 || !run.sourceProjectPath) return [];
+    const workspace = this.getWorkspaces().find((w) => w.rootPath === run.sourceProjectPath);
+    if (!workspace) return [];
+    const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
+    const current = workspace.projectIds
+      .map((pid) => projectsById.get(pid))
+      .filter((p): p is NonNullable<typeof p> => !!p && !!p.path);
+    const missing = new Set(
+      workspaceMembersMissingFromRun(
+        current.map((p) => p.path),
+        minted.map((m) => m.projectPath),
+      ),
+    );
+    return current.filter((p) => missing.has(p.path)).map((p) => ({ name: p.name, path: p.path }));
+  }
+
+  /// Adopt those projects into the live run: a worktree each, a symlink in the
+  /// run's root, and its own baseline.
+  ///
+  /// ADDITIVE ONLY, and that is the whole reason this is safe. Every diff the
+  /// run has produced is measured from `baselineCommitsByMember`; existing
+  /// entries are never touched, so nothing already measured moves. A member
+  /// REMOVED from the workspace likewise keeps its worktree — dropping it
+  /// would strand the diffs that cite it.
+  ///
+  /// Best-effort per member: a repo that fails to check out is logged and
+  /// skipped rather than failing the resume, matching the launch path's
+  /// tolerance for a partially-cleaned workspace.
+  private async adoptWorkspaceMembers(run: FlowRun): Promise<void> {
+    const pending = this.pendingWorkspaceMembers(run);
+    if (pending.length === 0) return;
+    const minted = run.workspaceWorktrees;
+    if (!minted) return;
+
+    const settings = this.getSettings();
+    const branchPrefix = settings.agentBranchPrefix || 'agent/';
+    // Reuse the run's existing branch name so an adopted repo lands on the
+    // same branch as its siblings rather than inventing a second one.
+    const agentName = minted[0].branchName.startsWith(branchPrefix)
+      ? minted[0].branchName.slice(branchPrefix.length)
+      : minted[0].branchName;
+
+    for (const member of pending) {
+      let baseBranch: string;
+      if (run.baseBranch && (await baseBranchExistsAsync(member.path, run.baseBranch))) {
+        baseBranch = run.baseBranch;
+      } else {
+        baseBranch = await detectBaseBranchAsync(member.path);
+      }
+      const created = await createWorktreeAsync({
+        projectPath: member.path,
+        agentName,
+        baseBranch,
+        branchPrefix,
+      });
+      if (!created.ok) {
+        log('warn', 'flows', `Could not adopt ${member.name} into run ${run.id}: ${created.error}`);
+        continue;
+      }
+      minted.push({
+        name: member.name,
+        projectPath: member.path,
+        worktreePath: created.worktreePath,
+        branchName: created.branchName,
+      });
+      const head = await runGitAsync(['rev-parse', 'HEAD'], created.worktreePath);
+      const commit = head.exitCode === 0 ? head.stdout.trim() : '';
+      if (commit) {
+        run.baselineCommitsByMember = {
+          ...(run.baselineCommitsByMember ?? {}),
+          [member.name]: { path: created.worktreePath, commit },
+        };
+      }
+      log('info', 'flows', `Adopted ${member.name} into run ${run.id} at ${created.worktreePath}`);
+    }
+
+    // Rebuild the farm from the FULL member list — this reconciles by
+    // removing symlinks it doesn't recognize, so a partial list would unlink
+    // the members the run has been working in.
+    const linked = ensureCoordinatorSymlinkRoot(
+      run.id,
+      minted.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
+    );
+    if (!linked.ok) {
+      log('warn', 'flows', `Could not relink run ${run.id}'s workspace root: ${linked.error}`);
+    }
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+  }
+
+  /// Resume/rerun entry points run the adoption first when the workspace has
+  /// grown, then do the real thing. Both callers are synchronous and return
+  /// immediately, so this hands back `{ ok: true }` and lets the git work
+  /// settle before the step starts — the step must not open in a root whose
+  /// new symlink isn't there yet.
+  private withWorkspaceAdoption(
+    runId: UUID,
+    proceed: () => { ok: true } | { ok: false; error: string },
+  ): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run || this.pendingWorkspaceMembers(run).length === 0) return proceed();
+    void this.adoptWorkspaceMembers(run).then(proceed, (err) => {
+      log('warn', 'flows', `Workspace adoption failed for run ${runId}`, err);
+      proceed();
+    });
+    return { ok: true };
+  }
+
   rerunFromStep(args: { runId: UUID; stepId: string }): { ok: true } | { ok: false; error: string } {
+    return this.withWorkspaceAdoption(args.runId, () => this.rerunFromStepInner(args));
+  }
+
+  private rerunFromStepInner(args: { runId: UUID; stepId: string }): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
     if (run.state.kind === 'running') {
