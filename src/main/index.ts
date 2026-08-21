@@ -23,6 +23,7 @@ import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Store, flushStoreSync } from './store';
+import { isAgentWrittenPath, recordWritesFromEvents } from './writtenPaths';
 import { RunnerManager } from './runner';
 import { SymbolLookupManager, resolveSearchRoot } from './symbolLookup';
 import { loadHistory, migrateClaudeSessionCwd } from './history';
@@ -244,9 +245,20 @@ function isSafeExternalUrl(url: string): boolean {
 }
 
 function emitToRenderer(event: MainToRendererEvent): void {
+  noteAgentWrites(event);
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('main:event', event);
   }
+}
+
+/// Watch the event stream for files agents write, so the viewer can open them
+/// again afterwards (see writtenPaths.ts). Every backend's events funnel
+/// through `emitToRenderer`, which makes it the one place that sees them all
+/// — parsing each CLI's own tool-call shape separately would leave whichever
+/// backend was added next silently unsupported.
+function noteAgentWrites(event: MainToRendererEvent): void {
+  if (event.type !== 'stream') return;
+  recordWritesFromEvents(event.events);
 }
 
 /// Native OS notification. The only way a scheduled run reaches the user when
@@ -2108,8 +2120,18 @@ function isReadablePlanPath(target: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
+/// Readable is deliberately wider than writable. `isPathUnderRegisteredRoot`
+/// is the rule for changing a file; for SHOWING one it would hide an agent's
+/// own scratch output (a `/tmp` chunk it just wrote) behind an error, while
+/// protecting nothing — the run made that file and its contents already
+/// reached the user. `isAgentWrittenPath` opens exactly those, by provenance:
+/// a path this session watched a tool create. Writes keep the strict rule.
 function isReadablePath(target: string): boolean {
-  return isPathUnderRegisteredRoot(target) || isReadablePlanPath(target);
+  return (
+    isPathUnderRegisteredRoot(target) ||
+    isReadablePlanPath(target) ||
+    isAgentWrittenPath(target)
+  );
 }
 
 // `fs.realpathSync` throws if any segment is missing (e.g. a file about
