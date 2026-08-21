@@ -14,7 +14,7 @@
 //   questions, redirect, or fork the participant's thinking from
 //   anywhere.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
@@ -29,6 +29,7 @@ import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
+import { railArrowOpacity, railDepth, railScrollLeft } from './stepRail';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
@@ -375,19 +376,17 @@ export function FlowRunPane({ runId }: { runId: string }) {
         {/* Step pipeline gets its own full-width row so it can breathe and
             stays vertically clean — keeping it inline with the title/actions
             row left the pills offset by the reserved scrollbar gutter. */}
-        <div className="overflow-x-auto no-scrollbar -mx-0.5 px-0.5 mb-1">
-          <InlineStepPipeline
-            run={run}
-            activeStepId={activeStepId}
-            onPick={(id) => {
-              // Switching steps abandons any half-open re-run confirmation —
-              // it's bound to the step being viewed, so it must never carry
-              // over to the step the user just navigated to.
-              setConfirmingRerun(false);
-              setFocusStepId(id);
-            }}
-          />
-        </div>
+        <InlineStepPipeline
+          run={run}
+          activeStepId={activeStepId}
+          onPick={(id) => {
+            // Switching steps abandons any half-open re-run confirmation —
+            // it's bound to the step being viewed, so it must never carry
+            // over to the step the user just navigated to.
+            setConfirmingRerun(false);
+            setFocusStepId(id);
+          }}
+        />
         {/* Original prompt as subtitle. Sits directly under the flow
             name, treats the user's words as the run's identity. */}
         <RunPromptSubtitle
@@ -912,36 +911,109 @@ function InlineStepPipeline({
   const activeStep = steps.find((s) => s.id === activeStepId) ?? null;
   const activeConvId = activeStep ? run.conversationIds[activeStep.participantId] : undefined;
   const activeConvIsRunning = useRunnerIsRunning(activeConvId);
+  const activeIdx = steps.findIndex((s) => s.id === activeStepId);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const pillRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [scrollable, setScrollable] = useState(false);
+  // Bit 1 = content hidden left, bit 2 = content hidden right. A number so
+  // repeated identical updates bail out of re-rendering during the glide.
+  const [edges, setEdges] = useState(0);
+  // The first centring must not animate: on mount the rail is at 0 and a
+  // long flow would slide in from the left for no reason.
+  const centeredOnce = useRef(false);
+
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const measureEdges = () => {
+      const max = vp.scrollWidth - vp.clientWidth;
+      setEdges((vp.scrollLeft > 1 ? 1 : 0) | (vp.scrollLeft < max - 1 ? 2 : 0));
+    };
+    const center = () => {
+      setScrollable(vp.scrollWidth > vp.clientWidth + 1);
+      const el = activeStepId ? pillRefs.current[activeStepId] : null;
+      if (el) {
+        const left = railScrollLeft(vp.clientWidth, vp.scrollWidth, el.offsetLeft, el.offsetWidth);
+        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        vp.scrollTo({ left, behavior: reduce || !centeredOnce.current ? 'auto' : 'smooth' });
+        centeredOnce.current = true;
+      }
+      measureEdges();
+    };
+    center();
+    vp.addEventListener('scroll', measureEdges);
+    const ro = new ResizeObserver(center);
+    ro.observe(vp);
+    return () => {
+      vp.removeEventListener('scroll', measureEdges);
+      ro.disconnect();
+    };
+  }, [activeStepId, steps.length]);
+
   return (
-    <div className="flex items-center gap-1">
-      {steps.map((step, idx) => {
-        const participant = participants.find((p) => p.id === step.participantId);
-        const attempts = run.attempts.filter((a) => a.stepId === step.id);
-        const last = attempts[attempts.length - 1];
-        const done = last?.outcome === 'success';
-        const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
-        const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
-        const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
-        const isActive = step.id === activeStepId;
-        const isResponding = isActive && activeConvIsRunning && !isCurrent;
-        return (
-          <div key={step.id} className="flex items-center gap-1 flex-shrink-0">
-            <InlineStepPill
-              step={step}
-              participant={participant}
-              isActive={isActive}
-              isCurrent={isCurrent}
-              isResponding={isResponding}
-              isPausedNext={isPausedNext}
-              done={done}
-              failed={!!failed}
-              onClick={() => onPick(step.id)}
-              idx={idx}
-            />
-            {idx < steps.length - 1 && <StepArrow done={done} pulsing={isCurrent} />}
-          </div>
-        );
-      })}
+    <div
+      ref={viewportRef}
+      className={
+        'overflow-x-auto overflow-y-hidden no-scrollbar py-2.5 -my-1.5 mb-1 ' +
+        (scrollable ? 'flow-rail-mask' : '')
+      }
+      style={{
+        ['--rail-fade-l' as string]: edges & 1 ? '56px' : '0px',
+        ['--rail-fade-r' as string]: edges & 2 ? '56px' : '0px',
+      }}
+    >
+      <div className="relative flex w-max items-center gap-1 min-h-[44px] px-0.5">
+        {steps.map((step, idx) => {
+          const participant = participants.find((p) => p.id === step.participantId);
+          const attempts = run.attempts.filter((a) => a.stepId === step.id);
+          const last = attempts[attempts.length - 1];
+          const done = last?.outcome === 'success';
+          const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
+          const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
+          const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
+          const isActive = step.id === activeStepId;
+          const isResponding = isActive && activeConvIsRunning && !isCurrent;
+          const dist = activeIdx < 0 ? 0 : Math.abs(idx - activeIdx);
+          const nextDist = activeIdx < 0 ? 0 : Math.abs(idx + 1 - activeIdx);
+          const depth = railDepth(dist);
+          return (
+            <div key={step.id} className="flex items-center gap-1 flex-shrink-0">
+              <div
+                ref={(el) => {
+                  pillRefs.current[step.id] = el;
+                }}
+                className="flow-rail-item"
+                style={{
+                  opacity: depth.opacity,
+                  transform: `scale(${depth.scale})`,
+                  filter: depth.blurPx ? `blur(${depth.blurPx}px)` : undefined,
+                }}
+              >
+                <InlineStepPill
+                  step={step}
+                  participant={participant}
+                  isActive={isActive}
+                  isCurrent={isCurrent}
+                  isResponding={isResponding}
+                  isPausedNext={isPausedNext}
+                  done={done}
+                  failed={!!failed}
+                  onClick={() => onPick(step.id)}
+                  idx={idx}
+                />
+              </div>
+              {idx < steps.length - 1 && (
+                <div
+                  className="flow-rail-item"
+                  style={{ opacity: railArrowOpacity(dist, nextDist) }}
+                >
+                  <StepArrow done={done} pulsing={isCurrent && dist < 2} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -981,13 +1053,24 @@ function InlineStepPill({
           : failed
             ? 'border-red-400/40'
             : 'border-card-strong';
-  const bg = isActive ? 'bg-accent/[0.14]' : 'bg-card/30 hover:bg-card/55';
+  const bg = isActive ? '' : 'bg-card/30 hover:bg-card/55';
+  // Mixed against the theme surface rather than layered as alpha-on-transparent:
+  // that's what keeps the tint honest in BOTH the light and dark palettes.
+  const activeStyle = isActive
+    ? {
+        background: 'color-mix(in srgb, var(--c-accent) 15%, var(--c-surface))',
+        boxShadow:
+          '0 0 0 1px var(--c-accent), 0 4px 14px -6px color-mix(in srgb, var(--c-accent) 55%, transparent)',
+      }
+    : undefined;
   return (
     <button
       onClick={onClick}
       aria-pressed={isActive}
+      style={activeStyle}
       className={
-        'flex items-center gap-1.5 rounded-md border px-2 py-1 transition flex-shrink-0 ' +
+        'flex items-center gap-1.5 rounded-md border transition flex-shrink-0 ' +
+        (isActive ? 'px-2.5 py-1.5 ' : 'px-2 py-1 ') +
         stateBorder + ' ' + bg
       }
       title={
@@ -998,13 +1081,16 @@ function InlineStepPill({
     >
       <span
         className={
-          'text-[10px] font-mono ' + (isActive ? 'text-accent' : 'text-ink-faint')
+          'font-mono ' +
+          (isActive ? 'text-[11px] text-accent' : 'text-[10px] text-ink-faint')
         }
       >
         {idx + 1}
       </span>
       {participant && <FlowMonogram name={participant.name} size="xs" />}
-      <span className="text-xs font-semibold text-ink">{step.id}</span>
+      <span className={(isActive ? 'text-[13px] font-bold ' : 'text-xs font-semibold ') + 'text-ink'}>
+        {step.id}
+      </span>
       {pulsing && <span className="text-sky-700 dark:text-sky-300 animate-spin text-[10px]">⟳</span>}
       {done && !pulsing && <span className="text-emerald-700 dark:text-emerald-300/80 text-[10px]">✓</span>}
       {failed && !pulsing && <span className="text-red-700 dark:text-red-300 text-[10px]">!</span>}
