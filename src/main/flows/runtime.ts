@@ -60,6 +60,7 @@ import {
   effectiveParticipantModel,
 } from '../../shared/flows/schema';
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
+import { extractWorkerQuestion } from '../../shared/flows/workerQuestion';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
 import {
@@ -3606,23 +3607,12 @@ export function buildWorkerAnswerBlock(question: string, answer: string): string
   ].join('\n');
 }
 
-/// Prefer the explicit protocol tag. The narrow question-mark fallback keeps
-/// older flows useful: only a missing-output final response that ends as a
-/// direct question is promoted, never incidental questions inside prose.
-export function extractWorkerQuestion(text: string): string | null {
-  const tagged = text.match(/<worker_question\b[^>]*>([\s\S]*?)<\/worker_question\s*>/i)?.[1]?.trim();
-  if (tagged) return tagged.slice(0, 4_000);
-  // The compatibility fallback is deliberately plain text. Regex-based tag
-  // removal is not a sanitizer, so marked-up responses must use the explicit
-  // worker_question protocol above instead of being reinterpreted here.
-  if (text.includes('<') || text.includes('>')) return null;
-  const cleaned = text.trim();
-  if (!cleaned.endsWith('?')) return null;
-  const paragraphs = cleaned.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  const last = paragraphs.at(-1) ?? '';
-  if (!last.endsWith('?') || last.length > 4_000) return null;
-  return last;
-}
+/// Re-exported so the runtime's own callers and tests keep one import site.
+/// The rule itself lives in shared/flows/workerQuestion.ts because the
+/// renderer's timeline matcher has to agree with it exactly — when the two
+/// had separate copies they drifted, and multi-paragraph questions stopped
+/// matching their answers.
+export { extractWorkerQuestion };
 
 /// Decide whether a reviewer's produced artifact represents an APPROVAL.
 /// The reviewer role prompts (see ../../shared/flows/roles.ts) instruct the
