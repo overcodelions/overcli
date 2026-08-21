@@ -3,6 +3,7 @@ import { marked, Renderer } from 'marked';
 import hljs from 'highlight.js';
 import DOMPurify from 'dompurify';
 import { mermaidPlaceholderHtml } from '../mermaid';
+import { fenceStrayDiffs } from '../diffFencing';
 
 // hljs-produced <span class="hljs-...">, <code class="file-path" data-path="…">,
 // and standard markdown tags are the only HTML we generate. Everything else
@@ -142,7 +143,7 @@ function renderMarkdownHtmlUncached(
       block ? `<pre><code>${escapeHtml(text)}</code></pre>` : escapeHtml(text);
   }
 
-  const raw = marked.parse(source ?? '', { async: false, renderer }) as string;
+  const raw = marked.parse(fenceStrayDiffs(source ?? ''), { async: false, renderer }) as string;
   return DOMPurify.sanitize(raw, SANITIZE_CONFIG) as string;
 }
 

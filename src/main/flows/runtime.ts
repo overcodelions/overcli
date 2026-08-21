@@ -1612,6 +1612,12 @@ export class FlowRuntimeImpl {
     if (run.pendingContinue) {
       delete run.pendingContinue;
     }
+    // A queued correction is persisted and would otherwise survive an abort
+    // and resurface framed as fresh guidance on a `rerunFromStep` far later,
+    // for a step context the user has long forgotten.
+    if (run.pendingSteer) {
+      delete run.pendingSteer;
+    }
     this.emitRunUpdate(run);
     this.checkpoint(run); // terminal — save final state
     return { ok: true };
@@ -2172,6 +2178,36 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Queue a course correction for the next step to run. Valid while a step
+  /// is running AND while the run is paused: a pause is the moment the user
+  /// is most likely to want to correct what happens next, and the pending
+  /// step is known exactly. Only a finished run has nothing left to steer.
+  /// Empty text withdraws a queued steer.
+  steerRun(args: { runId: UUID; text: string }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.state.kind !== 'running' && run.state.kind !== 'paused') {
+      return { ok: false, error: 'This run has finished — there is no next step to correct.' };
+    }
+    const text = args.text.trim().slice(0, 2000);
+    if (!text) {
+      delete run.pendingSteer;
+    } else {
+      run.pendingSteer = {
+        text,
+        at: Date.now(),
+        // Only meaningful when a step was actually mid-flight: it becomes
+        // "Received while step X was running" in the block. A pause has no
+        // running step, and `buildSteerBlock` drops the clause when absent.
+        queuedDuringStepId:
+          run.state.kind === 'running' ? run.state.currentStepId : undefined,
+      };
+    }
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   private async executeStep(runId: UUID, stepId: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
@@ -2275,6 +2311,13 @@ export class FlowRuntimeImpl {
     // The model still receives the full `prompt` with role + contract,
     // so behavior doesn't change.
     const displayText = this.buildStepDisplayText(run, step);
+    if (run.pendingSteer) {
+      delete run.pendingSteer;
+      this.checkpoint(run);
+      // The pill in SteerBanner is driven by `pendingSteer`; without this
+      // it keeps claiming "queued" for the whole step that just spent it.
+      this.emitRunUpdate(run);
+    }
     // Both builders have read it — this attempt owns the feedback, so a
     // later step (or a manual re-run) doesn't get a stale rejection notice.
     if (this.retryFeedback.get(runId)?.targetStepId === step.id) {
@@ -2667,6 +2710,7 @@ export class FlowRuntimeImpl {
     const next = run.flowSnapshot.steps[idx + 1];
     if (!next) {
       run.state = { kind: 'done', success: true };
+      delete run.pendingSteer; // no step left to carry it
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
       return;
@@ -2760,6 +2804,10 @@ export class FlowRuntimeImpl {
 
     if (policy.action === 'abort') {
       run.state = { kind: 'aborted' };
+      // Same reason as `abortRun`: a queued correction is persisted, and a
+      // terminal run that is later re-run from a step must not replay it as
+      // if it were fresh guidance.
+      delete run.pendingSteer;
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
       return;
@@ -2894,6 +2942,12 @@ export class FlowRuntimeImpl {
       if (art) rawInputs.push({ name: feedback.artifactName, body: art.body });
     }
     const retryBlock = feedback ? `${buildRetryFeedbackBlock(feedback)}\n\n---\n\n` : '';
+    // A steer arriving on the same step as a retry goes FIRST: the owner's
+    // live correction outranks a reviewer's earlier rejection.
+    const steer = run.pendingSteer;
+    const steerBlock = steer?.text.trim()
+      ? `${buildSteerBlock(steer.text, steer.queuedDuringStepId)}\n\n---\n\n`
+      : '';
     const workerBoundary = buildWorkerRunBoundary(run);
     const workerSupervision = buildWorkerSupervisionBoundary(run);
     const workerAnswer = this.workerAnswerFeedback.get(run.id);
@@ -2928,7 +2982,7 @@ export class FlowRuntimeImpl {
       stepModel.backend === 'ollama'
         ? FlowRuntimeImpl.PROMPT_BUDGET_OLLAMA
         : FlowRuntimeImpl.PROMPT_BUDGET_PREMIUM;
-    const overhead = systemPrompt.length + retryBlock.length + 500; // wrappers + instructions
+    const overhead = systemPrompt.length + steerBlock.length + retryBlock.length + 500; // wrappers + instructions
     const inlineParts = inputParts.filter(
       (p): p is InlineInput => p.kind === 'inline',
     );
@@ -2994,7 +3048,7 @@ export class FlowRuntimeImpl {
     const preamble = preambleNotes.length > 0 ? `\n\nNOTE: ${preambleNotes.join(' ')}` : '';
 
     return (
-      `${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
+      `${steerBlock}${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
       `<output name="${step.output}">…</output>.`
     );
@@ -3049,6 +3103,10 @@ export class FlowRuntimeImpl {
         `_↺ Retry ${feedback.attempt} of ${feedback.maxRetries} — sent back by ` +
           `**${feedback.fromStepId}**: ${feedback.reason}_`,
       );
+    }
+    const steerText = run.pendingSteer?.text.trim();
+    if (steerText) {
+      header.push(`_↯ Course correction applied: ${steerText}_`);
     }
     if (this.isParticipantContinuation(run, step)) {
       header.push(
@@ -3132,6 +3190,7 @@ export class FlowRuntimeImpl {
 
   private failRun(run: FlowRun, message: string): void {
     run.state = { kind: 'aborted' };
+    delete run.pendingSteer; // see `abortRun` — never replay it on a re-run
     this.emitRunUpdate(run);
     this.emit({ type: 'error', conversationId: run.id, message });
   }
@@ -3579,6 +3638,29 @@ export interface FlowRetryFeedback {
   /// knows how many shots it has left.
   attempt: number;
   maxRetries: number;
+}
+
+/// Render the "your owner corrected you mid-flight" preamble. Same shape as
+/// `buildRetryFeedbackBlock`: a shouty header, a blank line, then substance.
+/// Placed ahead of the step's inputs because those inputs were produced
+/// BEFORE the correction and may contradict it.
+export function buildSteerBlock(text: string, duringStepId?: string): string {
+  const lines: string[] = [];
+  lines.push('COURSE CORRECTION FROM YOUR OWNER — read this before your inputs.');
+  lines.push('');
+  lines.push(
+    duringStepId
+      ? `Received while step "${duringStepId}" was running. It supersedes anything in your inputs that conflicts with it.`
+      : 'It supersedes anything in your inputs that conflicts with it.',
+  );
+  lines.push('');
+  lines.push(`  ${text.trim()}`);
+  lines.push('');
+  lines.push(
+    'Your inputs below were produced BEFORE this correction. Where they disagree with it, ' +
+      'the correction wins — say so explicitly in your output rather than silently splitting the difference.',
+  );
+  return lines.join('\n');
 }
 
 /// Render the "you're being sent back, here's why" preamble prepended to a
