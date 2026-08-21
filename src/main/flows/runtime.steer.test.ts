@@ -216,6 +216,20 @@ describe('steerRun', () => {
     expect(r.pendingSteer).toBeUndefined();
   });
 
+  it('is dropped when the run is aborted, so a re-run cannot replay it', () => {
+    const { rt } = harness();
+    const r = run();
+    (rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    rt.steerRun({ runId: RUN_ID, text: 'use per-tenant limits' });
+
+    rt.abortRun({ runId: RUN_ID });
+
+    // `pendingSteer` is persisted, unlike the in-memory retry feedback, so
+    // without this it would resurface on a `rerunFromStep` days later framed
+    // as fresh guidance.
+    expect(r.pendingSteer).toBeUndefined();
+  });
+
   it('survives a JSON round-trip, so it persists across a restart', () => {
     const { rt } = harness();
     const r = run();

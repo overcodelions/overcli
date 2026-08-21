@@ -2710,6 +2710,7 @@ export class FlowRuntimeImpl {
     const next = run.flowSnapshot.steps[idx + 1];
     if (!next) {
       run.state = { kind: 'done', success: true };
+      delete run.pendingSteer; // no step left to carry it
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
       return;
@@ -2803,6 +2804,10 @@ export class FlowRuntimeImpl {
 
     if (policy.action === 'abort') {
       run.state = { kind: 'aborted' };
+      // Same reason as `abortRun`: a queued correction is persisted, and a
+      // terminal run that is later re-run from a step must not replay it as
+      // if it were fresh guidance.
+      delete run.pendingSteer;
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
       return;
@@ -3185,6 +3190,7 @@ export class FlowRuntimeImpl {
 
   private failRun(run: FlowRun, message: string): void {
     run.state = { kind: 'aborted' };
+    delete run.pendingSteer; // see `abortRun` — never replay it on a re-run
     this.emitRunUpdate(run);
     this.emit({ type: 'error', conversationId: run.id, message });
   }

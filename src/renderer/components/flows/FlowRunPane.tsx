@@ -34,6 +34,7 @@ import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
+import { steerRecipient } from './steerRecipient';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
@@ -1843,9 +1844,24 @@ function HijackComposer({
   // without this, a successful hold looks identical to a click that did
   // nothing, which is exactly how this control first failed.
   const [justHeld, setJustHeld] = useState(false);
+  const heldAckTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (heldAckTimer.current !== null) window.clearTimeout(heldAckTimer.current);
+    },
+    [],
+  );
   const recipient = steerRecipient(run);
   const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
+  // A failed hold has to stop shouting once the user moves on — otherwise
+  // "restart the app" sits under the composer for the rest of the run.
+  useEffect(() => setSteerError(null), [draft, recipient?.id]);
   const holdDraft = () => {
+    // Empty text is the WITHDRAW signal to the runtime. The button stays
+    // clickable through the acknowledgement (when the draft is already
+    // cleared), so without this a second click silently drops the
+    // correction that was just held.
+    if (!draft.trim()) return;
     void steerRun(run.id, draft).then((res) => {
       if (!res.ok) {
         setSteerError(res.error ?? 'That correction did not queue — the run has moved on.');
@@ -1855,7 +1871,8 @@ function HijackComposer({
       setDraft(draftKey, '');
       clearAttachments(draftKey);
       setJustHeld(true);
-      window.setTimeout(() => setJustHeld(false), 1800);
+      if (heldAckTimer.current !== null) window.clearTimeout(heldAckTimer.current);
+      heldAckTimer.current = window.setTimeout(() => setJustHeld(false), 1800);
     });
   };
 
@@ -2766,26 +2783,4 @@ function formatTokens(n: number): string {
 
 // Re-exported types referenced by sibling components in this folder.
 export type { FlowStepAttempt };
-
-/// The step a queued correction will actually reach.
-///   - running: the next step in order, which is how the runtime itself
-///     defines "next" (see `prewarmNextParticipant`).
-///   - paused: the step the run is parked in front of — known exactly, and
-///     the moment a correction is most likely to be worth typing.
-/// Null on the final step and on a finished run: there is nothing left to
-/// carry a correction, so the Hold button is not offered at all rather than
-/// taking words the run has nowhere to deliver.
-function steerRecipient(run: FlowRun): FlowStep | null {
-  const steps = run.flowSnapshot.steps;
-  if (run.state.kind === 'paused') {
-    const nextStepId = run.state.nextStepId;
-    return steps.find((s) => s.id === nextStepId) ?? null;
-  }
-  if (run.state.kind !== 'running') return null;
-  // Hoisted: narrowing doesn't survive into the findIndex closure.
-  const currentStepId = run.state.currentStepId;
-  const idx = steps.findIndex((s) => s.id === currentStepId);
-  if (idx < 0) return null;
-  return steps[idx + 1] ?? null;
-}
 
