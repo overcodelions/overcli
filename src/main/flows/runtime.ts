@@ -22,9 +22,9 @@
 // runner pipeline drives.
 
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
 import { migrateClaudeSessionCwd } from '../history';
 
@@ -1317,7 +1317,7 @@ export class FlowRuntimeImpl {
     const latest = this.latestAssistantTextByParticipant.get(`${runId}:${prior.participantId}`);
     const existingArtifact = run.artifacts[prior.output];
     if (latest && existingArtifact) {
-      const already = extractOutput(latest, prior.output);
+      const already = this.resolveArtifactBody(latest, prior.output, run.projectPath);
       if (already !== null && already !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -1393,7 +1393,7 @@ export class FlowRuntimeImpl {
     // Re-extract from the finalize reply.
     const finalText = this.latestAssistantTextByParticipant.get(waitKey);
     if (finalText && existingArtifact) {
-      const refined = extractOutput(finalText, prior.output);
+      const refined = this.resolveArtifactBody(finalText, prior.output, run.projectPath);
       if (refined !== null && refined !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -2466,7 +2466,7 @@ export class FlowRuntimeImpl {
     const text = buf?.assistantText ?? '';
 
     const artifactKind = detectArtifactKind(step.output);
-    let artifactBody = extractOutput(text, step.output);
+    let artifactBody = this.resolveArtifactBody(text, step.output, run.projectPath);
 
     /// This step's own change, measured off the previous diff step's
     /// snapshot. Computed at most once per step: `computeIncrementalDiffForRun`
@@ -2731,6 +2731,27 @@ export class FlowRuntimeImpl {
     void this.executeStep(runId, next.id);
   }
 
+  /// Inline block first, pointer form second. A missing or out-of-root
+  /// pointer file degrades to "no output", which is what the reask and
+  /// on_fail paths already handle.
+  private resolveArtifactBody(text: string, outputName: string, runRoot: string): string | null {
+    const inline = extractOutput(text, outputName);
+    if (inline !== null) return inline;
+    const ref = extractOutputFileRef(text, outputName);
+    if (!ref) return null;
+    const abs = resolveArtifactFilePath(ref, runRoot);
+    if (!abs) {
+      log('warn', 'flows.outputFile', `pointer path outside run root, ignoring: ${ref}`);
+      return null;
+    }
+    const body = readArtifactFileBody(abs);
+    if (body === null) {
+      log('warn', 'flows.outputFile', `pointer file unreadable or empty, ignoring: ${abs}`);
+      return null;
+    }
+    return body;
+  }
+
   /// A step finished without the `<output name="…">` wrapper. Ask its
   /// participant, once per attempt, to re-emit the deliverable properly
   /// before treating the step as failed.
@@ -2766,7 +2787,7 @@ export class FlowRuntimeImpl {
 
     const sendResult = this.runner.send({
       conversationId: convId,
-      prompt: missingOutputReaskPrompt(step.output),
+      prompt: missingOutputReaskPrompt(step.output, stepCanWriteFiles(step, stepModel.backend)),
       displayText: `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
       backend: stepModel.backend,
       cwd: run.projectPath,
@@ -2903,10 +2924,12 @@ export class FlowRuntimeImpl {
   }
 
   private buildStepPrompt(run: FlowRun, step: FlowStep): string {
+    const stepModel = resolveRunStepModel(run, step);
     const systemPrompt = resolveSystemPrompt({
       role: step.role,
       override: step.systemPromptOverride,
       outputName: step.output,
+      allowFileRef: stepCanWriteFiles(step, stepModel.backend),
     });
 
     // Each input becomes either an inline body (small enough to live in
@@ -2918,7 +2941,6 @@ export class FlowRuntimeImpl {
     type AttachedInput = { kind: 'attached'; name: string; path: string; size: number };
     type InputPart = InlineInput | AttachedInput;
 
-    const stepModel = resolveRunStepModel(run, step);
     const canAttach = stepModel.backend !== 'ollama';
 
     const rawInputs: Array<{ name: string; body: string }> = [];
@@ -3740,12 +3762,21 @@ export function summarizeReviewRejection(reviewBody: string): string | null {
 /// recoverable cases explicitly — the artifact was written to a file, or it
 /// was narrated in chat — because in both the model tends to answer "I
 /// already did that" unless told the block itself is the missing part.
-export function missingOutputReaskPrompt(outputName: string): string {
+export function missingOutputReaskPrompt(outputName: string, allowFileRef = false): string {
+  const fileLines = [
+    `  - If you wrote it to a file, read that file back and paste its full contents inside the block.`,
+    ...(allowFileRef
+      ? [
+          `  - Or, if that file still holds the complete deliverable, point at it instead of retyping it:`,
+          `    <output name="${outputName}" file="relative/path/to/the/file" />`,
+        ]
+      : []),
+  ];
   return [
     `Your last reply did not contain an <output name="${outputName}"> block, so this step has nothing to hand to the next one.`,
     '',
     'Do not redo the work. Emit the deliverable you already produced:',
-    `  - If you wrote it to a file, read that file back and paste its full contents inside the block.`,
+    ...fileLines,
     '  - If you described it in your reply, restate it in full inside the block.',
     '',
     `Reply with ONLY this, and nothing else — no preamble, no commentary:`,
@@ -3792,6 +3823,72 @@ export function extractOutput(text: string, outputName: string): string | null {
   const cleaned = bodies.map((b) => b.replace(noiseRe, '').trim()).filter(Boolean);
   if (cleaned.length === 0) return null;
   return cleaned.join('\n').trim();
+}
+
+/// Hard cap on a filesystem-sourced artifact. Larger than the 256 KB
+/// persistence cap in runsStore, so nothing realistic is refused; a file
+/// past it falls back to the normal missing-output path rather than
+/// pulling an unbounded blob into memory and into downstream prompts.
+const MAX_OUTPUT_FILE_BYTES = 1024 * 1024;
+
+/// Pointer form of the output contract: `<output name="x" file="path" />`.
+/// The model has already written the deliverable with its Write tool, so
+/// re-typing it into the reply costs a full second decode of the artifact.
+/// Returns the raw `file` attribute of the first matching tag, or null.
+export function extractOutputFileRef(text: string, outputName: string): string | null {
+  const tagRe = /<output\s+([^>]*?)\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(text)) !== null) {
+    const attrs = m[1];
+    const name = attrs.match(/\bname\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+    const file = attrs.match(/\bfile\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+    if (!name || !file) continue;
+    const nameVal = (name[1] ?? name[2] ?? name[3] ?? '').trim();
+    const fileVal = (file[1] ?? file[2] ?? file[3] ?? '').trim();
+    if (nameVal.toLowerCase() !== outputName.toLowerCase()) continue;
+    if (fileVal) return fileVal;
+  }
+  return null;
+}
+
+/// Resolve a pointer path against the run root, refusing anything that
+/// escapes it. Mirrors the boundary rule behind
+/// `workerPromptWritesToPersistentRoot`: a run may only source artifacts
+/// from its own disposable working directory. Absolute paths are allowed
+/// only when they land inside that root.
+export function resolveArtifactFilePath(rawPath: string, runRoot: string): string | null {
+  const cleaned = rawPath.trim().replace(/^["'<]+/, '').replace(/["'>]+$/, '').trim();
+  if (!cleaned || cleaned.includes('\0')) return null;
+  if (!runRoot) return null;
+  const root = resolve(runRoot);
+  const abs = isAbsolute(cleaned) ? resolve(cleaned) : resolve(root, cleaned);
+  if (abs !== root && !abs.startsWith(root + sep)) return null;
+  return abs;
+}
+
+/// Read a pointer artifact's body. Returns null for anything that isn't a
+/// readable, non-empty, in-budget regular file so the caller can fall back
+/// to the inline contract.
+export function readArtifactFileBody(absPath: string): string | null {
+  try {
+    const st = statSync(absPath);
+    if (!st.isFile()) return null;
+    if (st.size > MAX_OUTPUT_FILE_BYTES) return null;
+    const body = readFileSync(absPath, 'utf8').trim();
+    return body.length > 0 ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/// Which steps may be offered the pointer form: only ones that can write
+/// files at all. Mirrors `resolvePermissionMode` — `step.tools` is an
+/// authoritative allowlist for Ollama only; other backends' tool surface
+/// is owned by their CLI.
+export function stepCanWriteFiles(step: Pick<FlowStep, 'tools'>, backend: Backend): boolean {
+  if (backend !== 'ollama') return true;
+  const writeTools = new Set(['write_file', 'edit_file', 'bash']);
+  return step.tools.some((t) => writeTools.has(t));
 }
 
 /// Dispatch wrapper: single-repo runs get one `computeRunDiff`; workspace

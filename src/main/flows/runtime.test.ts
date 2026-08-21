@@ -2,6 +2,9 @@
 // RunnerManager (which would need an Electron app context). The full
 // orchestration is exercised manually by running a flow end-to-end.
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -70,11 +73,16 @@ import {
   buildRetryFeedbackBlock,
   detectArtifactKind,
   extractOutput,
+  extractOutputFileRef,
   extractWorkerQuestion,
   isGatingReviewStep,
   verdictGateStopsRun,
   isGatingReviewerRole,
   isReviewApproved,
+  missingOutputReaskPrompt,
+  readArtifactFileBody,
+  resolveArtifactFilePath,
+  stepCanWriteFiles,
   stepParticipantKey,
   stuckStepMessage,
   summarizeReviewRejection,
@@ -174,6 +182,169 @@ chatter after`;
 
   it('is case-insensitive on the tag', () => {
     expect(extractOutput('<OUTPUT name="x">y</OUTPUT>', 'x')).toBe('y');
+  });
+});
+
+describe('extractOutputFileRef', () => {
+  it('extracts the file attribute from a self-closing pointer tag', () => {
+    expect(extractOutputFileRef('<output name="plan.md" file="out/plan.md" />', 'plan.md')).toBe(
+      'out/plan.md',
+    );
+  });
+
+  it('matches without the self-closing slash too', () => {
+    expect(extractOutputFileRef('<output name="plan.md" file="plan.md">', 'plan.md')).toBe(
+      'plan.md',
+    );
+  });
+
+  it('matches single-quoted and unquoted attributes', () => {
+    expect(extractOutputFileRef(`<output name='diff' file='out.diff' />`, 'diff')).toBe(
+      'out.diff',
+    );
+    expect(extractOutputFileRef('<output name=diff file=out.diff />', 'diff')).toBe('out.diff');
+  });
+
+  it('is case-insensitive on the name match', () => {
+    expect(extractOutputFileRef('<OUTPUT NAME="Plan.md" FILE="plan.md" />', 'plan.md')).toBe(
+      'plan.md',
+    );
+  });
+
+  it('returns null when there is no file attribute', () => {
+    expect(extractOutputFileRef('<output name="plan.md">body</output>', 'plan.md')).toBeNull();
+  });
+
+  it('returns null when the name does not match', () => {
+    expect(
+      extractOutputFileRef('<output name="other.md" file="x.md" />', 'plan.md'),
+    ).toBeNull();
+  });
+
+  it('returns null when there is no output tag at all', () => {
+    expect(extractOutputFileRef('no tags here', 'plan.md')).toBeNull();
+  });
+});
+
+describe('resolveArtifactFilePath', () => {
+  const root = '/runs/abc';
+
+  it('resolves a relative path inside the run root', () => {
+    expect(resolveArtifactFilePath('out/plan.md', root)).toBe('/runs/abc/out/plan.md');
+  });
+
+  it('resolves an absolute path that lands inside the run root', () => {
+    expect(resolveArtifactFilePath('/runs/abc/out/plan.md', root)).toBe('/runs/abc/out/plan.md');
+  });
+
+  it('rejects a relative path that escapes the run root', () => {
+    expect(resolveArtifactFilePath('../escape.md', root)).toBeNull();
+    expect(resolveArtifactFilePath('../../etc/passwd', root)).toBeNull();
+  });
+
+  it('rejects an absolute path outside the run root', () => {
+    expect(resolveArtifactFilePath('/etc/passwd', root)).toBeNull();
+  });
+
+  it('rejects empty or whitespace-only input', () => {
+    expect(resolveArtifactFilePath('', root)).toBeNull();
+    expect(resolveArtifactFilePath('   ', root)).toBeNull();
+  });
+
+  it('rejects a null-byte path', () => {
+    expect(resolveArtifactFilePath('plan.md\0', root)).toBeNull();
+  });
+
+  it('rejects when the run root is empty', () => {
+    expect(resolveArtifactFilePath('plan.md', '')).toBeNull();
+  });
+
+  it('allows the run root itself', () => {
+    expect(resolveArtifactFilePath('.', root)).toBe(root);
+  });
+});
+
+describe('readArtifactFileBody', () => {
+  it('reads and trims an existing file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'plan.md');
+      writeFileSync(file, '\n  # Goal\nship the thing\n\n');
+      expect(readArtifactFileBody(file)).toBe('# Goal\nship the thing');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a missing file', () => {
+    expect(readArtifactFileBody('/nonexistent/path/plan.md')).toBeNull();
+  });
+
+  it('returns null for an empty (whitespace-only) file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'empty.md');
+      writeFileSync(file, '   \n  ');
+      expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      expect(readArtifactFileBody(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a file over the size budget', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'big.md');
+      writeFileSync(file, 'x'.repeat(1024 * 1024 + 1));
+      expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('stepCanWriteFiles', () => {
+  it('is always true for non-ollama backends regardless of tools', () => {
+    expect(stepCanWriteFiles({ tools: [] }, 'claude')).toBe(true);
+    expect(stepCanWriteFiles({ tools: ['read_file'] }, 'codex')).toBe(true);
+  });
+
+  it('is true for ollama only when a write tool is granted', () => {
+    expect(stepCanWriteFiles({ tools: ['write_file'] }, 'ollama')).toBe(true);
+    expect(stepCanWriteFiles({ tools: ['edit_file'] }, 'ollama')).toBe(true);
+    expect(stepCanWriteFiles({ tools: ['bash'] }, 'ollama')).toBe(true);
+  });
+
+  it('is false for ollama when only read-only tools are granted', () => {
+    expect(stepCanWriteFiles({ tools: ['read_file'] }, 'ollama')).toBe(false);
+    expect(stepCanWriteFiles({ tools: [] }, 'ollama')).toBe(false);
+  });
+});
+
+describe('missingOutputReaskPrompt', () => {
+  it('is byte-identical to the base prompt when allowFileRef is omitted', () => {
+    expect(missingOutputReaskPrompt('plan.md')).toBe(missingOutputReaskPrompt('plan.md', false));
+  });
+
+  it('does not mention the pointer form when allowFileRef is false', () => {
+    expect(missingOutputReaskPrompt('plan.md', false)).not.toContain('file=');
+  });
+
+  it('offers the pointer form as an extra bullet when allowFileRef is true', () => {
+    const withRef = missingOutputReaskPrompt('plan.md', true);
+    const without = missingOutputReaskPrompt('plan.md', false);
+    expect(withRef).toContain('<output name="plan.md" file="relative/path/to/the/file" />');
+    // Purely additive: everything in the base prompt still appears.
+    expect(withRef).toContain(without.split('\n')[0]);
   });
 });
 
