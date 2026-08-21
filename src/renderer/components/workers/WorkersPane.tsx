@@ -82,6 +82,7 @@ import { WorkerErrandComposer } from "./WorkerDesk";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
 import { FundsPane } from "./FundsPane";
+import { WorkerReportPane } from "./WorkerReportPane";
 import {
   CARRIED_OVER_SHOWN,
   adjacentDeskDay,
@@ -302,6 +303,8 @@ export function WorkersPane() {
         <div className="px-6 text-sm text-ink-muted">Loading workers…</div>
       ) : view === "calendar" ? (
         <ShiftCalendar />
+      ) : view === "report" ? (
+        <WorkerReportPane />
       ) : view === "funds" ? (
         <FundsPane />
       ) : rows.length === 0 ? (

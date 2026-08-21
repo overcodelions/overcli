@@ -106,7 +106,7 @@ interface WorkersState {
   /// the selection rather than part of it — both are about every worker at
   /// once, so neither has a worker to be the selection of, and picking anyone
   /// from them must land you on their desk.
-  view: 'worker' | 'calendar' | 'funds';
+  view: 'worker' | 'calendar' | 'funds' | 'report';
   /// One turn to open when the desk mounts, set by arriving from somewhere
   /// that already knows which turn you meant — clicking a past shift on the
   /// calendar. The desk shows one DAY, so a link into it has to carry the
@@ -266,6 +266,7 @@ interface WorkersActions {
   openWorkerDesk(id: string): void;
   showCalendar(): void;
   showFunds(): void;
+  showReport(): void;
   applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
   setTreasury(monthlyUSD: number): Promise<boolean>;
   setPreviewEmpty(on: boolean): void;
@@ -640,6 +641,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   showFunds() {
     set({ view: 'funds' });
+  },
+
+  showReport() {
+    set({ view: 'report' });
   },
 
   clearDeskFocus() {

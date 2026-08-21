@@ -136,6 +136,7 @@ import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury
 import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
 import { flushRuns } from './flows/runsStore';
 import { loadRunSummaries } from './flows/runSummaryLog';
+import { emptyWorkerReportTotals } from '../shared/flows/workerReport';
 import { flowDeletionBlocker } from './flows/flowGuards';
 import {
   listRecentPrompts,
@@ -1395,6 +1396,17 @@ function registerIpc(): void {
       : {
           treasury: { monthlyUSD: DEFAULT_TREASURY_USD },
           allocation: allocateTreasury([], () => 0, DEFAULT_TREASURY_USD),
+        },
+  );
+  ipcMain.handle('workers:report', (_e, { sinceMs }) =>
+    workerEngine
+      ? workerEngine.report(sinceMs)
+      : {
+          generatedAt: Date.now(),
+          sinceMs,
+          byWorker: [],
+          totals: emptyWorkerReportTotals(),
+          daily: [],
         },
   );
   ipcMain.handle('workers:setTreasury', (_e, { monthlyUSD }) =>
