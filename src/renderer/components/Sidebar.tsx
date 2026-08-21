@@ -683,7 +683,14 @@ export function collectActiveCandidates(
   // cannot evict the chat you are reading; the Workers tab has them all.
   const liveWorkerRuns = Object.values(flowRuns)
     .filter((run) => isWorkerRun(run) && workerRunIsActive(run, runners))
-    .sort((a, b) => flowRunPromptedAt(b) - flowRunPromptedAt(a))
+    // The run you have open sorts first, then newest: a roster waking up
+    // together must not push out the run you're reading (and possibly
+    // hijack-chatting) just because it started earlier.
+    .sort(
+      (a, b) =>
+        Number(b.id === selection.openedRunId) - Number(a.id === selection.openedRunId) ||
+        flowRunPromptedAt(b) - flowRunPromptedAt(a),
+    )
     .slice(0, ACTIVE_WORKER_RUN_LIMIT);
   for (const run of liveWorkerRuns) {
     out.push({

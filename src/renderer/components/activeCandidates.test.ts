@@ -89,6 +89,44 @@ describe('collectActiveCandidates', () => {
     expect(order([project('a', [])], [userRun, finished], {}, {})).toEqual(['user-run']);
   });
 
+  it('keeps a finished run in Active while it is still answering you', () => {
+    // Hijack-chatting a run that has already completed streams turns through
+    // its participant conversations. The row has to stay put mid-reply — for
+    // a worker's run as much as your own.
+    const streaming = { c1: { isRunning: true } };
+    const workerRun = run('worker-run', {
+      workerId: 'worker-1',
+      state: { kind: 'done' },
+      conversationIds: { writer: 'c1' },
+      createdAt: NOW - 90 * MIN,
+    } as unknown as Partial<FlowRun>);
+    expect(order([project('a', [])], [workerRun], streaming, {})).toContain('worker-run');
+
+    const userRun = run('user-run', {
+      state: { kind: 'done' },
+      conversationIds: { writer: 'c1' },
+      createdAt: NOW - 90 * MIN,
+    } as unknown as Partial<FlowRun>);
+    expect(order([project('a', [])], [userRun], streaming, {})).toContain('user-run');
+  });
+
+  it('does not let a waking roster evict the worker run you have open', () => {
+    const answering = run('answering', {
+      workerId: 'w0',
+      state: { kind: 'done' },
+      conversationIds: { writer: 'c1' },
+      createdAt: NOW - 90 * MIN,
+    } as unknown as Partial<FlowRun>);
+    const woken = [1, 2, 3, 4].map((n) =>
+      run(`worker-${n}`, { workerId: `w${n}`, createdAt: NOW - n } as Partial<FlowRun>),
+    );
+    expect(
+      order([project('a', [])], [answering, ...woken], { c1: { isRunning: true } }, {
+        openedRunId: 'answering',
+      }),
+    ).toContain('answering');
+  });
+
   it('keeps a worker run that is waiting on you', () => {
     const paused = run('worker-run', {
       workerId: 'worker-1',

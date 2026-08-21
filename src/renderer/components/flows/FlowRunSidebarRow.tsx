@@ -125,15 +125,21 @@ export function FlowRunsSection({ path, query = '' }: FlowRunsSectionProps) {
 /// Whether a WORKER's run earns a slot in Active. Stricter than
 /// `runIsActive` on purpose: a worker run is machine-started, and the Active
 /// section is the user's own workbench. It gets in while it is genuinely
-/// happening — orchestrating, or stopped waiting for the user — and leaves
-/// the moment it stops, with no recency grace and no backfill. The worker's
-/// desk remains the place to read a finished one.
+/// happening — orchestrating, streaming a turn, or stopped waiting for the
+/// user — and leaves the moment it stops, with no recency grace and no
+/// backfill. The worker's desk remains the place to read a finished one.
 export function workerRunIsActive(
   run: FlowRun,
   runners: Record<string, { isRunning: boolean } | undefined>,
 ): boolean {
-  if (run.state.kind === 'archived' || run.state.kind === 'done') return false;
-  return runIsLive(run, runners) || run.state.kind === 'paused' || run.state.kind === 'watching';
+  if (run.state.kind === 'archived') return false;
+  // Liveness is checked before `done` is ruled out: hijack-chatting a
+  // finished run still streams turns through its participant conversations,
+  // and a run answering you right now belongs in Active whatever its state
+  // says. Without this the row vanished mid-reply.
+  if (runIsLive(run, runners)) return true;
+  if (run.state.kind === 'done') return false;
+  return run.state.kind === 'paused' || run.state.kind === 'watching';
 }
 
 /// Top-active row designed to be a visual sibling of RecentConversationRow:
