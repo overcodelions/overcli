@@ -218,19 +218,16 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  // Lock the renderer to its initial origin. Any attempt to navigate (a
-  // rogue link, a redirect in an iframe, a window.open) is denied and
-  // bounced to the user's default browser if it's a plain http(s) URL.
-  mainWindow.webContents.on('will-navigate', (event, url) => {
-    const current = mainWindow?.webContents.getURL();
-    if (url === current) return;
-    event.preventDefault();
-    if (isSafeExternalUrl(url)) shell.openExternal(url);
-  });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (isSafeExternalUrl(url)) shell.openExternal(url);
-    return { action: 'deny' };
-  });
+  // The navigate/window-open lock that keeps the renderer on its own origin
+  // and bounces external links to the browser is NOT installed here. It is
+  // installed once, for every webContents, by the `web-contents-created`
+  // handler in `whenReady` — which runs before this window exists.
+  //
+  // This function used to install its own copy as well. `setWindowOpenHandler`
+  // is a setter, so that one was harmlessly replaced; `will-navigate` is an
+  // event, so BOTH listeners fired and every link that took the navigate path
+  // was handed to `shell.openExternal` twice — two browser tabs per click.
+  // One registration, one tab.
 }
 
 // Allowlist for URLs handed to `shell.openExternal` — anywhere a URL
