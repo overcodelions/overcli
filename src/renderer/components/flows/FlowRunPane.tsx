@@ -28,6 +28,8 @@ import { ChatView } from '../ChatView';
 import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
+import { CopyActions } from '../CopyActions';
+import { openPathWithHighlight, useOpenFile } from '../../openFile';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
 import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
@@ -2316,31 +2318,43 @@ function StepInfoPanel({
   prompt: string;
   activeStep: FlowStep | null;
 }) {
-  const [copied, setCopied] = useState(false);
+  const renderedRef = useRef<HTMLDivElement>(null);
+  const openFile = useOpenFile();
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
   return (
     <div id="step-info" className="mt-1.5 rounded-lg border border-card bg-card/40 px-3.5 py-2.5">
-      <div className="flex items-start gap-2">
-        {/* Capped and scrollable: a 400-word prompt must not shove the
+      {/* The copy pair floats over the top-right of the scroll box rather than
+          taking a column beside it — the prompt gets the full width, and the
+          buttons stay put as it scrolls. They sit OUTSIDE `renderedRef` on
+          purpose: inside, their own labels would land in the `innerText` that
+          `copy` yields. */}
+      <div className="relative">
+        {/* Rendered as markdown, not raw text: a run's request is routinely a
+            pitch or a ticket body, and reading it as literal asterisks and
+            backticks is worse than reading it in the composer it came from.
+            Capped and scrollable so a 400-word prompt can't shove the
             transcript off-screen just because someone opened the panel. */}
-        <p className="flex-1 min-w-0 max-h-64 overflow-y-auto select-text whitespace-pre-wrap text-[13px] leading-snug text-ink">
-          {prompt}
-        </p>
+        <div
+          ref={renderedRef}
+          className="copy-gutter max-h-64 overflow-y-auto text-[13px] leading-snug text-ink"
+        >
+          {/* Prompts cite code — `runtime.ts:3540` and the like. Markdown
+              already renders those codespans as file-path chips; without a
+              handler they look clickable and do nothing. */}
+          <Markdown source={prompt} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
+        </div>
         {/* Always visible rather than hover-revealed — hiding a control
             inside a panel the user deliberately opened hides it twice. */}
-        <button
-          onClick={() => {
-            void navigator.clipboard.writeText(prompt);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1200);
-          }}
-          className={
-            'flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors ' +
-            (copied ? 'text-accent' : 'text-ink-faint hover:bg-card-strong hover:text-ink')
-          }
-        >
-          {copied ? 'copied' : 'copy'}
-        </button>
+        <CopyActions
+          getPlain={() => renderedRef.current?.innerText ?? prompt}
+          raw={prompt}
+          // Opaque, not tinted: `bg-card` is a 2%-alpha overlay, so anything
+          // built on it let the prompt scroll through the buttons and made
+          // both unreadable. `surface-elevated` is a solid colour in both
+          // themes, and the border + shadow read it as floating above the
+          // text rather than punched out of it.
+          className="absolute right-[14px] top-0 rounded border border-card bg-surface-elevated shadow-sm"
+        />
       </div>
       {/* What this step is contracted to do. The step's id and its
           in-thread siblings are deliberately absent: the rail names the
