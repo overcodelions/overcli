@@ -912,11 +912,12 @@ function ghAvailable(): boolean {
 }
 
 /// Pull the host out of a git remote URL. Handles both shapes git emits:
-/// a real URL (`https://…`, `ssh://…`) and scp-style (`git@host:owner/repo`).
-/// Returns '' when neither parses (e.g. a plain filesystem path).
+/// a real URL (`https://…`, `ssh://…`) and scp-style (`[user@]host:owner/repo`
+/// — the user is optional, and `new URL` would read a userless one's host as
+/// a scheme). Returns '' when neither parses (e.g. a plain filesystem path).
 export function remoteHost(url: string): string {
   if (!url.includes('://')) {
-    const scp = /^[^/]*@([^/:]+):/.exec(url);
+    const scp = /^(?:[^/]*@)?([^/:]+):(?!\/)/.exec(url);
     if (scp) return scp[1].toLowerCase();
   }
   try {

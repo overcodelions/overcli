@@ -54,6 +54,7 @@ describe('isGitHubRemote', () => {
   it('accepts real github remotes in every URL shape', () => {
     expect(isGitHubRemote('https://github.com/foo/bar.git')).toBe(true);
     expect(isGitHubRemote('git@github.com:foo/bar.git')).toBe(true);
+    expect(isGitHubRemote('github.com:foo/bar.git')).toBe(true);
     expect(isGitHubRemote('ssh://git@github.com/foo/bar.git')).toBe(true);
     expect(isGitHubRemote('https://user@github.com/foo/bar.git')).toBe(true);
   });
@@ -61,6 +62,7 @@ describe('isGitHubRemote', () => {
   it('rejects lookalike hosts that merely contain github.com', () => {
     expect(isGitHubRemote('https://github.com.evil.test/foo/bar.git')).toBe(false);
     expect(isGitHubRemote('git@github.com.evil.test:foo/bar.git')).toBe(false);
+    expect(isGitHubRemote('github.com.evil.test:foo/bar.git')).toBe(false);
     expect(isGitHubRemote('https://evil.test/github.com/foo/bar.git')).toBe(false);
   });
 
