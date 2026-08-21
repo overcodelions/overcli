@@ -911,6 +911,28 @@ function ghAvailable(): boolean {
   return ghAvailableCache;
 }
 
+/// Pull the host out of a git remote URL. Handles both shapes git emits:
+/// a real URL (`https://…`, `ssh://…`) and scp-style (`git@host:owner/repo`).
+/// Returns '' when neither parses (e.g. a plain filesystem path).
+export function remoteHost(url: string): string {
+  if (!url.includes('://')) {
+    const scp = /^[^/]*@([^/:]+):/.exec(url);
+    if (scp) return scp[1].toLowerCase();
+  }
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/// True only when the remote's *host* is github.com (or a subdomain of it).
+/// A substring check would also match `https://github.com.evil.test/o/r`.
+export function isGitHubRemote(url: string): boolean {
+  const host = remoteHost(url);
+  return host === 'github.com' || host.endsWith('.github.com');
+}
+
 /// Classify the worktree's `origin` so the UI can decide between Push and
 /// Open PR. Returns 'github' only if `gh` is on PATH — so the Open PR
 /// action doesn't dead-end at a missing CLI.
@@ -919,7 +941,7 @@ export async function detectRemoteKind(cwd: string): Promise<RemoteKind> {
   if (res.exitCode !== 0) return 'none';
   const url = res.stdout.trim();
   if (!url) return 'none';
-  if (url.includes('github.com') && ghAvailable()) return 'github';
+  if (isGitHubRemote(url) && ghAvailable()) return 'github';
   return 'other';
 }
 
