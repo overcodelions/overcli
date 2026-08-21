@@ -4,7 +4,7 @@ import { railArrowOpacity, railDepth, railScrollLeft } from './stepRail';
 
 describe('railDepth', () => {
   it('is fully opaque and unscaled at the active step', () => {
-    expect(railDepth(0)).toEqual({ opacity: 1, scale: 1, blurPx: 0 });
+    expect(railDepth(0)).toEqual({ opacity: 1, scale: 1 });
   });
   it('recedes monotonically with distance', () => {
     expect(railDepth(1).opacity).toBeGreaterThan(railDepth(2).opacity);
@@ -13,9 +13,9 @@ describe('railDepth', () => {
   it('clamps far distances to the last rung', () => {
     expect(railDepth(9)).toEqual(railDepth(3));
   });
-  it('leaves immediate neighbours unblurred', () => {
-    expect(railDepth(1).blurPx).toBe(0);
-    expect(railDepth(2).blurPx).toBeGreaterThan(0);
+  it('keeps even the furthest step readable', () => {
+    expect(railDepth(3).opacity).toBeGreaterThanOrEqual(0.35);
+    expect(railDepth(3).scale).toBeGreaterThanOrEqual(0.9);
   });
 });
 

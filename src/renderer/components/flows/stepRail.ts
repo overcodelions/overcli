@@ -6,17 +6,22 @@
 export interface RailDepth {
   opacity: number;
   scale: number;
-  blurPx: number;
 }
 
 /// Distance-indexed falloff. Index = |idx - activeIdx|, clamped at 3.
 /// The active pill never scales up — transform-scaled text goes soft; it
 /// reads as "the one" through the accent ring and its neighbours receding.
+///
+/// The tail stays legible on purpose. An earlier ramp bottomed out at 0.16
+/// opacity with a 1.2px blur, which read as broken rendering rather than
+/// depth and cost you the at-a-glance shape of the whole flow — the one
+/// thing the old cluttered bar was actually good at. Recession is carried
+/// by opacity and a gentle scale; the viewport's edge mask does the rest.
 const RAMP: RailDepth[] = [
-  { opacity: 1, scale: 1, blurPx: 0 },
-  { opacity: 0.62, scale: 0.94, blurPx: 0 },
-  { opacity: 0.34, scale: 0.88, blurPx: 0.6 },
-  { opacity: 0.16, scale: 0.84, blurPx: 1.2 },
+  { opacity: 1, scale: 1 },
+  { opacity: 0.72, scale: 0.96 },
+  { opacity: 0.52, scale: 0.93 },
+  { opacity: 0.38, scale: 0.9 },
 ];
 
 export function railDepth(distance: number): RailDepth {

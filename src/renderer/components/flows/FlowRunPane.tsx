@@ -107,6 +107,10 @@ export function FlowRunPane({ runId }: { runId: string }) {
     return pickFocusStepId(run);
   }, [run]);
 
+  // Prompt + step contract, disclosed from the rail's info toggle. Closed
+  // by default: it's reference material, wanted when orienting or auditing
+  // and never while following a run.
+  const [infoOpen, setInfoOpen] = useState(false);
   const [focusStepId, setFocusStepId] = useState<string | null>(null);
   const [autoFollowedId, setAutoFollowedId] = useState<string | null>(null);
   useEffect(() => {
@@ -179,7 +183,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
           underneath. Treating the prompt as the run's identity rather
           than a separate banner reads cleaner than the colored strip
           and stops the page from having two competing "anchors". */}
-      <div className="pl-2 pr-3 pt-4 pb-2 border-b border-card">
+      <div className="pl-2 pr-3 pt-4 pb-1 border-b border-card">
         {/* Two wrapping groups — identity on the left, actions on the right.
             Both wrap rather than compress: in a narrow window the actions
             drop to their own line and the title truncates with an ellipsis,
@@ -379,6 +383,8 @@ export function FlowRunPane({ runId }: { runId: string }) {
         <InlineStepPipeline
           run={run}
           activeStepId={activeStepId}
+          infoOpen={infoOpen}
+          onToggleInfo={() => setInfoOpen((v) => !v)}
           onPick={(id) => {
             // Switching steps abandons any half-open re-run confirmation —
             // it's bound to the step being viewed, so it must never carry
@@ -387,15 +393,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
             setFocusStepId(id);
           }}
         />
-        {/* Original prompt as subtitle. Sits directly under the flow
-            name, treats the user's words as the run's identity. */}
-        <RunPromptSubtitle
-          prompt={run.userPrompt}
-          activeStep={activeStep}
-          run={run}
-          activeParticipant={activeParticipant}
-          activeStepId={activeStepId}
-        />
+        {infoOpen && <StepInfoPanel prompt={run.userPrompt} activeStep={activeStep} />}
       </div>
 
       {/* Pause banner — shown when actually paused AND while a Continue
@@ -889,6 +887,19 @@ function WatchEye({ className }: { className?: string }) {
   );
 }
 
+/// Info affordance for the step rail. An SVG rather than the text glyph
+/// "ⓘ", which renders at wildly different weights and baselines across
+/// system fonts. Same construction as WatchEye so the two read as siblings.
+function InfoGlyph({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 11v5.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="7.6" r="1.05" fill="currentColor" />
+    </svg>
+  );
+}
+
 // Compact step pills designed to live inside the page header row. Each
 // pill is just idx + monogram + step name + status icon — model goes in
 // the tooltip. Clicking switches the body to that step's participant.
@@ -896,10 +907,14 @@ function InlineStepPipeline({
   run,
   activeStepId,
   onPick,
+  infoOpen,
+  onToggleInfo,
 }: {
   run: FlowRun;
   activeStepId: string | null;
   onPick: (stepId: string) => void;
+  infoOpen: boolean;
+  onToggleInfo: () => void;
 }) {
   const steps = run.flowSnapshot.steps;
   const participants = run.flowSnapshot.participants ?? [];
@@ -951,69 +966,91 @@ function InlineStepPipeline({
   }, [activeStepId, steps.length]);
 
   return (
-    <div
-      ref={viewportRef}
-      className={
-        'overflow-x-auto overflow-y-hidden no-scrollbar py-2.5 -my-1.5 mb-1 ' +
-        (scrollable ? 'flow-rail-mask' : '')
-      }
-      style={{
-        ['--rail-fade-l' as string]: edges & 1 ? '56px' : '0px',
-        ['--rail-fade-r' as string]: edges & 2 ? '56px' : '0px',
-      }}
-    >
-      <div className="relative flex w-max items-center gap-1 min-h-[44px] px-0.5">
-        {steps.map((step, idx) => {
-          const participant = participants.find((p) => p.id === step.participantId);
-          const attempts = run.attempts.filter((a) => a.stepId === step.id);
-          const last = attempts[attempts.length - 1];
-          const done = last?.outcome === 'success';
-          const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
-          const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
-          const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
-          const isActive = step.id === activeStepId;
-          const isResponding = isActive && activeConvIsRunning && !isCurrent;
-          const dist = activeIdx < 0 ? 0 : Math.abs(idx - activeIdx);
-          const nextDist = activeIdx < 0 ? 0 : Math.abs(idx + 1 - activeIdx);
-          const depth = railDepth(dist);
-          return (
-            <div key={step.id} className="flex items-center gap-1 flex-shrink-0">
-              <div
-                ref={(el) => {
-                  pillRefs.current[step.id] = el;
-                }}
-                className="flow-rail-item"
-                style={{
-                  opacity: depth.opacity,
-                  transform: `scale(${depth.scale})`,
-                  filter: depth.blurPx ? `blur(${depth.blurPx}px)` : undefined,
-                }}
-              >
-                <InlineStepPill
-                  step={step}
-                  participant={participant}
-                  isActive={isActive}
-                  isCurrent={isCurrent}
-                  isResponding={isResponding}
-                  isPausedNext={isPausedNext}
-                  done={done}
-                  failed={!!failed}
-                  onClick={() => onPick(step.id)}
-                  idx={idx}
-                />
-              </div>
-              {idx < steps.length - 1 && (
+    // The info toggle is a SIBLING of the scroll viewport, never a child:
+    // the viewport is what the ResizeObserver measures and what the edge
+    // mask paints, so anything inside it would scroll away and dissolve.
+    // `flex-1 min-w-0` keeps it measurable at the row's full width.
+    <div className="flex items-center gap-1.5">
+      <div
+        ref={viewportRef}
+        className={
+          'flex-1 min-w-0 overflow-x-auto overflow-y-hidden no-scrollbar py-2 -my-1.5 ' +
+          (scrollable ? 'flow-rail-mask' : '')
+        }
+        style={{
+          // Capped as a share of the width too: on a narrow window a flat
+          // 56px each side would leave almost no unmasked rail in between.
+          ['--rail-fade-l' as string]: edges & 1 ? 'min(56px, 15%)' : '0px',
+          ['--rail-fade-r' as string]: edges & 2 ? 'min(56px, 15%)' : '0px',
+        }}
+      >
+        <div className="relative flex w-max items-center gap-1 min-h-[34px] px-0.5">
+          {steps.map((step, idx) => {
+            const participant = participants.find((p) => p.id === step.participantId);
+            const attempts = run.attempts.filter((a) => a.stepId === step.id);
+            const last = attempts[attempts.length - 1];
+            const done = last?.outcome === 'success';
+            const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
+            const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
+            const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
+            const isActive = step.id === activeStepId;
+            const isResponding = isActive && activeConvIsRunning && !isCurrent;
+            const dist = activeIdx < 0 ? 0 : Math.abs(idx - activeIdx);
+            const nextDist = activeIdx < 0 ? 0 : Math.abs(idx + 1 - activeIdx);
+            const depth = railDepth(dist);
+            return (
+              <div key={step.id} className="flex items-center gap-1 flex-shrink-0">
                 <div
+                  ref={(el) => {
+                    pillRefs.current[step.id] = el;
+                  }}
                   className="flow-rail-item"
-                  style={{ opacity: railArrowOpacity(dist, nextDist) }}
+                  style={{
+                    opacity: depth.opacity,
+                    transform: `scale(${depth.scale})`,
+                  }}
                 >
-                  <StepArrow done={done} pulsing={isCurrent && dist < 2} />
+                  <InlineStepPill
+                    step={step}
+                    participant={participant}
+                    isActive={isActive}
+                    isCurrent={isCurrent}
+                    isResponding={isResponding}
+                    isPausedNext={isPausedNext}
+                    done={done}
+                    failed={!!failed}
+                    onClick={() => onPick(step.id)}
+                    idx={idx}
+                  />
                 </div>
-              )}
-            </div>
-          );
-        })}
+                {idx < steps.length - 1 && (
+                  <div
+                    className="flow-rail-item"
+                    style={{ opacity: railArrowOpacity(dist, nextDist) }}
+                  >
+                    <StepArrow done={done} pulsing={isCurrent && dist < 2} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
+      <button
+        onClick={onToggleInfo}
+        aria-expanded={infoOpen}
+        aria-controls="step-info"
+        title="Step details and original request"
+        className={
+          'flex-shrink-0 grid place-items-center h-6 w-6 rounded-md transition-colors ' +
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
+          (infoOpen
+            ? 'text-accent bg-accent/10 ring-1 ring-accent/30'
+            : 'text-ink-faint/70 hover:text-ink-muted hover:bg-card')
+        }
+      >
+        <InfoGlyph className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
@@ -2164,139 +2201,67 @@ function cryptoRandomUuid(): string {
 // depth — but a thinner, single-line resting state with a chevron to
 // expand. The focused step's metadata sits below the card as a quiet
 // caption.
-function RunPromptSubtitle({
+/// Prompt + step contract, disclosed from the ⓘ at the end of the step
+/// rail. This used to be two permanent bars — an elevated card holding a
+/// one-line truncation of the prompt, and a dot-separated metadata strip.
+/// Both were reference material dressed as chrome: you read them when
+/// orienting, never while following a run, and between them they cost ~74px
+/// above every transcript. They're the same words now, on demand.
+function StepInfoPanel({
   prompt,
   activeStep,
-  run,
-  activeParticipant,
-  activeStepId,
 }: {
   prompt: string;
   activeStep: FlowStep | null;
-  run: FlowRun;
-  activeParticipant: FlowParticipant | null;
-  activeStepId: string | null;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
-  // Steps the active participant owns, in order — relocated here from the
-  // body so the "which steps this thread covers" info sits next to the
-  // produces/reads line rather than floating above the chat. Only shown
-  // when the participant runs more than one step (otherwise the pipeline
-  // up top already says it all).
-  const ownedSteps = activeParticipant
-    ? run.flowSnapshot.steps.filter((s) => s.participantId === activeParticipant.id)
-    : [];
-  const showStepChips = ownedSteps.length > 1;
   return (
-    <div className="mt-2.5">
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className={
-          'group w-full text-left rounded-xl bg-surface-elevated ring-1 ring-card-strong ' +
-          'shadow-[0_10px_30px_-18px_rgba(0,0,0,0.55),0_1px_0_0_rgba(255,255,255,0.03)_inset] ' +
-          'px-3.5 py-2 transition-all duration-150 hover:ring-accent/40'
-        }
-        title={expanded ? 'Click to collapse' : 'Click to expand'}
-      >
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div
-            className={
-              'flex-1 min-w-0 text-[13px] text-ink leading-snug ' +
-              (expanded ? 'whitespace-pre-wrap' : 'truncate')
-            }
-          >
-            {prompt}
-          </div>
-          <span
-            role="button"
-            tabIndex={0}
-            title="Copy prompt"
-            onClick={(e) => {
-              e.stopPropagation();
-              void navigator.clipboard.writeText(prompt);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                e.stopPropagation();
-                void navigator.clipboard.writeText(prompt);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1200);
-              }
-            }}
-            className={
-              'text-[10px] flex-shrink-0 rounded px-1.5 py-0.5 transition-colors cursor-pointer ' +
-              (copied
-                ? 'text-emerald-700 dark:text-emerald-300'
-                : 'text-ink-faint opacity-0 group-hover:opacity-100 hover:text-ink hover:bg-card-strong')
-            }
-          >
-            {copied ? 'copied' : 'copy'}
-          </span>
-          <span
-            aria-hidden
-            className={
-              'text-[10px] text-ink-faint group-hover:text-ink flex-shrink-0 transition-transform ' +
-              (expanded ? 'rotate-180' : '')
-            }
-          >
-            ▾
-          </span>
-        </div>
-      </button>
+    <div id="step-info" className="mt-1.5 rounded-lg border border-card bg-card/40 px-3.5 py-2.5">
+      <div className="flex items-start gap-2">
+        {/* Capped and scrollable: a 400-word prompt must not shove the
+            transcript off-screen just because someone opened the panel. */}
+        <p className="flex-1 min-w-0 max-h-64 overflow-y-auto select-text whitespace-pre-wrap text-[13px] leading-snug text-ink">
+          {prompt}
+        </p>
+        {/* Always visible rather than hover-revealed — hiding a control
+            inside a panel the user deliberately opened hides it twice. */}
+        <button
+          onClick={() => {
+            void navigator.clipboard.writeText(prompt);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1200);
+          }}
+          className={
+            'flex-shrink-0 rounded px-1.5 py-0.5 text-[10px] transition-colors ' +
+            (copied ? 'text-accent' : 'text-ink-faint hover:bg-card-strong hover:text-ink')
+          }
+        >
+          {copied ? 'copied' : 'copy'}
+        </button>
+      </div>
+      {/* What this step is contracted to do. The step's id and its
+          in-thread siblings are deliberately absent: the rail names the
+          active step 24px above and is permanently visible, so repeating
+          its state inside a panel opened FROM it is the same redundancy in
+          a smaller box. */}
       {activeStep && (
-        <div className="mt-1.5 px-1 text-[11px] text-ink-faint flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent/70" />
-            <span className="font-semibold text-ink-muted">{activeStep.id}</span>
-          </span>
-          <span className="text-ink-faint/60">·</span>
+        <div className="mt-2 border-t border-card pt-2 text-[11px] leading-relaxed text-ink-faint">
           <span className="font-mono text-ink-muted">{activeStep.role}</span>
           {roleBlurb && (
-            <span className="text-ink-faint italic">— {roleBlurb}</span>
-          )}
-          <span className="text-ink-faint/60">·</span>
-          <span>
-            produces <span className="font-mono text-ink-muted">{activeStep.output}</span>
-          </span>
-          {activeStep.inputs.length > 0 && (
             <>
-              <span className="text-ink-faint/60">·</span>
-              <span>
-                reads{' '}
-                <span className="font-mono text-ink-muted">
-                  {activeStep.inputs.join(', ')}
-                </span>
-              </span>
+              {' — '}
+              {roleBlurb}
             </>
           )}
-          {showStepChips && (
+          <span className="mx-1.5 text-ink-faint/60">·</span>
+          {'produces '}
+          <span className="font-mono text-ink-muted">{activeStep.output}</span>
+          {activeStep.inputs.length > 0 && (
             <>
-              <span className="text-ink-faint/60">·</span>
-              <span className="uppercase tracking-wider text-[10px]">in thread</span>
-              {ownedSteps.map((step) => {
-                const attempts = run.attempts.filter((a) => a.stepId === step.id);
-                const last = attempts[attempts.length - 1];
-                const done = last?.outcome === 'success';
-                const isCurrent = step.id === activeStepId;
-                return (
-                  <span
-                    key={step.id}
-                    className={
-                      'px-1.5 py-0.5 rounded ' +
-                      (isCurrent ? 'bg-accent/20 text-ink' : done ? 'text-ink-muted' : 'text-ink-faint')
-                    }
-                  >
-                    {done && <span className="text-emerald-700 dark:text-emerald-300/80 mr-0.5">✓</span>}
-                    {isCurrent && <span className="animate-pulse text-sky-700 dark:text-sky-300 mr-0.5">●</span>}
-                    {step.id}
-                  </span>
-                );
-              })}
+              <span className="mx-1.5 text-ink-faint/60">·</span>
+              {'reads '}
+              <span className="font-mono text-ink-muted">{activeStep.inputs.join(', ')}</span>
             </>
           )}
         </div>
@@ -2643,16 +2608,14 @@ function RunTitle({ run }: { run: FlowRun }) {
     <>
       <div
         onDoubleClick={() => setRenameValue(run.title ?? '')}
-        title={`${flowRunTitle(run)} — double-click to rename this run`}
+        title={`${run.userPrompt.trim() || flowRunTitle(run)}\n\nDouble-click to rename this run`}
         className="text-xl font-semibold truncate min-w-0"
       >
-        {run.title?.trim() || run.flowSnapshot.name}
+        {flowRunTitle(run)}
       </div>
-      {run.title?.trim() && (
-        <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
-          {run.flowSnapshot.name}
-        </span>
-      )}
+      <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
+        {run.flowSnapshot.name}
+      </span>
     </>
   );
 }

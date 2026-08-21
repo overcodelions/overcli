@@ -770,8 +770,7 @@ body.dragging-divider iframe {
   will-change: transform, opacity;
   transition:
     opacity 260ms cubic-bezier(0.22, 0.61, 0.36, 1),
-    transform 260ms cubic-bezier(0.22, 0.61, 0.36, 1),
-    filter 260ms cubic-bezier(0.22, 0.61, 0.36, 1);
+    transform 260ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 /* Reduce motion kills the travel, not the falloff — the falloff is state. */
 @media (prefers-reduced-motion: reduce) {
