@@ -1318,7 +1318,12 @@ export class FlowRuntimeImpl {
     const latest = this.latestAssistantTextByParticipant.get(`${runId}:${prior.participantId}`);
     const existingArtifact = run.artifacts[prior.output];
     if (latest && existingArtifact) {
-      const already = this.resolveArtifactBody(latest, prior.output, run.projectPath);
+      const already = this.resolveArtifactBody(
+        latest,
+        prior.output,
+        run.projectPath,
+        this.lastAttemptStartedAt(run, prior.id),
+      );
       if (already !== null && already !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -1394,7 +1399,12 @@ export class FlowRuntimeImpl {
     // Re-extract from the finalize reply.
     const finalText = this.latestAssistantTextByParticipant.get(waitKey);
     if (finalText && existingArtifact) {
-      const refined = this.resolveArtifactBody(finalText, prior.output, run.projectPath);
+      const refined = this.resolveArtifactBody(
+        finalText,
+        prior.output,
+        run.projectPath,
+        this.lastAttemptStartedAt(run, prior.id),
+      );
       if (refined !== null && refined !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -2467,7 +2477,12 @@ export class FlowRuntimeImpl {
     const text = buf?.assistantText ?? '';
 
     const artifactKind = detectArtifactKind(step.output);
-    let artifactBody = this.resolveArtifactBody(text, step.output, run.projectPath);
+    let artifactBody = this.resolveArtifactBody(
+      text,
+      step.output,
+      run.projectPath,
+      this.lastAttemptStartedAt(run, step.id),
+    );
 
     /// This step's own change, measured off the previous diff step's
     /// snapshot. Computed at most once per step: `computeIncrementalDiffForRun`
@@ -2732,25 +2747,61 @@ export class FlowRuntimeImpl {
     void this.executeStep(runId, next.id);
   }
 
-  /// Inline block first, pointer form second. A missing or out-of-root
-  /// pointer file degrades to "no output", which is what the reask and
-  /// on_fail paths already handle.
-  private resolveArtifactBody(text: string, outputName: string, runRoot: string): string | null {
+  /// Resolve a step's artifact body from its final message, in priority
+  /// order: the strict inline block, then the pointer form, then — only if a
+  /// pointer was claimed and could not be honoured — whatever body was typed
+  /// alongside it. Everything failing leaves `null`, which is the same "no
+  /// output" the reask and on_fail paths already handle.
+  ///
+  /// `minMtimeMs` gates the pointer on freshness; see `readArtifactFileBody`.
+  private resolveArtifactBody(
+    text: string,
+    outputName: string,
+    runRoot: string,
+    minMtimeMs: number,
+  ): string | null {
     const inline = extractOutput(text, outputName);
     if (inline !== null) return inline;
+    // `url` artifacts never come from disk (see `stepAllowsFileRef`), so a
+    // `file=` attribute on one is noise around a typed value, not a pointer.
+    if (detectArtifactKind(outputName) === 'url') return extractOutputLooseBody(text, outputName);
     const ref = extractOutputFileRef(text, outputName);
     if (!ref) return null;
     const abs = resolveArtifactFilePath(ref, runRoot);
     if (!abs) {
       log('warn', 'flows.outputFile', `pointer path outside run root, ignoring: ${ref}`);
-      return null;
+      return this.recoverTypedBody(text, outputName);
     }
-    const body = readArtifactFileBody(abs);
+    const body = readArtifactFileBody(abs, minMtimeMs);
     if (body === null) {
-      log('warn', 'flows.outputFile', `pointer file unreadable or empty, ignoring: ${abs}`);
-      return null;
+      log(
+        'warn',
+        'flows.outputFile',
+        `pointer file rejected (missing, empty, oversized, binary, or not written by this step): ${abs}`,
+      );
+      return this.recoverTypedBody(text, outputName);
     }
     return body;
+  }
+
+  /// The pointer was claimed and refused. If the model ALSO typed a body into
+  /// that same tag, it is the deliverable and throwing it away would spend a
+  /// whole extra turn re-asking for text we already have.
+  private recoverTypedBody(text: string, outputName: string): string | null {
+    const typed = extractOutputLooseBody(text, outputName);
+    if (typed !== null) {
+      log('info', 'flows.outputFile', `recovered inline body from a pointer tag for "${outputName}"`);
+    }
+    return typed;
+  }
+
+  /// Start time of the most recent attempt at `stepId`, or 0 when the run has
+  /// no record of one. Used as the pointer-freshness floor.
+  private lastAttemptStartedAt(run: FlowRun, stepId: string): number {
+    for (let i = run.attempts.length - 1; i >= 0; i--) {
+      if (run.attempts[i].stepId === stepId) return run.attempts[i].startedAt;
+    }
+    return 0;
   }
 
   /// A step finished without the `<output name="…">` wrapper. Ask its
@@ -2788,7 +2839,7 @@ export class FlowRuntimeImpl {
 
     const sendResult = this.runner.send({
       conversationId: convId,
-      prompt: missingOutputReaskPrompt(step.output, stepCanWriteFiles(step, stepModel.backend)),
+      prompt: missingOutputReaskPrompt(step.output, stepAllowsFileRef(step, stepModel.backend)),
       displayText: `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
       backend: stepModel.backend,
       cwd: run.projectPath,
@@ -2930,7 +2981,7 @@ export class FlowRuntimeImpl {
       role: step.role,
       override: step.systemPromptOverride,
       outputName: step.output,
-      allowFileRef: stepCanWriteFiles(step, stepModel.backend),
+      allowFileRef: stepAllowsFileRef(step, stepModel.backend),
     });
 
     // Each input becomes either an inline body (small enough to live in
@@ -3821,13 +3872,24 @@ export function extractOutput(text: string, outputName: string): string | null {
 /// pulling an unbounded blob into memory and into downstream prompts.
 const MAX_OUTPUT_FILE_BYTES = 1024 * 1024;
 
+/// Slack allowed between a step's start and its pointer file's mtime, to
+/// absorb filesystem timestamp granularity. See `readArtifactFileBody`.
+const MTIME_GRACE_MS = 1_000;
+
 /// Pointer form of the output contract: `<output name="x" file="path" />`.
 /// The model has already written the deliverable with its Write tool, so
 /// re-typing it into the reply costs a full second decode of the artifact.
-/// Returns the raw `file` attribute of the first matching tag, or null.
+///
+/// Returns the `file` attribute of the LAST matching tag, or null. Last, not
+/// first, because the shape this has to survive is a model correcting itself
+/// mid-reply ("…file=\"draft.md\" — sorry, I meant file=\"plan.md\""), and
+/// taking the first match hands the run the stale draft. `extractOutput`
+/// answers that same self-correction by concatenating every block it finds;
+/// there is nothing to concatenate here, so the last claim wins instead.
 export function extractOutputFileRef(text: string, outputName: string): string | null {
   const tagRe = /<output\s+([^>]*?)\/?>/gi;
   let m: RegExpExecArray | null;
+  let last: string | null = null;
   while ((m = tagRe.exec(text)) !== null) {
     const attrs = m[1];
     const name = attrs.match(/\bname\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
@@ -3836,9 +3898,31 @@ export function extractOutputFileRef(text: string, outputName: string): string |
     const nameVal = (name[1] ?? name[2] ?? name[3] ?? '').trim();
     const fileVal = (file[1] ?? file[2] ?? file[3] ?? '').trim();
     if (nameVal.toLowerCase() !== outputName.toLowerCase()) continue;
-    if (fileVal) return fileVal;
+    if (fileVal) last = fileVal;
   }
-  return null;
+  return last;
+}
+
+/// Last-resort body extraction: an `<output>` block whose opening tag carries
+/// EXTRA attributes (typically a `file=` pointer) around a real, typed body.
+/// `extractOutput`'s regex requires the name attribute to be followed
+/// immediately by `>`, so it cannot see these — which means a model that
+/// emitted BOTH a broken pointer and the full deliverable would otherwise
+/// have its deliverable thrown away. Only consulted after the pointer path
+/// has failed; the strict form always wins when it matches.
+export function extractOutputLooseBody(text: string, outputName: string): string | null {
+  const escaped = outputName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const blockRe = new RegExp(
+    `<output\\s+[^>]*\\bname\\s*=\\s*(?:"${escaped}"|'${escaped}'|${escaped})[^>]*>([\\s\\S]*?)</output\\s*>`,
+    'gi',
+  );
+  const bodies: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(text)) !== null) bodies.push(m[1]);
+  const noiseRe = /<\/?output(?:\s+[^>]*)?>/gi;
+  const cleaned = bodies.map((b) => b.replace(noiseRe, '').trim()).filter(Boolean);
+  if (cleaned.length === 0) return null;
+  return cleaned.join('\n').trim();
 }
 
 /// Resolve a pointer path against the run root, refusing anything that
@@ -3857,14 +3941,32 @@ export function resolveArtifactFilePath(rawPath: string, runRoot: string): strin
 }
 
 /// Read a pointer artifact's body. Returns null for anything that isn't a
-/// readable, non-empty, in-budget regular file so the caller can fall back
-/// to the inline contract.
-export function readArtifactFileBody(absPath: string): string | null {
+/// readable, non-empty, in-budget, plausibly-textual regular file so the
+/// caller can fall back to the inline contract.
+///
+/// `minMtimeMs` is the freshness floor — normally the start of the attempt
+/// that emitted the pointer. It is what stops the pointer form from being a
+/// way to pass off a file the step did NOT write: the inline contract could
+/// only ever carry what the model actually produced, so without this check a
+/// mistyped path (an input, a source file, a previous step's scratch) becomes
+/// a plausible-looking artifact that nothing downstream can question. We only
+/// accept a file this step itself created or updated. Pass 0 to skip the
+/// check when no attempt timestamp is available.
+export function readArtifactFileBody(absPath: string, minMtimeMs = 0): string | null {
   try {
     const st = statSync(absPath);
     if (!st.isFile()) return null;
     if (st.size > MAX_OUTPUT_FILE_BYTES) return null;
-    const body = readFileSync(absPath, 'utf8').trim();
+    if (minMtimeMs > 0 && st.mtimeMs + MTIME_GRACE_MS < minMtimeMs) return null;
+    const raw = readFileSync(absPath, 'utf8');
+    // Artifacts are text. A NUL byte means binary; U+FFFD means Node hit a
+    // byte sequence that isn't valid UTF-8 and substituted the replacement
+    // character. Either way the "artifact" would be mojibake, and every
+    // downstream consumer (prompt injection, markdown render, diff parse)
+    // treats it as prose. Refusing costs one reask; accepting corrupts the
+    // rest of the run silently.
+    if (raw.includes('\0') || raw.includes('�')) return null;
+    const body = raw.trim();
     return body.length > 0 ? body : null;
   } catch {
     return null;
@@ -3879,6 +3981,18 @@ export function stepCanWriteFiles(step: Pick<FlowStep, 'tools'>, backend: Backen
   if (backend !== 'ollama') return true;
   const writeTools = new Set(['write_file', 'edit_file', 'bash']);
   return step.tools.some((t) => writeTools.has(t));
+}
+
+/// Whether this step's output contract should offer the pointer form at all.
+/// Beyond "can it write files", `url` artifacts are excluded: a `pr_url` is
+/// one line, so there is no duplicated decode to save, and sourcing it from a
+/// file only adds a way for the run to record a URL nobody typed.
+export function stepAllowsFileRef(
+  step: Pick<FlowStep, 'tools' | 'output'>,
+  backend: Backend,
+): boolean {
+  if (detectArtifactKind(step.output) === 'url') return false;
+  return stepCanWriteFiles(step, backend);
 }
 
 /// Dispatch wrapper: single-repo runs get one `computeRunDiff`; workspace

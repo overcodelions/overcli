@@ -74,6 +74,7 @@ import {
   detectArtifactKind,
   extractOutput,
   extractOutputFileRef,
+  extractOutputLooseBody,
   extractWorkerQuestion,
   isGatingReviewStep,
   verdictGateStopsRun,
@@ -82,6 +83,7 @@ import {
   missingOutputReaskPrompt,
   readArtifactFileBody,
   resolveArtifactFilePath,
+  stepAllowsFileRef,
   stepCanWriteFiles,
   stepParticipantKey,
   stuckStepMessage,
@@ -226,6 +228,60 @@ describe('extractOutputFileRef', () => {
   });
 });
 
+describe('extractOutputFileRef — self-correction', () => {
+  it('takes the LAST matching pointer, not the first', () => {
+    // A model that names a draft and then corrects itself must not have the
+    // run pick up the stale file.
+    const text =
+      '<output name="plan.md" file="draft.md" />\nSorry, I meant:\n' +
+      '<output name="plan.md" file="final.md" />';
+    expect(extractOutputFileRef(text, 'plan.md')).toBe('final.md');
+  });
+
+  it('ignores a differently-named tag in between', () => {
+    const text =
+      '<output name="plan.md" file="a.md" />' +
+      '<output name="other.md" file="b.md" />';
+    expect(extractOutputFileRef(text, 'plan.md')).toBe('a.md');
+  });
+});
+
+describe('extractOutputLooseBody', () => {
+  it('recovers a body from a tag carrying extra attributes', () => {
+    // extractOutput cannot see this shape: its regex needs `name="x"` to be
+    // followed immediately by `>`.
+    const text = '<output name="plan.md" file="gone.md">the real deliverable</output>';
+    expect(extractOutput(text, 'plan.md')).toBeNull();
+    expect(extractOutputLooseBody(text, 'plan.md')).toBe('the real deliverable');
+  });
+
+  it('returns null for a self-closing pointer with no body', () => {
+    expect(extractOutputLooseBody('<output name="plan.md" file="x.md" />', 'plan.md')).toBeNull();
+  });
+
+  it('returns null when the name does not match', () => {
+    expect(
+      extractOutputLooseBody('<output name="other.md" file="x">body</output>', 'plan.md'),
+    ).toBeNull();
+  });
+});
+
+describe('stepAllowsFileRef', () => {
+  it('refuses url-kind outputs even when the step can write', () => {
+    expect(stepAllowsFileRef({ tools: ['Write'], output: 'pr_url' }, 'claude')).toBe(false);
+    expect(stepAllowsFileRef({ tools: ['bash'], output: 'releaseUrl' }, 'ollama')).toBe(false);
+  });
+
+  it('allows text and markdown outputs on a write-capable step', () => {
+    expect(stepAllowsFileRef({ tools: [], output: 'plan.md' }, 'claude')).toBe(true);
+    expect(stepAllowsFileRef({ tools: ['write_file'], output: 'notes.txt' }, 'ollama')).toBe(true);
+  });
+
+  it('still refuses a read-only ollama step', () => {
+    expect(stepAllowsFileRef({ tools: ['read_file'], output: 'plan.md' }, 'ollama')).toBe(false);
+  });
+});
+
 describe('resolveArtifactFilePath', () => {
   const root = '/runs/abc';
 
@@ -295,6 +351,37 @@ describe('readArtifactFileBody', () => {
     const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
     try {
       expect(readArtifactFileBody(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a binary file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'bin.dat');
+      writeFileSync(file, Buffer.from([0xff, 0xfe, 0x00, 0x41, 0x42]));
+      expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a file older than the freshness floor', () => {
+    // The pointer form may only hand over a file THIS step wrote. A file
+    // whose mtime predates the attempt is an input or a leftover.
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'stale.md');
+      writeFileSync(file, '# written before the step started');
+      const wellAfter = Date.now() + 60_000;
+      expect(readArtifactFileBody(file, wellAfter)).toBeNull();
+      // Same file passes when the floor is in the past.
+      expect(readArtifactFileBody(file, Date.now() - 60_000)).toBe(
+        '# written before the step started',
+      );
+      // And a floor of 0 disables the check entirely.
+      expect(readArtifactFileBody(file, 0)).toBe('# written before the step started');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

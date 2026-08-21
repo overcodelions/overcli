@@ -22,6 +22,8 @@ export function artifactInstruction(outputName: string, allowFileRef = false): s
         "  - Emit that tag alone: no body, no closing </output> tag — the trailing `/>` ends it.",
         "  - The `file` path is relative to the step's working directory (or an absolute path",
         '    inside it).',
+        '  - It must be a file YOU wrote or updated during THIS step. Pointing at an input, at',
+        '    an untouched file, or at an earlier step\'s file is rejected and costs you a turn.',
         '  - Only use it when the file already contains the complete, final deliverable.',
         '  - If the deliverable is not yet written to disk, use the inline block form instead.',
       ]

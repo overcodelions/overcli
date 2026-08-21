@@ -96,6 +96,13 @@ describe('artifactInstruction', () => {
     expect(instruction).toContain('<output name="plan.md" file="relative/path/to/the/file" />');
   });
 
+  it('tells the model the file must be one this step wrote', () => {
+    // Without this the cheapest thing a model can do is point at an input it
+    // already has on disk, which the runtime then rejects on freshness.
+    const instruction = artifactInstruction('plan.md', true);
+    expect(instruction).toContain('YOU wrote or updated during THIS step');
+  });
+
   it('does not contradict the pointer form with a mandatory inline-tag rule', () => {
     // "Rules:" (unqualified) reads as "you MUST do this", which contradicts
     // the pointer form's "point at the file instead of the block" offer
