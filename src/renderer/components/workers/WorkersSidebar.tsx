@@ -95,6 +95,7 @@ export function WorkersSidebar({
   const view = useWorkersStore((s) => s.view);
   const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
+  const showReport = useWorkersStore((s) => s.showReport);
   const allocation = useWorkersStore((s) => s.allocation);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const runs = useFlowsStore((s) => s.runs);
@@ -279,6 +280,22 @@ export function WorkersSidebar({
           </span>
         </button>
       )}
+
+      <button
+        onClick={showReport}
+        title="Shifts, outcomes, tokens and time across the roster"
+        className={
+          "sidebar-row mb-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+          "hover:bg-card-strong hover:text-ink hover:border-card " +
+          "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+          (view === "report"
+            ? "sidebar-row-selected text-ink"
+            : "text-ink-muted")
+        }
+      >
+        <CalendarIcon />
+        <span className="truncate text-[13px] leading-tight">Report</span>
+      </button>
 
       <div className="mt-1 flex items-center gap-1.5 px-2">
         <span className="text-[10px] uppercase tracking-wider text-ink-faint">
