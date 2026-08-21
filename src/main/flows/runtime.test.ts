@@ -463,6 +463,36 @@ describe('worker run file boundary', () => {
     ).toBe(false);
   });
 
+  it('allows a prompt that names the persistent root only to exclude it', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Write this page to a relative output path inside this run's own directory (never into ${source}) and report its path.`,
+        source,
+      ),
+    ).toBe(false);
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Save the report under the run root, not under ${source}.`,
+        source,
+      ),
+    ).toBe(false);
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Write the file to the run root rather than ${source}/out.html.`,
+        source,
+      ),
+    ).toBe(false);
+  });
+
+  it('still refuses a real destination that merely follows a negation elsewhere', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Do not stop until you write the report to ${source}/report.html.`,
+        source,
+      ),
+    ).toBe(true);
+  });
+
   it('places worker output in the disposable root and marks the source read-only', () => {
     const block = buildWorkerRunBoundary({
       workerId: 'worker-1',
