@@ -52,6 +52,11 @@ export function FlowsLibraryPane() {
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const justSaved = useFlowsStore((s) => s.justSaved);
   const dismissJustSaved = useFlowsStore((s) => s.dismissJustSaved);
+  // The overview drawer is `fixed`, so nothing above it reflows on its own.
+  // FlowLibraryList already reserves the width for the rows; the page header
+  // lives up here, so it has to be told separately or "+ New flow" and
+  // "Browse library" sit underneath the drawer.
+  const [overviewOpen, setOverviewOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(false);
   // Seeded from the library's own filter when the user browses out of a
@@ -134,7 +139,12 @@ export function FlowsLibraryPane() {
 
   return (
     <div className="flex-1 overflow-y-auto p-6">
-      <div className="flex items-center gap-3 mb-2">
+      <div
+        className={
+          'flex flex-wrap items-center gap-3 mb-2 transition-[padding] duration-150 ' +
+          (overviewOpen ? 'pr-[440px]' : '')
+        }
+      >
         <div className="text-2xl font-semibold">Flows</div>
         {/* A real segmented control, not two bare words. The track is what
             makes the inactive half legible as an option: without an enclosing
@@ -241,6 +251,7 @@ export function FlowsLibraryPane() {
               flows={flows}
               projectPaths={projectPaths}
               onBrowse={(q) => { setBrowseQuery(q); setBrowseOpen(true); }}
+              onOverviewOpenChange={setOverviewOpen}
             />
           )}
         </>
@@ -822,10 +833,12 @@ function FlowLibraryList({
   flows,
   projectPaths,
   onBrowse,
+  onOverviewOpenChange,
 }: {
   flows: Flow[];
   projectPaths: string[];
   onBrowse: (query: string) => void;
+  onOverviewOpenChange: (open: boolean) => void;
 }) {
   const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
   const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
@@ -868,6 +881,13 @@ function FlowLibraryList({
   // project flow can share an id, and selecting one shouldn't also select
   // (or edit) the other.
   const selected = rows.find((f) => flowStarKey(f) === selectedId) ?? null;
+  // Tell the page header the drawer is up. Cleared on unmount too, or
+  // switching to Runs/Schedules would leave the header indented.
+  const overviewOpen = !!selected;
+  useEffect(() => {
+    onOverviewOpenChange(overviewOpen);
+    return () => onOverviewOpenChange(false);
+  }, [overviewOpen, onOverviewOpenChange]);
   const filtering = query.trim().length > 0 || tags.size > 0;
   const searching = query.trim().length > 0;
 
