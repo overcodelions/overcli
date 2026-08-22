@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // The renderer store calls window.overcli.invoke for IPC. Stub the global
 // before importing so the module load doesn't crash in the Node test env.
@@ -787,5 +787,48 @@ describe('working a shift by hand', () => {
     await useWorkersStore.getState().workShiftNow('worker-1');
     expect(useWorkersStore.getState().shiftStarting['worker-1']).toBeUndefined();
     expect(useWorkersStore.getState().error).toBe('A shift is already starting.');
+  });
+});
+
+describe('navigating away from what fills the pane', () => {
+  // The Workers tab draws the editor, the hire screen and a worker's flow run
+  // in place of its own screens, and checks for them BEFORE it reads `view` —
+  // so a destination that only set `view` moved a variable nothing on screen
+  // was looking at, and the click appeared to do nothing at all.
+  beforeEach(() => {
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useFlowsStore.setState({ activeRunId: 'run-1' });
+  });
+
+  it('closes the editor and drops the run when you ask for the funds pane', () => {
+    useWorkersStore.getState().showFunds();
+    expect(useWorkersStore.getState().view).toBe('funds');
+    expect(useWorkersStore.getState().draft).toBeNull();
+    expect(useFlowsStore.getState().activeRunId).toBeNull();
+  });
+
+  it('does the same for the calendar and the report', () => {
+    useWorkersStore.getState().showCalendar();
+    expect(useWorkersStore.getState().view).toBe('calendar');
+    expect(useWorkersStore.getState().draft).toBeNull();
+
+    useWorkersStore.getState().openEditor(newWorkerDraft('/repo'));
+    useWorkersStore.getState().showReport();
+    expect(useWorkersStore.getState().view).toBe('report');
+    expect(useWorkersStore.getState().draft).toBeNull();
+  });
+
+  it('opens the picked worker rather than leaving you in the editor', () => {
+    useWorkersStore.getState().selectWorker('worker-2');
+    expect(useWorkersStore.getState().view).toBe('worker');
+    expect(useWorkersStore.getState().selectedWorkerId).toBe('worker-2');
+    expect(useWorkersStore.getState().draft).toBeNull();
+  });
+
+  it('counts a re-pick of the worker already on screen, so the pane can reset to its desk', () => {
+    const before = useWorkersStore.getState().selectSeq;
+    useWorkersStore.getState().selectWorker('worker-2');
+    useWorkersStore.getState().selectWorker('worker-2');
+    expect(useWorkersStore.getState().selectSeq).toBe(before + 2);
   });
 });
