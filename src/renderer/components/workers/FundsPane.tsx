@@ -19,6 +19,10 @@
 //   - THE WATERLINE. Each row shows where the pot ran out relative to it, so
 //     "everything below here is unfunded" is a place on the screen rather than
 //     six statuses you read one at a time.
+//   - THE BENCH IS NOT THE QUEUE. A paused worker claims nothing from the pot,
+//     so it does not stand in the queue — it sits under it, unnumbered. Leaving
+//     paused rows interleaved made the order read as though five names nobody
+//     had resumed were still taking a cut.
 //   - STARVED IS NOT BROKE. A worker stopped by the POOL is a decision you can
 //     reverse (move it up, pause someone above, raise the pot); a worker
 //     stopped by its OWN cap is done for the month. Different colours,
@@ -78,7 +82,7 @@ export function FundsPane() {
   };
 
   const commitDrop = () => {
-    if (dragId && dropAt != null) void dropWorker(dragId, dropAt);
+    if (dragId && dropAt != null) void dropWorker(dragId, rosterGap(dropAt));
     endDrag();
   };
 
@@ -87,6 +91,21 @@ export function FundsPane() {
   }
 
   const rows = allocation.byWorker;
+  // Drawn as two groups — the queue the pot drains down, then the bench. The
+  // roster underneath is still one list in one order; this only stops paused
+  // workers from occupying places in a queue they take nothing from.
+  const queue = rows.filter((f) => f.enabled);
+  const bench = rows.filter((f) => !f.enabled);
+  const shown = [...queue, ...bench];
+  /// Displayed gap -> roster gap. `placeInRoster` reads an index into the
+  /// ROSTER, and the display no longer matches it once the bench is moved to
+  /// the bottom, so a drop translates through the worker it landed above.
+  /// Without this, dragging anything past the bench divider lands wherever
+  /// the first paused worker happens to sit in the roster.
+  const rosterGap = (gap: number) =>
+    gap >= shown.length
+      ? rows.length
+      : rows.findIndex((f) => f.workerId === shown[gap].workerId);
   const starved = rows.filter((f) => f.blocked === 'pool');
   // What the enabled roster still has claim on. Above the pot's remainder,
   // this is the overcommitment — the number that says the waterfall is doing
@@ -138,31 +157,33 @@ export function FundsPane() {
               if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropAt(null);
             }}
           >
-            {rows.map((funding, index) => {
+            {shown.map((funding, index) => {
               const worker = workers[funding.workerId];
               if (!worker) return null;
               return (
-                <FundingRow
-                  key={funding.workerId}
-                  worker={worker}
-                  funding={funding}
-                  allocation={allocation}
-                  index={index}
-                  last={index === rows.length - 1}
-                  dragging={dragId === funding.workerId}
-                  dropBefore={dropAt === index}
-                  dropAfter={index === rows.length - 1 && dropAt === rows.length}
-                  canMoveUp={index > 0}
-                  canMoveDown={index < rows.length - 1}
-                  onMove={(direction) => void moveWorker(funding.workerId, direction)}
-                  onOpen={() => selectWorker(funding.workerId)}
-                  onDragStart={() => {
-                    setDragId(funding.workerId);
-                    setDropAt(index);
-                  }}
-                  onDragOverRow={(before) => setDropAt(before)}
-                  onDragEnd={endDrag}
-                />
+                <div key={funding.workerId}>
+                  {index === queue.length && <BenchDivider count={bench.length} />}
+                  <FundingRow
+                    worker={worker}
+                    funding={funding}
+                    allocation={allocation}
+                    index={index}
+                    last={index === shown.length - 1}
+                    dragging={dragId === funding.workerId}
+                    dropBefore={dropAt === index}
+                    dropAfter={index === shown.length - 1 && dropAt === shown.length}
+                    canMoveUp={index > 0}
+                    canMoveDown={index < shown.length - 1}
+                    onMove={(direction) => void moveWorker(funding.workerId, direction)}
+                    onOpen={() => selectWorker(funding.workerId)}
+                    onDragStart={() => {
+                      setDragId(funding.workerId);
+                      setDropAt(index);
+                    }}
+                    onDragOverRow={(before) => setDropAt(before)}
+                    onDragEnd={endDrag}
+                  />
+                </div>
               );
             })}
           </div>
@@ -306,6 +327,24 @@ function PotHeader({
   );
 }
 
+/// The line under the queue. Paused workers are still roster rows — they can
+/// be dragged back up, and they resume where you leave them — but they are
+/// drawn below this and unnumbered, because the pot never reaches them and
+/// never has to.
+function BenchDivider({ count }: { count: number }) {
+  return (
+    <div className="flex items-baseline gap-2 border-t border-card-strong bg-card/40 px-0 py-1.5 pl-7">
+      <span className="text-[10px] uppercase tracking-wider text-ink-faint">
+        Bench
+      </span>
+      <span className="text-[11px] text-ink-faint">
+        {count} paused worker{count === 1 ? '' : 's'} — held out of the queue,
+        claiming nothing. Resume one and it rejoins at its place in the order.
+      </span>
+    </div>
+  );
+}
+
 function FundingRow({
   worker,
   funding,
@@ -401,8 +440,10 @@ function FundingRow({
         ⠿
       </span>
 
+      {/* Only the queue is numbered. A benched worker has no place in it —
+          giving it one is the whole misreading this screen used to invite. */}
       <div className="w-5 shrink-0 text-right text-xs tabular-nums text-ink-faint">
-        {funding.priority}
+        {funding.enabled ? funding.queuePosition : ''}
       </div>
 
       <button

@@ -107,6 +107,12 @@ interface WorkersState {
   /// once, so neither has a worker to be the selection of, and picking anyone
   /// from them must land you on their desk.
   view: 'worker' | 'calendar' | 'funds' | 'report';
+  /// Bumped every time a worker is picked from the roster, including a pick
+  /// of the one already on screen. The pane keys the worker's screen on it, so
+  /// clicking a name lands on that worker's desk rather than on whichever tab
+  /// you happened to leave it on — "show me this worker" means the front of
+  /// the worker, not the fifth tab of the last one.
+  selectSeq: number;
   /// One turn to open when the desk mounts, set by arriving from somewhere
   /// that already knows which turn you meant — clicking a past shift on the
   /// calendar. The desk shows one DAY, so a link into it has to carry the
@@ -484,6 +490,23 @@ export function selectRevise(s: WorkersState): ReviseState {
   return (key ? s.revise[key] : undefined) ?? IDLE_REVISE;
 }
 
+/// Every sidebar destination is a NAVIGATION, so it has to LEAVE whatever is
+/// filling the pane — not just set `view`. The Workers tab draws the editor,
+/// the hire screen and a worker's flow run in place of its own screens and
+/// checks for them first, so a bare `set({ view })` changed a variable nobody
+/// on screen was reading: clicking Funds from an open editor sat there on the
+/// editor, and clicking a name in the roster did nothing at all.
+///
+/// Closing the editor discards the draft, which is the same bargain every
+/// other route out of it already made — the roster is a navigation bar, and a
+/// navigation bar that refuses to navigate is the worse failure.
+function leavePane(get: () => WorkersState & WorkersActions): void {
+  useFlowsStore.getState().setActiveRun(null);
+  const st = get();
+  if (st.draft) st.closeEditor();
+  if (st.hire.open) st.closeHire();
+}
+
 export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) => ({
   loaded: false,
   workers: {},
@@ -504,6 +527,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   treasury: null,
   allocation: null,
   view: 'worker',
+  selectSeq: 0,
   deskFocus: null,
   previewEmpty: false,
   busy: false,
@@ -623,27 +647,32 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   selectWorker(id) {
     // Picking a worker outright is a fresh arrival: it clears any turn a
-    // previous link asked for, so the desk opens on today as it should — and
-    // any run filling the pane, since the Workers tab renders a worker's run
-    // in place of its desk and you just asked for the desk.
-    useFlowsStore.getState().setActiveRun(null);
-    set({ selectedWorkerId: id, view: 'worker', deskFocus: null });
+    // previous link asked for, so the desk opens on today as it should.
+    leavePane(get);
+    set((st) => ({
+      selectedWorkerId: id,
+      view: 'worker',
+      deskFocus: null,
+      selectSeq: st.selectSeq + 1,
+    }));
   },
 
   openWorkerDesk(id) {
-    get().closeEditor();
     get().selectWorker(id);
   },
 
   showCalendar() {
+    leavePane(get);
     set({ view: 'calendar' });
   },
 
   showFunds() {
+    leavePane(get);
     set({ view: 'funds' });
   },
 
   showReport() {
+    leavePane(get);
     set({ view: 'report' });
   },
 
@@ -664,12 +693,13 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   openWorkerActivity(workerId, orchestrationId, at) {
-    useFlowsStore.getState().setActiveRun(null);
-    set({
+    leavePane(get);
+    set((st) => ({
       selectedWorkerId: workerId,
       view: 'worker',
       deskFocus: { workerId, orchestrationId, at },
-    });
+      selectSeq: st.selectSeq + 1,
+    }));
   },
 
   setFilesRoot(id, root) {
