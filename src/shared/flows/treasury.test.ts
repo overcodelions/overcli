@@ -144,6 +144,19 @@ describe('allocateTreasury', () => {
       ['OLD', 2],
     ]);
   });
+
+  it('numbers the QUEUE over enabled workers only, so a paused row takes no place in it', () => {
+    const alloc = allocateTreasury(
+      roster(['a', 10], ['paused', 10, { enabled: false }], ['b', 10]),
+      noSpend,
+      30,
+    );
+    expect(alloc.byWorker.map((f) => [f.name, f.priority, f.queuePosition])).toEqual([
+      ['A', 1, 1],
+      ['PAUSED', 2, 0],
+      ['B', 3, 2],
+    ]);
+  });
 });
 
 describe('describeFundingBlock', () => {
@@ -155,6 +168,19 @@ describe('describeFundingBlock', () => {
 
     const capped = allocateTreasury(roster(['a', 10]), () => 10, 100);
     expect(describeFundingBlock(fundingFor(capped, 'a')!, capped)).toContain('budget');
+  });
+
+  it('counts the workers ahead of a starved one over the queue, not the roster', () => {
+    // `paused` sits above `c` in the roster but claims nothing, so blaming the
+    // empty pot on "2 workers ahead" would name a row that is not touching it.
+    const alloc = allocateTreasury(
+      roster(['a', 10], ['paused', 10, { enabled: false }], ['c', 10]),
+      noSpend,
+      10,
+    );
+    const starved = fundingFor(alloc, 'c')!;
+    expect(starved.blocked).toBe('pool');
+    expect(describeFundingBlock(starved, alloc)).toContain('1 worker ahead');
   });
 });
 
