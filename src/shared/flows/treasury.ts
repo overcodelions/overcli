@@ -56,8 +56,14 @@ export type FundingBlock = 'none' | 'cap' | 'pool' | 'paused';
 export interface WorkerFunding {
   workerId: string;
   name: string;
-  /// Position in the funding queue, 1-based, matching what the roster shows.
+  /// Position in the roster, 1-based — the order the user drags, paused
+  /// workers included.
   priority: number;
+  /// Position in the queue the pot actually drains down, 1-based, counting
+  /// only enabled workers; 0 for a paused one. A paused worker holds nothing
+  /// back, so counting it as somebody "ahead" of the rows below overstates
+  /// the queue they are waiting on — and reads as though pausing did nothing.
+  queuePosition: number;
   enabled: boolean;
   /// The worker's own ceiling — `budgetUSDPerMonth`, unchanged in meaning.
   capUSD: number;
@@ -118,6 +124,7 @@ export function allocateTreasury(
   const remainingUSD = Math.max(0, poolTotal - spentUSD);
 
   let claimedAbove = 0;
+  let queued = 0;
   const byWorker = ordered.map((w, index) => {
     const capUSD = Math.max(0, w.budgetUSDPerMonth);
     const workerSpend = spend.get(w.id) ?? 0;
@@ -129,6 +136,7 @@ export function allocateTreasury(
       workerId: w.id,
       name: w.name,
       priority: index + 1,
+      queuePosition: w.enabled ? ++queued : 0,
       enabled: w.enabled,
       capUSD,
       spentUSD: workerSpend,
@@ -178,13 +186,18 @@ export function describeFundingBlock(
   switch (funding.blocked) {
     case 'cap':
       return `Its monthly budget is spent (${money(funding.spentUSD)} of ${money(funding.capUSD)}) — idle until the month rolls over.`;
-    case 'pool':
+    case 'pool': {
+      // Counted over the QUEUE, not the roster: a paused worker above this one
+      // claims nothing, so naming it among the workers "ahead" would blame the
+      // pot on rows that are not touching it.
+      const ahead = Math.max(0, funding.queuePosition - 1);
       return (
         `The monthly pool is committed above it — ${money(allocation.remainingUSD)} left of ` +
-        `${money(allocation.poolUSD)}, all of it claimed by the ${funding.priority - 1} worker` +
-        `${funding.priority - 1 === 1 ? '' : 's'} ahead. Raise the pool, pause someone above it, ` +
+        `${money(allocation.poolUSD)}, all of it claimed by the ${ahead} worker` +
+        `${ahead === 1 ? '' : 's'} ahead. Raise the pool, pause someone above it, ` +
         `or move it up the roster.`
       );
+    }
     case 'paused':
       return 'Paused — it holds no funds and works no shifts.';
     default:
