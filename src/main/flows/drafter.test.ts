@@ -769,3 +769,57 @@ describe('proven flow exemplars', () => {
     expect(sys).not.toContain('PROVEN FLOWS');
   });
 });
+
+// ─── cross-family model ids ───────────────────────────────────────────────────
+
+/// A draft that pairs backends with models from the wrong family — the exact
+/// shape that used to fail validation with "not supported".
+function mismatchedYaml(): string {
+  return [
+    '```yaml',
+    'name: Mismatched Models',
+    'input: user_prompt',
+    'steps:',
+    '  - id: plan',
+    '    model: { backend: claude, model: gpt-5 }',
+    '    role: planner',
+    '    inputs: [user_prompt]',
+    '    tools: [Read]',
+    '    output: plan.md',
+    '  - id: build',
+    '    model: { backend: codex, model: claude-opus-5 }',
+    '    role: implementer',
+    '    inputs: [plan.md]',
+    '    tools: [Read, Edit]',
+    '    output: build.md',
+    '```',
+  ].join('\n');
+}
+
+describe('models from the wrong family are retargeted, not rejected', () => {
+  beforeEach(() => {
+    mockQuery.mockClear();
+  });
+
+  it('translates a cross-family id onto the step backend instead of failing validation', async () => {
+    mockQuery.mockReturnValue(claudeStream(mismatchedYaml()));
+
+    const result = await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-sonnet-5' });
+    expect(result.flow.steps[1].model).toEqual({ backend: 'codex', model: 'gpt-5.6-sol' });
+  });
+
+  it('tells the drafter which ids exist and which family goes with which backend', async () => {
+    mockQuery.mockReturnValue(claudeStream(validYaml()));
+
+    await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
+
+    const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
+    expect(sys).toContain('claude-opus-5, claude-opus-4-8, claude-fable-5');
+    expect(sys).toContain('`gpt-*` ids run ONLY on backend `codex`');
+    expect(sys).toContain('there is no "gpt-5"');
+  });
+});
