@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-22
+
 ### Added
 - **A Timing tab that shows where a turn's time actually went.** The per-turn model-vs-tools breakdown shipped a release ago and was never announced.
 - **Reasoning effort is set per backend.** A per-backend reasoning effort control, plus a fix that makes a change take effect on the live turn rather than only the next one.
@@ -385,7 +387,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.14.2...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/overcodelions/overcli/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/overcodelions/overcli/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/overcodelions/overcli/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/overcodelions/overcli/compare/v0.13.4...v0.14.0
