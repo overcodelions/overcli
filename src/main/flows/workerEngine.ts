@@ -89,7 +89,7 @@ import {
   loadWorkerJournal,
   workerRejectedTitles,
 } from './workerJournal';
-import { workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
+import { loadRunSummaries, workerSpendByWorkerSince, workerSpendSince } from './runSummaryLog';
 import {
   archiveWorkerFiles,
   clearWorkerFiles,
@@ -103,6 +103,7 @@ import {
   isCompactionDue,
 } from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
+import { buildWorkerReport, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
 
 /// Same bound as the scheduler: re-derive the nearest due time at least once
 /// a minute so sleep/clock-steps can't strand a timer.
@@ -191,6 +192,9 @@ export interface WorkerEngineDeps {
   /// price every worker to answer for any one of them, so it never uses
   /// `spend` — that would re-read the log once per head.
   spendAll?: (sinceMs: number) => Map<string, number>;
+  /// Every terminal run's cost/token/time record. Injected so the report is
+  /// testable without the on-disk summary log.
+  runFacts?: () => WorkerRunFact[];
   treasuryStore?: {
     load: () => Treasury | null;
     save: (t: Treasury) => void;
@@ -388,6 +392,18 @@ export class WorkerEngine {
   /// disagree, and the one that gates spending has to be the true one.
   treasury(): { treasury: Treasury; allocation: TreasuryAllocation } {
     return { treasury: { ...this.pool }, allocation: this.allocate(this.now()) };
+  }
+
+  /// The roster's report card for the window starting at `sinceMs` (0 = all time).
+  report(sinceMs: number): WorkerReport {
+    return buildWorkerReport({
+      workers: [...this.workers.values()],
+      journal: (id) => this.journal.load(id),
+      orchestrations: this.deps.parker.list(),
+      runs: (this.deps.runFacts ?? loadRunSummaries)(),
+      sinceMs: Math.max(0, sinceMs),
+      generatedAt: this.now(),
+    });
   }
 
   private allocate(now: number): TreasuryAllocation {
@@ -1437,6 +1453,9 @@ export class WorkerEngine {
       'instructions must use relative output paths inside that run — never tell a',
       `flow to create, edit, overwrite, move, or delete anything under the persistent`,
       `project/workspace path ${w.projectPath}. It may read that source when needed.`,
+      'Do NOT paste that absolute path into a candidate prompt, not even as a place',
+      'to avoid. Write "save it to a relative path inside this run" and stop there —',
+      'the runtime already tells every step the source is read-only.',
       'Overcli files completed loose reports into your private directory automatically;',
       'publishing into the persistent workspace is not part of a worker shift or errand.',
       '',

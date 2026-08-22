@@ -2,6 +2,9 @@
 // RunnerManager (which would need an Electron app context). The full
 // orchestration is exercised manually by running a flow end-to-end.
 
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -70,11 +73,19 @@ import {
   buildRetryFeedbackBlock,
   detectArtifactKind,
   extractOutput,
+  extractOutputFileRef,
+  extractOutputLooseBody,
   extractWorkerQuestion,
   isGatingReviewStep,
   verdictGateStopsRun,
+  workspaceMembersMissingFromRun,
   isGatingReviewerRole,
   isReviewApproved,
+  missingOutputReaskPrompt,
+  readArtifactFileBody,
+  resolveArtifactFilePath,
+  stepAllowsFileRef,
+  stepCanWriteFiles,
   stepParticipantKey,
   stuckStepMessage,
   summarizeReviewRejection,
@@ -174,6 +185,282 @@ chatter after`;
 
   it('is case-insensitive on the tag', () => {
     expect(extractOutput('<OUTPUT name="x">y</OUTPUT>', 'x')).toBe('y');
+  });
+});
+
+describe('extractOutputFileRef', () => {
+  it('extracts the file attribute from a self-closing pointer tag', () => {
+    expect(extractOutputFileRef('<output name="plan.md" file="out/plan.md" />', 'plan.md')).toBe(
+      'out/plan.md',
+    );
+  });
+
+  it('matches without the self-closing slash too', () => {
+    expect(extractOutputFileRef('<output name="plan.md" file="plan.md">', 'plan.md')).toBe(
+      'plan.md',
+    );
+  });
+
+  it('matches single-quoted and unquoted attributes', () => {
+    expect(extractOutputFileRef(`<output name='diff' file='out.diff' />`, 'diff')).toBe(
+      'out.diff',
+    );
+    expect(extractOutputFileRef('<output name=diff file=out.diff />', 'diff')).toBe('out.diff');
+  });
+
+  it('is case-insensitive on the name match', () => {
+    expect(extractOutputFileRef('<OUTPUT NAME="Plan.md" FILE="plan.md" />', 'plan.md')).toBe(
+      'plan.md',
+    );
+  });
+
+  it('returns null when there is no file attribute', () => {
+    expect(extractOutputFileRef('<output name="plan.md">body</output>', 'plan.md')).toBeNull();
+  });
+
+  it('returns null when the name does not match', () => {
+    expect(
+      extractOutputFileRef('<output name="other.md" file="x.md" />', 'plan.md'),
+    ).toBeNull();
+  });
+
+  it('returns null when there is no output tag at all', () => {
+    expect(extractOutputFileRef('no tags here', 'plan.md')).toBeNull();
+  });
+});
+
+describe('workspaceMembersMissingFromRun', () => {
+  it('returns members the run has no worktree for', () => {
+    expect(
+      workspaceMembersMissingFromRun(['/repo/a', '/repo/b', '/repo/c'], ['/repo/a', '/repo/c']),
+    ).toEqual(['/repo/b']);
+  });
+
+  it('returns nothing when the run already covers every member', () => {
+    expect(workspaceMembersMissingFromRun(['/repo/a'], ['/repo/a', '/repo/b'])).toEqual([]);
+  });
+
+  it('ignores members dropped from the workspace — adoption is additive only', () => {
+    // '/repo/b' is still in the run but no longer in the workspace. It must
+    // NOT be reported here: removing it would strand diffs measured from it.
+    expect(workspaceMembersMissingFromRun(['/repo/a'], ['/repo/a', '/repo/b'])).toEqual([]);
+  });
+
+  it('matches on path, so a project re-added under a new id is not re-minted', () => {
+    expect(workspaceMembersMissingFromRun(['/repo/a'], ['/repo/a'])).toEqual([]);
+  });
+
+  it('dedupes and skips empty paths', () => {
+    expect(workspaceMembersMissingFromRun(['/repo/b', '/repo/b', ''], ['/repo/a'])).toEqual([
+      '/repo/b',
+    ]);
+  });
+});
+
+describe('extractOutputFileRef — self-correction', () => {
+  it('takes the LAST matching pointer, not the first', () => {
+    // A model that names a draft and then corrects itself must not have the
+    // run pick up the stale file.
+    const text =
+      '<output name="plan.md" file="draft.md" />\nSorry, I meant:\n' +
+      '<output name="plan.md" file="final.md" />';
+    expect(extractOutputFileRef(text, 'plan.md')).toBe('final.md');
+  });
+
+  it('ignores a differently-named tag in between', () => {
+    const text =
+      '<output name="plan.md" file="a.md" />' +
+      '<output name="other.md" file="b.md" />';
+    expect(extractOutputFileRef(text, 'plan.md')).toBe('a.md');
+  });
+});
+
+describe('extractOutputLooseBody', () => {
+  it('recovers a body from a tag carrying extra attributes', () => {
+    // extractOutput cannot see this shape: its regex needs `name="x"` to be
+    // followed immediately by `>`.
+    const text = '<output name="plan.md" file="gone.md">the real deliverable</output>';
+    expect(extractOutput(text, 'plan.md')).toBeNull();
+    expect(extractOutputLooseBody(text, 'plan.md')).toBe('the real deliverable');
+  });
+
+  it('returns null for a self-closing pointer with no body', () => {
+    expect(extractOutputLooseBody('<output name="plan.md" file="x.md" />', 'plan.md')).toBeNull();
+  });
+
+  it('returns null when the name does not match', () => {
+    expect(
+      extractOutputLooseBody('<output name="other.md" file="x">body</output>', 'plan.md'),
+    ).toBeNull();
+  });
+});
+
+describe('stepAllowsFileRef', () => {
+  it('refuses url-kind outputs even when the step can write', () => {
+    expect(stepAllowsFileRef({ tools: ['Write'], output: 'pr_url' }, 'claude')).toBe(false);
+    expect(stepAllowsFileRef({ tools: ['bash'], output: 'releaseUrl' }, 'ollama')).toBe(false);
+  });
+
+  it('allows text and markdown outputs on a write-capable step', () => {
+    expect(stepAllowsFileRef({ tools: [], output: 'plan.md' }, 'claude')).toBe(true);
+    expect(stepAllowsFileRef({ tools: ['write_file'], output: 'notes.txt' }, 'ollama')).toBe(true);
+  });
+
+  it('still refuses a read-only ollama step', () => {
+    expect(stepAllowsFileRef({ tools: ['read_file'], output: 'plan.md' }, 'ollama')).toBe(false);
+  });
+});
+
+describe('resolveArtifactFilePath', () => {
+  const root = '/runs/abc';
+
+  it('resolves a relative path inside the run root', () => {
+    expect(resolveArtifactFilePath('out/plan.md', root)).toBe('/runs/abc/out/plan.md');
+  });
+
+  it('resolves an absolute path that lands inside the run root', () => {
+    expect(resolveArtifactFilePath('/runs/abc/out/plan.md', root)).toBe('/runs/abc/out/plan.md');
+  });
+
+  it('rejects a relative path that escapes the run root', () => {
+    expect(resolveArtifactFilePath('../escape.md', root)).toBeNull();
+    expect(resolveArtifactFilePath('../../etc/passwd', root)).toBeNull();
+  });
+
+  it('rejects an absolute path outside the run root', () => {
+    expect(resolveArtifactFilePath('/etc/passwd', root)).toBeNull();
+  });
+
+  it('rejects empty or whitespace-only input', () => {
+    expect(resolveArtifactFilePath('', root)).toBeNull();
+    expect(resolveArtifactFilePath('   ', root)).toBeNull();
+  });
+
+  it('rejects a null-byte path', () => {
+    expect(resolveArtifactFilePath('plan.md\0', root)).toBeNull();
+  });
+
+  it('rejects when the run root is empty', () => {
+    expect(resolveArtifactFilePath('plan.md', '')).toBeNull();
+  });
+
+  it('allows the run root itself', () => {
+    expect(resolveArtifactFilePath('.', root)).toBe(root);
+  });
+});
+
+describe('readArtifactFileBody', () => {
+  it('reads and trims an existing file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'plan.md');
+      writeFileSync(file, '\n  # Goal\nship the thing\n\n');
+      expect(readArtifactFileBody(file)).toBe('# Goal\nship the thing');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a missing file', () => {
+    expect(readArtifactFileBody('/nonexistent/path/plan.md')).toBeNull();
+  });
+
+  it('returns null for an empty (whitespace-only) file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'empty.md');
+      writeFileSync(file, '   \n  ');
+      expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      expect(readArtifactFileBody(dir)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a binary file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'bin.dat');
+      writeFileSync(file, Buffer.from([0xff, 0xfe, 0x00, 0x41, 0x42]));
+      expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a file older than the freshness floor', () => {
+    // The pointer form may only hand over a file THIS step wrote. A file
+    // whose mtime predates the attempt is an input or a leftover.
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'stale.md');
+      writeFileSync(file, '# written before the step started');
+      const wellAfter = Date.now() + 60_000;
+      expect(readArtifactFileBody(file, wellAfter)).toBeNull();
+      // Same file passes when the floor is in the past.
+      expect(readArtifactFileBody(file, Date.now() - 60_000)).toBe(
+        '# written before the step started',
+      );
+      // And a floor of 0 disables the check entirely.
+      expect(readArtifactFileBody(file, 0)).toBe('# written before the step started');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null for a file over the size budget', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const file = join(dir, 'big.md');
+      writeFileSync(file, 'x'.repeat(1024 * 1024 + 1));
+      expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('stepCanWriteFiles', () => {
+  it('is always true for non-ollama backends regardless of tools', () => {
+    expect(stepCanWriteFiles({ tools: [] }, 'claude')).toBe(true);
+    expect(stepCanWriteFiles({ tools: ['read_file'] }, 'codex')).toBe(true);
+  });
+
+  it('is true for ollama only when a write tool is granted', () => {
+    expect(stepCanWriteFiles({ tools: ['write_file'] }, 'ollama')).toBe(true);
+    expect(stepCanWriteFiles({ tools: ['edit_file'] }, 'ollama')).toBe(true);
+    expect(stepCanWriteFiles({ tools: ['bash'] }, 'ollama')).toBe(true);
+  });
+
+  it('is false for ollama when only read-only tools are granted', () => {
+    expect(stepCanWriteFiles({ tools: ['read_file'] }, 'ollama')).toBe(false);
+    expect(stepCanWriteFiles({ tools: [] }, 'ollama')).toBe(false);
+  });
+});
+
+describe('missingOutputReaskPrompt', () => {
+  it('is byte-identical to the base prompt when allowFileRef is omitted', () => {
+    expect(missingOutputReaskPrompt('plan.md')).toBe(missingOutputReaskPrompt('plan.md', false));
+  });
+
+  it('does not mention the pointer form when allowFileRef is false', () => {
+    expect(missingOutputReaskPrompt('plan.md', false)).not.toContain('file=');
+  });
+
+  it('offers the pointer form as an extra bullet when allowFileRef is true', () => {
+    const withRef = missingOutputReaskPrompt('plan.md', true);
+    const without = missingOutputReaskPrompt('plan.md', false);
+    expect(withRef).toContain('<output name="plan.md" file="relative/path/to/the/file" />');
+    // Purely additive: everything in the base prompt still appears.
+    expect(withRef).toContain(without.split('\n')[0]);
   });
 });
 
@@ -461,6 +748,36 @@ describe('worker run file boundary', () => {
     expect(
       workerPromptWritesToPersistentRoot(`Do not modify ${source}/prior.html.`, source),
     ).toBe(false);
+  });
+
+  it('allows a prompt that names the persistent root only to exclude it', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Write this page to a relative output path inside this run's own directory (never into ${source}) and report its path.`,
+        source,
+      ),
+    ).toBe(false);
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Save the report under the run root, not under ${source}.`,
+        source,
+      ),
+    ).toBe(false);
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Write the file to the run root rather than ${source}/out.html.`,
+        source,
+      ),
+    ).toBe(false);
+  });
+
+  it('still refuses a real destination that merely follows a negation elsewhere', () => {
+    expect(
+      workerPromptWritesToPersistentRoot(
+        `Do not stop until you write the report to ${source}/report.html.`,
+        source,
+      ),
+    ).toBe(true);
   });
 
   it('places worker output in the disposable root and marks the source read-only', () => {

@@ -3,7 +3,7 @@ import { AssistantEventInfo, ToolResultBlock, ToolUseBlock, UUID } from '@shared
 import { backendColor, backendFromModel, shortModel } from '../theme';
 import { Markdown } from './Markdown';
 import { useStore } from '../store';
-import { useOpenFile } from '../openFile';
+import { openPathWithHighlight, useOpenFile } from '../openFile';
 import { ToolUseCard } from './ToolUseCard';
 
 /// Tool names that must stay visible when tool activity is hidden,
@@ -127,7 +127,7 @@ export function AssistantBubble({
                 )}
               </div>
             )}
-            <Markdown source={displayText} onOpenPath={(p) => handleOpenPath(p, openFile)} />
+            <Markdown source={displayText} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
           </div>
           <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
             <button
@@ -209,18 +209,6 @@ function askUserQuestionKey(inputJSON: string): string {
     parts.push(`${head}::${opts}`);
   }
   return parts.join('§');
-}
-
-function handleOpenPath(path: string, openFile: (p: string, highlight?: any) => void) {
-  // path may have `:NN` or `:NN-MM` suffix; parse off and pass as highlight.
-  const m = path.match(/^(.+?):(\d+)(?:[-:](\d+))?$/);
-  if (m) {
-    const start = parseInt(m[2], 10);
-    const end = m[3] ? parseInt(m[3], 10) : start;
-    openFile(m[1], { startLine: start, endLine: end, requestId: crypto.randomUUID() });
-  } else {
-    openFile(path);
-  }
 }
 
 /// Replace the flow watcher's machine-readable `<watch_report>…</watch_report>`

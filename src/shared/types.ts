@@ -14,6 +14,7 @@ import type {
   WorkerTrustLevel,
 } from './flows/worker';
 import type { PortableWorker, WorkerImportNotes } from './flows/workerYaml';
+import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
@@ -1751,6 +1752,10 @@ export interface IPCInvokeMap {
     runId: UUID;
     title: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Queue a course correction to be injected at the top of the next step's
+  /// prompt. Empty `text` withdraws a queued steer.
+  'flows:steerRun': (args: { runId: UUID; text: string }) =>
+    { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
@@ -1928,6 +1933,9 @@ export interface IPCInvokeMap {
   /// log, and a renderer-side copy of that arithmetic could tell the user a
   /// worker was funded that the engine then refused to run.
   'workers:treasury': () => { treasury: Treasury; allocation: TreasuryAllocation };
+  /// What the roster has actually done — shifts, outcomes, tokens, time.
+  /// `sinceMs` is an epoch-ms floor; 0 means all time.
+  'workers:report': (args: { sinceMs: number }) => WorkerReport;
   /// Set the monthly pool every worker draws from.
   'workers:setTreasury': (args: { monthlyUSD: number }) =>
     | { ok: true }

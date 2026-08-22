@@ -163,6 +163,10 @@ interface StoreState {
   openFilePath: string | null;
   openFileHighlight: OpenFileHighlight | null;
   openFileMode: FileViewMode;
+  /// Two-file comparison picked by ⌥-click in a file tree. See uiSlice.
+  compareBase: string | null;
+  comparePair: { a: string; b: string } | null;
+  compareDirty: boolean;
   /// Last view mode chosen per file extension. See uiSlice.
   fileViewModeByExt: Record<string, FileViewMode>;
   /// Open editor tabs for the scope on screen, and the saved tabs for
@@ -257,6 +261,9 @@ interface StoreState {
   retargetTab(from: string, to: string): void;
   closeTab(path: string): void;
   closeFile(): void;
+  pickCompare(path: string): void;
+  closeCompare(): void;
+  setCompareDirty(dirty: boolean): void;
   switchFileScope(key: string | null): void;
   markFileDirty(path: string): void;
   clearFileDirty(path: string): void;
@@ -495,16 +502,18 @@ interface StoreState {
 }
 
 function uuid(): string {
-  // crypto.randomUUID is available in Electron's renderer via the browser
-  // Crypto API when secure context is enabled; fallback for older runtimes.
+  // Electron's renderer exposes the browser Crypto API. randomUUID needs a
+  // secure context; getRandomValues does not — so the fallback stays
+  // cryptographically strong instead of dropping to Math.random().
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10xx
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 // newRunnerState is imported from ./runnersStore — kept as a single

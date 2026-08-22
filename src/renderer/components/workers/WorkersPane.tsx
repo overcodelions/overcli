@@ -82,6 +82,7 @@ import { WorkerErrandComposer } from "./WorkerDesk";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
 import { FundsPane } from "./FundsPane";
+import { WorkerReportPane } from "./WorkerReportPane";
 import {
   CARRIED_OVER_SHOWN,
   adjacentDeskDay,
@@ -124,6 +125,7 @@ export function WorkersPane() {
   const importFromFile = useWorkersStore((s) => s.importFromFile);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const view = useWorkersStore((s) => s.view);
+  const selectSeq = useWorkersStore((s) => s.selectSeq);
   const activeRun = useFlowsStore((s) =>
     s.activeRunId ? s.runs[s.activeRunId] : undefined,
   );
@@ -302,6 +304,8 @@ export function WorkersPane() {
         <div className="px-6 text-sm text-ink-muted">Loading workers…</div>
       ) : view === "calendar" ? (
         <ShiftCalendar />
+      ) : view === "report" ? (
+        <WorkerReportPane />
       ) : view === "funds" ? (
         <FundsPane />
       ) : rows.length === 0 ? (
@@ -320,7 +324,7 @@ export function WorkersPane() {
         </div>
       ) : selected ? (
         <WorkerRow
-          key={selected.id}
+          key={`${selected.id}:${selectSeq}`}
           worker={selected}
           projectLabel={nameForPath.get(selected.projectPath)}
         />
@@ -746,6 +750,40 @@ function TrustLadderMark() {
 ///     action on the front page is "Work now"; pausing, promoting and firing
 ///     are deliberate acts that belong on Settings, next to the rules that
 ///     govern them.
+/// Why "Work now" would be refused, before you press it. The engine gates a
+/// manual shift on the same funding waterfall the scheduler uses, but it only
+/// answers after the click — and its answer lands in the store's `error`,
+/// which this pane never draws. An out-of-budget worker therefore read as a
+/// dead button. The allocation is already in the renderer, so say it up front.
+function useShiftBlock(
+  workerId: string,
+): { headline: string; reason: string } | null {
+  const allocation = useWorkersStore((s) => s.allocation);
+  return useMemo(() => {
+    const funding = fundingFor(allocation, workerId);
+    if (!allocation || !funding || funding.funded) return null;
+    return {
+      headline:
+        funding.blocked === "paused"
+          ? "Paused — no shifts."
+          : "Out of budget — no shifts.",
+      reason: describeFundingBlock(funding, allocation),
+    };
+  }, [allocation, workerId]);
+}
+
+function ShiftBlockNotice({
+  block,
+}: {
+  block: { headline: string; reason: string };
+}) {
+  return (
+    <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-ink-muted">
+      <span className="text-amber-500">{block.headline}</span> {block.reason}
+    </div>
+  );
+}
+
 function WorkerRow({
   worker,
   projectLabel,
@@ -758,6 +796,7 @@ function WorkerRow({
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const starting = useWorkersStore((s) => !!s.shiftStarting[worker.id]);
   const workShiftNow = useWorkersStore((s) => s.workShiftNow);
+  const shiftBlock = useShiftBlock(worker.id);
   const [tab, setTab] = useState<
     "desk" | "shift" | "files" | "journal" | "stats" | "settings"
   >("desk");
@@ -940,14 +979,19 @@ function WorkerRow({
             </div>
           </div>
           <button
-            disabled={starting || !!shift}
+            disabled={starting || !!shift || !!shiftBlock}
             onClick={() => void workShiftNow(worker.id)}
-            title="Work one shift now, out of band. Does not change the schedule."
+            title={
+              shiftBlock?.reason ??
+              "Work one shift now, out of band. Does not change the schedule."
+            }
             className="shrink-0 rounded-md border border-card-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
           >
             {shift ? "Working…" : "Work now"}
           </button>
         </div>
+
+        {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
 
         <div className="mt-5 flex items-center gap-6 border-b border-card-strong">
           {(
@@ -1132,7 +1176,9 @@ function WorkerStats({
               className="text-[11px] text-ink-faint hover:text-ink hover:underline focus:outline-none"
               title="The pot every worker draws from, and the order it is paid in"
             >
-              priority {funding.priority} of {allocation?.byWorker.length}
+              {funding.enabled
+                ? `priority ${funding.queuePosition} of ${allocation?.byWorker.filter((f) => f.enabled).length}`
+                : "benched — outside the funding queue"}
             </button>
           )}
         </div>
@@ -2022,6 +2068,7 @@ function WorkerShiftPane({
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const workShiftNow = useWorkersStore((s) => s.workShiftNow);
   const starting = useWorkersStore((s) => !!s.shiftStarting[worker.id]);
+  const shiftBlock = useShiftBlock(worker.id);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
 
@@ -2053,14 +2100,19 @@ function WorkerShiftPane({
             : "paused — no shifts until you resume it"}
         </span>
         <button
-          disabled={starting || !!shift}
+          disabled={starting || !!shift || !!shiftBlock}
           onClick={() => void workShiftNow(worker.id)}
-          title="Work one shift now, out of band. Does not change the schedule."
+          title={
+            shiftBlock?.reason ??
+            "Work one shift now, out of band. Does not change the schedule."
+          }
           className="ml-auto shrink-0 rounded-md border border-card-strong px-2.5 py-1 text-xs text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
         >
           {shift ? "Working…" : "Work now"}
         </button>
       </div>
+
+      {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
 
       {/* The planning turn, as it arrives. A worker deciding what today's
           version of its job is has reasoning worth reading — it is the part

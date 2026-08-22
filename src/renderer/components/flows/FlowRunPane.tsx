@@ -13,8 +13,13 @@
 //   (they don't count toward step completion) so you can ask
 //   questions, redirect, or fork the participant's thinking from
 //   anywhere.
+//   The composer carries a second button beside Send — "Hold for <step>" —
+//   which parks the same draft until that step starts, then injects it at
+//   the top of its prompt. That reaches a step on a different participant
+//   which a hijack turn never would. The held step is marked ↯ in the
+//   pipeline above.
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
@@ -23,12 +28,16 @@ import { ChatView } from '../ChatView';
 import { RunningIndicator } from '../RunningIndicator';
 import { Composer } from '../Composer';
 import { Markdown } from '../Markdown';
+import { CopyActions } from '../CopyActions';
+import { openPathWithHighlight, useOpenFile } from '../../openFile';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
 import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
 import { ResizableDivider } from '../ResizableDivider';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
+import { steerRecipient } from './steerRecipient';
+import { railArrowOpacity, railDepth, railScrollLeft } from './stepRail';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { Attachment } from '@shared/types';
 import {
@@ -83,6 +92,21 @@ export function FlowRunPane({ runId }: { runId: string }) {
   const [treeWidth, setTreeWidth] = useState(() =>
     Math.max(TREE_MIN, Math.min(TREE_MAX, settings.explorerTreeWidth ?? 280)),
   );
+  // ⌥-click two files to compare them, the same gesture the standalone
+  // explorer has. State lives in the store because the comparison renders in
+  // the side editor pane (App.tsx), which is not below this component.
+  const compareBase = useStore((s) => s.compareBase);
+  const comparePair = useStore((s) => s.comparePair);
+  const compareDirty = useStore((s) => s.compareDirty);
+  const pickCompare = useStore((s) => s.pickCompare);
+  // Opening a file retires the comparison, so an open one with unsaved moves
+  // has to be confirmed away first. Stable identity: FileTree is memoized.
+  const confirmDiscardCompare = useCallback(
+    () =>
+      !(comparePair && compareDirty) ||
+      window.confirm('Discard unsaved changes to these files?'),
+    [comparePair, compareDirty],
+  );
 
   useEffect(() => {
     if (!run) {
@@ -106,6 +130,10 @@ export function FlowRunPane({ runId }: { runId: string }) {
     return pickFocusStepId(run);
   }, [run]);
 
+  // Prompt + step contract, disclosed from the rail's info toggle. Closed
+  // by default: it's reference material, wanted when orienting or auditing
+  // and never while following a run.
+  const [infoOpen, setInfoOpen] = useState(false);
   const [focusStepId, setFocusStepId] = useState<string | null>(null);
   const [autoFollowedId, setAutoFollowedId] = useState<string | null>(null);
   useEffect(() => {
@@ -178,7 +206,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
           underneath. Treating the prompt as the run's identity rather
           than a separate banner reads cleaner than the colored strip
           and stops the page from having two competing "anchors". */}
-      <div className="pl-2 pr-3 pt-4 pb-2 border-b border-card">
+      <div className="pl-2 pr-3 pt-4 pb-1 border-b border-card">
         {/* Two wrapping groups — identity on the left, actions on the right.
             Both wrap rather than compress: in a narrow window the actions
             drop to their own line and the title truncates with an ellipsis,
@@ -375,28 +403,20 @@ export function FlowRunPane({ runId }: { runId: string }) {
         {/* Step pipeline gets its own full-width row so it can breathe and
             stays vertically clean — keeping it inline with the title/actions
             row left the pills offset by the reserved scrollbar gutter. */}
-        <div className="overflow-x-auto no-scrollbar -mx-0.5 px-0.5 mb-1">
-          <InlineStepPipeline
-            run={run}
-            activeStepId={activeStepId}
-            onPick={(id) => {
-              // Switching steps abandons any half-open re-run confirmation —
-              // it's bound to the step being viewed, so it must never carry
-              // over to the step the user just navigated to.
-              setConfirmingRerun(false);
-              setFocusStepId(id);
-            }}
-          />
-        </div>
-        {/* Original prompt as subtitle. Sits directly under the flow
-            name, treats the user's words as the run's identity. */}
-        <RunPromptSubtitle
-          prompt={run.userPrompt}
-          activeStep={activeStep}
+        <InlineStepPipeline
           run={run}
-          activeParticipant={activeParticipant}
           activeStepId={activeStepId}
+          infoOpen={infoOpen}
+          onToggleInfo={() => setInfoOpen((v) => !v)}
+          onPick={(id) => {
+            // Switching steps abandons any half-open re-run confirmation —
+            // it's bound to the step being viewed, so it must never carry
+            // over to the step the user just navigated to.
+            setConfirmingRerun(false);
+            setFocusStepId(id);
+          }}
         />
+        {infoOpen && <StepInfoPanel prompt={run.userPrompt} activeStep={activeStep} />}
       </div>
 
       {/* Pause banner — shown when actually paused AND while a Continue
@@ -448,7 +468,12 @@ export function FlowRunPane({ runId }: { runId: string }) {
             style={{ width: treeWidth }}
             className="flex-shrink-0 h-full border-l border-card overflow-hidden"
           >
-            <FileTree rootPath={run.projectPath} />
+            <FileTree
+              rootPath={run.projectPath}
+              compareBase={compareBase}
+              onCompare={pickCompare}
+              onBeforeOpen={confirmDiscardCompare}
+            />
           </div>
         </>
       )}
@@ -890,6 +915,19 @@ function WatchEye({ className }: { className?: string }) {
   );
 }
 
+/// Info affordance for the step rail. An SVG rather than the text glyph
+/// "ⓘ", which renders at wildly different weights and baselines across
+/// system fonts. Same construction as WatchEye so the two read as siblings.
+function InfoGlyph({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 11v5.4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <circle cx="12" cy="7.6" r="1.05" fill="currentColor" />
+    </svg>
+  );
+}
+
 // Compact step pills designed to live inside the page header row. Each
 // pill is just idx + monogram + step name + status icon — model goes in
 // the tooltip. Clicking switches the body to that step's participant.
@@ -897,10 +935,14 @@ function InlineStepPipeline({
   run,
   activeStepId,
   onPick,
+  infoOpen,
+  onToggleInfo,
 }: {
   run: FlowRun;
   activeStepId: string | null;
   onPick: (stepId: string) => void;
+  infoOpen: boolean;
+  onToggleInfo: () => void;
 }) {
   const steps = run.flowSnapshot.steps;
   const participants = run.flowSnapshot.participants ?? [];
@@ -912,36 +954,135 @@ function InlineStepPipeline({
   const activeStep = steps.find((s) => s.id === activeStepId) ?? null;
   const activeConvId = activeStep ? run.conversationIds[activeStep.participantId] : undefined;
   const activeConvIsRunning = useRunnerIsRunning(activeConvId);
+  const activeIdx = steps.findIndex((s) => s.id === activeStepId);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const pillRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const [scrollable, setScrollable] = useState(false);
+  // Bit 1 = content hidden left, bit 2 = content hidden right. A number so
+  // repeated identical updates bail out of re-rendering during the glide.
+  const [edges, setEdges] = useState(0);
+  // The first centring must not animate: on mount the rail is at 0 and a
+  // long flow would slide in from the left for no reason.
+  const centeredOnce = useRef(false);
+
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp) return;
+    const measureEdges = () => {
+      const max = vp.scrollWidth - vp.clientWidth;
+      setEdges((vp.scrollLeft > 1 ? 1 : 0) | (vp.scrollLeft < max - 1 ? 2 : 0));
+    };
+    const center = () => {
+      setScrollable(vp.scrollWidth > vp.clientWidth + 1);
+      const el = activeStepId ? pillRefs.current[activeStepId] : null;
+      if (el) {
+        const left = railScrollLeft(vp.clientWidth, vp.scrollWidth, el.offsetLeft, el.offsetWidth);
+        const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        vp.scrollTo({ left, behavior: reduce || !centeredOnce.current ? 'auto' : 'smooth' });
+        centeredOnce.current = true;
+      }
+      measureEdges();
+    };
+    center();
+    vp.addEventListener('scroll', measureEdges);
+    const ro = new ResizeObserver(center);
+    ro.observe(vp);
+    return () => {
+      vp.removeEventListener('scroll', measureEdges);
+      ro.disconnect();
+    };
+  }, [activeStepId, steps.length]);
+
+  // The step a held correction will land on. Marked here so the pipeline —
+  // not just the composer — shows that a step is already spoken for.
+  const steerTargetId = run.pendingSteer ? (steerRecipient(run)?.id ?? null) : null;
   return (
-    <div className="flex items-center gap-1">
-      {steps.map((step, idx) => {
-        const participant = participants.find((p) => p.id === step.participantId);
-        const attempts = run.attempts.filter((a) => a.stepId === step.id);
-        const last = attempts[attempts.length - 1];
-        const done = last?.outcome === 'success';
-        const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
-        const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
-        const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
-        const isActive = step.id === activeStepId;
-        const isResponding = isActive && activeConvIsRunning && !isCurrent;
-        return (
-          <div key={step.id} className="flex items-center gap-1 flex-shrink-0">
-            <InlineStepPill
-              step={step}
-              participant={participant}
-              isActive={isActive}
-              isCurrent={isCurrent}
-              isResponding={isResponding}
-              isPausedNext={isPausedNext}
-              done={done}
-              failed={!!failed}
-              onClick={() => onPick(step.id)}
-              idx={idx}
-            />
-            {idx < steps.length - 1 && <StepArrow done={done} pulsing={isCurrent} />}
-          </div>
-        );
-      })}
+    // The info toggle is a SIBLING of the scroll viewport, never a child:
+    // the viewport is what the ResizeObserver measures and what the edge
+    // mask paints, so anything inside it would scroll away and dissolve.
+    // `flex-1 min-w-0` keeps it measurable at the row's full width.
+    <div className="flex items-center gap-1.5">
+      <div
+        ref={viewportRef}
+        className={
+          'flex-1 min-w-0 overflow-x-auto overflow-y-hidden no-scrollbar py-2 -my-1.5 ' +
+          (scrollable ? 'flow-rail-mask' : '')
+        }
+        style={{
+          // Capped as a share of the width too: on a narrow window a flat
+          // 56px each side would leave almost no unmasked rail in between.
+          ['--rail-fade-l' as string]: edges & 1 ? 'min(56px, 15%)' : '0px',
+          ['--rail-fade-r' as string]: edges & 2 ? 'min(56px, 15%)' : '0px',
+        }}
+      >
+        <div className="relative flex w-max items-center gap-1 min-h-[34px] px-0.5">
+          {steps.map((step, idx) => {
+            const participant = participants.find((p) => p.id === step.participantId);
+            const attempts = run.attempts.filter((a) => a.stepId === step.id);
+            const last = attempts[attempts.length - 1];
+            const done = last?.outcome === 'success';
+            const failed = last?.outcome && last.outcome !== 'success' && last.outcome !== 'question';
+            const isCurrent = st.kind === 'running' && st.currentStepId === step.id;
+            const isPausedNext = st.kind === 'paused' && st.nextStepId === step.id;
+            const isActive = step.id === activeStepId;
+            const isResponding = isActive && activeConvIsRunning && !isCurrent;
+            const dist = activeIdx < 0 ? 0 : Math.abs(idx - activeIdx);
+            const nextDist = activeIdx < 0 ? 0 : Math.abs(idx + 1 - activeIdx);
+            const depth = railDepth(dist);
+            return (
+              <div key={step.id} className="flex items-center gap-1 flex-shrink-0">
+                <div
+                  ref={(el) => {
+                    pillRefs.current[step.id] = el;
+                  }}
+                  className="flow-rail-item"
+                  style={{
+                    opacity: depth.opacity,
+                    transform: `scale(${depth.scale})`,
+                  }}
+                >
+                  <InlineStepPill
+                    step={step}
+                    participant={participant}
+                    isActive={isActive}
+                    isCurrent={isCurrent}
+                    isResponding={isResponding}
+                    isPausedNext={isPausedNext}
+                  steerTarget={step.id === steerTargetId}
+                    done={done}
+                    failed={!!failed}
+                    onClick={() => onPick(step.id)}
+                    idx={idx}
+                  />
+                </div>
+                {idx < steps.length - 1 && (
+                  <div
+                    className="flow-rail-item"
+                    style={{ opacity: railArrowOpacity(dist, nextDist) }}
+                  >
+                    <StepArrow done={done} pulsing={isCurrent && dist < 2} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <button
+        onClick={onToggleInfo}
+        aria-expanded={infoOpen}
+        aria-controls="step-info"
+        title="Step details and original request"
+        className={
+          'flex-shrink-0 grid place-items-center h-6 w-6 rounded-md transition-colors ' +
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
+          (infoOpen
+            ? 'text-accent bg-accent/10 ring-1 ring-accent/30'
+            : 'text-ink-faint/70 hover:text-ink-muted hover:bg-card')
+        }
+      >
+        <InfoGlyph className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
@@ -953,6 +1094,7 @@ function InlineStepPill({
   isCurrent,
   isResponding,
   isPausedNext,
+  steerTarget,
   done,
   failed,
   onClick,
@@ -964,6 +1106,8 @@ function InlineStepPill({
   isCurrent: boolean;
   isResponding: boolean;
   isPausedNext: boolean;
+  /// A correction is queued and this is the step that will receive it.
+  steerTarget: boolean;
   done: boolean;
   failed: boolean;
   onClick: () => void;
@@ -981,34 +1125,54 @@ function InlineStepPill({
           : failed
             ? 'border-red-400/40'
             : 'border-card-strong';
-  const bg = isActive ? 'bg-accent/[0.14]' : 'bg-card/30 hover:bg-card/55';
+  const bg = isActive ? '' : 'bg-card/30 hover:bg-card/55';
+  // Mixed against the theme surface rather than layered as alpha-on-transparent:
+  // that's what keeps the tint honest in BOTH the light and dark palettes.
+  const activeStyle = isActive
+    ? {
+        background: 'color-mix(in srgb, var(--c-accent) 15%, var(--c-surface))',
+        boxShadow:
+          '0 0 0 1px var(--c-accent), 0 4px 14px -6px color-mix(in srgb, var(--c-accent) 55%, transparent)',
+      }
+    : undefined;
   return (
     <button
       onClick={onClick}
       aria-pressed={isActive}
+      style={activeStyle}
       className={
-        'flex items-center gap-1.5 rounded-md border px-2 py-1 transition flex-shrink-0 ' +
+        'flex items-center gap-1.5 rounded-md border transition flex-shrink-0 ' +
+        (isActive ? 'px-2.5 py-1.5 ' : 'px-2 py-1 ') +
         stateBorder + ' ' + bg
       }
       title={
         (participant ? `${participant.backend}:${participant.model}` : '') +
         (isActive ? ' (viewing)' : '') +
-        (isResponding ? ' — responding' : '')
+        (isResponding ? ' — responding' : '') +
+        (steerTarget ? ' — a course correction is held for this step' : '')
       }
     >
       <span
         className={
-          'text-[10px] font-mono ' + (isActive ? 'text-accent' : 'text-ink-faint')
+          'font-mono ' +
+          (isActive ? 'text-[11px] text-accent' : 'text-[10px] text-ink-faint')
         }
       >
         {idx + 1}
       </span>
       {participant && <FlowMonogram name={participant.name} size="xs" />}
-      <span className="text-xs font-semibold text-ink">{step.id}</span>
+      <span className={(isActive ? 'text-[13px] font-bold ' : 'text-xs font-semibold ') + 'text-ink'}>
+        {step.id}
+      </span>
       {pulsing && <span className="text-sky-700 dark:text-sky-300 animate-spin text-[10px]">⟳</span>}
       {done && !pulsing && <span className="text-emerald-700 dark:text-emerald-300/80 text-[10px]">✓</span>}
       {failed && !pulsing && <span className="text-red-700 dark:text-red-300 text-[10px]">!</span>}
       {isPausedNext && <span className="text-amber-700 dark:text-amber-300 text-[10px]">⏸</span>}
+      {steerTarget && (
+        <span className="text-violet-700 dark:text-violet-300 text-[10px]" title="A course correction is held for this step">
+          ↯
+        </span>
+      )}
     </button>
   );
 }
@@ -1812,6 +1976,51 @@ function HijackComposer({
   const stop = useStore((s) => s.stop);
   const draftKey = `flow-hijack:${run.id}:${participant.id}`;
 
+  // Deferred steer. Deliberately NOT a second text box: a correction is the
+  // same words as a hijack turn, differing only in WHEN they land. So it is
+  // a second BUTTON on the one composer — Send speaks to this participant
+  // now, Hold parks the same draft for the next step. Reads the draft from
+  // the store, which is where Composer keeps it, so both buttons act on
+  // exactly the text on screen.
+  const steerRun = useFlowsStore((s) => s.steerRun);
+  const [steerError, setSteerError] = useState<string | null>(null);
+  // Short-lived acknowledgement on the button itself. The queued strip above
+  // the composer is the durable signal, but it appears away from the cursor —
+  // without this, a successful hold looks identical to a click that did
+  // nothing, which is exactly how this control first failed.
+  const [justHeld, setJustHeld] = useState(false);
+  const heldAckTimer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (heldAckTimer.current !== null) window.clearTimeout(heldAckTimer.current);
+    },
+    [],
+  );
+  const recipient = steerRecipient(run);
+  const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
+  // A failed hold has to stop shouting once the user moves on — otherwise
+  // "restart the app" sits under the composer for the rest of the run.
+  useEffect(() => setSteerError(null), [draft, recipient?.id]);
+  const holdDraft = () => {
+    // Empty text is the WITHDRAW signal to the runtime. The button stays
+    // clickable through the acknowledgement (when the draft is already
+    // cleared), so without this a second click silently drops the
+    // correction that was just held.
+    if (!draft.trim()) return;
+    void steerRun(run.id, draft).then((res) => {
+      if (!res.ok) {
+        setSteerError(res.error ?? 'That correction did not queue — the run has moved on.');
+        return;
+      }
+      setSteerError(null);
+      setDraft(draftKey, '');
+      clearAttachments(draftKey);
+      setJustHeld(true);
+      if (heldAckTimer.current !== null) window.clearTimeout(heldAckTimer.current);
+      heldAckTimer.current = window.setTimeout(() => setJustHeld(false), 1800);
+    });
+  };
+
   // Per-participant model override, persisted on the run. Lets the user
   // bump from a struggling small model to a stronger one mid-run — it
   // drives orchestration AND these hijack turns. Falls back to the
@@ -1874,6 +2083,22 @@ function HijackComposer({
           Thinking/Working/Reading… cue never shows while a step runs. */}
       {convId && <RunningIndicator conversationId={convId} />}
       <ChangesBar files={changes} baseRef={baseRef} />
+      {run.pendingSteer && (
+        <div className="flex items-center gap-2 text-[11px] min-w-0 rounded-md border border-violet-500/35 bg-violet-500/10 px-2 py-1">
+          <span aria-hidden className="shrink-0 text-violet-600 dark:text-violet-300">↯</span>
+          <span className="shrink-0 text-violet-700 dark:text-violet-200">
+            Held for <span className="font-mono">{recipient?.id ?? 'the next step'}</span>
+          </span>
+          <span className="flex-1 min-w-0 truncate text-ink-muted">{run.pendingSteer.text}</span>
+          <button
+            onClick={() => void steerRun(run.id, '')}
+            className="shrink-0 rounded px-1 text-violet-700/70 hover:text-violet-700 dark:text-violet-300/70 dark:hover:text-violet-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400"
+          >
+            Withdraw
+          </button>
+        </div>
+      )}
+      {steerError && <div className="text-[11px] text-amber-500 px-0.5">{steerError}</div>}
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
@@ -1883,7 +2108,29 @@ function HijackComposer({
         }}
         isRunning={isRunning}
         variant="compact"
+        onModEnter={recipient ? holdDraft : undefined}
         placeholder={`Ask ${friendlyModelLabel(participant.backend, effectiveModel)} anything — your messages don't advance the flow.`}
+        // Sits in the composer's own bottom row so the two deliveries of the
+        // same draft are adjacent: Send speaks to this participant now, Hold
+        // parks the words for the step that hasn't started. Absent on the
+        // final step — nothing left to hold them for.
+        footer={
+          recipient ? (
+            <button
+              onClick={holdDraft}
+              disabled={!draft.trim() && !justHeld}
+              title={`⌘⏎ — held until ${recipient.id} starts, then delivered at the top of its prompt, ahead of the inputs it overrides`}
+              className="ml-auto flex items-center gap-1.5 rounded-full border border-violet-500/45 bg-violet-500/15 px-2.5 py-1 text-[11px] text-violet-700 dark:text-violet-200 hover:bg-violet-500/25 disabled:opacity-30 disabled:hover:bg-violet-500/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-violet-400"
+            >
+              <span aria-hidden>↯</span>
+              {justHeld ? (
+                <>Held for <span className="font-mono">{recipient.id}</span> ✓</>
+              ) : (
+                <>Hold for <span className="font-mono">{recipient.id}</span></>
+              )}
+            </button>
+          ) : null
+        }
       />
       <FlowStatsFooter
         convId={convId}
@@ -2078,139 +2325,79 @@ function cryptoRandomUuid(): string {
 // depth — but a thinner, single-line resting state with a chevron to
 // expand. The focused step's metadata sits below the card as a quiet
 // caption.
-function RunPromptSubtitle({
+/// Prompt + step contract, disclosed from the ⓘ at the end of the step
+/// rail. This used to be two permanent bars — an elevated card holding a
+/// one-line truncation of the prompt, and a dot-separated metadata strip.
+/// Both were reference material dressed as chrome: you read them when
+/// orienting, never while following a run, and between them they cost ~74px
+/// above every transcript. They're the same words now, on demand.
+function StepInfoPanel({
   prompt,
   activeStep,
-  run,
-  activeParticipant,
-  activeStepId,
 }: {
   prompt: string;
   activeStep: FlowStep | null;
-  run: FlowRun;
-  activeParticipant: FlowParticipant | null;
-  activeStepId: string | null;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const renderedRef = useRef<HTMLDivElement>(null);
+  const openFile = useOpenFile();
   const roleBlurb = activeStep ? ROLE_DESCRIPTIONS[activeStep.role] ?? null : null;
-  // Steps the active participant owns, in order — relocated here from the
-  // body so the "which steps this thread covers" info sits next to the
-  // produces/reads line rather than floating above the chat. Only shown
-  // when the participant runs more than one step (otherwise the pipeline
-  // up top already says it all).
-  const ownedSteps = activeParticipant
-    ? run.flowSnapshot.steps.filter((s) => s.participantId === activeParticipant.id)
-    : [];
-  const showStepChips = ownedSteps.length > 1;
   return (
-    <div className="mt-2.5">
-      <button
-        onClick={() => setExpanded((v) => !v)}
-        className={
-          'group w-full text-left rounded-xl bg-surface-elevated ring-1 ring-card-strong ' +
-          'shadow-[0_10px_30px_-18px_rgba(0,0,0,0.55),0_1px_0_0_rgba(255,255,255,0.03)_inset] ' +
-          'px-3.5 py-2 transition-all duration-150 hover:ring-accent/40'
-        }
-        title={expanded ? 'Click to collapse' : 'Click to expand'}
-      >
-        <div className="flex items-center gap-2.5 min-w-0">
-          <div
-            className={
-              'flex-1 min-w-0 text-[13px] text-ink leading-snug ' +
-              (expanded ? 'whitespace-pre-wrap' : 'truncate')
-            }
-          >
-            {prompt}
-          </div>
-          <span
-            role="button"
-            tabIndex={0}
-            title="Copy prompt"
-            onClick={(e) => {
-              e.stopPropagation();
-              void navigator.clipboard.writeText(prompt);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 1200);
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                e.stopPropagation();
-                void navigator.clipboard.writeText(prompt);
-                setCopied(true);
-                setTimeout(() => setCopied(false), 1200);
-              }
-            }}
-            className={
-              'text-[10px] flex-shrink-0 rounded px-1.5 py-0.5 transition-colors cursor-pointer ' +
-              (copied
-                ? 'text-emerald-700 dark:text-emerald-300'
-                : 'text-ink-faint opacity-0 group-hover:opacity-100 hover:text-ink hover:bg-card-strong')
-            }
-          >
-            {copied ? 'copied' : 'copy'}
-          </span>
-          <span
-            aria-hidden
-            className={
-              'text-[10px] text-ink-faint group-hover:text-ink flex-shrink-0 transition-transform ' +
-              (expanded ? 'rotate-180' : '')
-            }
-          >
-            ▾
-          </span>
+    <div id="step-info" className="mt-1.5 rounded-lg border border-card bg-card/40 px-3.5 py-2.5">
+      {/* The copy pair floats over the top-right of the scroll box rather than
+          taking a column beside it — the prompt gets the full width, and the
+          buttons stay put as it scrolls. They sit OUTSIDE `renderedRef` on
+          purpose: inside, their own labels would land in the `innerText` that
+          `copy` yields. */}
+      <div className="relative">
+        {/* Rendered as markdown, not raw text: a run's request is routinely a
+            pitch or a ticket body, and reading it as literal asterisks and
+            backticks is worse than reading it in the composer it came from.
+            Capped and scrollable so a 400-word prompt can't shove the
+            transcript off-screen just because someone opened the panel. */}
+        <div
+          ref={renderedRef}
+          className="copy-gutter max-h-64 overflow-y-auto text-[13px] leading-snug text-ink"
+        >
+          {/* Prompts cite code — `runtime.ts:3540` and the like. Markdown
+              already renders those codespans as file-path chips; without a
+              handler they look clickable and do nothing. */}
+          <Markdown source={prompt} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
         </div>
-      </button>
+        {/* Always visible rather than hover-revealed — hiding a control
+            inside a panel the user deliberately opened hides it twice. */}
+        <CopyActions
+          getPlain={() => renderedRef.current?.innerText ?? prompt}
+          raw={prompt}
+          // Opaque, not tinted: `bg-card` is a 2%-alpha overlay, so anything
+          // built on it let the prompt scroll through the buttons and made
+          // both unreadable. `surface-elevated` is a solid colour in both
+          // themes, and the border + shadow read it as floating above the
+          // text rather than punched out of it.
+          className="absolute right-[14px] top-0 rounded border border-card bg-surface-elevated shadow-sm"
+        />
+      </div>
+      {/* What this step is contracted to do. The step's id and its
+          in-thread siblings are deliberately absent: the rail names the
+          active step 24px above and is permanently visible, so repeating
+          its state inside a panel opened FROM it is the same redundancy in
+          a smaller box. */}
       {activeStep && (
-        <div className="mt-1.5 px-1 text-[11px] text-ink-faint flex flex-wrap items-center gap-x-2 gap-y-0.5">
-          <span className="inline-flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-accent/70" />
-            <span className="font-semibold text-ink-muted">{activeStep.id}</span>
-          </span>
-          <span className="text-ink-faint/60">·</span>
+        <div className="mt-2 border-t border-card pt-2 text-[11px] leading-relaxed text-ink-faint">
           <span className="font-mono text-ink-muted">{activeStep.role}</span>
           {roleBlurb && (
-            <span className="text-ink-faint italic">— {roleBlurb}</span>
-          )}
-          <span className="text-ink-faint/60">·</span>
-          <span>
-            produces <span className="font-mono text-ink-muted">{activeStep.output}</span>
-          </span>
-          {activeStep.inputs.length > 0 && (
             <>
-              <span className="text-ink-faint/60">·</span>
-              <span>
-                reads{' '}
-                <span className="font-mono text-ink-muted">
-                  {activeStep.inputs.join(', ')}
-                </span>
-              </span>
+              {' — '}
+              {roleBlurb}
             </>
           )}
-          {showStepChips && (
+          <span className="mx-1.5 text-ink-faint/60">·</span>
+          {'produces '}
+          <span className="font-mono text-ink-muted">{activeStep.output}</span>
+          {activeStep.inputs.length > 0 && (
             <>
-              <span className="text-ink-faint/60">·</span>
-              <span className="uppercase tracking-wider text-[10px]">in thread</span>
-              {ownedSteps.map((step) => {
-                const attempts = run.attempts.filter((a) => a.stepId === step.id);
-                const last = attempts[attempts.length - 1];
-                const done = last?.outcome === 'success';
-                const isCurrent = step.id === activeStepId;
-                return (
-                  <span
-                    key={step.id}
-                    className={
-                      'px-1.5 py-0.5 rounded ' +
-                      (isCurrent ? 'bg-accent/20 text-ink' : done ? 'text-ink-muted' : 'text-ink-faint')
-                    }
-                  >
-                    {done && <span className="text-emerald-700 dark:text-emerald-300/80 mr-0.5">✓</span>}
-                    {isCurrent && <span className="animate-pulse text-sky-700 dark:text-sky-300 mr-0.5">●</span>}
-                    {step.id}
-                  </span>
-                );
-              })}
+              <span className="mx-1.5 text-ink-faint/60">·</span>
+              {'reads '}
+              <span className="font-mono text-ink-muted">{activeStep.inputs.join(', ')}</span>
             </>
           )}
         </div>
@@ -2557,16 +2744,14 @@ function RunTitle({ run }: { run: FlowRun }) {
     <>
       <div
         onDoubleClick={() => setRenameValue(run.title ?? '')}
-        title={`${flowRunTitle(run)} — double-click to rename this run`}
+        title={`${run.userPrompt.trim() || flowRunTitle(run)}\n\nDouble-click to rename this run`}
         className="text-xl font-semibold truncate min-w-0"
       >
-        {run.title?.trim() || run.flowSnapshot.name}
+        {flowRunTitle(run)}
       </div>
-      {run.title?.trim() && (
-        <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
-          {run.flowSnapshot.name}
-        </span>
-      )}
+      <span className="text-[11px] text-ink-faint truncate min-w-0 flex-shrink">
+        {run.flowSnapshot.name}
+      </span>
     </>
   );
 }
@@ -2681,3 +2866,4 @@ function formatTokens(n: number): string {
 
 // Re-exported types referenced by sibling components in this folder.
 export type { FlowStepAttempt };
+

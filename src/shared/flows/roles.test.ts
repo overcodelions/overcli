@@ -41,6 +41,25 @@ describe('resolveSystemPrompt', () => {
       expect(prompt).toContain('(no system prompt provided)');
     },
   );
+
+  it('is byte-identical whether allowFileRef is omitted or explicitly false', () => {
+    const withoutArg = resolveSystemPrompt({ role: 'planner', outputName: 'foo.md' });
+    const explicitFalse = resolveSystemPrompt({
+      role: 'planner',
+      outputName: 'foo.md',
+      allowFileRef: false,
+    });
+    expect(explicitFalse).toBe(withoutArg);
+  });
+
+  it('offers the pointer form when allowFileRef is true', () => {
+    const prompt = resolveSystemPrompt({
+      role: 'planner',
+      outputName: 'foo.md',
+      allowFileRef: true,
+    });
+    expect(prompt).toContain('<output name="foo.md" file="relative/path/to/the/file" />');
+  });
 });
 
 describe('artifactInstruction', () => {
@@ -61,5 +80,36 @@ describe('artifactInstruction', () => {
     const instruction = artifactInstruction('findings.md');
     expect(instruction).toContain('It is not a file');
     expect(instruction).toContain('read-only step still emits its findings');
+  });
+
+  it('is byte-identical whether allowFileRef is omitted or explicitly false', () => {
+    expect(artifactInstruction('plan.md')).toBe(artifactInstruction('plan.md', false));
+  });
+
+  it('does not mention the pointer form when allowFileRef is false', () => {
+    expect(artifactInstruction('plan.md', false)).not.toContain('file=');
+  });
+
+  it('offers the pointer form when allowFileRef is true', () => {
+    const instruction = artifactInstruction('plan.md', true);
+    expect(instruction).toContain('CHEAPER ALTERNATIVE');
+    expect(instruction).toContain('<output name="plan.md" file="relative/path/to/the/file" />');
+  });
+
+  it('tells the model the file must be one this step wrote', () => {
+    // Without this the cheapest thing a model can do is point at an input it
+    // already has on disk, which the runtime then rejects on freshness.
+    const instruction = artifactInstruction('plan.md', true);
+    expect(instruction).toContain('YOU wrote or updated during THIS step');
+  });
+
+  it('does not contradict the pointer form with a mandatory inline-tag rule', () => {
+    // "Rules:" (unqualified) reads as "you MUST do this", which contradicts
+    // the pointer form's "point at the file instead of the block" offer
+    // immediately above it. Scoping the heading to the inline form keeps
+    // both true at once.
+    const instruction = artifactInstruction('plan.md', true);
+    expect(instruction).toContain('Rules for the inline block form:');
+    expect(instruction).not.toMatch(/\nRules:\n/);
   });
 });

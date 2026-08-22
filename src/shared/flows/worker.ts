@@ -149,6 +149,49 @@ export function sortRoster<T extends Pick<Worker, 'order' | 'createdAt'>>(worker
   });
 }
 
+/// The roster split into the workers that run and the ones on the bench.
+///
+/// A paused worker is still yours — you want to see it, rename it, re-enable
+/// it — but it does nothing today, and interleaving it with the ones actually
+/// working makes the list read as "here are your workers" when half of them
+/// aren't. Below a divider it reads as what it is: a bench.
+///
+/// Order WITHIN each group is `sortRoster`'s, untouched, so the arrangement
+/// you set survives a worker being paused and un-paused.
+export function benchRoster<T extends Pick<Worker, 'order' | 'createdAt' | 'enabled'>>(
+  workers: T[],
+): { active: T[]; benched: T[] } {
+  const ordered = sortRoster(workers);
+  return {
+    active: ordered.filter((w) => w.enabled),
+    benched: ordered.filter((w) => !w.enabled),
+  };
+}
+
+/// Where a worker lands when nudged one place WITHIN its displayed group.
+///
+/// The roster is one ordered list, but the sidebar draws it as two (active,
+/// then bench). A plain one-step move walks the flat order, so nudging a
+/// benched worker swaps it with whatever sits next to it there — often an
+/// active worker, which moves nothing visible and reads as a dead button.
+/// This resolves the move against the group the user can actually see, and
+/// returns the gap index `placeInRoster` consumes. Null when there is no
+/// neighbour in that group to trade with.
+export function moveWithinGroup<T extends Pick<Worker, 'id'>>(
+  flatOrder: readonly T[],
+  group: readonly T[],
+  id: string,
+  direction: -1 | 1,
+): number | null {
+  const from = group.findIndex((w) => w.id === id);
+  if (from === -1) return null;
+  const target = group[from + direction];
+  if (!target) return null;
+  const targetIndex = flatOrder.findIndex((w) => w.id === target.id);
+  if (targetIndex === -1) return null;
+  return direction === -1 ? targetIndex : targetIndex + 1;
+}
+
 /// The roster with one worker moved one place. Returns the ids in their new
 /// order, which is what `workers:reorder` persists — every worker gets an
 /// explicit position, so a later hire lands at the bottom instead of silently

@@ -22,9 +22,9 @@
 // runner pipeline drives.
 
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
 import { migrateClaudeSessionCwd } from '../history';
 
@@ -60,6 +60,7 @@ import {
   effectiveParticipantModel,
 } from '../../shared/flows/schema';
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
+import { extractWorkerQuestion } from '../../shared/flows/workerQuestion';
 import type { RunnerManager } from '../runner';
 import { loadAllFlows } from './storage';
 import {
@@ -218,6 +219,30 @@ function uniqueWorktreeName(repoPaths: string[], base: string, branchPrefix: str
     name = `${base}-${n++}`;
   }
   return name;
+}
+
+/// Which of a workspace's current members a live run has no worktree for.
+///
+/// A workspace run resolves its members ONCE, at launch (see `startRun`), and
+/// the agent's cwd is a symlink farm built from exactly that set. Add a
+/// project to the workspace afterwards and the running flow simply cannot see
+/// it — which is worst precisely when a step has PAUSED asking for the repo
+/// that is missing, and adding it is the obvious fix.
+///
+/// Matching is by project path, not id, so a project re-added under a new id
+/// doesn't mint a second worktree over the same repo. Pure so the adoption
+/// rule can be tested without git.
+export function workspaceMembersMissingFromRun(
+  currentMemberPaths: readonly string[],
+  runMemberPaths: readonly string[],
+): string[] {
+  const have = new Set(runMemberPaths);
+  const out: string[] = [];
+  for (const p of currentMemberPaths) {
+    if (!p || have.has(p) || out.includes(p)) continue;
+    out.push(p);
+  }
+  return out;
 }
 
 export class FlowRuntimeImpl {
@@ -1084,6 +1109,10 @@ export class FlowRuntimeImpl {
   }
 
   resumeRun(args: FlowRuntimeResumeArgs): { ok: true } | { ok: false; error: string } {
+    return this.withWorkspaceAdoption(args.runId, () => this.resumeRunInner(args));
+  }
+
+  private resumeRunInner(args: FlowRuntimeResumeArgs): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
     if (run.state.kind !== 'paused') {
@@ -1202,7 +1231,123 @@ export class FlowRuntimeImpl {
   /// Only valid from a settled state (paused / done / aborted). Refused
   /// while a step is actively running (it would race the live subprocess)
   /// or while the run is watching (archive it first).
+  /// Projects added to this run's workspace since it launched, as
+  /// `{ name, path }`. Empty for anything that isn't a workspace-worktree run.
+  private pendingWorkspaceMembers(run: FlowRun): Array<{ name: string; path: string }> {
+    const minted = run.workspaceWorktrees;
+    if (!minted || minted.length === 0 || !run.sourceProjectPath) return [];
+    const workspace = this.getWorkspaces().find((w) => w.rootPath === run.sourceProjectPath);
+    if (!workspace) return [];
+    const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
+    const current = workspace.projectIds
+      .map((pid) => projectsById.get(pid))
+      .filter((p): p is NonNullable<typeof p> => !!p && !!p.path);
+    const missing = new Set(
+      workspaceMembersMissingFromRun(
+        current.map((p) => p.path),
+        minted.map((m) => m.projectPath),
+      ),
+    );
+    return current.filter((p) => missing.has(p.path)).map((p) => ({ name: p.name, path: p.path }));
+  }
+
+  /// Adopt those projects into the live run: a worktree each, a symlink in the
+  /// run's root, and its own baseline.
+  ///
+  /// ADDITIVE ONLY, and that is the whole reason this is safe. Every diff the
+  /// run has produced is measured from `baselineCommitsByMember`; existing
+  /// entries are never touched, so nothing already measured moves. A member
+  /// REMOVED from the workspace likewise keeps its worktree — dropping it
+  /// would strand the diffs that cite it.
+  ///
+  /// Best-effort per member: a repo that fails to check out is logged and
+  /// skipped rather than failing the resume, matching the launch path's
+  /// tolerance for a partially-cleaned workspace.
+  private async adoptWorkspaceMembers(run: FlowRun): Promise<void> {
+    const pending = this.pendingWorkspaceMembers(run);
+    if (pending.length === 0) return;
+    const minted = run.workspaceWorktrees;
+    if (!minted) return;
+
+    const settings = this.getSettings();
+    const branchPrefix = settings.agentBranchPrefix || 'agent/';
+    // Reuse the run's existing branch name so an adopted repo lands on the
+    // same branch as its siblings rather than inventing a second one.
+    const agentName = minted[0].branchName.startsWith(branchPrefix)
+      ? minted[0].branchName.slice(branchPrefix.length)
+      : minted[0].branchName;
+
+    for (const member of pending) {
+      let baseBranch: string;
+      if (run.baseBranch && (await baseBranchExistsAsync(member.path, run.baseBranch))) {
+        baseBranch = run.baseBranch;
+      } else {
+        baseBranch = await detectBaseBranchAsync(member.path);
+      }
+      const created = await createWorktreeAsync({
+        projectPath: member.path,
+        agentName,
+        baseBranch,
+        branchPrefix,
+      });
+      if (!created.ok) {
+        log('warn', 'flows', `Could not adopt ${member.name} into run ${run.id}: ${created.error}`);
+        continue;
+      }
+      minted.push({
+        name: member.name,
+        projectPath: member.path,
+        worktreePath: created.worktreePath,
+        branchName: created.branchName,
+      });
+      const head = await runGitAsync(['rev-parse', 'HEAD'], created.worktreePath);
+      const commit = head.exitCode === 0 ? head.stdout.trim() : '';
+      if (commit) {
+        run.baselineCommitsByMember = {
+          ...(run.baselineCommitsByMember ?? {}),
+          [member.name]: { path: created.worktreePath, commit },
+        };
+      }
+      log('info', 'flows', `Adopted ${member.name} into run ${run.id} at ${created.worktreePath}`);
+    }
+
+    // Rebuild the farm from the FULL member list — this reconciles by
+    // removing symlinks it doesn't recognize, so a partial list would unlink
+    // the members the run has been working in.
+    const linked = ensureCoordinatorSymlinkRoot(
+      run.id,
+      minted.map((m) => ({ name: m.name, worktreePath: m.worktreePath })),
+    );
+    if (!linked.ok) {
+      log('warn', 'flows', `Could not relink run ${run.id}'s workspace root: ${linked.error}`);
+    }
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+  }
+
+  /// Resume/rerun entry points run the adoption first when the workspace has
+  /// grown, then do the real thing. Both callers are synchronous and return
+  /// immediately, so this hands back `{ ok: true }` and lets the git work
+  /// settle before the step starts — the step must not open in a root whose
+  /// new symlink isn't there yet.
+  private withWorkspaceAdoption(
+    runId: UUID,
+    proceed: () => { ok: true } | { ok: false; error: string },
+  ): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run || this.pendingWorkspaceMembers(run).length === 0) return proceed();
+    void this.adoptWorkspaceMembers(run).then(proceed, (err) => {
+      log('warn', 'flows', `Workspace adoption failed for run ${runId}`, err);
+      proceed();
+    });
+    return { ok: true };
+  }
+
   rerunFromStep(args: { runId: UUID; stepId: string }): { ok: true } | { ok: false; error: string } {
+    return this.withWorkspaceAdoption(args.runId, () => this.rerunFromStepInner(args));
+  }
+
+  private rerunFromStepInner(args: { runId: UUID; stepId: string }): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(args.runId);
     if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
     if (run.state.kind === 'running') {
@@ -1317,7 +1462,12 @@ export class FlowRuntimeImpl {
     const latest = this.latestAssistantTextByParticipant.get(`${runId}:${prior.participantId}`);
     const existingArtifact = run.artifacts[prior.output];
     if (latest && existingArtifact) {
-      const already = extractOutput(latest, prior.output);
+      const already = this.resolveArtifactBody(
+        latest,
+        prior.output,
+        run.projectPath,
+        this.lastAttemptStartedAt(run, prior.id),
+      );
       if (already !== null && already !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -1393,7 +1543,12 @@ export class FlowRuntimeImpl {
     // Re-extract from the finalize reply.
     const finalText = this.latestAssistantTextByParticipant.get(waitKey);
     if (finalText && existingArtifact) {
-      const refined = extractOutput(finalText, prior.output);
+      const refined = this.resolveArtifactBody(
+        finalText,
+        prior.output,
+        run.projectPath,
+        this.lastAttemptStartedAt(run, prior.id),
+      );
       if (refined !== null && refined !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -1611,6 +1766,12 @@ export class FlowRuntimeImpl {
     // transient "Continuing…" signal is no longer meaningful — clear it.
     if (run.pendingContinue) {
       delete run.pendingContinue;
+    }
+    // A queued correction is persisted and would otherwise survive an abort
+    // and resurface framed as fresh guidance on a `rerunFromStep` far later,
+    // for a step context the user has long forgotten.
+    if (run.pendingSteer) {
+      delete run.pendingSteer;
     }
     this.emitRunUpdate(run);
     this.checkpoint(run); // terminal — save final state
@@ -2172,6 +2333,36 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Queue a course correction for the next step to run. Valid while a step
+  /// is running AND while the run is paused: a pause is the moment the user
+  /// is most likely to want to correct what happens next, and the pending
+  /// step is known exactly. Only a finished run has nothing left to steer.
+  /// Empty text withdraws a queued steer.
+  steerRun(args: { runId: UUID; text: string }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    if (run.state.kind !== 'running' && run.state.kind !== 'paused') {
+      return { ok: false, error: 'This run has finished — there is no next step to correct.' };
+    }
+    const text = args.text.trim().slice(0, 2000);
+    if (!text) {
+      delete run.pendingSteer;
+    } else {
+      run.pendingSteer = {
+        text,
+        at: Date.now(),
+        // Only meaningful when a step was actually mid-flight: it becomes
+        // "Received while step X was running" in the block. A pause has no
+        // running step, and `buildSteerBlock` drops the clause when absent.
+        queuedDuringStepId:
+          run.state.kind === 'running' ? run.state.currentStepId : undefined,
+      };
+    }
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   private async executeStep(runId: UUID, stepId: string): Promise<void> {
     const run = this.runs.get(runId);
     if (!run) return;
@@ -2275,6 +2466,13 @@ export class FlowRuntimeImpl {
     // The model still receives the full `prompt` with role + contract,
     // so behavior doesn't change.
     const displayText = this.buildStepDisplayText(run, step);
+    if (run.pendingSteer) {
+      delete run.pendingSteer;
+      this.checkpoint(run);
+      // The pill in SteerBanner is driven by `pendingSteer`; without this
+      // it keeps claiming "queued" for the whole step that just spent it.
+      this.emitRunUpdate(run);
+    }
     // Both builders have read it — this attempt owns the feedback, so a
     // later step (or a manual re-run) doesn't get a stale rejection notice.
     if (this.retryFeedback.get(runId)?.targetStepId === step.id) {
@@ -2423,7 +2621,12 @@ export class FlowRuntimeImpl {
     const text = buf?.assistantText ?? '';
 
     const artifactKind = detectArtifactKind(step.output);
-    let artifactBody = extractOutput(text, step.output);
+    let artifactBody = this.resolveArtifactBody(
+      text,
+      step.output,
+      run.projectPath,
+      this.lastAttemptStartedAt(run, step.id),
+    );
 
     /// This step's own change, measured off the previous diff step's
     /// snapshot. Computed at most once per step: `computeIncrementalDiffForRun`
@@ -2667,6 +2870,7 @@ export class FlowRuntimeImpl {
     const next = run.flowSnapshot.steps[idx + 1];
     if (!next) {
       run.state = { kind: 'done', success: true };
+      delete run.pendingSteer; // no step left to carry it
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
       return;
@@ -2685,6 +2889,63 @@ export class FlowRuntimeImpl {
     run.state = { kind: 'running', currentStepId: next.id };
     this.emitRunUpdate(run);
     void this.executeStep(runId, next.id);
+  }
+
+  /// Resolve a step's artifact body from its final message, in priority
+  /// order: the strict inline block, then the pointer form, then — only if a
+  /// pointer was claimed and could not be honoured — whatever body was typed
+  /// alongside it. Everything failing leaves `null`, which is the same "no
+  /// output" the reask and on_fail paths already handle.
+  ///
+  /// `minMtimeMs` gates the pointer on freshness; see `readArtifactFileBody`.
+  private resolveArtifactBody(
+    text: string,
+    outputName: string,
+    runRoot: string,
+    minMtimeMs: number,
+  ): string | null {
+    const inline = extractOutput(text, outputName);
+    if (inline !== null) return inline;
+    // `url` artifacts never come from disk (see `stepAllowsFileRef`), so a
+    // `file=` attribute on one is noise around a typed value, not a pointer.
+    if (detectArtifactKind(outputName) === 'url') return extractOutputLooseBody(text, outputName);
+    const ref = extractOutputFileRef(text, outputName);
+    if (!ref) return null;
+    const abs = resolveArtifactFilePath(ref, runRoot);
+    if (!abs) {
+      log('warn', 'flows.outputFile', `pointer path outside run root, ignoring: ${ref}`);
+      return this.recoverTypedBody(text, outputName);
+    }
+    const body = readArtifactFileBody(abs, minMtimeMs);
+    if (body === null) {
+      log(
+        'warn',
+        'flows.outputFile',
+        `pointer file rejected (missing, empty, oversized, binary, or not written by this step): ${abs}`,
+      );
+      return this.recoverTypedBody(text, outputName);
+    }
+    return body;
+  }
+
+  /// The pointer was claimed and refused. If the model ALSO typed a body into
+  /// that same tag, it is the deliverable and throwing it away would spend a
+  /// whole extra turn re-asking for text we already have.
+  private recoverTypedBody(text: string, outputName: string): string | null {
+    const typed = extractOutputLooseBody(text, outputName);
+    if (typed !== null) {
+      log('info', 'flows.outputFile', `recovered inline body from a pointer tag for "${outputName}"`);
+    }
+    return typed;
+  }
+
+  /// Start time of the most recent attempt at `stepId`, or 0 when the run has
+  /// no record of one. Used as the pointer-freshness floor.
+  private lastAttemptStartedAt(run: FlowRun, stepId: string): number {
+    for (let i = run.attempts.length - 1; i >= 0; i--) {
+      if (run.attempts[i].stepId === stepId) return run.attempts[i].startedAt;
+    }
+    return 0;
   }
 
   /// A step finished without the `<output name="…">` wrapper. Ask its
@@ -2722,7 +2983,7 @@ export class FlowRuntimeImpl {
 
     const sendResult = this.runner.send({
       conversationId: convId,
-      prompt: missingOutputReaskPrompt(step.output),
+      prompt: missingOutputReaskPrompt(step.output, stepAllowsFileRef(step, stepModel.backend)),
       displayText: `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
       backend: stepModel.backend,
       cwd: run.projectPath,
@@ -2760,6 +3021,10 @@ export class FlowRuntimeImpl {
 
     if (policy.action === 'abort') {
       run.state = { kind: 'aborted' };
+      // Same reason as `abortRun`: a queued correction is persisted, and a
+      // terminal run that is later re-run from a step must not replay it as
+      // if it were fresh guidance.
+      delete run.pendingSteer;
       this.emitRunUpdate(run);
       this.checkpoint(run); // terminal — save final state
       return;
@@ -2855,10 +3120,12 @@ export class FlowRuntimeImpl {
   }
 
   private buildStepPrompt(run: FlowRun, step: FlowStep): string {
+    const stepModel = resolveRunStepModel(run, step);
     const systemPrompt = resolveSystemPrompt({
       role: step.role,
       override: step.systemPromptOverride,
       outputName: step.output,
+      allowFileRef: stepAllowsFileRef(step, stepModel.backend),
     });
 
     // Each input becomes either an inline body (small enough to live in
@@ -2870,7 +3137,6 @@ export class FlowRuntimeImpl {
     type AttachedInput = { kind: 'attached'; name: string; path: string; size: number };
     type InputPart = InlineInput | AttachedInput;
 
-    const stepModel = resolveRunStepModel(run, step);
     const canAttach = stepModel.backend !== 'ollama';
 
     const rawInputs: Array<{ name: string; body: string }> = [];
@@ -2894,6 +3160,12 @@ export class FlowRuntimeImpl {
       if (art) rawInputs.push({ name: feedback.artifactName, body: art.body });
     }
     const retryBlock = feedback ? `${buildRetryFeedbackBlock(feedback)}\n\n---\n\n` : '';
+    // A steer arriving on the same step as a retry goes FIRST: the owner's
+    // live correction outranks a reviewer's earlier rejection.
+    const steer = run.pendingSteer;
+    const steerBlock = steer?.text.trim()
+      ? `${buildSteerBlock(steer.text, steer.queuedDuringStepId)}\n\n---\n\n`
+      : '';
     const workerBoundary = buildWorkerRunBoundary(run);
     const workerSupervision = buildWorkerSupervisionBoundary(run);
     const workerAnswer = this.workerAnswerFeedback.get(run.id);
@@ -2928,7 +3200,7 @@ export class FlowRuntimeImpl {
       stepModel.backend === 'ollama'
         ? FlowRuntimeImpl.PROMPT_BUDGET_OLLAMA
         : FlowRuntimeImpl.PROMPT_BUDGET_PREMIUM;
-    const overhead = systemPrompt.length + retryBlock.length + 500; // wrappers + instructions
+    const overhead = systemPrompt.length + steerBlock.length + retryBlock.length + 500; // wrappers + instructions
     const inlineParts = inputParts.filter(
       (p): p is InlineInput => p.kind === 'inline',
     );
@@ -2994,7 +3266,7 @@ export class FlowRuntimeImpl {
     const preamble = preambleNotes.length > 0 ? `\n\nNOTE: ${preambleNotes.join(' ')}` : '';
 
     return (
-      `${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
+      `${steerBlock}${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
       `<output name="${step.output}">…</output>.`
     );
@@ -3049,6 +3321,10 @@ export class FlowRuntimeImpl {
         `_↺ Retry ${feedback.attempt} of ${feedback.maxRetries} — sent back by ` +
           `**${feedback.fromStepId}**: ${feedback.reason}_`,
       );
+    }
+    const steerText = run.pendingSteer?.text.trim();
+    if (steerText) {
+      header.push(`_↯ Course correction applied: ${steerText}_`);
     }
     if (this.isParticipantContinuation(run, step)) {
       header.push(
@@ -3132,6 +3408,7 @@ export class FlowRuntimeImpl {
 
   private failRun(run: FlowRun, message: string): void {
     run.state = { kind: 'aborted' };
+    delete run.pendingSteer; // see `abortRun` — never replay it on a re-run
     this.emitRunUpdate(run);
     this.emit({ type: 'error', conversationId: run.id, message });
   }
@@ -3407,7 +3684,8 @@ export function pauseReasonBeforeStep(
 /// and report-update flows need that — but destinations must be relative to the
 /// disposable run root. This catches the concrete escape shape (`named
 /// /persistent/workspace/report.html`) without rejecting a plain `Read
-/// /persistent/workspace/prior.html` input.
+/// /persistent/workspace/prior.html` input, or a prompt that names the path
+/// only to exclude it (`write it to a relative path, never into /persistent/workspace`).
 export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: string): boolean {
   const normalizedPrompt = prompt.replace(/\\/g, '/').toLowerCase();
   const normalizedRoot = sourceRoot.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -3434,6 +3712,19 @@ export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: s
       'i',
     );
     if (negated.test(before)) continue;
+
+    // The path is often quoted as a PROHIBITION — "write it to a relative path
+    // (never into /persistent/workspace)". The write verb earlier in the same
+    // sentence made that read as a destination and refused the launch. A
+    // negative direction that runs right up to the path is an exclusion, not a
+    // destination.
+    const excluded = new RegExp(
+      `\\b(?:never|not|avoid|rather than|instead of|outside(?:\\s+of)?|other than|excluding|except)\\s*` +
+        `(?:${writeVerb}|writing|saving|creating|placing|putting|copying|moving|publishing)?\\s*` +
+        `(?:back\\s+)?(?:into|inside|within|under|in|to|at)?\\s*[('"\`]*$`,
+      'i',
+    );
+    if (excluded.test(before)) continue;
 
     const destination = new RegExp(
       `(?:` +
@@ -3511,23 +3802,12 @@ export function buildWorkerAnswerBlock(question: string, answer: string): string
   ].join('\n');
 }
 
-/// Prefer the explicit protocol tag. The narrow question-mark fallback keeps
-/// older flows useful: only a missing-output final response that ends as a
-/// direct question is promoted, never incidental questions inside prose.
-export function extractWorkerQuestion(text: string): string | null {
-  const tagged = text.match(/<worker_question\b[^>]*>([\s\S]*?)<\/worker_question\s*>/i)?.[1]?.trim();
-  if (tagged) return tagged.slice(0, 4_000);
-  // The compatibility fallback is deliberately plain text. Regex-based tag
-  // removal is not a sanitizer, so marked-up responses must use the explicit
-  // worker_question protocol above instead of being reinterpreted here.
-  if (text.includes('<') || text.includes('>')) return null;
-  const cleaned = text.trim();
-  if (!cleaned.endsWith('?')) return null;
-  const paragraphs = cleaned.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-  const last = paragraphs.at(-1) ?? '';
-  if (!last.endsWith('?') || last.length > 4_000) return null;
-  return last;
-}
+/// Re-exported so the runtime's own callers and tests keep one import site.
+/// The rule itself lives in shared/flows/workerQuestion.ts because the
+/// renderer's timeline matcher has to agree with it exactly — when the two
+/// had separate copies they drifted, and multi-paragraph questions stopped
+/// matching their answers.
+export { extractWorkerQuestion };
 
 /// Decide whether a reviewer's produced artifact represents an APPROVAL.
 /// The reviewer role prompts (see ../../shared/flows/roles.ts) instruct the
@@ -3579,6 +3859,29 @@ export interface FlowRetryFeedback {
   /// knows how many shots it has left.
   attempt: number;
   maxRetries: number;
+}
+
+/// Render the "your owner corrected you mid-flight" preamble. Same shape as
+/// `buildRetryFeedbackBlock`: a shouty header, a blank line, then substance.
+/// Placed ahead of the step's inputs because those inputs were produced
+/// BEFORE the correction and may contradict it.
+export function buildSteerBlock(text: string, duringStepId?: string): string {
+  const lines: string[] = [];
+  lines.push('COURSE CORRECTION FROM YOUR OWNER — read this before your inputs.');
+  lines.push('');
+  lines.push(
+    duringStepId
+      ? `Received while step "${duringStepId}" was running. It supersedes anything in your inputs that conflicts with it.`
+      : 'It supersedes anything in your inputs that conflicts with it.',
+  );
+  lines.push('');
+  lines.push(`  ${text.trim()}`);
+  lines.push('');
+  lines.push(
+    'Your inputs below were produced BEFORE this correction. Where they disagree with it, ' +
+      'the correction wins — say so explicitly in your output rather than silently splitting the difference.',
+  );
+  return lines.join('\n');
 }
 
 /// Render the "you're being sent back, here's why" preamble prepended to a
@@ -3644,12 +3947,21 @@ export function summarizeReviewRejection(reviewBody: string): string | null {
 /// recoverable cases explicitly — the artifact was written to a file, or it
 /// was narrated in chat — because in both the model tends to answer "I
 /// already did that" unless told the block itself is the missing part.
-export function missingOutputReaskPrompt(outputName: string): string {
+export function missingOutputReaskPrompt(outputName: string, allowFileRef = false): string {
+  const fileLines = [
+    `  - If you wrote it to a file, read that file back and paste its full contents inside the block.`,
+    ...(allowFileRef
+      ? [
+          `  - Or, if that file still holds the complete deliverable, point at it instead of retyping it:`,
+          `    <output name="${outputName}" file="relative/path/to/the/file" />`,
+        ]
+      : []),
+  ];
   return [
     `Your last reply did not contain an <output name="${outputName}"> block, so this step has nothing to hand to the next one.`,
     '',
     'Do not redo the work. Emit the deliverable you already produced:',
-    `  - If you wrote it to a file, read that file back and paste its full contents inside the block.`,
+    ...fileLines,
     '  - If you described it in your reply, restate it in full inside the block.',
     '',
     `Reply with ONLY this, and nothing else — no preamble, no commentary:`,
@@ -3696,6 +4008,135 @@ export function extractOutput(text: string, outputName: string): string | null {
   const cleaned = bodies.map((b) => b.replace(noiseRe, '').trim()).filter(Boolean);
   if (cleaned.length === 0) return null;
   return cleaned.join('\n').trim();
+}
+
+/// Hard cap on a filesystem-sourced artifact. Larger than the 256 KB
+/// persistence cap in runsStore, so nothing realistic is refused; a file
+/// past it falls back to the normal missing-output path rather than
+/// pulling an unbounded blob into memory and into downstream prompts.
+const MAX_OUTPUT_FILE_BYTES = 1024 * 1024;
+
+/// Slack allowed between a step's start and its pointer file's mtime, to
+/// absorb filesystem timestamp granularity. See `readArtifactFileBody`.
+const MTIME_GRACE_MS = 1_000;
+
+/// Pointer form of the output contract: `<output name="x" file="path" />`.
+/// The model has already written the deliverable with its Write tool, so
+/// re-typing it into the reply costs a full second decode of the artifact.
+///
+/// Returns the `file` attribute of the LAST matching tag, or null. Last, not
+/// first, because the shape this has to survive is a model correcting itself
+/// mid-reply ("…file=\"draft.md\" — sorry, I meant file=\"plan.md\""), and
+/// taking the first match hands the run the stale draft. `extractOutput`
+/// answers that same self-correction by concatenating every block it finds;
+/// there is nothing to concatenate here, so the last claim wins instead.
+export function extractOutputFileRef(text: string, outputName: string): string | null {
+  const tagRe = /<output\s+([^>]*?)\/?>/gi;
+  let m: RegExpExecArray | null;
+  let last: string | null = null;
+  while ((m = tagRe.exec(text)) !== null) {
+    const attrs = m[1];
+    const name = attrs.match(/\bname\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+    const file = attrs.match(/\bfile\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i);
+    if (!name || !file) continue;
+    const nameVal = (name[1] ?? name[2] ?? name[3] ?? '').trim();
+    const fileVal = (file[1] ?? file[2] ?? file[3] ?? '').trim();
+    if (nameVal.toLowerCase() !== outputName.toLowerCase()) continue;
+    if (fileVal) last = fileVal;
+  }
+  return last;
+}
+
+/// Last-resort body extraction: an `<output>` block whose opening tag carries
+/// EXTRA attributes (typically a `file=` pointer) around a real, typed body.
+/// `extractOutput`'s regex requires the name attribute to be followed
+/// immediately by `>`, so it cannot see these — which means a model that
+/// emitted BOTH a broken pointer and the full deliverable would otherwise
+/// have its deliverable thrown away. Only consulted after the pointer path
+/// has failed; the strict form always wins when it matches.
+export function extractOutputLooseBody(text: string, outputName: string): string | null {
+  const escaped = outputName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const blockRe = new RegExp(
+    `<output\\s+[^>]*\\bname\\s*=\\s*(?:"${escaped}"|'${escaped}'|${escaped})[^>]*>([\\s\\S]*?)</output\\s*>`,
+    'gi',
+  );
+  const bodies: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(text)) !== null) bodies.push(m[1]);
+  const noiseRe = /<\/?output(?:\s+[^>]*)?>/gi;
+  const cleaned = bodies.map((b) => b.replace(noiseRe, '').trim()).filter(Boolean);
+  if (cleaned.length === 0) return null;
+  return cleaned.join('\n').trim();
+}
+
+/// Resolve a pointer path against the run root, refusing anything that
+/// escapes it. Mirrors the boundary rule behind
+/// `workerPromptWritesToPersistentRoot`: a run may only source artifacts
+/// from its own disposable working directory. Absolute paths are allowed
+/// only when they land inside that root.
+export function resolveArtifactFilePath(rawPath: string, runRoot: string): string | null {
+  const cleaned = rawPath.trim().replace(/^["'<]+/, '').replace(/["'>]+$/, '').trim();
+  if (!cleaned || cleaned.includes('\0')) return null;
+  if (!runRoot) return null;
+  const root = resolve(runRoot);
+  const abs = isAbsolute(cleaned) ? resolve(cleaned) : resolve(root, cleaned);
+  if (abs !== root && !abs.startsWith(root + sep)) return null;
+  return abs;
+}
+
+/// Read a pointer artifact's body. Returns null for anything that isn't a
+/// readable, non-empty, in-budget, plausibly-textual regular file so the
+/// caller can fall back to the inline contract.
+///
+/// `minMtimeMs` is the freshness floor — normally the start of the attempt
+/// that emitted the pointer. It is what stops the pointer form from being a
+/// way to pass off a file the step did NOT write: the inline contract could
+/// only ever carry what the model actually produced, so without this check a
+/// mistyped path (an input, a source file, a previous step's scratch) becomes
+/// a plausible-looking artifact that nothing downstream can question. We only
+/// accept a file this step itself created or updated. Pass 0 to skip the
+/// check when no attempt timestamp is available.
+export function readArtifactFileBody(absPath: string, minMtimeMs = 0): string | null {
+  try {
+    const st = statSync(absPath);
+    if (!st.isFile()) return null;
+    if (st.size > MAX_OUTPUT_FILE_BYTES) return null;
+    if (minMtimeMs > 0 && st.mtimeMs + MTIME_GRACE_MS < minMtimeMs) return null;
+    const raw = readFileSync(absPath, 'utf8');
+    // Artifacts are text. A NUL byte means binary; U+FFFD means Node hit a
+    // byte sequence that isn't valid UTF-8 and substituted the replacement
+    // character. Either way the "artifact" would be mojibake, and every
+    // downstream consumer (prompt injection, markdown render, diff parse)
+    // treats it as prose. Refusing costs one reask; accepting corrupts the
+    // rest of the run silently.
+    if (raw.includes('\0') || raw.includes('�')) return null;
+    const body = raw.trim();
+    return body.length > 0 ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+/// Which steps may be offered the pointer form: only ones that can write
+/// files at all. Mirrors `resolvePermissionMode` — `step.tools` is an
+/// authoritative allowlist for Ollama only; other backends' tool surface
+/// is owned by their CLI.
+export function stepCanWriteFiles(step: Pick<FlowStep, 'tools'>, backend: Backend): boolean {
+  if (backend !== 'ollama') return true;
+  const writeTools = new Set(['write_file', 'edit_file', 'bash']);
+  return step.tools.some((t) => writeTools.has(t));
+}
+
+/// Whether this step's output contract should offer the pointer form at all.
+/// Beyond "can it write files", `url` artifacts are excluded: a `pr_url` is
+/// one line, so there is no duplicated decode to save, and sourcing it from a
+/// file only adds a way for the run to record a URL nobody typed.
+export function stepAllowsFileRef(
+  step: Pick<FlowStep, 'tools' | 'output'>,
+  backend: Backend,
+): boolean {
+  if (detectArtifactKind(step.output) === 'url') return false;
+  return stepCanWriteFiles(step, backend);
 }
 
 /// Dispatch wrapper: single-repo runs get one `computeRunDiff`; workspace
