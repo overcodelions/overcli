@@ -30,6 +30,12 @@ export interface BackendSendArgs {
   /// Speed-over-capability launch mode. Honored by the claude backend:
   /// forces `--effort low` and `--strict-mcp-config`.
   turbo?: boolean;
+  /// Skip the user's global MCP config (`--strict-mcp-config`) WITHOUT the
+  /// rest of turbo. Turbo also pins the cheapest thinking tier via
+  /// `resolveTurboEffort`, which is right for a speed-first coding turn and
+  /// wrong for a hidden drafting turn that wants full reasoning and simply
+  /// has no use for tools.
+  skipGlobalMcp?: boolean;
 }
 
 /// Lookups the runner exposes to a spec. Lets a spec resolve per-conv

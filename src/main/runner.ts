@@ -100,6 +100,10 @@ import { isSafeIdSegment } from '../shared/flows/safeId';
 
 type Emit = (event: MainToRendererEvent) => void;
 
+/// Error text for a turn the caller stopped on purpose. Callers match on it
+/// to stay quiet instead of showing a failure the user caused deliberately.
+export const ONE_SHOT_CANCELLED = 'Cancelled.';
+
 /// Result of a `RunnerManager.oneShot` call: the assistant's full text on
 /// success, or a surfaced error string.
 export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
@@ -513,6 +517,8 @@ interface SendArgs {
   /// Per-send turbo override. Undefined defers to the global setting;
   /// flow steps set it explicitly from `step.turbo`.
   turbo?: boolean;
+  /// See the note on `oneShot`'s `skipGlobalMcp`.
+  skipGlobalMcp?: boolean;
   codexRolloutPaths?: string[];
   attachments?: Attachment[];
   reviewBackend?: string | null;
@@ -810,6 +816,12 @@ export class RunnerManager {
   /// In-flight `oneShot` turns, keyed by their throwaway conversation id.
   /// `tapOneShot` accumulates assistant text into these and resolves them
   /// when the turn finishes — see `oneShot`.
+  /// Caller-supplied cancel handles → the throwaway conversation id of the
+  /// turn they belong to. `oneShot` mints its own id internally, so without
+  /// this a caller has nothing to name when it wants to stop a turn it
+  /// started.
+  private oneShotCancelKeys = new Map<string, UUID>();
+
   private oneShotWaiters = new Map<
     UUID,
     {
@@ -1109,6 +1121,20 @@ export class RunnerManager {
   /// ends, and never surfaces in the sidebar. Used by build-time helpers
   /// like the flow drafter that need a one-shot completion from whichever
   /// CLI the user prefers — not an interactive chat.
+  /// Stop an in-flight `oneShot` started with this `cancelKey`. Resolves the
+  /// turn as cancelled, which runs the same teardown as any other ending —
+  /// so the CLI subprocess dies rather than grinding on to its timeout with
+  /// nobody waiting for the answer. Returns false when there is nothing to
+  /// stop (already finished, or never started).
+  cancelOneShot(cancelKey: string): boolean {
+    const conversationId = this.oneShotCancelKeys.get(cancelKey);
+    if (!conversationId) return false;
+    const waiter = this.oneShotWaiters.get(conversationId);
+    if (!waiter || waiter.settled) return false;
+    waiter.finish({ ok: false, error: ONE_SHOT_CANCELLED });
+    return true;
+  }
+
   async oneShot(args: {
     backend: Backend;
     model: string;
@@ -1142,6 +1168,18 @@ export class RunnerManager {
     /// Throttle/coalesce on the consumer side; the runner calls it once per
     /// batched stream event.
     onProgress?: (snap: { text: string; tools: string[] }) => void;
+    /// Skip the user's global MCP config for this turn (`--strict-mcp-config`).
+    /// Every spawn otherwise boots each configured server before the first
+    /// token — seven of them on a well-connected machine — which dominates
+    /// the latency of a turn that never calls a tool. Opt-in, because the
+    /// orchestrator producer's whole job IS those servers.
+    ///
+    /// Deliberately NOT `turbo`: turbo also pins effort to 'low', which would
+    /// quietly downgrade every flow draft and worker hire.
+    skipGlobalMcp?: boolean;
+    /// Handle the caller can later pass to `cancelOneShot` to stop this turn
+    /// and reclaim its subprocess.
+    cancelKey?: string;
   }): Promise<OneShotResult> {
     const conversationId = randomUUID();
     const timeoutMs = args.timeoutMs ?? 120_000;
@@ -1154,6 +1192,7 @@ export class RunnerManager {
         clearTimeout(timer);
         idle.cancel();
         this.oneShotWaiters.delete(conversationId);
+        if (args.cancelKey) this.oneShotCancelKeys.delete(args.cancelKey);
         // Best-effort teardown so no subprocess / ACP session lingers. We
         // call the kill helpers directly rather than `stop()` because
         // `stop()` emits a `running:false` the renderer would see for this
@@ -1181,6 +1220,7 @@ export class RunnerManager {
           }),
       });
       idle.bump();
+      if (args.cancelKey) this.oneShotCancelKeys.set(args.cancelKey, conversationId);
       this.oneShotWaiters.set(conversationId, {
         text: '',
         settled: false,
@@ -1198,6 +1238,7 @@ export class RunnerManager {
         backend: args.backend,
         cwd: args.cwd,
         model: args.model,
+        skipGlobalMcp: args.skipGlobalMcp,
         // Default: pure generation with no edits, prompts off so the hidden
         // conversation can't stall on an unanswerable approval. Callers that
         // need unattended tool use (the producer) override this.
@@ -1282,6 +1323,7 @@ export class RunnerManager {
       allowedDirs: args.allowedDirs,
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       turbo: args.turbo ?? false,
+      skipGlobalMcp: args.skipGlobalMcp,
     };
   }
 

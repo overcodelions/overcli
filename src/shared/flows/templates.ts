@@ -240,6 +240,69 @@ steps:
     output: brief.md
 `;
 
+const CONTENT_REVIEW_YAML = `name: Review my documents
+description: |
+  Reads the documents in this project and writes a plain-language review
+  covering tone, claims and consistency. Never edits your originals.
+input: user_prompt
+steps:
+  - id: read
+    model: { backend: claude, model: claude-sonnet-5 }
+    role: researcher
+    inputs: [user_prompt]
+    tools: [Read, Grep, Glob]
+    output: notes.md
+
+  - id: review
+    model: { backend: claude, model: claude-opus-5 }
+    role: reviewer
+    inputs: [user_prompt, notes.md]
+    tools: [Read, Grep, Glob, Write]
+    output: review.md
+`;
+
+const POLICY_DOC_YAML = `name: Draft or update a policy
+description: |
+  Drafts a policy document, or updates an existing one against a
+  source-of-truth file, and lists every change it made in plain English.
+input: user_prompt
+steps:
+  - id: gather
+    model: { backend: claude, model: claude-sonnet-5 }
+    role: researcher
+    inputs: [user_prompt]
+    tools: [Read, Grep, Glob]
+    output: sources.md
+
+  - id: draft
+    model: { backend: claude, model: claude-opus-5 }
+    role: technical-writer
+    inputs: [user_prompt, sources.md]
+    tools: [Read, Grep, Glob, Write, Edit]
+    output: policy.md
+`;
+
+const SPREADSHEET_CLEANUP_YAML = `name: Clean up a spreadsheet export
+description: |
+  Normalises a messy CSV export and explains every change, row by row.
+  Your original file is left untouched.
+input: user_prompt
+steps:
+  - id: inspect
+    model: { backend: claude, model: claude-sonnet-5 }
+    role: researcher
+    inputs: [user_prompt]
+    tools: [Read, Grep, Glob]
+    output: findings.md
+
+  - id: clean
+    model: { backend: claude, model: claude-opus-5 }
+    role: editor
+    inputs: [user_prompt, findings.md]
+    tools: [Read, Grep, Glob, Write, Edit]
+    output: changelog.md
+`;
+
 export const FLOW_TEMPLATES: FlowTemplate[] = [
   {
     id: 'build-feature',
@@ -289,5 +352,26 @@ export const FLOW_TEMPLATES: FlowTemplate[] = [
     description: 'Read-only investigation with citations. No code changes.',
     icon: 'book',
     yaml: RESEARCH_TOPIC_YAML,
+  },
+  {
+    id: 'content-review',
+    name: 'Review my documents',
+    description: 'Read the drafts in this project and get tone, claims and consistency notes back.',
+    icon: 'magnifier',
+    yaml: CONTENT_REVIEW_YAML,
+  },
+  {
+    id: 'policy-document',
+    name: 'Draft or update a policy',
+    description: 'Write a policy, or update one against a source-of-truth document.',
+    icon: 'book',
+    yaml: POLICY_DOC_YAML,
+  },
+  {
+    id: 'spreadsheet-cleanup',
+    name: 'Clean up a spreadsheet',
+    description: 'Normalise a messy export and explain every change made.',
+    icon: 'compass',
+    yaml: SPREADSHEET_CLEANUP_YAML,
   },
 ];

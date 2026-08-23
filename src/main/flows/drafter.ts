@@ -533,6 +533,16 @@ export async function oneShotDraftText(
     attachments?: Attachment[];
     /// Verb for the no-CLI error: "No CLI is signed in to <verb> with."
     verb: string;
+    /// Override the model. `drafterModelFor` returns the backend's STRONGEST
+    /// model, which is right for "design a flow from one sentence" and wrong
+    /// for a small, mechanical rewrite — those want the fast tier and the
+    /// latency that comes with it.
+    model?: string;
+    /// Fires with the running assistant text as the turn streams, so a
+    /// caller can show the work instead of a spinner.
+    onProgress?: (text: string) => void;
+    /// Handle for `RunnerManager.cancelOneShot`, so a caller can stop the turn.
+    cancelKey?: string;
   },
 ): Promise<
   { ok: true; text: string; label: string; backend: Backend } | { ok: false; error: string }
@@ -554,7 +564,7 @@ export async function oneShotDraftText(
         'Set up Claude, Codex, Gemini, or Copilot in Settings first.',
     };
   }
-  const model = drafterModelFor(backend);
+  const model = args.model?.trim() || drafterModelFor(backend);
   const label = backendLabel(backend);
   const sys = args.buildSystemPrompt(backend);
 
@@ -574,7 +584,7 @@ export async function oneShotDraftText(
     !(args.attachments && args.attachments.length > 0);
   const text = useClaudeSdk
     ? await draftViaClaudeSdk(args.userMessage, model, sys, deps.settings.backendPaths.claude)
-    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage, args.attachments);
+    : await draftViaRunner(deps.runner, backend, model, sys, args.userMessage, args.attachments, args.onProgress, args.cancelKey);
   if (!text.ok) return text;
   return { ok: true, text: text.text, label, backend };
 }
@@ -643,6 +653,8 @@ async function draftViaRunner(
   systemPromptText: string,
   userMessage: string,
   attachments?: Attachment[],
+  onProgress?: (text: string) => void,
+  cancelKey?: string,
 ): Promise<OneShotResult> {
   const prompt = `${systemPromptText}\n\n---\n\n${userMessage}`;
   return runner.oneShot({
@@ -650,6 +662,16 @@ async function draftViaRunner(
     model,
     prompt,
     attachments,
+    // Drafting is pure text generation — the SDK sibling of this function
+    // disables tools outright. Booting the user's MCP servers first buys
+    // nothing and costs the whole cold start before the first token.
+    //
+    // `skipGlobalMcp`, not `turbo`: turbo would also pin effort to 'low',
+    // and this path runs the backend's strongest model against a large
+    // schema prompt precisely because the reasoning matters.
+    skipGlobalMcp: true,
+    cancelKey,
+    ...(onProgress ? { onProgress: (snap: { text: string }) => onProgress(snap.text) } : {}),
     cwd: os.homedir(),
     // `oneShot`'s flat 120s default was killing healthy drafts. Drafting runs
     // the backend's STRONGEST model against a large schema prompt and asks it

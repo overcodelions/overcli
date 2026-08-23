@@ -90,3 +90,27 @@ describe('fileExtensionKey', () => {
     expect(fileExtensionKey(null)).toBe('');
   });
 });
+
+describe('defaultFileViewMode — everyday projects', () => {
+  it('opens a document in split so it is obviously editable', () => {
+    expect(
+      defaultFileViewMode('/Users/me/Documents/Overcli Projects/Q3/BRIEF.md', false, undefined, undefined, true),
+    ).toBe('split');
+  });
+
+  it('leaves a code project on preview', () => {
+    expect(defaultFileViewMode('/repo/README.md', false, undefined, undefined, false)).toBe('preview');
+  });
+
+  it('never splits a file that cannot render', () => {
+    expect(
+      defaultFileViewMode('/Users/me/Documents/Overcli Projects/Q3/notes.txt', false, undefined, undefined, true),
+    ).toBe('edit');
+  });
+
+  it('still respects a remembered choice over the split default', () => {
+    expect(
+      defaultFileViewMode('/Users/me/Documents/Overcli Projects/Q3/BRIEF.md', false, undefined, 'edit', true),
+    ).toBe('edit');
+  });
+});

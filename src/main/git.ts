@@ -572,6 +572,277 @@ export async function createWorktreeAsync(
   return { ok: true, worktreePath, branchName };
 }
 
+/// Ceiling on a folder Overcli will start a history for. Text documents are
+/// orders of magnitude below it.
+export const MAX_INIT_BYTES = 500 * 1024 * 1024;
+
+/// Total bytes under a folder, ignoring the usual heavy directories. Used
+/// only as a guard, so an unreadable subtree counts as zero rather than
+/// failing the whole operation.
+function folderSizeBytes(root: string, depth = 0): number {
+  if (depth > 12) return 0;
+  let total = 0;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    if (entry.name === '.git' || entry.name === 'node_modules') continue;
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      total += folderSizeBytes(full, depth + 1);
+    } else if (entry.isFile()) {
+      try {
+        total += fs.statSync(full).size;
+      } catch {
+        // Vanished mid-walk; nothing to account for.
+      }
+    }
+  }
+  return total;
+}
+
+const DEFAULT_GITIGNORE = ['.DS_Store', 'Thumbs.db', '~$*', '*.tmp', 'node_modules/', ''].join('\n');
+
+/// Prepare a plain folder so Overcli can undo what it changes. Async because
+/// `git add -A` on a documents folder can take seconds, and `runGit` is
+/// spawnSync — the same reason `createWorktreeAsync` exists.
+export async function initRepo(
+  args: { projectPath: string },
+): Promise<{ ok: true; branch: string } | { ok: false; error: string }> {
+  const cwd = args.projectPath;
+  if (!fs.existsSync(cwd)) return { ok: false, error: `${cwd} does not exist.` };
+  const already = await runGitAsync(['rev-parse', '--is-inside-work-tree'], cwd);
+  if (already.exitCode === 0 && already.stdout.trim() === 'true') {
+    return { ok: false, error: `${cwd} already has a history.` };
+  }
+  // Guard BEFORE `git init`: everything here becomes a permanent blob, and
+  // git can never reclaim it. A documents folder is nowhere near this; a
+  // folder of video is, and "Turn on history" would silently double it.
+  const bytes = folderSizeBytes(cwd);
+  if (bytes > MAX_INIT_BYTES) {
+    return {
+      ok: false,
+      error:
+        `This folder holds ${Math.round(bytes / 1024 / 1024)} MB. Keeping a history of it would ` +
+        'roughly double that on disk, so Overcli has left it alone.',
+    };
+  }
+  const init = await runGitAsync(['init'], cwd);
+  if (init.exitCode !== 0) return { ok: false, error: init.stderr.trim() || init.stdout.trim() };
+  await runGitAsync(['symbolic-ref', 'HEAD', 'refs/heads/main'], cwd);
+  const ignorePath = path.join(cwd, '.gitignore');
+  if (!fs.existsSync(ignorePath)) fs.writeFileSync(ignorePath, DEFAULT_GITIGNORE, 'utf-8');
+  const add = await runGitAsync(['add', '-A'], cwd);
+  if (add.exitCode !== 0) return { ok: false, error: add.stderr.trim() || add.stdout.trim() };
+  const email = await runGitAsync(['config', 'user.email'], cwd);
+  const identity = email.stdout.trim()
+    ? []
+    : ['-c', 'user.name=Overcli', '-c', 'user.email=overcli@localhost'];
+  const commit = await runGitAsync(
+    [...identity, 'commit', '--allow-empty', '-m', 'Starting point'], cwd,
+  );
+  if (commit.exitCode !== 0) return { ok: false, error: commit.stderr.trim() || commit.stdout.trim() };
+  return { ok: true, branch: 'main' };
+}
+
+export async function removeRepoHistory(
+  args: { projectPath: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const gitDir = path.join(args.projectPath, '.git');
+  if (!fs.existsSync(gitDir)) return { ok: false, error: 'No history to remove.' };
+  const top = await runGitAsync(['rev-parse', '--show-toplevel'], args.projectPath);
+  if (top.exitCode !== 0 || fs.realpathSync(top.stdout.trim()) !== fs.realpathSync(args.projectPath)) {
+    return { ok: false, error: 'Refused: this folder is inside a larger repository.' };
+  }
+  try {
+    fs.rmSync(gitDir, { recursive: true, force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/// Async sibling of `commitAll`. Checkpoints fire on ordinary editing, so
+/// they must never block the main thread the way `runGit` does.
+export async function commitAllAsync(
+  args: { cwd: string; message: string },
+): Promise<{ ok: true; sha: string } | { ok: false; error: string; nothingToCommit?: boolean }> {
+  const message = args.message.trim();
+  if (!message) return { ok: false, error: 'Commit message is empty.' };
+  const repoCheck = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.cwd);
+  if (repoCheck.exitCode !== 0 || repoCheck.stdout.trim() !== 'true') {
+    return { ok: false, error: `${args.cwd} isn't a git working tree.` };
+  }
+  const status = await runGitAsync(['status', '--porcelain'], args.cwd);
+  if (status.exitCode !== 0) {
+    return { ok: false, error: status.stderr.trim() || status.stdout.trim() };
+  }
+  // Nothing changed is the common case for a periodic checkpoint, and it is
+  // not an error — the caller just shouldn't log it as one.
+  if (!status.stdout.trim()) return { ok: false, error: 'Nothing to save.', nothingToCommit: true };
+  const add = await runGitAsync(['add', '-A'], args.cwd);
+  if (add.exitCode !== 0) return { ok: false, error: add.stderr.trim() || add.stdout.trim() };
+  const email = await runGitAsync(['config', 'user.email'], args.cwd);
+  const identity = email.stdout.trim()
+    ? []
+    : ['-c', 'user.name=Overcli', '-c', 'user.email=overcli@localhost'];
+  const commit = await runGitAsync([...identity, 'commit', '-m', message], args.cwd);
+  if (commit.exitCode !== 0) {
+    return { ok: false, error: commit.stderr.trim() || commit.stdout.trim() };
+  }
+  const sha = await runGitAsync(['rev-parse', 'HEAD'], args.cwd);
+  return { ok: true, sha: sha.stdout.trim() };
+}
+
+/// Record + field separators for the log format below. ASCII 30/31 exist for
+/// exactly this and cannot appear in a commit subject or a path.
+const LOG_RECORD_SEP = '\x1e';
+const LOG_FIELD_SEP = '\x1f';
+
+/// `--numstat` renders a rename inline rather than as two paths:
+/// `old.md => new.md`, or `dir/{old => new}/f.md` when only part of the path
+/// moved. Either form must resolve to the file that exists NOW — the raw
+/// string is not a path, so `git show -- <it>` returns nothing and opening it
+/// fails.
+export function resolveNumstatPath(raw: string): string {
+  const braced = raw.match(/^(.*)\{(.*) => (.*)\}(.*)$/);
+  if (braced) {
+    const [, prefix, , to, suffix] = braced;
+    return `${prefix}${to}${suffix}`.replace(/\/{2,}/g, '/');
+  }
+  const arrow = raw.indexOf(' => ');
+  return arrow >= 0 ? raw.slice(arrow + 4) : raw;
+}
+
+export interface ProjectVersionFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  /// `--numstat` reports `-` for both counts on a binary, which is how we
+  /// know not to offer a line diff for it.
+  binary: boolean;
+}
+
+export interface ProjectVersion {
+  sha: string;
+  /// ISO 8601, author date.
+  at: string;
+  subject: string;
+  files: ProjectVersionFile[];
+}
+
+/// Newest-first list of versions, with the files each one touched. Parsed
+/// from a single `git log` rather than one call per commit.
+export async function readProjectLog(
+  args: { cwd: string; limit?: number },
+): Promise<{ ok: true; versions: ProjectVersion[] } | { ok: false; error: string }> {
+  const res = await runGitAsync(
+    [
+      // Without this a `Résumé.md` comes back as `"R\303\251sum\303\251.md"`,
+      // which is then shown as the filename, returns nothing from `git show
+      // -- <it>`, and never matches a document extension.
+      '-c',
+      'core.quotePath=false',
+      'log',
+      `-n${args.limit ?? 50}`,
+      `--format=${LOG_RECORD_SEP}%H${LOG_FIELD_SEP}%aI${LOG_FIELD_SEP}%s`,
+      // numstat, not name-only: a version row that cannot say how much moved
+      // is barely more use than the commit subject on its own.
+      '--numstat',
+    ],
+    args.cwd,
+  );
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
+  }
+  const versions: ProjectVersion[] = [];
+  for (const record of res.stdout.split(LOG_RECORD_SEP)) {
+    if (!record.trim()) continue;
+    const [header, ...rest] = record.split(/\r?\n/);
+    const [sha, at, ...subjectParts] = header.split(LOG_FIELD_SEP);
+    if (!sha) continue;
+    versions.push({
+      sha,
+      at: at ?? '',
+      subject: subjectParts.join(LOG_FIELD_SEP),
+      files: rest
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [added, deleted, ...pathParts] = line.split('\t');
+          const binary = added === '-' || deleted === '-';
+          return {
+            path: resolveNumstatPath(pathParts.join('\t')),
+            additions: binary ? 0 : Number(added) || 0,
+            deletions: binary ? 0 : Number(deleted) || 0,
+            binary,
+          };
+        })
+        .filter((f) => f.path),
+    });
+  }
+  return { ok: true, versions };
+}
+
+/// The patch a single version introduced, for one file or all of them.
+/// Rendered by the versions panel so "what changed" is something you can
+/// read rather than a count you have to take on trust.
+export async function readVersionDiff(
+  args: { cwd: string; sha: string; file?: string },
+): Promise<{ ok: true; diff: string } | { ok: false; error: string }> {
+  const res = await runGitAsync(
+    [
+      'show',
+      args.sha,
+      '--format=',
+      '--no-color',
+      ...(args.file ? ['--', args.file] : []),
+    ],
+    args.cwd,
+  );
+  if (res.exitCode !== 0) {
+    return { ok: false, error: res.stderr.trim() || res.stdout.trim() };
+  }
+  return { ok: true, diff: res.stdout };
+}
+
+/// Put the folder back to how it was at `sha`, as a NEW version on top.
+///
+/// Never rewinds history: the current state is checkpointed first, then the
+/// old tree is written over the working copy and committed. So restoring is
+/// itself undoable — which is the whole point of offering it to someone who
+/// cannot read a git log.
+export async function restoreProjectVersion(
+  args: { cwd: string; sha: string; label: string },
+): Promise<{ ok: true; sha: string } | { ok: false; error: string }> {
+  const verify = await runGitAsync(['rev-parse', '--verify', `${args.sha}^{commit}`], args.cwd);
+  if (verify.exitCode !== 0) return { ok: false, error: 'That version no longer exists.' };
+
+  // Safety net first. `nothingToCommit` is fine — it means the folder was
+  // already clean, so there is nothing at risk.
+  const guard = await commitAllAsync({ cwd: args.cwd, message: 'Before restoring' });
+  if (!guard.ok && !guard.nothingToCommit) return { ok: false, error: guard.error };
+
+  // `read-tree -u --reset` makes the working tree and index match the old
+  // commit exactly — including files added since, which a `checkout -- .`
+  // would leave behind. HEAD is untouched, so the next commit lands on top.
+  const reset = await runGitAsync(['read-tree', '-u', '--reset', args.sha], args.cwd);
+  if (reset.exitCode !== 0) {
+    return { ok: false, error: reset.stderr.trim() || reset.stdout.trim() };
+  }
+  const done = await commitAllAsync({ cwd: args.cwd, message: `Restored ${args.label}` });
+  if (!done.ok) {
+    if (done.nothingToCommit) {
+      return { ok: false, error: 'That version is the same as what you have now.' };
+    }
+    return { ok: false, error: done.error };
+  }
+  return { ok: true, sha: done.sha };
+}
+
 /// Is `agentName` already used by a worktree dir or branch in this repo?
 /// Lets callers pick a clean, human-meaningful name (e.g. `WOW-1234`) and
 /// only fall back to a numbered suffix when there's an actual collision,

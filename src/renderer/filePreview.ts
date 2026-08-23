@@ -1,4 +1,7 @@
-export type FileViewMode = 'edit' | 'preview' | 'diff';
+/// `split` is edit + live preview side by side. It only makes sense for the
+/// previewable text formats (markdown, html), which is why the button is
+/// gated on `canPreviewFile` rather than offered everywhere.
+export type FileViewMode = 'edit' | 'preview' | 'diff' | 'split';
 
 export type FilePreviewKind =
   | 'html'
@@ -124,12 +127,26 @@ export function defaultFileViewMode(
   hasHighlight: boolean,
   requestedMode?: FileViewMode,
   rememberedMode?: FileViewMode,
+  /// Everyday projects open a document in `split` — rendered on the right,
+  /// editable on the left. A code project keeps `preview`, where reading a
+  /// rendered README is usually the whole intent; someone whose project IS
+  /// documents is there to write, and preview alone makes the file look
+  /// read-only.
+  preferSplit?: boolean,
 ): FileViewMode {
   if (requestedMode === 'preview' && !canPreviewFile(filePath)) return 'edit';
   if (requestedMode) return requestedMode;
   if (hasHighlight) return 'edit';
   if (rememberedMode) {
-    return rememberedMode === 'preview' && canPreviewFile(filePath) ? 'preview' : 'edit';
+    // 'split' is as much a rendering mode as 'preview' — collapsing it to
+    // 'edit' meant choosing Split once turned it off for good.
+    if ((rememberedMode === 'preview' || rememberedMode === 'split') && canPreviewFile(filePath)) {
+      return rememberedMode;
+    }
+    return rememberedMode === 'preview' || rememberedMode === 'split' ? 'edit' : rememberedMode;
   }
-  return rendersByDefault(filePath) ? 'preview' : 'edit';
+  if (!rendersByDefault(filePath)) return 'edit';
+  // `rendersByDefault` covers markdown and HTML — both editable, so split is
+  // always meaningful here. Binary artifacts never reach this branch.
+  return preferSplit ? 'split' : 'preview';
 }

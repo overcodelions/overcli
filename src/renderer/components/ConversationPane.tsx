@@ -9,6 +9,7 @@ import { FileEditorPane } from './FileEditorPane';
 import { ExplorerPane } from './ExplorerPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
+import { isEverydayProject } from '@shared/everydayProjects';
 import { RunningIndicator } from './RunningIndicator';
 import { ManualCommand } from './ManualCommand';
 import { useConversation } from '../hooks';
@@ -65,6 +66,16 @@ export function ConversationPane() {
   // push, stash, …) that don't show up in editCount. One extra refresh
   // per turn — cheap, and avoids per-Bash-call refresh churn.
   const completedAt = useRunnerCompletedAt(convId);
+  // Plain-language change labels belong to everyday projects, not to the
+  // user. Derived per conversation so a repo never inherits the vocabulary
+  // of a documents folder that happens to live in the same sidebar.
+  const plainLanguage = useStore((s) =>
+    s.projects.some(
+      (p) =>
+        isEverydayProject(p) &&
+        p.conversations.some((c) => c.id === convId),
+    ),
+  );
   useEffect(() => {
     if (!convId) return;
     void refreshGitStatus(convId);
@@ -120,7 +131,7 @@ export function ConversationPane() {
         <ChatView conversationId={convId} />
         <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
           <RunningIndicator conversationId={convId} />
-          <ChangesBar files={gitStatus?.changes ?? []} />
+          <ChangesBar files={gitStatus?.changes ?? []} plain={plainLanguage} />
           <InputBar conversationId={convId} />
           <StatsFooter conversationId={convId} />
         </div>

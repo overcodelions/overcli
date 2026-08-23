@@ -474,6 +474,7 @@ export function CodeMirrorEditor({
   highlightRange,
   language,
   onSymbolNavigate,
+  onSelectionChange,
 }: {
   content: string;
   onChange: (v: string) => void;
@@ -483,6 +484,11 @@ export function CodeMirrorEditor({
   /// it to a definition site and opens it; this component only reports
   /// which word was clicked and on what line.
   onSymbolNavigate?: (args: { symbol: string; line: number }) => void;
+  /// Fires whenever the selection moves. Lets a host scope an operation to
+  /// what the user highlighted instead of the whole document.
+  onSelectionChange?: (
+    sel: { from: number; to: number; text: string; lineCount: number } | null,
+  ) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -492,6 +498,10 @@ export function CodeMirrorEditor({
   // re-render that hands us a new function identity.
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  // Same ref trick, same reason: the listener is baked into the mount-once
+  // extension list and must read the latest callback through a ref.
+  const onSelectionChangeRef = useRef(onSelectionChange);
+  onSelectionChangeRef.current = onSelectionChange;
   // Same ref trick for the navigate callback — the DOM handler is baked
   // into the mount-once extension list, so it has to read through a ref to
   // see the current closure.
@@ -607,6 +617,21 @@ export function CodeMirrorEditor({
         ),
         EditorView.updateListener.of((u) => {
           if (u.docChanged) onChangeRef.current(u.state.doc.toString());
+          if (!u.selectionSet && !u.docChanged) return;
+          const report = onSelectionChangeRef.current;
+          if (!report) return;
+          const range = u.state.selection.main;
+          if (range.empty) {
+            report(null);
+            return;
+          }
+          const text = u.state.doc.sliceString(range.from, range.to);
+          report({
+            from: range.from,
+            to: range.to,
+            text,
+            lineCount: u.state.doc.lineAt(range.to).number - u.state.doc.lineAt(range.from).number + 1,
+          });
         }),
       ],
     });
