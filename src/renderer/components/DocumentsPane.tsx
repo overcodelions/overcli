@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { intakeAttachments } from '../attachmentIntake';
 import type { DocumentEntry } from '@shared/types';
 import { FileEditorPane } from './FileEditorPane';
+import { revealLabel } from '../platform';
 
 /// The documents view: what a non-engineer sees when they open their files.
 ///
@@ -199,7 +200,7 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
           onClick={() => window.overcli.invoke('fs:openInFinder', dir)}
           className="shrink-0 rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
         >
-          Show in Finder
+          {revealLabel()}
         </button>
         <button
           onClick={closeExplorer}
@@ -226,7 +227,8 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
             </div>
             <div className="text-sm font-medium text-ink mt-1">Nothing here yet</div>
             <div className="text-xs text-ink-muted max-w-[380px] leading-relaxed">
-              Drag documents in from Finder, or use <span className="text-ink">New document</span> to
+              Drag documents in from your file manager, or use{' '}
+              <span className="text-ink">New document</span> to
               describe what you want and have one written for you.
             </div>
           </div>

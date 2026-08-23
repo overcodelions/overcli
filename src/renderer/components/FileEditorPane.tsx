@@ -569,7 +569,6 @@ export const FileEditorPane = memo(function FileEditorPane({
   /// a file that was only ever looked at, and claims the agent's writes as
   /// the user's edit.
   const editedRef = useRef(false);
-  const bodyRef = useRef<HTMLDivElement>(null);
   // Offsets belong to one document. Preview mode never mounts CodeMirror, so
   // nothing would clear a selection made in the previous file — and the Ask
   // bar would splice a reply into the new one at the old one's offsets.
@@ -578,32 +577,6 @@ export const FileEditorPane = memo(function FileEditorPane({
     editedRef.current = false;
   }, [path]);
 
-  // A person reading the rendered half of Split highlights the paragraph they
-  // mean, not its markdown. The DOM offsets are into the rendered HTML, so
-  // they are useless directly — but the selected TEXT can be located in the
-  // source, and when it occurs exactly once that is an unambiguous mapping.
-  // Ambiguous or unfound selections fall back to the whole document rather
-  // than guessing at an offset.
-  useEffect(() => {
-    const host = bodyRef.current;
-    if (!host) return;
-    const onSelect = () => {
-      const sel = window.getSelection();
-      const text = sel?.toString() ?? '';
-      if (!sel || sel.isCollapsed || !text.trim()) return;
-      if (!host.contains(sel.anchorNode)) return;
-      const from = content.indexOf(text);
-      if (from < 0 || content.indexOf(text, from + 1) >= 0) return;
-      setSelection({
-        from,
-        to: from + text.length,
-        text,
-        lineCount: text.split('\n').length,
-      });
-    };
-    document.addEventListener('selectionchange', onSelect);
-    return () => document.removeEventListener('selectionchange', onSelect);
-  }, [content, path]);
   useEffect(() => {
     if (!autoSaves || !dirty || !path || reviewPending) return;
     const timer = setTimeout(() => void save(), AUTO_SAVE_IDLE_MS);
@@ -933,7 +906,7 @@ export const FileEditorPane = memo(function FileEditorPane({
             </button>
           </div>
         </div>
-        <div ref={bodyRef} className="relative flex-1 min-h-0 overflow-auto">
+        <div className="relative flex-1 min-h-0 overflow-auto">
           {symbolNav && (
             <SymbolNavOverlay
               state={symbolNav}
@@ -1088,6 +1061,12 @@ function AskToEditBar({
   /// Live editor selection. When set, only this passage is sent for rewriting
   /// and the reply is spliced back by offset — the rest of the document is
   /// untouchable by construction rather than by asking the model nicely.
+  ///
+  /// Source pane only. Markdown and HTML previews render inside a sandboxed
+  /// `srcDoc` iframe (`FilePreview.tsx`), and `window.getSelection()` in this
+  /// document cannot see a selection made across that boundary — so scoping
+  /// from the rendered half would need the frame to post its selection out,
+  /// which means adding script to a document that is deliberately inert.
   selection?: { from: number; to: number; text: string; lineCount: number } | null;
   /// Lets the editor suppress auto-save while a proposal awaits a decision.
   onPendingChange?: (pending: boolean) => void;
