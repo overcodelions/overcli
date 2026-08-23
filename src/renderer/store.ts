@@ -40,7 +40,7 @@ import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
-import { looksLikeEverydayProjectPath, pickDocumentToShow } from '@shared/everydayProjects';
+import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
@@ -173,6 +173,7 @@ interface StoreState {
   compareDirty: boolean;
   /// Last view mode chosen per file extension. See uiSlice.
   fileViewModeByExt: Record<string, FileViewMode>;
+  everydayRoots: string[];
   /// Open editor tabs for the scope on screen, and the saved tabs for
   /// every other scope. See uiSlice + ./fileScope.ts.
   tabs: FileTab[];
@@ -505,6 +506,7 @@ interface StoreState {
   refreshGitStatus(conversationId: UUID): Promise<void>;
   refreshProjectGitStatus(projectId: UUID): Promise<void>;
   clearDocumentRevision(requestId: string): void;
+  refreshEverydayRoots(): void;
   checkpointProject(projectPath: string, message: string): Promise<void>;
   askAboutDocument(filePath: string): void;
   protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
@@ -1002,6 +1004,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }
     }
     if (workspacesChanged) await get().saveWorkspaces();
+    get().refreshEverydayRoots();
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
@@ -1242,6 +1245,7 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async addProject(project) {
     set((s) => ({ projects: [...s.projects, project] }));
+    get().refreshEverydayRoots();
     await get().saveProjects();
     void get().refreshProjectGitStatus(project.id);
   },
@@ -1351,6 +1355,7 @@ export const useStore = create<StoreState>((set, get) => ({
     });
     await get().saveProjects();
     await get().saveWorkspaces();
+    get().refreshEverydayRoots();
   },
 
   async removeWorkspace(id) {
@@ -3194,6 +3199,16 @@ export const useStore = create<StoreState>((set, get) => ({
     get().startNewConversation(project.id);
   },
 
+  /// Recompute the paths `uiSlice` consults. Called wherever the project
+  /// list changes, so "is this file in an everyday project?" has one answer
+  /// across the app instead of one per call site.
+  refreshEverydayRoots() {
+    const roots = get().projects.filter(isEverydayProject).map((p) => p.path);
+    const prev = get().everydayRoots;
+    if (prev.length === roots.length && prev.every((r, i) => r === roots[i])) return;
+    set({ everydayRoots: roots });
+  },
+
   clearDocumentRevision(requestId) {
     set((s) => {
       if (!(requestId in s.documentRevisions)) return {};
@@ -3381,7 +3396,7 @@ export const useStore = create<StoreState>((set, get) => ({
       if (justCompleted) {
         const project = get().projects.find(
           (p) =>
-            (p.everyday === true || looksLikeEverydayProjectPath(p.path)) &&
+            isEverydayProject(p) &&
             p.conversations.some((c) => c.id === event.conversationId),
         );
         const conv = project?.conversations.find((c) => c.id === event.conversationId);

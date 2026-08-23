@@ -14,6 +14,18 @@ export function looksLikeEverydayProjectPath(projectPath: string): boolean {
   return projectPath.split(/[\\/]/).includes(EVERYDAY_PROJECTS_DIRNAME);
 }
 
+/// The single answer to "is this an everyday project?".
+///
+/// Two signals, because neither alone is sufficient. `everyday` records
+/// INTENT at creation and survives the folder being moved; the path check
+/// catches projects scaffolded before that flag existed, and folders a user
+/// drops into the managed directory themselves. Call sites used to pick one
+/// or the other, so moving a project out of `~/Documents/Overcli Projects/`
+/// kept the documents grid but silently lost auto-save.
+export function isEverydayProject(project: { path: string; everyday?: boolean }): boolean {
+  return project.everyday === true || looksLikeEverydayProjectPath(project.path);
+}
+
 /// Plain-word labels for the file types a blank document can be, so the
 /// picker never makes a business user choose between "md" and "json".
 /// Markdown is first because it is the default.

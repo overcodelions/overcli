@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isDocumentLikePath,
+  isEverydayProject,
   isProseDocumentPath,
   pickDocumentToShow,
 } from './everydayProjects';
@@ -53,5 +54,27 @@ describe('isProseDocumentPath', () => {
     for (const p of ['/repo/src/runtime.ts', '/repo/build.py', '/repo/notes.txt']) {
       expect(isProseDocumentPath(p)).toBe(false);
     }
+  });
+});
+
+// The bug this predicate exists to stop: a project MOVED out of the managed
+// folder kept the documents grid (flag-or-path call sites) while silently
+// losing auto-save and the split default (path-only call sites).
+describe('isEverydayProject', () => {
+  it('recognises a scaffolded project wherever the folder now lives', () => {
+    expect(
+      isEverydayProject({ path: '/Users/me/Desktop/Moved out', everyday: true }),
+    ).toBe(true);
+  });
+
+  it('recognises one made before the flag existed, by where it sits', () => {
+    expect(
+      isEverydayProject({ path: '/Users/me/Documents/Overcli Projects/Marketing101' }),
+    ).toBe(true);
+  });
+
+  it('leaves an ordinary repo alone', () => {
+    expect(isEverydayProject({ path: '/Users/me/git-services/overcli' })).toBe(false);
+    expect(isEverydayProject({ path: '/Users/me/git-services/overcli', everyday: false })).toBe(false);
   });
 });

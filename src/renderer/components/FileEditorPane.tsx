@@ -27,7 +27,7 @@ import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
 import { Diff } from './DiffView';
-import { isProseDocumentPath, looksLikeEverydayProjectPath } from '@shared/everydayProjects';
+import { isEverydayProject, isProseDocumentPath } from '@shared/everydayProjects';
 import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
 
 // Feature flag: route the editable file view through CodeMirror 6.
@@ -544,7 +544,17 @@ export const FileEditorPane = memo(function FileEditorPane({
   // `content` in the dependencies is what makes this "idle" rather than
   // "every five seconds": each keystroke re-runs the effect and restarts the
   // timer, so the write lands only once typing actually stops.
-  const autoSaves = looksLikeEverydayProjectPath(rootPath ?? path ?? '');
+  // Resolved from the owning PROJECT, not from the path alone. A project
+  // moved out of `~/Documents/Overcli Projects/` keeps its `everyday` flag,
+  // and used to keep the documents grid while silently losing auto-save.
+  const autoSaves = useStore((s) => {
+    const target = rootPath ?? path ?? '';
+    if (!target) return false;
+    const owner = s.projects.find(
+      (p) => target === p.path || target.startsWith(`${p.path}/`),
+    );
+    return owner ? isEverydayProject(owner) : false;
+  });
   const checkpointProject = useStore((s) => s.checkpointProject);
   const [selection, setSelection] = useState<
     { from: number; to: number; text: string; lineCount: number } | null

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '../store';
-import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
+import { isEverydayProject } from '@shared/everydayProjects';
 
 /// What the explorer shows with nothing picked yet.
 ///
@@ -94,7 +94,7 @@ export function ExplorerLanding() {
                 <span className="min-w-0">
                   <span className="block text-xs font-medium text-ink truncate">{p.name}</span>
                   <span className="block text-[11px] text-ink-faint truncate">
-                    {looksLikeEverydayProjectPath(p.path) || p.everyday
+                    {isEverydayProject(p)
                       ? 'Everyday project'
                       : 'Code project'}
                   </span>

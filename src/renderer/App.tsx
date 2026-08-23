@@ -14,7 +14,7 @@ import { LocalPane } from './components/LocalPane';
 import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
 import { DocumentsPane } from './components/DocumentsPane';
-import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
+import { isEverydayProject } from '@shared/everydayProjects';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
@@ -62,7 +62,7 @@ export function App() {
     ? allProjects.find(
         (p) =>
           p.path === explorerRootPath &&
-          (p.everyday === true || looksLikeEverydayProjectPath(p.path)),
+          isEverydayProject(p),
       )
     : undefined;
   const subagentDrawerParentId = useStore((s) => s.subagentDrawerParentId);

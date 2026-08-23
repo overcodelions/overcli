@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
-import { DOCUMENT_TYPES, looksLikeEverydayProjectPath } from '@shared/everydayProjects';
+import { DOCUMENT_TYPES, isEverydayProject } from '@shared/everydayProjects';
 
 /// Two ways to start a document, in one sheet.
 ///
@@ -26,6 +26,9 @@ export function NewDocumentSheet({ dirPath }: { dirPath: string }) {
   const openSheet = useStore((s) => s.openSheet);
   const openFile = useStore((s) => s.openFile);
   const checkpointProject = useStore((s) => s.checkpointProject);
+  const inEverydayProject = useStore((s) =>
+    s.projects.some((p) => (dirPath === p.path || dirPath.startsWith(`${p.path}/`)) && isEverydayProject(p)),
+  );
   const [mode, setMode] = useState<Mode>('describe');
   const [description, setDescription] = useState('');
   const [name, setName] = useState('');
@@ -52,7 +55,7 @@ export function NewDocumentSheet({ dirPath }: { dirPath: string }) {
     // Everyday projects only. This sheet is also reachable from a code repo
     // via the explorer's "+ Document", and committing someone's entire dirty
     // working tree because they made a note would be indefensible.
-    if (looksLikeEverydayProjectPath(dirPath)) {
+    if (inEverydayProject) {
       void checkpointProject(dirPath, `Created ${created}`);
     }
     openSheet(null);

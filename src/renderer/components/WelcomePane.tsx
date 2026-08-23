@@ -9,7 +9,7 @@ import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
 import { CopyButton } from './ManualCommand';
 import { ProjectFilesBubble } from './ProjectFilesBubble';
-import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
+import { isEverydayProject } from '@shared/everydayProjects';
 import {
   flowTagCounts,
   groupFlows,
@@ -199,13 +199,11 @@ export function WelcomePane() {
   // works, which used to route the most non-technical folders in the app into
   // the engineer copy ("What should we build in Marketing101?"). Intent is
   // recorded on the project now, so ask that instead of asking git.
-  const isEverydayProject =
-    !focusedWorkspace &&
-    !!selectedProject &&
-    (selectedProject.everyday === true || looksLikeEverydayProjectPath(selectedProject.path));
+  const isEverydayFolder =
+    !focusedWorkspace && !!selectedProject && isEverydayProject(selectedProject);
   const isNonGitProject =
     (!focusedWorkspace && !!selectedProject && projectIsGitRepo[selectedProject.id] === false) ||
-    isEverydayProject;
+    isEverydayFolder;
   // Agent mode mints git worktrees: one for a single git-backed project,
   // or one per member repo for a workspace (wired through a coordinator).
   // Excludes non-git folders and empty workspaces.

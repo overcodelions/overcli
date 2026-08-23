@@ -9,7 +9,7 @@ import { FileEditorPane } from './FileEditorPane';
 import { ExplorerPane } from './ExplorerPane';
 import { ResizableDivider } from './ResizableDivider';
 import { ChangesBar } from './ChangesBar';
-import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
+import { isEverydayProject } from '@shared/everydayProjects';
 import { RunningIndicator } from './RunningIndicator';
 import { ManualCommand } from './ManualCommand';
 import { useConversation } from '../hooks';
@@ -72,7 +72,7 @@ export function ConversationPane() {
   const plainLanguage = useStore((s) =>
     s.projects.some(
       (p) =>
-        (p.everyday === true || looksLikeEverydayProjectPath(p.path)) &&
+        isEverydayProject(p) &&
         p.conversations.some((c) => c.id === convId),
     ),
   );

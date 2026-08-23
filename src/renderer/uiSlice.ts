@@ -11,7 +11,6 @@
 // capabilities), and a data slice (projects, workspaces, conversations
 // + persistence). Doing them in stages keeps each PR reviewable.
 
-import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
 import { nextComparePick } from './comparePick';
 import type { ActiveSheet, DetailMode, OpenFileHighlight } from './store';
 import {
@@ -79,6 +78,9 @@ export interface UiSliceState {
   /// the next one rendered. Session-scoped: it is not persisted, so a fresh
   /// launch starts back at File for everything.
   fileViewModeByExt: Record<string, FileViewMode>;
+  /// Project roots that are everyday projects, kept in sync by the domain
+  /// store. Paths only, so this slice never learns what a `Project` is.
+  everydayRoots: string[];
   /// Open tabs for the scope currently on screen, left to right.
   tabs: FileTab[];
   /// Which scope `tabs` belongs to. Owned by `switchFileScope`, driven by
@@ -191,6 +193,7 @@ export const uiSliceInitialState: UiSliceState = {
   compareDirty: false,
   openFileMode: 'edit',
   fileViewModeByExt: {},
+  everydayRoots: [],
   tabs: [],
   fileScopeKey: null,
   fileTabsByScope: {},
@@ -300,6 +303,9 @@ function newTab(
   highlight: OpenFileHighlight | undefined,
   mode: FileViewMode | undefined,
   rememberedByExt: Record<string, FileViewMode>,
+  /// Project roots that are everyday projects. Paths, not `Project`s, so this
+  /// slice keeps its independence from domain state — see the file header.
+  everydayRoots: string[],
 ): FileTab {
   return {
     path,
@@ -308,7 +314,7 @@ function newTab(
       !!highlight,
       mode,
       rememberedByExt[fileExtensionKey(path)],
-      looksLikeEverydayProjectPath(path),
+      everydayRoots.some((root) => path === root || path.startsWith(`${root}/`)),
     ),
     highlight: highlight ?? null,
   };
@@ -327,7 +333,7 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
       // the explicit click is the newer intent. Trees that can lose unsaved
       // moves this way guard the click first (`onBeforeOpen`).
       set(((s) => ({
-        ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt)),
+        ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt, s.everydayRoots)),
         fileEditorSide: 'inline',
         compareBase: null,
         comparePair: null,
@@ -336,7 +342,7 @@ export function createUiSlice<T extends UiSlice>(set: SetFn<T>, get: () => T): U
     },
     openSideFile(path, highlight, mode) {
       set(((s) => ({
-        ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt)),
+        ...focusTabState(s, newTab(path, highlight, mode, s.fileViewModeByExt, s.everydayRoots)),
         fileEditorSide: 'side',
       })) as (s: T) => Partial<T>);
     },
