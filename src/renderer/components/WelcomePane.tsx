@@ -78,6 +78,7 @@ export function WelcomePane() {
   const addAttachment = useStore((s) => s.addAttachment);
   const clearAttachments = useStore((s) => s.clearAttachments);
   const setDraft = useStore((s) => s.setDraft);
+  const openSheet = useStore((s) => s.openSheet);
   const selectConversation = useStore((s) => s.selectConversation);
   const saveProjects = useStore((s) => s.saveProjects);
   const newWorkspaceAgent = useStore((s) => s.newWorkspaceAgent);
@@ -474,6 +475,23 @@ export function WelcomePane() {
             }}
           />
         )}
+        {selectedProject &&
+          !focusedWorkspace &&
+          !isEverydayFolder &&
+          projectIsGitRepo[selectedProject.id] === false && (
+            <div className="text-center text-xs text-ink-faint mb-4">
+              Working with documents rather than code?{' '}
+              <button
+                className="text-accent hover:underline"
+                onClick={() =>
+                  openSheet({ type: 'everydayConversion', projectId: selectedProject.id })
+                }
+              >
+                Make this an everyday project
+              </button>{' '}
+              and Overcli will show your documents, save as you type, and keep an undo history.
+            </div>
+          )}
         <Composer
           draftKey={WELCOME_KEY}
           autoFocus

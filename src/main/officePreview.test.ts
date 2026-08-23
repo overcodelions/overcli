@@ -9,6 +9,7 @@ import {
   inlineQuickLookAttachments,
   libreOfficeCandidates,
   officeFamilyForExtension,
+  parseSlideSize,
   readQuickLookAttachments,
   resolveOnPath,
 } from './officePreview';
@@ -298,5 +299,53 @@ describe('OFFICE_COM_SCRIPT', () => {
     const finallys = OFFICE_COM_SCRIPT.match(/\} finally \{/g) ?? [];
     expect(quits).toHaveLength(3);
     expect(finallys).toHaveLength(3);
+  });
+});
+
+describe('parseSlideSize', () => {
+  it('reads the deck size the generator states in its own stylesheet', () => {
+    const html =
+      '<style>div.slide{position:relative;}div.slide, div.loading-slide { width: 959; height: 540;}</style>';
+    expect(parseSlideSize(html)).toEqual({ slideWidth: 959, slideHeight: 540 });
+  });
+
+  it('is not fooled by the earlier rule that carries no dimensions', () => {
+    const html = '<style>div.slide{position:relative;}div.slide{ width: 720; height: 540;}</style>';
+    expect(parseSlideSize(html)).toEqual({ slideWidth: 720, slideHeight: 540 });
+  });
+
+  it('returns nothing when the rule is absent', () => {
+    expect(parseSlideSize('<body>no styles</body>')).toEqual({});
+  });
+});
+
+describe('rasterized PDF attachments', () => {
+  it('serves the PNG under the name the document still references', () => {
+    // Quick Look writes vector art as PDF and points an <img> at it; Chromium
+    // cannot decode that, so main rasterizes alongside it.
+    write(path.join(root, 'Attachment1.pdf'), 'pdf-bytes');
+    write(path.join(root, 'Attachment1.png'), 'png-bytes');
+    const attachments = readQuickLookAttachments(root, 1024);
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0].name).toBe('Attachment1.pdf');
+    expect(attachments[0].mimeType).toBe('image/png');
+    expect(attachments[0].data.toString()).toBe('png-bytes');
+  });
+
+  it('keeps the PDF when rasterization produced nothing', () => {
+    write(path.join(root, 'Attachment1.pdf'), 'pdf-bytes');
+    expect(readQuickLookAttachments(root, 1024)[0]).toMatchObject({
+      name: 'Attachment1.pdf',
+      mimeType: 'application/pdf',
+    });
+  });
+
+  it('substitutes the PNG bytes into the document under the PDF name', () => {
+    const html = '<img src="Attachment1.pdf" style="width:151;">';
+    const out = inlineQuickLookAttachments(html, [
+      { name: 'Attachment1.pdf', mimeType: 'image/png', data: Buffer.from('png') },
+    ]);
+    expect(out).toContain('data:image/png;base64,');
+    expect(out).not.toContain('Attachment1.pdf');
   });
 });

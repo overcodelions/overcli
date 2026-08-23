@@ -91,6 +91,8 @@ export type ActiveSheet =
   | { type: 'newAgent'; projectId: UUID }
   | { type: 'newWorkspace' }
   | { type: 'newEverydayProject' }
+  /// Turn an existing folder into an everyday project, or turn one back.
+  | { type: 'everydayConversion'; projectId: UUID }
   | { type: 'newDocument'; dirPath: string }
   | { type: 'versions'; projectPath: string }
   | { type: 'editWorkspace'; workspaceId: UUID }
@@ -512,6 +514,8 @@ interface StoreState {
   askAboutDocument(filePath: string): void;
   protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
   createEverydayProject(title: string, goal: string): Promise<{ ok: true; path: string; historyOn: boolean } | { ok: false; error: string }>;
+  convertToEverydayProject(projectId: UUID): Promise<{ ok: true } | { ok: false; error: string }>;
+  revertEverydayProject(projectId: UUID): Promise<{ ok: true } | { ok: false; error: string }>;
 
   // Event routing — called from the preload's onMainEvent bridge.
   ingestMainEvent(event: MainToRendererEvent): void;
@@ -1433,6 +1437,61 @@ export const useStore = create<StoreState>((set, get) => ({
     await get().addProject(project);
     get().startNewConversation(project.id);
     return res;
+  },
+
+  /// The other way into an everyday project: a folder someone already has,
+  /// rather than one Overcli scaffolded. Three steps, in this order —
+  /// history, marker, flag.
+  ///
+  /// History first because undo is what makes the everyday framing honest:
+  /// the whole pitch is "try it, you can put anything back", and relabelling
+  /// a folder that has no history would make that promise to someone who
+  /// cannot keep it. `initRepo` refuses very large folders, so this can
+  /// legitimately fail — in which case nothing is relabelled.
+  async convertToEverydayProject(projectId) {
+    const project = get().projects.find((p) => p.id === projectId);
+    if (!project) return { ok: false as const, error: 'Project not found.' };
+    // A folder already under history — including one nested inside a bigger
+    // repo, which `initRepo` rightly refuses to init — needs no init.
+    if (get().projectIsGitRepo[projectId] !== true) {
+      const init = await get().protectProject(projectId);
+      if (!init.ok) return init;
+    }
+    const marked = await window.overcli.invoke('fs:setEverydayMarker', {
+      projectPath: project.path,
+      everyday: true,
+    });
+    if (!marked.ok) return marked;
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === projectId ? { ...p, everyday: true } : p)),
+    }));
+    await get().saveProjects();
+    get().refreshEverydayRoots();
+    return { ok: true as const };
+  },
+
+  /// Undo the relabel, and only the relabel. The history stays: it is the
+  /// user's undo timeline by the time they change their mind, and throwing
+  /// it away is a separate, separately-confirmed decision (`git:removeHistory`,
+  /// from the versions sheet).
+  ///
+  /// `everyday: false` rather than deleting the key, because
+  /// `syncProjectMarkers` back-fills a marker for any project still flagged
+  /// `true` — an undefined flag would simply be re-marked on next load.
+  async revertEverydayProject(projectId) {
+    const project = get().projects.find((p) => p.id === projectId);
+    if (!project) return { ok: false as const, error: 'Project not found.' };
+    const cleared = await window.overcli.invoke('fs:setEverydayMarker', {
+      projectPath: project.path,
+      everyday: false,
+    });
+    if (!cleared.ok) return cleared;
+    set((s) => ({
+      projects: s.projects.map((p) => (p.id === projectId ? { ...p, everyday: false } : p)),
+    }));
+    await get().saveProjects();
+    get().refreshEverydayRoots();
+    return { ok: true as const };
   },
 
   async newConversation(projectId) {

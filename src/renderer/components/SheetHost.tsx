@@ -6,6 +6,7 @@ import { CapabilitiesSheet } from './sheets/CapabilitiesSheet';
 import { NewAgentSheet } from './sheets/NewAgentSheet';
 import { NewWorkspaceSheet } from './sheets/NewWorkspaceSheet';
 import { NewEverydayProjectSheet } from './sheets/NewEverydayProjectSheet';
+import { EverydayConversionSheet } from './sheets/EverydayConversionSheet';
 import { NewDocumentSheet } from './sheets/NewDocumentSheet';
 import { VersionsSheet } from './sheets/VersionsSheet';
 import { EditWorkspaceSheet } from './sheets/EditWorkspaceSheet';
@@ -112,6 +113,9 @@ export function SheetHost() {
         {sheet.type === 'newAgent' && <NewAgentSheet projectId={sheet.projectId} />}
         {sheet.type === 'newWorkspace' && <NewWorkspaceSheet />}
         {sheet.type === 'newEverydayProject' && <NewEverydayProjectSheet />}
+        {sheet.type === 'everydayConversion' && (
+          <EverydayConversionSheet projectId={sheet.projectId} />
+        )}
         {sheet.type === 'newDocument' && <NewDocumentSheet dirPath={sheet.dirPath} />}
         {sheet.type === 'versions' && <VersionsSheet projectPath={sheet.projectPath} />}
         {sheet.type === 'editWorkspace' && <EditWorkspaceSheet workspaceId={sheet.workspaceId} />}

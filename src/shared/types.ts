@@ -1334,7 +1334,7 @@ export interface IPCInvokeMap {
   /// component Overcli compiled and inlined itself, `document` for a
   /// hand-written .html file, which is nearly always a CDN page and renders
   /// blank without remote script.
-  'preview:publishDocument': (args: { html: string; policy?: 'bundle' | 'document' }) =>
+  'preview:publishDocument': (args: { html: string; policy?: 'bundle' | 'local' | 'document' }) =>
     | { ok: true; url: string }
     | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
@@ -1555,6 +1555,12 @@ export interface IPCInvokeMap {
     | { ok: true; branch: string }
     | { ok: false; error: string };
   'git:removeHistory': (args: { projectPath: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  /// Convert an existing project folder to or from an everyday project by
+  /// writing or deleting its marker. The store's `everyday` flag alone would
+  /// not survive a reinstall or a second machine.
+  'fs:setEverydayMarker': (args: { projectPath: string; everyday: boolean }) =>
     | { ok: true }
     | { ok: false; error: string };
   'fs:syncProjectMarkers': (args: {
@@ -2196,6 +2202,9 @@ export type ArtifactPreviewResult =
       /// Quick Look renders Office documents to HTML rather than PDF, so the
       /// macOS fallback fills this instead of `convertedPdfDataUrl`.
       convertedHtml?: string;
+      /// The deck's own slide size, used to scale `convertedHtml` to the pane.
+      slideWidth?: number;
+      slideHeight?: number;
       converterPath?: string;
       converterKind?: 'libreoffice' | 'quicklook' | 'office-com';
       conversionError?: string;

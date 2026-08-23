@@ -4,6 +4,7 @@ import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runn
 import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
 import { flowRunActivityAt, flowRunOwnerPath, isWorkerRun, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
+import { isEverydayProject } from '@shared/everydayProjects';
 import { backendColor } from '../theme';
 import {
   ACTIVE_CONVERSATION_WINDOW_MS,
@@ -912,6 +913,11 @@ function ProjectGroup({
   // depend on git worktrees, so we hide the "+ agent" affordance only
   // when we've confirmed the project isn't a git repo.
   const isGitRepo = useStore((s) => s.projectIsGitRepo[project.id]);
+  // Everyday projects ARE git repos, so this is a separate question from
+  // `isGitRepo` — see `isEverydayProject`. A plain folder with no history is
+  // the one state where offering the conversion is purely additive, which is
+  // why the offer is gated on `false` and not on `!== true`.
+  const everyday = isEverydayProject(project);
   // Memoized because this group is re-rendered by every unrelated store
   // change, and a mature project list carries hundreds of conversations —
   // walking them four times per render was showing up in profiles.
@@ -1097,6 +1103,19 @@ function ProjectGroup({
                 title="New colosseum"
               >
                 + colosseum
+              </button>
+            )}
+            {(everyday || isGitRepo === false) && (
+              <button
+                onClick={() => openSheet({ type: 'everydayConversion', projectId: project.id })}
+                className="text-[10px] text-ink-faint hover:text-ink py-0.5 px-1.5 rounded hover:bg-card-strong"
+                title={
+                  everyday
+                    ? 'Everyday project — documents, plain words, undo. Click to turn off.'
+                    : 'Make this an everyday project: documents, plain words, undo'
+                }
+              >
+                {everyday ? 'everyday' : '+ everyday'}
               </button>
             )}
             {archivableCount + deletableFlowCount > 0 && (

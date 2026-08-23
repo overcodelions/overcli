@@ -30,6 +30,20 @@ export interface WorkerCaps {
   /// hand, and the receiver plans it through its own job description either
   /// way. See `canDelegate` for the trust half of the gate.
   canDelegate?: boolean;
+  /// File this worker's finished deliverables into the project folder itself,
+  /// not only into its private cabinet.
+  ///
+  /// Off for repos, and deliberately so: a repo has git, a review ceremony and
+  /// a reader who knows where `userData` is, and unreviewed agent files in the
+  /// tree are noise. An everyday project has none of that — the folder IS the
+  /// app, so a document filed only under `worker-files/<uuid>/` is, to the
+  /// person this was built for, output that does not exist.
+  ///
+  /// This does NOT loosen the run boundary. The run still writes only inside
+  /// its disposable root (`buildWorkerRunBoundary`); Overcli copies the
+  /// finished deliverable across once, at completion, and checkpoints the
+  /// folder so the drop is as undoable as anything else that lands there.
+  fileIntoProject?: boolean;
 }
 
 export interface Worker {

@@ -12,6 +12,7 @@ import { useFlowsStore } from './flowsStore';
 import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
 import { moveInRoster, placeInRoster } from '@shared/flows/worker';
+import { isEverydayProject } from '@shared/everydayProjects';
 import {
   allocateTreasury,
   fundingFor,
@@ -333,14 +334,29 @@ interface WorkersActions {
   clearError(): void;
 }
 
-export function newWorkerDraft(projectPath: string): WorkerDraft {
+/// Whether a new hire should file its deliverables into the project folder.
+///
+/// On for everyday projects and off for repos — see `WorkerCaps.fileIntoProject`.
+/// `everyday` is the project record's own flag when the caller has it; the
+/// path check behind `isEverydayProject` covers the rest.
+export function defaultFileIntoProject(projectPath: string, everyday?: boolean): boolean {
+  return isEverydayProject({ path: projectPath, everyday });
+}
+
+export function newWorkerDraft(projectPath: string, everyday?: boolean): WorkerDraft {
   return {
     name: '',
     tagline: '',
     jobDescription: '',
     projectPath,
     cadence: { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] },
-    caps: { maxItemsPerShift: 3, runIn: 'worktree', allowExternalActions: false, canDelegate: false },
+    caps: {
+      maxItemsPerShift: 3,
+      runIn: 'worktree',
+      allowExternalActions: false,
+      canDelegate: false,
+      fileIntoProject: defaultFileIntoProject(projectPath, everyday),
+    },
     budgetUSDPerMonth: 10,
     heartbeatModel: '',
     flowIds: [],
@@ -372,6 +388,7 @@ export function draftFromContract(
   contract: WorkerContract,
   projectPath: string,
   flowId: string | undefined,
+  everyday?: boolean,
 ): WorkerDraft {
   return {
     name: contract.name,
@@ -384,6 +401,7 @@ export function draftFromContract(
       runIn: 'worktree',
       allowExternalActions: false,
       canDelegate: false,
+      fileIntoProject: defaultFileIntoProject(projectPath, everyday),
     },
     budgetUSDPerMonth: contract.budgetUSDPerMonth,
     heartbeatModel: contract.heartbeatModel,
@@ -420,7 +438,15 @@ export function draftFromPortable(
     // access. A shared worker file cannot arrive pre-authorized — and that
     // covers delegation too: an imported worker knows nothing about who else
     // this install employs, and must not arrive able to commission them.
-    caps: { ...worker.caps, allowExternalActions: false, canDelegate: false },
+    // Where its output lands is the receiving install's decision too: the
+    // sender's folder is not this one, and the file cannot carry the flag
+    // anyway (`coerceCaps`). Defaulted from the project it is landing in.
+    caps: {
+      ...worker.caps,
+      allowExternalActions: false,
+      canDelegate: false,
+      fileIntoProject: defaultFileIntoProject(projectPath),
+    },
     budgetUSDPerMonth: worker.budgetUSDPerMonth,
     heartbeatModel: worker.heartbeatModel,
     heartbeatBackend: worker.heartbeatBackend,
