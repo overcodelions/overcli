@@ -1007,7 +1007,12 @@ function registerIpc(): void {
   // is already a repo before the renderer registers it, so `addProject`'s own
   // git-status probe sees the truth on its first look.
   ipcMain.handle('fs:syncProjectMarkers', (_e, args) =>
-    syncProjectMarkers(Array.isArray(args?.projects) ? args.projects : []),
+    syncProjectMarkers(
+      (Array.isArray(args?.projects) ? args.projects : []).filter(
+        (p: { path?: unknown }) =>
+          typeof p?.path === 'string' && isPathUnderRegisteredRoot(p.path),
+      ),
+    ),
   );
   ipcMain.handle('fs:listDocuments', (_e, args) => {
     if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
@@ -1020,7 +1025,8 @@ function registerIpc(): void {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };
     }
     return checkpointProject(args, {
-      statusPorcelain: async (cwd) => (await runGitAsync(['status', '--porcelain'], cwd)).stdout,
+      statusPorcelain: async (cwd) =>
+        (await runGitAsync(['-c', 'core.quotePath=false', 'status', '--porcelain'], cwd)).stdout,
       commit: commitAllAsync,
     });
   });
@@ -1033,6 +1039,9 @@ function registerIpc(): void {
   ipcMain.handle('versions:diff', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    if (typeof args?.sha !== 'string' || !/^[0-9a-f]{7,40}$/i.test(args.sha)) {
+      return { ok: false as const, error: 'Refused: not a valid version id.' };
     }
     return readVersionDiff({ cwd: args.projectPath, sha: args.sha, file: args.file });
   });
@@ -1049,6 +1058,15 @@ function registerIpc(): void {
   ipcMain.handle('fs:reviseDocument', (_e, args) => {
     if (typeof args?.path !== 'string' || !isPathUnderRegisteredRoot(args.path)) {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    if (args.rootPath !== undefined) {
+      if (typeof args.rootPath !== 'string' || !isPathUnderRegisteredRoot(args.rootPath)) {
+        return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      }
+      const rel = path.relative(args.rootPath, args.path);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) {
+        return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      }
     }
     const requestId = typeof args?.requestId === 'string' ? args.requestId : '';
     return reviseDocument(drafterDeps(), args, (text) => {

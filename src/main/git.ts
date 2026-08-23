@@ -796,9 +796,9 @@ export async function readVersionDiff(
   const res = await runGitAsync(
     [
       'show',
-      args.sha,
       '--format=',
       '--no-color',
+      args.sha,
       ...(args.file ? ['--', args.file] : []),
     ],
     args.cwd,

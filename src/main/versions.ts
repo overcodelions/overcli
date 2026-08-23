@@ -21,6 +21,9 @@ import type { ProjectVersion } from './git';
 /// documents — the thing this feature is for — never come close.
 export const MAX_CHECKPOINT_BYTES = 25 * 1024 * 1024;
 
+/// Entry cap on the pre-checkpoint size walk, matching fileWalk.ts.
+const MAX_SIZE_WALK_ENTRIES = 20_000;
+
 export interface CheckpointResult {
   ok: boolean;
   /// Set when we deliberately skipped, so callers can stay quiet instead of
@@ -33,6 +36,7 @@ export interface CheckpointResult {
 /// be declined before it lands in the object store rather than after.
 export function pendingChangeBytes(cwd: string, porcelain: string): number {
   let total = 0;
+  const budget = { left: MAX_SIZE_WALK_ENTRIES };
   for (const line of porcelain.split(/\r?\n/)) {
     if (!line.trim()) continue;
     // Porcelain v1: two status chars, a space, then the path. Renames carry
@@ -40,7 +44,7 @@ export function pendingChangeBytes(cwd: string, porcelain: string): number {
     const raw = line.slice(3).trim();
     const rel = raw.includes(' -> ') ? raw.slice(raw.indexOf(' -> ') + 4) : raw;
     const unquoted = rel.startsWith('"') && rel.endsWith('"') ? rel.slice(1, -1) : rel;
-    total += sizeOnDisk(path.join(cwd, unquoted));
+    total += sizeOnDisk(path.join(cwd, unquoted), 0, budget);
   }
   return total;
 }
@@ -48,9 +52,11 @@ export function pendingChangeBytes(cwd: string, porcelain: string): number {
 /// Bytes at a path, recursing when it is a directory. Porcelain collapses a
 /// wholly-untracked folder into a single `?? exports/` entry, so measuring
 /// only files would report zero for the 40 MB of artifacts inside it.
-function sizeOnDisk(target: string, depth = 0): number {
+function sizeOnDisk(target: string, depth = 0, budget = { left: MAX_SIZE_WALK_ENTRIES }): number {
   // Cheap cycle/runaway guard; a documents folder is never this deep.
   if (depth > 12) return 0;
+  // Cap hit: fail safe as "too large" rather than freezing the main process.
+  if (--budget.left < 0) return Number.MAX_SAFE_INTEGER;
   let stat: fs.Stats;
   try {
     stat = fs.statSync(target);
@@ -63,7 +69,7 @@ function sizeOnDisk(target: string, depth = 0): number {
   try {
     for (const entry of fs.readdirSync(target)) {
       if (entry === '.git') continue;
-      total += sizeOnDisk(path.join(target, entry), depth + 1);
+      total += sizeOnDisk(path.join(target, entry), depth + 1, budget);
     }
   } catch {
     // Unreadable directory — treat as empty rather than failing the guard.

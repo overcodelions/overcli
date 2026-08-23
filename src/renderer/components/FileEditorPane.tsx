@@ -176,6 +176,7 @@ export const FileEditorPane = memo(function FileEditorPane({
   // Bumped to force a re-read of the file + diff after a revert, so the
   // view reflects the restored-to-HEAD content.
   const [refreshToken, setRefreshToken] = useState(0);
+  const versionRestoreToken = useStore((s) => s.versionRestoreToken);
   const previewKind = detectFilePreviewKind(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
   const unsupportedBinary = isUnsupportedBinaryFile(path);
@@ -576,6 +577,21 @@ export const FileEditorPane = memo(function FileEditorPane({
     setSelection(null);
     editedRef.current = false;
   }, [path]);
+
+  // A restore rewrote the file on disk. Throw away the in-memory buffer and
+  // force a re-read, exactly as the Revert button does. Gated on an actual
+  // BUMP of the token, not merely its presence — `versionRestoreToken` never
+  // resets, so keying off `path` too would re-fire this on every later tab
+  // switch and wipe an unrelated file's unsaved buffer.
+  const lastRestoreToken = useRef(versionRestoreToken);
+  useEffect(() => {
+    if (lastRestoreToken.current === versionRestoreToken) return;
+    lastRestoreToken.current = versionRestoreToken;
+    if (!path) return;
+    clearFileDirty(path);
+    dropBuffer(path);
+    setRefreshToken((t) => t + 1);
+  }, [versionRestoreToken, path, clearFileDirty]);
 
   useEffect(() => {
     if (!autoSaves || !dirty || !path || reviewPending) return;
@@ -1021,7 +1037,9 @@ export const FileEditorPane = memo(function FileEditorPane({
             selection={selection}
             onPendingChange={setReviewPending}
             onKept={(instruction) => {
-              if (!rootPath) return;
+              // Checkpointing is an everyday-project mechanism. Never run
+              // `git add -A && git commit` on a repo the user manages.
+              if (!autoSaves || !rootPath) return;
               // Deferred past the auto-save timer so the version records the
               // rewrite rather than the state just before it.
               setTimeout(
