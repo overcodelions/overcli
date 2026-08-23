@@ -40,6 +40,7 @@ import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
+import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
@@ -89,6 +90,9 @@ export type ActiveSheet =
   | { type: 'capabilities' }
   | { type: 'newAgent'; projectId: UUID }
   | { type: 'newWorkspace' }
+  | { type: 'newEverydayProject' }
+  | { type: 'newDocument'; dirPath: string }
+  | { type: 'versions'; projectPath: string }
   | { type: 'editWorkspace'; workspaceId: UUID }
   | { type: 'newWorkspaceAgent'; workspaceId: UUID }
   | { type: 'newColosseum'; projectId: UUID }
@@ -169,6 +173,7 @@ interface StoreState {
   compareDirty: boolean;
   /// Last view mode chosen per file extension. See uiSlice.
   fileViewModeByExt: Record<string, FileViewMode>;
+  everydayRoots: string[];
   /// Open editor tabs for the scope on screen, and the saved tabs for
   /// every other scope. See uiSlice + ./fileScope.ts.
   tabs: FileTab[];
@@ -244,6 +249,10 @@ interface StoreState {
   /// so the sidebar hides the "+ agent" affordance when this is false.
   /// Undefined means "not yet probed" — treat as unknown, not false.
   projectIsGitRepo: Record<UUID, boolean>;
+  /// Live text of in-flight document rewrites, keyed by requestId. The
+  /// editor reads its own key to show the document being rewritten as it
+  /// streams, rather than sitting behind a spinner.
+  documentRevisions: Record<string, string>;
 
   // Actions
   init(): Promise<void>;
@@ -496,6 +505,13 @@ interface StoreState {
   >;
   refreshGitStatus(conversationId: UUID): Promise<void>;
   refreshProjectGitStatus(projectId: UUID): Promise<void>;
+  clearDocumentRevision(requestId: string): void;
+  refreshEverydayRoots(): void;
+  syncProjectMarkers(): Promise<void>;
+  checkpointProject(projectPath: string, message: string): Promise<void>;
+  askAboutDocument(filePath: string): void;
+  protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
+  createEverydayProject(title: string, goal: string): Promise<{ ok: true; path: string; historyOn: boolean } | { ok: false; error: string }>;
 
   // Event routing — called from the preload's onMainEvent bridge.
   ingestMainEvent(event: MainToRendererEvent): void;
@@ -892,6 +908,7 @@ export const useStore = create<StoreState>((set, get) => ({
   lastSelectedAt: {},
   gitStatusByConv: {},
   projectIsGitRepo: {},
+  documentRevisions: {},
   ...createUiSlice<StoreState>(set, get),
 
   async init() {
@@ -988,6 +1005,8 @@ export const useStore = create<StoreState>((set, get) => ({
       }
     }
     if (workspacesChanged) await get().saveWorkspaces();
+    get().refreshEverydayRoots();
+    void get().syncProjectMarkers();
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
@@ -1228,6 +1247,10 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async addProject(project) {
     set((s) => ({ projects: [...s.projects, project] }));
+    get().refreshEverydayRoots();
+    // A folder that already carries a marker is an everyday project the
+    // moment it is added, even on a machine that has never seen it.
+    void get().syncProjectMarkers();
     await get().saveProjects();
     void get().refreshProjectGitStatus(project.id);
   },
@@ -1337,6 +1360,7 @@ export const useStore = create<StoreState>((set, get) => ({
     });
     await get().saveProjects();
     await get().saveWorkspaces();
+    get().refreshEverydayRoots();
   },
 
   async removeWorkspace(id) {
@@ -1385,6 +1409,30 @@ export const useStore = create<StoreState>((set, get) => ({
       await get().addProject(project);
     }
     get().startNewConversation(added[added.length - 1].id);
+  },
+
+  async protectProject(projectId) {
+    const project = get().projects.find((p) => p.id === projectId);
+    if (!project) return { ok: false as const, error: 'Project not found.' };
+    const res = await window.overcli.invoke('git:initRepo', { projectPath: project.path });
+    if (res.ok) await get().refreshProjectGitStatus(projectId);
+    return res;
+  },
+
+  async createEverydayProject(title, goal) {
+    const res = await window.overcli.invoke('fs:createEverydayProject', { title, goal });
+    if (!res.ok) return res;
+    const project: Project = {
+      id: uuid(),
+      name: title.trim() || pathBasename(res.path),
+      path: res.path,
+      conversations: [],
+      lastOpenedAt: Date.now(),
+      everyday: true,
+    };
+    await get().addProject(project);
+    get().startNewConversation(project.id);
+    return res;
   },
 
   async newConversation(projectId) {
@@ -3128,6 +3176,85 @@ export const useStore = create<StoreState>((set, get) => ({
     return window.overcli.invoke('mcp:login', { cli, name });
   },
 
+  /// Save a version at a boundary — a kept rewrite, documents arriving, a
+  /// finished run. Fire-and-forget on purpose: a checkpoint that fails must
+  /// never interrupt the thing the user was actually doing, and "nothing
+  /// changed" is the ordinary case rather than an error.
+  async checkpointProject(projectPath, message) {
+    if (!projectPath) return;
+    try {
+      await window.overcli.invoke('versions:checkpoint', { projectPath, message });
+    } catch {
+      // Best effort by design.
+    }
+  },
+
+  /// Hand a document to the chat instead of building a second, weaker chat
+  /// inside the editor. The bar below a document is a COMMAND surface — one
+  /// instruction, one rewrite, one review — and it genuinely cannot answer
+  /// "what does this say about pricing?". The conversation that can already
+  /// exists, with Read tools pointed at this project; all that was missing
+  /// was the door.
+  askAboutDocument(filePath) {
+    const project = get().projects.find((p) => filePath.startsWith(`${p.path}/`));
+    if (!project) return;
+    const rel = filePath.slice(project.path.length + 1);
+    // Seeded, not sent: the user still says what they actually want to know.
+    get().setDraft('__welcome__', `About @${rel} — `);
+    get().startNewConversation(project.id);
+  },
+
+  /// Recompute the paths `uiSlice` consults. Called wherever the project
+  /// list changes, so "is this file in an everyday project?" has one answer
+  /// across the app instead of one per call site.
+  /// Ask each project's own folder whether it is an everyday project, and
+  /// adopt the answer. This is what survives a reinstall, a second machine,
+  /// or a folder handed to someone else — the store's own flag does not.
+  async syncProjectMarkers() {
+    const projects = get().projects;
+    if (projects.length === 0) return;
+    let marks: Record<string, boolean> | undefined;
+    try {
+      marks = await window.overcli.invoke('fs:syncProjectMarkers', {
+        projects: projects.map((p) => ({ path: p.path, everyday: p.everyday })),
+      });
+    } catch {
+      return;
+    }
+    // A missing or malformed reply means "learned nothing", never a crash:
+    // this runs on every load, and a project's everyday-ness is not worth
+    // taking the store down for.
+    if (!marks || typeof marks !== 'object') return;
+    let changed = false;
+    const next = projects.map((p) => {
+      const marked = marks[p.path];
+      if (marked === undefined || marked === (p.everyday === true)) return p;
+      changed = true;
+      return { ...p, everyday: marked };
+    });
+    if (changed) {
+      set({ projects: next });
+      void get().saveProjects();
+    }
+    get().refreshEverydayRoots();
+  },
+
+  refreshEverydayRoots() {
+    const roots = get().projects.filter(isEverydayProject).map((p) => p.path);
+    const prev = get().everydayRoots;
+    if (prev.length === roots.length && prev.every((r, i) => r === roots[i])) return;
+    set({ everydayRoots: roots });
+  },
+
+  clearDocumentRevision(requestId) {
+    set((s) => {
+      if (!(requestId in s.documentRevisions)) return {};
+      const next = { ...s.documentRevisions };
+      delete next[requestId];
+      return { documentRevisions: next };
+    });
+  },
+
   async refreshProjectGitStatus(projectId) {
     const project = get().projects.find((p) => p.id === projectId);
     if (!project?.path) return;
@@ -3210,6 +3337,12 @@ export const useStore = create<StoreState>((set, get) => ({
   },
 
   ingestMainEvent(event) {
+    if (event.type === 'documentRevise') {
+      set((s) => ({
+        documentRevisions: { ...s.documentRevisions, [event.requestId]: event.text },
+      }));
+      return;
+    }
     if (event.type === 'stream') {
       // Pull the most recent system:init info out of this batch BEFORE we
       // commit state — the slash-commands, MCP-servers, and plugins
@@ -3293,6 +3426,42 @@ export const useStore = create<StoreState>((set, get) => ({
       const justCompleted = wasRunning && !event.isRunning;
       const justStarted = !wasRunning && event.isRunning;
       const completedAt = justCompleted ? Date.now() : justStarted ? null : undefined;
+      // The biggest checkpoint boundary of all: an agent just finished
+      // changing this person's documents. Without it, a turn that rewrote
+      // sixteen files leaves them all sitting as one undifferentiated "new
+      // change" with nothing in the history to go back to.
+      if (justCompleted) {
+        const project = get().projects.find(
+          (p) =>
+            isEverydayProject(p) &&
+            p.conversations.some((c) => c.id === event.conversationId),
+        );
+        const conv = project?.conversations.find((c) => c.id === event.conversationId);
+        // An agent conversation runs in its own worktree (see the cwd
+        // resolution in `refreshGitStatus`). Nothing it wrote is in the
+        // user's folder yet — it lands on merge — so checkpointing the
+        // project here would capture no change and then open a document from
+        // an older version, which reads as the app losing the work.
+        if (project && conv && !conv.worktreePath) {
+          const title = (conv.name ?? '').trim();
+          const message = title ? `Claude worked on “${title}”` : 'Claude made some changes';
+          // Checkpoint first, then show what it made. Having to ask "what is
+          // the file?" after a turn that wrote sixteen of them is the whole
+          // problem — the answer should already be on screen.
+          void (async () => {
+            await get().checkpointProject(project.path, message);
+            // Never yank someone off a file they are already reading.
+            if (get().openFilePath) return;
+            const latest = await window.overcli.invoke('versions:list', {
+              projectPath: project.path,
+              limit: 1,
+            });
+            if (!latest.ok || latest.versions.length === 0) return;
+            const pick = pickDocumentToShow(latest.versions[0].files.map((f) => f.path));
+            if (pick) get().openFile(`${project.path}/${pick}`);
+          })();
+        }
+      }
       useRunnersStore.getState().patchRunner(event.conversationId, (runner) => ({
         isRunning: event.isRunning,
         // Stamped on the idle→running edge only, so a long turn's activity

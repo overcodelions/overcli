@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { FileTree } from './FileTree';
+import { ExplorerLanding } from './ExplorerLanding';
 import { FileEditorPane } from './FileEditorPane';
 import { CompareView } from './CompareView';
 import { nextComparePick } from '../comparePick';
@@ -31,6 +32,7 @@ export function ExplorerPane() {
   // switches detailMode back), and in-conversation right pane (just
   // clears the root, leaving the chat untouched).
   const closeExplorer = useStore((s) => s.closeExplorer);
+  const openSheet = useStore((s) => s.openSheet);
 
   // Two-file comparison picked from the tree via ⌥-click. `compareBase` is
   // the first pick (highlighted, pending a second); `comparePair` is the
@@ -116,12 +118,19 @@ export function ExplorerPane() {
     return (
       <div className="h-full flex flex-col">
         <ExplorerHeader onClose={closeExplorer} />
-        <div className="flex-1 flex items-center justify-center text-xs text-ink-faint">
-          Pick a project or workspace from the sidebar to explore.
-        </div>
+        <ExplorerLanding />
       </div>
     );
   }
+
+  // Drafting a document from a description is not a non-engineer feature —
+  // "write an ADR for this decision", "draft a runbook for the deploy" are
+  // the same ask. It lands at the explorer root rather than a selected
+  // folder: the tree does not track a selected directory, and guessing one
+  // would put files somewhere the user did not choose.
+  const newDocument = () => {
+    if (rootPath) openSheet({ type: 'newDocument', dirPath: rootPath });
+  };
 
   return (
     // h-full + flex-1 covers both mount sites: in App.tsx's <main
@@ -129,11 +138,11 @@ export function ExplorerPane() {
     // fixed-width right pane we get sized by h-full / h:100%.
     <div className="flex flex-col flex-1 h-full min-h-0 min-w-0">
       {branch?.isRepo && branch.currentBranch ? (
-        <BranchBanner info={branch} onClose={closeExplorer} />
+        <BranchBanner info={branch} onClose={closeExplorer} onNewDocument={newDocument} />
       ) : branch ? (
-        <FolderBanner onClose={closeExplorer} />
+        <FolderBanner onClose={closeExplorer} onNewDocument={newDocument} />
       ) : (
-        <ExplorerHeader onClose={closeExplorer} />
+        <ExplorerHeader onClose={closeExplorer} onNewDocument={newDocument} />
       )}
       <div className="flex flex-1 min-h-0 min-w-0">
       <div
@@ -185,7 +194,15 @@ export function ExplorerPane() {
 /// Thin read-only strip at the top of the explorer showing the current
 /// git branch and dirty-file stats. Matches the `⎇ branch` treatment used
 /// in the conversation header so the two views feel consistent.
-function BranchBanner({ info, onClose }: { info: BranchInfo; onClose: () => void }) {
+function BranchBanner({
+  info,
+  onClose,
+  onNewDocument,
+}: {
+  info: BranchInfo;
+  onClose: () => void;
+  onNewDocument?: () => void;
+}) {
   const dirty = info.changeCount > 0;
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
@@ -206,27 +223,46 @@ function BranchBanner({ info, onClose }: { info: BranchInfo; onClose: () => void
       ) : (
         <span className="text-ink-faint">clean</span>
       )}
+      {onNewDocument && <NewDocumentButton onClick={onNewDocument} />}
       <CloseButton onClose={onClose} />
     </div>
   );
 }
 
-function FolderBanner({ onClose }: { onClose: () => void }) {
+function FolderBanner({ onClose, onNewDocument }: { onClose: () => void; onNewDocument?: () => void }) {
   return (
     <div className="flex items-center gap-3 px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
       <span className="text-ink-muted">Folder</span>
       <span className="text-ink-faint">Not a git repo. Overcli will preview safe files and open blocked files externally.</span>
+      {onNewDocument && <NewDocumentButton onClick={onNewDocument} />}
       <CloseButton onClose={onClose} />
     </div>
   );
 }
 
-function ExplorerHeader({ onClose }: { onClose: () => void }) {
+function ExplorerHeader({ onClose, onNewDocument }: { onClose: () => void; onNewDocument?: () => void }) {
   return (
     <div className="flex items-center px-3 py-1.5 text-[11px] border-b border-card bg-surface-muted">
       <span className="text-ink-muted">Explorer</span>
+      {onNewDocument && <NewDocumentButton onClick={onNewDocument} />}
       <CloseButton onClose={onClose} />
     </div>
+  );
+}
+
+/// `ml-auto` here rather than on `CloseButton`: the first auto-margin in a
+/// flex row absorbs the free space, so this pins the pair to the right and
+/// the close button sits flush beside it.
+function NewDocumentButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Write a document from a description, or start a blank one"
+      className="ml-auto rounded px-2 py-0.5 text-[11px] text-ink-muted hover:text-ink hover:bg-card"
+    >
+      + Document
+    </button>
   );
 }
 

@@ -525,6 +525,13 @@ export function Sidebar() {
 
       <div className="border-t border-card px-2 py-2 flex flex-col gap-1">
         <button
+          onClick={() => openSheet({ type: 'newEverydayProject' })}
+          disabled={cliBlocked}
+          className="text-xs text-ink-muted hover:text-ink py-1 px-2 rounded hover:bg-card-strong text-left disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-ink-muted"
+        >
+          + New everyday project
+        </button>
+        <button
           onClick={pickProject}
           disabled={cliBlocked}
           title={cliBlocked ? 'Install a CLI first to add a project' : undefined}

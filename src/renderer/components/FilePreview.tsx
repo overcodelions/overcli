@@ -152,9 +152,13 @@ export function FilePreview({
           <div className="mt-2 text-xs text-ink-muted">
             {artifact.extension.toUpperCase()} · {formatBytes(artifact.sizeBytes)}
           </div>
+          {/* Says what the reader can DO, not which library we shell out to.
+              The old wording named LibreOffice conversion as the mechanism,
+              which is an implementation detail a non-engineer cannot act on. */}
           <div className="mt-4 text-xs text-ink-muted leading-relaxed">
-            LibreOffice conversion is used for inline previews when available. Open this artifact in
-            the system app to inspect sheets, slides, comments, and formatting.
+            Open this to see it with its slides, sheets, comments and formatting intact. To preview
+            files like this inside Overcli instead, install{' '}
+            <span className="text-ink">LibreOffice</span>.
           </div>
           {artifact.conversionError && (
             <div className="mt-3 text-xs text-ink-faint">{artifact.conversionError}</div>

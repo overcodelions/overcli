@@ -173,7 +173,15 @@ export function Composer({
   const maxHeight = variant === 'welcome' ? 260 : 200;
 
   useEffect(() => {
-    if (autoFocus) textareaRef.current?.focus();
+    if (!autoFocus) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    // Caret to the end. A pre-filled draft is a prefix the user continues
+    // ("About @BRIEF.md — …"), so focusing at position 0 drops them in front
+    // of it and the next keystroke lands in the wrong place.
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
   }, [autoFocus, draftKey, focusSignal]);
 
   // @-mention state. `mention` is the active trigger (position of the `@`

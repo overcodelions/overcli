@@ -5,6 +5,9 @@ import { AboutSheet } from './sheets/AboutSheet';
 import { CapabilitiesSheet } from './sheets/CapabilitiesSheet';
 import { NewAgentSheet } from './sheets/NewAgentSheet';
 import { NewWorkspaceSheet } from './sheets/NewWorkspaceSheet';
+import { NewEverydayProjectSheet } from './sheets/NewEverydayProjectSheet';
+import { NewDocumentSheet } from './sheets/NewDocumentSheet';
+import { VersionsSheet } from './sheets/VersionsSheet';
 import { EditWorkspaceSheet } from './sheets/EditWorkspaceSheet';
 import { NewWorkspaceAgentSheet } from './sheets/NewWorkspaceAgentSheet';
 import { NewColosseumSheet } from './sheets/NewColosseumSheet';
@@ -43,6 +46,8 @@ const WIDE_SHEETS = new Set<string>([
   // A planning turn is a document. The whole point of opening it here is the
   // room the desk could not give it.
   'shiftReader',
+  // Version diffs need the same room the other diff surfaces get.
+  'versions',
 ]);
 
 /// Sheets that already render as their own floating card. They get the
@@ -106,6 +111,9 @@ export function SheetHost() {
         {sheet.type === 'capabilities' && <CapabilitiesSheet />}
         {sheet.type === 'newAgent' && <NewAgentSheet projectId={sheet.projectId} />}
         {sheet.type === 'newWorkspace' && <NewWorkspaceSheet />}
+        {sheet.type === 'newEverydayProject' && <NewEverydayProjectSheet />}
+        {sheet.type === 'newDocument' && <NewDocumentSheet dirPath={sheet.dirPath} />}
+        {sheet.type === 'versions' && <VersionsSheet projectPath={sheet.projectPath} />}
         {sheet.type === 'editWorkspace' && <EditWorkspaceSheet workspaceId={sheet.workspaceId} />}
         {sheet.type === 'newWorkspaceAgent' && (
           <NewWorkspaceAgentSheet workspaceId={sheet.workspaceId} />
