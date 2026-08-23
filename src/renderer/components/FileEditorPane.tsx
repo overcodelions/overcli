@@ -20,7 +20,6 @@ import {
   detectFilePreviewKind,
   isBinaryPreviewKind,
   isUnsupportedBinaryFile,
-  type FileViewMode,
 } from '../filePreview';
 import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
 import { dirName, fileName, tabLabels } from '../tabLabels';
@@ -1033,7 +1032,6 @@ export const FileEditorPane = memo(function FileEditorPane({
             path={path}
             content={content}
             rootPath={rootPath ?? undefined}
-            mode={mode}
             selection={selection}
             onPendingChange={setReviewPending}
             onKept={(instruction) => {
@@ -1066,7 +1064,6 @@ function AskToEditBar({
   path,
   content,
   rootPath,
-  mode,
   selection,
   onPendingChange,
   onKept,
@@ -1078,8 +1075,6 @@ function AskToEditBar({
   /// as context. The one-shot transport runs with tools disabled, so without
   /// this "add the course material to the brief" has nothing to work from.
   rootPath?: string;
-  /// Which view the pane is showing, so the bar can match its measure.
-  mode: FileViewMode;
   /// Live editor selection. When set, only this passage is sent for rewriting
   /// and the reply is spliced back by offset — the rest of the document is
   /// untouchable by construction rather than by asking the model nicely.
@@ -1324,11 +1319,11 @@ function AskToEditBar({
         </div>
       )}
 
-      {/* The bar's measure follows the PANE's, not a fixed number. Preview
-          centres the document at 980px, so a wider bar would float free of
-          it; split and file are full-bleed, so a capped bar reads as a
-          stranded widget under them. */}
-      <div className={'px-3 py-2 ' + (mode === 'preview' ? 'max-w-[980px]' : '')}>
+      {/* Full width of the pane, in every mode. An earlier version capped
+          this in preview to match the rendered document's measure, which made
+          the same file's bar change width depending on which tab you were on
+          — a rule nobody asked for and everybody noticed. */}
+      <div className="px-3 py-2">
         <div
           className={
             'flex items-center gap-2 rounded-xl border bg-surface pl-3 pr-1.5 py-2 transition-colors ' +
