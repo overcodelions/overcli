@@ -190,6 +190,9 @@ const MAX_CONTEXT_CHARS = 40_000;
 /// either binary or something the model cannot use as prose.
 const CONTEXT_EXTS = new Set(['md', 'txt', 'csv', 'json', 'html', 'tsv']);
 
+const CONTEXT_WALK_TTL_MS = 30_000;
+const contextWalkCache = new Map<string, { at: number; entries: ReturnType<typeof listFileEntriesSync> }>();
+
 /// The project's other documents, nearest first, up to the budget. Nearest
 /// because a file beside the one being edited is likelier to be what "the
 /// course material" refers to than something four folders down.
@@ -197,7 +200,15 @@ export function gatherProjectContext(
   args: { rootPath: string; excludePath: string },
 ): { blocks: Array<{ rel: string; text: string }>; omitted: string[] } {
   const here = path.dirname(args.excludePath);
-  const candidates = listFileEntriesSync(args.rootPath)
+  const cached = contextWalkCache.get(args.rootPath);
+  let walked: ReturnType<typeof listFileEntriesSync>;
+  if (cached && Date.now() - cached.at < CONTEXT_WALK_TTL_MS) {
+    walked = cached.entries;
+  } else {
+    walked = listFileEntriesSync(args.rootPath);
+    contextWalkCache.set(args.rootPath, { at: Date.now(), entries: walked });
+  }
+  const candidates = walked
     .filter((e) => e.path !== args.excludePath)
     .filter((e) => CONTEXT_EXTS.has(path.extname(e.path).slice(1).toLowerCase()))
     .sort((a, b) => {
@@ -297,7 +308,10 @@ export async function reviseDocument(
   // Models still occasionally fence the whole reply despite being told not
   // to; strip one wrapping fence rather than writing backticks into the
   // user's document.
-  const text = out.text.replace(/^\s*```[a-zA-Z]*\r?\n([\s\S]*?)\r?\n```\s*$/, '$1');
+  // Only unwrap when the ENTIRE reply is one fence. A README that merely
+  // starts and ends with a code block must keep both of its delimiters.
+  const fenced = out.text.match(/^\s*```[a-zA-Z]*\r?\n([\s\S]*?)\r?\n```\s*$/);
+  const text = fenced && !/^\s*```/m.test(fenced[1]) ? fenced[1] : out.text;
   if (!text.trim()) return { ok: false, error: 'The model returned an empty document.' };
   return { ok: true, content: text };
 }
