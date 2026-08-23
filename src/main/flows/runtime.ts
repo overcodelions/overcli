@@ -299,6 +299,10 @@ export class FlowRuntimeImpl {
   /// re-emit a missing `<output>` block. `${runId}:${stepId}` → count,
   /// cleared by `executeStep` so every fresh attempt gets its own nudge.
   private reaskCounts = new Map<string, number>();
+  /// The pointer a step's last reply drew that the runtime refused, and why.
+  /// `${runId}:${stepId}` → rejection, written by `resolveArtifactBody` and
+  /// read by `reaskMissingOutput` so the nudge names the actual problem.
+  private pointerRejections = new Map<string, { path: string; reason: PointerRejectionReason }>();
   /// One nudge per attempt. A model that ignores a direct "emit only the
   /// block" instruction twice is not one turn away from complying, and each
   /// round costs the user real tokens.
@@ -1032,6 +1036,9 @@ export class FlowRuntimeImpl {
       for (const key of this.reaskCounts.keys()) {
         if (key.startsWith(`${victim.id}:`)) this.reaskCounts.delete(key);
       }
+      for (const key of this.pointerRejections.keys()) {
+        if (key.startsWith(`${victim.id}:`)) this.pointerRejections.delete(key);
+      }
       deleteRunFromDisk(victim.id);
       clearAttachments(victim.id);
     }
@@ -1383,6 +1390,9 @@ export class FlowRuntimeImpl {
     for (const key of Array.from(this.reaskCounts.keys())) {
       if (key.startsWith(`${args.runId}:`)) this.reaskCounts.delete(key);
     }
+    for (const key of Array.from(this.pointerRejections.keys())) {
+      if (key.startsWith(`${args.runId}:`)) this.pointerRejections.delete(key);
+    }
     // A manual rewind isn't a rejection — don't hand the step a stale
     // "you were sent back" notice from an earlier automatic retry.
     this.retryFeedback.delete(args.runId);
@@ -1462,12 +1472,7 @@ export class FlowRuntimeImpl {
     const latest = this.latestAssistantTextByParticipant.get(`${runId}:${prior.participantId}`);
     const existingArtifact = run.artifacts[prior.output];
     if (latest && existingArtifact) {
-      const already = this.resolveArtifactBody(
-        latest,
-        prior.output,
-        run.projectPath,
-        this.lastAttemptStartedAt(run, prior.id),
-      );
+      const already = this.resolveArtifactBody(run, latest, prior.output, prior.id);
       if (already !== null && already !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -1543,12 +1548,7 @@ export class FlowRuntimeImpl {
     // Re-extract from the finalize reply.
     const finalText = this.latestAssistantTextByParticipant.get(waitKey);
     if (finalText && existingArtifact) {
-      const refined = this.resolveArtifactBody(
-        finalText,
-        prior.output,
-        run.projectPath,
-        this.lastAttemptStartedAt(run, prior.id),
-      );
+      const refined = this.resolveArtifactBody(run, finalText, prior.output, prior.id);
       if (refined !== null && refined !== existingArtifact.body) {
         run.artifacts[prior.output] = {
           ...existingArtifact,
@@ -1711,6 +1711,9 @@ export class FlowRuntimeImpl {
     }
     for (const key of this.reaskCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.reaskCounts.delete(key);
+    }
+    for (const key of this.pointerRejections.keys()) {
+      if (key.startsWith(`${args.runId}:`)) this.pointerRejections.delete(key);
     }
     for (const key of this.latestAssistantTextByParticipant.keys()) {
       if (key.startsWith(`${args.runId}:`)) {
@@ -2428,6 +2431,7 @@ export class FlowRuntimeImpl {
     // should only see what THIS step produces.
     // Every fresh attempt at a step gets its own missing-`<output>` nudge.
     this.reaskCounts.delete(`${runId}:${step.id}`);
+    this.pointerRejections.delete(`${runId}:${step.id}`);
     this.stepBuffers.set(runId, {
       assistantText: '',
       usage: { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 },
@@ -2621,12 +2625,7 @@ export class FlowRuntimeImpl {
     const text = buf?.assistantText ?? '';
 
     const artifactKind = detectArtifactKind(step.output);
-    let artifactBody = this.resolveArtifactBody(
-      text,
-      step.output,
-      run.projectPath,
-      this.lastAttemptStartedAt(run, step.id),
-    );
+    let artifactBody = this.resolveArtifactBody(run, text, step.output, step.id);
 
     /// This step's own change, measured off the previous diff step's
     /// snapshot. Computed at most once per step: `computeIncrementalDiffForRun`
@@ -2897,13 +2896,20 @@ export class FlowRuntimeImpl {
   /// alongside it. Everything failing leaves `null`, which is the same "no
   /// output" the reask and on_fail paths already handle.
   ///
-  /// `minMtimeMs` gates the pointer on freshness; see `readArtifactFileBody`.
+  /// The pointer is gated on the run having produced the file: first on the
+  /// attempt's mtime floor (see `readArtifactFile`), and failing that on git
+  /// showing it among the run's own changes (see `pathChangedInRun`).
+  ///
+  /// A rejected pointer is remembered per step so `reaskMissingOutput` can
+  /// tell the model why, instead of drawing the same pointer twice.
   private resolveArtifactBody(
+    run: FlowRun,
     text: string,
     outputName: string,
-    runRoot: string,
-    minMtimeMs: number,
+    stepId: string,
   ): string | null {
+    const key = `${run.id}:${stepId}`;
+    this.pointerRejections.delete(key);
     const inline = extractOutput(text, outputName);
     if (inline !== null) return inline;
     // `url` artifacts never come from disk (see `stepAllowsFileRef`), so a
@@ -2911,21 +2917,48 @@ export class FlowRuntimeImpl {
     if (detectArtifactKind(outputName) === 'url') return extractOutputLooseBody(text, outputName);
     const ref = extractOutputFileRef(text, outputName);
     if (!ref) return null;
-    const abs = resolveArtifactFilePath(ref, runRoot);
+    const abs = resolveArtifactFilePath(ref, run.projectPath);
     if (!abs) {
       log('warn', 'flows.outputFile', `pointer path outside run root, ignoring: ${ref}`);
+      this.pointerRejections.set(key, { path: ref, reason: 'missing' });
       return this.recoverTypedBody(text, outputName);
     }
-    const body = readArtifactFileBody(abs, minMtimeMs);
-    if (body === null) {
-      log(
-        'warn',
-        'flows.outputFile',
-        `pointer file rejected (missing, empty, oversized, binary, or not written by this step): ${abs}`,
-      );
+    let read = readArtifactFile(abs, this.lastAttemptStartedAt(run, stepId));
+    // Older than this attempt, but the run's own work — the usual shape is a
+    // re-run, or a step that read the file, found it already correct, and
+    // changed nothing. Re-read with the floor lifted.
+    if (!read.ok && read.reason === 'stale' && this.runOwnsPath(run, abs)) {
+      read = readArtifactFile(abs, 0);
+      if (read.ok) {
+        log('info', 'flows.outputFile', `pointer file predates the attempt but is the run's own work: ${abs}`);
+      }
+    }
+    if (!read.ok) {
+      log('warn', 'flows.outputFile', `pointer file rejected (${read.reason}): ${abs}`);
+      this.pointerRejections.set(key, { path: ref, reason: read.reason });
       return this.recoverTypedBody(text, outputName);
     }
-    return body;
+    return read.body;
+  }
+
+  /// Whether git in the repo holding `abs` reports it as this run's own
+  /// change. Workspace runs carry a baseline per member, so the question is
+  /// asked of the member repo that contains the file.
+  private runOwnsPath(run: FlowRun, abs: string): boolean {
+    let repoRoot = run.projectPath;
+    let baseline = run.baselineCommit;
+    if (run.baselineCommitsByMember) {
+      for (const info of Object.values(run.baselineCommitsByMember)) {
+        const root = resolve(info.path);
+        if (abs === root || abs.startsWith(root + sep)) {
+          repoRoot = info.path;
+          baseline = info.commit;
+          break;
+        }
+      }
+    }
+    if (!repoRoot) return false;
+    return pathChangedInRun(repoRoot, baseline, abs);
   }
 
   /// The pointer was claimed and refused. If the model ALSO typed a body into
@@ -2976,6 +3009,10 @@ export class FlowRuntimeImpl {
     if (!convId) return false;
 
     const stepModel = resolveRunStepModel(run, step);
+    // Why the last reply's pointer was refused, if it drew one. Without it
+    // the nudge reads as "you emitted no block", the model re-sends the
+    // identical pointer, and the second miss is decided before it is sent.
+    const rejection = this.pointerRejections.get(key);
     const buf = this.stepBuffers.get(run.id);
     // The nudge's reply is the only text that should be extracted from.
     // Usage and cost stay — they belong to this attempt either way.
@@ -2983,8 +3020,14 @@ export class FlowRuntimeImpl {
 
     const sendResult = this.runner.send({
       conversationId: convId,
-      prompt: missingOutputReaskPrompt(step.output, stepAllowsFileRef(step, stepModel.backend)),
-      displayText: `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
+      prompt: missingOutputReaskPrompt(
+        step.output,
+        stepAllowsFileRef(step, stepModel.backend),
+        rejection,
+      ),
+      displayText: rejection
+        ? `Couldn't take ${step.output} from ${rejection.path} (${rejection.reason}) — asking for it inline before failing the step.`
+        : `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
       backend: stepModel.backend,
       cwd: run.projectPath,
       allowedDirs: this.runAllowedDirs(run),
@@ -3947,7 +3990,28 @@ export function summarizeReviewRejection(reviewBody: string): string | null {
 /// recoverable cases explicitly — the artifact was written to a file, or it
 /// was narrated in chat — because in both the model tends to answer "I
 /// already did that" unless told the block itself is the missing part.
-export function missingOutputReaskPrompt(outputName: string, allowFileRef = false): string {
+export function missingOutputReaskPrompt(
+  outputName: string,
+  allowFileRef = false,
+  rejection?: { path: string; reason: PointerRejectionReason },
+): string {
+  // A refused pointer is a different conversation from a missing block: the
+  // model already believes it complied, so repeating the generic instruction
+  // gets the same pointer back. Name the file, name the reason, and take the
+  // pointer form off the table for this turn.
+  if (rejection) {
+    return [
+      `Your last reply pointed at "${rejection.path}" for <output name="${outputName}">, but the runtime could not accept that file: ${pointerRejectionExplanation(rejection.reason)}`,
+      '',
+      'Do not redo the work, and do not point at a file again this turn.',
+      'Read the deliverable back and paste its full contents inline.',
+      '',
+      `Reply with ONLY this, and nothing else — no preamble, no commentary:`,
+      `<output name="${outputName}">`,
+      '... the complete deliverable ...',
+      '</output>',
+    ].join('\n');
+  }
   const fileLines = [
     `  - If you wrote it to a file, read that file back and paste its full contents inside the block.`,
     ...(allowFileRef
@@ -3969,6 +4033,23 @@ export function missingOutputReaskPrompt(outputName: string, allowFileRef = fals
     '... the complete deliverable ...',
     '</output>',
   ].join('\n');
+}
+
+/// Plain-language version of a `PointerRejectionReason`, written for the
+/// model that drew the pointer rather than for a log reader.
+function pointerRejectionExplanation(reason: PointerRejectionReason): string {
+  switch (reason) {
+    case 'missing':
+      return 'no readable file exists at that path inside this run\'s working directory';
+    case 'stale':
+      return 'nothing in this run wrote or changed that file, so it cannot be this step\'s deliverable';
+    case 'oversized':
+      return 'the file is too large to hand to the next step';
+    case 'binary':
+      return 'the file is not readable as UTF-8 text';
+    case 'empty':
+      return 'the file is empty';
+  }
 }
 
 /// Pull the artifact body out of an assistant turn. Robust against the
@@ -4094,14 +4175,39 @@ export function resolveArtifactFilePath(rawPath: string, runRoot: string): strin
 /// only ever carry what the model actually produced, so without this check a
 /// mistyped path (an input, a source file, a previous step's scratch) becomes
 /// a plausible-looking artifact that nothing downstream can question. We only
-/// accept a file this step itself created or updated. Pass 0 to skip the
-/// check when no attempt timestamp is available.
+/// accept a file the run itself created or updated — `resolveArtifactBody`
+/// widens "the step" to "the run" for files git can show are the run's own
+/// work, so a step that verified an already-correct file can still point at
+/// it. Pass 0 to skip the check when no attempt timestamp is available.
 export function readArtifactFileBody(absPath: string, minMtimeMs = 0): string | null {
+  const read = readArtifactFile(absPath, minMtimeMs);
+  return read.ok ? read.body : null;
+}
+
+/// Why a pointer file was refused. Carried into the reask prompt so the
+/// follow-up turn can say what to do differently — a model told only "there
+/// was no <output> block" re-sends the identical pointer and the step fails
+/// on the same rejection twice.
+export type PointerRejectionReason = 'missing' | 'stale' | 'oversized' | 'binary' | 'empty';
+
+export type PointerRead =
+  | { ok: true; body: string }
+  | { ok: false; reason: PointerRejectionReason };
+
+/// `readArtifactFileBody` with the refusal reason kept.
+export function readArtifactFile(absPath: string, minMtimeMs = 0): PointerRead {
+  let st: ReturnType<typeof statSync>;
   try {
-    const st = statSync(absPath);
-    if (!st.isFile()) return null;
-    if (st.size > MAX_OUTPUT_FILE_BYTES) return null;
-    if (minMtimeMs > 0 && st.mtimeMs + MTIME_GRACE_MS < minMtimeMs) return null;
+    st = statSync(absPath);
+  } catch {
+    return { ok: false, reason: 'missing' };
+  }
+  try {
+    if (!st.isFile()) return { ok: false, reason: 'missing' };
+    if (st.size > MAX_OUTPUT_FILE_BYTES) return { ok: false, reason: 'oversized' };
+    if (minMtimeMs > 0 && st.mtimeMs + MTIME_GRACE_MS < minMtimeMs) {
+      return { ok: false, reason: 'stale' };
+    }
     const raw = readFileSync(absPath, 'utf8');
     // Artifacts are text. A NUL byte means binary; U+FFFD means Node hit a
     // byte sequence that isn't valid UTF-8 and substituted the replacement
@@ -4109,12 +4215,37 @@ export function readArtifactFileBody(absPath: string, minMtimeMs = 0): string | 
     // downstream consumer (prompt injection, markdown render, diff parse)
     // treats it as prose. Refusing costs one reask; accepting corrupts the
     // rest of the run silently.
-    if (raw.includes('\0') || raw.includes('�')) return null;
+    if (raw.includes('\0') || raw.includes('�')) return { ok: false, reason: 'binary' };
     const body = raw.trim();
-    return body.length > 0 ? body : null;
+    return body.length > 0 ? { ok: true, body } : { ok: false, reason: 'empty' };
   } catch {
-    return null;
+    return { ok: false, reason: 'missing' };
   }
+}
+
+/// Whether `abs` is part of what this run changed in `repoRoot` — uncommitted
+/// (including untracked), or committed since `baselineCommit`.
+///
+/// This is the run-scoped version of the mtime floor. The property worth
+/// defending is that a pointer can't hand the run a file the run did not
+/// produce; the floor enforced the much stricter "written during THIS
+/// attempt", which no re-run and no verify-only turn can satisfy — the file
+/// is already correct, so nothing rewrites it and its mtime predates the
+/// attempt forever. Git knows the difference between "the run wrote this"
+/// and "this was already in the repo", which is the question actually being
+/// asked.
+export function pathChangedInRun(
+  repoRoot: string,
+  baselineCommit: string | undefined,
+  abs: string,
+): boolean {
+  // `-uall` so an untracked file inside an untracked directory is listed by
+  // name rather than collapsed into its parent.
+  const status = runGit(['status', '--porcelain', '-uall', '--', abs], repoRoot);
+  if (status.exitCode === 0 && status.stdout.trim() !== '') return true;
+  if (!baselineCommit) return false;
+  const committed = runGit(['diff', '--name-only', baselineCommit, '--', abs], repoRoot);
+  return committed.exitCode === 0 && committed.stdout.trim() !== '';
 }
 
 /// Which steps may be offered the pointer form: only ones that can write
