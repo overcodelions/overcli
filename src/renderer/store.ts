@@ -507,6 +507,7 @@ interface StoreState {
   refreshProjectGitStatus(projectId: UUID): Promise<void>;
   clearDocumentRevision(requestId: string): void;
   refreshEverydayRoots(): void;
+  syncProjectMarkers(): Promise<void>;
   checkpointProject(projectPath: string, message: string): Promise<void>;
   askAboutDocument(filePath: string): void;
   protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
@@ -1005,6 +1006,7 @@ export const useStore = create<StoreState>((set, get) => ({
     }
     if (workspacesChanged) await get().saveWorkspaces();
     get().refreshEverydayRoots();
+    void get().syncProjectMarkers();
     await get().refreshBackendHealth();
     await get().refreshInstalledReviewers();
     void get().refreshCapabilities();
@@ -1246,6 +1248,9 @@ export const useStore = create<StoreState>((set, get) => ({
   async addProject(project) {
     set((s) => ({ projects: [...s.projects, project] }));
     get().refreshEverydayRoots();
+    // A folder that already carries a marker is an everyday project the
+    // moment it is added, even on a machine that has never seen it.
+    void get().syncProjectMarkers();
     await get().saveProjects();
     void get().refreshProjectGitStatus(project.id);
   },
@@ -3202,6 +3207,38 @@ export const useStore = create<StoreState>((set, get) => ({
   /// Recompute the paths `uiSlice` consults. Called wherever the project
   /// list changes, so "is this file in an everyday project?" has one answer
   /// across the app instead of one per call site.
+  /// Ask each project's own folder whether it is an everyday project, and
+  /// adopt the answer. This is what survives a reinstall, a second machine,
+  /// or a folder handed to someone else — the store's own flag does not.
+  async syncProjectMarkers() {
+    const projects = get().projects;
+    if (projects.length === 0) return;
+    let marks: Record<string, boolean> | undefined;
+    try {
+      marks = await window.overcli.invoke('fs:syncProjectMarkers', {
+        projects: projects.map((p) => ({ path: p.path, everyday: p.everyday })),
+      });
+    } catch {
+      return;
+    }
+    // A missing or malformed reply means "learned nothing", never a crash:
+    // this runs on every load, and a project's everyday-ness is not worth
+    // taking the store down for.
+    if (!marks || typeof marks !== 'object') return;
+    let changed = false;
+    const next = projects.map((p) => {
+      const marked = marks[p.path];
+      if (marked === undefined || marked === (p.everyday === true)) return p;
+      changed = true;
+      return { ...p, everyday: marked };
+    });
+    if (changed) {
+      set({ projects: next });
+      void get().saveProjects();
+    }
+    get().refreshEverydayRoots();
+  },
+
   refreshEverydayRoots() {
     const roots = get().projects.filter(isEverydayProject).map((p) => p.path);
     const prev = get().everydayRoots;

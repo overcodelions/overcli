@@ -16,6 +16,64 @@ export function folderNameFor(title: string): string {
   return cleaned.slice(0, 60) || 'New project';
 }
 
+/// Marker written into an everyday project's own folder.
+///
+/// Everything else that knows a project is "everyday" lives in the app's
+/// store, keyed by an id — so it is lost the moment the folder outlives that
+/// record: a reinstall, a second machine, a folder handed to a colleague. A
+/// file in the folder is the only thing that survives all of those, and it
+/// replaces a path heuristic that would otherwise claim any directory a user
+/// happened to name "Overcli Projects".
+///
+/// Deliberately a MARKER, not a settings file. A name like
+/// `.overcli-settings` invites folder-local config that would end up fighting
+/// app config; this answers one question and nothing else.
+export const EVERYDAY_MARKER_FILE = '.overcli-project.json';
+
+export function writeEverydayMarker(projectPath: string): void {
+  try {
+    fs.writeFileSync(
+      path.join(projectPath, EVERYDAY_MARKER_FILE),
+      `${JSON.stringify({ kind: 'everyday', version: 1 }, null, 2)}\n`,
+      'utf-8',
+    );
+  } catch {
+    // Best effort. A project without its marker still works here and now;
+    // it just will not recognise itself somewhere else.
+  }
+}
+
+export function hasEverydayMarker(projectPath: string): boolean {
+  try {
+    const raw = fs.readFileSync(path.join(projectPath, EVERYDAY_MARKER_FILE), 'utf-8');
+    return JSON.parse(raw)?.kind === 'everyday';
+  } catch {
+    // Absent, unreadable, or not JSON — all mean "no marker", never an error.
+    return false;
+  }
+}
+
+/// Read every project's marker in one pass, and back-fill one for a project
+/// the store already knows is everyday. Healing on read is what makes folders
+/// scaffolded before markers existed portable from now on; it never INVENTS
+/// everyday-ness for a folder that was not already one.
+export function syncProjectMarkers(
+  projects: ReadonlyArray<{ path: string; everyday?: boolean }>,
+): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const project of projects) {
+    if (!project.path) continue;
+    const marked = hasEverydayMarker(project.path);
+    if (!marked && project.everyday === true) {
+      writeEverydayMarker(project.path);
+      out[project.path] = true;
+      continue;
+    }
+    out[project.path] = marked;
+  }
+  return out;
+}
+
 export function createEverydayProject(
   args: { title: string; goal: string },
 ): { ok: true; path: string } | { ok: false; error: string } {
@@ -30,6 +88,7 @@ export function createEverydayProject(
       `# ${args.title}\n\n## What I want\n\n${args.goal.trim()}\n`,
       'utf-8',
     );
+    writeEverydayMarker(dir);
     return { ok: true, path: dir };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

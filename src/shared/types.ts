@@ -1557,6 +1557,9 @@ export interface IPCInvokeMap {
   'git:removeHistory': (args: { projectPath: string }) =>
     | { ok: true }
     | { ok: false; error: string };
+  'fs:syncProjectMarkers': (args: {
+    projects: Array<{ path: string; everyday?: boolean }>;
+  }) => Record<string, boolean>;
   'fs:listDocuments': (args: { dirPath: string }) =>
     | { ok: true; entries: DocumentEntry[] }
     | { ok: false; error: string };

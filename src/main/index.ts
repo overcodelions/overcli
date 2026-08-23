@@ -65,7 +65,7 @@ import {
   initRepo,
   removeRepoHistory,
 } from './git';
-import { copyIntoProject, createEverydayProject } from './everydayProject';
+import { copyIntoProject, createEverydayProject, syncProjectMarkers } from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import { checkpointProject, listVersions, restoreVersion } from './versions';
 import { commitAllAsync, readVersionDiff, runGitAsync } from './git';
@@ -990,6 +990,9 @@ function registerIpc(): void {
   // Scaffold AND prepare in one handler. Doing the init here means the folder
   // is already a repo before the renderer registers it, so `addProject`'s own
   // git-status probe sees the truth on its first look.
+  ipcMain.handle('fs:syncProjectMarkers', (_e, args) =>
+    syncProjectMarkers(Array.isArray(args?.projects) ? args.projects : []),
+  );
   ipcMain.handle('fs:listDocuments', (_e, args) => {
     if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };

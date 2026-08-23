@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { copyIntoProject, createEverydayProject, everydayProjectsRoot, folderNameFor } from './everydayProject';
+import {
+  copyIntoProject,
+  createEverydayProject,
+  EVERYDAY_MARKER_FILE,
+  everydayProjectsRoot,
+  folderNameFor,
+  hasEverydayMarker,
+  syncProjectMarkers,
+} from './everydayProject';
 import { looksLikeEverydayProjectPath } from '../shared/everydayProjects';
 
 describe('everydayProject', () => {
@@ -39,7 +47,9 @@ describe('createEverydayProject', () => {
     expect(res.path).toBe(path.join(home, 'Overcli Projects', 'Marketing copy review'));
     // Deliberately flat: no `inbox/`, no `output/`. The undo history is what
     // distinguishes what the agent made from what the user supplied.
-    expect(fs.readdirSync(res.path)).toEqual(['BRIEF.md']);
+    // Flat, plus the marker that lets the folder recognise itself elsewhere.
+    expect(fs.readdirSync(res.path).sort()).toEqual(['.overcli-project.json', 'BRIEF.md']);
+    expect(hasEverydayMarker(res.path)).toBe(true);
     const brief = fs.readFileSync(path.join(res.path, 'BRIEF.md'), 'utf-8');
     expect(brief).toContain('# Marketing copy review');
     expect(brief).toContain('Check tone and claims.');
@@ -125,5 +135,44 @@ describe('looksLikeEverydayProjectPath', () => {
   it('does not claim an ordinary folder', () => {
     expect(looksLikeEverydayProjectPath('/Users/me/git-services/overcli')).toBe(false);
     expect(looksLikeEverydayProjectPath('')).toBe(false);
+  });
+});
+
+// The marker is what makes a folder recognise itself somewhere the app's own
+// store has never seen it: a reinstall, a second machine, a shared folder.
+describe('everyday project marker', () => {
+  function tempDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-marker-'));
+  }
+
+  it('reports no marker for an ordinary folder, and never throws on junk', () => {
+    const dir = tempDir();
+    expect(hasEverydayMarker(dir)).toBe(false);
+    fs.writeFileSync(path.join(dir, EVERYDAY_MARKER_FILE), 'not json at all');
+    expect(hasEverydayMarker(dir)).toBe(false);
+  });
+
+  it('adopts a folder that carries a marker, even with no flag in the store', () => {
+    const dir = tempDir();
+    fs.writeFileSync(
+      path.join(dir, EVERYDAY_MARKER_FILE),
+      JSON.stringify({ kind: 'everyday', version: 1 }),
+    );
+
+    expect(syncProjectMarkers([{ path: dir }])).toEqual({ [dir]: true });
+  });
+
+  it('back-fills a marker for a project the store already vouches for', () => {
+    const dir = tempDir();
+
+    expect(syncProjectMarkers([{ path: dir, everyday: true }])).toEqual({ [dir]: true });
+    expect(hasEverydayMarker(dir)).toBe(true);
+  });
+
+  it('never invents everyday-ness for a folder that was not already one', () => {
+    const dir = tempDir();
+
+    expect(syncProjectMarkers([{ path: dir, everyday: false }])).toEqual({ [dir]: false });
+    expect(fs.existsSync(path.join(dir, EVERYDAY_MARKER_FILE))).toBe(false);
   });
 });
