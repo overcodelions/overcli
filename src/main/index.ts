@@ -63,7 +63,12 @@ import {
   initRepo,
   removeRepoHistory,
 } from './git';
-import { copyIntoProject, createEverydayProject, syncProjectMarkers } from './everydayProject';
+import {
+  copyIntoProject,
+  createEverydayProject,
+  setEverydayMarker,
+  syncProjectMarkers,
+} from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import { checkpointProject, listVersions, restoreVersion } from './versions';
 import { commitAllAsync, readVersionDiff, runGitAsync } from './git';
@@ -98,6 +103,7 @@ import {
   handlePreviewProtocol,
   publishPreviewDocument,
   registerPreviewScheme,
+  type PreviewPolicy,
 } from './previewProtocol';
 import {
   listMarketplaceSkills,
@@ -469,6 +475,18 @@ function registerIpc(): void {
         out.push({ name: file.name, sourcePath: file.path });
       }
       return out;
+    },
+    // Everyday projects checkpoint on boundaries, and a worker filing a
+    // document into one is a boundary. Fire-and-forget: the file is already
+    // there, and a failed commit is a missing version, not a lost document.
+    checkpoint: ({ projectPath, message }) => {
+      void checkpointProject(
+        { projectPath, message },
+        {
+          statusPorcelain: async (cwd) => (await runGitAsync(['status', '--porcelain'], cwd)).stdout,
+          commit: commitAllAsync,
+        },
+      ).catch(() => {});
     },
     generatedFlow: async ({ worker, errand, request, runIn }) => {
       const drafted = await draftFlowFromPrompt(
@@ -880,8 +898,8 @@ function registerIpc(): void {
   );
   ipcMain.handle(
     'preview:publishDocument',
-    (_e, args: { html: string; policy?: 'bundle' | 'document' }) =>
-      publishPreviewDocument(args?.html ?? '', args?.policy === 'document' ? 'document' : 'bundle'),
+    (_e, args: { html: string; policy?: PreviewPolicy }) =>
+      publishPreviewDocument(args?.html ?? '', args?.policy),
   );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
@@ -1054,6 +1072,12 @@ function registerIpc(): void {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };
     }
     return copyIntoProject(args);
+  });
+  ipcMain.handle('fs:setEverydayMarker', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return setEverydayMarker(args.projectPath, args.everyday === true);
   });
   ipcMain.handle('fs:createEverydayProject', async (_e, args) => {
     const made = createEverydayProject({

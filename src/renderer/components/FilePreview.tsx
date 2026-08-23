@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ArtifactPreviewResult,
   HtmlPreviewAsset,
@@ -144,19 +144,12 @@ export function FilePreview({
         />
       );
     }
-    // Quick Look hands back HTML instead of a PDF. It arrives self-contained —
-    // main has already folded the bundle's images and stylesheets in — so a
-    // srcdoc frame with no permissions at all is enough to render it, and
-    // withholding `allow-scripts` means the generator's own JS never runs.
-    // Rendered as-is, with no wrapper document: the generator's CSS is
-    // unitless and needs the quirks mode that a DOCTYPE-less srcdoc gives it.
     if (artifact.convertedHtml) {
       return (
-        <iframe
-          title={`${path} preview`}
-          sandbox=""
-          srcDoc={artifact.convertedHtml}
-          className="block w-full h-full border-0 bg-surface"
+        <OfficeHtmlPreview
+          path={path}
+          html={artifact.convertedHtml}
+          slideWidth={artifact.slideWidth}
         />
       );
     }
@@ -274,6 +267,98 @@ function HtmlPreview({ path, document: html }: { path: string; document: string 
       src={frameUrl}
       className="block w-full h-full border-0 bg-transparent"
     />
+  );
+}
+
+/// Quick Look's HTML at the size the pane can actually show.
+///
+/// Served over `overcli-preview://` rather than handed to `srcdoc`, and that
+/// is not a style choice: an `about:srcdoc` document is always parsed in
+/// no-quirks mode, whatever DOCTYPE it does or does not carry. Quick Look
+/// writes unitless CSS lengths (`div.slide { width: 959; height: 540 }`),
+/// which no-quirks mode discards — every slide computed to height 0 and the
+/// pane showed nothing but the generator's grey backdrop. A real navigation
+/// honours the absent DOCTYPE and gives the document the quirks mode its CSS
+/// was written for.
+///
+/// It is published under the `local` policy — no script, no network — and
+/// framed with an empty sandbox, because everything it needs to render was
+/// already inlined into it by main.
+///
+/// Slides are laid out at their real size, 959px across for a 16:9 deck,
+/// which in a side pane meant seeing the left third of slide one behind a
+/// scrollbar. Scaling the frame rather than the document keeps the deck's own
+/// vertical scrolling inside the frame, so there is no content height to
+/// measure across a sandbox boundary we deliberately cannot see through.
+function OfficeHtmlPreview({
+  path,
+  html,
+  slideWidth,
+}: {
+  path: string;
+  html: string;
+  slideWidth?: number;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const [paneWidth, setPaneWidth] = useState(0);
+  const [frameUrl, setFrameUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const element = box.current;
+    if (!element) return;
+    const observer = new ResizeObserver((entries) => {
+      setPaneWidth(entries[0]?.contentRect.width ?? 0);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    window.overcli
+      .invoke('preview:publishDocument', { html, policy: 'local' })
+      .then((res) => {
+        if (cancelled) return;
+        setFrameUrl(res.ok ? res.url : null);
+        setError(res.ok ? null : res.error);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setFrameUrl(null);
+        setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [html]);
+
+  // The generator gives every slide an 8px side margin inside the document's
+  // own 8px body margin.
+  const contentWidth = (slideWidth ?? 0) + 32;
+  // Never past 1: a pane wider than the deck should letterbox it, not blow a
+  // 4:3 deck up to fill a widescreen pane.
+  const scale = slideWidth && paneWidth ? Math.min(1, paneWidth / contentWidth) : 1;
+
+  return (
+    <div ref={box} className="h-full w-full overflow-hidden bg-surface">
+      {error && <div className="p-4 text-xs text-red-300">{error}</div>}
+      {!error && frameUrl && (
+        <iframe
+          title={`${path} preview`}
+          sandbox=""
+          src={frameUrl}
+          style={{
+            width: `${100 / scale}%`,
+            height: `${100 / scale}%`,
+            transform: `scale(${scale})`,
+            transformOrigin: 'top left',
+          }}
+          className="block border-0"
+        />
+      )}
+    </div>
   );
 }
 

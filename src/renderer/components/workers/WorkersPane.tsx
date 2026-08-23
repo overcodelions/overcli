@@ -33,6 +33,7 @@ function heartbeatBackendOf(
 }
 
 import { useStore } from "../../store";
+import { isEverydayProject } from "@shared/everydayProjects";
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
 import {
@@ -173,6 +174,12 @@ export function WorkersPane() {
   }, [projects, workspaces]);
 
   const defaultProjectPath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
+  // Where a new hire lands decides whether it files into the folder by
+  // default — see `defaultFileIntoProject`. A workspace root is never an
+  // everyday project, so the lookup simply misses.
+  const defaultProjectEveryday = projects.find(
+    (p) => p.path === defaultProjectPath,
+  )?.everyday;
   const canHire = defaultProjectPath !== "";
 
   // The editor wins over everything below it: it is the one screen on this
@@ -236,7 +243,7 @@ export function WorkersPane() {
           </button>
           <button
             disabled={!canHire}
-            onClick={() => openEditor(newWorkerDraft(defaultProjectPath))}
+            onClick={() => openEditor(newWorkerDraft(defaultProjectPath, defaultProjectEveryday))}
             className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
           >
             Add by hand
@@ -313,7 +320,7 @@ export function WorkersPane() {
           <WorkersEmptyState
             canHire={canHire}
             onHire={() => openHire(defaultProjectPath)}
-            onAddByHand={() => openEditor(newWorkerDraft(defaultProjectPath))}
+            onAddByHand={() => openEditor(newWorkerDraft(defaultProjectPath, defaultProjectEveryday))}
             onImport={() =>
               void importFromFile({
                 projectPath: defaultProjectPath,
@@ -3737,6 +3744,14 @@ function WorkerEditor() {
   // mirrored here so the editor cannot offer a colleague a handoff would never
   // actually reach. Off-project workers are excluded outright — two workspaces
   // can each employ a "Triage", and a name is all a handoff has to go on.
+  // Everyday projects are the only ones a worker may file into; the flag on
+  // the project record is the real answer, with `isEverydayProject` covering
+  // folders scaffolded before it existed.
+  const everydayProject = isEverydayProject({
+    path: draft.projectPath,
+    everyday: projects.find((p) => p.path === draft.projectPath)?.everyday,
+  });
+
   const colleagues = useMemo(
     () =>
       sortRoster(
@@ -4088,6 +4103,38 @@ function WorkerEditor() {
                 </span>
               </span>
             </label>
+
+            {/* Only for everyday projects. A repo has git, a review step and
+                somewhere else for output to live, so offering to drop agent
+                files into the tree would be a setting whose right answer is
+                always no. */}
+            {everydayProject && (
+              <label className="flex items-start gap-2 rounded-lg border border-sky-400/30 bg-sky-400/5 px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  checked={draft.caps.fileIntoProject === true}
+                  onChange={(e) =>
+                    patch({
+                      caps: {
+                        ...draft.caps,
+                        fileIntoProject: e.target.checked,
+                      },
+                    })
+                  }
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="block text-sm text-ink">
+                    Put finished work in the project folder
+                  </span>
+                  <span className="block text-[11px] leading-relaxed text-ink-faint">
+                    Documents this worker finishes are added to the folder, alongside
+                    everything else in it, and a version is saved so you can undo them.
+                    Everything it produces is kept in its own files either way.
+                  </span>
+                </span>
+              </label>
+            )}
 
             <label className="flex items-start gap-2 rounded-lg border border-teal-400/30 bg-teal-400/5 px-3 py-2.5">
               <input

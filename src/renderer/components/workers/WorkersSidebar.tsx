@@ -305,7 +305,14 @@ export function WorkersSidebar({
             the list you look at when you notice nobody covers something. */}
         {hirePath !== "" && (
           <button
-            onClick={() => openEditor(newWorkerDraft(hirePath))}
+            onClick={() =>
+              openEditor(
+                newWorkerDraft(
+                  hirePath,
+                  projects.find((p) => p.path === hirePath)?.everyday,
+                ),
+              )
+            }
             title="Hire a worker"
             aria-label="Hire a worker"
             className="ml-auto rounded px-1 text-[11px] leading-none text-ink-faint hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
