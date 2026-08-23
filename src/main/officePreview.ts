@@ -98,12 +98,26 @@ export async function convertOfficeToPreview(
     attempts.push({ label: 'Office', run: () => convertWithOfficeCom(filePath, family, maxBytes, resolved) });
   }
 
+  // Raced, not serial: a hung LibreOffice used to burn its full 30s timeout
+  // before Quick Look — which ships with macOS — was ever tried.
   const failures: string[] = [];
-  for (const attempt of attempts) {
-    const result = await attempt.run();
-    if (result.convertedPdfDataUrl || result.convertedHtml) return result;
-    failures.push(`${attempt.label}: ${result.conversionError ?? 'no preview produced.'}`);
-  }
+  let settled = 0;
+  const winner = await new Promise<OfficeConversion | null>((resolve) => {
+    for (const attempt of attempts) {
+      void attempt.run().then(
+        (result) => {
+          if (result.convertedPdfDataUrl || result.convertedHtml) return resolve(result);
+          failures.push(`${attempt.label}: ${result.conversionError ?? 'no preview produced.'}`);
+          if (++settled === attempts.length) resolve(null);
+        },
+        (e: unknown) => {
+          failures.push(`${attempt.label}: ${(e as Error).message}`);
+          if (++settled === attempts.length) resolve(null);
+        },
+      );
+    }
+  });
+  if (winner) return winner;
   return { conversionError: failures.join(' ') };
 }
 

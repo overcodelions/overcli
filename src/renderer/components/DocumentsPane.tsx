@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../store';
-import { intakeAttachments } from '../attachmentIntake';
+import { intakeProjectFiles } from '../attachmentIntake';
 import type { DocumentEntry } from '@shared/types';
 import { FileEditorPane } from './FileEditorPane';
 import { revealLabel } from '../platform';
@@ -98,7 +98,7 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
 
   const addFiles = async (fileList: FileList) => {
     setBusy(true);
-    const { attachments, rejections } = await intakeAttachments(fileList);
+    const { attachments, rejections } = await intakeProjectFiles(fileList);
     if (attachments.length === 0) {
       setBusy(false);
       setError(rejections.at(-1) ?? 'Nothing to add.');

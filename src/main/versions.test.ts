@@ -25,6 +25,24 @@ describe('pendingChangeBytes', () => {
     expect(pendingChangeBytes(dir, ' M a.md\n?? b.md\n')).toBe(150);
   });
 
+  it('adds up the files porcelain says have changed — non-ASCII name', () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'café.md'), 'x'.repeat(100));
+
+    expect(pendingChangeBytes(dir, ' M café.md\n')).toBeGreaterThan(0);
+  });
+
+  it('cannot measure an octal-escaped name — why the status call sets core.quotePath=false', () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'café.md'), 'x'.repeat(100));
+
+    // Without `-c core.quotePath=false`, `git status --porcelain` reports a
+    // non-ASCII name like this — the escaped form never matches a real path,
+    // so the guard measures 0 and a checkpoint that should have been skipped
+    // goes through instead.
+    expect(pendingChangeBytes(dir, ' M "caf\\303\\251.md"\n')).toBe(0);
+  });
+
   it('reads the new name of a rename, and ignores a file that is gone', () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, 'new.md'), 'z'.repeat(10));

@@ -6,17 +6,45 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import type { AppSettings } from '../shared/types';
 import { resolveNumstatPath } from './git';
+
+const { mockOneShotDraftText } = vi.hoisted(() => ({
+  mockOneShotDraftText: vi.fn(),
+}));
+
+// reviseDocument resolves which backend is healthy before drafting, then
+// hands the turn to oneShotDraftText — stub both so the test exercises only
+// the fence-stripping logic downstream of the model's reply.
+vi.mock('./health', () => ({
+  healthyBackends: vi.fn(async () => new Set(['claude'])),
+}));
+vi.mock('./flows/drafter', () => ({
+  oneShotDraftText: mockOneShotDraftText,
+}));
+
 import {
   createBlankDocument,
   gatherProjectContext,
   listDocuments,
   parseDraftedDocument,
+  reviseDocument,
   safeDocumentName,
   uniqueDocumentPath,
 } from './documents';
+
+function draftDeps(): Parameters<typeof reviseDocument>[0] {
+  return {
+    settings: {
+      preferredBackend: 'claude',
+      disabledBackends: {},
+      backendPaths: {},
+    } as unknown as AppSettings,
+    runner: {} as never,
+  };
+}
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-documents-'));
@@ -193,6 +221,47 @@ describe('gatherProjectContext', () => {
 
     expect(blocks.map((b) => b.rel)).toEqual(['small.md']);
     expect(omitted).toEqual(['huge.md']);
+  });
+});
+
+describe('reviseDocument', () => {
+  it('unwraps a reply that is entirely one fence', async () => {
+    mockOneShotDraftText.mockResolvedValueOnce({
+      ok: true,
+      text: '```markdown\nHello world\n```',
+      label: 'Claude',
+      backend: 'claude',
+    });
+
+    const res = await reviseDocument(draftDeps(), {
+      path: '/tmp/doc.md',
+      content: 'Hello',
+      instruction: 'greet the world',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.content).toBe('Hello world');
+  });
+
+  it('leaves a reply byte-identical when fences appear in the middle, not just at the edges', async () => {
+    const text = '```bash\necho hi\n```\n\nSome text\n\n```python\nprint(1)\n```';
+    mockOneShotDraftText.mockResolvedValueOnce({
+      ok: true,
+      text,
+      label: 'Claude',
+      backend: 'claude',
+    });
+
+    const res = await reviseDocument(draftDeps(), {
+      path: '/tmp/README.md',
+      content: 'Some text',
+      instruction: 'add a bash and a python example',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.content).toBe(text);
   });
 });
 
