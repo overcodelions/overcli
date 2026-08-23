@@ -20,8 +20,6 @@ import {
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { Store, flushStoreSync } from './store';
 import { isAgentWrittenPath, recordWritesFromEvents } from './writtenPaths';
 import { RunnerManager } from './runner';
@@ -94,6 +92,7 @@ import {
   watchTree,
 } from './fileTreeWatch';
 import { readHtmlPreviewAssets } from './htmlPreviewAssets';
+import { convertOfficeToPreview, officeFamilyForExtension } from './officePreview';
 import { buildReactPreviewBundle } from './reactPreviewBundle';
 import {
   handlePreviewProtocol,
@@ -180,7 +179,6 @@ import {
 // incorrectly sent `npm start` at the Vite URL that wasn't running.
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const isDev = !!DEV_URL;
-const execFileAsync = promisify(execFile);
 const MAX_OPEN_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_FILE_BYTES = 1 * 1024 * 1024;
 const LARGE_TEXT_PREVIEW_BYTES = 256 * 1024;
@@ -1759,7 +1757,7 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
     const ext = path.extname(resolved).slice(1).toLowerCase();
     const officeFamily = officeFamilyForExtension(ext);
     if (officeFamily) {
-      const converted = await convertOfficeToPdfPreview(resolved);
+      const converted = await convertOfficeToPreview(resolved, officeFamily, MAX_OPEN_FILE_BYTES);
       return {
         ok: true,
         kind: 'office',
@@ -1804,46 +1802,6 @@ function pathToFileUrl(filePath: string): string {
   const normalized = path.resolve(filePath).replace(/\\/g, '/');
   const prefixed = normalized.startsWith('/') ? normalized : `/${normalized}`;
   return encodeURI(`file://${prefixed}`);
-}
-
-async function convertOfficeToPdfPreview(
-  filePath: string,
-): Promise<Pick<
-  Extract<ArtifactPreviewResult, { ok: true; kind: 'office' }>,
-  'convertedPdfDataUrl' | 'convertedPdfSizeBytes' | 'converterPath' | 'conversionError'
->> {
-  const converterPath = findLibreOfficeBinary();
-  if (!converterPath) return { conversionError: 'LibreOffice/soffice was not found.' };
-  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-office-preview-'));
-  try {
-    await execFileAsync(
-      converterPath,
-      ['--headless', '--convert-to', 'pdf', '--outdir', outDir, filePath],
-      { timeout: 30_000, maxBuffer: 1024 * 1024 },
-    );
-    const expected = path.join(outDir, `${path.basename(filePath, path.extname(filePath))}.pdf`);
-    const pdfPath = fs.existsSync(expected)
-      ? expected
-      : fs.readdirSync(outDir).find((name) => name.toLowerCase().endsWith('.pdf'));
-    const resolvedPdfPath = pdfPath && path.isAbsolute(pdfPath) ? pdfPath : pdfPath ? path.join(outDir, pdfPath) : '';
-    if (!resolvedPdfPath || !fs.existsSync(resolvedPdfPath)) {
-      return { converterPath, conversionError: 'LibreOffice did not produce a PDF preview.' };
-    }
-    const stat = fs.statSync(resolvedPdfPath);
-    if (stat.size > MAX_OPEN_FILE_BYTES) {
-      return { converterPath, conversionError: 'Converted PDF is over the 5 MB preview cap.' };
-    }
-    const data = fs.readFileSync(resolvedPdfPath).toString('base64');
-    return {
-      converterPath,
-      convertedPdfDataUrl: `data:application/pdf;base64,${data}`,
-      convertedPdfSizeBytes: stat.size,
-    };
-  } catch (err: any) {
-    return { converterPath, conversionError: err?.message ?? 'LibreOffice conversion failed.' };
-  } finally {
-    fs.rmSync(outDir, { recursive: true, force: true });
-  }
 }
 
 function fileTooLargeMessage(bytes: number): string {
@@ -1920,35 +1878,6 @@ function isLikelyBinaryFile(filePath: string, sizeBytes: number): boolean {
   } finally {
     fs.closeSync(fd);
   }
-}
-
-function findLibreOfficeBinary(): string | null {
-  const candidates =
-    process.platform === 'darwin'
-      ? [
-          '/Applications/LibreOffice.app/Contents/MacOS/soffice',
-          '/opt/homebrew/bin/soffice',
-          '/usr/local/bin/soffice',
-          'soffice',
-          'libreoffice',
-        ]
-      : ['soffice', 'libreoffice'];
-  for (const candidate of candidates) {
-    if (candidate.includes(path.sep) && fs.existsSync(candidate)) return candidate;
-    if (!candidate.includes(path.sep) && commandExists(candidate)) return candidate;
-  }
-  return null;
-}
-
-function commandExists(command: string): boolean {
-  const paths = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
-  return paths.some((dir) => {
-    try {
-      return fs.existsSync(path.join(dir, command));
-    } catch {
-      return false;
-    }
-  });
 }
 
 function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHintsResult {
@@ -2035,13 +1964,6 @@ function scriptCommand(packageManager: 'npm' | 'pnpm' | 'yarn', script: string):
   if (packageManager === 'yarn') return `yarn ${script}`;
   if (packageManager === 'pnpm') return `pnpm run ${script}`;
   return script === 'start' ? 'npm start' : `npm run ${script}`;
-}
-
-function officeFamilyForExtension(ext: string): 'document' | 'spreadsheet' | 'presentation' | null {
-  if (ext === 'doc' || ext === 'docx') return 'document';
-  if (ext === 'xls' || ext === 'xlsx') return 'spreadsheet';
-  if (ext === 'ppt' || ext === 'pptx') return 'presentation';
-  return null;
 }
 
 function mimeForPreviewExtension(ext: string): string | null {
