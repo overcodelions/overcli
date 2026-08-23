@@ -30,7 +30,9 @@ import type { AppSettings, Attachment, Backend } from '../../shared/types';
 import type { Flow, FlowModelRef } from '../../shared/flows/schema';
 import { normalizeFlowTag } from '../../shared/flows/schema';
 import {
+  PREMIUM_MODELS,
   canonicalizePremiumModel,
+  isSupportedPremiumModel,
   liftMissingModel,
   snapToTierDefault,
   type FlowModelDefaults,
@@ -47,6 +49,7 @@ import {
   pickDrafterBackend,
   drafterModelFor,
   drafterModelHints,
+  resolveProducerModel,
 } from '../../shared/flows/drafterBackend';
 import { healthyBackends } from '../health';
 import { flowHasCodeWritingStep, isGatingReviewerRole } from './runtime';
@@ -307,6 +310,18 @@ function systemPrompt(
     `  - planning + review: { backend: ${backend}, model: ${hints.thinking} }`,
     `  - rebound critic / cheaper steps: { backend: ${backend}, model: ${hints.standard} }`,
     `  - implementers + test-writers: { backend: ${backend}, model: ${hints.fast} }`,
+    '',
+    `MODEL IDS — these are the ONLY ids that exist for the "${backend}" backend. Copy one`,
+    'EXACTLY as written. Never invent, shorten, or guess a version (there is no "gpt-5", no',
+    '"claude-opus", no "gemini-pro"):',
+    `  ${(PREMIUM_MODELS[backend as Exclude<Backend, 'ollama'>] ?? []).join(', ')}`,
+    'A model id and its backend MUST come from the same family:',
+    '  - `gpt-*` ids run ONLY on backend `codex` (or `copilot`)',
+    '  - `claude-*` ids run ONLY on backend `claude` (or `copilot`)',
+    '  - `gemini-*` ids run ONLY on backend `gemini`',
+    'Never mix families: { backend: codex, model: claude-opus-5 } and { backend: claude, model:',
+    'gpt-5.6-sol } are both INVALID and will fail validation.',
+    '',
     `Do NOT put every step on ${hints.thinking}. It is the most expensive model available and`,
     'the user pays per step. Reserve it for steps that genuinely need deep reasoning — the',
     'plan, and the review that judges the plan. Extraction, summarising, formatting, drafting',
@@ -792,6 +807,14 @@ function repairModelIds(flow: Flow, snap?: FlowModelDefaults): void {
   const repair = (backend: FlowModelRef['backend'], model: string) => {
     const premium = backend as Exclude<typeof backend, 'ollama'>;
     const lifted = liftMissingModel(premium, canonicalizePremiumModel(premium, model));
+    // Anything the backend still doesn't recognise is a family mismatch
+    // (`gpt-5` on claude, `claude-opus-5` on codex) or an id that never
+    // existed. Both lose the entire draft at validation, so translate the id
+    // onto the same speed tier of the backend that will actually run the
+    // step — a runnable flow beats a rejected one.
+    if (!isSupportedPremiumModel(premium, lifted)) {
+      return resolveProducerModel(premium, lifted, snap);
+    }
     return snap ? snapToTierDefault(premium, lifted, snap) : lifted;
   };
   const fix = (ref: FlowModelRef | undefined) => {
