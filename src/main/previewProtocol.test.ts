@@ -67,6 +67,19 @@ describe('documentIdFromUrl', () => {
 });
 
 describe('the policy a served document carries', () => {
+  it('gives a converted local document neither script nor network', async () => {
+    // A .pptx that references a remote image must not be able to phone home
+    // just because someone previewed it.
+    const published = publishPreviewDocument('<html><body>slides</body></html>', 'local');
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    const csp = (await fetchPreview(published.url)).headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("script-src 'none'");
+    expect(csp).toContain("connect-src 'none'");
+    expect(csp).toContain('img-src data: blob:');
+    expect(csp).not.toContain('https:');
+  });
+
   it('lets a hand-written page load the CDN scripts it is built from', async () => {
     const published = publishPreviewDocument('<html><body>page</body></html>', 'document');
     expect(published.ok).toBe(true);

@@ -33,6 +33,11 @@ const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 ///
 ///   - `bundle`: a component Overcli compiled itself. Everything it needs is
 ///     already inlined, so no remote script is allowed at all.
+///   - `local`: a document Overcli produced by converting a local file — a
+///     Quick Look rendering of a .pptx, say. It is static markup: inline
+///     styles and `data:` images, no script and nothing to fetch. Granting it
+///     anything remote would mean a deck that references an external image
+///     could phone home just because someone previewed it.
 ///   - `document`: a self-contained .html file someone wrote. These are
 ///     overwhelmingly CDN pages — React/Vue/Tailwind from unpkg or jsdelivr,
 ///     Babel standalone compiling JSX in the page — which is exactly the
@@ -40,7 +45,7 @@ const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024;
 ///     script renders them as a blank white frame, which is what this
 ///     policy exists to stop, so it allows https: script and the `eval`
 ///     an in-page compiler runs on.
-export type PreviewPolicy = 'bundle' | 'document';
+export type PreviewPolicy = 'bundle' | 'local' | 'document';
 
 const BASE_CSP = [
   "default-src 'none'",
@@ -66,6 +71,9 @@ const REMOTE_DISPLAY_CSP = [
 const LOCAL_DISPLAY_CSP = ['img-src data: blob:', 'font-src data:', 'media-src data: blob:'];
 
 const CSP_BY_POLICY: Record<PreviewPolicy, string> = {
+  // No script and no network at all: everything this document needs to render
+  // is already inside it.
+  local: [...BASE_CSP, ...LOCAL_DISPLAY_CSP, "connect-src 'none'", "script-src 'none'"].join('; '),
   bundle: [...BASE_CSP, ...REMOTE_DISPLAY_CSP, 'connect-src https:', "script-src 'unsafe-inline'"].join('; '),
   // `document` runs REMOTE script (see the type doc above — CDN pages are the
   // point), and CSP has no directive that limits what a script does once it
@@ -130,7 +138,7 @@ export function publishPreviewDocument(
     return { ok: false, error: 'Preview document is too large to render.' };
   }
   const id = randomUUID();
-  documents.set(id, { html, policy: policy === 'document' ? 'document' : 'bundle' });
+  documents.set(id, { html, policy: policy in CSP_BY_POLICY ? policy : 'bundle' });
   while (documents.size > MAX_DOCUMENTS) {
     const oldest = documents.keys().next();
     if (oldest.done) break;

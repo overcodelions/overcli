@@ -30,16 +30,47 @@ export function folderNameFor(title: string): string {
 /// app config; this answers one question and nothing else.
 export const EVERYDAY_MARKER_FILE = '.overcli-project.json';
 
-export function writeEverydayMarker(projectPath: string): void {
+/// Convert an existing folder in either direction, and report whether it
+/// worked. Deliberately NOT `writeEverydayMarker`: that one is best-effort
+/// because it runs behind scaffolding that has already succeeded, whereas a
+/// conversion IS the marker — a silent failure there would leave the app
+/// claiming a folder is everyday on this machine and nowhere else.
+export function setEverydayMarker(
+  projectPath: string,
+  everyday: boolean,
+): { ok: true } | { ok: false; error: string } {
+  if (!everyday) return removeEverydayMarker(projectPath);
   try {
     fs.writeFileSync(
       path.join(projectPath, EVERYDAY_MARKER_FILE),
       `${JSON.stringify({ kind: 'everyday', version: 1 }, null, 2)}\n`,
       'utf-8',
     );
-  } catch {
-    // Best effort. A project without its marker still works here and now;
-    // it just will not recognise itself somewhere else.
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+/// Best-effort sibling for callers that have already succeeded at the real
+/// work (scaffolding, marker back-fill). A project without its marker still
+/// works here and now; it just will not recognise itself somewhere else.
+export function writeEverydayMarker(projectPath: string): void {
+  setEverydayMarker(projectPath, true);
+}
+
+/// Undo a conversion. Deleting the marker is the whole operation — the
+/// history `initRepo` created stays, because it is the user's undo timeline
+/// and not something a relabel should be allowed to throw away (removing it
+/// is `git:removeHistory`, behind its own confirmation).
+export function removeEverydayMarker(
+  projectPath: string,
+): { ok: true } | { ok: false; error: string } {
+  try {
+    fs.rmSync(path.join(projectPath, EVERYDAY_MARKER_FILE), { force: true });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
   }
 }
 
@@ -132,7 +163,7 @@ export function copyIntoProject(
 /// `report.csv` dropped twice becomes `report.csv` and `report 2.csv` rather
 /// than one file silently replacing the other — these are the user's own
 /// documents, and an overwrite is not recoverable from inside the app.
-function uniqueFilePath(dir: string, base: string): string {
+export function uniqueFilePath(dir: string, base: string): string {
   let candidate = path.join(dir, base);
   if (!fs.existsSync(candidate)) return candidate;
   const ext = path.extname(base);

@@ -23,14 +23,22 @@ vi.mock('./runSummaryLog', () => ({
 // Partial: only the archiving call is stubbed, so the weekly pass is
 // observable without touching the disk. `archiveWorkerFiles` has its own
 // tests; what is unproven here is that the engine calls it at all.
-const { archiveMock, deleteDeliverableMock } = vi.hoisted(() => ({
+const { archiveMock, deleteDeliverableMock, fileDeliverableMock } = vi.hoisted(() => ({
   archiveMock: vi.fn(() => ({ moved: 0 })),
   deleteDeliverableMock: vi.fn(() => ({ removed: 0 })),
+  // The cabinet copy has its own tests; stubbing it keeps the engine's tests
+  // off the disk now that a finished item can carry artifacts.
+  fileDeliverableMock: vi.fn(() => ({ written: true, name: 'filed' })),
 }));
+const { publishMock } = vi.hoisted(() => ({
+  publishMock: vi.fn(() => ({ written: [] as string[] })),
+}));
+vi.mock('./workerPublish', () => ({ publishDeliverableToProject: publishMock }));
 vi.mock('./workerFiles', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./workerFiles')>()),
   archiveWorkerFiles: archiveMock,
   deleteDeliverable: deleteDeliverableMock,
+  fileWorkerDeliverable: fileDeliverableMock,
 }));
 
 import {
@@ -64,6 +72,7 @@ function makeHarness(
     deleteActivity?: WorkerEngineDeps['deleteActivity'];
     journalClear?: (workerId: string) => number;
     supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
+    deliverablesFor?: WorkerEngineDeps['deliverablesFor'];
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -73,6 +82,7 @@ function makeHarness(
   const saved: Worker[] = [];
   const journal: WorkerJournalEntry[] = [];
   const orchestrations = new Map<string, Orchestration>();
+  const checkpoints: Array<{ projectPath: string; message: string }> = [];
   let spend = opts.spend ?? 0;
   let treasury: Treasury | null = opts.pool != null ? { monthlyUSD: opts.pool } : null;
   let parkResult: Awaited<ReturnType<WorkerParker['parkProposal']>> = {
@@ -179,6 +189,8 @@ function makeHarness(
     clearActivity: opts.clearActivity,
     deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
+    deliverablesFor: opts.deliverablesFor,
+    checkpoint: (args) => checkpoints.push(args),
   });
 
   async function flush(): Promise<void> {
@@ -205,6 +217,7 @@ function makeHarness(
     saved,
     journal,
     orchestrations,
+    checkpoints,
     advanceTo,
     flush,
     setNow: (t: number) => {
@@ -824,6 +837,69 @@ describe('WorkerEngine notes', () => {
     });
     expect(h.engine.note('worker-1', 'orch-1', 'x'.repeat(601)).ok).toBe(false);
     expect(h.engine.note('nobody', 'orch-1', 'hello').ok).toBe(false);
+  });
+});
+
+describe('WorkerEngine delivery to the project folder', () => {
+  const doneBatch = () =>
+    workerBatch({
+      items: [
+        {
+          candidate: { id: 'c1', title: 'Summarise the course material', prompt: 'p' },
+          flowId: 'fix-it',
+          status: 'done',
+          runId: 'run-1',
+          finishedAt: 10,
+        },
+      ],
+    });
+
+  it('files a finished deliverable into the folder and saves a version', () => {
+    publishMock.mockReturnValue({ written: ['Summary.md'] });
+    const h = makeHarness({
+      seed: [
+        seedWorker({
+          projectPath: '/documents/Course',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', fileIntoProject: true },
+        }),
+      ],
+      deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
+    });
+    h.engine.start();
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+
+    expect(publishMock).toHaveBeenCalledWith({
+      workerId: 'worker-1',
+      projectPath: '/documents/Course',
+      runId: 'run-1',
+      artifacts: [{ name: 'Summary.md', body: 'hello' }],
+    });
+    expect(h.checkpoints).toEqual([
+      { projectPath: '/documents/Course', message: 'Scout added Summary.md' },
+    ]);
+  });
+
+  it('saves no version when the deliverable did not land in the folder', () => {
+    publishMock.mockReturnValue({ written: [] });
+    const h = makeHarness({
+      seed: [seedWorker({ caps: { maxItemsPerShift: 3, runIn: 'worktree', fileIntoProject: true } })],
+      deliverablesFor: () => [{ name: 'notes.py', body: 'x' }],
+    });
+    h.engine.start();
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+    expect(h.checkpoints).toEqual([]);
+  });
+
+  it('leaves a worker without the cap filing only to its cabinet', () => {
+    publishMock.mockClear();
+    const h = makeHarness({
+      seed: [seedWorker()],
+      deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
+    });
+    h.engine.start();
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+    expect(publishMock).not.toHaveBeenCalled();
+    expect(h.checkpoints).toEqual([]);
   });
 });
 

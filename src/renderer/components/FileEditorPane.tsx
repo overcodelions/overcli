@@ -804,7 +804,10 @@ export const FileEditorPane = memo(function FileEditorPane({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          {/* `shrink-0`: without it both halves of the bar shrink together and
+              the mode buttons ride up over Download in a narrow pane. The left
+              half is the side that can afford to give — its path truncates. */}
+          <div className="flex items-center gap-2 shrink-0">
             <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
               <button
                 onClick={() => setMode('diff')}

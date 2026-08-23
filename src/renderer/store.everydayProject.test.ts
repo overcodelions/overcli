@@ -13,6 +13,7 @@ const createEverydayProjectResult = {
   current: { ok: true, path: '/Users/x/Documents/Overcli Projects/Marketing copy review', historyOn: true } as InvokeResult,
 };
 const commitStatusResult = { current: { isRepo: true } as { isRepo: boolean } };
+const setMarkerResult = { current: { ok: true } as InvokeResult };
 const invoked: Array<{ channel: string; args: unknown }> = [];
 
 function stubBridge(): void {
@@ -21,6 +22,7 @@ function stubBridge(): void {
     if (channel === 'git:initRepo') return initRepoResult.current;
     if (channel === 'fs:createEverydayProject') return createEverydayProjectResult.current;
     if (channel === 'git:commitStatus') return commitStatusResult.current;
+    if (channel === 'fs:setEverydayMarker') return setMarkerResult.current;
     if (channel === 'store:saveProjects' || channel === 'store:saveSettings' || channel === 'store:saveSelection') {
       return undefined;
     }
@@ -56,6 +58,7 @@ beforeEach(() => {
     historyOn: true,
   };
   commitStatusResult.current = { isRepo: true };
+  setMarkerResult.current = { ok: true };
   useStore.setState({
     projects: [],
     settings: { ...DEFAULT_SETTINGS },
@@ -127,5 +130,105 @@ describe('createEverydayProject', () => {
 
     expect(res).toEqual({ ok: false, error: 'disk full' });
     expect(useStore.getState().projects).toHaveLength(0);
+  });
+});
+
+// Converting a folder someone already has, in both directions. The order
+// matters more than the individual steps: history has to exist before the
+// app promises undo in plain words.
+describe('convertToEverydayProject', () => {
+  it('errors when the project is not found', async () => {
+    const res = await useStore.getState().convertToEverydayProject('missing' as never);
+    expect(res.ok).toBe(false);
+  });
+
+  it('turns on history first, then marks the folder and flags the project', async () => {
+    useStore.setState({ projects: [project()], projectIsGitRepo: { 'proj-1': false } } as never);
+
+    const res = await useStore.getState().convertToEverydayProject('proj-1' as never);
+
+    expect(res).toEqual({ ok: true });
+    const channels = invoked.map((c) => c.channel);
+    expect(channels.indexOf('git:initRepo')).toBeLessThan(channels.indexOf('fs:setEverydayMarker'));
+    expect(invoked).toContainEqual({
+      channel: 'fs:setEverydayMarker',
+      args: { projectPath: '/Users/x/git/proj', everyday: true },
+    });
+    expect(useStore.getState().projects[0].everyday).toBe(true);
+    expect(useStore.getState().everydayRoots).toEqual(['/Users/x/git/proj']);
+  });
+
+  it('skips the init for a folder that already has history', async () => {
+    useStore.setState({ projects: [project()], projectIsGitRepo: { 'proj-1': true } } as never);
+
+    await useStore.getState().convertToEverydayProject('proj-1' as never);
+
+    expect(invoked.some((c) => c.channel === 'git:initRepo')).toBe(false);
+    expect(useStore.getState().projects[0].everyday).toBe(true);
+  });
+
+  // The whole everyday framing promises "you can undo anything". A folder
+  // that could not get a history must not be relabelled as though it could.
+  it('relabels nothing when history cannot be turned on', async () => {
+    initRepoResult.current = { ok: false, error: 'too large' };
+    useStore.setState({ projects: [project()], projectIsGitRepo: { 'proj-1': false } } as never);
+
+    const res = await useStore.getState().convertToEverydayProject('proj-1' as never);
+
+    expect(res).toEqual({ ok: false, error: 'too large' });
+    expect(invoked.some((c) => c.channel === 'fs:setEverydayMarker')).toBe(false);
+    expect(useStore.getState().projects[0].everyday).toBeUndefined();
+  });
+
+  it('leaves the flag alone when the marker cannot be written', async () => {
+    setMarkerResult.current = { ok: false, error: 'read-only folder' };
+    useStore.setState({ projects: [project()], projectIsGitRepo: { 'proj-1': true } } as never);
+
+    const res = await useStore.getState().convertToEverydayProject('proj-1' as never);
+
+    expect(res).toEqual({ ok: false, error: 'read-only folder' });
+    expect(useStore.getState().projects[0].everyday).toBeUndefined();
+  });
+});
+
+describe('revertEverydayProject', () => {
+  // `false`, not `undefined`: `syncProjectMarkers` back-fills a marker for
+  // anything still flagged true, and an absent flag would be re-marked on the
+  // next load — the revert would silently undo itself.
+  it('clears the marker and pins the flag to false', async () => {
+    useStore.setState({
+      projects: [project({ everyday: true })],
+      everydayRoots: ['/Users/x/git/proj'],
+    } as never);
+
+    const res = await useStore.getState().revertEverydayProject('proj-1' as never);
+
+    expect(res).toEqual({ ok: true });
+    expect(invoked).toContainEqual({
+      channel: 'fs:setEverydayMarker',
+      args: { projectPath: '/Users/x/git/proj', everyday: false },
+    });
+    expect(useStore.getState().projects[0].everyday).toBe(false);
+    expect(useStore.getState().everydayRoots).toEqual([]);
+  });
+
+  // Undo history is the user's by the time they change their mind; dropping
+  // it is a separate, separately-confirmed decision.
+  it('leaves the history in place', async () => {
+    useStore.setState({ projects: [project({ everyday: true })] } as never);
+
+    await useStore.getState().revertEverydayProject('proj-1' as never);
+
+    expect(invoked.some((c) => c.channel === 'git:removeHistory')).toBe(false);
+  });
+
+  it('keeps the flag when the marker cannot be cleared', async () => {
+    setMarkerResult.current = { ok: false, error: 'permission denied' };
+    useStore.setState({ projects: [project({ everyday: true })] } as never);
+
+    const res = await useStore.getState().revertEverydayProject('proj-1' as never);
+
+    expect(res).toEqual({ ok: false, error: 'permission denied' });
+    expect(useStore.getState().projects[0].everyday).toBe(true);
   });
 });
