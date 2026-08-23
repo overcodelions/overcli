@@ -13,6 +13,8 @@ import { StatsPage } from './components/StatsPage';
 import { LocalPane } from './components/LocalPane';
 import { WelcomePane } from './components/WelcomePane';
 import { ExplorerPane } from './components/ExplorerPane';
+import { DocumentsPane } from './components/DocumentsPane';
+import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
 import { FlowsLibraryPane } from './components/flows/FlowsLibraryPane';
 import { OrchestratorPane } from './components/orchestrator/OrchestratorPane';
 import { WorkersPane } from './components/workers/WorkersPane';
@@ -52,6 +54,17 @@ export function App() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const backendHealth = useStore((s) => s.backendHealth);
   const detailMode = useStore((s) => s.detailMode);
+  const explorerRootPath = useStore((s) => s.explorerRootPath);
+  const allProjects = useStore((s) => s.projects);
+  // The explorer root is a path, not a project id, so match it back to the
+  // project that owns it to decide which browser to render.
+  const everydayExplorerProject = explorerRootPath
+    ? allProjects.find(
+        (p) =>
+          p.path === explorerRootPath &&
+          (p.everyday === true || looksLikeEverydayProjectPath(p.path)),
+      )
+    : undefined;
   const subagentDrawerParentId = useStore((s) => s.subagentDrawerParentId);
   const subagentDrawerConversationId = useStore((s) => s.subagentDrawerConversationId);
   const [subagentDrawerWidth, setSubagentDrawerWidth] = useState(SUBAGENT_DRAWER_DEFAULT);
@@ -381,7 +394,18 @@ export function App() {
           ) : detailMode === 'local' ? (
             <LocalPane />
           ) : detailMode === 'explorer' ? (
-            <ExplorerPane />
+            // Everyday projects get the documents grid; a code project keeps
+            // the tree. Same entry point, two renderers — the file browser a
+            // repo needs and the one a folder of documents needs are not the
+            // same browser.
+            everydayExplorerProject ? (
+              <DocumentsPane
+                rootPath={everydayExplorerProject.path}
+                projectName={everydayExplorerProject.name}
+              />
+            ) : (
+              <ExplorerPane />
+            )
           ) : detailMode === 'flows' ? (
             <FlowsLibraryPane />
           ) : detailMode === 'orchestrator' ? (

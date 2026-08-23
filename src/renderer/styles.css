@@ -787,3 +787,31 @@ body.dragging-divider iframe {
     transition: none;
   }
 }
+
+/* Accent chips/buttons/wells for the everyday-project surfaces.
+ *
+ * Same trap as the flow rows above: this project's colours are `var(--c-*)`
+ * strings, and Tailwind 3 cannot apply a `/nn` opacity modifier to a `var()`
+ * colour — the utility is DROPPED. `bg-accent/15 border-accent/50` therefore
+ * rendered as no fill plus preflight's near-white border, which is exactly
+ * the "outlined button" complaint. Named blends instead. */
+.accent-soft {
+  background: color-mix(in srgb, var(--c-accent) 16%, var(--c-card-bg-strong));
+  border-color: color-mix(in srgb, var(--c-accent) 34%, var(--c-card-border));
+}
+.accent-soft:hover {
+  background: color-mix(in srgb, var(--c-accent) 26%, var(--c-card-bg-strong));
+}
+/* Dashed "put something here" affordance. */
+.accent-invite {
+  background: color-mix(in srgb, var(--c-accent) 7%, transparent);
+  border-color: color-mix(in srgb, var(--c-accent) 38%, var(--c-card-border));
+}
+.accent-invite:hover {
+  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+}
+/* Full-surface drop target. */
+.accent-dropzone {
+  background: color-mix(in srgb, var(--c-accent) 12%, transparent);
+  border-color: var(--c-accent);
+}

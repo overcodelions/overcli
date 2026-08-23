@@ -8,6 +8,8 @@ import { useProjectBranches } from './sheets/useProjectBranches';
 import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
 import { CopyButton } from './ManualCommand';
+import { ProjectFilesBubble } from './ProjectFilesBubble';
+import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
 import {
   flowTagCounts,
   groupFlows,
@@ -192,7 +194,18 @@ export function WelcomePane() {
   // reports, investigate — rather than the build/code framing that fits a
   // git project. `true`/`undefined` keep the default coding framing.
   const projectIsGitRepo = useStore((s) => s.projectIsGitRepo);
-  const isNonGitProject = !focusedWorkspace && !!selectedProject && projectIsGitRepo[selectedProject.id] === false;
+  // "Not a git repo" was the app's only proxy for "not a code project", and
+  // everyday projects invalidated it: they are git repos precisely so undo
+  // works, which used to route the most non-technical folders in the app into
+  // the engineer copy ("What should we build in Marketing101?"). Intent is
+  // recorded on the project now, so ask that instead of asking git.
+  const isEverydayProject =
+    !focusedWorkspace &&
+    !!selectedProject &&
+    (selectedProject.everyday === true || looksLikeEverydayProjectPath(selectedProject.path));
+  const isNonGitProject =
+    (!focusedWorkspace && !!selectedProject && projectIsGitRepo[selectedProject.id] === false) ||
+    isEverydayProject;
   // Agent mode mints git worktrees: one for a single git-backed project,
   // or one per member repo for a workspace (wired through a coordinator).
   // Excludes non-git folders and empty workspaces.
@@ -439,7 +452,19 @@ export function WelcomePane() {
     : `Ask ${backendName(backend)} anything. @ to reference files · / for commands`;
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto">
+    <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto relative">
+      {(focusedWorkspace || selectedProject) && (
+        <div className="absolute top-6 right-8 z-10">
+          <ProjectFilesBubble
+            project={
+              focusedWorkspace
+                ? { ...focusedWorkspace, path: focusedWorkspace.rootPath }
+                : selectedProject!
+            }
+            variant={!focusedWorkspace && isNonGitProject ? 'documents' : 'files'}
+          />
+        </div>
+      )}
       <div className="w-full max-w-[680px]">
         <div className="text-center text-2xl font-semibold mb-5">{headline}</div>
         {isNonGitProject && selectedProject && (

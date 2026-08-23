@@ -62,7 +62,13 @@ import {
   workspaceCommitStatus,
   commitAll,
   workspaceCommitAll,
+  initRepo,
+  removeRepoHistory,
 } from './git';
+import { copyIntoProject, createEverydayProject } from './everydayProject';
+import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
+import { checkpointProject, listVersions, restoreVersion } from './versions';
+import { commitAllAsync, readVersionDiff, runGitAsync } from './git';
 import {
   scanWorktrees,
   sweepWorktrees,
@@ -969,6 +975,93 @@ function registerIpc(): void {
   ipcMain.handle('git:workspaceCommitStatus', (_e, { projects }) => workspaceCommitStatus(projects));
   ipcMain.handle('git:commitAll', (_e, args) => commitAll(args));
   ipcMain.handle('git:workspaceCommitAll', (_e, args) => workspaceCommitAll(args));
+  ipcMain.handle('git:initRepo', async (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return initRepo(args);
+  });
+  ipcMain.handle('git:removeHistory', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return removeRepoHistory(args);
+  });
+  // Scaffold AND prepare in one handler. Doing the init here means the folder
+  // is already a repo before the renderer registers it, so `addProject`'s own
+  // git-status probe sees the truth on its first look.
+  ipcMain.handle('fs:listDocuments', (_e, args) => {
+    if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return listDocuments(args);
+  });
+  ipcMain.handle('versions:checkpoint', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return checkpointProject(args, {
+      statusPorcelain: async (cwd) => (await runGitAsync(['status', '--porcelain'], cwd)).stdout,
+      commit: commitAllAsync,
+    });
+  });
+  ipcMain.handle('versions:list', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return listVersions(args);
+  });
+  ipcMain.handle('versions:diff', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return readVersionDiff({ cwd: args.projectPath, sha: args.sha, file: args.file });
+  });
+  ipcMain.handle('versions:restore', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return restoreVersion(args);
+  });
+  ipcMain.handle('fs:cancelRevise', (_e, args) => {
+    const requestId = typeof args?.requestId === 'string' ? args.requestId : '';
+    return { stopped: requestId ? (runner?.cancelOneShot(requestId) ?? false) : false };
+  });
+  ipcMain.handle('fs:reviseDocument', (_e, args) => {
+    if (typeof args?.path !== 'string' || !isPathUnderRegisteredRoot(args.path)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    const requestId = typeof args?.requestId === 'string' ? args.requestId : '';
+    return reviseDocument(drafterDeps(), args, (text) => {
+      if (requestId) flowAwareEmit({ type: 'documentRevise', requestId, text });
+    });
+  });
+  ipcMain.handle('fs:createBlankDocument', (_e, args) => {
+    if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return createBlankDocument(args);
+  });
+  ipcMain.handle('fs:createDocumentFromPrompt', (_e, args) => {
+    if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return createDocumentFromPrompt(drafterDeps(), args);
+  });
+  ipcMain.handle('fs:copyIntoProject', (_e, args) => {
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+    }
+    return copyIntoProject(args);
+  });
+  ipcMain.handle('fs:createEverydayProject', async (_e, args) => {
+    const made = createEverydayProject({
+      title: String(args?.title ?? ''), goal: String(args?.goal ?? ''),
+    });
+    if (!made.ok) return made;
+    const init = await initRepo({ projectPath: made.path });
+    return { ...made, historyOn: init.ok };
+  });
 
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects, instructions }) =>
     ensureWorkspaceSymlinkRoot(workspaceId, projects, instructions),

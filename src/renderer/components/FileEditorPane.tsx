@@ -20,12 +20,15 @@ import {
   detectFilePreviewKind,
   isBinaryPreviewKind,
   isUnsupportedBinaryFile,
+  type FileViewMode,
 } from '../filePreview';
 import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
 import { dirName, fileName, tabLabels } from '../tabLabels';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
+import { Diff } from './DiffView';
+import { isProseDocumentPath, looksLikeEverydayProjectPath } from '@shared/everydayProjects';
 import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
 
 // Feature flag: route the editable file view through CodeMirror 6.
@@ -35,6 +38,17 @@ import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
 // `false` to fall through to the legacy editor if the CM6 version
 // regresses something.
 const USE_CODEMIRROR_EDITOR = true;
+
+/// Idle gap before an everyday project's document saves itself. Long enough
+/// that it never fires mid-sentence, short enough that walking away from the
+/// laptop does not lose the paragraph you just wrote.
+const AUTO_SAVE_IDLE_MS = 5000;
+
+/// Idle gap before a spell of editing is captured as a version. Much longer
+/// than the save timer on purpose: saving protects the keystroke, a version
+/// marks "you stopped working on this", and one per keystroke-burst would be
+/// a history nobody can read.
+const CHECKPOINT_IDLE_MS = 120_000;
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
 /// Cmd-click go-to-definition state. `loading` shows a inline chip (a
@@ -140,6 +154,7 @@ export const FileEditorPane = memo(function FileEditorPane({
   const setMode = useStore((s) => s.setOpenFileMode);
   const closeFile = useStore((s) => s.closeFile);
   const [content, setContent] = useState<string>('');
+
   const [diffText, setDiffText] = useState<string>('');
   const [artifactPreview, setArtifactPreview] = useState<ArtifactPreviewResult | null>(null);
   const [fileInfo, setFileInfo] = useState<FileInfoState | null>(null);
@@ -517,6 +532,87 @@ export const FileEditorPane = memo(function FileEditorPane({
     } else setError(res.error);
   }, [path, dirty, content, clearFileDirty, rootPath, fileInfo]);
 
+  // Auto-save, everyday projects only.
+  //
+  // A business user does not think about saving, and Drive/Dropbox/Notion
+  // have made that the expected behaviour. It is safe *here specifically*
+  // because we put a git history in these folders: auto-save plus real undo
+  // is the Drive model, and without the history this would be the wrong
+  // call. A code project stays manual — auto-saving source every few seconds
+  // would surprise its owner and wake file watchers, dev servers and agent
+  // watch loops that are all listening for a human's deliberate save.
+  //
+  // `content` in the dependencies is what makes this "idle" rather than
+  // "every five seconds": each keystroke re-runs the effect and restarts the
+  // timer, so the write lands only once typing actually stops.
+  const autoSaves = looksLikeEverydayProjectPath(rootPath ?? path ?? '');
+  const checkpointProject = useStore((s) => s.checkpointProject);
+  const [selection, setSelection] = useState<
+    { from: number; to: number; text: string; lineCount: number } | null
+  >(null);
+  // A rewrite awaiting the user's decision is, by definition, undecided.
+  // Auto-save exists to protect what they already chose; letting it commit a
+  // pending proposal would remove the decision by timeout, which is the one
+  // thing the review step exists to prevent.
+  const [reviewPending, setReviewPending] = useState(false);
+  /// Whether a HUMAN has typed in this file since it was opened. The idle
+  /// checkpoint is a "you stopped working" marker; without this it fires for
+  /// a file that was only ever looked at, and claims the agent's writes as
+  /// the user's edit.
+  const editedRef = useRef(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // Offsets belong to one document. Preview mode never mounts CodeMirror, so
+  // nothing would clear a selection made in the previous file — and the Ask
+  // bar would splice a reply into the new one at the old one's offsets.
+  useEffect(() => {
+    setSelection(null);
+    editedRef.current = false;
+  }, [path]);
+
+  // A person reading the rendered half of Split highlights the paragraph they
+  // mean, not its markdown. The DOM offsets are into the rendered HTML, so
+  // they are useless directly — but the selected TEXT can be located in the
+  // source, and when it occurs exactly once that is an unambiguous mapping.
+  // Ambiguous or unfound selections fall back to the whole document rather
+  // than guessing at an offset.
+  useEffect(() => {
+    const host = bodyRef.current;
+    if (!host) return;
+    const onSelect = () => {
+      const sel = window.getSelection();
+      const text = sel?.toString() ?? '';
+      if (!sel || sel.isCollapsed || !text.trim()) return;
+      if (!host.contains(sel.anchorNode)) return;
+      const from = content.indexOf(text);
+      if (from < 0 || content.indexOf(text, from + 1) >= 0) return;
+      setSelection({
+        from,
+        to: from + text.length,
+        text,
+        lineCount: text.split('\n').length,
+      });
+    };
+    document.addEventListener('selectionchange', onSelect);
+    return () => document.removeEventListener('selectionchange', onSelect);
+  }, [content, path]);
+  useEffect(() => {
+    if (!autoSaves || !dirty || !path || reviewPending) return;
+    const timer = setTimeout(() => void save(), AUTO_SAVE_IDLE_MS);
+    return () => clearTimeout(timer);
+  }, [autoSaves, dirty, path, content, save, reviewPending]);
+
+  // Capture a version once editing has genuinely stopped. Guarded on `dirty`
+  // being false — i.e. the auto-save above already landed — so a checkpoint
+  // never races the write it is meant to record.
+  useEffect(() => {
+    if (!autoSaves || dirty || reviewPending || !path || !rootPath) return;
+    if (!editedRef.current) return;
+    const timer = setTimeout(() => {
+      void checkpointProject(rootPath, `Edited ${path.slice(path.lastIndexOf('/') + 1)}`);
+    }, CHECKPOINT_IDLE_MS);
+    return () => clearTimeout(timer);
+  }, [autoSaves, dirty, reviewPending, path, rootPath, content, checkpointProject]);
+
   // Discard all uncommitted changes to the current file, back to HEAD.
   // Only offered on HEAD-based diffs (see `canRevert`) where "revert" is
   // unambiguous — destructive, so we confirm first. For a deleted file the
@@ -557,6 +653,7 @@ export const FileEditorPane = memo(function FileEditorPane({
   /// subscriber in the app for nothing.
   const onEdit = useCallback(
     (v: string) => {
+      editedRef.current = true;
       setContent(v);
       if (!path) return;
       for (const evicted of stashBuffer(path, v)) clearFileDirty(evicted);
@@ -701,6 +798,21 @@ export const FileEditorPane = memo(function FileEditorPane({
                     : 'Download'}
               </button>
             )}
+            {autoSaves && !missingFile && (
+              // Wording, not decoration: the Download button beside this one
+              // already flashes "Saved" to mean "copied to your Downloads
+              // folder", so this has to say something that cannot be read as
+              // that. Persistent rather than a flash — the reassurance a
+              // non-engineer needs is "I don't have to save this", which is
+              // true all the time, not only in the second after a write.
+              <span className="shrink-0 text-[10px] text-ink-faint">
+                {reviewPending
+                  ? 'Waiting for you'
+                  : dirty
+                    ? 'Saving…'
+                    : 'All changes saved'}
+              </span>
+            )}
             {missingFile && (
               <span
                 title="This file is no longer on disk"
@@ -724,6 +836,20 @@ export const FileEditorPane = memo(function FileEditorPane({
               >
                 Diff
               </button>
+              {previewable && !missingFile && !binaryPreview && (
+                <button
+                  onClick={() => setMode('split')}
+                  title="Write on the left, see it rendered on the right"
+                  className={
+                    'px-2.5 py-1 ' +
+                    (mode === 'split'
+                      ? 'bg-accent text-surface'
+                      : 'text-ink hover:bg-card-strong')
+                  }
+                >
+                  Split
+                </button>
+              )}
               {previewable && (
                 <button
                   onClick={() => setMode('preview')}
@@ -784,7 +910,7 @@ export const FileEditorPane = memo(function FileEditorPane({
               <button
                 onClick={() => void save()}
                 title="Save (⌘S or ⌘↵)"
-                className="text-xs font-medium px-2.5 py-1 rounded bg-accent text-surface hover:bg-accent/90"
+                className="text-xs font-medium px-2.5 py-1 rounded bg-accent text-surface hover:bg-accent-600"
               >
                 Save
               </button>
@@ -798,7 +924,7 @@ export const FileEditorPane = memo(function FileEditorPane({
             </button>
           </div>
         </div>
-        <div className="relative flex-1 min-h-0 overflow-auto">
+        <div ref={bodyRef} className="relative flex-1 min-h-0 overflow-auto">
           {symbolNav && (
             <SymbolNavOverlay
               state={symbolNav}
@@ -833,6 +959,30 @@ export const FileEditorPane = memo(function FileEditorPane({
             ) : (
               <div className="p-4 text-xs text-ink-faint">No changes against HEAD.</div>
             )
+          ) : mode === 'split' && previewable && !missingFile ? (
+            // One buffer, two views. `FilePreview` renders the in-memory
+            // `content` rather than re-reading the file, so the right half
+            // tracks typing on the left with no wiring between them.
+            <div className="flex h-full min-h-0">
+              <div className="flex-1 min-w-0 h-full overflow-hidden border-r border-card">
+                <CodeMirrorEditor
+                  content={content}
+                  onChange={onEdit}
+                  highlightRange={null}
+                  language={detectLanguage(path)}
+                  onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
+                  onSelectionChange={setSelection}
+                />
+              </div>
+              <div className="flex-1 min-w-0 h-full overflow-auto">
+                <FilePreview
+                  path={path}
+                  content={content}
+                  artifact={artifactPreview}
+                  rootPath={rootPath ?? undefined}
+                />
+              </div>
+            </div>
           ) : mode === 'preview' && previewable ? (
             <FilePreview
               path={path}
@@ -858,6 +1008,7 @@ export const FileEditorPane = memo(function FileEditorPane({
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
               onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
+              onSelectionChange={setSelection}
             />
           ) : (
             <Editor
@@ -868,10 +1019,379 @@ export const FileEditorPane = memo(function FileEditorPane({
             />
           )}
         </div>
+        {/* Everyday projects, plus markdown anywhere. An engineer opening
+            `runtime.ts` did not ask for a "rewrite this file" box under their
+            source — whole-file LLM rewrites of code are what flows and agents
+            are for — but a README is prose and the same ask applies. */}
+        {(autoSaves || (path && isProseDocumentPath(path))) &&
+          path &&
+          !missingFile &&
+          !binaryPreview &&
+          (mode !== 'diff' || reviewPending) && (
+          <AskToEditBar
+            key={path}
+            path={path}
+            content={content}
+            rootPath={rootPath ?? undefined}
+            mode={mode}
+            selection={selection}
+            onPendingChange={setReviewPending}
+            onKept={(instruction) => {
+              if (!rootPath) return;
+              // Deferred past the auto-save timer so the version records the
+              // rewrite rather than the state just before it.
+              setTimeout(
+                () => void checkpointProject(rootPath, `Rewrote ${path?.slice((path?.lastIndexOf('/') ?? -1) + 1)} — “${instruction}”`),
+                AUTO_SAVE_IDLE_MS + 1500,
+              );
+            }}
+            onRevised={onEdit}
+          />
+        )}
       </div>
     </div>
   );
 });
+
+/// "Make this shorter." A one-line ask at the foot of the document, on the
+/// fast model, for the person who can read markdown but would rather not
+/// write it.
+///
+/// The rewrite goes into the EDITOR BUFFER, never straight to disk. It then
+/// behaves like any other unsaved edit: visible immediately, ⌘S to keep,
+/// Diff to see what moved, and recoverable from the project's history if it
+/// was saved and regretted. Writing the file behind the user's back would
+/// make a bad rewrite indistinguishable from their own work.
+function AskToEditBar({
+  path,
+  content,
+  rootPath,
+  mode,
+  selection,
+  onPendingChange,
+  onKept,
+  onRevised,
+}: {
+  path: string;
+  content: string;
+  /// Project root, so the rewrite can be given the project's OTHER documents
+  /// as context. The one-shot transport runs with tools disabled, so without
+  /// this "add the course material to the brief" has nothing to work from.
+  rootPath?: string;
+  /// Which view the pane is showing, so the bar can match its measure.
+  mode: FileViewMode;
+  /// Live editor selection. When set, only this passage is sent for rewriting
+  /// and the reply is spliced back by offset — the rest of the document is
+  /// untouchable by construction rather than by asking the model nicely.
+  selection?: { from: number; to: number; text: string; lineCount: number } | null;
+  /// Lets the editor suppress auto-save while a proposal awaits a decision.
+  onPendingChange?: (pending: boolean) => void;
+  /// Fired when the user keeps a rewrite — the clearest "something finished"
+  /// boundary there is, and the one a version most needs to mark.
+  onKept?: (instruction: string) => void;
+  onRevised: (next: string) => void;
+}) {
+  const [instruction, setInstruction] = useState('');
+  const [lastInstruction, setLastInstruction] = useState('');
+  const [status, setStatus] = useState<'idle' | 'running' | 'review'>('idle');
+  const [problem, setProblem] = useState<string | null>(null);
+  const [requestId, setRequestId] = useState<string | null>(null);
+  /// The proposal, and the text it was computed against. Kept apart from the
+  /// document: until the user keeps it, the editor buffer is untouched.
+  const [proposal, setProposal] = useState<{ before: string; after: string } | null>(null);
+  const [scoped, setScoped] = useState<{ from: number; to: number } | null>(null);
+  /// Requests the user stopped. A turn already in flight may still resolve —
+  /// the SDK transport has no cancel path at all — so the reply is dropped on
+  /// arrival rather than trusted to never come.
+  const abandoned = useRef(new Set<string>());
+  const streamed = useStore((s) => (requestId ? s.documentRevisions[requestId] : undefined));
+  const askAboutDocument = useStore((s) => s.askAboutDocument);
+  const clearRevision = useStore((s) => s.clearDocumentRevision);
+
+  useEffect(() => {
+    onPendingChange?.(status !== 'idle');
+  }, [status, onPendingChange]);
+
+  const fileName = path.slice(path.lastIndexOf('/') + 1);
+  const scopeLines = selection?.lineCount ?? 0;
+  const useSelection = !!selection && selection.text.trim().length > 0;
+
+  // Takes the id explicitly: reading it back off state here saw a stale
+  // value on the success path, so the streamed text — a full copy of the
+  // document — was never released.
+  const reset = (next: 'idle' | 'review', id: string | null) => {
+    setStatus(next);
+    if (id) clearRevision(id);
+    setRequestId(null);
+  };
+
+  const run = async () => {
+    if (!canRun) return;
+    const id = crypto.randomUUID();
+    const before = content;
+    const payload = useSelection ? selection!.text : before;
+    const span = useSelection ? { from: selection!.from, to: selection!.to } : null;
+    setScoped(span);
+    setLastInstruction(instruction);
+    setRequestId(id);
+    setStatus('running');
+    setProblem(null);
+    const res = await window.overcli.invoke('fs:reviseDocument', {
+      path,
+      content: payload,
+      instruction,
+      rootPath,
+      requestId: id,
+      ...(useSelection ? { fullDocument: before } : {}),
+    });
+    // Stopped while it was in flight: the answer is no longer wanted, and
+    // showing it would undo the user's decision to stop.
+    if (abandoned.current.has(id)) {
+      abandoned.current.delete(id);
+      return;
+    }
+    if (!res.ok) {
+      reset('idle', id);
+      setProblem(res.error);
+      return;
+    }
+    const after = span
+      ? before.slice(0, span.from) + res.content + before.slice(span.to)
+      : res.content;
+    setProposal({ before, after });
+    reset('review', id);
+    setInstruction('');
+  };
+
+  const stop = () => {
+    const id = requestId;
+    setScoped(null);
+    reset('idle', id);
+    setInstruction(lastInstruction);
+    if (!id) return;
+    abandoned.current.add(id);
+    void window.overcli.invoke('fs:cancelRevise', { requestId: id });
+  };
+
+  const keep = () => {
+    if (proposal) onRevised(proposal.after);
+    if (proposal) onKept?.(lastInstruction);
+    setProposal(null);
+    setScoped(null);
+    setStatus('idle');
+  };
+
+  const undo = () => {
+    setProposal(null);
+    setScoped(null);
+    setStatus('idle');
+  };
+
+  const tryAgain = () => {
+    setProposal(null);
+    setScoped(null);
+    setStatus('idle');
+    setInstruction(lastInstruction);
+  };
+
+  const unchanged = !!proposal && proposal.before === proposal.after;
+  /// Also false during `review`: pressing Enter with a proposal on screen
+  /// used to replace it with a fresh request, throwing away a suggestion the
+  /// user had not decided on.
+  const canRun = !!instruction.trim() && status === 'idle';
+  /// The document moved under the proposal while the turn was running. We
+  /// cannot merge the two — the model rewrote the text it was given — so the
+  /// only honest options are to say so before replacing, or to walk away.
+  const staleBase = !!proposal && proposal.before !== content;
+
+  return (
+    <div
+      className="shrink-0 border-t border-card bg-surface-muted"
+      onKeyDown={(e) => {
+        if (status !== 'review') return;
+        // ⌘Z is the reflex a panicking user reaches for. Claim it here or it
+        // hits CodeMirror's history and unwinds the document itself.
+        if (e.key === 'Escape' || ((e.metaKey || e.ctrlKey) && e.key === 'z')) {
+          e.preventDefault();
+          e.stopPropagation();
+          undo();
+        }
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          keep();
+        }
+      }}
+    >
+      {status === 'running' && (
+        <div className="ml-3 mt-2 max-w-[680px] rounded-xl border border-card bg-surface-elevated overflow-hidden">
+          <div className="px-3 py-2 text-xs font-medium text-ink">
+            Writing a new version of {fileName}…
+          </div>
+          <div className="relative max-h-[96px] overflow-hidden border-t border-card px-3 py-2">
+            {streamed ? (
+              <pre className="font-mono text-[10.5px] text-ink-faint whitespace-pre-wrap">
+                {streamed.slice(-1200)}
+              </pre>
+            ) : (
+              <div className="font-mono text-[10.5px] text-ink-faint">Thinking…</div>
+            )}
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-6 bg-gradient-to-b from-surface-elevated to-transparent" />
+          </div>
+          <div className="flex items-center gap-2 border-t border-card px-3 py-1.5">
+            <span className="text-[10px] text-ink-faint flex-1">
+              Your document hasn’t changed yet.
+            </span>
+            <button
+              onClick={stop}
+              className="rounded border border-card px-2 py-0.5 text-[10px] text-ink-muted hover:text-ink hover:bg-card-strong"
+            >
+              Stop
+            </button>
+          </div>
+        </div>
+      )}
+
+      {status === 'review' && proposal && (
+        <div className="ml-3 mt-2 max-w-[980px] rounded-xl border border-card bg-surface-elevated overflow-hidden">
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className="text-xs font-medium text-ink">Suggested edit</span>
+            {scoped && (
+              <span className="accent-soft rounded border px-1.5 py-0.5 text-[10px] text-accent">
+                selected text only
+              </span>
+            )}
+            <span className="text-[11px] text-ink-faint italic truncate ml-auto max-w-[45%]">
+              “{lastInstruction}”
+            </span>
+          </div>
+          {staleBase && !unchanged && (
+            <div className="border-t border-card px-3 py-2 text-[11px] text-amber-300/90">
+              You’ve edited this document since asking. Keeping the suggestion will replace what
+              you typed — <span className="text-ink">Try again</span> to redo it against your
+              current text instead.
+            </div>
+          )}
+          {unchanged ? (
+            <div className="border-t border-card px-3 py-2 text-[11px] text-ink-faint">
+              Nothing changed. The document already reads that way.
+            </div>
+          ) : (
+            <div className="border-t border-card max-h-[38vh] overflow-y-auto">
+              <Diff oldText={proposal.before} newText={proposal.after} compact />
+            </div>
+          )}
+          <div className="flex items-center gap-2 border-t border-card px-3 py-2">
+            {unchanged ? (
+              <button
+                onClick={undo}
+                className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-surface hover:bg-accent-600"
+              >
+                OK
+              </button>
+            ) : (
+              <>
+                <button
+                  onClick={keep}
+                  className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-surface hover:bg-accent-600"
+                >
+                  {staleBase ? 'Keep anyway' : 'Keep changes'}
+                </button>
+                <button
+                  onClick={undo}
+                  className="rounded border border-card px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink hover:bg-card-strong"
+                >
+                  Undo it
+                </button>
+                <button
+                  onClick={tryAgain}
+                  className="px-1.5 py-1 text-[11px] text-ink-faint hover:text-ink"
+                >
+                  Try again
+                </button>
+                <span className="ml-auto text-[10px] text-ink-faint">⌘↵ keep · esc undo</span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {problem && (
+        <div className="px-3 pt-2">
+          <div className="text-[11px] text-red-400">
+            Couldn’t finish that edit. Your document hasn’t changed.
+          </div>
+          <div className="text-[10px] text-ink-faint">{problem}</div>
+        </div>
+      )}
+
+      {/* The bar's measure follows the PANE's, not a fixed number. Preview
+          centres the document at 980px, so a wider bar would float free of
+          it; split and file are full-bleed, so a capped bar reads as a
+          stranded widget under them. */}
+      <div className={'px-3 py-2 ' + (mode === 'preview' ? 'max-w-[980px]' : '')}>
+        <div
+          className={
+            'flex items-center gap-2 rounded-xl border bg-surface pl-3 pr-1.5 py-2 transition-colors ' +
+            (status === 'running'
+              ? 'border-card-strong opacity-60'
+              : 'border-card-strong hover:border-accent focus-within:border-accent')
+          }
+        >
+          {useSelection && (
+            <span className="accent-soft shrink-0 rounded-md border px-1.5 py-0.5 text-[10px] text-accent">
+              {scopeLines} selected line{scopeLines === 1 ? '' : 's'}
+            </span>
+          )}
+          <input
+            value={instruction}
+            onChange={(e) => setInstruction(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void run();
+            }}
+            disabled={status === 'running'}
+            placeholder={
+              useSelection
+                ? 'Change just the selected text — “tighten this”'
+                : 'Ask for a change — “make this shorter”'
+            }
+            // No `field` class: it is declared after @tailwind utilities and
+            // outside a layer, so it outranks anything stacked on it — and its
+            // border is the same colour as this bar. The wrapper owns the box.
+            className="flex-1 min-w-0 bg-transparent outline-none text-[13px] text-ink placeholder-ink-muted disabled:opacity-60"
+          />
+          <button
+            onClick={() => void run()}
+            disabled={!canRun}
+            // A fill change, not an opacity change. This button is disabled
+            // most of the time, and a half-faded accent lozenge is the worst
+            // of both; instead it is a quiet filled key that LIGHTS UP the
+            // moment there is something to send.
+            className={
+              'shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors ' +
+              (canRun
+                ? 'bg-accent text-surface hover:bg-accent-600'
+                : 'bg-card-strong text-ink-muted cursor-not-allowed')
+            }
+          >
+            Suggest edit <span className="opacity-60">↵</span>
+          </button>
+        </div>
+        <div className="mt-1.5 flex items-center gap-2 px-1">
+          <span className="text-[11px] text-ink-muted min-w-0 truncate flex-1">
+            {useSelection ? 'Only the selected text changes.' : 'Changes the whole document.'}{' '}
+            Nothing changes until you keep it.
+          </span>
+          <button
+            onClick={() => askAboutDocument(path)}
+            className="shrink-0 rounded-lg border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink hover:bg-card-strong transition-colors"
+          >
+            Ask a question about this
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /// Tab strip above the editor header. Rendered only with more than one
 /// file open, so a single-file view looks exactly as it did before tabs
@@ -921,7 +1441,7 @@ function FileTabStrip({
   }, [menuOpen]);
 
   return (
-    <div className="flex items-stretch border-b border-card bg-surface-muted/40">
+    <div className="flex items-stretch border-b border-card bg-surface-muted">
       <div ref={stripRef} className="flex items-stretch flex-1 min-w-0 overflow-x-auto no-scrollbar">
         {tabs.map((tab, i) => {
           const active = tab.path === activePath;
@@ -1145,7 +1665,7 @@ function BlockedFilePanel({ path, message }: { path: string; message: string }) 
               const res = await window.overcli.invoke('fs:openPath', path);
               if (!res.ok) setOpenError(res.error);
             }}
-            className="text-xs font-medium px-3 py-1.5 rounded bg-accent text-surface hover:bg-accent/90"
+            className="text-xs font-medium px-3 py-1.5 rounded bg-accent text-surface hover:bg-accent-600"
           >
             Open
           </button>

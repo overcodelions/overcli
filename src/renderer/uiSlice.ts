@@ -11,6 +11,7 @@
 // capabilities), and a data slice (projects, workspaces, conversations
 // + persistence). Doing them in stages keeps each PR reviewable.
 
+import { looksLikeEverydayProjectPath } from '@shared/everydayProjects';
 import { nextComparePick } from './comparePick';
 import type { ActiveSheet, DetailMode, OpenFileHighlight } from './store';
 import {
@@ -302,7 +303,13 @@ function newTab(
 ): FileTab {
   return {
     path,
-    mode: defaultFileViewMode(path, !!highlight, mode, rememberedByExt[fileExtensionKey(path)]),
+    mode: defaultFileViewMode(
+      path,
+      !!highlight,
+      mode,
+      rememberedByExt[fileExtensionKey(path)],
+      looksLikeEverydayProjectPath(path),
+    ),
     highlight: highlight ?? null,
   };
 }

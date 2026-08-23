@@ -499,6 +499,12 @@ export interface Project {
   path: string;
   conversations: Conversation[];
   lastOpenedAt?: number;
+  /// Scaffolded by "New everyday project" rather than pointed at with the
+  /// folder picker. The welcome pane keys its non-engineer copy off this
+  /// rather than off "is a git repo" — everyday projects ARE git repos (that
+  /// is what makes undo work), so the repo test says "code project" for
+  /// exactly the folders that are not one.
+  everyday?: boolean;
 }
 
 export interface Workspace {
@@ -1545,6 +1551,54 @@ export interface IPCInvokeMap {
   'git:commitAll': (args: { cwd: string; message: string }) =>
     | { ok: true; sha: string; subject: string }
     | { ok: false; error: string };
+  'git:initRepo': (args: { projectPath: string }) =>
+    | { ok: true; branch: string }
+    | { ok: false; error: string };
+  'git:removeHistory': (args: { projectPath: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  'fs:listDocuments': (args: { dirPath: string }) =>
+    | { ok: true; entries: DocumentEntry[] }
+    | { ok: false; error: string };
+  'versions:checkpoint': (args: { projectPath: string; message: string }) =>
+    { ok: boolean; skipped?: 'nothing-to-save' | 'too-large'; error?: string };
+  'versions:list': (args: { projectPath: string; limit?: number }) =>
+    | { ok: true; versions: ProjectVersion[] }
+    | { ok: false; error: string };
+  'versions:diff': (args: { projectPath: string; sha: string; file?: string }) =>
+    | { ok: true; diff: string }
+    | { ok: false; error: string };
+  'versions:restore': (args: { projectPath: string; sha: string; label: string }) =>
+    | { ok: true }
+    | { ok: false; error: string };
+  'fs:cancelRevise': (args: { requestId: string }) => { stopped: boolean };
+  'fs:reviseDocument': (args: {
+    path: string;
+    content: string;
+    instruction: string;
+    rootPath?: string;
+    /// Correlates the `documentRevise` progress events with this call.
+    requestId?: string;
+    /// Set when `content` is a SELECTED PASSAGE rather than the whole file.
+    /// The passage is what gets rewritten; this is the surrounding document,
+    /// passed as read-only context so the rewrite fits where it lands.
+    fullDocument?: string;
+  }) =>
+    | { ok: true; content: string }
+    | { ok: false; error: string };
+  'fs:createBlankDocument': (args: { dirPath: string; name: string; ext: string }) =>
+    | { ok: true; path: string }
+    | { ok: false; error: string };
+  'fs:createDocumentFromPrompt': (args: { dirPath: string; description: string }) =>
+    | { ok: true; path: string; backend: string }
+    | { ok: false; error: string };
+  'fs:copyIntoProject': (args: {
+    projectPath: string;
+    files: Array<{ name: string; dataBase64: string }>;
+  }) => { ok: true; written: number } | { ok: false; error: string };
+  'fs:createEverydayProject': (args: { title: string; goal: string }) =>
+    | { ok: true; path: string; historyOn: boolean }
+    | { ok: false; error: string };
   'git:workspaceCommitAll': (args: {
     projects: Array<{ name: string; path: string }>;
     message: string;
@@ -2156,6 +2210,35 @@ export type FileInfoResult =
   /// diff", not as a hard error.
   | { ok: false; error: string; missing?: boolean };
 
+/// One row in the documents view: a single level of a folder, with the
+/// modified time a file card shows. Distinct from `FileTreeEntry` (a flat
+/// recursive walk for the code tree) because browsing documents is a
+/// folder-at-a-time activity.
+/// One entry in an everyday project's version history — a commit, named for
+/// the people who will read it rather than for git.
+export interface ProjectVersionFile {
+  path: string;
+  additions: number;
+  deletions: number;
+  binary: boolean;
+}
+
+export interface ProjectVersion {
+  sha: string;
+  /// ISO 8601, author date.
+  at: string;
+  subject: string;
+  files: ProjectVersionFile[];
+}
+
+export interface DocumentEntry {
+  name: string;
+  path: string;
+  isDir: boolean;
+  sizeBytes: number;
+  mtimeMs: number;
+}
+
 export interface FileTreeEntry {
   path: string;
   sizeBytes: number;
@@ -2373,6 +2456,16 @@ export interface ProjectStats {
 /// come off the CLI's stdout. Events are tagged with the conversationId so
 /// the renderer can route them to the right pane.
 export type MainToRendererEvent =
+  | {
+      /// Live text from an in-flight document rewrite. The rewrite runs on
+      /// the hidden one-shot transport, which has no conversation to stream
+      /// into — without this the editor sits unchanged behind a spinner for
+      /// the whole turn, which is the one place this app stops showing its
+      /// work.
+      type: 'documentRevise';
+      requestId: string;
+      text: string;
+    }
   | {
       type: 'stream';
       conversationId: UUID;

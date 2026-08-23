@@ -41,6 +41,7 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   const selectConversation = useStore((s) => s.selectConversation);
   const openSheet = useStore((s) => s.openSheet);
   const send = useStore((s) => s.send);
+  const protectProject = useStore((s) => s.protectProject);
   const isGitRepo = useStore((s) => s.projectIsGitRepo[projectId]);
   const project = projects.find((p) => p.id === projectId);
 
@@ -50,6 +51,7 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   const [targetBranch, setTargetBranch] = useState('');
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [protecting, setProtecting] = useState(false);
   const launchLock = useRef(false);
 
   const needsTargetBranch = kind === 'review' || kind === 'docs';
@@ -76,16 +78,26 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   if (isGitRepo === false) {
     return (
       <div className="flex flex-col p-5 gap-3">
-        <div className="text-sm font-medium">Agents need a git repository</div>
+        <div className="text-sm font-medium">Turn on history for this project</div>
         <div className="text-xs text-ink-muted leading-relaxed">
-          Agents run in isolated git worktrees, so{' '}
-          <span className="text-ink">{project.name}</span> needs to be a git
-          repo before you can create one. Run <code>git init</code> in{' '}
-          <code>{project.path}</code> (or pick a different project) and the
-          agent options will appear.
+          Overcli can keep a history of{' '}
+          <span className="text-ink">{project.name}</span> so you can undo anything it
+          changes. Nothing is uploaded and your files stay where they are.
         </div>
-        <div className="flex justify-end">
-          <SheetActionButton label="Close" onClick={() => openSheet(null)} />
+        {error && <div className="text-xs text-red-500">{error}</div>}
+        <div className="flex justify-end gap-2">
+          <SheetActionButton label="Not now" onClick={() => openSheet(null)} />
+          <SheetActionButton
+            primary
+            disabled={protecting}
+            label={protecting ? 'Turning on…' : 'Turn on history'}
+            onClick={async () => {
+              setProtecting(true);
+              const res = await protectProject(project.id);
+              setProtecting(false);
+              if (!res.ok) setError(res.error);
+            }}
+          />
         </div>
       </div>
     );

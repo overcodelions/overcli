@@ -1,0 +1,31 @@
+# Everyday projects
+
+## What this is
+
+Everyday projects make Overcli useful for people who do not have a repo and should not need one.
+
+## The three doors
+
+The path has three doors: create an everyday project, offer history for an existing folder, and use plain language in the changes bar.
+
+## Where files live
+
+Everyday projects live at `~/Documents/Overcli Projects/<name>/`, holding a `BRIEF.md` and whatever documents you put there. This is chosen over an app-support path so people can find their own documents.
+
+There is deliberately no `inbox/` or `output/`. Separating "what I gave it" from "what it made" is the job the undo history already does, invisibly and without being taught — a folder convention that duplicates it is one more thing to explain to someone who came here to review a document. Files go in the folder; the history says what changed.
+
+## Why there is no separate "safe mode" runner
+
+`isGitRepo` (`src/main/index.ts:348` and `:367`) is evaluated live per call via `currentBranch`. The moment history is turned on, the two `effectiveRunIn` ternaries (`src/main/flows/scheduler.ts:475`, `src/main/flows/workerEngine.ts:1961`) return `'worktree'` on their own — no restart, no edit to either file, and no pre-run auto-commit needed.
+
+## What it does not do
+
+There is no cloud sync, no teaching git, no change to how agents run, and only the changes bar is translated in this slice.
+
+## How to turn history off
+
+`git:removeHistory` deletes only `.git`, refuses when the folder sits inside a larger repository, and never touches user files.
+
+## The open question we did not close
+
+“Project setup is the first blocker for non-engineers” is a hypothesis, not a measured finding; validate with real non-engineer users before expanding the template library beyond three.
