@@ -16,7 +16,7 @@ export function NewEverydayProjectSheet() {
         <div>
           <div className="text-lg font-semibold">New everyday project</div>
           <div className="text-xs text-ink-faint">
-            A prepared folder with somewhere to put your documents and somewhere for the results.
+            A prepared folder for your documents, with every version saved so you can undo anything.
           </div>
         </div>
         <div>

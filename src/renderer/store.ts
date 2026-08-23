@@ -176,6 +176,7 @@ interface StoreState {
   /// Last view mode chosen per file extension. See uiSlice.
   fileViewModeByExt: Record<string, FileViewMode>;
   everydayRoots: string[];
+  versionRestoreToken: number;
   /// Open editor tabs for the scope on screen, and the saved tabs for
   /// every other scope. See uiSlice + ./fileScope.ts.
   tabs: FileTab[];
@@ -511,6 +512,7 @@ interface StoreState {
   refreshEverydayRoots(): void;
   syncProjectMarkers(): Promise<void>;
   checkpointProject(projectPath: string, message: string): Promise<void>;
+  noteVersionsRestored(): void;
   askAboutDocument(filePath: string): void;
   protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
   createEverydayProject(title: string, goal: string): Promise<{ ok: true; path: string; historyOn: boolean } | { ok: false; error: string }>;
@@ -913,6 +915,7 @@ export const useStore = create<StoreState>((set, get) => ({
   gitStatusByConv: {},
   projectIsGitRepo: {},
   documentRevisions: {},
+  versionRestoreToken: 0,
   ...createUiSlice<StoreState>(set, get),
 
   async init() {
@@ -3246,6 +3249,12 @@ export const useStore = create<StoreState>((set, get) => ({
     } catch {
       // Best effort by design.
     }
+  },
+
+  /// Bumped after `versions:restore` so any open editor re-reads from disk
+  /// instead of auto-saving its pre-restore buffer back over the file.
+  noteVersionsRestored() {
+    set((s) => ({ versionRestoreToken: s.versionRestoreToken + 1 }));
   },
 
   /// Hand a document to the chat instead of building a second, weaker chat

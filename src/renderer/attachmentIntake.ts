@@ -162,3 +162,34 @@ export async function intakeAttachments(
   }
   return { attachments, rejections };
 }
+
+/// Dropping a file INTO a project folder is a copy, not an LLM attachment:
+/// `.pages`, `.numbers`, `.key` and anything else a Mac user owns belongs in
+/// their own folder. Size is the only limit.
+export async function intakeProjectFiles(
+  files: FileList | File[],
+): Promise<{ attachments: Attachment[]; rejections: string[] }> {
+  const attachments: Attachment[] = [];
+  const rejections: string[] = [];
+  for (const f of Array.from(files)) {
+    if (f.size > MAX_ATTACHMENT_BYTES) {
+      rejections.push(`${f.name || 'file'} is ${Math.round(f.size / 1024 / 1024)} MB; max is 25 MB.`);
+      continue;
+    }
+    let dataBase64: string;
+    try {
+      dataBase64 = await fileToBase64(f);
+    } catch {
+      rejections.push(`Couldn't read ${f.name || 'file'}.`);
+      continue;
+    }
+    attachments.push({
+      id: attachmentId(),
+      mimeType: f.type || guessMimeFromName(f.name) || 'application/octet-stream',
+      dataBase64,
+      label: f.name,
+      size: f.size,
+    });
+  }
+  return { attachments, rejections };
+}
