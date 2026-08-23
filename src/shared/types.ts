@@ -2193,7 +2193,11 @@ export type ArtifactPreviewResult =
       family: 'document' | 'spreadsheet' | 'presentation';
       convertedPdfDataUrl?: string;
       convertedPdfSizeBytes?: number;
+      /// Quick Look renders Office documents to HTML rather than PDF, so the
+      /// macOS fallback fills this instead of `convertedPdfDataUrl`.
+      convertedHtml?: string;
       converterPath?: string;
+      converterKind?: 'libreoffice' | 'quicklook' | 'office-com';
       conversionError?: string;
     }
   | { ok: false; error: string };

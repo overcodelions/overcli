@@ -144,6 +144,22 @@ export function FilePreview({
         />
       );
     }
+    // Quick Look hands back HTML instead of a PDF. It arrives self-contained —
+    // main has already folded the bundle's images and stylesheets in — so a
+    // srcdoc frame with no permissions at all is enough to render it, and
+    // withholding `allow-scripts` means the generator's own JS never runs.
+    // Rendered as-is, with no wrapper document: the generator's CSS is
+    // unitless and needs the quirks mode that a DOCTYPE-less srcdoc gives it.
+    if (artifact.convertedHtml) {
+      return (
+        <iframe
+          title={`${path} preview`}
+          sandbox=""
+          srcDoc={artifact.convertedHtml}
+          className="block w-full h-full border-0 bg-surface"
+        />
+      );
+    }
     return (
       <div className="h-full min-h-0 bg-surface-muted p-4">
         <div className="max-w-xl border border-card-strong bg-surface rounded-lg p-4">
