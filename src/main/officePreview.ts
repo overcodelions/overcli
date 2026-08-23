@@ -39,6 +39,10 @@ export interface OfficeConversion {
   /// Quick Look's output. Self-contained after attachment inlining, meant for
   /// a sandboxed srcdoc frame.
   convertedHtml?: string;
+  /// The deck's own slide size, so the renderer can scale the frame to the
+  /// pane instead of showing a third of a slide behind a scrollbar.
+  slideWidth?: number;
+  slideHeight?: number;
   converterPath?: string;
   converterKind?: OfficeConverterKind;
   conversionError?: string;
@@ -50,6 +54,8 @@ export interface OfficeConversion {
 const LIBREOFFICE_TIMEOUT_MS = 30_000;
 const QUICKLOOK_TIMEOUT_MS = 20_000;
 const OFFICE_COM_TIMEOUT_MS = 120_000;
+/// One `sips` pass over the whole attachment set; 13 of them take ~0.2s.
+const RASTERIZE_TIMEOUT_MS = 20_000;
 
 export interface OfficePreviewDeps {
   platform: NodeJS.Platform;
@@ -142,10 +148,12 @@ async function convertWithQuickLook(
     const size = fs.statSync(htmlPath).size;
     if (size > maxBytes) return { conversionError: 'preview is over the size cap.' };
     const html = fs.readFileSync(htmlPath, 'utf-8');
+    await rasterizePdfAttachments(bundle!, deps);
     return {
       converterPath: 'qlmanage',
       converterKind: 'quicklook',
       convertedHtml: inlineQuickLookAttachments(html, readQuickLookAttachments(bundle!, maxBytes)),
+      ...parseSlideSize(html),
     };
   } catch (err: any) {
     return { conversionError: err?.message ?? 'conversion failed.' };
@@ -213,6 +221,41 @@ function findFirst(dir: string, match: (name: string) => boolean): string {
 
 // --- Quick Look attachments -------------------------------------------------
 
+/// Quick Look exports a slide's vector art as PDF and points an `<img>` at
+/// it. WebKit renders PDF in an `<img>`, which is why it looks right in
+/// Finder; Chromium does not, so in Electron every one of them is a
+/// broken-image icon. `sips` ships with macOS and rasterizes the whole set in
+/// a single pass.
+///
+/// Rasterized at natural size: `sips` re-renders a PDF at its own dimensions
+/// and offers no resolution control that survives batching (`-Z` would fit
+/// every attachment into one box, scaling art that differs in size by an
+/// order of magnitude), so this trades some retina sharpness on decorative
+/// art for one 0.2s call instead of one call per attachment.
+async function rasterizePdfAttachments(bundleDir: string, deps: OfficePreviewDeps): Promise<void> {
+  const pdfs = fs
+    .readdirSync(bundleDir)
+    .filter((name) => name.toLowerCase().endsWith('.pdf'))
+    .map((name) => path.join(bundleDir, name));
+  if (!pdfs.length) return;
+  try {
+    await deps.run('sips', ['-s', 'format', 'png', ...pdfs, '--out', bundleDir], {
+      timeout: RASTERIZE_TIMEOUT_MS,
+    });
+  } catch {
+    // Best effort. Without it the art is missing and the text still reads,
+    // which beats refusing the whole preview.
+  }
+}
+
+/// The slide size the generator states in its own stylesheet — 959x540 for a
+/// 16:9 deck, 720x540 for 4:3.
+export function parseSlideSize(html: string): { slideWidth?: number; slideHeight?: number } {
+  const match = /div\.slide\b[^{]*\{[^}]*?width:\s*(\d+)[^}]*?height:\s*(\d+)/i.exec(html);
+  if (!match) return {};
+  return { slideWidth: Number(match[1]), slideHeight: Number(match[2]) };
+}
+
 export interface QuickLookAttachment {
   name: string;
   mimeType: string;
@@ -236,6 +279,20 @@ export function readQuickLookAttachments(bundleDir: string, maxBytes: number): Q
       continue;
     }
     if (!stat.isFile()) continue;
+    // A PNG that shadows a PDF is our own rasterization, already emitted
+    // under the PDF's name below — listing it again would double-count it
+    // against the cap for nothing.
+    if (name.toLowerCase().endsWith('.png') && fs.existsSync(swapExtension(full, '.pdf'))) continue;
+    // The document still says `Attachment1.pdf`, so the substitution has to
+    // happen under that name even though the bytes are now a PNG.
+    const rasterized = name.toLowerCase().endsWith('.pdf') ? swapExtension(full, '.png') : '';
+    if (rasterized && fs.existsSync(rasterized)) {
+      const raster = fs.statSync(rasterized);
+      if (total + raster.size > maxBytes) break;
+      total += raster.size;
+      attachments.push({ name, mimeType: 'image/png', data: fs.readFileSync(rasterized) });
+      continue;
+    }
     // A deck of full-bleed photos can carry more image bytes than the whole
     // preview budget. Stop inlining at the cap and let the rest 404 into
     // broken-image icons rather than refusing the preview outright.
@@ -251,9 +308,11 @@ export function readQuickLookAttachments(bundleDir: string, maxBytes: number): Q
 ///
 /// Substitution only — the document is passed through otherwise, and in
 /// particular it must keep arriving without a DOCTYPE. Quick Look emits
-/// unitless CSS lengths (`div.slide { width: 720; height: 540 }`), which only
+/// unitless CSS lengths (`div.slide { width: 959; height: 540 }`), which only
 /// mean anything in quirks mode; add a DOCTYPE and every slide collapses to
-/// zero height.
+/// zero height. The renderer has to serve this over a real scheme for the
+/// same reason — `srcdoc` is parsed in no-quirks mode no matter what the
+/// document says.
 ///
 /// Stylesheets become inline `<style>`, not `data:` URLs, because the app's
 /// own CSP is `style-src 'self' 'unsafe-inline'` — a srcdoc frame inherits
@@ -285,6 +344,10 @@ const ATTACHMENT_MIME_TYPES: Record<string, string> = {
   tiff: 'image/tiff',
   webp: 'image/webp',
 };
+
+function swapExtension(full: string, extension: string): string {
+  return path.join(path.dirname(full), `${path.basename(full, path.extname(full))}${extension}`);
+}
 
 function attachmentMimeType(name: string): string {
   const ext = path.extname(name).slice(1).toLowerCase();

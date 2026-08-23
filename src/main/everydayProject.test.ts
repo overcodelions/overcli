@@ -9,6 +9,7 @@ import {
   everydayProjectsRoot,
   folderNameFor,
   hasEverydayMarker,
+  setEverydayMarker,
   syncProjectMarkers,
 } from './everydayProject';
 import { looksLikeEverydayProjectPath } from '../shared/everydayProjects';
@@ -174,5 +175,45 @@ describe('everyday project marker', () => {
 
     expect(syncProjectMarkers([{ path: dir, everyday: false }])).toEqual({ [dir]: false });
     expect(fs.existsSync(path.join(dir, EVERYDAY_MARKER_FILE))).toBe(false);
+  });
+});
+
+describe('setEverydayMarker', () => {
+  function tempFolder(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-convert-'));
+  }
+
+  it('marks a plain folder, and unmarks it again', () => {
+    const dir = tempFolder();
+
+    expect(setEverydayMarker(dir, true)).toEqual({ ok: true });
+    expect(hasEverydayMarker(dir)).toBe(true);
+
+    expect(setEverydayMarker(dir, false)).toEqual({ ok: true });
+    expect(hasEverydayMarker(dir)).toBe(false);
+    expect(fs.existsSync(path.join(dir, EVERYDAY_MARKER_FILE))).toBe(false);
+  });
+
+  // Unmarking twice happens whenever a revert is retried, and there is
+  // nothing wrong with a folder that is already not an everyday project.
+  it('treats an absent marker as already cleared', () => {
+    expect(setEverydayMarker(tempFolder(), false)).toEqual({ ok: true });
+  });
+
+  // Unlike `writeEverydayMarker`, this one is the operation the user asked
+  // for — a failure has to reach them rather than be swallowed.
+  it('reports a write it could not do', () => {
+    const res = setEverydayMarker(path.join(os.tmpdir(), 'overcli-nope-does-not-exist'), true);
+    expect(res.ok).toBe(false);
+  });
+
+  it('leaves the folder contents alone', () => {
+    const dir = tempFolder();
+    fs.writeFileSync(path.join(dir, 'notes.md'), '# hi\n', 'utf-8');
+
+    setEverydayMarker(dir, true);
+    setEverydayMarker(dir, false);
+
+    expect(fs.readdirSync(dir)).toEqual(['notes.md']);
   });
 });

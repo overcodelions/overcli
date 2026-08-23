@@ -97,6 +97,7 @@ import {
   fileWorkerDeliverable,
   workerFilesDir,
 } from './workerFiles';
+import { publishDeliverableToProject } from './workerPublish';
 import {
   WORKER_COMPACTION_KEEP_DAYS,
   compactionCutoff,
@@ -224,6 +225,11 @@ export interface WorkerEngineDeps {
   /// Entries carry either the recorded output (`body`) or a path to a file
   /// the run wrote itself (`sourcePath`), which is copied instead of read.
   deliverablesFor?: (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }>;
+  /// Save a version of an everyday project after this worker has filed
+  /// something into it. Optional and fire-and-forget: the delivery has
+  /// already happened, and a checkpoint that fails must not take the journal
+  /// fold down with it.
+  checkpoint?: (args: { projectPath: string; message: string }) => void;
   /// Permanently remove this worker's shift/errand ledgers and their child
   /// flow runs. Main wires this across the orchestrator + runtime; keeping it
   /// as one dependency lets the worker reset stay the single owner of what
@@ -1884,6 +1890,30 @@ export class WorkerEngine {
               at: item.finishedAt ?? now,
               artifacts,
             });
+            // And, for a worker hired to file into an everyday project, a
+            // second copy where its owner actually looks: the folder. The
+            // cabinet stays the archive; this is the delivery address.
+            // `publishDeliverableToProject` refuses anything that is not a
+            // marked everyday folder and keeps its own ledger, so this is
+            // safe on the same re-fold the cabinet copy survives.
+            if (w.caps.fileIntoProject) {
+              const published = publishDeliverableToProject({
+                workerId: w.id,
+                projectPath: w.projectPath,
+                runId: item.runId,
+                artifacts,
+              });
+              // Documents arriving is one of the boundaries everyday projects
+              // checkpoint on, and a worker's drop is no different from a
+              // drag from Finder — without this it would be the one change to
+              // the folder that "Undo or restore" could not put back.
+              if (published.written.length > 0) {
+                this.deps.checkpoint?.({
+                  projectPath: w.projectPath,
+                  message: `${w.name} added ${published.written.join(', ')}`,
+                });
+              }
+            }
           }
         }
       }
