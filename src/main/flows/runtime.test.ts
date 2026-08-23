@@ -82,6 +82,7 @@ import {
   isGatingReviewerRole,
   isReviewApproved,
   missingOutputReaskPrompt,
+  readArtifactFile,
   readArtifactFileBody,
   resolveArtifactFilePath,
   stepAllowsFileRef,
@@ -422,6 +423,39 @@ describe('readArtifactFileBody', () => {
       const file = join(dir, 'big.md');
       writeFileSync(file, 'x'.repeat(1024 * 1024 + 1));
       expect(readArtifactFileBody(file)).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('readArtifactFile', () => {
+  // The reason is what the reask prompt is built from — a step told only
+  // "no <output> block" re-sends the same pointer and fails twice.
+  it('names why the pointer was refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-artifact-'));
+    try {
+      const stale = join(dir, 'stale.md');
+      writeFileSync(stale, '# already correct');
+      expect(readArtifactFile(stale, Date.now() + 60_000)).toEqual({
+        ok: false,
+        reason: 'stale',
+      });
+
+      const empty = join(dir, 'empty.md');
+      writeFileSync(empty, '   \n');
+      expect(readArtifactFile(empty)).toEqual({ ok: false, reason: 'empty' });
+
+      const big = join(dir, 'big.md');
+      writeFileSync(big, 'x'.repeat(1024 * 1024 + 1));
+      expect(readArtifactFile(big)).toEqual({ ok: false, reason: 'oversized' });
+
+      const bin = join(dir, 'bin.dat');
+      writeFileSync(bin, Buffer.from([0xff, 0xfe, 0x00, 0x41]));
+      expect(readArtifactFile(bin)).toEqual({ ok: false, reason: 'binary' });
+
+      expect(readArtifactFile(join(dir, 'nope.md'))).toEqual({ ok: false, reason: 'missing' });
+      expect(readArtifactFile(stale)).toEqual({ ok: true, body: '# already correct' });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
