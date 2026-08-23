@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import { PLAIN } from '@shared/plainLanguage';
 
 /// Per-file summary, shared shape with `git:commitStatus`. `status` is
 /// the porcelain v1 code (e.g. ` M`, `??`, `A `); the two chars matter
@@ -54,6 +55,7 @@ function isDeletedStatus(status: string): boolean {
 export function ChangesBar({
   files,
   baseRef,
+  plain = false,
 }: {
   files: FileChangeSummary[];
   /// Ref the counts were measured against, e.g. `origin/master`. When it's
@@ -61,6 +63,11 @@ export function ChangesBar({
   /// work has landed upstream legitimately has zero files, and silently
   /// showing nothing reads as a broken probe.
   baseRef?: string | null;
+  /// Speak in document terms rather than git terms. Passed per render, NOT
+  /// read from settings: this is a property of the project you are looking
+  /// at, and a global flag meant that trying one everyday project silently
+  /// relabelled the changes bar in every repo the user owns.
+  plain?: boolean;
 }) {
   const openFile = useStore((s) => s.openFile);
   const [expanded, setExpanded] = useState(false);
@@ -118,14 +125,17 @@ export function ChangesBar({
               >
                 {f.path}
               </code>
-              {f.commitState && (
-                <span
-                  title={COMMIT_STATE_BADGE[f.commitState].title}
-                  className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${COMMIT_STATE_BADGE[f.commitState].className}`}
-                >
-                  {COMMIT_STATE_BADGE[f.commitState].label}
-                </span>
-              )}
+              {f.commitState && (() => {
+                const badge = (plain ? PLAIN : COMMIT_STATE_BADGE)[f.commitState];
+                return (
+                  <span
+                    title={badge.title}
+                    className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${COMMIT_STATE_BADGE[f.commitState].className}`}
+                  >
+                    {badge.label}
+                  </span>
+                );
+              })()}
               <span className="diff-add-ink text-[11px]">+{Number(f.additions) || 0}</span>
               <span className="diff-remove-ink text-[11px]">-{Number(f.deletions) || 0}</span>
             </button>

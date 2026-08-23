@@ -68,7 +68,7 @@ export const claudeBackend: BackendSpec = {
     // this loads zero servers; in `auto` mode the broker config above is
     // still passed, so strict keeps exactly that one and drops the rest —
     // which is what makes the flag safe to set unconditionally here.
-    if (args.turbo) {
+    if (args.turbo || args.skipGlobalMcp) {
       a.push('--strict-mcp-config');
     }
     // Unconditional, not turbo-gated: consolidating tool calls costs nothing
