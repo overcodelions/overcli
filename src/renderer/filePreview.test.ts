@@ -46,6 +46,19 @@ describe('file preview detection', () => {
     expect(defaultFileViewMode('/repo/Button.tsx', true)).toBe('edit');
   });
 
+  it('opens binary artifacts rendered, since they have no source to show', () => {
+    // `edit` on these is a dead end: the pane can only say "not editable as
+    // text". A line highlight and a remembered `edit` are both overridden.
+    expect(defaultFileViewMode('/repo/logo.png', false)).toBe('preview');
+    expect(defaultFileViewMode('/repo/brief.docx', false)).toBe('preview');
+    expect(defaultFileViewMode('/repo/invoice.pdf', false)).toBe('preview');
+    expect(defaultFileViewMode('/repo/deck.pptx', true)).toBe('preview');
+    expect(defaultFileViewMode('/repo/brief.docx', false, undefined, 'edit')).toBe('preview');
+    // …but reviewing a changed binary against HEAD is a real thing to want.
+    expect(defaultFileViewMode('/repo/brief.docx', false, undefined, 'diff')).toBe('diff');
+    expect(defaultFileViewMode('/repo/logo.png', false, 'edit')).toBe('edit');
+  });
+
   it('still honours an explicitly requested mode', () => {
     expect(defaultFileViewMode('/repo/README.md', false, 'preview')).toBe('preview');
     expect(defaultFileViewMode('/repo/main.ts', false, 'diff')).toBe('diff');

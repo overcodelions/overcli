@@ -354,6 +354,13 @@ function OfficeHtmlPreview({
             height: `${100 / scale}%`,
             transform: `scale(${scale})`,
             transformOrigin: 'top left',
+            // A page, not a hole in the pane. Chromium paints SUBFRAMES
+            // transparent when the embedded document sets no background, and
+            // Quick Look's Word HTML sets none — so a .docx rendered its own
+            // black body text straight onto the app's dark surface and was
+            // unreadable. Quick Look's deck HTML does carry a backdrop, so
+            // this only shows through where there was nothing to show.
+            background: '#ffffff',
           }}
           className="block border-0"
         />

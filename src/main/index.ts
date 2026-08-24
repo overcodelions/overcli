@@ -62,6 +62,9 @@ import {
   workspaceCommitAll,
   initRepo,
   removeRepoHistory,
+  gitAvailability,
+  gitInstallCommand,
+  forgetGitAvailability,
 } from './git';
 import {
   copyIntoProject,
@@ -1000,6 +1003,30 @@ function registerIpc(): void {
     }
     return initRepo(args);
   });
+  /// "Is git here?" — asked by any surface that promises undo, so it can say
+  /// what is wrong before the user hits a raw git error.
+  ipcMain.handle('git:availability', (_e, args) =>
+    gitAvailability({ refresh: args?.refresh === true }),
+  );
+  /// Install git the same way Overcli installs everything else the user
+  /// needs: a visible Terminal window they can watch and answer. On Linux
+  /// there is no single command, so `runInTerminal` opens nothing and the
+  /// caller shows the guidance instead.
+  ipcMain.handle('git:install', async () => {
+    const command = gitInstallCommand();
+    if (!command) {
+      return {
+        ok: false as const,
+        error: 'Install Git with your distribution’s package manager, then reopen this project.',
+      };
+    }
+    const launched = await runInTerminal(command, 'git-install');
+    // The install runs on in that window long after osascript returns, so
+    // re-probing here would just re-cache "missing". Forget instead, and let
+    // the next surface that cares ask a fresh question.
+    forgetGitAvailability();
+    return launched.ok ? { ok: true as const, command } : { ...launched, command };
+  });
   ipcMain.handle('git:removeHistory', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };
@@ -1105,7 +1132,12 @@ function registerIpc(): void {
     });
     if (!made.ok) return made;
     const init = await initRepo({ projectPath: made.path });
-    return { ...made, historyOn: init.ok };
+    // The folder is real either way — the caller registers it and starts a
+    // conversation. `historyReason` is what lets the sheet explain the
+    // missing undo honestly instead of inventing a cause.
+    return init.ok
+      ? { ...made, historyOn: true as const }
+      : { ...made, historyOn: false as const, historyReason: init.reason, historyError: init.error };
   });
 
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects, instructions }) =>
