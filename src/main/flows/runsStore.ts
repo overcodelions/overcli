@@ -137,6 +137,17 @@ export function deleteRun(runId: string): void {
   }
 }
 
+/// Whether a run's file is still on disk. Cheap enough to ask per item at
+/// boot — one `stat` against a path we already know how to build, rather
+/// than parsing every run in the directory to find out what's missing.
+export function runExists(runId: string): boolean {
+  try {
+    return fs.existsSync(pathFor(runId));
+  } catch {
+    return false;
+  }
+}
+
 /// Load every persisted run from disk. Called once at startup. A
 /// `running` run is NOT restored as-is — it died mid-step, its subprocess
 /// and in-flight tool calls are gone. Rather than abandon it as `aborted`,

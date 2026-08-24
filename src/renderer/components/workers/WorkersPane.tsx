@@ -108,6 +108,7 @@ import {
   type WorkerActivity,
 } from "./workerDeskSelectors";
 import { TRUST_LABEL, WorkerPendingProposal } from "./WorkerRowParts";
+import { WorkQueuePane } from "./WorkQueuePane";
 import { pinnedToBottom, shouldFollowLive } from "./deskFollow";
 
 export function WorkersPane() {
@@ -309,6 +310,12 @@ export function WorkersPane() {
 
       {!loaded ? (
         <div className="px-6 text-sm text-ink-muted">Loading workers…</div>
+      ) : /* The landing page — but only once somebody has been hired. On an
+             empty roster the queue would be a screen explaining that nobody
+             is working, which is true and useless; the vacancy below is the
+             screen that says what to do about it. */
+      view === "queue" && rows.length > 0 ? (
+        <WorkQueuePane />
       ) : view === "calendar" ? (
         <ShiftCalendar />
       ) : view === "report" ? (

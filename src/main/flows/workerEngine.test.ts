@@ -1010,6 +1010,30 @@ describe('WorkerEngine journal projection', () => {
     expect(h.engine.get('worker-1')?.trust).toBe('trusted');
   });
 
+  it('does not journal a rejection for an item a restart settled', () => {
+    // The narrow case the `approved` guard above cannot cover: the app died
+    // between the item reaching `queued` and the fold that journals it, so
+    // there is no `approved` entry to lean on. The item says so itself.
+    const h = makeHarness({ seed: [seedWorker({ trust: 'trusted' })] });
+    h.engine.start();
+    h.engine.observeEvent({
+      type: 'orchestrationUpdate',
+      orchestration: workerBatch({
+        items: [
+          {
+            candidate: { id: 'c1', title: 'Trim the bundle', prompt: 'p' },
+            flowId: 'fix-it',
+            status: 'cancelled',
+            finishedAt: 9,
+            settledByRestart: true,
+          },
+        ],
+      }),
+    });
+    expect(h.journal.some((e) => e.kind === 'rejected')).toBe(false);
+    expect(h.engine.get('worker-1')?.trust).toBe('trusted');
+  });
+
   it('demotes after three consecutive rejections, exactly once', () => {
     const h = makeHarness({ seed: [seedWorker({ trust: 'autonomous' })] });
     h.engine.start();

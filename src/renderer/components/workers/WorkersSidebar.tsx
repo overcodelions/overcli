@@ -58,6 +58,7 @@ import {
   workerDeskRuns,
   type WorkerActivity,
 } from "./workerDeskSelectors";
+import { buildWorkQueue } from "./workQueue";
 
 /// How many turns hang under an open worker, errands and shifts together. Five:
 /// a busy morning is visible without one worker pushing the rest of the roster
@@ -89,16 +90,19 @@ export function WorkersSidebar({
   onExpand: (id: string) => void;
 }) {
   const workers = useWorkersStore((s) => s.workers);
+  const shiftProgress = useWorkersStore((s) => s.shiftProgress);
   const selectedWorkerId = useWorkersStore((s) => s.selectedWorkerId);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
   const view = useWorkersStore((s) => s.view);
+  const showQueue = useWorkersStore((s) => s.showQueue);
   const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
   const showReport = useWorkersStore((s) => s.showReport);
   const allocation = useWorkersStore((s) => s.allocation);
   const openEditor = useWorkersStore((s) => s.openEditor);
   const runs = useFlowsStore((s) => s.runs);
+  const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
@@ -189,6 +193,15 @@ export function WorkersSidebar({
       .filter((entry) => entry.review > 0 || entry.paused > 0 || entry.starved);
   }, [roster, orchestrations, runs, allocation]);
 
+  // Only the count, not the queue itself: the pane draws the rows, and the
+  // sidebar has room for one bit of it.
+  const queueRunning = useMemo(
+    () =>
+      buildWorkQueue(orchestrations, runs, workers, shiftProgress, Date.now(), runsLoaded).running
+        .length,
+    [orchestrations, runs, workers, shiftProgress, runsLoaded],
+  );
+
   return (
     <>
       {needsYou.length > 0 && (
@@ -221,13 +234,41 @@ export function WorkersSidebar({
         </>
       )}
 
+      {/* First of the roster-wide screens because it is the tab's landing
+          page — the one that answers NOW, where the calendar answers next and
+          the report answers last. The dot is the only live thing in this
+          column: it says the crew is working without saying how much, which
+          is the pane's job. */}
+      <button
+        onClick={showQueue}
+        title="Everything the crew has in the air, and what it just finished"
+        className={
+          "sidebar-row mb-1 mt-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+          "hover:bg-card-strong hover:text-ink hover:border-card " +
+          "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+          (view === "queue"
+            ? "sidebar-row-selected text-ink"
+            : "text-ink-muted")
+        }
+      >
+        <QueueIcon />
+        <span className="truncate text-[13px] leading-tight">Work queue</span>
+        {queueRunning > 0 && (
+          <span
+            aria-hidden
+            title={`${queueRunning} job(s) running`}
+            className="ml-auto h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+          />
+        )}
+      </button>
+
       {/* Above the roster, not in it: the calendar is about every worker at
           once, so it is not one of the names it sits over. */}
       <button
         onClick={showCalendar}
         title="When every worker's shifts fall, this week"
         className={
-          "sidebar-row mb-1 mt-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+          "sidebar-row mb-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
           "hover:bg-card-strong hover:text-ink hover:border-card " +
           "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
           (view === "calendar"
@@ -470,6 +511,26 @@ function PotIcon() {
       <path d="M2.4 4.3h9.2l-1 6.4a1.4 1.4 0 0 1-1.4 1.2H4.8a1.4 1.4 0 0 1-1.4-1.2z" />
       <path d="M1.6 4.3h10.8" />
       <path d="M4 8.4h6" opacity="0.55" />
+    </svg>
+  );
+}
+
+/// Three jobs stacked, the top one live. The dot on the first line is what
+/// separates it from a plain list glyph — this column already has a list in
+/// it, and the queue is the one that moves.
+function QueueIcon() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden
+      className="h-3.5 w-3.5 shrink-0 text-ink-faint"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    >
+      <circle cx="2.6" cy="3.4" r="1.4" fill="currentColor" stroke="none" />
+      <path d="M6 3.4h6.4M6 7h6.4M6 10.6h6.4M2.6 7h.01M2.6 10.6h.01" />
     </svg>
   );
 }
