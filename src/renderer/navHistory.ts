@@ -383,6 +383,55 @@ function blankFor(detailMode: DetailMode): NavLocation {
   };
 }
 
+/// Plain-language name for a place, for the history arrows' tooltips.
+///
+/// The arrows used to say only "Back", which is the one thing the user
+/// already knows. Naming the destination is what separates them from a tab
+/// click — the two controls answer different questions ("retrace my steps"
+/// versus "take me to this tab's last place"), and until the arrow says where
+/// it goes there is nothing on screen to tell you which one you want.
+export function describeLocation(loc: NavLocation): string {
+  switch (loc.detailMode) {
+    case 'workers':
+      if (loc.workersView === 'queue') return 'the work queue';
+      if (loc.workersView === 'calendar') return 'the shift calendar';
+      if (loc.workersView === 'funds') return 'funds';
+      if (loc.workersView === 'report') return 'a shift report';
+      return "a worker's desk";
+    case 'flows':
+      if (loc.activeRunId) return 'a flow run';
+      if (loc.librarySegment === 'runs') return 'the runs list';
+      if (loc.librarySegment === 'schedules') return 'schedules';
+      return 'the flows library';
+    case 'orchestrator':
+      return 'the orchestrator';
+    case 'explorer':
+      return 'the file explorer';
+    case 'stats':
+      return 'usage';
+    case 'local':
+      return 'local models';
+    case 'conversation': {
+      if (!loc.selectedConversationId) return 'chat';
+      const found = findConversation(useStore.getState(), loc.selectedConversationId);
+      const name = found?.name?.trim();
+      return name ? `“${name}”` : 'your conversation';
+    }
+  }
+}
+
+/// Where Back would take you, or null when there is nowhere to go.
+export function backTarget(): NavLocation | null {
+  const { back } = useNavHistory.getState();
+  return back[back.length - 1] ?? null;
+}
+
+/// Where Forward would take you, or null.
+export function forwardTarget(): NavLocation | null {
+  const { forward } = useNavHistory.getState();
+  return forward[forward.length - 1] ?? null;
+}
+
 export function navigateBack(): void {
   useNavHistory.getState().goBack();
 }

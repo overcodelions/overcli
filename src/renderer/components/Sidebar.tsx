@@ -1,18 +1,14 @@
 import { useMemo, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
 import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
-import { Colosseum, Conversation, Project, Workspace, UUID } from '@shared/types';
-import { flowRunActivityAt, flowRunOwnerPath, isWorkerRun, type FlowRun } from '@shared/flows/schema';
+import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from '@shared/types';
+import { flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
 import { isEverydayProject } from '@shared/everydayProjects';
 import { backendColor } from '../theme';
-import {
-  ACTIVE_CONVERSATION_WINDOW_MS,
-  conversationActivityAt,
-  conversationPromptAt,
-  isActiveConversation,
-} from '../conversationLookup';
-import { type ActiveCandidate, selectActiveEntries } from '../activeSection';
+import { selectActiveEntries } from '../activeSection';
+import { conversationActivityAt } from '../conversationLookup';
+import { partitionSleeping } from '../sidebarSleep';
 import { useFlowsStore } from '../flowsStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
@@ -20,14 +16,29 @@ import {
   ActiveFlowRow,
   FlowRunsSection,
   flowRunMatchesQuery,
-  resolveOwner as resolveFlowOwner,
-  runIsActive as flowRunIsActive,
-  runIsLive as flowRunIsLive,
-  workerRunIsActive,
 } from './flows/FlowRunSidebarRow';
+import { ConversationRow } from './ConversationRow';
 import { RUNNING_MARKER_COLOR, SidebarMarker } from './SidebarMarker';
+import { MomentumMeter, SleepRollup } from './SidebarAtoms';
+import { SidebarStream } from './SidebarStream';
+import {
+  byNewestFirst,
+  collectActiveCandidates,
+  collectStreamItems,
+  isAgentConversation,
+  projectActivityAt,
+  projectLabel,
+  workspaceActivityAt,
+  type RecentConversationItem,
+} from './sidebarItems';
 import { WorkersSidebar } from './workers/WorkersSidebar';
 import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
+
+// Collecting what the sidebar shows moved to ./sidebarItems so both layouts
+// feed from one place. Re-exported here because the sheets and the
+// activeCandidates suite have imported them from this module for a long time,
+// and a rename would be churn with no reader-facing benefit.
+export { collectActiveCandidates, isAgentConversation };
 
 const WORKERS_EXPANDED_KEY = 'sidebar.workersExpanded';
 
@@ -84,6 +95,21 @@ export function Sidebar() {
   const openExplorer = useStore((s) => s.openExplorer);
   const showDebug = useStore((s) => s.settings.showDebug ?? false);
   const showActiveSection = useStore((s) => s.settings.showActiveSidebarSection ?? true);
+  const sidebarLayout = useStore((s) => s.settings.sidebarLayout ?? 'stream');
+  // Read through getState rather than subscribing to the whole settings
+  // object: the switch writes once a click, and a sidebar that re-rendered on
+  // every unrelated settings change would be paying for it constantly.
+  const showTree = sidebarLayout === 'projects';
+  const setSidebarLayout = (layout: SidebarLayout) => {
+    const st = useStore.getState();
+    if ((st.settings.sidebarLayout ?? 'stream') === layout) return;
+    void st.saveSettings({ ...st.settings, sidebarLayout: layout });
+  };
+  // One clock for every time-sensitive memo in this render, rather than each
+  // calling Date.now() itself. Two memos disagreeing about "now" by a few
+  // milliseconds is harmless; two memos each taking their own reading is how
+  // a row ends up warm in one list and asleep in the next.
+  const now = Date.now();
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
   const workers = useWorkersStore((s) => s.workers);
@@ -94,8 +120,19 @@ export function Sidebar() {
   const activeRunId = useFlowsStore((s) => s.activeRunId);
   const openedRunId = detailMode === 'flows' ? activeRunId : null;
   const [search, setSearch] = useState('');
-  const [moreProjectsOpen, setMoreProjectsOpen] = useState(false);
-  const [expandedMoreProjects, setExpandedMoreProjects] = useState<Set<UUID>>(new Set());
+  const [sleepingProjectsOpen, setSleepingProjectsOpen] = useState(false);
+  const [sleepingWorkspacesOpen, setSleepingWorkspacesOpen] = useState(false);
+  /// Which woken groups the user has since opened. Separate from `collapsed`
+  /// because the two lists run opposite defaults — the warm tree is open
+  /// until you close it, a woken group is closed until you open it.
+  const [expandedSleeping, setExpandedSleeping] = useState<Set<UUID>>(new Set());
+  const toggleSleeping = (id: UUID) =>
+    setExpandedSleeping((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   // Flip the expand model: "expanded by default unless collapsed by the
   // user." We track only the IDs the user has explicitly collapsed;
   // everything else is open. New projects that arrive later (after the
@@ -138,22 +175,6 @@ export function Sidebar() {
       next.add(id);
       return next;
     });
-  const toggleMoreProjects = () => {
-    if (moreProjectsOpen) setExpandedMoreProjects(new Set());
-    setMoreProjectsOpen((v) => !v);
-  };
-  const closeMoreProjects = () => {
-    setMoreProjectsOpen(false);
-    setExpandedMoreProjects(new Set());
-  };
-  const toggleMoreProject = (id: UUID) =>
-    setExpandedMoreProjects((cur) => {
-      const next = new Set(cur);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-
   const query = search.trim().toLowerCase();
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
@@ -282,39 +303,116 @@ export function Sidebar() {
       workers,
     ],
   );
+  // The Stream layout's flat list. Built regardless of the current layout so
+  // that flipping the switch is instant rather than a visible rebuild — it is
+  // the same walk over the same arrays the tree already does.
+  const streamEntries = useMemo(
+    () =>
+      collectStreamItems(
+        projects,
+        workspaces,
+        flowRuns,
+        runners,
+        { openedConversationId: selectedId, lastSelectedAt, openedRunId, lastOpenedAtByRun },
+        now,
+        workers,
+      ),
+    [
+      projects,
+      workspaces,
+      flowRuns,
+      runners,
+      selectedId,
+      lastSelectedAt,
+      openedRunId,
+      lastOpenedAtByRun,
+      workers,
+      now,
+    ],
+  );
+  // Which lane gets the accent rail. Reads off whatever is actually on
+  // screen — a conversation, or a flow run — so "where am I" survives
+  // switching between the two.
+  const currentOwnerId = useMemo(() => {
+    // `activeRunId`, not `openedRunId`: the latter is null whenever you are
+    // not on the Flows tab, which would drop the rail exactly when you opened
+    // a worker's run and most wanted to know whose repo it was in.
+    const open = streamEntries.find(
+      (e) =>
+        (selectedId && e.key === `c:${selectedId}`) ||
+        (activeRunId && e.key === `f:${activeRunId}`),
+    );
+    return open?.owner.id ?? null;
+  }, [streamEntries, selectedId, activeRunId]);
+  const streamMatches = useMemo(() => {
+    if (!query) return streamEntries;
+    return streamEntries.filter((e) =>
+      e.item.kind === 'conversation'
+        ? e.item.conv.name.toLowerCase().includes(query) ||
+          (e.item.conv.sessionId ?? '').toLowerCase().includes(query) ||
+          e.owner.name.toLowerCase().includes(query)
+        : flowRunMatchesQuery(e.item.run, query) || e.owner.name.toLowerCase().includes(query),
+    );
+  }, [streamEntries, query]);
+
+  // Projects and workspaces now obey ONE rule instead of two.
+  //
+  // Projects used to sort by activity, show the first five and overflow the
+  // rest into "More projects"; workspaces sorted not at all, showed all of
+  // them, and never rolled up. Two lists of the same kind of thing behaving
+  // differently is most of why this sidebar read as busy — and the flat five
+  // was arbitrary, so a sixth repo you were actively in got buried while a
+  // dead one above it did not.
+  //
+  // Both are now: sort by activity, then roll up whatever has gone cold.
+  // Warmth decides, not a headcount.
   const sortedProjects = useMemo(
     () =>
       [...projects].sort(
         (a, b) =>
-          projectActivityAt(b, colosseums, runners, flowRuns) -
-          projectActivityAt(a, colosseums, runners, flowRuns),
+          projectActivityAt(b, colosseums, runners, flowRuns, now) -
+          projectActivityAt(a, colosseums, runners, flowRuns, now),
       ),
-    [colosseums, projects, runners, flowRuns],
+    [colosseums, projects, runners, flowRuns, now],
   );
-  const activeProjects = useMemo(
-    () => sortedProjects.filter((p) => hasProjectActivity(p, colosseums, flowRuns)),
-    [colosseums, sortedProjects, flowRuns],
-  );
-  const inactiveProjects = useMemo(
+  const projectSleep = useMemo(
     () =>
-      sortedProjects
-        .filter((p) => !hasProjectActivity(p, colosseums, flowRuns))
-        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
-    [colosseums, sortedProjects, flowRuns],
-  );
-  const visibleProjectGroups = useMemo(
-    () =>
-      [...activeProjects.slice(0, 5)].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      partitionSleeping(
+        sortedProjects,
+        (p) => ({
+          touchedAt: projectActivityAt(p, colosseums, runners, flowRuns, now),
+          // A project you are inside, or one that has never had a chance to
+          // look busy, stays put. Without the second half a repo you just
+          // added would roll up before you had typed in it.
+          pinned:
+            p.id === focusedProjectId ||
+            p.conversations.some((c) => c.id === selectedId) ||
+            !hasProjectActivity(p, colosseums, flowRuns),
+        }),
+        { now },
       ),
-    [activeProjects],
+    [sortedProjects, colosseums, runners, flowRuns, focusedProjectId, selectedId, now],
   );
-  const overflowActiveProjects = useMemo(
+  const sortedWorkspaces = useMemo(
     () =>
-      [...activeProjects.slice(5)].sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }),
+      [...workspaces].sort(
+        (a, b) =>
+          workspaceActivityAt(b, runners, flowRuns, now) -
+          workspaceActivityAt(a, runners, flowRuns, now),
       ),
-    [activeProjects],
+    [workspaces, runners, flowRuns, now],
+  );
+  const workspaceSleep = useMemo(
+    () =>
+      partitionSleeping(
+        sortedWorkspaces,
+        (w) => ({
+          touchedAt: workspaceActivityAt(w, runners, flowRuns, now),
+          pinned: (w.conversations ?? []).some((c) => c.id === selectedId),
+        }),
+        { now },
+      ),
+    [sortedWorkspaces, runners, flowRuns, selectedId, now],
   );
   const selectedProjectId = useMemo(
     () =>
@@ -323,6 +421,22 @@ export function Sidebar() {
         : focusedProjectId,
     [focusedProjectId, projects, selectedId],
   );
+
+  /// Opening a run from the sidebar, wherever the row lives.
+  ///
+  /// A worker's run keeps its one home: the row is a route to the desk it
+  /// belongs to, not a second copy of it. `selectWorker` clears the active
+  /// run, so it has to go first.
+  const openFlowRun = (run: FlowRun) => {
+    if (run.workerId) {
+      selectWorker(run.workerId);
+      setActiveRun(run.id);
+      setDetailMode('workers');
+      return;
+    }
+    setActiveRun(run.id);
+    setDetailMode('flows');
+  };
 
   const renderProjectShortcut = (project: Project) => (
     <ProjectShortcutRow
@@ -353,13 +467,15 @@ export function Sidebar() {
       searchQuery={query}
     />
   );
-  const renderMoreProjectGroup = (project: Project) => (
+  // A woken group starts folded: you opened the roll-up to see WHICH cold
+  // projects are there, not to have ten trees unfurl at once.
+  const renderSleepingProjectGroup = (project: Project) => (
     <ProjectGroup
       key={project.id}
       project={project}
       colosseums={colosseums.filter((c) => c.projectId === project.id)}
-      expanded={expandedMoreProjects.has(project.id)}
-      toggle={() => toggleMoreProject(project.id)}
+      expanded={collapsed.has(project.id) ? false : expandedSleeping.has(project.id)}
+      toggle={() => toggleSleeping(project.id)}
       selectedId={selectedId}
       onSelect={(id) => {
         setDetailMode('conversation');
@@ -382,16 +498,39 @@ export function Sidebar() {
           placeholder="Search"
           className="field flex-1 min-w-0 px-2 py-1 text-xs"
         />
-        <button
-          onClick={toggleAll}
-          disabled={allGroupIds.length === 0}
-          title={allCollapsed ? 'Expand all' : 'Collapse all'}
-          aria-label={allCollapsed ? 'Expand all' : 'Collapse all'}
-          className="p-1 rounded text-ink-faint hover:text-ink-muted hover:bg-card-strong disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
-        >
-          {allCollapsed ? <ExpandAllIcon /> : <CollapseAllIcon />}
-        </button>
+        {/* Nothing to fold in Stream — it has no groups to collapse — so the
+            control goes rather than sitting there permanently disabled. */}
+        {showTree && (
+          <button
+            onClick={toggleAll}
+            disabled={allGroupIds.length === 0}
+            title={allCollapsed ? 'Expand all' : 'Collapse all'}
+            aria-label={allCollapsed ? 'Expand all' : 'Collapse all'}
+            className="p-1 rounded text-ink-faint hover:text-ink-muted hover:bg-card-strong disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
+          >
+            {allCollapsed ? <ExpandAllIcon /> : <CollapseAllIcon />}
+          </button>
+        )}
       </div>
+      {/* The switch is the setting: it writes the same stored value the
+          Settings sheet mirrors, so the two can never disagree. Hidden on
+          Workers, whose sidebar is the roster and has no second layout. */}
+      {detailMode !== 'workers' && (
+        <div className="mx-2 mt-1 flex gap-0.5 rounded-md border border-card-strong bg-card p-0.5">
+          <LayoutTab
+            label="Recent"
+            title="Everything you have worked on, newest first"
+            on={sidebarLayout === 'stream'}
+            onClick={() => setSidebarLayout('stream')}
+          />
+          <LayoutTab
+            label="Places"
+            title="Your projects and workspaces as folders"
+            on={sidebarLayout === 'projects'}
+            onClick={() => setSidebarLayout('projects')}
+          />
+        </div>
+      )}
 
       <nav className="flex-1 min-h-0 overflow-y-auto px-1 pb-2">
         {/* The Workers tab gets its own navigator. Workers are a fleet, not a
@@ -409,8 +548,8 @@ export function Sidebar() {
         <>
         {!query && showActiveSection && activeEntries.length > 0 && (
           <>
-            <SidebarSectionTitle label="Active" />
-            {activeEntries.map(({ entry }) =>
+            <SidebarSectionTitle label="Working on" />
+            {activeEntries.map(({ entry, momentum }) =>
               entry.kind === 'flow' ? (
                 <ActiveFlowRow
                   key={entry.run.id}
@@ -418,24 +557,13 @@ export function Sidebar() {
                   isLive={entry.isLive}
                   ownerName={entry.ownerName}
                   ownerKind={entry.ownerKind}
-                  onClick={() => {
-                    // A worker's run keeps its one home: this row is a route
-                    // to the desk it belongs to, not a second copy of it.
-                    // `selectWorker` clears the active run, so it goes first.
-                    if (entry.run.workerId) {
-                      selectWorker(entry.run.workerId);
-                      setActiveRun(entry.run.id);
-                      setDetailMode('workers');
-                      return;
-                    }
-                    setActiveRun(entry.run.id);
-                    setDetailMode('flows');
-                  }}
+                  onClick={() => openFlowRun(entry.run)}
                 />
               ) : (
                 <RecentConversationRow
                   key={entry.conv.id}
                   item={entry}
+                  momentum={momentum ?? 0}
                   onClick={() => {
                     setDetailMode('conversation');
                     selectConversation(entry.conv.id);
@@ -445,16 +573,29 @@ export function Sidebar() {
             )}
           </>
         )}
-        {query && <SidebarSectionTitle label="Search results" />}
-        {query && visibleProjects.length === 0 && visibleWorkspaces.length === 0 && (
+        {!showTree && (
+          <SidebarStream
+            entries={query ? streamMatches : streamEntries}
+            currentOwnerId={currentOwnerId}
+            selectedKey={
+              selectedId ? `c:${selectedId}` : openedRunId ? `f:${openedRunId}` : null
+            }
+            onOpenConversation={(id) => {
+              setDetailMode('conversation');
+              selectConversation(id);
+            }}
+            now={now}
+          />
+        )}
+        {showTree && query && <SidebarSectionTitle label="Search results" />}
+        {showTree && query && visibleProjects.length === 0 && visibleWorkspaces.length === 0 && (
           <div className="px-2 py-2 text-xs text-ink-faint">No matches</div>
         )}
-        {query &&
-          visibleProjects.map(renderProjectGroup)}
-        {(query ? visibleWorkspaces : workspaces).length > 0 && (
+        {showTree && query && visibleProjects.map(renderProjectGroup)}
+        {showTree && (query ? visibleWorkspaces : workspaceSleep.awake).length > 0 && (
           <SidebarSectionTitle label="Workspaces" />
         )}
-        {(query ? visibleWorkspaces : workspaces).map((ws) => (
+        {showTree && (query ? visibleWorkspaces : workspaceSleep.awake).map((ws) => (
           <WorkspaceGroup
             key={ws.id}
             workspace={ws}
@@ -475,46 +616,52 @@ export function Sidebar() {
             searchQuery={query}
           />
         ))}
-        {!query && (visibleProjectGroups.length > 0 || overflowActiveProjects.length > 0 || inactiveProjects.length > 0) && (
+        {showTree && !query && workspaceSleep.sleeping.length > 0 && (
+          <SleepRollup
+            count={workspaceSleep.sleeping.length}
+            open={sleepingWorkspacesOpen}
+            onToggle={() => setSleepingWorkspacesOpen((v) => !v)}
+            label="Sleeping workspaces"
+            openLabel="Sleeping workspaces"
+          />
+        )}
+        {showTree &&
+          !query &&
+          sleepingWorkspacesOpen &&
+          workspaceSleep.sleeping.map((ws) => (
+            <WorkspaceGroup
+              key={ws.id}
+              workspace={ws}
+              expanded={expandedSleeping.has(ws.id)}
+              toggle={() => toggleSleeping(ws.id)}
+              selectedId={selectedId}
+              onSelect={(id) => {
+                setDetailMode('conversation');
+                selectConversation(id);
+              }}
+              onNewConversation={() => startNewConversationInWorkspace(ws.id)}
+              onNewAgent={() => openSheet({ type: 'newWorkspaceAgent', workspaceId: ws.id })}
+              onEdit={() => openSheet({ type: 'editWorkspace', workspaceId: ws.id })}
+              onRemove={() => void removeWorkspace(ws.id)}
+              onExplore={ws.rootPath ? () => openExplorer(ws.rootPath!) : undefined}
+            />
+          ))}
+        {showTree && !query && projects.length > 0 && (
           <>
             <SidebarSectionTitle label="Projects" />
-            {visibleProjectGroups.map(renderProjectGroup)}
-            {(overflowActiveProjects.length > 0 || inactiveProjects.length > 0) && (
-              <div className="mt-1">
-                <div className="group flex items-center gap-1.5 w-full px-2 py-1 rounded hover:bg-card-strong">
-                  <button
-                    onClick={toggleMoreProjects}
-                    className="flex items-center gap-1.5 flex-1 min-w-0 text-left"
-                  >
-                    <span
-                      className={
-                        'text-[9px] text-ink-faint transition-transform flex-shrink-0 ' +
-                        (moreProjectsOpen ? 'rotate-90' : '')
-                      }
-                    >
-                      ▸
-                    </span>
-                    <span className="text-[10px] uppercase tracking-wide text-ink-faint flex-1 truncate">
-                      More projects
-                    </span>
-                    <span className="text-[10px] text-ink-faint">
-                      {overflowActiveProjects.length + inactiveProjects.length}
-                    </span>
-                  </button>
-                </div>
-                {moreProjectsOpen && (
-                  <div>
-                    {overflowActiveProjects.map(renderMoreProjectGroup)}
-                    {inactiveProjects.map(renderMoreProjectGroup)}
-                    <button
-                      onClick={closeMoreProjects}
-                      className="mt-1 w-full rounded px-2 py-1 text-left text-[10px] uppercase tracking-wide text-ink-faint hover:bg-card-strong hover:text-ink-muted"
-                    >
-                      Show fewer projects
-                    </button>
-                  </div>
-                )}
-              </div>
+            {projectSleep.awake.map(renderProjectGroup)}
+            {projectSleep.sleeping.length > 0 && (
+              <>
+                <SleepRollup
+                  count={projectSleep.sleeping.length}
+                  open={sleepingProjectsOpen}
+                  onToggle={() => setSleepingProjectsOpen((v) => !v)}
+                  label="Sleeping projects"
+                  openLabel="Sleeping projects"
+                />
+                {sleepingProjectsOpen &&
+                  projectSleep.sleeping.map(renderSleepingProjectGroup)}
+              </>
             )}
           </>
         )}
@@ -563,6 +710,38 @@ export function Sidebar() {
   );
 }
 
+/// One half of the layout switch. Deliberately a pair of buttons rather than
+/// a checkbox: these are two answers to two questions — "what was I doing"
+/// and "where does this live" — not a feature and its absence, and a
+/// checkbox would make people guess what the off state does.
+function LayoutTab({
+  label,
+  title,
+  on,
+  onClick,
+}: {
+  label: string;
+  title: string;
+  on: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={on}
+      className={
+        'flex-1 rounded px-2 py-0.5 text-[11px] transition-colors ' +
+        (on
+          ? 'bg-surface-elevated text-ink shadow-sm'
+          : 'text-ink-faint hover:text-ink-muted')
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
 function CollapseAllIcon() {
   return (
     <svg viewBox="0 0 16 16" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -592,163 +771,8 @@ function SidebarIconButton({ label, onClick }: { label: string; onClick: () => v
   );
 }
 
-function projectLabel(project: Project): string {
-  const fromPath = pathBasename(project.path).trim();
-  if (fromPath) return fromPath;
-  return project.name;
-}
-
-interface RecentConversationItem {
-  kind: 'conversation';
-  conv: Conversation;
-  ownerName: string;
-  ownerKind: 'project' | 'workspace';
-}
-
-interface ActiveFlowItem {
-  kind: 'flow';
-  run: FlowRun;
-  ownerName: string;
-  ownerKind: 'project' | 'workspace' | 'unknown' | 'worker';
-  /// Drives the row's live indicator only. Liveness deliberately has no say
-  /// in where the row sits — see selectActiveEntries.
-  isLive: boolean;
-}
-
-type ActiveItem = RecentConversationItem | ActiveFlowItem;
-
-/// What the user is currently looking at, and when they last looked at
-/// everything else. This is what holds a row's slot while a long turn runs —
-/// you aren't typing, but that chat is still what you're working on. It only
-/// feeds `touchedAt`, never `promptedAt`: opening something keeps it on
-/// screen, it doesn't move it (see selectActiveEntries).
-interface ActiveSelection {
-  openedConversationId: UUID | null;
-  lastSelectedAt: Record<UUID, number>;
-  openedRunId: string | null;
-  lastOpenedAtByRun: Record<string, number>;
-}
-
-/// Every chat, agent and flow run eligible for the Active section, whether or
-/// not it's still active — selectActiveEntries ranks them and decides which
-/// make the cut. Hidden conversations and archived runs are left out: the user
-/// has explicitly put those away, so they shouldn't be dragged back in by the
-/// section's floor.
-///
-/// Worker runs are the one entry here nobody started by hand, and they follow
-/// their own rule — see `pushWorkerRuns`.
-export function collectActiveCandidates(
-  projects: Project[],
-  workspaces: Workspace[],
-  flowRuns: Record<UUID, FlowRun>,
-  runners: Record<UUID, { isRunning: boolean } | undefined>,
-  selection: ActiveSelection,
-  now: number = Date.now(),
-  /// The roster, for naming a worker run after its worker. Optional so the
-  /// section still builds before the workers store has loaded.
-  workers: Record<string, { name: string }> = {},
-): ActiveCandidate<ActiveItem>[] {
-  const cutoff = now - ACTIVE_CONVERSATION_WINDOW_MS;
-  const out: ActiveCandidate<ActiveItem>[] = [];
-
-  const pushConversation = (
-    conv: Conversation,
-    ownerName: string,
-    ownerKind: 'project' | 'workspace',
-  ) => {
-    if (conv.hidden) return;
-    const running = !!runners[conv.id]?.isRunning;
-    const opened = conv.id === selection.openedConversationId;
-    out.push({
-      entry: { kind: 'conversation', conv, ownerName, ownerKind },
-      // The chat on screen always gets a slot. Without this a busy set of
-      // backends could fill the cap and evict the one you're reading.
-      active: opened || isActiveConversation(conv, running, cutoff),
-      promptedAt: conversationPromptAt(conv),
-      touchedAt: Math.max(
-        conversationPromptAt(conv),
-        selection.lastSelectedAt[conv.id] ?? 0,
-      ),
-    });
-  };
-
-  for (const project of projects) {
-    for (const conv of project.conversations) {
-      pushConversation(conv, projectLabel(project), 'project');
-    }
-  }
-  for (const workspace of workspaces) {
-    for (const conv of workspace.conversations ?? []) {
-      pushConversation(conv, workspace.name, 'workspace');
-    }
-  }
-
-  // A worker's runs are shown at its desk, not in the project's flow list —
-  // a worker on an hourly clock would bury the runs you started yourself.
-  // The exception is HERE, and only while the run is happening: this section
-  // answers "what is going on right now", and an unattended run spending
-  // money is exactly that. Capped, newest first, so a roster firing at once
-  // cannot evict the chat you are reading; the Workers tab has them all.
-  const liveWorkerRuns = Object.values(flowRuns)
-    .filter((run) => isWorkerRun(run) && workerRunIsActive(run, runners))
-    // The run you have open sorts first, then newest: a roster waking up
-    // together must not push out the run you're reading (and possibly
-    // hijack-chatting) just because it started earlier.
-    .sort(
-      (a, b) =>
-        Number(b.id === selection.openedRunId) - Number(a.id === selection.openedRunId) ||
-        flowRunPromptedAt(b) - flowRunPromptedAt(a),
-    )
-    .slice(0, ACTIVE_WORKER_RUN_LIMIT);
-  for (const run of liveWorkerRuns) {
-    out.push({
-      entry: {
-        kind: 'flow',
-        run,
-        ownerName: workers[run.workerId!]?.name ?? 'a worker',
-        ownerKind: 'worker',
-        isLive: flowRunIsLive(run, runners),
-      },
-      active: true,
-      promptedAt: flowRunPromptedAt(run),
-      // Never held by a past touch: a worker run leaves this section when it
-      // stops, however recently you looked at it.
-      touchedAt: flowRunPromptedAt(run),
-    });
-  }
-
-  for (const run of Object.values(flowRuns)) {
-    if (run.state.kind === 'archived') continue;
-    if (isWorkerRun(run)) continue;
-    const owner = resolveFlowOwner(flowRunOwnerPath(run), projects, workspaces);
-    out.push({
-      entry: {
-        kind: 'flow',
-        run,
-        ownerName: owner.name,
-        ownerKind: owner.kind,
-        isLive: flowRunIsLive(run, runners),
-      },
-      active: run.id === selection.openedRunId || flowRunIsActive(run, runners, cutoff),
-      promptedAt: flowRunPromptedAt(run),
-      touchedAt: Math.max(
-        flowRunPromptedAt(run),
-        selection.lastOpenedAtByRun[run.id] ?? 0,
-      ),
-    });
-  }
-
-  return out;
-}
-
-/// When the user last drove this run: launching it, or clicking Continue on
-/// a paused step. Deliberately NOT flowRunActivityAt — attempts are pushed by
-/// the runtime for every step it takes, so keying off those would let a flow
-/// walking itself through ten steps outrank a chat the user just typed in.
-function flowRunPromptedAt(run: FlowRun): number {
-  return Math.max(run.createdAt ?? 0, run.pendingContinue?.startedAt ?? 0);
-}
-
+/// Whether a project has anything worth showing at the top level, as opposed
+/// to rolling up with the ones you have not touched.
 function hasProjectActivity(
   project: Project,
   colosseums: Colosseum[],
@@ -760,35 +784,9 @@ function hasProjectActivity(
   // conversation of its own — keep such projects in the main list.
   if (Object.values(flowRuns).some((r) => flowRunOwnerPath(r) === project.path)) return true;
   // A freshly picked project has no conversation yet — the welcome composer
-  // creates one only on first send. Keep it in the main list for a short
-  // grace window so it doesn't immediately hide in "More projects".
-  return (project.lastOpenedAt ?? 0) > Date.now() - ACTIVE_CONVERSATION_WINDOW_MS;
-}
-
-function projectActivityAt(
-  project: Project,
-  colosseums: Colosseum[],
-  runners: Record<UUID, { isRunning: boolean } | undefined>,
-  flowRuns: Record<UUID, FlowRun>,
-): number {
-  if (project.conversations.some((c) => runners[c.id]?.isRunning)) return Date.now();
-  const projectRuns = Object.values(flowRuns).filter(
-    (r) => flowRunOwnerPath(r) === project.path,
-  );
-  // A live (running or paused) flow pins the project to the top, just like a
-  // running conversation does.
-  if (projectRuns.some((r) => r.state.kind === 'running' || r.state.kind === 'paused')) {
-    return Date.now();
-  }
-  const newestConversation = project.conversations.reduce(
-    (max, c) => (c.hidden ? max : Math.max(max, conversationActivityAt(c))),
-    0,
-  );
-  const newestColosseum = colosseums
-    .filter((c) => c.projectId === project.id)
-    .reduce((max, c) => Math.max(max, c.createdAt), 0);
-  const newestFlowRun = projectRuns.reduce((max, r) => Math.max(max, flowRunActivityAt(r)), 0);
-  return Math.max(project.lastOpenedAt ?? 0, newestConversation, newestColosseum, newestFlowRun);
+  // creates one only on first send. Keep it out of the roll-up for a short
+  // grace window so it does not vanish the moment it is added.
+  return (project.lastOpenedAt ?? 0) > Date.now() - 24 * 60 * 60 * 1000;
 }
 
 function SidebarSectionTitle({ label }: { label: string }) {
@@ -843,9 +841,13 @@ function ProjectShortcutRow({
 
 function RecentConversationRow({
   item,
+  momentum,
   onClick,
 }: {
   item: RecentConversationItem;
+  /// Shown so the ranking is legible rather than mysterious: the row at the
+  /// top of the section can say why it is there.
+  momentum: number;
   onClick: () => void;
 }) {
   const bgColor = backendColor(item.conv.primaryBackend);
@@ -872,6 +874,7 @@ function RecentConversationRow({
           {item.ownerName}
         </span>
       </span>
+      {!isRunning && <MomentumMeter score={momentum} />}
     </button>
   );
 }
@@ -929,8 +932,21 @@ function ProjectGroup({
       if (!isAgentConversation(c)) vis.push(c);
       else if (!c.colosseumId && !c.workspaceAgentCoordinatorId) ags.push(c);
     }
-    return { visible: vis, agents: ags };
+    // Newest first, like the flow runs directly below them. These used to
+    // render in raw store order — which is append order — so the newest chat
+    // sat at the BOTTOM of a group whose newest run sat at the top. One list,
+    // two directions.
+    return { visible: byNewestFirst(vis), agents: byNewestFirst(ags) };
   }, [project.conversations]);
+  const convSleep = useMemo(
+    () =>
+      partitionSleeping(visible, (c) => ({
+        touchedAt: conversationActivityAt(c),
+        pinned: c.id === selectedId || (runners[c.id]?.isRunning ?? false),
+      })),
+    [visible, selectedId, runners],
+  );
+  const [sleepOpen, setSleepOpen] = useState(false);
   const archivableCount = useMemo(
     () =>
       project.conversations.filter(
@@ -1050,7 +1066,7 @@ function ProjectGroup({
       )}
       {expanded && (
         <div className="ml-4 border-l border-card pl-1">
-          {visible.map((conv) => (
+          {convSleep.awake.map((conv) => (
             <ConversationRow
               key={conv.id}
               conv={conv}
@@ -1058,6 +1074,22 @@ function ProjectGroup({
               onClick={() => onSelect(conv.id)}
             />
           ))}
+          {convSleep.sleeping.length > 0 && (
+            <SleepRollup
+              count={convSleep.sleeping.length}
+              open={sleepOpen}
+              onToggle={() => setSleepOpen((v) => !v)}
+            />
+          )}
+          {sleepOpen &&
+            convSleep.sleeping.map((conv) => (
+              <ConversationRow
+                key={conv.id}
+                conv={conv}
+                selected={conv.id === selectedId}
+                onClick={() => onSelect(conv.id)}
+              />
+            ))}
           {agents.length > 0 && (
             <div className="mt-1 text-[10px] uppercase tracking-wider text-ink-faint px-2">
               Agents
@@ -1268,63 +1300,6 @@ function ColosseumSidebarGroup({
   );
 }
 
-function ConversationRow({ conv, selected, onClick }: {
-  conv: Conversation;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  const bgColor = backendColor(conv.primaryBackend);
-  const isRunning = useRunnerIsRunning(conv.id);
-  const completedAt = useRunnerCompletedAt(conv.id);
-  const completed = !isRunning && !!completedAt;
-  const openSheet = useStore((s) => s.openSheet);
-  const isAgent = isAgentConversation(conv);
-
-  const onClose = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    openSheet({ type: 'archiveConversation', convId: conv.id });
-  };
-
-  return (
-    <div
-      className={
-        'sidebar-row group w-full rounded text-xs truncate flex items-center gap-1.5 pr-1 ' +
-        (selected
-          ? 'sidebar-row-selected text-ink'
-          : 'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card')
-      }
-      title={conv.name}
-    >
-      <button onClick={onClick} className="flex items-center gap-1.5 flex-1 min-w-0 text-left px-2 py-1">
-        <SidebarMarker color={bgColor} active={isRunning} completed={completed} />
-        {isAgent && <span className="text-[10px] text-ink-faint">⎇</span>}
-        <span className={'truncate flex-1 ' + (selected ? 'font-medium' : '')}>{conv.name}</span>
-      </button>
-      <button
-        onClick={onClose}
-        className={
-          'w-4 h-4 flex items-center justify-center text-[11px] text-ink-faint hover:text-red-400 rounded transition-opacity ' +
-          (selected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-100')
-        }
-        title={isAgent ? 'Archive or delete agent…' : 'Archive or delete conversation…'}
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
-/// Conversations in the store are plain objects, so we use a helper
-/// rather than extending the type with methods. `continuedLocally`
-/// coordinators still carry `workspaceAgentMemberIds` (we keep the
-/// historical link), but the coordinator is no longer operating as an
-/// agent so the sidebar should list it with the workspace's plain
-/// chats, not under Agents.
-export function isAgentConversation(c: Conversation): boolean {
-  if (c.continuedLocally) return false;
-  return !!c.worktreePath || (c.workspaceAgentMemberIds?.length ?? 0) > 0;
-}
-
 function effectiveColosseumStatus(
   colosseum: Colosseum,
   runners: Record<UUID, { isRunning: boolean } | undefined>,
@@ -1417,12 +1392,23 @@ function WorkspaceGroup({
   // change doesn't re-walk the whole conversation list.
   const { convs, plain, agents } = useMemo(() => {
     const all = (workspace.conversations ?? []).filter((c) => !c.hidden);
+    // Same direction as a project group and as the flow runs below — see the
+    // note on byNewestFirst.
     return {
       convs: all,
-      plain: all.filter((c) => !isAgentConversation(c)),
-      agents: all.filter(isAgentConversation),
+      plain: byNewestFirst(all.filter((c) => !isAgentConversation(c))),
+      agents: byNewestFirst(all.filter(isAgentConversation)),
     };
   }, [workspace.conversations]);
+  const convSleep = useMemo(
+    () =>
+      partitionSleeping(plain, (c) => ({
+        touchedAt: conversationActivityAt(c),
+        pinned: c.id === selectedId || (runners[c.id]?.isRunning ?? false),
+      })),
+    [plain, selectedId, runners],
+  );
+  const [sleepOpen, setSleepOpen] = useState(false);
   const archivableCount = useMemo(
     () =>
       (workspace.conversations ?? []).filter(
@@ -1530,7 +1516,7 @@ function WorkspaceGroup({
           {plain.length === 0 && agents.length === 0 && (
             <div className="px-2 py-1 text-[10px] text-ink-faint">No conversations yet</div>
           )}
-          {plain.map((conv) => (
+          {convSleep.awake.map((conv) => (
             <ConversationRow
               key={conv.id}
               conv={conv}
@@ -1538,6 +1524,22 @@ function WorkspaceGroup({
               onClick={() => onSelect(conv.id)}
             />
           ))}
+          {convSleep.sleeping.length > 0 && (
+            <SleepRollup
+              count={convSleep.sleeping.length}
+              open={sleepOpen}
+              onToggle={() => setSleepOpen((v) => !v)}
+            />
+          )}
+          {sleepOpen &&
+            convSleep.sleeping.map((conv) => (
+              <ConversationRow
+                key={conv.id}
+                conv={conv}
+                selected={conv.id === selectedId}
+                onClick={() => onSelect(conv.id)}
+              />
+            ))}
           {agents.length > 0 && (
             <div className="mt-1 text-[10px] uppercase tracking-wider text-ink-faint px-2">
               Agents
