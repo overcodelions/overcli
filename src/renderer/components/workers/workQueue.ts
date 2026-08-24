@@ -22,7 +22,11 @@ import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestrati
 import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 
+import { isRenderableOutput } from '@shared/flows/worker';
+
 import { startOfDay, toWorkerActivity } from './workerDeskSelectors';
+
+import type { WorkerFile } from './workerDeskSelectors';
 
 /// How many finished rows the tail keeps. The band is a glance backwards, not
 /// the Report — ten is roughly a morning's work for a small roster, and the
@@ -73,6 +77,10 @@ export interface QueueRow {
   orchestrationId?: string;
   /// The item's candidate id, absent for the same reason.
   candidateId?: string;
+  /// The batch's ledger title (`[Shift 3] Warden`). Carried because it is one
+  /// of the four facts `workers:deliverables` addresses a filed output by —
+  /// the naming rule lives in main and is not reproduced here.
+  batchLabel?: string;
   /// Which entry point produced the work: the worker's standing cadence, or
   /// something somebody asked for.
   task: 'shift' | 'errand';
@@ -189,9 +197,8 @@ export function buildWorkQueue(
         workerId: origin.workerId,
         workerName: origin.workerName,
         orchestrationId: batch.id,
-        /// The candidate id, which is what `orchestrator:rejectItem` takes —
-        /// an orphan's Dismiss is the one act this screen performs itself.
         candidateId: item.candidate.id,
+        batchLabel: batch.title,
         task,
         status,
         title: item.candidate.title,
@@ -321,4 +328,21 @@ export function describeQueue(queue: WorkQueue): string {
       : `${done} finished today`,
   );
   return `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}.`;
+}
+
+/// Which of a job's filed files is THE answer.
+///
+/// A run that produced several artifacts is filed as a folder — the last
+/// artifact is the answer and the earlier ones are what it was built from.
+/// A rendered page or document beats a note about one, because that is what
+/// the person asking "did the report land" means; failing that, the last
+/// file is the tail of the run and the closest thing to a conclusion.
+export function pickDeliverable(files: WorkerFile[]): WorkerFile | null {
+  if (files.length === 0) return null;
+  const renderable = files.filter((f) => isRenderableOutput(baseName(f.name)));
+  return renderable[renderable.length - 1] ?? files[files.length - 1];
+}
+
+export function baseName(name: string): string {
+  return name.split('/').pop() ?? name;
 }

@@ -28,6 +28,21 @@ function item(overrides: Partial<OrchestrationItem> = {}): OrchestrationItem {
 }
 
 describe('settleItemOnLoad', () => {
+  it('dates a settled item from the work, not from the launch that noticed', () => {
+    // The batch is a week old. Stamping boot time on it would file last
+    // Tuesday's abandoned job at the top of today's finished list, and count
+    // it in "finished today".
+    const WEEK_AGO = NOW - 7 * 24 * 3_600_000;
+    const started = item({ status: 'paused', runId: 'r1', startedAt: WEEK_AGO + 60_000 });
+    settleItemOnLoad(started, GONE, WEEK_AGO);
+    expect(started.finishedAt).toBe(WEEK_AGO + 60_000);
+
+    // Nothing ever started it, so the batch's own age is the best answer.
+    const never = item({ status: 'queued' });
+    settleItemOnLoad(never, GONE, WEEK_AGO);
+    expect(never.finishedAt).toBe(WEEK_AGO);
+  });
+
   it('fails a running item — its subprocess died with the app', () => {
     const it_ = item({ status: 'running' });
     expect(settleItemOnLoad(it_, ALIVE, NOW)).toBe(true);

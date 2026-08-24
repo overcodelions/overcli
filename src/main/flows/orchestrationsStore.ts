@@ -75,17 +75,24 @@ export function saveOrchestration(o: Orchestration): void {
 /// itself on every launch — and because `loadAllOrchestrations` around them
 /// is all electron paths and fs, which is why they went untested for as long
 /// as they did. `exists` answers whether a child run's file is still there.
+/// `settledAt` stands in for a finish time the item never recorded. It is the
+/// batch's own `createdAt`, NOT the clock: stamping boot time onto a week-old
+/// item files it as having finished the moment you launched the app, which
+/// puts last Tuesday's abandoned work at the top of today's list and counts
+/// it in "finished today". The item's own `startedAt` is better still when it
+/// has one — that is at least the right era, and usually the right hour.
 export function settleItemOnLoad(
   item: Orchestration['items'][number],
   exists: (runId: string) => boolean,
-  now: number = Date.now(),
+  settledAt: number = Date.now(),
 ): boolean {
+  const ended = () => item.finishedAt ?? item.startedAt ?? settledAt;
   if (item.status === 'running') {
     // Its subprocess died with the app, mirroring how runsStore demotes
     // in-flight runs.
     item.status = 'failed';
     item.note = item.note ?? 'Interrupted by app restart.';
-    item.finishedAt = item.finishedAt ?? now;
+    item.finishedAt = ended();
     return true;
   }
   if (item.status === 'paused' && item.runId && !exists(item.runId)) {
@@ -101,7 +108,7 @@ export function settleItemOnLoad(
     // not a verdict on the worker's judgement.
     item.status = 'failed';
     item.note = item.note ?? 'Run no longer exists.';
-    item.finishedAt = item.finishedAt ?? now;
+    item.finishedAt = ended();
     return true;
   }
   if (item.status === 'queued') {
@@ -111,7 +118,7 @@ export function settleItemOnLoad(
     // the batch becomes a read-only ledger instead of re-pumping on boot.
     item.status = 'cancelled';
     item.note = item.note ?? 'Not resumed after app restart.';
-    item.finishedAt = item.finishedAt ?? now;
+    item.finishedAt = ended();
     // Not a verdict on the work: the app closed, that is all. Without this
     // the worker journal reads the cancellation as a rejection and counts it
     // toward a demotion.
@@ -144,7 +151,7 @@ export function loadAllOrchestrations(): Orchestration[] {
       if (!o || typeof o.id !== 'string' || !Array.isArray(o.items)) continue;
       let mutated = false;
       for (const item of o.items) {
-        if (settleItemOnLoad(item, runExists)) mutated = true;
+        if (settleItemOnLoad(item, runExists, o.createdAt)) mutated = true;
       }
       if (
         mutated &&

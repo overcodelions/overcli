@@ -4,7 +4,20 @@ import type { Orchestration } from '@shared/flows/orchestration';
 import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 
-import { buildWorkQueue, describeQueue, stepTrack, FINISHED_LIMIT } from './workQueue';
+import {
+  baseName,
+  buildWorkQueue,
+  describeQueue,
+  pickDeliverable,
+  stepTrack,
+  FINISHED_LIMIT,
+} from './workQueue';
+
+import type { WorkerFile } from './workerDeskSelectors';
+
+function file(name: string): WorkerFile {
+  return { name, path: `/root/${name}`, bytes: 10, modifiedAt: 1 } as WorkerFile;
+}
 
 const NOON = new Date('2026-08-24T12:00:00').getTime();
 const HOUR = 3_600_000;
@@ -361,5 +374,30 @@ describe('describeQueue', () => {
 
   it('says nothing at all when there is nothing to say', () => {
     expect(describeQueue(buildWorkQueue({}, {}, WORKERS, {}, NOON))).toBe('');
+  });
+});
+
+describe('pickDeliverable', () => {
+  it('prefers what a person can read over the notes it was built from', () => {
+    const files = [
+      file('2026-08-24-1200-shift-3-report/raw_test_output.md'),
+      file('2026-08-24-1200-shift-3-report/sprint-status.html'),
+      file('2026-08-24-1200-shift-3-report/receipt.txt'),
+    ];
+    expect(pickDeliverable(files)?.name).toContain('sprint-status.html');
+  });
+
+  it('falls back to the last file — the tail of the run is the conclusion', () => {
+    const files = [file('job/notes.txt'), file('job/summary.txt')];
+    expect(pickDeliverable(files)?.name).toBe('job/summary.txt');
+  });
+
+  it('has nothing to offer when the job filed nothing', () => {
+    expect(pickDeliverable([])).toBeNull();
+  });
+
+  it('labels a file by its own name, not its job folder', () => {
+    expect(baseName('2026-08-24-1200-shift-3-report/sprint-status.html')).toBe('sprint-status.html');
+    expect(baseName('loose-note.md')).toBe('loose-note.md');
   });
 });

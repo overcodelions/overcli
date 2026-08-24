@@ -28,14 +28,19 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
+import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
 import { WorkerAvatar, useWorkerColors } from './WorkerAvatar';
 import { clockTime } from './workerCalendar';
 import { relativeTime, startOfDay } from './workerDeskSelectors';
 import { workerColorFor } from './workerPalette';
+
+import type { WorkerFile } from './workerDeskSelectors';
 import {
+  baseName,
   buildWorkQueue,
   describeQueue,
+  pickDeliverable,
   type QueueRow,
   type QueueStep,
 } from './workQueue';
@@ -50,6 +55,7 @@ export function WorkQueuePane() {
   const runs = useFlowsStore((s) => s.runs);
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const openFile = useStore((s) => s.openFile);
 
   // Every stamp on this page is an age, and an age that never re-renders is
   // the thing that makes a live screen feel dead. A minute is as fine as any
@@ -84,6 +90,50 @@ export function WorkQueuePane() {
     }
   };
 
+  // What each finished job actually PRODUCED. A tail that says "Done" ten
+  // times tells you the crew was busy and nothing about what you got — and
+  // the report, the spec, the page is the entire reason the job was run.
+  //
+  // Addressed through `workers:deliverables`, which takes the same four facts
+  // the filing used. Main owns that naming rule and the renderer does not
+  // reproduce it: the two would drift the first time either changed, and the
+  // failure would be a silently missing link rather than anything that breaks.
+  const [filed, setFiled] = useState<Record<string, WorkerFile | null>>({});
+  useEffect(() => {
+    // Only `done` rows: a failure, an orphan and a quiet shift all filed
+    // nothing, so asking about them is a directory read per row per render
+    // for a guaranteed empty answer.
+    const wanted = queue.finished.filter(
+      (row) =>
+        row.status === 'done' &&
+        row.batchLabel &&
+        // A null is cached like any other answer, EXCEPT for a job that just
+        // landed: the journal fold files the output moments after the item
+        // settles, so "nothing filed" inside that window is a race rather
+        // than a fact, and caching it would hide the report until a remount.
+        (!(row.key in filed) || (filed[row.key] === null && now - row.at < 120_000)),
+    );
+    if (wanted.length === 0) return;
+    let live = true;
+    void Promise.all(
+      wanted.map(async (row) => {
+        const files = await window.overcli.invoke('workers:deliverables', {
+          id: row.workerId,
+          task: row.task,
+          label: row.batchLabel!,
+          title: row.title,
+          at: row.at,
+        });
+        return [row.key, pickDeliverable(files)] as const;
+      }),
+    ).then((pairs) => {
+      if (live) setFiled((prev) => ({ ...prev, ...Object.fromEntries(pairs) }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [queue.finished, filed, now]);
+
   const nothing =
     queue.running.length === 0 && queue.needsYou.length === 0 && queue.finished.length === 0;
 
@@ -116,6 +166,8 @@ export function WorkQueuePane() {
             rows={queue.finished}
             now={now}
             onOpen={open}
+            filed={filed}
+            onOpenFile={(path) => openFile(path, undefined, 'preview')}
           />
         </>
       )}
@@ -134,6 +186,8 @@ function Band({
   rows,
   now,
   onOpen,
+  filed,
+  onOpenFile,
 }: {
   title: string;
   count: number;
@@ -141,6 +195,8 @@ function Band({
   rows: QueueRow[];
   now: number;
   onOpen: (row: QueueRow) => void;
+  filed?: Record<string, WorkerFile | null>;
+  onOpenFile?: (path: string) => void;
 }) {
   return (
     <section className="mt-7">
@@ -154,7 +210,14 @@ function Band({
       ) : (
         <div className="mt-1.5">
           {rows.map((row) => (
-            <QueueRowView key={row.key} row={row} now={now} onOpen={() => onOpen(row)} />
+            <QueueRowView
+              key={row.key}
+              row={row}
+              now={now}
+              onOpen={() => onOpen(row)}
+              filed={filed?.[row.key] ?? null}
+              onOpenFile={onOpenFile}
+            />
           ))}
         </div>
       )}
@@ -172,10 +235,14 @@ function QueueRowView({
   row,
   now,
   onOpen,
+  filed,
+  onOpenFile,
 }: {
   row: QueueRow;
   now: number;
   onOpen: () => void;
+  filed?: WorkerFile | null;
+  onOpenFile?: (path: string) => void;
 }) {
   const colors = useWorkerColors();
   const tint = workerColorFor(colors, row.workerId);
@@ -240,12 +307,29 @@ function QueueRowView({
         </span>
       </button>
 
-      <span
-        aria-hidden
-        className="mt-3 shrink-0 pr-1 text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100"
-      >
-        →
-      </span>
+      {filed && onOpenFile ? (
+        <button
+          onClick={() => onOpenFile(filed.path)}
+          title={`Open ${baseName(filed.name)}`}
+          className={
+            'mt-2 flex shrink-0 items-center gap-1 rounded-md border border-card-strong px-2 py-1 ' +
+            'text-[11px] text-ink-muted hover:bg-card hover:text-ink ' +
+            'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
+          }
+        >
+          <span className="max-w-[11rem] truncate">{baseName(filed.name)}</span>
+          <span aria-hidden className="text-ink-faint">
+            ↗
+          </span>
+        </button>
+      ) : (
+        <span
+          aria-hidden
+          className="mt-3 shrink-0 pr-1 text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100"
+        >
+          →
+        </span>
+      )}
     </div>
   );
 }
