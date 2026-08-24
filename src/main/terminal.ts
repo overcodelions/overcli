@@ -25,6 +25,7 @@ export type TerminalOrigin =
   | 'ollama-update'
   | 'ollama-security'
   | 'backend-update'
+  | 'git-install'
   | 'agent-launch'
   | 'workspace-command'
   | 'file-tree'

@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
 import { Diff } from '../DiffView';
 import type { ProjectVersion, ProjectVersionFile } from '@shared/types';
+import { GitInstallNotice, useGitAvailability } from '../GitInstallNotice';
 
 /// The version history of an everyday project, for someone who has never
 /// heard of a commit.
@@ -51,6 +52,11 @@ export function VersionsSheet({ projectPath }: { projectPath: string }) {
   const [openFile, setOpenFile] = useState<string | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const now = new Date();
+  /// Only asked once the list has actually failed. Every git error here used
+  /// to be printed verbatim, so a machine without git greeted the user with
+  /// `spawn git ENOENT` under a heading promising earlier versions.
+  const availability = useGitAvailability(error !== null);
+  const gitMissing = availability !== null && availability.state !== 'ok';
 
   const load = useCallback(async () => {
     const res = await window.overcli.invoke('versions:list', { projectPath });
@@ -105,7 +111,17 @@ export function VersionsSheet({ projectPath }: { projectPath: string }) {
         </div>
       </div>
 
-      {error && <div className="shrink-0 px-5 pb-2 text-xs text-red-500">{error}</div>}
+      {error &&
+        (gitMissing ? (
+          <div className="shrink-0 px-5 pb-2">
+            <GitInstallNotice
+              state={availability.state === 'needs-xcode-tools' ? 'needs-xcode-tools' : 'missing'}
+              lead="No versions were saved for this project."
+            />
+          </div>
+        ) : (
+          <div className="shrink-0 px-5 pb-2 text-xs text-red-500">{error}</div>
+        ))}
 
       <div className="flex-1 min-h-0 overflow-y-auto px-5 pb-2">
         {versions.length === 0 && !error ? (
