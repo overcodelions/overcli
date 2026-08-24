@@ -144,7 +144,29 @@ function renderMarkdownHtmlUncached(
   }
 
   const raw = marked.parse(fenceStrayDiffs(source ?? ''), { async: false, renderer }) as string;
-  return DOMPurify.sanitize(raw, SANITIZE_CONFIG) as string;
+  const clean = DOMPurify.sanitize(raw, SANITIZE_CONFIG) as string;
+
+  // A reply made entirely of HTML we don't allow sanitizes down to nothing,
+  // and the bubble renders as silence — the model said something, the UI
+  // showed a blank box. The case that hits users is a flow step answering
+  // with only its `<output name="…" file="…" />` pointer: `marked` treats a
+  // lone unknown tag as a raw HTML block, DOMPurify drops the element, and
+  // a self-closing tag has no children to keep. Re-render with raw HTML
+  // escaped so the text is visible rather than gone. Guarded on
+  // `escapeRawHtml` so this can only recurse once.
+  if (!escapeRawHtml && (source ?? '').trim().length > 0 && !hasVisibleContent(clean)) {
+    return renderMarkdownHtmlUncached(source, enableFilePathLinks, true, mermaidPlaceholders);
+  }
+  return clean;
+}
+
+/// Whether sanitized HTML would put anything on screen. Text between tags
+/// counts; so do the void/near-empty elements that are visible in their own
+/// right — images, rules, and the keyed placeholder divs mermaid diagrams are
+/// spliced into later (which are legitimately empty at this point).
+function hasVisibleContent(html: string): boolean {
+  if (/<(?:img|hr)\b/i.test(html) || html.includes('data-mermaid-key')) return true;
+  return html.replace(/<[^>]*>/g, '').trim().length > 0;
 }
 
 /// Render a single assistant / review bubble's markdown as HTML. We purposely

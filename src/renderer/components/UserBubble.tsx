@@ -1,6 +1,6 @@
 import { Attachment } from '@shared/types';
 import { FlowStepCards } from './flows/FlowStepCards';
-import { isFlowStepTurn } from './flows/flowStepSections';
+import { isFlowStepTurn, isFlowNoteTurn, parseFlowNote } from './flows/flowStepSections';
 
 export function UserBubble({ text, attachments }: { text: string; attachments?: Attachment[] }) {
   const hasAttachments = attachments && attachments.length > 0;
@@ -14,6 +14,14 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
   // user dropped in are visible on the step card, not just sent to the model.
   if (isFlowStepTurn(text)) {
     return <FlowStepCards text={text} attachments={attachments} />;
+  }
+
+  // Short turns the runtime sends between steps — same reasoning as above,
+  // the flow driver is speaking. They carry no attachments and no structure,
+  // so they render as a single quiet line rather than a card.
+  if (isFlowNoteTurn(text)) {
+    const note = parseFlowNote(text);
+    if (note) return <FlowNote text={note} />;
   }
 
   const hasText = text && text.trim().length > 0;
@@ -54,6 +62,19 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
         {hasText && (
           <div className="px-3.5 py-2 text-sm whitespace-pre-wrap">{text}</div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/// One centered line for a runtime-authored note. Deliberately quieter than
+/// FlowStepCards: these are housekeeping turns between steps, not work.
+function FlowNote({ text }: { text: string }) {
+  return (
+    <div className="flex justify-center my-0.5">
+      <div className="max-w-[820px] flex items-baseline gap-1.5 px-3 py-1 text-xs text-ink-muted select-text">
+        <span className="text-[10px] uppercase tracking-wider text-ink-faint shrink-0">⚙ flow</span>
+        <span>{text}</span>
       </div>
     </div>
   );
