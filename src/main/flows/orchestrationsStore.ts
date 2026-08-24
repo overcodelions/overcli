@@ -11,6 +11,8 @@ import { app } from 'electron';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 
+import { runExists } from './runsStore';
+
 import type { Orchestration } from '../../shared/flows/orchestration';
 
 /// Worker batches are exempt from the residue sweep by design, so nothing
@@ -66,9 +68,62 @@ export function saveOrchestration(o: Orchestration): void {
   }
 }
 
-/// Load every persisted batch. Down-converts any item still marked
-/// `running` to `failed` — its child run's subprocess is dead after a
-/// restart, mirroring how runsStore demotes in-flight runs to `aborted`.
+/// What a restart does to one item that never reached a terminal state.
+///
+/// Pure and separately exported because these three rules are the whole
+/// difference between a batch that reads as history and one that lies about
+/// itself on every launch — and because `loadAllOrchestrations` around them
+/// is all electron paths and fs, which is why they went untested for as long
+/// as they did. `exists` answers whether a child run's file is still there.
+export function settleItemOnLoad(
+  item: Orchestration['items'][number],
+  exists: (runId: string) => boolean,
+  now: number = Date.now(),
+): boolean {
+  if (item.status === 'running') {
+    // Its subprocess died with the app, mirroring how runsStore demotes
+    // in-flight runs.
+    item.status = 'failed';
+    item.note = item.note ?? 'Interrupted by app restart.';
+    item.finishedAt = item.finishedAt ?? now;
+    return true;
+  }
+  if (item.status === 'paused' && item.runId && !exists(item.runId)) {
+    // A parked item whose child run has been deleted (evicted by the
+    // retention cap, cleaned up with its worktree, removed by hand).
+    // `paused` promises the user can continue it, and there is nothing left
+    // to continue — so it sat in the Workers work queue asking for a decision
+    // that could never be taken, for as long as the batch survived.
+    //
+    // `failed`, deliberately, and NOT `cancelled`: a cancelled item is
+    // journaled as a REJECTION and counts toward the worker's demotion streak
+    // (see workerEngine's reconcile). Losing a run file is the app's doing,
+    // not a verdict on the worker's judgement.
+    item.status = 'failed';
+    item.note = item.note ?? 'Run no longer exists.';
+    item.finishedAt = item.finishedAt ?? now;
+    return true;
+  }
+  if (item.status === 'queued') {
+    // Orchestrations do NOT auto-resume on restart: relaunching a child flow
+    // run forks a worktree and spawns an AI subprocess (burning tokens) with
+    // no user present to approve it. Settle anything that never launched so
+    // the batch becomes a read-only ledger instead of re-pumping on boot.
+    item.status = 'cancelled';
+    item.note = item.note ?? 'Not resumed after app restart.';
+    item.finishedAt = item.finishedAt ?? now;
+    // Not a verdict on the work: the app closed, that is all. Without this
+    // the worker journal reads the cancellation as a rejection and counts it
+    // toward a demotion.
+    item.settledByRestart = true;
+    return true;
+  }
+  return false;
+}
+
+/// Load every persisted batch, settling anything a restart has invalidated
+/// (see `settleItemOnLoad` for the three rules and why each one is what it
+/// is).
 ///
 /// `proposed` items pass through untouched. A schedule can park a batch at
 /// 8am and the user might not open the app until the afternoon; settling the
@@ -89,22 +144,7 @@ export function loadAllOrchestrations(): Orchestration[] {
       if (!o || typeof o.id !== 'string' || !Array.isArray(o.items)) continue;
       let mutated = false;
       for (const item of o.items) {
-        if (item.status === 'running') {
-          item.status = 'failed';
-          item.note = item.note ?? 'Interrupted by app restart.';
-          item.finishedAt = item.finishedAt ?? Date.now();
-          mutated = true;
-        } else if (item.status === 'queued') {
-          // Orchestrations do NOT auto-resume on restart: relaunching a child
-          // flow run forks a worktree and spawns an AI subprocess (burning
-          // tokens) with no user present to approve it. Settle anything that
-          // never launched so the batch becomes a read-only ledger instead of
-          // re-pumping on every boot.
-          item.status = 'cancelled';
-          item.note = item.note ?? 'Not resumed after app restart.';
-          item.finishedAt = item.finishedAt ?? Date.now();
-          mutated = true;
-        }
+        if (settleItemOnLoad(item, runExists)) mutated = true;
       }
       if (
         mutated &&

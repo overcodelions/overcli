@@ -31,7 +31,7 @@ export function TitleBar() {
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
-  const showWorkersCalendar = useWorkersStore((s) => s.showCalendar);
+  const showWorkersQueue = useWorkersStore((s) => s.showQueue);
   const closeWorkerEditor = useWorkersStore((s) => s.closeEditor);
   const schedules = useSchedulesStore((s) => s.schedules);
   const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
@@ -114,15 +114,17 @@ export function TitleBar() {
   }
 
   function workersRoot(): void {
-    // The shift calendar, not a desk: the tab is a roster on a clock, and the
-    // question you arrive with is "who is working when", which no single
-    // worker's desk answers. selectWorker(null) first so the calendar isn't
-    // secretly still a selection — it is about every worker at once — and it
-    // clears any run filling the pane on the way.
+    // The work queue, not a desk and not the calendar: the question you
+    // arrive at this tab with is "what is my crew doing", and the calendar
+    // answers the narrower "who is working when" — right when you are
+    // planning the week, wrong every other time you press the tab.
+    // selectWorker(null) first so the queue isn't secretly still a selection
+    // — it is about every worker at once — and it clears any run filling the
+    // pane on the way.
     selectWorker(null);
     closeWorkerEditor();
     closeFlowEditor();
-    showWorkersCalendar();
+    showWorkersQueue();
     setDetailMode('workers');
   }
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform;

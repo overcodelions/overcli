@@ -1928,7 +1928,16 @@ export class WorkerEngine {
             note: item.note,
           }) || changed;
       }
-      if (item.status === 'cancelled' && !this.journal.has(key('approved'))) {
+      // A cancellation is a REJECTION only when a person turned the work
+      // down. Two things say otherwise: the item was already accepted (it
+      // earned an `approved` entry on its way to `queued`), or a restart
+      // settled it — which is the app's doing and must never cost a worker
+      // its trust level.
+      if (
+        item.status === 'cancelled' &&
+        !item.settledByRestart &&
+        !this.journal.has(key('approved'))
+      ) {
         const wrote = this.journal.append({
           ...base,
           id: key('rejected'),

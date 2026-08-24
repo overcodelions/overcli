@@ -102,12 +102,18 @@ interface WorkersState {
   /// so a reorder shows the money move before the round trip lands.
   treasury: Treasury | null;
   allocation: TreasuryAllocation | null;
-  /// The Workers pane shows one of three things: the selected worker's desk,
-  /// the roster calendar, or the funding waterfall. The last two are peers of
-  /// the selection rather than part of it — both are about every worker at
-  /// once, so neither has a worker to be the selection of, and picking anyone
-  /// from them must land you on their desk.
-  view: 'worker' | 'calendar' | 'funds' | 'report';
+  /// The Workers pane shows the selected worker's desk, or one of the four
+  /// roster-wide screens. Those four are peers of the selection rather than
+  /// part of it — each is about every worker at once, so none has a worker to
+  /// be the selection of, and picking anyone from them must land you on their
+  /// desk.
+  ///
+  /// `queue` is the tab's landing page, and deliberately not `worker`. The
+  /// other three answer what is coming (calendar), what it cost (funds) and
+  /// what it came to (report); nothing answered NOW, so the tab opened on
+  /// whichever worker happened to be hired first — an accident of sort order
+  /// standing in for a front page.
+  view: 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
   /// Bumped every time a worker is picked from the roster, including a pick
   /// of the one already on screen. The pane keys the worker's screen on it, so
   /// clicking a name lands on that worker's desk rather than on whichever tab
@@ -271,6 +277,7 @@ interface WorkersActions {
   /// left open: the editor renders over the desk, so a half-written edit from
   /// earlier would swallow the worker just asked for.
   openWorkerDesk(id: string): void;
+  showQueue(): void;
   showCalendar(): void;
   showFunds(): void;
   showReport(): void;
@@ -552,7 +559,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   selectedWorkerId: null,
   treasury: null,
   allocation: null,
-  view: 'worker',
+  view: 'queue',
   selectSeq: 0,
   deskFocus: null,
   previewEmpty: false,
@@ -685,6 +692,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   openWorkerDesk(id) {
     get().selectWorker(id);
+  },
+
+  showQueue() {
+    leavePane(get);
+    set({ view: 'queue' });
   },
 
   showCalendar() {
