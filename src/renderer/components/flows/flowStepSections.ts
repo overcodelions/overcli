@@ -32,6 +32,18 @@ export interface FlowStepContent {
 }
 
 const FLOW_DISPLAY_MARKER = '<!--flow-->';
+
+// Prefix on the short one-line turns the runtime sends between steps —
+// finalizing an artifact, re-asking for a missing `<output>` block, driving a
+// watcher. Kept in sync with `flowNote` in src/main/flows/runtime.ts.
+const FLOW_NOTE_MARKER = '<!--flow-note-->';
+
+// Reloaded shape: after a restart the transcript is rebuilt from the CLI's
+// JSONL, which recorded the raw prompt rather than the display text, so the
+// marker is gone. These are the openings of the two missing-output re-asks
+// (see missingOutputReaskPrompt) — the only runtime notes long enough that
+// showing them raw, as if the user had typed them, is actively confusing.
+const RAW_NOTE_SIGNATURE = /^Your last reply (?:did not contain an <output|pointed at ")/;
 const SECTION_RE = /<!--flow:(header|instructions|inputs)-->/g;
 
 // Unique tail of every step prompt buildStepPrompt produces — used to
@@ -47,6 +59,26 @@ const PROCEED_DELIMITER = '\n\n---\n\nProceed with your task now.';
 /// True for either a live (markered) or reloaded (raw) flow step turn.
 export function isFlowStepTurn(text: string): boolean {
   return text.startsWith(FLOW_DISPLAY_MARKER) || RAW_PROMPT_SIGNATURE.test(text);
+}
+
+/// True for a runtime-authored note turn in either shape (live marker, or a
+/// re-ask prompt restored from the CLI transcript).
+export function isFlowNoteTurn(text: string): boolean {
+  return text.startsWith(FLOW_NOTE_MARKER) || RAW_NOTE_SIGNATURE.test(text.trim());
+}
+
+/// The note's human-facing line. For the live shape that's everything after
+/// the marker. For a reloaded re-ask the raw prompt is a dozen lines of
+/// instructions written for the model, so only its first line is shown —
+/// enough to say what the runtime asked for, without reading as if the user
+/// typed a wall of demands.
+export function parseFlowNote(text: string): string | null {
+  if (text.startsWith(FLOW_NOTE_MARKER)) {
+    return text.slice(FLOW_NOTE_MARKER.length).trim() || null;
+  }
+  const trimmed = text.trim();
+  if (!RAW_NOTE_SIGNATURE.test(trimmed)) return null;
+  return trimmed.split('\n', 1)[0].trim() || null;
 }
 
 /// Split a marker-delimited body into ordered sections. Text before the

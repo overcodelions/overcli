@@ -5,6 +5,7 @@ import { Markdown } from './Markdown';
 import { useStore } from '../store';
 import { openPathWithHighlight, useOpenFile } from '../openFile';
 import { ToolUseCard } from './ToolUseCard';
+import { parseOutputHandoff } from './flows/outputPointer';
 
 /// Tool names that must stay visible when tool activity is hidden,
 /// because they block the conversation on user input.
@@ -72,6 +73,10 @@ export function AssistantBubble({
   // raw" below still copies the full untouched text.)
   const displayText = stripWatchReport(info.text);
   const hasContent = displayText.length > 0;
+  // A reply that is only an `<output …/>` pointer is a flow step handing its
+  // deliverable over — correct, and completely invisible as markdown. Render
+  // what was handed over instead of the tag.
+  const handoff = hasContent && !info.isPartial ? parseOutputHandoff(displayText) : null;
   const hasThinking = info.thinking.some((t) => t.trim().length > 0);
   const hasTools = visibleToolUses.length > 0;
   if (!hasContent && !hasThinking && !hasTools && !info.hasOpaqueReasoning) return null;
@@ -127,7 +132,24 @@ export function AssistantBubble({
                 )}
               </div>
             )}
-            <Markdown source={displayText} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
+            {handoff ? (
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                <span className="text-[10px] uppercase tracking-wider text-ink-faint">
+                  delivered
+                </span>
+                <span className="font-mono text-ink">{handoff.name}</span>
+                {handoff.file && (
+                  <>
+                    <span className="text-ink-faint">←</span>
+                    <span className="font-mono text-ink-muted truncate max-w-[320px]">
+                      {handoff.file}
+                    </span>
+                  </>
+                )}
+              </div>
+            ) : (
+              <Markdown source={displayText} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
+            )}
           </div>
           <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
             <button
