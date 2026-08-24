@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { commitAllAsync, readProjectLog, restoreProjectVersion } from './git';
+import { commitAllAsync, readProjectLog, restoreProjectVersion, runGitAsync } from './git';
 import type { ProjectVersion } from './git';
 
 /// Checkpointing for everyday projects.
@@ -23,6 +23,14 @@ export const MAX_CHECKPOINT_BYTES = 25 * 1024 * 1024;
 
 /// Entry cap on the pre-checkpoint size walk, matching fileWalk.ts.
 const MAX_SIZE_WALK_ENTRIES = 20_000;
+
+/// The ONE way to read status for a checkpoint. `core.quotePath=false` is
+/// load-bearing: without it git octal-escapes non-ASCII names, `statSync`
+/// throws on the escaped name, `sizeOnDisk` returns 0, and the size guard
+/// waves a 400 MB file into a history git can never reclaim.
+export async function checkpointStatusPorcelain(cwd: string): Promise<string> {
+  return (await runGitAsync(['-c', 'core.quotePath=false', 'status', '--porcelain'], cwd)).stdout;
+}
 
 export interface CheckpointResult {
   ok: boolean;

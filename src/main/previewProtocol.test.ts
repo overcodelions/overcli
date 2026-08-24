@@ -135,4 +135,13 @@ describe('the policy a served document carries', () => {
     resetPreviewDocuments();
     expect((await fetchPreview(published.url)).status).toBe(404);
   });
+
+  it('falls back to bundle for a prototype-chain key', async () => {
+    const res = publishPreviewDocument('<html>x</html>', 'toString' as never);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const csp = (await fetchPreview(res.url)).headers.get('content-security-policy') ?? '';
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'unsafe-inline'");
+  });
 });

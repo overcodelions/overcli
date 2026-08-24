@@ -27,6 +27,7 @@ vi.mock('./flows/drafter', () => ({
 
 import {
   createBlankDocument,
+  createDocumentFromPrompt,
   gatherProjectContext,
   listDocuments,
   parseDraftedDocument,
@@ -263,6 +264,46 @@ describe('reviseDocument', () => {
     if (!res.ok) return;
     expect(res.content).toBe(text);
   });
+
+  it('unwraps a ```markdown reply that legitimately contains a nested ```bash block', async () => {
+    const text = '```markdown\n# Title\n\nRun this:\n\n```bash\necho hi\n```\n\nThat is it.\n```';
+    mockOneShotDraftText.mockResolvedValueOnce({
+      ok: true,
+      text,
+      label: 'Claude',
+      backend: 'claude',
+    });
+
+    const res = await reviseDocument(draftDeps(), {
+      path: '/tmp/README.md',
+      content: '# Title',
+      instruction: 'add a bash example',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.content).toBe('# Title\n\nRun this:\n\n```bash\necho hi\n```\n\nThat is it.');
+  });
+
+  it('leaves a reply byte-identical when it opens and closes with unlabeled fences', async () => {
+    const text = '```\necho hi\n```\n\nSome text\n\n```\nprint(1)\n```';
+    mockOneShotDraftText.mockResolvedValueOnce({
+      ok: true,
+      text,
+      label: 'Claude',
+      backend: 'claude',
+    });
+
+    const res = await reviseDocument(draftDeps(), {
+      path: '/tmp/README.md',
+      content: 'Some text',
+      instruction: 'add two unlabeled examples',
+    });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.content).toBe(text);
+  });
 });
 
 describe('resolveNumstatPath', () => {
@@ -285,5 +326,23 @@ describe('safeDocumentName — long names', () => {
     const out = safeDocumentName(`${'a'.repeat(200)}.csv`, 'x');
     expect(out.endsWith('.csv')).toBe(true);
     expect(out.length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe('createDocumentFromPrompt', () => {
+  it('rebuilds the model filename and never overwrites', async () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, 'notes.md'), 'first', 'utf-8');
+    mockOneShotDraftText.mockResolvedValue({
+      ok: true,
+      text: 'FILENAME: ../../notes.md\n---\nsecond',
+      label: 'Claude',
+      backend: 'claude',
+    });
+    const res = await createDocumentFromPrompt(draftDeps(), { dirPath: dir, description: 'notes' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(path.dirname(res.path)).toBe(dir);
+    expect(fs.readFileSync(path.join(dir, 'notes.md'), 'utf-8')).toBe('first');
   });
 });
