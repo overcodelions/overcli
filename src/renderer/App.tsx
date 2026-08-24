@@ -150,13 +150,36 @@ export function App() {
   // Back/forward across views (⌘←/⌘→, and the title-bar arrows).
   useEffect(() => installNavHistory(), []);
 
+  // Re-check which finished runs still have unreviewed work whenever the
+  // window regains focus. Reviewing a worktree means leaving this app —
+  // committing in a terminal, opening an editor — so focus returning is
+  // exactly the moment the answer is most likely to have changed, and
+  // without this the dot outlives the work it points at. Throttled, because
+  // focus fires on every alt-tab and each check costs one `git status` per
+  // finished run.
+  useEffect(() => {
+    let last = 0;
+    const MIN_GAP_MS = 5_000;
+    const refresh = () => {
+      const now = Date.now();
+      if (now - last < MIN_GAP_MS) return;
+      last = now;
+      void window.overcli
+        .invoke('flows:listUnreviewedRuns')
+        .then((ids) => useFlowsStore.getState().applyUnreviewedRuns(ids));
+    };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, []);
+
   // Hydrate flow runs on app startup so the sidebar's per-project
   // "Flows" sections populate immediately. Without this, runs only
   // appeared after the user visited the Flows tab (which is where
   // the original IPC call lived).
   useEffect(() => {
-    void window.overcli.invoke('flows:listRuns').then((runs) => {
+    void window.overcli.invoke('flows:listRuns').then(({ runs, unreviewedRunIds }) => {
       useFlowsStore.getState().applyRunsBulk(runs);
+      useFlowsStore.getState().applyUnreviewedRuns(unreviewedRunIds);
       // Warm each run's transcript + markdown in the background (idle-paced)
       // so the first click into a run paints instantly.
       void useStore.getState().prefetchFlowRunHistories();

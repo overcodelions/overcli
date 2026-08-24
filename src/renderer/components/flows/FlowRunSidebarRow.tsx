@@ -35,6 +35,20 @@ export function runIsLive(
   return Object.values(run.conversationIds).some((cid) => runners[cid]?.isRunning);
 }
 
+/// Whether a run's badge should say it finished with work nobody reviewed.
+/// `unreviewed` comes from the main process (`unreviewedDoneRunIds`), which
+/// only ever flags `done` runs; the state check here keeps the badge honest
+/// if that ever changes. `isLive` matters because StateBadge intercepts a
+/// live `done` run with the spinner before reaching the done branch — a run
+/// you're still chatting with hasn't been abandoned, so it isn't flagged.
+export function doneWithUnreviewedChanges(
+  state: FlowRun['state']['kind'],
+  isLive: boolean,
+  unreviewed: boolean,
+): boolean {
+  return state === 'done' && !isLive && unreviewed;
+}
+
 /// Whether a run earns a slot in the top-of-sidebar "Active" set on merit. A
 /// run qualifies while it's live (orchestrating or a participant is
 /// streaming) or paused, AND — mirroring how recently-touched conversations
@@ -186,11 +200,13 @@ export function ActiveFlowRow({
   onClick: () => void;
 }) {
   const renameRun = useFlowsStore((s) => s.renameRun);
+  const unreviewedFlag = useFlowsStore((s) => s.unreviewedRunIds[run.id] === true);
   // Same double-click-to-rename affordance as the per-project Flows row.
   // A live run is usually only visible up here, so this is where the user
   // reaches for it first.
   const [renameValue, setRenameValue] = useState<string | null>(null);
   const completed = !isLive && run.state.kind === 'done';
+  const unreviewed = doneWithUnreviewedChanges(run.state.kind, isLive, unreviewedFlag);
   // Neutral tint matches the FlowMonogram palette feel without trying to
   // map a single backend color onto a multi-participant flow.
   const restColor = 'rgb(168 85 247 / 0.65)';
@@ -235,11 +251,21 @@ export function ActiveFlowRow({
         'sidebar-row group mt-0.5 flex w-full items-center gap-1 rounded px-2 py-1 text-left text-xs ' +
         'text-ink-muted hover:bg-card-strong hover:text-ink hover:border-card'
       }
-      title={`${runTitle(run)} · ${ownerName} · ${run.state.kind}${isLive ? ' (responding)' : ''} — double-click to rename`}
+      title={`${runTitle(run)} · ${ownerName} · ${run.state.kind}${isLive ? ' (responding)' : ''}${unreviewed ? ' — finished with unreviewed changes' : ''} — double-click to rename`}
     >
       <SidebarMarker color={restColor} active={isLive} completed={completed} />
       <span className="min-w-0 flex-1">
-        <span className="block truncate">{runTitle(run)}</span>
+        <span className="block truncate">
+          {runTitle(run)}
+          {/* The Active section has no StateBadge, so the dot rides on the
+              title itself — same amber, same meaning as the Flows row. */}
+          {unreviewed && (
+            <span
+              className="ml-1 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full bg-amber-500 align-middle"
+              aria-label="finished with unreviewed changes"
+            />
+          )}
+        </span>
         <span className="block truncate text-[9px] leading-3.5 text-ink-faint">
           {ownerKind === 'workspace' ? 'workspace · ' : ''}
           {/* Named for its WORKER, not its project: this run is one nobody
@@ -277,6 +303,9 @@ export function FlowRunRow({
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const removeRun = useFlowsStore((s) => s.removeRun);
   const renameRun = useFlowsStore((s) => s.renameRun);
+  // Subscribe to this run's flag only, so a change elsewhere in the map
+  // doesn't re-render every row.
+  const unreviewed = useFlowsStore((s) => s.unreviewedRunIds[run.id] === true);
   const setDetailMode = useStore((s) => s.setDetailMode);
   const detailMode = useStore((s) => s.detailMode);
   const [confirming, setConfirming] = useState(false);
@@ -389,6 +418,7 @@ export function FlowRunRow({
               state={run.state.kind}
               isLive={isLive}
               escalated={run.state.kind === 'watching' && run.state.watch.escalated}
+              unreviewed={doneWithUnreviewedChanges(run.state.kind, isLive, unreviewed)}
             />
           </button>
           <button
@@ -437,10 +467,12 @@ function StateBadge({
   state,
   isLive,
   escalated,
+  unreviewed,
 }: {
   state: FlowRun['state']['kind'];
   isLive: boolean;
   escalated?: boolean;
+  unreviewed?: boolean;
 }) {
   if (state === 'watching') {
     // A small eye with a live pulse dot, so a watching run reads as an
@@ -517,7 +549,23 @@ function StateBadge({
     );
   }
   // done: subtle checkmark so the user knows it finished cleanly without
-  // it competing with active items.
+  // it competing with active items. When the run left uncommitted work in
+  // its worktree, the checkmark turns amber and carries a dot — same shape
+  // as the escalated watching badge above — because "finished" and
+  // "finished, and there's something here you haven't looked at" are
+  // different facts and only the second one needs you.
+  if (unreviewed) {
+    return (
+      <span
+        className="relative text-[10px] text-amber-700 dark:text-amber-300 flex-shrink-0 leading-none"
+        title="done — finished with unreviewed changes"
+        aria-label="done, finished with unreviewed changes"
+      >
+        ✓
+        <span className="absolute -right-1 -top-0.5 inline-flex h-1.5 w-1.5 rounded-full bg-amber-500" />
+      </span>
+    );
+  }
   return (
     <span
       className="text-[10px] text-emerald-700 dark:text-emerald-300/70 flex-shrink-0 leading-none"

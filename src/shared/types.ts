@@ -1787,7 +1787,17 @@ export interface IPCInvokeMap {
   }) =>
     | { ok: true; runId: UUID }
     | { ok: false; error: string; preflight?: { problems: Array<{ path: string; message: string; hint?: string }> } };
-  'flows:listRuns': () => FlowRun[];
+  /// Every retained run, plus the ids of the `done` ones whose worktree still
+  /// holds uncommitted work. The dirty ids ride alongside the runs rather than
+  /// on them: `flowRunUpdate` echoes runs back wholesale and `saveRun` persists
+  /// them, so a field on FlowRun would be clobbered on the next update and
+  /// reload stale. Computed at fetch time; see `unreviewedDoneRunIds`.
+  'flows:listRuns': () => { runs: FlowRun[]; unreviewedRunIds: UUID[] };
+  /// Just the dirty ids, recomputed. The renderer calls this on window focus:
+  /// the user may have committed or cleaned a worktree in another app, and a
+  /// stale "unreviewed" dot outlives its truth otherwise. Separate from
+  /// `flows:listRuns` so a refresh doesn't re-ship every run.
+  'flows:listUnreviewedRuns': () => UUID[];
   'flows:getRun': (args: { runId: UUID }) => FlowRun | null;
   'flows:resumeRun': (args: {
     runId: UUID;

@@ -64,6 +64,7 @@ const TREE_MAX = 520;
 
 export function FlowRunPane({ runId }: { runId: string }) {
   const run = useFlowsStore((s) => s.runs[runId]);
+  const unreviewed = useFlowsStore((s) => s.unreviewedRunIds[runId] === true);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   // A worker's runs are kept out of the Flows sidebar on purpose, so a run
   // opened from a desk has no row to return to — the breadcrumb is the only
@@ -234,7 +235,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
               <span className="text-ink-faint">/</span>
             </div>
             <RunTitle run={run} />
-            <RunStateBadge state={run.state} />
+            <RunStateBadge state={run.state} unreviewed={unreviewed} />
             <RunTokenSummary run={run} />
             <RunDiffStats run={run} onOpen={() => setDiffSheetOpen(true)} />
           </div>
@@ -2756,8 +2757,27 @@ function RunTitle({ run }: { run: FlowRun }) {
   );
 }
 
-function RunStateBadge({ state }: { state: { kind: string } }) {
+function RunStateBadge({
+  state,
+  unreviewed,
+}: {
+  state: { kind: string };
+  unreviewed?: boolean;
+}) {
   const label = state.kind;
+  // A finished run holding uncommitted work is a different fact from a
+  // finished run, so it gets its own pill rather than the emerald one —
+  // amber, and it says what's waiting instead of just "done".
+  if (label === 'done' && unreviewed) {
+    return (
+      <span
+        className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded uppercase tracking-wider bg-amber-500/20 text-amber-700 dark:text-amber-300"
+        title="This run finished with uncommitted changes in its worktree that nobody has reviewed."
+      >
+        done · unreviewed
+      </span>
+    );
+  }
   const cls =
     label === 'running'
       ? 'bg-sky-500/20 text-sky-700 dark:text-sky-300'
