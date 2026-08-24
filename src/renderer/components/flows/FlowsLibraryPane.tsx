@@ -123,8 +123,9 @@ export function FlowsLibraryPane() {
   // sections light up immediately after an app restart instead of only
   // showing runs started this session.
   useEffect(() => {
-    void window.overcli.invoke('flows:listRuns').then((runs) => {
+    void window.overcli.invoke('flows:listRuns').then(({ runs, unreviewedRunIds }) => {
       useFlowsStore.getState().applyRunsBulk(runs);
+      useFlowsStore.getState().applyUnreviewedRuns(unreviewedRunIds);
     });
   }, []);
 

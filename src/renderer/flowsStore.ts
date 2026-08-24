@@ -26,6 +26,12 @@ interface FlowsState {
   /// about a MISSING run — the Workers work queue calls those orphaned — has
   /// to wait for this, or every run looks missing for the first half second.
   runsLoaded: boolean;
+  /// Ids of `done` runs whose worktree still holds uncommitted work nobody
+  /// has reviewed. Kept PARALLEL to `runs` rather than on the run itself:
+  /// `applyRunUpdate` replaces a run wholesale with the main process's
+  /// un-enriched copy, so a field on FlowRun would be wiped by the next
+  /// rename/artifact event. Populated by `flows:listRuns` at fetch time.
+  unreviewedRunIds: Record<string, true>;
   /// Which run is currently shown in the active run pane.
   activeRunId: string | null;
   /// runId → when the user last opened it. The sidebar's Active section
@@ -68,6 +74,11 @@ interface FlowsActions {
   /// `set` (and re-render of every `runs` subscriber) per run, so opening the
   /// Flows view with N runs did O(N) renders. Batching collapses that to one.
   applyRunsBulk(runs: FlowRun[]): void;
+  /// Replace the set of done-but-unreviewed run ids. Authoritative, not
+  /// merged — the main process recomputes it from `git status` on every
+  /// `flows:listRuns`, so a run that has since been committed or cleaned
+  /// must be able to drop back out of the set.
+  applyUnreviewedRuns(ids: string[]): void;
   removeRun(id: string): void;
   /// Set (or clear, with `null`) the worktree-prep progress for a launch
   /// target. Called from the `flowLaunchProgress` main event and reset by
@@ -235,6 +246,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   flows: [],
   runs: {},
   runsLoaded: false,
+  unreviewedRunIds: {},
   activeRunId: null,
   lastOpenedAtByRun: {},
   librarySegment: 'flows',
@@ -282,12 +294,18 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     });
   },
 
+  applyUnreviewedRuns(ids) {
+    set({ unreviewedRunIds: Object.fromEntries(ids.map(id => [id, true as const])) });
+  },
+
   removeRun(id) {
     set(s => {
       if (!(id in s.runs)) return {};
       const { [id]: _drop, ...rest } = s.runs;
+      const { [id]: _dropDirty, ...restDirty } = s.unreviewedRunIds;
       return {
         runs: rest,
+        unreviewedRunIds: restDirty,
         activeRunId: s.activeRunId === id ? null : s.activeRunId,
       };
     });
