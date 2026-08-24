@@ -70,8 +70,8 @@ import {
   syncProjectMarkers,
 } from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
-import { checkpointProject, listVersions, restoreVersion } from './versions';
-import { commitAllAsync, readVersionDiff, runGitAsync } from './git';
+import { checkpointProject, checkpointStatusPorcelain, listVersions, restoreVersion } from './versions';
+import { commitAllAsync, readVersionDiff } from './git';
 import {
   scanWorktrees,
   sweepWorktrees,
@@ -482,11 +482,14 @@ function registerIpc(): void {
     checkpoint: ({ projectPath, message }) => {
       void checkpointProject(
         { projectPath, message },
-        {
-          statusPorcelain: async (cwd) => (await runGitAsync(['status', '--porcelain'], cwd)).stdout,
-          commit: commitAllAsync,
-        },
-      ).catch(() => {});
+        { statusPorcelain: checkpointStatusPorcelain, commit: commitAllAsync },
+      )
+        .then((res) => {
+          if (!res.ok && !res.skipped) {
+            log('warn', 'versions.checkpoint', `no version saved for ${projectPath}`, res.error);
+          }
+        })
+        .catch((err) => log('warn', 'versions.checkpoint', `checkpoint threw for ${projectPath}`, err));
     },
     generatedFlow: async ({ worker, errand, request, runIn }) => {
       const drafted = await draftFlowFromPrompt(
@@ -1025,8 +1028,7 @@ function registerIpc(): void {
       return { ok: false as const, error: 'Refused: path outside a registered project root.' };
     }
     return checkpointProject(args, {
-      statusPorcelain: async (cwd) =>
-        (await runGitAsync(['-c', 'core.quotePath=false', 'status', '--porcelain'], cwd)).stdout,
+      statusPorcelain: checkpointStatusPorcelain,
       commit: commitAllAsync,
     });
   });

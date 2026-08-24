@@ -20,6 +20,7 @@ import {
   type FileViewMode,
 } from './filePreview';
 import { dropBuffer } from './fileBuffers';
+import { isPathAtOrUnder } from '@shared/pathScope';
 
 type SetFn<T> = (
   partial: Partial<T> | ((s: T) => Partial<T>),
@@ -314,7 +315,7 @@ function newTab(
       !!highlight,
       mode,
       rememberedByExt[fileExtensionKey(path)],
-      everydayRoots.some((root) => path === root || path.startsWith(`${root}/`)),
+      everydayRoots.some((root) => isPathAtOrUnder(path, root)),
     ),
     highlight: highlight ?? null,
   };

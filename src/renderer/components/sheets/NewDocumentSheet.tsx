@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
 import { DOCUMENT_TYPES, isEverydayProject } from '@shared/everydayProjects';
+import { isPathAtOrUnder } from '@shared/pathScope';
 
 /// Two ways to start a document, in one sheet.
 ///
@@ -27,7 +28,7 @@ export function NewDocumentSheet({ dirPath }: { dirPath: string }) {
   const openFile = useStore((s) => s.openFile);
   const checkpointProject = useStore((s) => s.checkpointProject);
   const inEverydayProject = useStore((s) =>
-    s.projects.some((p) => (dirPath === p.path || dirPath.startsWith(`${p.path}/`)) && isEverydayProject(p)),
+    s.projects.some((p) => isPathAtOrUnder(dirPath, p.path) && isEverydayProject(p)),
   );
   const [mode, setMode] = useState<Mode>('describe');
   const [description, setDescription] = useState('');

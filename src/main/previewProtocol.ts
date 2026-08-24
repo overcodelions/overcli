@@ -138,7 +138,11 @@ export function publishPreviewDocument(
     return { ok: false, error: 'Preview document is too large to render.' };
   }
   const id = randomUUID();
-  documents.set(id, { html, policy: policy in CSP_BY_POLICY ? policy : 'bundle' });
+  // `in` walks the prototype chain, so 'toString'/'constructor'/'__proto__'
+  // pass and `CSP_BY_POLICY[doc.policy]` then serves an unparseable header —
+  // which makes the browser discard the ENTIRE policy, `default-src 'none'`
+  // included.
+  documents.set(id, { html, policy: Object.hasOwn(CSP_BY_POLICY, policy) ? policy : 'bundle' });
   while (documents.size > MAX_DOCUMENTS) {
     const oldest = documents.keys().next();
     if (oldest.done) break;

@@ -27,13 +27,18 @@ function filePath(): string {
 }
 
 let journalIds: Set<string> | null = null;
+/// Parsed alongside the id index. `report()` asks for every worker's entries
+/// in one pass, and re-reading + re-parsing the whole shared file N times for
+/// N workers is the same file read N times.
+let journalEntries: WorkerJournalEntry[] | null = null;
 let appendsSinceCompaction = 0;
 
 function ensureIndex(): Set<string> {
   if (journalIds) return journalIds;
   const loaded = loadWorkerJournalRaw();
-  maybeCompact(loaded);
-  journalIds = new Set(loaded.map((entry) => entry.id));
+  const entries = maybeCompact(loaded);
+  journalEntries = entries;
+  journalIds = new Set(entries.map((entry) => entry.id));
   return journalIds;
 }
 
@@ -46,8 +51,10 @@ export function appendWorkerJournalEntry(entry: WorkerJournalEntry): boolean {
   try {
     fs.appendFileSync(filePath(), JSON.stringify(entry) + '\n', 'utf-8');
     ids.add(entry.id);
+    journalEntries?.push(entry);
     if (++appendsSinceCompaction >= 200) {
       appendsSinceCompaction = 0;
+      journalEntries = null;
       journalIds = null;
       ensureIndex();
     }
@@ -69,7 +76,7 @@ export function hasWorkerJournalEntry(entryId: string): boolean {
 export function loadWorkerJournal(workerId: string): WorkerJournalEntry[] {
   ensureIndex();
   const byId = new Map<string, WorkerJournalEntry>();
-  for (const entry of loadWorkerJournalRaw()) byId.set(entry.id, entry);
+  for (const entry of journalEntries ?? loadWorkerJournalRaw()) byId.set(entry.id, entry);
   return Array.from(byId.values())
     .filter((entry) => entry.workerId === workerId)
     .sort((a, b) => b.at - a.at);
@@ -139,6 +146,7 @@ export function clearWorkerJournal(workerId: string): number {
   if (!rewrite(kept)) throw new Error('Could not rewrite the worker journal.');
   // The append-dedupe index is keyed by entry id with no worker dimension, so
   // it cannot be filtered in place — drop it and let the next append reload.
+  journalEntries = null;
   journalIds = null;
   return dropped;
 }
@@ -159,15 +167,19 @@ function rewrite(entries: WorkerJournalEntry[]): boolean {
   }
 }
 
-function maybeCompact(loaded: WorkerJournalEntry[]): void {
+/// Returns the entries actually left after compaction — `loaded` itself, byte-
+/// for-byte, when nothing needed to shrink. Callers that cache the return
+/// value must not cache `loaded` instead: that reflects the pre-compaction
+/// file, not what's on disk once this returns.
+function maybeCompact(loaded: WorkerJournalEntry[]): WorkerJournalEntry[] {
   const p = filePath();
   let size = 0;
   try {
     size = fs.statSync(p).size;
   } catch {
-    return;
+    return loaded;
   }
-  if (size <= COMPACT_BYTES && loaded.length <= WORKER_JOURNAL_MAX_ENTRIES) return;
+  if (size <= COMPACT_BYTES && loaded.length <= WORKER_JOURNAL_MAX_ENTRIES) return loaded;
   // Journal ids are unique by construction, so dedupe alone can never shrink
   // the file — the entry cap is what bounds it, matching SCHEDULE_HISTORY_LIMIT
   // (src/shared/flows/schedule.ts:177).
@@ -177,6 +189,7 @@ function maybeCompact(loaded: WorkerJournalEntry[]): void {
     .sort((a, b) => a.at - b.at)
     .slice(-WORKER_JOURNAL_MAX_ENTRIES);
   rewrite(compacted);
+  return compacted;
 }
 
 /// Forget ONE turn — every entry the projection wrote for a single shift or
@@ -212,6 +225,7 @@ export function deleteWorkerJournalEntries(
   // The append-dedupe index is keyed by entry id with no worker dimension, so
   // it cannot be filtered in place — drop it and let the next append reload.
   // This is what lets a re-run reuse the shift number it just gave back.
+  journalEntries = null;
   journalIds = null;
   return dropped;
 }
