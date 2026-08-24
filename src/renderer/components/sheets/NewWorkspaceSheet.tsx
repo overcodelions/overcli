@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
+import { sheetSubmitKeys } from './sheetSubmit';
 import { ProjectPicker } from './ProjectPicker';
 
 export function NewWorkspaceSheet() {
@@ -11,8 +12,14 @@ export function NewWorkspaceSheet() {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [instructions, setInstructions] = useState('');
 
+  const submit = async () => {
+    if (!name.trim()) return;
+    const ws = await newWorkspace(name, Array.from(picked), instructions);
+    if (ws) openSheet(null);
+  };
+
   return (
-    <div className="flex flex-col min-h-0 flex-1">
+    <div className="flex flex-col min-h-0 flex-1" onKeyDown={sheetSubmitKeys(() => void submit())}>
       <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-3">
         <div>
           <div className="text-lg font-semibold">New workspace</div>
@@ -57,10 +64,7 @@ export function NewWorkspaceSheet() {
         <SheetActionButton
           primary
           label="Create"
-          onClick={async () => {
-            const ws = await newWorkspace(name, Array.from(picked), instructions);
-            if (ws) openSheet(null);
-          }}
+          onClick={() => void submit()}
         />
       </div>
     </div>

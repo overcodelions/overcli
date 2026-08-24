@@ -18,3 +18,4 @@ Thumbs.db
 # Defensive: some users have a global ignore (e.g. `*log.*`) that would
 # otherwise swallow CHANGELOG.md. Force it to be tracked.
 !CHANGELOG.md
+.mockups/

@@ -41,6 +41,8 @@ import {
   resolveNativeTools,
   runOllamaToolLoop,
 } from './ollamaTools';
+import { ollamaUsage } from './parsers/ollama';
+import { recordOllamaUsage } from './ollamaUsageLog';
 import { resolveSymlinkWritableRoots } from './workspace';
 
 type Emit = (event: MainToRendererEvent) => void;
@@ -910,6 +912,18 @@ export class ReviewerManager {
           // Replace any in-progress raw text with the cleaned version
           // (tool_call JSON stripped). Final round's text is the verdict.
           visibleText = ev.text;
+          // A local reviewer costs local tokens like any other round, and
+          // leaves no transcript behind either. Log it the same way.
+          const usage = ollamaUsage(ev.usage);
+          if (usage) {
+            recordOllamaUsage({
+              ts: Date.now(),
+              cwd: args.cwd,
+              model,
+              inputTokens: usage.inputTokens,
+              outputTokens: usage.outputTokens,
+            });
+          }
         } else if (ev.type === 'toolResult') {
           const summary = summarizeToolUse(
             ev.call.name,

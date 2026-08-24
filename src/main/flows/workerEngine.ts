@@ -931,6 +931,16 @@ export class WorkerEngine {
     if (this.disposed || this.ticking) return;
     this.ticking = true;
     try {
+      // The moment this pass began, and the cutoff for "was this occurrence
+      // missed while the app was closed?". A shift's planning turn runs for
+      // minutes, and this loop awaits it — so every worker behind it comes
+      // due while we are still inside the one in front. Judged by wall clock
+      // alone those look missed, and `catchUp: 'skip'` would write them off;
+      // judged against the moment we started looking they are simply late,
+      // and fire as soon as their turn in the loop arrives. Without it the
+      // bottom of a busy roster never runs: skipped, re-anchored to now, and
+      // skipped again the next time the worker in front runs long.
+      const awakeSince = this.now();
       // Iterate ids and RE-FETCH each worker: an earlier iteration's planning
       // turn can hold this loop for minutes, long enough for the user to edit
       // (or fire) a later worker. Evaluating a pre-edit snapshot would fire
@@ -943,7 +953,7 @@ export class WorkerEngine {
         if (this.firing.has(id)) continue;
         this.compactIfDue(w);
         const now = this.now();
-        const decision = evaluateSchedule(this.timing(w), now, { busy: false });
+        const decision = evaluateSchedule(this.timing(w), now, { busy: false, awakeSince });
         if (decision.action === 'wait') continue;
         if (decision.action === 'skip') {
           // Missed while the app was closed. Journal it honestly (idempotent

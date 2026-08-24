@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useStore, isLiveWorkspaceAgent } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
+import { sheetSubmitKeys } from './sheetSubmit';
 import { ProjectPicker } from './ProjectPicker';
 import { BaseBranchSelect } from './BaseBranchSelect';
 import { UUID } from '@shared/types';
@@ -115,8 +116,27 @@ export function EditWorkspaceSheet({ workspaceId }: { workspaceId: UUID }) {
     );
   }
 
+  const save = async () => {
+    if (picked.size === 0 || saving) return;
+    setSaving(true);
+    const projectsOk = await updateWorkspaceProjects(workspaceId, Array.from(picked));
+    const instructionsChanged = (workspace.instructions ?? '') !== instructions;
+    const instructionsOk = instructionsChanged
+      ? await updateWorkspaceInstructions(workspaceId, instructions)
+      : true;
+    setSaving(false);
+    if (!projectsOk || !instructionsOk) return;
+    const added = Array.from(picked).filter((id) => !originalProjectIds.has(id));
+    if (added.length > 0 && agents.length > 0) {
+      setAddedIds(added);
+      setPhase('apply');
+    } else {
+      openSheet(null);
+    }
+  };
+
   return (
-    <div className="flex flex-col min-h-0 flex-1">
+    <div className="flex flex-col min-h-0 flex-1" onKeyDown={sheetSubmitKeys(() => void save())}>
       <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-3">
         <div>
           <div className="text-lg font-semibold">Edit workspace</div>
@@ -169,24 +189,7 @@ export function EditWorkspaceSheet({ workspaceId }: { workspaceId: UUID }) {
         <SheetActionButton
           primary
           label={saving ? 'Saving…' : 'Save'}
-          onClick={async () => {
-            if (picked.size === 0 || saving) return;
-            setSaving(true);
-            const projectsOk = await updateWorkspaceProjects(workspaceId, Array.from(picked));
-            const instructionsChanged = (workspace.instructions ?? '') !== instructions;
-            const instructionsOk = instructionsChanged
-              ? await updateWorkspaceInstructions(workspaceId, instructions)
-              : true;
-            setSaving(false);
-            if (!projectsOk || !instructionsOk) return;
-            const added = Array.from(picked).filter((id) => !originalProjectIds.has(id));
-            if (added.length > 0 && agents.length > 0) {
-              setAddedIds(added);
-              setPhase('apply');
-            } else {
-              openSheet(null);
-            }
-          }}
+          onClick={() => void save()}
         />
       </div>
     </div>

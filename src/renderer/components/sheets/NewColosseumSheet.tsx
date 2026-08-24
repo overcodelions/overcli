@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { UUID, Colosseum } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
+import { sheetSubmitKeys } from './sheetSubmit';
 import { BaseBranchSelect } from './BaseBranchSelect';
 import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 
@@ -114,7 +115,12 @@ export function NewColosseumSheet({ projectId }: { projectId: UUID }) {
   };
 
   return (
-    <div className="flex flex-col p-5 gap-3 max-h-[80vh] overflow-y-auto">
+    <div
+      className="flex flex-col p-5 gap-3 max-h-[80vh] overflow-y-auto"
+      onKeyDown={sheetSubmitKeys(() => {
+        if (!working && prompt.trim() && baseBranch && contenders.length >= 2) void go();
+      })}
+    >
       <div>
         <div className="text-lg font-semibold">New colosseum</div>
         <div className="text-xs text-ink-faint">

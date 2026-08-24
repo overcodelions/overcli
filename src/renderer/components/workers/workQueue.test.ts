@@ -8,9 +8,11 @@ import {
   baseName,
   buildWorkQueue,
   describeQueue,
+  groupByDay,
   pickDeliverable,
   stepTrack,
   FINISHED_LIMIT,
+  type QueueRow,
 } from './workQueue';
 
 import type { WorkerFile } from './workerDeskSelectors';
@@ -399,5 +401,36 @@ describe('pickDeliverable', () => {
   it('labels a file by its own name, not its job folder', () => {
     expect(baseName('2026-08-24-1200-shift-3-report/sprint-status.html')).toBe('sprint-status.html');
     expect(baseName('loose-note.md')).toBe('loose-note.md');
+  });
+});
+
+describe('groupByDay', () => {
+  const row = (key: string, at: number) => ({ key, at }) as unknown as QueueRow;
+
+  it('cuts a newest-first tail into contiguous days', () => {
+    const days = groupByDay(
+      [
+        row('a', NOON),
+        row('b', NOON - 3 * HOUR),
+        row('c', NOON - 20 * HOUR),
+        row('d', NOON - 30 * HOUR),
+        row('e', NOON - 3 * 24 * HOUR),
+      ],
+      NOON,
+    );
+    expect(days.map((d) => d.rows.map((r) => r.key))).toEqual([['a', 'b'], ['c', 'd'], ['e']]);
+  });
+
+  it('names the two days a reader thinks in and dates the rest', () => {
+    const days = groupByDay(
+      [row('a', NOON), row('b', NOON - 24 * HOUR), row('c', NOON - 3 * 24 * HOUR)],
+      NOON,
+    );
+    expect(days.map((d) => d.label)).toEqual(['Today', 'Yesterday', expect.stringContaining('Aug')]);
+  });
+
+  it('keys each group by local midnight, not by the row that opened it', () => {
+    const [day] = groupByDay([row('a', NOON)], NOON);
+    expect(day.at).toBe(new Date('2026-08-24T00:00:00').getTime());
   });
 });

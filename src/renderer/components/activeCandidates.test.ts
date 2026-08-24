@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { collectActiveCandidates } from './Sidebar';
+import { collectStreamItems } from './sidebarItems';
 import { selectActiveEntries } from '../activeSection';
 import type { Conversation, Project, UUID } from '@shared/types';
 import type { FlowRun } from '@shared/flows/schema';
@@ -289,5 +290,148 @@ describe('collectActiveCandidates', () => {
     });
     expect(order(projects, [quiet], {}, {})[0]).toBe('mine');
     expect(order(projects, [advanced], {}, {})[0]).toBe('mine');
+  });
+});
+
+// Reported: a handful of flow runs sat permanently in Working on despite not
+// having been touched in days. `runIsActive` returned true unconditionally for
+// `paused` and `watching` — the states that mean "waiting on you" — so a run
+// left mid-flow last week never aged out and crowded out live work.
+describe('runs that are waiting on the user', () => {
+  const DAY = 24 * 60 * MIN;
+  const candidateFor = (r: FlowRun) =>
+    collectActiveCandidates([], [], { [r.id]: r } as Record<UUID, FlowRun>, {}, NO_SELECTION, NOW)
+      .find((c) => c.entry.kind === 'flow');
+
+  it('keeps a recently paused run — it is a question somebody asked you', () => {
+    const r = run('r1', {
+      state: { kind: 'paused', nextStepId: 's2' },
+      createdAt: NOW - 2 * DAY,
+      attempts: [{ stepId: 's1', at: NOW - 2 * DAY }],
+    } as never);
+    expect(candidateFor(r)?.active).toBe(true);
+  });
+
+  it('lets a long-stale paused run fall out of the section', () => {
+    const r = run('r2', {
+      state: { kind: 'paused', nextStepId: 's2' },
+      createdAt: NOW - 30 * DAY,
+      attempts: [{ stepId: 's1', at: NOW - 30 * DAY }],
+    } as never);
+    expect(candidateFor(r)?.active).toBe(false);
+  });
+
+  it('ages out a stale watching run too', () => {
+    const r = run('r3', {
+      state: { kind: 'watching', watch: { escalated: false } },
+      createdAt: NOW - 30 * DAY,
+      attempts: [{ stepId: 's1', at: NOW - 30 * DAY }],
+    } as never);
+    expect(candidateFor(r)?.active).toBe(false);
+  });
+
+  it('still shows a stale paused run you have open', () => {
+    const r = run('r4', {
+      state: { kind: 'paused', nextStepId: 's2' },
+      createdAt: NOW - 30 * DAY,
+      attempts: [{ stepId: 's1', at: NOW - 30 * DAY }],
+    } as never);
+    const found = collectActiveCandidates(
+      [],
+      [],
+      { [r.id]: r } as Record<UUID, FlowRun>,
+      {},
+      { ...NO_SELECTION, openedRunId: 'r4' },
+      NOW,
+    ).find((c) => c.entry.kind === 'flow');
+    expect(found?.active).toBe(true);
+  });
+
+  it('keeps a stale paused run whose backend is still streaming', () => {
+    // Hijack-chatting a paused run streams through its participant
+    // conversation; liveness has to win over the age check.
+    const r = run('r5', {
+      state: { kind: 'paused', nextStepId: 's2' },
+      createdAt: NOW - 30 * DAY,
+      conversationIds: { p1: 'conv-live' },
+      attempts: [{ stepId: 's1', at: NOW - 30 * DAY }],
+    } as never);
+    const found = collectActiveCandidates(
+      [],
+      [],
+      { [r.id]: r } as Record<UUID, FlowRun>,
+      { 'conv-live': { isRunning: true } } as never,
+      NO_SELECTION,
+      NOW,
+    ).find((c) => c.entry.kind === 'flow');
+    expect(found?.active).toBe(true);
+  });
+});
+
+// Reported from the running app: a run driven to step seven and left paused
+// showed in Working on AND under "Earlier" at the bottom of the same list.
+// Appearing twice is by design — Working on is a shortcut strip over the list
+// below it, as the old Active section was. Being filed under "Earlier" was
+// not: `flowRunPromptedAt` is max(createdAt, pendingContinue.startedAt), and
+// pendingContinue is explicitly not persisted, so a run's timeline position
+// was pinned to its creation date however much work had happened since.
+describe('where a run sits on the Stream timeline', () => {
+  const DAY = 24 * 60 * MIN;
+
+  const streamAtFor = (r: FlowRun) => {
+    const entries = collectStreamItems(
+      [],
+      [],
+      { [r.id]: r } as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+    );
+    return entries.find((e) => e.item.kind === 'flow')?.at;
+  };
+
+  it('files a long-running flow under its latest step, not its creation', () => {
+    const r = run('r1', {
+      state: { kind: 'paused', nextStepId: 's8' },
+      createdAt: NOW - 10 * DAY,
+      attempts: [
+        { stepId: 's1', startedAt: NOW - 10 * DAY, endedAt: NOW - 10 * DAY },
+        { stepId: 's7', startedAt: NOW - 2 * MIN, endedAt: NOW - MIN },
+      ],
+    } as never);
+    expect(streamAtFor(r)).toBe(NOW - MIN);
+  });
+
+  it('leaves a run that never advanced at its creation', () => {
+    const r = run('r2', { createdAt: NOW - 10 * DAY, attempts: [] } as never);
+    expect(streamAtFor(r)).toBe(NOW - 10 * DAY);
+  });
+
+  it('does not let the timeline drag a run backwards', () => {
+    // A Continue pressed after the last step ended still wins.
+    const r = run('r3', {
+      createdAt: NOW - 10 * DAY,
+      pendingContinue: { priorStepId: 's1', priorOutput: '', startedAt: NOW - MIN },
+      attempts: [{ stepId: 's1', startedAt: NOW - 3 * DAY, endedAt: NOW - 3 * DAY }],
+    } as never);
+    expect(streamAtFor(r)).toBe(NOW - MIN);
+  });
+
+  it('keeps the Working-on ordering key free of backend progress', () => {
+    // The other half of the split: a flow walking itself through steps must
+    // not climb the live list the user is clicking in.
+    const r = run('r4', {
+      createdAt: NOW - 10 * DAY,
+      attempts: [{ stepId: 's7', startedAt: NOW - 2 * MIN, endedAt: NOW - MIN }],
+    } as never);
+    const candidate = collectActiveCandidates(
+      [],
+      [],
+      { [r.id]: r } as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+    ).find((c) => c.entry.kind === 'flow');
+    expect(candidate?.promptedAt).toBe(NOW - 10 * DAY);
   });
 });

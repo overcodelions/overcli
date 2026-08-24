@@ -42,16 +42,38 @@ export function runIsLive(
 /// recency clause a finished run dropped out of Active instantly, even
 /// seconds after completing. Past that window it can still be held in Active
 /// by the section's floor (see selectActiveEntries), just not on merit.
+/// How long a run that is WAITING ON YOU keeps its slot in Working on.
+///
+/// Longer than the flat touch window, because a paused run is a question
+/// somebody asked you and forgetting it is worse than forgetting a chat you
+/// wandered away from. Finite, because it used to be forever: paused and
+/// watching runs were unconditionally active, so a run you left mid-flow last
+/// week sat at the top of the section indefinitely and crowded out the work
+/// you were actually doing.
+///
+/// Deliberately a day longer than the sleep threshold rather than equal to
+/// it: a chat that goes quiet is just old, but a paused run is a question
+/// somebody asked and nobody answered, and that outlives the chat. Past this
+/// it is a backlog item rather than what you are in the middle of, and it is
+/// still right there in the stream with its paused badge on.
+export const WAITING_RUN_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+
 export function runIsActive(
   run: FlowRun,
   runners: Record<string, { isRunning: boolean } | undefined>,
   cutoff: number,
+  /// Separate, older cutoff for the states that are waiting on the user.
+  /// Defaults to `cutoff` so a caller that doesn't care keeps one window.
+  waitingCutoff: number = cutoff,
 ): boolean {
   if (runIsLive(run, runners)) return true;
-  if (run.state.kind === 'running' || run.state.kind === 'paused') return true;
-  // A watching run is an ongoing commitment (it's polling for follow-ups),
-  // so it stays in Active until the user archives it.
-  if (run.state.kind === 'watching') return true;
+  if (run.state.kind === 'running') return true;
+  // Paused and watching both mean the run is waiting on you — one for an
+  // answer, one by polling for follow-ups. They get the longer window rather
+  // than an unlimited one.
+  if (run.state.kind === 'paused' || run.state.kind === 'watching') {
+    return flowRunActivityAt(run) > waitingCutoff;
+  }
   return flowRunActivityAt(run) > cutoff;
 }
 
