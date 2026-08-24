@@ -5,14 +5,20 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { FlowRun } from '../../shared/flows/schema';
 
 // Only the one integration-style suite below (`FlowRuntimeImpl — diff
 // rescue`) needs these; everything else in this file exercises pure
 // functions with no Electron/git dependency. See that suite for why.
+// Mutable so a suite can seed `this.runs` — the constructor replays
+// `loadAllRuns()` straight into the run map, so pushing fixtures here before
+// constructing is the whole seeding mechanism. Pattern from
+// `runtime.localCheckout.test.ts`.
+const seeded = vi.hoisted(() => ({ runs: [] as FlowRun[] }));
+
 vi.mock('./runsStore', () => ({
-  loadAllRuns: () => [],
+  loadAllRuns: () => seeded.runs,
   saveRun: vi.fn(),
   deleteRun: vi.fn(),
 }));
@@ -53,15 +59,34 @@ vi.mock('../git', () => ({
   detectBaseBranchAsync: vi.fn(),
   removeWorktreeAsync: vi.fn(),
   worktreeNameTaken: () => false,
-  runGitAsync: async (args: string[]) =>
-    args[0] === 'rev-parse' && args[1] === 'HEAD'
-      ? { stdout: 'baseline-sha\n', stderr: '', exitCode: 0 }
-      : { stdout: '', stderr: '', exitCode: 0 },
+  runGitAsync: async (args: string[], cwd?: string) => {
+    if (args[0] === 'rev-parse' && args[1] === 'HEAD')
+      return { stdout: 'baseline-sha\n', stderr: '', exitCode: 0 };
+    // Same cwd-keyed dirty/clean fixture as `runGit` below — the unreviewed
+    // scan runs on the async path, so a mock that answered clean for
+    // everything here would make its assertions vacuous.
+    if (args[0] === 'status') {
+      return cwd && cwd.includes('clean-worktree')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: ' M file.txt\n', stderr: '', exitCode: 0 };
+    }
+    return { stdout: '', stderr: '', exitCode: 0 };
+  },
   // Branches so the diff-rescue suite can drive a real "the tree changed"
   // result off `git status --porcelain` (step 30's cheap pre-check) through
   // to a non-empty `git diff` (the incremental-diff synthesis itself).
-  runGit: (args: string[]) => {
-    if (args[0] === 'status') return { stdout: ' M file.txt\n', stderr: '', exitCode: 0 };
+  // `status` is keyed off the cwd, with DIRTY as the default so the
+  // diff-rescue suite below (which needs a non-empty status to drive its own
+  // tree) is unaffected. A cwd marked `clean-worktree` reports clean — and it
+  // must do so as exitCode 0 with empty stdout, NOT as an error: a non-zero
+  // exit is treated as clean by `runDirtyWorktrees`, so an error fixture
+  // would pass the assertion for the wrong reason.
+  runGit: (args: string[], cwd?: string) => {
+    if (args[0] === 'status') {
+      return cwd && cwd.includes('clean-worktree')
+        ? { stdout: '', stderr: '', exitCode: 0 }
+        : { stdout: ' M file.txt\n', stderr: '', exitCode: 0 };
+    }
     if (args[0] === 'write-tree') return { stdout: 'tree-sha\n', stderr: '', exitCode: 0 };
     if (args[0] === 'diff') return { stdout: 'diff --git a/x b/x\n+added\n', stderr: '', exitCode: 0 };
     return { stdout: '', stderr: '', exitCode: 0 };
@@ -1118,5 +1143,115 @@ describe('FlowRuntimeImpl — diff rescue', () => {
     expect(run.workerExchanges).toMatchObject([
       { stepId: 'build', question: 'Which branch?', status: 'asking' },
     ]);
+  });
+});
+
+/// `unreviewedDoneRunIds` is what lets the sidebar say "this run finished and
+/// left work nobody looked at". Before it, that fact was computed only inside
+/// `deleteRun`'s confirm guard — invisible until you tried to destroy the work.
+describe('FlowRuntimeImpl — unreviewed done runs', () => {
+  function seedRun(over: Partial<FlowRun>): FlowRun {
+    return {
+      id: 'run-x',
+      flowId: 'diff-flow',
+      flowSnapshot: { id: 'diff-flow', name: 'Diff flow', steps: [], participants: [] },
+      projectPath: '/tmp/project',
+      userPrompt: 'do the thing',
+      conversationIds: {},
+      artifacts: {},
+      state: { kind: 'done' },
+      createdAt: 1,
+      attempts: [],
+      ...over,
+    } as FlowRun;
+  }
+
+  function runtimeWith(runs: FlowRun[]): FlowRuntimeImpl {
+    seeded.runs = runs;
+    return new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+  });
+
+  it('flags a done run whose worktree has uncommitted changes', async () => {
+    const runtime = runtimeWith([
+      seedRun({ id: 'dirty-done', worktreePath: '/tmp/wt/dirty-done' }),
+    ]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual(['dirty-done']);
+  });
+
+  it('does not flag a done run whose worktree is clean', async () => {
+    const runtime = runtimeWith([
+      seedRun({ id: 'clean-done', worktreePath: '/tmp/wt/clean-worktree-1' }),
+    ]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual([]);
+  });
+
+  it('does not flag active runs, even with a dirty worktree', async () => {
+    // A run still in flight is SUPPOSED to have a dirty tree — flagging it
+    // would say nothing, and the state gate is what keeps git spawns off
+    // active runs.
+    const runtime = runtimeWith([
+      seedRun({
+        id: 'running',
+        state: { kind: 'running', currentStepId: 'build' },
+        worktreePath: '/tmp/wt/running',
+      }),
+      seedRun({
+        id: 'paused',
+        state: { kind: 'paused', nextStepId: 'build', reason: 'failure' },
+        worktreePath: '/tmp/wt/paused',
+      }),
+      seedRun({ id: 'aborted', state: { kind: 'aborted' }, worktreePath: '/tmp/wt/aborted' }),
+    ]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual([]);
+  });
+
+  it('does not flag a done run that has no worktree of its own', async () => {
+    // `runIn: 'cwd'` runs share the project checkout: there is no isolated
+    // tree to review, so dirtiness there is the user's own work.
+    const runtime = runtimeWith([seedRun({ id: 'cwd-run' })]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual([]);
+  });
+
+  it('re-reads git each call, so a cleaned worktree drops back out', async () => {
+    // This is what makes the focus refresh meaningful: nothing is cached, so
+    // committing the work in another app clears the flag on the next call.
+    const run = seedRun({ id: 'flips', worktreePath: '/tmp/wt/dirty-then-clean' });
+    const runtime = runtimeWith([run]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual(['flips']);
+    // Point the same run at a worktree the fixture reports clean.
+    (run as { worktreePath: string }).worktreePath = '/tmp/wt/clean-worktree-z';
+    expect(await runtime.unreviewedDoneRunIds()).toEqual([]);
+  });
+
+  it('flags a workspace run when any member worktree is dirty', async () => {
+    const runtime = runtimeWith([
+      seedRun({
+        id: 'workspace-run',
+        workspaceWorktrees: [
+          {
+            name: 'clean-one',
+            projectPath: '/tmp/p1',
+            worktreePath: '/tmp/wt/clean-worktree-a',
+            branchName: 'b1',
+          },
+          {
+            name: 'dirty-one',
+            projectPath: '/tmp/p2',
+            worktreePath: '/tmp/wt/dirty-member',
+            branchName: 'b2',
+          },
+        ],
+      } as Partial<FlowRun>),
+    ]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual(['workspace-run']);
   });
 });
