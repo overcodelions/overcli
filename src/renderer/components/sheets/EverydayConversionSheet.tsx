@@ -3,6 +3,7 @@ import { useStore } from '../../store';
 import { UUID } from '@shared/types';
 import { isEverydayProject, looksLikeEverydayProjectPath } from '@shared/everydayProjects';
 import { SheetActionButton } from './SettingsSheet';
+import { GitInstallNotice, useGitAvailability } from '../GitInstallNotice';
 
 /// Both directions of "is this folder an everyday project?", for a folder the
 /// user already had rather than one Overcli scaffolded. One sheet rather than
@@ -25,6 +26,11 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
   // see. Say so instead of offering a button that appears to do nothing.
   const pinnedByPath = looksLikeEverydayProjectPath(project.path);
   const needsHistory = !everyday && isGitRepo === false;
+  /// Converting starts a history FIRST and refuses to relabel if that fails,
+  /// so on a machine without git this direction is closed outright. Ask up
+  /// front rather than after a click that could never have worked.
+  const availability = useGitAvailability(needsHistory);
+  const gitMissing = needsHistory && availability !== null && availability.state !== 'ok';
 
   const run = async () => {
     setWorking(true);
@@ -73,13 +79,20 @@ export function EverydayConversionSheet({ projectId }: { projectId: UUID }) {
         </div>
       )}
 
+      {gitMissing && (
+        <GitInstallNotice
+          state={availability.state === 'needs-xcode-tools' ? 'needs-xcode-tools' : 'missing'}
+          lead="This folder has no history yet, and Overcli starts one before converting."
+        />
+      )}
+
       {error && <div className="text-xs text-red-500">{error}</div>}
 
       <div className="flex justify-end gap-2">
         <SheetActionButton label="Cancel" onClick={() => openSheet(null)} />
         <SheetActionButton
           primary
-          disabled={working || (everyday && pinnedByPath)}
+          disabled={working || (everyday && pinnedByPath) || gitMissing}
           label={
             working
               ? everyday

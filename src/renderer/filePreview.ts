@@ -136,6 +136,16 @@ export function defaultFileViewMode(
 ): FileViewMode {
   if (requestedMode === 'preview' && !canPreviewFile(filePath)) return 'edit';
   if (requestedMode) return requestedMode;
+  // An image, a PDF or a Word file has no source to fall back to: `edit`
+  // renders a "not editable as text" dead end with the thing the user asked
+  // for one click away. So these open rendered whatever the other signals
+  // say — a `path:line` highlight means nothing on a PNG, and a remembered
+  // `edit`/`split` for the extension was recorded by a click that landed on
+  // that same dead end. Only a remembered `diff` survives, because reviewing
+  // a changed binary is a real thing to want.
+  if (isBinaryPreviewKind(detectFilePreviewKind(filePath))) {
+    return rememberedMode === 'diff' ? 'diff' : 'preview';
+  }
   if (hasHighlight) return 'edit';
   if (rememberedMode) {
     // 'split' is as much a rendering mode as 'preview' — collapsing it to

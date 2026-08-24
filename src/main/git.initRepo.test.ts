@@ -29,7 +29,11 @@ afterEach(() => {
 describe('initRepo', () => {
   it('reports a missing path instead of trying to init it', async () => {
     const res = await initRepo({ projectPath: path.join(dir, 'nope') });
-    expect(res).toEqual({ ok: false, error: expect.stringContaining('does not exist') });
+    expect(res).toEqual({
+      ok: false,
+      reason: 'no-folder',
+      error: expect.stringContaining('does not exist'),
+    });
   });
 
   it('inits a fresh folder, commits everything already in it, and lands on main', async () => {
@@ -68,7 +72,7 @@ describe('initRepo', () => {
 
     const res = await initRepo({ projectPath: dir });
 
-    expect(res).toEqual({ ok: false, error: expect.stringContaining('already has a history') });
+    expect(res).toEqual({ ok: false, reason: 'already-tracked', error: expect.stringContaining('already has a history') });
   });
 
   it('refuses a folder nested inside an existing repo, even without its own .git', async () => {
