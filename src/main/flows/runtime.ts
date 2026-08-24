@@ -245,6 +245,26 @@ export function workspaceMembersMissingFromRun(
   return out;
 }
 
+/// The worktree(s) a run owns, if any. A workspace run forks one per member
+/// project; a single-project run has at most one; a `runIn: 'cwd'` run has
+/// none — it shares the project checkout, so there is no isolated tree whose
+/// dirtiness belongs to the run rather than to the user.
+function runWorktreeTargets(run: FlowRun): Array<{ name: string; worktreePath: string }> {
+  if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
+    return run.workspaceWorktrees.map((m) => ({ name: m.name, worktreePath: m.worktreePath }));
+  }
+  if (run.worktreePath) {
+    return [{ name: run.flowSnapshot.name, worktreePath: run.worktreePath }];
+  }
+  return [];
+}
+
+/// Count the entries in `git status --porcelain` output. One file per line;
+/// the trailing newline must not count as a change.
+function countPorcelainFiles(stdout: string): number {
+  return stdout.split('\n').filter((l) => l.trim().length > 0).length;
+}
+
 export class FlowRuntimeImpl {
   private runs = new Map<UUID, FlowRun>();
   /// Reverse index: which run owns this conversation id. With participants,
@@ -1058,6 +1078,30 @@ export class FlowRuntimeImpl {
     return Array.from(this.runs.values()).sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /// Ids of finished runs that still have uncommitted work sitting in their
+  /// worktree — work the flow produced and nobody has looked at. Reuses the
+  /// same `runDirtyWorktrees` predicate `deleteRun` gates its confirm on, so
+  /// the sidebar can show that fact passively instead of only revealing it
+  /// at the moment the user tries to destroy it.
+  ///
+  /// Deliberately `done`-only. A run that is still `running`/`watching`/
+  /// `paused` is EXPECTED to have a dirty tree — flagging it would say
+  /// nothing — and gating here keeps the git calls off active runs. Cost is
+  /// bounded by MAX_RETAINED_RUNS (50) `git status --porcelain` invocations,
+  /// run concurrently and asynchronously so the main thread keeps serving the
+  /// UI while they resolve. The renderer refreshes this on window focus, so
+  /// it must never block.
+  ///
+  /// Not attached to the FlowRun itself on purpose: runs are echoed back to
+  /// the renderer wholesale by `emitRunUpdate`, and persisted by `saveRun`,
+  /// so a computed field would be clobbered by the next update and would
+  /// reload stale from disk. The renderer keeps this as a parallel map.
+  async unreviewedDoneRunIds(): Promise<UUID[]> {
+    const done = Array.from(this.runs.values()).filter((r) => r.state.kind === 'done');
+    const dirty = await Promise.all(done.map((run) => this.runIsDirtyAsync(run)));
+    return done.filter((_, i) => dirty[i]).map((run) => run.id);
+  }
+
   getRun(runId: UUID): FlowRun | null {
     return this.runs.get(runId) ?? null;
   }
@@ -1575,18 +1619,32 @@ export class FlowRuntimeImpl {
     run: FlowRun,
   ): Array<{ name: string; worktreePath: string; fileCount: number }> {
     const out: Array<{ name: string; worktreePath: string; fileCount: number }> = [];
-    const check = (name: string, worktreePath: string): void => {
+    for (const { name, worktreePath } of runWorktreeTargets(run)) {
       const status = runGit(['status', '--porcelain'], worktreePath);
-      if (status.exitCode !== 0) return;
-      const fileCount = status.stdout.split('\n').filter((l) => l.trim().length > 0).length;
+      if (status.exitCode !== 0) continue;
+      const fileCount = countPorcelainFiles(status.stdout);
       if (fileCount > 0) out.push({ name, worktreePath, fileCount });
-    };
-    if (run.workspaceWorktrees && run.workspaceWorktrees.length > 0) {
-      for (const m of run.workspaceWorktrees) check(m.name, m.worktreePath);
-    } else if (run.worktreePath) {
-      check(run.flowSnapshot.name, run.worktreePath);
     }
     return out;
+  }
+
+  /// Async twin of `runDirtyWorktrees`, answering only yes/no. Used by the
+  /// unreviewed-run scan, which runs across every retained `done` run and can
+  /// be triggered by something as ordinary as focusing the window — at that
+  /// frequency `runGit`'s `spawnSync` would block the main thread (and so the
+  /// UI) for up to MAX_RETAINED_RUNS git invocations in a row. `deleteRun`
+  /// keeps the synchronous version: it runs once, on an explicit click, and
+  /// needs the per-worktree file counts for its confirm dialog.
+  private async runIsDirtyAsync(run: FlowRun): Promise<boolean> {
+    for (const { worktreePath } of runWorktreeTargets(run)) {
+      const status = await runGitAsync(['status', '--porcelain'], worktreePath);
+      // A worktree we can't read is treated as clean, exactly as the
+      // synchronous version does — we don't raise an alarm on a directory
+      // that's gone or was never a git checkout.
+      if (status.exitCode !== 0) continue;
+      if (countPorcelainFiles(status.stdout) > 0) return true;
+    }
+    return false;
   }
 
   /// Remove the git worktree(s) a run forked, if any. Only invoked from
