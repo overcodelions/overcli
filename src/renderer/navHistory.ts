@@ -29,7 +29,7 @@ export interface NavLocation {
   /// selection rather than part of it — the calendar and the funds waterfall
   /// have no worker to be the selection of — so Back out of Funds has to
   /// know to return to the calendar rather than to a desk.
-  workersView: 'worker' | 'calendar' | 'funds' | 'report';
+  workersView: 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
 }
 
 /// Identity of a location — two locations with the same key are the same
@@ -266,7 +266,8 @@ function applyLocation(loc: NavLocation): void {
     // AFTER selectWorker too, which forces the desk: picking a worker means
     // "show me the desk", but a restored location already knows whether the
     // desk was what was on screen.
-    if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
+    if (loc.workersView === 'queue') useWorkersStore.getState().showQueue();
+    else if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
     else if (loc.workersView === 'funds') useWorkersStore.getState().showFunds();
     else if (loc.workersView === 'report') useWorkersStore.getState().showReport();
     void window.overcli.invoke('store:saveSelection', loc.selectedConversationId);
@@ -378,7 +379,7 @@ function blankFor(detailMode: DetailMode): NavLocation {
     librarySegment: 'flows',
     activeOrchestrationId: null,
     selectedWorkerId: null,
-    workersView: 'worker',
+    workersView: 'queue',
   };
 }
 
