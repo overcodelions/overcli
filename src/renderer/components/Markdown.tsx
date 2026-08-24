@@ -166,7 +166,9 @@ function renderMarkdownHtmlUncached(
 /// spliced into later (which are legitimately empty at this point).
 function hasVisibleContent(html: string): boolean {
   if (/<(?:img|hr)\b/i.test(html) || html.includes('data-mermaid-key')) return true;
-  return html.replace(/<[^>]*>/g, '').trim().length > 0;
+  const probe = document.createElement('div');
+  probe.innerHTML = html;
+  return (probe.textContent ?? '').trim().length > 0;
 }
 
 /// Render a single assistant / review bubble's markdown as HTML. We purposely
