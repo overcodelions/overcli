@@ -28,6 +28,7 @@ import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
 import { Diff } from './DiffView';
 import { isEverydayProject, isProseDocumentPath } from '@shared/everydayProjects';
+import { isPathAtOrUnder, isPathUnder } from '@shared/pathScope';
 import { flowRunPaneIsOnScreen } from '../fileEditorRoot';
 
 // Feature flag: route the editable file view through CodeMirror 6.
@@ -551,9 +552,7 @@ export const FileEditorPane = memo(function FileEditorPane({
   const autoSaves = useStore((s) => {
     const target = rootPath ?? path ?? '';
     if (!target) return false;
-    const owner = s.projects.find(
-      (p) => target === p.path || target.startsWith(`${p.path}/`),
-    );
+    const owner = s.projects.find((p) => isPathAtOrUnder(target, p.path));
     return owner ? isEverydayProject(owner) : false;
   });
   const checkpointProject = useStore((s) => s.checkpointProject);
@@ -2020,7 +2019,7 @@ export function resolveDiffTarget(
         (p): p is string => !!p,
       );
       for (const root of candidates) {
-        if (path === root || path.startsWith(`${root}/`)) {
+        if (isPathAtOrUnder(path, root)) {
           return {
             cwd: m.path,
             path: path === root ? '.' : path.slice(root.length + 1),
@@ -2035,11 +2034,7 @@ export function resolveDiffTarget(
   // unknown and fall through to the --no-index branch above, which
   // makes every file render as a fresh add.
   const rel =
-    path === rootPath
-      ? '.'
-      : path.startsWith(`${rootPath}/`)
-        ? path.slice(rootPath.length + 1)
-        : path;
+    path === rootPath ? '.' : isPathUnder(path, rootPath) ? path.slice(rootPath.length + 1) : path;
   return {
     cwd: rootPath,
     path: rel,

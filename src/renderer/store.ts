@@ -41,6 +41,7 @@ import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects';
+import { isPathUnder } from '@shared/pathScope';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
@@ -58,6 +59,7 @@ import {
   type FileTab,
   type ScopeTabs,
 } from './uiSlice';
+import { dropBuffer } from './fileBuffers';
 import {
   useRunnersStore,
   getRunner,
@@ -512,7 +514,7 @@ interface StoreState {
   refreshEverydayRoots(): void;
   syncProjectMarkers(): Promise<void>;
   checkpointProject(projectPath: string, message: string): Promise<void>;
-  noteVersionsRestored(): void;
+  noteVersionsRestored(projectPath: string): void;
   askAboutDocument(filePath: string): void;
   protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
   createEverydayProject(title: string, goal: string): Promise<{ ok: true; path: string; historyOn: boolean } | { ok: false; error: string }>;
@@ -3253,8 +3255,18 @@ export const useStore = create<StoreState>((set, get) => ({
 
   /// Bumped after `versions:restore` so any open editor re-reads from disk
   /// instead of auto-saving its pre-restore buffer back over the file.
-  noteVersionsRestored() {
-    set((s) => ({ versionRestoreToken: s.versionRestoreToken + 1 }));
+  noteVersionsRestored(projectPath) {
+    // `git read-tree -u --reset` rewrites the WHOLE working tree, so every
+    // buffer under this project is stale — not only the file on screen.
+    // A buffer left behind gets re-shown on the next tab click and auto-saved
+    // back over the restored file, silently undoing the restore.
+    const dirtyFiles = { ...get().dirtyFiles };
+    for (const key of Object.keys(dirtyFiles)) {
+      if (!isPathUnder(key, projectPath)) continue;
+      dropBuffer(key);
+      delete dirtyFiles[key];
+    }
+    set((s) => ({ dirtyFiles, versionRestoreToken: s.versionRestoreToken + 1 }));
   },
 
   /// Hand a document to the chat instead of building a second, weaker chat
@@ -3264,7 +3276,7 @@ export const useStore = create<StoreState>((set, get) => ({
   /// exists, with Read tools pointed at this project; all that was missing
   /// was the door.
   askAboutDocument(filePath) {
-    const project = get().projects.find((p) => filePath.startsWith(`${p.path}/`));
+    const project = get().projects.find((p) => isPathUnder(filePath, p.path));
     if (!project) return;
     const rel = filePath.slice(project.path.length + 1);
     // Seeded, not sent: the user still says what they actually want to know.

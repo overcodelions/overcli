@@ -4527,7 +4527,12 @@ function WorkerAiRevise() {
             e.preventDefault();
             void intakeAttachments(files).then(({ attachments: picked }) => {
               if (picked.length > 0)
-                patchRevise({ attachments: [...revise.attachments, ...picked] });
+                // Read through the store, not the render-time closure: two
+                // pastes before the first FileReader resolves both spread the
+                // same base and one screenshot is silently dropped.
+                patchRevise({
+                  attachments: [...selectRevise(useWorkersStore.getState()).attachments, ...picked],
+                });
             });
           }}
           onKeyDown={(e) => {
