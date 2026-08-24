@@ -80,12 +80,21 @@ describe('partitionSleeping', () => {
     expect(sleeping.map((r) => r.id)).toEqual(['b', 'c']);
   });
 
-  it("keeps Friday's work awake on Monday morning", () => {
-    // Three days rather than one, or the sidebar forgets the week every
-    // weekend.
-    const fridayAfternoon = NOW - (SLEEP_AFTER_MS - 60 * 60 * 1000);
-    const { sleeping } = split([{ id: 'fri', touchedAt: fridayAfternoon }]);
-    expect(sleeping).toEqual([]);
+  it('keeps yesterday awake and sleeps the day before last', () => {
+    // The threshold is two days, so the sidebar does forget across a weekend
+    // — see the note on SLEEP_AFTER_MS. Pinned to the constant rather than a
+    // literal so the boundary moves with it.
+    const rows = [
+      row('a', 0),
+      row('b', 0),
+      row('c', 0),
+      { id: 'yesterday', touchedAt: NOW - (SLEEP_AFTER_MS - 60 * 60 * 1000) },
+      { id: 'older', touchedAt: NOW - (SLEEP_AFTER_MS + 60 * 60 * 1000) },
+      { id: 'ancient', touchedAt: NOW - 30 * DAY },
+    ];
+    const { awake, sleeping } = split(rows);
+    expect(awake.map((r) => r.id)).toContain('yesterday');
+    expect(sleeping.map((r) => r.id)).toEqual(['older', 'ancient']);
   });
 
   it('handles an empty list', () => {

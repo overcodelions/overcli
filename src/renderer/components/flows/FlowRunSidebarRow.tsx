@@ -49,9 +49,13 @@ export function runIsLive(
 /// wandered away from. Finite, because it used to be forever: paused and
 /// watching runs were unconditionally active, so a run you left mid-flow last
 /// week sat at the top of the section indefinitely and crowded out the work
-/// you were actually doing. Matches the sleep threshold — past this it is a
-/// backlog item, not what you are in the middle of, and it is still right
-/// there in the stream with its paused badge on.
+/// you were actually doing.
+///
+/// Deliberately a day longer than the sleep threshold rather than equal to
+/// it: a chat that goes quiet is just old, but a paused run is a question
+/// somebody asked and nobody answered, and that outlives the chat. Past this
+/// it is a backlog item rather than what you are in the middle of, and it is
+/// still right there in the stream with its paused badge on.
 export const WAITING_RUN_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 
 export function runIsActive(

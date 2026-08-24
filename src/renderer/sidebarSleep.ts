@@ -13,9 +13,12 @@
 
 /// How long something has to go untouched before it rolls up.
 ///
-/// Three days rather than one: a Friday afternoon's work must still be awake
-/// on Monday morning, or the sidebar forgets the week every weekend.
-export const SLEEP_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+/// Two days, set from use rather than from first principles. It does mean the
+/// sidebar forgets across a weekend: Friday afternoon's work is asleep by
+/// Monday morning. That is a deliberate trade — the roll-up is one click and
+/// keeps everything searchable, so a quiet Monday list costs less than a
+/// permanently crowded one.
+export const SLEEP_AFTER_MS = 2 * 24 * 60 * 60 * 1000;
 
 /// Rows that stay awake however cold they are, so a group you open is never
 /// just a count line. The newest few are the ones you would reach for.

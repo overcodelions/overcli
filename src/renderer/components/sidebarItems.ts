@@ -241,6 +241,13 @@ function liveWorkerRuns(
     .slice(0, ACTIVE_WORKER_RUN_LIMIT);
 }
 
+/// Where a run sits on the Stream timeline: the later of the user's own last
+/// action and the last step the run actually took. See `StreamEntry.at` for
+/// why this differs from the Working-on section's `promptedAt`.
+function streamAt(run: FlowRun): number {
+  return Math.max(flowRunPromptedAt(run), flowRunActivityAt(run));
+}
+
 export interface SidebarOwner {
   id: string;
   name: string;
@@ -253,12 +260,21 @@ export interface StreamEntry {
   key: string;
   item: ActiveItem;
   owner: SidebarOwner;
-  /// Where the row sits on the timeline: the user's own last turn.
+  /// Where the row sits on the timeline: when work last happened here.
   ///
   /// Stream keys off this rather than `createdAt` — which is what the tree
   /// uses — because a timeline of what you were doing, ordered by when things
-  /// were first made, would not be a timeline. It still only ever moves on a
-  /// user action: backend progress writes `lastActiveAt`, never this.
+  /// were first made, would not be a timeline.
+  ///
+  /// For a RUN this deliberately includes the steps it took, unlike the
+  /// Working-on section's `promptedAt`. The two want different things. A
+  /// small live list you are clicking in must not reshuffle because a backend
+  /// advanced; a historical timeline must put a flow that ran seven steps
+  /// yesterday under yesterday. Keying the timeline off `promptedAt` meant a
+  /// run's position was frozen at its creation date forever — `pendingContinue`
+  /// is explicitly not persisted, so it is almost always just `createdAt` —
+  /// and a run you had driven to step seven and left paused for you filed
+  /// itself under "Earlier" while simultaneously sitting in Working on.
   at: number;
   touchedAt: number;
   momentum: number;
@@ -315,7 +331,7 @@ export function collectStreamItems(
       key: `f:${run.id}`,
       item: { kind: 'flow', run, ownerName: name, ownerKind: 'worker', isLive: true },
       owner: { id: `worker:${run.workerId}`, name, kind: 'worker' },
-      at: flowRunPromptedAt(run),
+      at: streamAt(run),
       touchedAt: flowRunPromptedAt(run),
       momentum: flowMomentum(run, now),
       pinned: true,
@@ -335,7 +351,7 @@ export function collectStreamItems(
       // share a basename, and a lane that silently merged them would claim
       // work happened somewhere it didn't.
       owner: { id: `path:${path}`, name: resolved.name, kind: resolved.kind },
-      at: flowRunPromptedAt(run),
+      at: streamAt(run),
       touchedAt: Math.max(flowRunPromptedAt(run), selection.lastOpenedAtByRun[run.id] ?? 0),
       momentum: flowMomentum(run, now),
       pinned: isLive || run.id === selection.openedRunId,
