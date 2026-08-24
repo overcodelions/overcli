@@ -22,6 +22,7 @@ import { actionMomentum, momentumScore } from '../sidebarMomentum';
 import {
   resolveOwner as resolveFlowOwner,
   runIsActive as flowRunIsActive,
+  WAITING_RUN_WINDOW_MS,
   runIsLive as flowRunIsLive,
   workerRunIsActive,
 } from './flows/FlowRunSidebarRow';
@@ -133,6 +134,9 @@ export function collectActiveCandidates(
   workers: Record<string, { name: string }> = {},
 ): ActiveCandidate<ActiveItem>[] {
   const cutoff = now - ACTIVE_CONVERSATION_WINDOW_MS;
+  // Runs waiting on the user get a longer leash than runs that merely
+  // finished recently — see WAITING_RUN_WINDOW_MS.
+  const waitingCutoff = now - WAITING_RUN_WINDOW_MS;
   const out: ActiveCandidate<ActiveItem>[] = [];
 
   const pushConversation = (
@@ -198,7 +202,9 @@ export function collectActiveCandidates(
         ownerKind: owner.kind,
         isLive: flowRunIsLive(run, runners),
       },
-      active: run.id === selection.openedRunId || flowRunIsActive(run, runners, cutoff),
+      active:
+        run.id === selection.openedRunId ||
+        flowRunIsActive(run, runners, cutoff, waitingCutoff),
       promptedAt: flowRunPromptedAt(run),
       touchedAt: Math.max(
         flowRunPromptedAt(run),
