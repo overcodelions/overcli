@@ -1525,7 +1525,7 @@ export class FlowRuntimeImpl {
     const sendResult = this.runner.send({
       conversationId: convId,
       prompt: finalizePrompt,
-      displayText: `Finalizing ${prior.output} before continuing…`,
+      displayText: flowNote(`Finalizing ${prior.output} before continuing…`),
       backend: participant.backend,
       cwd: run.projectPath,
       allowedDirs: this.runAllowedDirs(run),
@@ -2040,7 +2040,7 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: detectModel,
       prompt,
-      displayText: `Watching ${w.binding || 'follow-ups'} — checking for new comments…`,
+      displayText: flowNote(`Watching ${w.binding || 'follow-ups'} — checking for new comments…`),
     });
     if (!sendResult.ok) {
       this.watchTicking.delete(runId);
@@ -2083,7 +2083,7 @@ export class FlowRuntimeImpl {
       allowedDirs: this.runAllowedDirs(run),
       model: effectiveParticipantModel(run, w.participantId),
       prompt,
-      displayText: `Answering on ${w.binding || 'the watched item'}…`,
+      displayText: flowNote(`Answering on ${w.binding || 'the watched item'}…`),
     });
     if (!sendResult.ok) {
       // Couldn't launch the answer pass — a real question is going unanswered,
@@ -3025,9 +3025,11 @@ export class FlowRuntimeImpl {
         stepAllowsFileRef(step, stepModel.backend),
         rejection,
       ),
-      displayText: rejection
-        ? `Couldn't take ${step.output} from ${rejection.path} (${rejection.reason}) — asking for it inline before failing the step.`
-        : `That reply had no <output name="${step.output}"> block — asking for it before failing the step.`,
+      displayText: flowNote(
+        rejection
+          ? `Asking for ${step.output} inline — ${rejection.path} couldn't be used (${rejection.reason}).`
+          : `Asking for ${step.output} in an output block so it can be handed to the next step.`,
+      ),
       backend: stepModel.backend,
       cwd: run.projectPath,
       allowedDirs: this.runAllowedDirs(run),
@@ -3981,6 +3983,16 @@ export function summarizeReviewRejection(reviewBody: string): string | null {
     if (line.length > 0) return cap(line);
   }
   return null;
+}
+
+/// Mark a one-line `displayText` as runtime-authored. Without it the turn
+/// renders as a bubble on the user's side of the transcript, so housekeeping
+/// the runtime did on its own reads as something the user typed — most
+/// confusingly for the missing-output re-ask, which then looks like the user
+/// interrupting their own flow to complain. Kept in sync with
+/// FLOW_NOTE_MARKER in flowStepSections.ts.
+export function flowNote(text: string): string {
+  return `<!--flow-note-->${text}`;
 }
 
 /// The follow-up turn sent when a step's reply carried no `<output>` block
