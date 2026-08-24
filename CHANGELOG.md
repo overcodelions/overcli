@@ -4,6 +4,8 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-08-23
+
 ### Added
 - **Preview Office files without Office, on every platform.** `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt` and `.pptx` render inside Overcli with no Word, Excel or PowerPoint installed. Three converter backends are raced rather than queued — LibreOffice where it exists, Quick Look on macOS, Office COM on Windows — so a hung LibreOffice no longer costs you thirty seconds before the preview that would have answered instantly. The converted result renders into a `sandbox=""` frame with no scripts and no same-origin access, under a CSP that blocks every outbound channel, because a document someone emailed you is untrusted input.
 - **Everyday projects.** Overcli without a repo, for people who have documents rather than code. Describe what you want and it scaffolds a folder in `~/Documents/Overcli Projects/`, prepares an undo history for it, and drops you straight into a conversation pointed at it — no file dialog, no path decision, and no mention of git anywhere in the flow. A folder you already have can be brought in the same way: the "New agent" screen used to dead-end on `Run \`git init\` in <path>` with nothing to click, and now offers a **Turn on history** button that does it for you. Three starter flows ship alongside it — review my documents, draft or update a policy, clean up a spreadsheet — because a new user needs something concrete on day one.
@@ -407,7 +409,8 @@ Initial public release.
 - Colosseum: same prompt against every backend in parallel git worktrees.
 - Cross-platform packaging via electron-builder (macOS dmg/zip, Windows NSIS, Linux AppImage/deb).
 
-[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/overcodelions/overcli/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/overcodelions/overcli/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/overcodelions/overcli/compare/v0.14.2...v0.15.0
 [0.14.2]: https://github.com/overcodelions/overcli/compare/v0.14.1...v0.14.2
 [0.14.1]: https://github.com/overcodelions/overcli/compare/v0.14.0...v0.14.1
