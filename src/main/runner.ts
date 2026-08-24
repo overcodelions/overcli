@@ -73,6 +73,7 @@ import {
   runOllamaToolLoop,
 } from './ollamaTools';
 import { loadOllamaSession, saveOllamaSession } from './ollamaStore';
+import { recordOllamaUsage } from './ollamaUsageLog';
 import { claudeSupportsEffort, ReviewerManager } from './reviewer';
 import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
@@ -2430,6 +2431,21 @@ export class RunnerManager {
     let assistantRevision = 0;
     let postedToolCallsThisRound = false;
 
+    // Ollama reports its counters once per round, on the `done` frame. Write
+    // each round down as it lands — unlike every other backend there's no
+    // transcript on disk for computeStats() to re-read later.
+    const logOllamaUsage = (counts?: { promptEvalCount?: number; evalCount?: number }) => {
+      const usage = ollamaUsage(counts);
+      if (!usage) return;
+      recordOllamaUsage({
+        ts: Date.now(),
+        cwd: args.cwd,
+        model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+      });
+    };
+
     const driveLoop = async () => {
       const messageCountBefore = session!.messages.length;
       // Resolve the tool protocol BEFORE building the prompt: the prompt and
@@ -2514,6 +2530,7 @@ export class RunnerManager {
                   ),
                 ],
               });
+              logOllamaUsage(ev.usage);
             } else if (ev.toolCalls.length === 0) {
               // Final round with no tools. Repaint the bubble one last
               // time so the round's reasoning and token usage land on a
@@ -2531,6 +2548,7 @@ export class RunnerManager {
                   }),
                 ],
               });
+              logOllamaUsage(ev.usage);
               // Keep finalAssistantText current for the reviewer hook below.
               if (ev.text) {
                 finalAssistantText = ev.text;

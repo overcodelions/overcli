@@ -31,6 +31,7 @@ import { readClaudeUsage } from './claudeUsage';
 import { modelSpeed } from '../shared/modelCatalog';
 import { loadAllRuns } from './flows/runsStore';
 import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
+import { readOllamaUsage } from './ollamaUsageLog';
 
 interface BackendAgg {
   backend: Backend;
@@ -780,14 +781,57 @@ function scanOllama(
       });
 
       if (lastActive) {
-        // We only know the conversation's last-active timestamp, not each
-        // turn's timestamp. Attribute all turns to that day — good enough
-        // for the activity chart; a future enhancement could persist
-        // per-turn timestamps in the ollama runner.
+        // The store only knows the conversation's last-active timestamp, not
+        // each turn's. Attribute all turns to that day — tokens come from
+        // the usage log below, which does carry per-round timestamps.
         addToDaily(daily, lastActive, 'ollama', turns, 0, 0);
         addRolling(agg, 0, lastActive, now, String(c?.id ?? lastActive));
       }
     }
+  }
+
+  scanOllamaUsageLog(projects, agg, byModel, daily, now);
+}
+
+/// Tokens for local models. The store rows above carry turn counts but no
+/// counters — Ollama reports those per round, and the runner appends them to
+/// <userData>/ollama-usage.jsonl as they arrive. Turns are deliberately not
+/// re-added here: the store already counted them, and a tool-using turn
+/// writes several rounds.
+function scanOllamaUsageLog(
+  projects: Map<string, ProjectAgg>,
+  agg: BackendAgg,
+  byModel: Map<string, any>,
+  daily: Map<string, DailyBucket>,
+  now: number,
+): void {
+  for (const e of readOllamaUsage()) {
+    if (!e.inputTokens && !e.outputTokens) continue;
+
+    agg.inputTokens += e.inputTokens;
+    agg.outputTokens += e.outputTokens;
+
+    if (e.cwd) {
+      const proj = ensureProject(projects, e.cwd, e.cwd);
+      proj.inputTokens += e.inputTokens;
+      proj.outputTokens += e.outputTokens;
+      proj.models.add(e.model);
+      proj.firstActivity = minNum(proj.firstActivity, e.ts);
+      proj.lastActivity = maxNum(proj.lastActivity, e.ts);
+    }
+
+    addModel(byModel, e.model, {
+      turns: 0,
+      inputTokens: e.inputTokens,
+      outputTokens: e.outputTokens,
+      cacheRead: 0,
+      cacheCreation: 0,
+    });
+
+    addToDaily(daily, e.ts, 'ollama', 0, e.inputTokens, e.outputTokens);
+    // Null session key: the store scan already counted these conversations,
+    // and one turn can write several rounds.
+    addRolling(agg, e.inputTokens + e.outputTokens, e.ts, now, null);
   }
 }
 
@@ -1001,12 +1045,15 @@ function finalizeBackend(agg: BackendAgg): BackendStats {
   };
 }
 
+/// `sessionKey` is null for rows that carry tokens but aren't a session of
+/// their own (Ollama's per-round usage entries) — they move the windows
+/// without inflating today's session count.
 function addRolling(
   agg: BackendAgg,
   tokens: number,
   ts: number | null,
   now: number,
-  sessionKey: string,
+  sessionKey: string | null,
 ): void {
   if (ts === null) return;
   const delta = now - ts;
@@ -1015,7 +1062,7 @@ function addRolling(
   if (delta <= 24 * 3600 * 1000) agg.tokensLast24h += tokens;
   if (delta <= 7 * 86400 * 1000) agg.tokensLast7d += tokens;
   if (ts > agg.lastActive) agg.lastActive = ts;
-  if (isSameDay(ts, now)) agg.sessionsToday.add(sessionKey);
+  if (sessionKey !== null && isSameDay(ts, now)) agg.sessionsToday.add(sessionKey);
 }
 
 export function isSameDay(a: number, b: number): boolean {
