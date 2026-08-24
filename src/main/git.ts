@@ -8,7 +8,7 @@ import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import type { RemoteKind, WorktreeStatus } from '../shared/types';
+import type { InitRepoFailure, RemoteKind, WorktreeStatus } from '../shared/types';
 
 export interface GitResult {
   stdout: string;
@@ -72,6 +72,99 @@ function gitEnv(): NodeJS.ProcessEnv {
   const current = env.PATH ?? '';
   env.PATH = [...extras, ...current.split(path.delimiter)].filter(Boolean).join(path.delimiter);
   return env;
+}
+
+/// ── Is git actually usable here? ────────────────────────────────────────
+///
+/// `resolveGitBinary` answers "which path do we spawn", NOT "does git work".
+/// On macOS those differ: `/usr/bin/git` exists on a machine that has never
+/// installed the Xcode Command Line Tools, as a stub whose only behaviour is
+/// to pop the system "install developer tools" dialog and exit non-zero. A
+/// path-existence check therefore reports a working git on exactly the
+/// machine that has none, and the first thing that touches git surprises the
+/// user with an OS modal Overcli never asked for.
+///
+/// So we ask `xcode-select -p` FIRST on that path — it is the one question
+/// that distinguishes stub from real without running the stub.
+export type GitAvailability =
+  | { state: 'ok'; version: string }
+  /// macOS with the CLT stub: git is one confirmation dialog away.
+  | { state: 'needs-xcode-tools' }
+  /// No git binary at all, or one that will not run.
+  | { state: 'missing' };
+
+/// The shell line that installs git, or null on a platform where there is no
+/// single right answer (Linux: the distro's package manager owns this).
+export function gitInstallCommand(platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === 'darwin') return 'xcode-select --install';
+  // No `&&`, `;` or `$` — `runInTerminal` refuses shell metacharacters.
+  if (platform === 'win32') return 'winget install --id Git.Git -e --source winget';
+  return null;
+}
+
+/// Probe core, with both spawns injected so tests never depend on whether
+/// the machine running them happens to have git.
+export async function probeGitAvailability(deps: {
+  platform: NodeJS.Platform;
+  resolvedBinary: () => string;
+  xcodeSelectPath: () => Promise<number>;
+  gitVersion: () => Promise<GitResult>;
+}): Promise<GitAvailability> {
+  const stubbed = deps.platform === 'darwin' && deps.resolvedBinary() === '/usr/bin/git';
+  if (stubbed && (await deps.xcodeSelectPath()) !== 0) return { state: 'needs-xcode-tools' };
+  const res = await deps.gitVersion();
+  if (res.exitCode === 0 && res.stdout.trim()) return { state: 'ok', version: res.stdout.trim() };
+  // Belt and braces: if the stub ran anyway (a race with an uninstall, or a
+  // candidate ordering we did not predict), it says so in stderr.
+  // The stub's complaint comes out of `xcrun` and talks about a "developer
+  // path" as often as "developer tools" — match the family, not one phrasing.
+  if (deps.platform === 'darwin' && /xcode|xcrun|developer (tools|path)/i.test(res.stderr)) {
+    return { state: 'needs-xcode-tools' };
+  }
+  return { state: 'missing' };
+}
+
+function xcodeSelectPath(): Promise<number> {
+  return new Promise((resolve) => {
+    execFile('/usr/bin/xcode-select', ['-p'], { env: gitEnv() }, (error) => {
+      resolve(error ? 1 : 0);
+    });
+  });
+}
+
+/// Memoised: this runs on every everyday-project boundary, and the answer
+/// only changes when the user installs something. `refresh` is for exactly
+/// that moment — the install flow re-asks rather than trusting the cache it
+/// just invalidated.
+let availabilityCache: GitAvailability | null = null;
+
+export async function gitAvailability(opts?: { refresh?: boolean }): Promise<GitAvailability> {
+  if (availabilityCache && !opts?.refresh) return availabilityCache;
+  availabilityCache = await probeGitAvailability({
+    platform: process.platform,
+    resolvedBinary: resolveGitBinary,
+    xcodeSelectPath,
+    // `--version` needs a cwd that exists, not a repo.
+    gitVersion: () => runGitAsync(['--version'], os.homedir()),
+  });
+  return availabilityCache;
+}
+
+/// Drop the memoised answer without asking a new question. The install flow
+/// uses this: the Terminal window it just opened will finish minutes later,
+/// so re-probing NOW would only cache the same "missing" for the rest of the
+/// session. Forgetting means the next surface that cares asks again.
+export function forgetGitAvailability(): void {
+  availabilityCache = null;
+}
+
+/// Plain-language version of the same fact, for anything user-facing.
+export function gitMissingMessage(state: GitAvailability['state']): string {
+  if (state === 'needs-xcode-tools') {
+    return "Saving versions needs Git, which comes with Apple's command line tools. They aren't installed yet.";
+  }
+  if (state === 'missing') return 'Saving versions needs Git, which isn’t installed on this computer.';
+  return '';
 }
 
 /// Git's ref rules permit a branch literally named `--output=/path`, and a
@@ -606,17 +699,33 @@ function folderSizeBytes(root: string, depth = 0): number {
 
 const DEFAULT_GITIGNORE = ['.DS_Store', 'Thumbs.db', '~$*', '*.tmp', 'node_modules/', ''].join('\n');
 
+export type InitRepoResult =
+  | { ok: true; branch: string }
+  | { ok: false; reason: InitRepoFailure; error: string };
+
 /// Prepare a plain folder so Overcli can undo what it changes. Async because
 /// `git add -A` on a documents folder can take seconds, and `runGit` is
 /// spawnSync — the same reason `createWorktreeAsync` exists.
 export async function initRepo(
   args: { projectPath: string },
-): Promise<{ ok: true; branch: string } | { ok: false; error: string }> {
+): Promise<InitRepoResult> {
   const cwd = args.projectPath;
-  if (!fs.existsSync(cwd)) return { ok: false, error: `${cwd} does not exist.` };
+  if (!fs.existsSync(cwd)) {
+    return { ok: false, reason: 'no-folder', error: `${cwd} does not exist.` };
+  }
+  // Ask before spawning anything: on macOS the failure we would otherwise
+  // get back is a system dialog, not a string we can put in the UI.
+  const available = await gitAvailability();
+  if (available.state !== 'ok') {
+    return {
+      ok: false,
+      reason: available.state === 'needs-xcode-tools' ? 'needs-xcode-tools' : 'no-git',
+      error: gitMissingMessage(available.state),
+    };
+  }
   const already = await runGitAsync(['rev-parse', '--is-inside-work-tree'], cwd);
   if (already.exitCode === 0 && already.stdout.trim() === 'true') {
-    return { ok: false, error: `${cwd} already has a history.` };
+    return { ok: false, reason: 'already-tracked', error: `${cwd} already has a history.` };
   }
   // Guard BEFORE `git init`: everything here becomes a permanent blob, and
   // git can never reclaim it. A documents folder is nowhere near this; a
@@ -625,18 +734,23 @@ export async function initRepo(
   if (bytes > MAX_INIT_BYTES) {
     return {
       ok: false,
+      reason: 'too-large',
       error:
         `This folder holds ${Math.round(bytes / 1024 / 1024)} MB. Keeping a history of it would ` +
         'roughly double that on disk, so Overcli has left it alone.',
     };
   }
   const init = await runGitAsync(['init'], cwd);
-  if (init.exitCode !== 0) return { ok: false, error: init.stderr.trim() || init.stdout.trim() };
+  if (init.exitCode !== 0) {
+    return { ok: false, reason: 'failed', error: init.stderr.trim() || init.stdout.trim() };
+  }
   await runGitAsync(['symbolic-ref', 'HEAD', 'refs/heads/main'], cwd);
   const ignorePath = path.join(cwd, '.gitignore');
   if (!fs.existsSync(ignorePath)) fs.writeFileSync(ignorePath, DEFAULT_GITIGNORE, 'utf-8');
   const add = await runGitAsync(['add', '-A'], cwd);
-  if (add.exitCode !== 0) return { ok: false, error: add.stderr.trim() || add.stdout.trim() };
+  if (add.exitCode !== 0) {
+    return { ok: false, reason: 'failed', error: add.stderr.trim() || add.stdout.trim() };
+  }
   const email = await runGitAsync(['config', 'user.email'], cwd);
   const identity = email.stdout.trim()
     ? []
@@ -644,7 +758,9 @@ export async function initRepo(
   const commit = await runGitAsync(
     [...identity, 'commit', '--allow-empty', '-m', 'Starting point'], cwd,
   );
-  if (commit.exitCode !== 0) return { ok: false, error: commit.stderr.trim() || commit.stdout.trim() };
+  if (commit.exitCode !== 0) {
+    return { ok: false, reason: 'failed', error: commit.stderr.trim() || commit.stdout.trim() };
+  }
   return { ok: true, branch: 'main' };
 }
 

@@ -35,6 +35,8 @@ import {
   ReviewPreset,
   MainToRendererEvent,
   LogLevel,
+  IPCInvokeMap,
+  InitRepoFailure,
 } from '@shared/types';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { effortForBackend } from '@shared/effort';
@@ -516,9 +518,13 @@ interface StoreState {
   checkpointProject(projectPath: string, message: string): Promise<void>;
   noteVersionsRestored(projectPath: string): void;
   askAboutDocument(filePath: string): void;
-  protectProject(projectId: UUID): Promise<{ ok: true; branch: string } | { ok: false; error: string }>;
-  createEverydayProject(title: string, goal: string): Promise<{ ok: true; path: string; historyOn: boolean } | { ok: false; error: string }>;
-  convertToEverydayProject(projectId: UUID): Promise<{ ok: true } | { ok: false; error: string }>;
+  protectProject(projectId: UUID): Promise<ReturnType<IPCInvokeMap['git:initRepo']>>;
+  createEverydayProject(title: string, goal: string): Promise<ReturnType<IPCInvokeMap['fs:createEverydayProject']>>;
+  /// `reason` rides along on failure so the sheet can offer the remedy —
+  /// notably "install git", which is the one cause the user can actually fix.
+  convertToEverydayProject(projectId: UUID): Promise<
+    { ok: true } | { ok: false; error: string; reason?: InitRepoFailure }
+  >;
   revertEverydayProject(projectId: UUID): Promise<{ ok: true } | { ok: false; error: string }>;
 
   // Event routing — called from the preload's onMainEvent bridge.
@@ -1065,6 +1071,14 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: id ? 'conversation' : s.detailMode,
       focusedProjectId: id ? null : s.focusedProjectId,
       focusedWorkspaceId: id ? null : s.focusedWorkspaceId,
+      // The explorer root is global state but it describes ONE conversation's
+      // folder, so leaving it set across a switch showed the previous
+      // project's files next to the new conversation — clicking a changed
+      // file in repo B while an everyday project's documents were open put
+      // that project's tree beside it and never swapped out. Cleared on a
+      // real switch; re-selecting the same conversation leaves it alone, and
+      // Back/Forward restores it directly (see navHistory.applyLocation).
+      explorerRootPath: id === s.selectedConversationId ? s.explorerRootPath : null,
       // The editor isn't cleared here any more: `useFileScope` sees the new
       // conversation and swaps in that conversation's own tabs (see
       // ./fileScope.ts), so the files you had open come back when you
@@ -1099,6 +1113,9 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: projectId,
       focusedWorkspaceId: null,
+      // A new chat is a blank slate: an explorer opened from some earlier
+      // conversation is not part of it. See selectConversation.
+      explorerRootPath: null,
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -1110,6 +1127,7 @@ export const useStore = create<StoreState>((set, get) => ({
       detailMode: 'conversation',
       focusedProjectId: null,
       focusedWorkspaceId: workspaceId,
+      explorerRootPath: null,
       welcomeFocusToken: s.welcomeFocusToken + 1,
     }));
     window.overcli.invoke('store:saveSelection', null);
@@ -1422,7 +1440,9 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async protectProject(projectId) {
     const project = get().projects.find((p) => p.id === projectId);
-    if (!project) return { ok: false as const, error: 'Project not found.' };
+    if (!project) {
+      return { ok: false as const, reason: 'no-folder' as const, error: 'Project not found.' };
+    }
     const res = await window.overcli.invoke('git:initRepo', { projectPath: project.path });
     if (res.ok) await get().refreshProjectGitStatus(projectId);
     return res;
@@ -3276,11 +3296,26 @@ export const useStore = create<StoreState>((set, get) => ({
   /// exists, with Read tools pointed at this project; all that was missing
   /// was the door.
   askAboutDocument(filePath) {
-    const project = get().projects.find((p) => isPathUnder(filePath, p.path));
+    const state = get();
+    const owner = state.projects.find((p) => isPathUnder(filePath, p.path));
+    // Not every document the pane can open lives in a project: worker and
+    // flow output is written outside every project root, and the ask bar is
+    // offered for markdown ANYWHERE. Falling out of the function there made
+    // the button dead — a click with no reaction, which reads as broken
+    // rather than as unsupported. So when no project owns the file we still
+    // open a chat, in whatever project is in context, and hand it the
+    // absolute path: a Read tool can open that just as well as an @-mention.
+    const project =
+      owner ??
+      state.projects.find((p) =>
+        p.conversations.some((c) => c.id === state.selectedConversationId),
+      ) ??
+      state.projects.find((p) => p.id === state.focusedProjectId) ??
+      state.projects[0];
     if (!project) return;
-    const rel = filePath.slice(project.path.length + 1);
+    const reference = owner ? `@${filePath.slice(owner.path.length + 1)}` : `\`${filePath}\``;
     // Seeded, not sent: the user still says what they actually want to know.
-    get().setDraft('__welcome__', `About @${rel} — `);
+    get().setDraft('__welcome__', `About ${reference} — `);
     get().startNewConversation(project.id);
   },
 

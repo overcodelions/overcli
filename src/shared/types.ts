@@ -538,6 +538,21 @@ export interface Colosseum {
 /// already shell out to git for the diff.
 export type RemoteKind = 'github' | 'other' | 'none';
 
+/// Why an init did not happen. The renderer picks its wording from this
+/// rather than from the error string: "couldn't start a history" has several
+/// causes with completely different remedies (install something / pick a
+/// different folder / nothing you can do), and guessing one of them in the UI
+/// is how someone with no git installed got told their folder was nested
+/// inside another project.
+export type InitRepoFailure =
+  | 'no-folder'
+  | 'no-git'
+  | 'needs-xcode-tools'
+  | 'already-tracked'
+  | 'too-large'
+  | 'failed';
+
+
 export interface WorktreeStatus {
   filesChanged: number;
   insertions: number;
@@ -1553,7 +1568,19 @@ export interface IPCInvokeMap {
     | { ok: false; error: string };
   'git:initRepo': (args: { projectPath: string }) =>
     | { ok: true; branch: string }
-    | { ok: false; error: string };
+    | { ok: false; reason: InitRepoFailure; error: string };
+  /// Whether git is usable on this machine. `needs-xcode-tools` is macOS
+  /// with the Command Line Tools stub — git is one dialog away, not absent.
+  'git:availability': (args?: { refresh?: boolean }) =>
+    | { state: 'ok'; version: string }
+    | { state: 'needs-xcode-tools' }
+    | { state: 'missing' };
+  /// Opens a Terminal window running the platform's git install command.
+  /// `command` comes back either way so the UI can offer it as copyable text
+  /// when we could not open a window (Linux, or a refused Apple Event).
+  'git:install': () =>
+    | { ok: true; command: string }
+    | { ok: false; error: string; command?: string };
   'git:removeHistory': (args: { projectPath: string }) =>
     | { ok: true }
     | { ok: false; error: string };
@@ -1605,8 +1632,13 @@ export interface IPCInvokeMap {
     projectPath: string;
     files: Array<{ name: string; dataBase64: string }>;
   }) => { ok: true; written: number } | { ok: false; error: string };
+  /// The folder is scaffolded and the history started in one call. A failed
+  /// history is NOT a failed creation — the folder exists and is usable — so
+  /// it comes back as `historyOn: false` plus the reason, and the caller
+  /// decides how much of a problem that is.
   'fs:createEverydayProject': (args: { title: string; goal: string }) =>
-    | { ok: true; path: string; historyOn: boolean }
+    | { ok: true; path: string; historyOn: true }
+    | { ok: true; path: string; historyOn: false; historyReason: InitRepoFailure; historyError: string }
     | { ok: false; error: string };
   'git:workspaceCommitAll': (args: {
     projects: Array<{ name: string; path: string }>;

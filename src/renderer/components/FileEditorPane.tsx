@@ -1110,6 +1110,9 @@ function AskToEditBar({
   const abandoned = useRef(new Set<string>());
   const streamed = useStore((s) => (requestId ? s.documentRevisions[requestId] : undefined));
   const askAboutDocument = useStore((s) => s.askAboutDocument);
+  // With no project at all there is no chat to open, so the door is hidden
+  // rather than offered and ignored.
+  const canAskAbout = useStore((s) => s.projects.length > 0);
   const clearRevision = useStore((s) => s.clearDocumentRevision);
 
   useEffect(() => {
@@ -1385,12 +1388,14 @@ function AskToEditBar({
             {useSelection ? 'Only the selected text changes.' : 'Changes the whole document.'}{' '}
             Nothing changes until you keep it.
           </span>
-          <button
-            onClick={() => askAboutDocument(path)}
-            className="shrink-0 rounded-lg border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink hover:bg-card-strong transition-colors"
-          >
-            Ask a question about this
-          </button>
+          {canAskAbout && (
+            <button
+              onClick={() => askAboutDocument(path)}
+              className="shrink-0 rounded-lg border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink hover:bg-card-strong transition-colors"
+            >
+              Ask a question about this
+            </button>
+          )}
         </div>
       </div>
     </div>
