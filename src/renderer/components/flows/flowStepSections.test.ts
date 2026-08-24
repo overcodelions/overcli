@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  isFlowNoteTurn,
   isFlowStepTurn,
+  parseFlowNote,
   parseFlowSections,
   parseFlowStepContent,
 } from './flowStepSections';
@@ -123,5 +125,45 @@ describe('parseFlowStepContent — reloaded (raw prompt)', () => {
 
   it('returns null for non-flow text', () => {
     expect(parseFlowStepContent('hello there')).toBeNull();
+  });
+});
+
+describe('flow notes', () => {
+  it('recognizes a live marked note and returns its line', () => {
+    const text =
+      '<!--flow-note-->Asking for report.md in an output block so it can be handed to the next step.';
+    expect(isFlowNoteTurn(text)).toBe(true);
+    expect(parseFlowNote(text)).toBe(
+      'Asking for report.md in an output block so it can be handed to the next step.',
+    );
+  });
+
+  it('recognizes a re-ask restored from the CLI transcript, and shows only its first line', () => {
+    // After a restart the marker is gone — the transcript has the raw prompt
+    // the model saw, which is written as instructions and reads as if the
+    // user typed them.
+    const raw = [
+      'Your last reply did not contain an <output name="report.md"> block, so this step has nothing to hand to the next one.',
+      '',
+      'Do not redo the work. Emit the deliverable you already produced:',
+      '  - If you wrote it to a file, read that file back and paste its full contents inside the block.',
+    ].join('\n');
+    expect(isFlowNoteTurn(raw)).toBe(true);
+    expect(parseFlowNote(raw)).toBe(
+      'Your last reply did not contain an <output name="report.md"> block, so this step has nothing to hand to the next one.',
+    );
+  });
+
+  it('recognizes the rejected-pointer re-ask too', () => {
+    const raw =
+      'Your last reply pointed at "draft.md" for <output name="report.md">, but the runtime could not accept that file: it is stale.\n\nDo not redo the work.';
+    expect(isFlowNoteTurn(raw)).toBe(true);
+  });
+
+  it('leaves real user turns and step turns alone', () => {
+    expect(isFlowNoteTurn('can you look at this again')).toBe(false);
+    expect(isFlowNoteTurn('<!--flow-->\n<!--flow:header-->\n### Step: `tests`')).toBe(false);
+    expect(parseFlowNote('hello there')).toBeNull();
+    expect(parseFlowNote('<!--flow-note-->   ')).toBeNull();
   });
 });
