@@ -90,7 +90,7 @@ export function VersionsSheet({ projectPath }: { projectPath: string }) {
     }
     setOpenSha(null);
     setOpenFile(null);
-    useStore.getState().noteVersionsRestored();
+    useStore.getState().noteVersionsRestored(projectPath);
     void load();
   };
 

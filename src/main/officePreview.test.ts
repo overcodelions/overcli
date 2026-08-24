@@ -203,6 +203,25 @@ describe('convertOfficeToPreview', () => {
     expect(result.convertedPdfSizeBytes).toBe(8);
   });
 
+  it('prefers LibreOffice over Quick Look when both succeed', async () => {
+    const result = await convertOfficeToPreview(path.join(root, 'deck.pptx'), 'presentation', 1024 * 1024, {
+      platform: 'darwin',
+      env: {},
+      exists: (c) => c === '/Applications/LibreOffice.app/Contents/MacOS/soffice',
+      run: async (file, args) => {
+        if (file === 'qlmanage') {
+          const bundle = path.join(args[args.indexOf('-o') + 1], 'deck.pptx.qlpreview');
+          write(path.join(bundle, 'Preview.html'), '<p>ql</p>');
+          return;
+        }
+        // Slower than Quick Look, and still the one that must win.
+        await new Promise((r) => setTimeout(r, 20));
+        write(path.join(args[args.indexOf('--outdir') + 1], 'deck.pdf'), '%PDF-1.4');
+      },
+    });
+    expect(result.converterKind).toBe('libreoffice');
+  });
+
   it('falls through to Quick Look on macOS when LibreOffice is absent', async () => {
     const result = await convertOfficeToPreview(path.join(root, 'deck.pptx'), 'presentation', 1024 * 1024, {
       platform: 'darwin',

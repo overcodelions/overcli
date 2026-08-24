@@ -41,6 +41,13 @@ const PUBLISH_LEDGER = '.published.json';
 /// It stays in the cabinet, which is pruned by compaction and is not a repo.
 export const PUBLISH_MAX_BYTES = 25 * 1024 * 1024;
 
+/// A worker's model-generated HTML previews under a script-running policy, so
+/// it is the one document-like extension that must not be filed into a live
+/// folder and committed as if a person put it there.
+function isPublishable(name: string): boolean {
+  return isDocumentLikePath(name) && !/\.html?$/i.test(name);
+}
+
 export interface PublishArtifact {
   name: string;
   body?: string;
@@ -51,6 +58,8 @@ export interface PublishResult {
   /// Filenames as they landed in the project, which is not necessarily what
   /// was asked for — a second `Summary.md` becomes `Summary 2.md`.
   written: string[];
+  /// Documents that were too large to file. The cabinet still has them.
+  skippedNames?: string[];
   /// Why nothing was written, when nothing was. Only for the log.
   skipped?: 'not-everyday' | 'already-published' | 'no-documents';
 }
@@ -78,7 +87,7 @@ export function publishDeliverableToProject(args: {
   const ledger = readLedger(args.workerId);
   if (ledger[args.runId]) return { written: [], skipped: 'already-published' };
 
-  const documents = args.artifacts.filter((a) => isDocumentLikePath(a.name));
+  const documents = args.artifacts.filter((a) => isPublishable(a.name));
   if (documents.length === 0) {
     // Recorded anyway: a run that produced no documents will not start
     // producing them on the next re-fold, and the entry stops this rescanning
@@ -88,19 +97,28 @@ export function publishDeliverableToProject(args: {
   }
 
   const written: string[] = [];
+  const skippedNames: string[] = [];
   for (const artifact of documents) {
     const base = safeBase(artifact.name);
     if (!base) continue;
     try {
       if (artifact.sourcePath) {
-        if (fs.statSync(artifact.sourcePath).size > PUBLISH_MAX_BYTES) continue;
+        if (fs.statSync(artifact.sourcePath).size > PUBLISH_MAX_BYTES) {
+          skippedNames.push(base);
+          log('warn', 'worker-publish', `${base} is too large to file into the folder; it stays in the cabinet`);
+          continue;
+        }
         const dest = uniqueFilePath(args.projectPath, base);
         fs.copyFileSync(artifact.sourcePath, dest);
         written.push(path.basename(dest));
         continue;
       }
       const body = artifact.body ?? '';
-      if (Buffer.byteLength(body, 'utf-8') > PUBLISH_MAX_BYTES) continue;
+      if (Buffer.byteLength(body, 'utf-8') > PUBLISH_MAX_BYTES) {
+        skippedNames.push(base);
+        log('warn', 'worker-publish', `${base} is too large to file into the folder; it stays in the cabinet`);
+        continue;
+      }
       const dest = uniqueFilePath(args.projectPath, base);
       fs.writeFileSync(dest, body, 'utf-8');
       written.push(path.basename(dest));
@@ -112,7 +130,7 @@ export function publishDeliverableToProject(args: {
   }
 
   writeLedger(args.workerId, { ...ledger, [args.runId]: written });
-  return { written };
+  return skippedNames.length > 0 ? { written, skippedNames } : { written };
 }
 
 /// Same shape as `copyIntoProject`: a basename, never a path, and never a

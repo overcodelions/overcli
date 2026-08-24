@@ -18,7 +18,7 @@ There is deliberately no `inbox/` or `output/`. Separating "what I gave it" from
 
 ## Why there is no separate "safe mode" runner
 
-`isGitRepo` (`src/main/index.ts:348` and `:367`) is evaluated live per call via `currentBranch`. The moment history is turned on, the two `effectiveRunIn` ternaries (`src/main/flows/scheduler.ts:475`, `src/main/flows/workerEngine.ts:1961`) return `'worktree'` on their own — no restart, no edit to either file, and no pre-run auto-commit needed.
+`isGitRepo` (`src/main/index.ts:358` and `:377`) is evaluated live per call via `currentBranch`. The moment history is turned on, the two `effectiveRunIn` ternaries (`src/main/flows/scheduler.ts:475`, `src/main/flows/workerEngine.ts:1991`) return `'worktree'` on their own — no restart, no edit to either file, and no pre-run auto-commit needed.
 
 ## What it does not do
 

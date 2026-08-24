@@ -99,23 +99,55 @@ export async function convertOfficeToPreview(
   }
 
   // Raced, not serial: a hung LibreOffice used to burn its full 30s timeout
-  // before Quick Look — which ships with macOS — was ever tried.
+  // before Quick Look — which ships with macOS — was ever tried. But a race
+  // with no tie-break lets process timing decide which converter's output the
+  // user sees, so the earliest-listed converter still wins when it is close.
+  const CONVERTER_GRACE_MS = 1500;
   const failures: string[] = [];
+  const results: Array<OfficeConversion | null> = attempts.map(() => null);
+  const done: boolean[] = attempts.map(() => false);
   let settled = 0;
+  let graceTimer: ReturnType<typeof setTimeout> | null = null;
+
   const winner = await new Promise<OfficeConversion | null>((resolve) => {
-    for (const attempt of attempts) {
+    const finish = (value: OfficeConversion | null) => {
+      if (graceTimer) clearTimeout(graceTimer);
+      resolve(value);
+    };
+    // The best success whose better-ranked rivals have all already settled.
+    const bestReady = (): OfficeConversion | null => {
+      for (let i = 0; i < attempts.length; i++) {
+        if (results[i]) return results[i];
+        if (!done[i]) return null;
+      }
+      return null;
+    };
+    const bestSoFar = (): OfficeConversion | null => results.find((r) => r) ?? null;
+    const onSettled = () => {
+      const ready = bestReady();
+      if (ready) return finish(ready);
+      if (settled === attempts.length) return finish(null);
+      if (bestSoFar() && !graceTimer) {
+        graceTimer = setTimeout(() => finish(bestSoFar()), CONVERTER_GRACE_MS);
+      }
+    };
+    attempts.forEach((attempt, i) => {
       void attempt.run().then(
         (result) => {
-          if (result.convertedPdfDataUrl || result.convertedHtml) return resolve(result);
-          failures.push(`${attempt.label}: ${result.conversionError ?? 'no preview produced.'}`);
-          if (++settled === attempts.length) resolve(null);
+          done[i] = true;
+          settled++;
+          if (result.convertedPdfDataUrl || result.convertedHtml) results[i] = result;
+          else failures.push(`${attempt.label}: ${result.conversionError ?? 'no preview produced.'}`);
+          onSettled();
         },
         (e: unknown) => {
+          done[i] = true;
+          settled++;
           failures.push(`${attempt.label}: ${(e as Error).message}`);
-          if (++settled === attempts.length) resolve(null);
+          onSettled();
         },
       );
-    }
+    });
   });
   if (winner) return winner;
   return { conversionError: failures.join(' ') };

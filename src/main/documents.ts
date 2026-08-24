@@ -144,6 +144,7 @@ export function createBlankDocument(
     // shows you what you just named.
     const seed = typed.ext === 'md' ? `# ${stem}\n\n` : '';
     fs.writeFileSync(target, seed, 'utf-8');
+    invalidateProjectContext(args.dirPath);
     return { ok: true, path: target };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
@@ -169,6 +170,7 @@ export async function createDocumentFromPrompt(
     fs.mkdirSync(args.dirPath, { recursive: true });
     const target = uniqueDocumentPath(args.dirPath, name);
     fs.writeFileSync(target, body, 'utf-8');
+    invalidateProjectContext(args.dirPath);
     return { ok: true, path: target, backend: out.label };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
@@ -190,8 +192,15 @@ const MAX_CONTEXT_CHARS = 40_000;
 /// either binary or something the model cannot use as prose.
 const CONTEXT_EXTS = new Set(['md', 'txt', 'csv', 'json', 'html', 'tsv']);
 
-const CONTEXT_WALK_TTL_MS = 30_000;
+const CONTEXT_WALK_TTL_MS = 3_000;
 const contextWalkCache = new Map<string, { at: number; entries: ReturnType<typeof listFileEntriesSync> }>();
+
+/// Anything that adds a file to a project must drop its walk, or the next
+/// "summarise the course material" is answered from a listing taken before
+/// the material arrived — indistinguishable from the model ignoring it.
+export function invalidateProjectContext(rootPath: string): void {
+  contextWalkCache.delete(rootPath);
+}
 
 /// The project's other documents, nearest first, up to the budget. Nearest
 /// because a file beside the one being edited is likelier to be what "the
@@ -310,8 +319,22 @@ export async function reviseDocument(
   // user's document.
   // Only unwrap when the ENTIRE reply is one fence. A README that merely
   // starts and ends with a code block must keep both of its delimiters.
-  const fenced = out.text.match(/^\s*```[a-zA-Z]*\r?\n([\s\S]*?)\r?\n```\s*$/);
-  const text = fenced && !/^\s*```/m.test(fenced[1]) ? fenced[1] : out.text;
+  const fenced = out.text.match(/^\s*```([a-zA-Z]*)\r?\n([\s\S]*?)\r?\n```\s*$/);
+  // The outer fence's own info string is what actually separates the two
+  // cases a parity count alone cannot tell apart: a reply the model wrapped
+  // opens ```markdown / ```md / a bare ```, while a README that genuinely
+  // starts with a code block opens ```bash, ```python, and so on — trusting
+  // parity there would also unwrap that README, eating its opening and
+  // closing fences. Trust an explicit markdown wrapper outright.
+  const wrapperLang = fenced ? fenced[1].toLowerCase() : '';
+  const isMarkdownWrapper = wrapperLang === 'markdown' || wrapperLang === 'md';
+  const innerFences = fenced ? (fenced[2].match(/^[ \t]*```/gm) ?? []).length : 0;
+  // A bare wrapper is only safe when it holds no fences at all: an even count
+  // cannot tell "wrapper around a nested block" from "document that opens and
+  // closes with unlabeled blocks", and guessing wrong eats the document's own
+  // delimiters.
+  const isBalancedBareWrapper = wrapperLang === '' && innerFences === 0;
+  const text = fenced && (isMarkdownWrapper || isBalancedBareWrapper) ? fenced[2] : out.text;
   if (!text.trim()) return { ok: false, error: 'The model returned an empty document.' };
   return { ok: true, content: text };
 }
