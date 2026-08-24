@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
+import { sheetSubmitKeys } from './sheetSubmit';
 import { WorktreeCreatingStatus } from '../WorktreeCreatingStatus';
 import { BranchCombobox } from './BranchCombobox';
 
@@ -223,7 +224,7 @@ export function NewWorkspaceAgentSheet({ workspaceId }: { workspaceId: UUID }) {
   };
 
   return (
-    <div className="flex flex-col p-5 gap-3">
+    <div className="flex flex-col p-5 gap-3" onKeyDown={sheetSubmitKeys(() => { if (canSubmit) void go(); })}>
       <div>
         <div className="text-lg font-semibold">New workspace agent</div>
         <div className="text-xs text-ink-faint">{meta.summary}</div>

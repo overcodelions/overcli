@@ -40,6 +40,7 @@ import {
   baseName,
   buildWorkQueue,
   describeQueue,
+  groupByDay,
   pickDeliverable,
   type QueueRow,
   type QueueStep,
@@ -166,6 +167,7 @@ export function WorkQueuePane() {
             rows={queue.finished}
             now={now}
             onOpen={open}
+            byDay
             filed={filed}
             onOpenFile={(path) => openFile(path, undefined, 'preview')}
           />
@@ -186,6 +188,7 @@ function Band({
   rows,
   now,
   onOpen,
+  byDay,
   filed,
   onOpenFile,
 }: {
@@ -195,9 +198,24 @@ function Band({
   rows: QueueRow[];
   now: number;
   onOpen: (row: QueueRow) => void;
+  byDay?: boolean;
   filed?: Record<string, WorkerFile | null>;
   onOpenFile?: (path: string) => void;
 }) {
+  const days = useMemo(() => (byDay ? groupByDay(rows, now) : null), [byDay, rows, now]);
+
+  const renderRow = (row: QueueRow) => (
+    <QueueRowView
+      key={row.key}
+      row={row}
+      now={now}
+      onOpen={() => onOpen(row)}
+      clock={byDay}
+      filed={filed?.[row.key] ?? null}
+      onOpenFile={onOpenFile}
+    />
+  );
+
   return (
     <section className="mt-7">
       <h3 className="flex items-baseline gap-2 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
@@ -207,21 +225,31 @@ function Band({
       </h3>
       {rows.length === 0 ? (
         <p className="mt-2 text-[12px] text-ink-faint">{EMPTY_BAND[title]}</p>
-      ) : (
+      ) : days ? (
         <div className="mt-1.5">
-          {rows.map((row) => (
-            <QueueRowView
-              key={row.key}
-              row={row}
-              now={now}
-              onOpen={() => onOpen(row)}
-              filed={filed?.[row.key] ?? null}
-              onOpenFile={onOpenFile}
-            />
+          {days.map((day, i) => (
+            <div key={day.at} className={i > 0 ? 'mt-4' : undefined}>
+              <DayRule label={day.label} />
+              {day.rows.map(renderRow)}
+            </div>
           ))}
         </div>
+      ) : (
+        <div className="mt-1.5">{rows.map(renderRow)}</div>
       )}
     </section>
+  );
+}
+
+/// The only rule this screen draws between rows, and it earns the exception
+/// by answering something no row can: whether the gap above it is ten minutes
+/// or a night. Quiet on purpose — a label and a hairline, not a header.
+function DayRule({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-2 py-1.5 pl-3">
+      <span className="text-[11px] text-ink-faint">{label}</span>
+      <span aria-hidden className="h-px flex-1 bg-card-strong" />
+    </div>
   );
 }
 
@@ -235,12 +263,14 @@ function QueueRowView({
   row,
   now,
   onOpen,
+  clock,
   filed,
   onOpenFile,
 }: {
   row: QueueRow;
   now: number;
   onOpen: () => void;
+  clock?: boolean;
   filed?: WorkerFile | null;
   onOpenFile?: (path: string) => void;
 }) {
@@ -252,12 +282,12 @@ function QueueRowView({
   // The wrapper holds the hover state the trailing arrow reads, so the arrow
   // is a sibling of the link rather than a child of it.
   return (
-    <div className="group flex items-start gap-2">
+    <div className="group flex items-start gap-2 rounded-md pr-1 transition-colors hover:bg-card">
       <button
         onClick={onOpen}
         className={
-          'flex min-w-0 flex-1 items-start gap-3 rounded-md py-2 pl-3 pr-2 text-left transition-colors ' +
-          'hover:bg-card focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
+          'flex min-w-0 flex-1 items-start gap-3 rounded-md py-2 pl-3 pr-2 text-left ' +
+          'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
         }
       >
         {/* Whose work this is, said twice on purpose — a rule you read at a
@@ -297,39 +327,50 @@ function QueueRowView({
           )}
         </span>
 
-        {/* Live work is timed from when it started and everything else from
-            when it stopped, so they cannot share a phrasing: "6m ago" against
-            a running job reads as a job that has stalled, and against one
-            running for fifteen hours it reads as a bug — which is exactly
-            what it was hiding. */}
-        <span className="ml-auto shrink-0 pt-0.5 text-[11px] tabular-nums text-ink-faint">
-          {live ? elapsed(row.at, now) : relativeTime(row.at, now)}
-        </span>
       </button>
 
-      {filed && onOpenFile ? (
-        <button
-          onClick={() => onOpenFile(filed.path)}
-          title={`Open ${baseName(filed.name)}`}
-          className={
-            'mt-2 flex shrink-0 items-center gap-1 rounded-md border border-card-strong px-2 py-1 ' +
-            'text-[11px] text-ink-muted hover:bg-card hover:text-ink ' +
-            'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
-          }
-        >
-          <span className="max-w-[11rem] truncate">{baseName(filed.name)}</span>
-          <span aria-hidden className="text-ink-faint">
-            ↗
-          </span>
-        </button>
-      ) : (
-        <span
-          aria-hidden
-          className="mt-3 shrink-0 pr-1 text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100"
-        >
-          →
-        </span>
+      {/* Fixed columns, and the stamp is a sibling of the row rather than its
+          last child. Inside the button its x-position was set by whatever the
+          job happened to file next to it, so a column of times that should
+          read straight down the page zig-zagged by the width of a filename. */}
+      {onOpenFile && (
+        <div className="flex w-[13rem] shrink-0 justify-end pt-2">
+          {filed && (
+            <button
+              onClick={() => onOpenFile(filed.path)}
+              title={`Open ${baseName(filed.name)}`}
+              className={
+                'flex min-w-0 items-center gap-1 rounded-md border border-card-strong px-2 py-1 ' +
+                'text-[11px] text-ink-muted hover:bg-card-strong hover:text-ink ' +
+                'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
+              }
+            >
+              <span className="truncate">{baseName(filed.name)}</span>
+              <span aria-hidden className="text-ink-faint">
+                ↗
+              </span>
+            </button>
+          )}
+        </div>
       )}
+
+      {/* Three phrasings, because they are three different questions. Live
+          work is timed from when it started — "6m ago" against a running job
+          reads as a job that has stalled, and against one running for fifteen
+          hours it reads as a bug, which is exactly what it was hiding. A
+          finished row under a day heading gives the clock time: "14:32" sorts
+          by eye, shows the gaps and the bursts, and doesn't drift under you.
+          Only an ungrouped past row still counts backwards. */}
+      <span className="w-16 shrink-0 pt-2.5 text-right text-[11px] tabular-nums text-ink-faint">
+        {live ? elapsed(row.at, now) : clock ? clockTime(row.at) : relativeTime(row.at, now)}
+      </span>
+
+      <span
+        aria-hidden
+        className="w-3 shrink-0 pt-2.5 text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100"
+      >
+        →
+      </span>
     </div>
   );
 }

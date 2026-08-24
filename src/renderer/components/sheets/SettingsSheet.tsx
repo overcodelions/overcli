@@ -5,6 +5,7 @@ import {
   PermissionMode,
   EffortLevel,
   AppSettings,
+  SidebarLayout,
   ThemePreference,
   BackendHealth,
 } from '@shared/types';
@@ -623,9 +624,22 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
         </Row>
       </Group>
       <Group title="Layout" description="Tuning reserved for when the defaults don't fit.">
+        <Row
+          label="Sidebar"
+          help="Recent is one list of everything you've worked on, newest first, with the project printed once per run of rows. Places is your projects and workspaces as folders. The switch at the top of the sidebar sets the same thing."
+        >
+          <select
+            value={local.sidebarLayout ?? 'stream'}
+            onChange={(e) => patch({ sidebarLayout: e.target.value as SidebarLayout })}
+            className="field px-2 py-1 text-xs"
+          >
+            <option value="stream">Recent</option>
+            <option value="projects">Places</option>
+          </select>
+        </Row>
         <Toggle
-          label="Show Active conversations in sidebar"
-          help="Adds the compact running/recent conversation shortcut strip above Workspaces."
+          label="Show Working on section"
+          help="Keeps a short list of what you're in the middle of at the top of the sidebar, ranked by how often you come back to it."
           value={local.showActiveSidebarSection ?? true}
           onChange={(v) => patch({ showActiveSidebarSection: v })}
         />

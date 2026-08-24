@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
 import { GitInstallNotice } from '../GitInstallNotice';
+import { sheetSubmitKeys } from './sheetSubmit';
 import type { InitRepoFailure } from '@shared/types';
 
 export function NewEverydayProjectSheet() {
@@ -18,8 +19,35 @@ export function NewEverydayProjectSheet() {
   /// After a successful creation there is nothing left to create.
   const [madeWithoutHistory, setMadeWithoutHistory] = useState<InitRepoFailure | null>(null);
 
+  const submit = async () => {
+    if (working || !name.trim() || madeWithoutHistory) return;
+    setWorking(true);
+    const res = await createEverydayProject(name, goal);
+    setWorking(false);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    if (res.historyOn) {
+      openSheet(null);
+      return;
+    }
+    // The folder exists and is already registered. Say why undo
+    // is missing using the reason the main process reported —
+    // this used to assert "it already sits inside another
+    // project's history" for every cause, including no git.
+    setMadeWithoutHistory(res.historyReason);
+    setError(
+      res.historyReason === 'no-git' || res.historyReason === 'needs-xcode-tools'
+        ? null
+        : res.historyReason === 'already-tracked'
+          ? "Made the folder, but couldn't start its history — it already sits inside another project's history. Overcli can still work here, but Undo won't be available."
+          : `Made the folder, but couldn't start its history. ${res.historyError} Overcli can still work here, but Undo won't be available.`,
+    );
+  };
+
   return (
-    <div className="flex flex-col min-h-0 flex-1">
+    <div className="flex flex-col min-h-0 flex-1" onKeyDown={sheetSubmitKeys(() => void submit())}>
       <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-3">
         <div>
           <div className="text-lg font-semibold">New everyday project</div>
@@ -68,31 +96,7 @@ export function NewEverydayProjectSheet() {
               primary
               label={working ? 'Creating…' : 'Create project'}
               disabled={working || !name.trim()}
-              onClick={async () => {
-                setWorking(true);
-                const res = await createEverydayProject(name, goal);
-                setWorking(false);
-                if (!res.ok) {
-                  setError(res.error);
-                  return;
-                }
-                if (res.historyOn) {
-                  openSheet(null);
-                  return;
-                }
-                // The folder exists and is already registered. Say why undo
-                // is missing using the reason the main process reported —
-                // this used to assert "it already sits inside another
-                // project's history" for every cause, including no git.
-                setMadeWithoutHistory(res.historyReason);
-                setError(
-                  res.historyReason === 'no-git' || res.historyReason === 'needs-xcode-tools'
-                    ? null
-                    : res.historyReason === 'already-tracked'
-                      ? "Made the folder, but couldn't start its history — it already sits inside another project's history. Overcli can still work here, but Undo won't be available."
-                      : `Made the folder, but couldn't start its history. ${res.historyError} Overcli can still work here, but Undo won't be available.`,
-                );
-              }}
+              onClick={() => void submit()}
             />
           </>
         )}

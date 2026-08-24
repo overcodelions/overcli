@@ -346,3 +346,38 @@ export function pickDeliverable(files: WorkerFile[]): WorkerFile | null {
 export function baseName(name: string): string {
   return name.split('/').pop() ?? name;
 }
+
+/// The finished tail spans days — the cap is ten rows, not one day's rows —
+/// and "3h ago … 1d ago … 2d ago" makes the reader do arithmetic to answer
+/// the only question the tail is ever asked: what happened while I was away.
+/// Cutting it into days answers that directly, and it stops the band's own
+/// count ("5 today") sitting above a list that plainly reaches back further.
+export interface QueueDay {
+  /// Local midnight — the group's identity, and its React key.
+  at: number;
+  /// "Today" / "Yesterday" / "Sat, Aug 22". Absolute for anything older,
+  /// because two relative days is where relative stops helping.
+  label: string;
+  rows: QueueRow[];
+}
+
+export function groupByDay(rows: QueueRow[], now: number): QueueDay[] {
+  const today = startOfDay(now);
+  const days: QueueDay[] = [];
+  for (const row of rows) {
+    const at = startOfDay(row.at);
+    const last = days[days.length - 1];
+    // Rows arrive newest-first, so a day is a contiguous run and the last
+    // group is the only one a row can ever join.
+    if (last && last.at === at) last.rows.push(row);
+    else days.push({ at, label: dayLabel(at, today), rows: [row] });
+  }
+  return days;
+}
+
+function dayLabel(at: number, today: number): string {
+  const days = Math.round((today - at) / 86_400_000);
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  return new Date(at).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
+}

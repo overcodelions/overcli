@@ -1284,7 +1284,7 @@ function registerIpc(): void {
       }),
   );
   ipcMain.handle('ollama:startServer', () => ollamaServer.start());
-  ipcMain.handle('ollama:stopServer', () => ollamaServer.stop());
+  ipcMain.handle('ollama:stopServer', () => ollamaServer.requestStop());
   ipcMain.handle('ollama:serverStatus', () => ({
     status: ollamaServer.getStatus(),
     log: ollamaServer.getLog(),

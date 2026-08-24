@@ -8,6 +8,14 @@ import {
   OllamaServerStatus,
 } from '@shared/types';
 import { ManualCommand } from './ManualCommand';
+import {
+  CATALOG_SORTS,
+  CatalogQuery,
+  CatalogSort,
+  DEFAULT_CATALOG_QUERY,
+  catalogYears,
+  filterCatalog,
+} from './catalogFilter';
 
 /// Top-level Ollama dashboard. Sibling to Chat/Usage. Handles the whole
 /// local-LLM lifecycle — install prompt, server start/stop with a live
@@ -31,8 +39,7 @@ export function LocalPane() {
   const [pulls, setPulls] = useState<
     Record<string, { percent: number; message?: string; done?: boolean; error?: string }>
   >({});
-  const [countryFilter, setCountryFilter] = useState<string | 'all'>('all');
-  const [companyFilter, setCompanyFilter] = useState<string | 'all'>('all');
+  const [query, setQuery] = useState<CatalogQuery>(DEFAULT_CATALOG_QUERY);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -112,6 +119,8 @@ export function LocalPane() {
     [detection],
   );
 
+  const browsed = useMemo(() => filterCatalog(catalog, query), [catalog, query]);
+
   const applyFix = async (fixId: 'update-ollama' | 'restart-loopback') => {
     setFixStatus({ text: 'Working…' });
     const res = await window.overcli.invoke('ollama:applyFix', { fixId });
@@ -143,8 +152,11 @@ export function LocalPane() {
     setInstallStatus({ text: res.message });
   };
 
-  const stopServer = () => {
-    void window.overcli.invoke('ollama:stopServer');
+  const stopServer = async () => {
+    setInstallStatus({ text: 'Stopping…' });
+    const res = await window.overcli.invoke('ollama:stopServer');
+    setInstallStatus({ text: res.message });
+    setTimeout(() => void refresh(), 1200);
   };
 
   const pullModel = (tag: string) => {
@@ -219,7 +231,7 @@ export function LocalPane() {
               </button>
             ) : serverStatus === 'running' || detection.running ? (
               <button
-                onClick={stopServer}
+                onClick={() => void stopServer()}
                 className="text-xs px-3 py-1 rounded bg-card/70 text-ink-muted hover:bg-card hover:text-ink"
               >
                 Stop server
@@ -399,15 +411,9 @@ export function LocalPane() {
           title="Browse models"
           description="Curated catalog with maker and country of origin. Not exhaustive — any Ollama tag still pulls via the CLI."
         >
-          <CatalogFilters
-            catalog={catalog}
-            country={countryFilter}
-            company={companyFilter}
-            onCountry={setCountryFilter}
-            onCompany={setCompanyFilter}
-          />
+          <CatalogFilters catalog={catalog} query={query} onChange={setQuery} />
           <div className="flex flex-col gap-2 mt-3">
-            {filterCatalog(catalog, countryFilter, companyFilter).map((m) => (
+            {browsed.map((m) => (
               <ModelRow
                 key={m.tag}
                 model={m}
@@ -417,7 +423,7 @@ export function LocalPane() {
                 onCancel={() => cancelPull(m.tag)}
               />
             ))}
-            {filterCatalog(catalog, countryFilter, companyFilter).length === 0 && (
+            {browsed.length === 0 && (
               <div className="text-[11px] text-ink-faint">No models match the current filters.</div>
             )}
           </div>
@@ -583,28 +589,14 @@ function countryLabel(code: string): string {
   }
 }
 
-function filterCatalog(
-  catalog: OllamaRecommendedModel[],
-  country: string,
-  company: string,
-): OllamaRecommendedModel[] {
-  return catalog.filter(
-    (m) => (country === 'all' || m.country === country) && (company === 'all' || m.company === company),
-  );
-}
-
 function CatalogFilters({
   catalog,
-  country,
-  company,
-  onCountry,
-  onCompany,
+  query,
+  onChange,
 }: {
   catalog: OllamaRecommendedModel[];
-  country: string;
-  company: string;
-  onCountry: (value: string) => void;
-  onCompany: (value: string) => void;
+  query: CatalogQuery;
+  onChange: (next: CatalogQuery) => void;
 }) {
   const countries = useMemo(
     () => Array.from(new Set(catalog.map((m) => m.country))).sort(),
@@ -615,20 +607,20 @@ function CatalogFilters({
   const companies = useMemo(
     () =>
       Array.from(
-        new Set(catalog.filter((m) => country === 'all' || m.country === country).map((m) => m.company)),
+        new Set(
+          catalog.filter((m) => query.country === 'all' || m.country === query.country).map((m) => m.company),
+        ),
       ).sort(),
-    [catalog, country],
+    [catalog, query.country],
   );
+  const years = useMemo(() => catalogYears(catalog), [catalog]);
   return (
     <div className="flex flex-wrap items-center gap-3 text-[11px]">
       <label className="flex items-center gap-1.5 text-ink-faint">
         Country
         <select
-          value={country}
-          onChange={(e) => {
-            onCountry(e.target.value);
-            onCompany('all');
-          }}
+          value={query.country}
+          onChange={(e) => onChange({ ...query, country: e.target.value, company: 'all' })}
           className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-ink"
         >
           <option value="all">All</option>
@@ -642,14 +634,43 @@ function CatalogFilters({
       <label className="flex items-center gap-1.5 text-ink-faint">
         Company
         <select
-          value={company}
-          onChange={(e) => onCompany(e.target.value)}
+          value={query.company}
+          onChange={(e) => onChange({ ...query, company: e.target.value })}
           className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-ink"
         >
           <option value="all">All</option>
           {companies.map((c) => (
             <option key={c} value={c}>
               {c}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-1.5 text-ink-faint">
+        Year
+        <select
+          value={query.year}
+          onChange={(e) => onChange({ ...query, year: e.target.value })}
+          className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-ink"
+        >
+          <option value="all">All</option>
+          {years.map((y) => (
+            <option key={y} value={y}>
+              {y}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-1.5 text-ink-faint">
+        Sort
+        <select
+          value={query.sort}
+          onChange={(e) => onChange({ ...query, sort: e.target.value as CatalogSort })}
+          className="bg-card border border-card-strong rounded px-1.5 py-0.5 text-ink"
+        >
+          {CATALOG_SORTS.map((s) => (
+            <option key={s.key} value={s.key}>
+              {s.label}
             </option>
           ))}
         </select>
