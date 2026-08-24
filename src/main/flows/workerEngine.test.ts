@@ -343,6 +343,15 @@ function workerBatch(over: Partial<Orchestration> = {}): Orchestration {
   };
 }
 
+/// `origin` is a union — a batch can come from a schedule or a worker — so the
+/// worker id needs narrowing. The engine only ever parks worker batches; a
+/// schedule origin here would be a bug, and surfaces as an `undefined` id.
+function parkedWorkerIds(
+  parked: Array<Parameters<WorkerParker['parkProposal']>[0]>,
+): Array<string | undefined> {
+  return parked.map((p) => (p.origin?.kind === 'worker' ? p.origin.workerId : undefined));
+}
+
 describe('WorkerEngine shifts', () => {
   it('snapshots external-action authority onto the worker batch', async () => {
     const h = makeHarness({
@@ -544,6 +553,29 @@ describe('WorkerEngine shifts', () => {
     // Both still fully funded to their own caps, exactly as before the pot.
     const { allocation } = h.engine.treasury();
     expect(allocation.byWorker.map((f) => f.availableUSD)).toEqual([20, 30]);
+  });
+
+  it('runs a worker whose slot passed while the one in front of it was planning', async () => {
+    // Both due at 9:00. Scout's planning turn holds the tick past the grace
+    // window; Relay's slot is late by then, but it was late because overcli
+    // was busy, not closed — it has to run, not be written off. Before this
+    // the bottom of a roster starved: skipped, re-anchored, skipped again.
+    const h = makeHarness({
+      seed: [seedWorker(), seedWorker({ id: 'worker-2', name: 'Relay' })],
+      startAt: local(2026, 3, 2, 8, 0),
+      pool: 100,
+    });
+    const release = h.holdPark();
+    h.engine.start();
+    await h.advanceTo(local(2026, 3, 2, 9, 0));
+    expect(parkedWorkerIds(h.parked)).toEqual(['worker-1']);
+
+    h.setNow(local(2026, 3, 2, 9, 10));
+    release();
+    for (let i = 0; i < 5; i++) await h.flush();
+
+    expect(parkedWorkerIds(h.parked)).toEqual(['worker-1', 'worker-2']);
+    expect(h.journal.some((e) => e.note?.startsWith('Missed a shift'))).toBe(false);
   });
 
   it('journals a missed shift instead of replaying it after a long sleep', async () => {

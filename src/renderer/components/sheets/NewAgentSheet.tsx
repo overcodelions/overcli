@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { Backend, Conversation, UUID } from '@shared/types';
 import { SheetActionButton } from './SettingsSheet';
+import { sheetSubmitKeys } from './sheetSubmit';
 import { BaseBranchSelect } from './BaseBranchSelect';
 import { BranchCombobox } from './BranchCombobox';
 import { useProjectBranches } from './useProjectBranches';
@@ -165,7 +166,7 @@ export function NewAgentSheet({ projectId }: { projectId: UUID }) {
   };
 
   return (
-    <div className="flex flex-col p-5 gap-3">
+    <div className="flex flex-col p-5 gap-3" onKeyDown={sheetSubmitKeys(() => void go())}>
       <div>
         <div className="text-lg font-semibold">New agent</div>
         <div className="text-xs text-ink-faint">{kindMeta(kind).summary}</div>

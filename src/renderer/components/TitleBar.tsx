@@ -5,7 +5,13 @@ import { useFlowsStore } from '../flowsStore';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
-import { navigateBack, navigateForward, navigateToTab, useNavHistory } from '../navHistory';
+import {
+  describeLocation,
+  navigateBack,
+  navigateForward,
+  navigateToTab,
+  useNavHistory,
+} from '../navHistory';
 import { formatShortcutDef, SHORTCUTS } from '../shortcuts';
 import {
   SCHEDULE_LABELS,
@@ -285,22 +291,31 @@ function AutomationIndicator({
 /// tabs don't shift sideways the first time you navigate; an exhausted
 /// direction is dimmed and inert instead.
 function HistoryArrows() {
-  const canBack = useNavHistory((s) => s.back.length > 0);
-  const canForward = useNavHistory((s) => s.forward.length > 0);
+  // Subscribe to the stacks themselves, not just their lengths: the tooltip
+  // names the destination, so it has to re-read when the top entry changes
+  // even though the arrow stays enabled throughout.
+  const back = useNavHistory((s) => s.back);
+  const forward = useNavHistory((s) => s.forward);
+  const backTo = back[back.length - 1];
+  const forwardTo = forward[forward.length - 1];
   const backHint = shortcutHint('nav.back');
   const forwardHint = shortcutHint('nav.forward');
   return (
     <div className="flex items-center no-drag mr-2">
       <HistoryArrow
         dir="back"
-        enabled={canBack}
-        title={`Back${backHint}`}
+        enabled={!!backTo}
+        title={backTo ? `Back to ${describeLocation(backTo)}${backHint}` : 'Nothing to go back to'}
         onClick={navigateBack}
       />
       <HistoryArrow
         dir="forward"
-        enabled={canForward}
-        title={`Forward${forwardHint}`}
+        enabled={!!forwardTo}
+        title={
+          forwardTo
+            ? `Forward to ${describeLocation(forwardTo)}${forwardHint}`
+            : 'Nothing to go forward to'
+        }
         onClick={navigateForward}
       />
     </div>

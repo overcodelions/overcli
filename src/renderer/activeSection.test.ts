@@ -14,9 +14,10 @@ function candidate(
     active = false,
     promptedAt = 0,
     touchedAt,
+    momentum,
   }: Partial<Omit<ActiveCandidate<string>, 'entry'>> = {},
 ): ActiveCandidate<string> {
-  return { entry: name, active, promptedAt, touchedAt };
+  return { entry: name, active, promptedAt, touchedAt, momentum };
 }
 
 const names = (entries: ActiveCandidate<string>[]) => entries.map((e) => e.entry);
@@ -176,5 +177,58 @@ describe('selectActiveEntries', () => {
     const input = [candidate('a', { promptedAt: 1 }), candidate('b', { promptedAt: 2 })];
     selectActiveEntries(input);
     expect(names(input)).toEqual(['a', 'b']);
+  });
+
+  it('puts what you just started at the top, however little history it has', () => {
+    // Reported against the built version: a conversation kicked off seconds
+    // ago sat third, below whatever had been ground on all morning, because
+    // momentum was ordering the section. Momentum is a function of history,
+    // so a brand-new row could never win — exactly backwards for a section
+    // answering "what am I doing right now".
+    const picked = selectActiveEntries([
+      candidate('long-haul', { active: true, promptedAt: 90, momentum: 40 }),
+      candidate('steady', { active: true, promptedAt: 80, momentum: 12 }),
+      candidate('just-kicked-off', { active: true, promptedAt: 100, momentum: 1 }),
+    ]);
+    expect(names(picked)[0]).toBe('just-kicked-off');
+    expect(names(picked)).toEqual(['just-kicked-off', 'long-haul', 'steady']);
+  });
+
+  it('never lets momentum reorder the section', () => {
+    const withMomentum = selectActiveEntries([
+      candidate('older', { active: true, promptedAt: 1, momentum: 99 }),
+      candidate('newer', { active: true, promptedAt: 9, momentum: 0 }),
+    ]);
+    const without = selectActiveEntries([
+      candidate('older', { active: true, promptedAt: 1 }),
+      candidate('newer', { active: true, promptedAt: 9 }),
+    ]);
+    expect(names(withMomentum)).toEqual(['newer', 'older']);
+    expect(names(withMomentum)).toEqual(names(without));
+  });
+
+  it('keeps a thread you come back to often past the touch window', () => {
+    // What momentum is actually for: "active by turns, and often". A steady
+    // back-and-forth holds its slot after the flat window has expired.
+    const now = 10 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const stale = now - 2 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const picked = selectActiveEntries(
+      [
+        candidate('worked-often', { promptedAt: stale, touchedAt: stale, momentum: 8 }),
+        candidate('touched-once', { promptedAt: stale, touchedAt: stale, momentum: 0 }),
+      ],
+      { now, floor: 0 },
+    );
+    expect(names(picked)).toEqual(['worked-often']);
+  });
+
+  it('does not extend a slot for momentum below the floor', () => {
+    const now = 10 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const stale = now - 2 * ACTIVE_USER_TOUCH_WINDOW_MS;
+    const picked = selectActiveEntries(
+      [candidate('faded', { promptedAt: stale, touchedAt: stale, momentum: 0.5 })],
+      { now, floor: 0 },
+    );
+    expect(picked).toEqual([]);
   });
 });

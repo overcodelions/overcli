@@ -11,6 +11,7 @@ import { useStore } from './store';
 import { useFlowsStore } from './flowsStore';
 import { useWorkersStore } from './workersStore';
 import {
+  describeLocation,
   installNavHistory,
   locationKey,
   navigateToTab,
@@ -289,6 +290,36 @@ describe('nav history', () => {
     });
   });
 
+  // Reported: "if I click from a flow to a worker then back, it takes me to
+  // the conversation, not the flow." Reproduced here against the arrow,
+  // which is the control that promises to retrace your steps exactly.
+  it('walks Back from a worker to the flow run you came from', () => {
+    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
+    useStore.setState({
+      projects: [{ id: 'p1', conversations: [{ id: 'conv-1' }] }] as never,
+      workspaces: [],
+      colosseums: [],
+      selectedConversationId: 'conv-1',
+    });
+    settle();
+
+    // Open a flow run from the Chat sidebar, then jump to a worker's desk
+    // the way the Working-on section's worker rows do.
+    useFlowsStore.getState().setActiveRun('run-9');
+    useStore.getState().setDetailMode('flows');
+    settle();
+    useWorkersStore.getState().selectWorker('w-1');
+    useStore.getState().setDetailMode('workers');
+    settle();
+
+    useNavHistory.getState().goBack();
+    settle();
+    expect(readLocation()).toMatchObject({
+      detailMode: 'flows',
+      activeRunId: 'run-9',
+    });
+  });
+
   // The complaint this rule answers: sitting on a flow run, pressing Flows,
   // and nothing happening — because "the last place in Flows" was the run
   // already on screen.
@@ -370,5 +401,40 @@ describe('nav history', () => {
     settle();
     expect(useNavHistory.getState().back).toHaveLength(depth - 1);
     expect(useNavHistory.getState().forward).toHaveLength(1);
+  });
+});
+
+describe('describeLocation', () => {
+  it('names each surface in words the arrows can show', () => {
+    expect(describeLocation(baseLocation({ detailMode: 'workers', workersView: 'queue' })))
+      .toBe('the work queue');
+    expect(describeLocation(baseLocation({ detailMode: 'workers', workersView: 'calendar' })))
+      .toBe('the shift calendar');
+    expect(describeLocation(baseLocation({ detailMode: 'workers', workersView: 'worker' })))
+      .toBe("a worker's desk");
+    expect(describeLocation(baseLocation({ detailMode: 'flows', activeRunId: 'run-9' })))
+      .toBe('a flow run');
+    expect(describeLocation(baseLocation({ detailMode: 'flows', librarySegment: 'schedules' })))
+      .toBe('schedules');
+    expect(describeLocation(baseLocation({ detailMode: 'flows' }))).toBe('the flows library');
+    expect(describeLocation(baseLocation({ detailMode: 'orchestrator' })))
+      .toBe('the orchestrator');
+  });
+
+  it('uses the conversation name when it can find one', () => {
+    useStore.setState({
+      projects: [{ id: 'p1', conversations: [{ id: 'conv-1', name: 'patch release' }] }] as never,
+      workspaces: [],
+    });
+    expect(
+      describeLocation(baseLocation({ selectedConversationId: 'conv-1' })),
+    ).toBe('\u201cpatch release\u201d');
+  });
+
+  it('falls back rather than naming a conversation it cannot resolve', () => {
+    useStore.setState({ projects: [], workspaces: [] });
+    expect(describeLocation(baseLocation({ selectedConversationId: 'gone' })))
+      .toBe('your conversation');
+    expect(describeLocation(baseLocation({ selectedConversationId: null }))).toBe('chat');
   });
 });

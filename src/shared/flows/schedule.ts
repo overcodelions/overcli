@@ -344,7 +344,7 @@ export type ScheduleDecision =
 export function evaluateSchedule(
   s: ScheduleTiming,
   now: number,
-  opts: { busy?: boolean } = {},
+  opts: { busy?: boolean; awakeSince?: number } = {},
 ): ScheduleDecision {
   if (!s.enabled) return { action: 'wait', at: Number.POSITIVE_INFINITY };
 
@@ -374,7 +374,19 @@ export function evaluateSchedule(
     return { action: 'fire', dueAt, late };
   }
 
-  if (late && s.catchUp === 'skip') {
+  // `late` alone does not mean the occurrence was missed — only that nobody
+  // looked at it in time. An engine that walks its roster serially spends
+  // minutes inside one entry's turn, and everything behind it comes due while
+  // it is running. Those occurrences were not missed while overcli was
+  // closed; overcli was right here, busy. `awakeSince` is the moment the
+  // caller knows it was awake and looking (its tick start), so anything due
+  // at or after it fires late instead of being written off. Without this the
+  // last entries on a long roster starve: skipped, re-anchored to now, and
+  // skipped again on the next pass, forever.
+  const missedWhileClosed =
+    late && (opts.awakeSince === undefined || dueAt < opts.awakeSince);
+
+  if (missedWhileClosed && s.catchUp === 'skip') {
     return {
       action: 'skip',
       dueAt,

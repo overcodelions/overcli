@@ -111,6 +111,26 @@ describe('evaluateSchedule', () => {
     }
   });
 
+  it('fires late, not skipped, when the occurrence came due after we woke', () => {
+    // The engine was awake at 8:55 and has been busy ever since — the 9am slot
+    // was not missed while overcli was closed, just queued behind a long turn.
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 2, 9, 20), {
+      awakeSince: local(2026, 3, 2, 8, 55),
+    });
+    expect(d).toMatchObject({ action: 'fire', dueAt: local(2026, 3, 2, 9, 0), late: true });
+  });
+
+  it('still skips a slot that predates the moment we woke', () => {
+    // Same lateness, but the 9am slot passed before the engine started
+    // looking: this one really was missed while the app was closed.
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 2, 9, 20), {
+      awakeSince: local(2026, 3, 2, 9, 5),
+    });
+    expect(d.action).toBe('skip');
+  });
+
   it('coalesces every missed occurrence into a single catch-up firing', () => {
     const s = makeSchedule({ catchUp: 'once' });
     const d = evaluateSchedule(s, local(2026, 3, 4, 14, 0));

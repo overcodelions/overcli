@@ -900,6 +900,8 @@ export interface InstalledRegistryFlow {
   filename: string;    // basename under <userData>/flows/
 }
 
+export type SidebarLayout = 'stream' | 'projects';
+
 export interface AppSettings {
   backendPaths: Partial<Record<Backend, string>>;
   backendDefaultModels: Partial<Record<Backend, string>>;
@@ -945,6 +947,15 @@ export interface AppSettings {
   editorPaneWidth: number;
   /// Width of the file-tree column inside the standalone explorer view.
   explorerTreeWidth: number;
+  /// How the primary sidebar is organised.
+  ///
+  /// 'stream' is one flat, newest-first list of everything you have worked
+  /// on, with the owning project printed once per run of consecutive rows.
+  /// 'projects' is the project/workspace tree. They are two answers to two
+  /// different questions — "what was I doing" and "where does this live" —
+  /// rather than a feature and its absence, which is why this is a choice
+  /// and not a boolean.
+  sidebarLayout?: SidebarLayout;
   /// Sidebar shortcut strip for running/recent conversations.
   showActiveSidebarSection?: boolean;
   /// Set once the user has opened Flows → Schedules. Until then the segment
@@ -1704,7 +1715,7 @@ export interface IPCInvokeMap {
   'ollama:catalog': () => OllamaRecommendedModel[];
   'ollama:install': () => { started: 'brew' | 'browser'; detail?: string; command?: string };
   'ollama:startServer': () => { ok: boolean; message: string };
-  'ollama:stopServer': () => void;
+  'ollama:stopServer': () => { ok: boolean; message: string };
   'ollama:serverStatus': () => { status: OllamaServerStatus; log: OllamaServerLogLine[] };
   'ollama:pullModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:cancelPull': (args: { tag: string }) => void;
@@ -2740,6 +2751,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarWidth: 260,
   editorPaneWidth: 540,
   explorerTreeWidth: 280,
+  sidebarLayout: 'stream',
   showActiveSidebarSection: true,
   showDebug: false,
   claudeTransport: 'cli',

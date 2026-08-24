@@ -838,6 +838,41 @@ export type ServerStatus = 'stopped' | 'starting' | 'running' | 'error';
 /// port 11434 bound, and we show a system log line explaining that.
 type ServerChild = ChildProcessByStdio<null, Readable, Readable>;
 
+/// Finds the Ollama server process we did not spawn and asks it to quit.
+/// On macOS the server is usually a child of Ollama.app, so quitting the app
+/// is cleaner than SIGTERM-ing its helper (which the app would relaunch).
+/// `pgrep -f` is unreliable here, so read the process table directly.
+function quitExternalServer(): { attempted: boolean; detail: string } {
+  const ps = spawnSync('ps', ['-eo', 'pid=,args='], { encoding: 'utf-8', timeout: 3000 });
+  if (ps.error || ps.status !== 0) return { attempted: false, detail: 'could not read the process list' };
+  const lines = (ps.stdout ?? '').split('\n');
+
+  if (process.platform === 'darwin') {
+    const app = lines.find((l) => /Ollama\.app\/Contents\/MacOS\/Ollama\b/.test(l));
+    if (app) {
+      const res = spawnSync('osascript', ['-e', 'tell application "Ollama" to quit'], {
+        encoding: 'utf-8',
+        timeout: 8000,
+      });
+      if (!res.error && res.status === 0) return { attempted: true, detail: 'quit Ollama.app' };
+      return { attempted: false, detail: 'Ollama.app refused to quit' };
+    }
+  }
+
+  // A bare `ollama serve` — from a terminal, a login item, or brew services.
+  const serve = lines.find((l) => /(^|\/)ollama\s+serve\b/.test(l));
+  const pid = serve ? Number(serve.trim().split(/\s+/)[0]) : NaN;
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { attempted: false, detail: 'no `ollama serve` process found' };
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+    return { attempted: true, detail: `sent SIGTERM to pid ${pid}` };
+  } catch (err: any) {
+    return { attempted: false, detail: err?.message ?? String(err) };
+  }
+}
+
 export class OllamaServerManager {
   private child: ServerChild | null = null;
   private status: ServerStatus = 'stopped';
@@ -953,11 +988,64 @@ export class OllamaServerManager {
     return { ok: true, message: 'Server starting.' };
   }
 
+  /// Kills only the child overcli spawned. Used on app quit and by the
+  /// restart-loopback fix, where reaching for someone else's server would
+  /// be wrong.
   stop(): void {
     if (!this.child) return;
     try {
       this.child.kill('SIGTERM');
     } catch {}
+  }
+
+  /// What the "Stop server" button calls. The server on :11434 is often not
+  /// ours — Ollama.app, `brew services`, or a terminal someone left open —
+  /// and stop() is a silent no-op for all of those, which made the button
+  /// look broken. Stop what we can, and say so plainly when we can't.
+  async requestStop(): Promise<{ ok: boolean; message: string }> {
+    if (this.child && !this.child.killed) {
+      this.stop();
+      return { ok: true, message: 'Stopping the server overcli started.' };
+    }
+
+    const external = await detectRunningServer();
+    if (!external.running) {
+      this.setStatus('stopped');
+      return { ok: true, message: 'No Ollama server is running.' };
+    }
+
+    const quit = quitExternalServer();
+    if (!quit.attempted) {
+      return {
+        ok: false,
+        message: `Ollama is running outside overcli${
+          quit.detail ? ` (${quit.detail})` : ''
+        } — quit it where you started it.`,
+      };
+    }
+
+    this.append({ stream: 'system', text: `Stopping external server: ${quit.detail}`, timestamp: Date.now() });
+    const freed = await this.waitForPortFree(8000);
+    if (freed) {
+      this.setStatus('stopped');
+      return { ok: true, message: 'External Ollama server stopped.' };
+    }
+    return {
+      ok: false,
+      message:
+        'Asked the external Ollama to quit, but 127.0.0.1:11434 is still answering. ' +
+        'If `brew services` manages it, run `brew services stop ollama`.',
+    };
+  }
+
+  private async waitForPortFree(timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 400));
+      const probe = await detectRunningServer();
+      if (!probe.running) return true;
+    }
+    return false;
   }
 
   private async waitForPort(timeoutMs: number): Promise<void> {
