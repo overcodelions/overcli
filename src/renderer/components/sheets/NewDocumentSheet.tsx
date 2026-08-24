@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { SheetActionButton } from './SettingsSheet';
+import { sheetSubmitKeys } from './sheetSubmit';
 import { DOCUMENT_TYPES, isEverydayProject } from '@shared/everydayProjects';
 import { isPathAtOrUnder } from '@shared/pathScope';
 
@@ -64,7 +65,7 @@ export function NewDocumentSheet({ dirPath }: { dirPath: string }) {
   };
 
   return (
-    <div className="flex flex-col min-h-0 flex-1">
+    <div className="flex flex-col min-h-0 flex-1" onKeyDown={sheetSubmitKeys(() => void submit())}>
       <div className="flex-1 min-h-0 overflow-y-auto p-5 flex flex-col gap-3">
         <div>
           <div className="text-lg font-semibold">New document</div>
@@ -101,11 +102,6 @@ export function NewDocumentSheet({ dirPath }: { dirPath: string }) {
                 autoFocus
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                onKeyDown={(e) => {
-                  // ⌘↵ matches the editor's save and the composer's send — the
-                  // two other places where ↵ alone must stay a newline.
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) void submit();
-                }}
                 placeholder="A one-page summary of our Q3 results for the board"
                 rows={4}
                 className="field mt-1 w-full px-3 py-1.5 text-sm resize-y"
@@ -132,9 +128,6 @@ export function NewDocumentSheet({ dirPath }: { dirPath: string }) {
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') void submit();
-                }}
                 placeholder="Q3 marketing plan"
                 className="field mt-1 w-full px-3 py-1.5 text-sm"
               />
