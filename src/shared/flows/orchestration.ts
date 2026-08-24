@@ -84,6 +84,18 @@ export interface OrchestrationItem {
   branchName?: string;
   /// Short status note (e.g. an error message when `failed`).
   note?: string;
+  /// Set when a restart settled this item rather than a person or a run: a
+  /// `queued` item is cancelled on boot because relaunching it would spend
+  /// tokens with nobody present (see `settleItemOnLoad`).
+  ///
+  /// It exists because `cancelled` otherwise means "a human turned this
+  /// down", and the worker journal reads it that way — as a rejection, which
+  /// feeds the demotion streak. The engine's existing guard is the `approved`
+  /// entry the item earned on its way to `queued`, and that holds for every
+  /// item the fold saw; this makes the exemption a property of the item
+  /// itself, so it survives a crash between queueing and the fold, and a
+  /// journal that predates `approved` being written at all.
+  settledByRestart?: boolean;
   startedAt?: number;
   finishedAt?: number;
 }

@@ -22,6 +22,10 @@ interface FlowsState {
   flows: Flow[];
   /// In-progress + recently completed runs, keyed by runId.
   runs: Record<string, FlowRun>;
+  /// Whether startup's `flows:listRuns` has landed. Anything that reasons
+  /// about a MISSING run — the Workers work queue calls those orphaned — has
+  /// to wait for this, or every run looks missing for the first half second.
+  runsLoaded: boolean;
   /// Which run is currently shown in the active run pane.
   activeRunId: string | null;
   /// runId → when the user last opened it. The sidebar's Active section
@@ -230,6 +234,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   loaded: false,
   flows: [],
   runs: {},
+  runsLoaded: false,
   activeRunId: null,
   lastOpenedAtByRun: {},
   librarySegment: 'flows',
@@ -263,11 +268,17 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   },
 
   applyRunsBulk(runs) {
-    if (runs.length === 0) return;
+    // The flag flips even for an empty list: no runs at all is a loaded state,
+    // and treating it as "still loading" would leave dangling items looking
+    // merely slow forever.
+    if (runs.length === 0) {
+      set({ runsLoaded: true });
+      return;
+    }
     set(s => {
       const next = { ...s.runs };
       for (const r of runs) next[r.id] = r;
-      return { runs: next };
+      return { runs: next, runsLoaded: true };
     });
   },
 
