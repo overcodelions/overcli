@@ -22,6 +22,7 @@ import {
   canPrewarm,
   reapTurnInFlight,
   shouldReapIdle,
+  shouldReleaseClaudeBroker,
   shouldSkipIdleOnClose,
   spawnFailureMessage,
   staleRunningReason,
@@ -88,6 +89,31 @@ describe('shouldSkipIdleOnClose', () => {
     expect(
       shouldSkipIdleOnClose({ isCurrent: true, backend: 'codex', claudeSendPending: true }),
     ).toBe(false);
+  });
+});
+
+describe('shouldReleaseClaudeBroker', () => {
+  // Regression: changing the model (or permission mode / cwd / turbo / effort)
+  // mid-conversation makes sendSubprocess kill and relaunch the proc. The kill
+  // used to unlink the broker's mcp-config and drop claudeMcpByConv, and the
+  // relaunch is synchronous — prepareClaudeBroker had already run and doesn't
+  // run again — so buildArgs found no config path and silently omitted
+  // `--mcp-config` + `--permission-prompt-tool`. The replacement process then
+  // had no channel to ask for permission, and every tool call needing approval
+  // failed for the rest of the session with nothing shown in the UI.
+  it('keeps the registration when the caller relaunches the same conversation', () => {
+    expect(shouldReleaseClaudeBroker({ backend: 'claude', respawning: true })).toBe(false);
+  });
+
+  it('releases it on a real teardown — stop, delete, backend switch', () => {
+    expect(shouldReleaseClaudeBroker({ backend: 'claude', respawning: false })).toBe(true);
+  });
+
+  it('is a no-op for backends that never register a broker', () => {
+    for (const backend of ['codex', 'gemini', 'copilot', 'ollama'] as const) {
+      expect(shouldReleaseClaudeBroker({ backend, respawning: false })).toBe(false);
+      expect(shouldReleaseClaudeBroker({ backend, respawning: true })).toBe(false);
+    }
   });
 });
 
