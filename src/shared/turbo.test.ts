@@ -7,9 +7,7 @@ describe('turboSupported', () => {
     expect(turboSupported('codex')).toBe(true);
   });
 
-  it('excludes backends where the toggle would be decoration', () => {
-    // copilot's CLI exposes no effort or MCP flags; ollama and gemini run
-    // through transports that never reach claudeBackend/codexBackend args.
+  it('excludes backends where the transport toggle would be decoration', () => {
     expect(turboSupported('copilot')).toBe(false);
     expect(turboSupported('ollama')).toBe(false);
     expect(turboSupported('gemini')).toBe(false);

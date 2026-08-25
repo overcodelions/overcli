@@ -33,11 +33,14 @@ import {
   EffortLevel,
   PersonaKey,
   ReviewPreset,
+  ResponseMode,
+  ResponseStyle,
   MainToRendererEvent,
   LogLevel,
   IPCInvokeMap,
   InitRepoFailure,
 } from '@shared/types';
+import { buildResponseModePrompt } from './responseMode';
 import { TIERS, modelTier, resolvePreset } from '@shared/reboundPresets';
 import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
@@ -75,7 +78,7 @@ import {
   isBackendEnabled,
   pickDefaultBackend,
 } from './components/conversationHeaderHelpers';
-import { isSupportedPremiumModel, premiumModelsForBackend } from '@shared/modelCatalog';
+import { isSupportedPremiumModel, latestAtTier, premiumModelsForBackend } from '@shared/modelCatalog';
 import type { PaletteScope } from './components/sheets/commandPalette';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
@@ -427,6 +430,9 @@ interface StoreState {
   setBackendModel(id: UUID, backend: Backend, model: string): Promise<void>;
   setEffortLevel(id: UUID, effort: EffortLevel): Promise<void>;
   setTurbo(id: UUID, turbo: boolean | undefined): Promise<void>;
+  setResponseStyle(id: UUID, style: ResponseStyle): Promise<void>;
+  setResponseMode(id: UUID, backend: Backend, mode: ResponseMode): Promise<void>;
+  applyClaudeFastPreset(id: UUID): Promise<void>;
   setReviewBackend(id: UUID, backend: string | null): Promise<void>;
   setReviewMode(id: UUID, mode: 'review' | 'collab'): Promise<void>;
   setReviewModel(id: UUID, model: string | null): Promise<void>;
@@ -640,6 +646,119 @@ export function ownsWorktree(
   conv: Conversation,
 ): conv is Conversation & { worktreePath: string } {
   return !!conv.worktreePath && !conv.adoptedWorktree;
+}
+
+export function withClaudeFastPreset(conversation: Conversation): Conversation {
+  return withFastestPreset(conversation, 'claude');
+}
+
+function modelForBackend(
+  conversation: Conversation,
+  backend: Exclude<Backend, 'ollama'>,
+): string | undefined {
+  if (backend === 'claude') return conversation.claudeModel ?? conversation.currentModel;
+  if (backend === 'codex') return conversation.codexModel ?? conversation.currentModel;
+  if (backend === 'gemini') return conversation.geminiModel ?? conversation.currentModel;
+  return conversation.copilotModel ?? conversation.currentModel;
+}
+
+function setConversationBackendModel(
+  conversation: Conversation,
+  backend: Exclude<Backend, 'ollama'>,
+  model: string | undefined,
+): Conversation {
+  const next = { ...conversation, currentModel: model };
+  if (backend === 'claude') next.claudeModel = model;
+  if (backend === 'codex') next.codexModel = model;
+  if (backend === 'gemini') next.geminiModel = model;
+  if (backend === 'copilot') next.copilotModel = model;
+  return next;
+}
+
+function restoreWarpPreset(
+  conversation: Conversation,
+  activeBackend: Backend,
+  fallbackModel?: string,
+): Conversation {
+  if (conversation.responseMode !== 'warp') return conversation;
+  const restore = conversation.responseModeRestore;
+  let next = { ...conversation, responseModeRestore: undefined };
+  for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
+    const model = restore?.models[backend];
+    if (model !== undefined) {
+      next = setConversationBackendModel(next, backend, model);
+    }
+  }
+  if (activeBackend !== 'ollama') {
+    const activeModel = restore?.models[activeBackend] ?? fallbackModel;
+    if (activeModel !== undefined) {
+      next = setConversationBackendModel(next, activeBackend, activeModel);
+    }
+  }
+  if (restore) next.effortLevel = restore.effortLevel;
+  return next;
+}
+
+export function withFastestPreset(
+  conversation: Conversation,
+  backend: Exclude<Backend, 'ollama'>,
+): Conversation {
+  const model = latestAtTier(backend, 'fast') ?? conversation.currentModel;
+  const priorModels = conversation.responseModeRestore?.models ?? {};
+  const displacedModel = modelForBackend(conversation, backend);
+  const responseModeRestore = {
+    models:
+      priorModels[backend] !== undefined || displacedModel === undefined
+        ? priorModels
+        : { ...priorModels, [backend]: displacedModel },
+    effortLevel:
+      conversation.responseModeRestore?.effortLevel ?? conversation.effortLevel,
+  };
+  const next: Conversation = {
+    ...conversation,
+    currentModel: model,
+    effortLevel:
+      backend === 'claude' || backend === 'codex' ? 'low' : conversation.effortLevel,
+    responseStyle: 'efficient',
+    responseMode: 'warp',
+    responseModeRestore,
+    turbo: true,
+  };
+  if (backend === 'claude') next.claudeModel = model;
+  if (backend === 'codex') next.codexModel = model;
+  if (backend === 'gemini') next.geminiModel = model;
+  if (backend === 'copilot') next.copilotModel = model;
+  return next;
+}
+
+export function withResponseMode(
+  conversation: Conversation,
+  backend: Backend,
+  mode: ResponseMode,
+  fallbackModel?: string,
+): Conversation {
+  const restored = mode === 'warp'
+    ? conversation
+    : restoreWarpPreset(conversation, backend, fallbackModel);
+  if (mode === 'full') {
+    const full =
+      backend !== 'ollama' && fallbackModel
+        ? setConversationBackendModel(restored, backend, fallbackModel)
+        : restored;
+    return { ...full, responseStyle: 'normal', responseMode: mode, turbo: false };
+  }
+  if (mode === 'swift') {
+    return { ...restored, responseStyle: 'efficient', responseMode: mode, turbo: false };
+  }
+  if (mode === 'warp' && backend !== 'ollama') return withFastestPreset(conversation, backend);
+  return {
+    ...restored,
+    responseStyle: 'efficient',
+    responseMode: 'turbo',
+    effortLevel:
+      backend === 'claude' || backend === 'codex' ? 'low' : restored.effortLevel,
+    turbo: true,
+  };
 }
 
 /// Ask the main process which Ollama models are actually pulled locally
@@ -2468,6 +2587,15 @@ export const useStore = create<StoreState>((set, get) => ({
           next.reviewPersona = resolved.reviewPersona;
         }
       }
+      if (backend === 'ollama') {
+        const restored = restoreWarpPreset(next, c.primaryBackend ?? 'claude');
+        Object.assign(next, restored);
+        next.responseMode = undefined;
+        next.responseStyle = 'normal';
+        next.turbo = false;
+      } else if (next.responseMode === 'warp') {
+        return withFastestPreset(next, backend);
+      }
       return next;
     });
     await saveConversationState(get);
@@ -2512,22 +2640,62 @@ export const useStore = create<StoreState>((set, get) => ({
       return;
     }
     mutateConversation(set, get, id, (c) => {
-      const next = { ...c, currentModel: model };
+      const base =
+        c.responseMode === 'warp' && backend !== 'ollama'
+          ? restoreWarpPreset(c, backend)
+          : c;
+      const next = { ...base, currentModel: model };
       if (backend === 'claude') next.claudeModel = model;
       if (backend === 'codex') next.codexModel = model;
       if (backend === 'gemini') next.geminiModel = model;
       if (backend === 'ollama') next.ollamaModel = model;
       if (backend === 'copilot') next.copilotModel = model;
+      if (
+        c.responseMode === 'warp' &&
+        backend !== 'ollama' &&
+        model !== latestAtTier(backend, 'fast')
+      ) {
+        next.responseMode = 'turbo';
+      }
       return next;
     });
     await saveConversationState(get);
   },
   async setEffortLevel(id, effort) {
-    mutateConversation(set, get, id, (c) => ({ ...c, effortLevel: effort }));
+    mutateConversation(set, get, id, (c) =>
+      (c.responseMode === 'turbo' || c.responseMode === 'warp') && effort !== 'low'
+        ? {
+            ...c,
+            effortLevel: effort,
+            responseStyle: 'efficient',
+            responseMode: 'swift',
+            turbo: false,
+          }
+        : { ...c, effortLevel: effort },
+    );
     await saveConversationState(get);
   },
   async setTurbo(id, turbo) {
-    mutateConversation(set, get, id, (c) => ({ ...c, turbo }));
+    mutateConversation(set, get, id, (c) => ({ ...c, turbo, responseMode: undefined }));
+    await saveConversationState(get);
+  },
+  async setResponseStyle(id, style) {
+    mutateConversation(set, get, id, (c) => ({ ...c, responseStyle: style, responseMode: undefined }));
+    await saveConversationState(get);
+  },
+  async setResponseMode(id, backend, mode) {
+    const settings = get().settings;
+    const fallbackModel =
+      backend === 'ollama'
+        ? undefined
+        : settings.backendDefaultModels?.[backend] ?? premiumModelsForBackend(backend)[0];
+    mutateConversation(set, get, id, (c) =>
+      withResponseMode(c, backend, mode, fallbackModel),
+    );
+    await saveConversationState(get);
+  },
+  async applyClaudeFastPreset(id) {
+    mutateConversation(set, get, id, withClaudeFastPreset);
     await saveConversationState(get);
   },
   async setReviewBackend(id, backend) {
@@ -2669,6 +2837,7 @@ export const useStore = create<StoreState>((set, get) => ({
     const state = get();
     const conv = findConversation(state, conversationId);
     if (!conv) return;
+    const priorEvents = getRunner(conversationId)?.events ?? [];
     const cwd = findContainerPath(state, conversationId);
     if (!cwd) return;
     // Flow-run conversations are synthesized on demand from FlowRun
@@ -2826,6 +2995,12 @@ export const useStore = create<StoreState>((set, get) => ({
         pendingContextUpdate: undefined,
       }));
     }
+    outgoingPrompt = buildResponseModePrompt(
+      outgoingPrompt,
+      conv.responseStyle ?? 'normal',
+      priorEvents,
+      conv.responseMode,
+    );
 
     // Stamped BEFORE the send goes out, not after it comes back. Hitting
     // enter is the user's turn — the sidebar should reorder on that, not on
@@ -2846,6 +3021,9 @@ export const useStore = create<StoreState>((set, get) => ({
     await window.overcli.invoke('runner:send', {
       conversationId,
       prompt: outgoingPrompt,
+      // Always preserve the human-authored form for main-process echoes. The
+      // model may receive fork/context/mode scaffolding in `outgoingPrompt`.
+      displayText: prompt,
       backend,
       localUserId: optimisticUserId,
       cwd,
@@ -4015,7 +4193,7 @@ function mutateConversation(
 /// assistant slot whose id matches (the partial-assistant slot gets updated
 /// in place during streaming so the tail bubble updates without visible
 /// flicker). We identify replacements by matching ids, bump revision.
-function mergeIncomingEvents(existing: StreamEvent[], incoming: StreamEvent[]): StreamEvent[] {
+export function mergeIncomingEvents(existing: StreamEvent[], incoming: StreamEvent[]): StreamEvent[] {
   const byId = new Map<string, number>();
   existing.forEach((e, i) => byId.set(e.id, i));
   const out = [...existing];
@@ -4023,10 +4201,32 @@ function mergeIncomingEvents(existing: StreamEvent[], incoming: StreamEvent[]): 
     const idx = byId.get(e.id);
     if (idx != null) {
       const prev = out[idx];
-      out[idx] = { ...e, revision: prev.revision + 1 };
+      if (prev.kind.type === 'assistant' && e.kind.type === 'assistant') {
+        const prevVisible = prev.kind.info.text.trim().length > 0;
+        const nextVisible = e.kind.info.text.trim().length > 0;
+        out[idx] = {
+          ...e,
+          firstSeenAt: prev.firstSeenAt ?? prev.timestamp,
+          firstVisibleAt:
+            prev.firstVisibleAt ??
+            (prevVisible ? prev.timestamp : nextVisible ? e.timestamp : undefined),
+          revision: prev.revision + 1,
+        };
+      } else {
+        out[idx] = { ...e, revision: prev.revision + 1 };
+      }
     } else {
       byId.set(e.id, out.length);
-      out.push(e);
+      const visible = e.kind.type === 'assistant' && e.kind.info.text.trim().length > 0;
+      out.push(
+        e.kind.type === 'assistant'
+          ? {
+              ...e,
+              firstSeenAt: e.firstSeenAt ?? e.timestamp,
+              firstVisibleAt: e.firstVisibleAt ?? (visible ? e.timestamp : undefined),
+            }
+          : e,
+      );
     }
   }
   return out;
