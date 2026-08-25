@@ -184,3 +184,30 @@ export function findConvWithProjectPath(
     ownerProjectPath: hit.kind === 'project' ? hit.project.path : null,
   };
 }
+
+/// The conversation the user would call "the one I was just in".
+///
+/// Ranked by the same key the sidebar's Recent list uses — the later of when
+/// you last typed in it and when you last opened it — so "most recent" means
+/// the row at the top of that list rather than some second ordering that
+/// disagrees with what's on screen. Hidden conversations (flow participants
+/// and other machinery) are never it, and neither are flow-run conversations,
+/// which is why this walks projects/workspaces directly instead of the index.
+export function mostRecentConversationId(
+  src: LookupSource,
+  lastSelectedAt: Readonly<Record<UUID, number>> = {},
+): UUID | null {
+  let bestId: UUID | null = null;
+  let bestAt = -Infinity;
+  const consider = (conv: Conversation): void => {
+    if (conv.hidden) return;
+    const at = Math.max(conversationPromptAt(conv), lastSelectedAt[conv.id] ?? 0);
+    if (at > bestAt) {
+      bestAt = at;
+      bestId = conv.id;
+    }
+  };
+  for (const project of src.projects) project.conversations.forEach(consider);
+  for (const workspace of src.workspaces) (workspace.conversations ?? []).forEach(consider);
+  return bestId;
+}

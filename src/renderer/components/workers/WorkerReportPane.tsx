@@ -38,7 +38,7 @@ import { useWorkersStore } from '../../workersStore';
 import {
   formatTokens,
   formatWorkedTime,
-  WORKER_MINUTES_SAVED_PER_ITEM,
+  WORKER_HUMAN_TIME_SAVED_MULTIPLIER,
   type WorkerReport,
   type WorkerReportDay,
   type WorkerReportRow,
@@ -102,7 +102,7 @@ const METRICS: MetricSpec[] = [
 /// cost me" is the question the page is opened with — the old default (jobs
 /// done, descending) buried the expensive-and-idle workers at the bottom,
 /// which is precisely where you would not look for them.
-type SortKey = 'cost' | 'perJob' | 'done' | 'shifts' | 'time' | 'tokens';
+type SortKey = 'cost' | 'perJob' | 'hourly' | 'done' | 'shifts' | 'time' | 'tokens';
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
@@ -110,6 +110,17 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 /// has no rate, and printing `$0.00` would say the opposite of what is true.
 function perJob(row: WorkerReportRow): number | null {
   return row.itemsDone > 0 ? row.costUSD / row.itemsDone : null;
+}
+
+/// What one measured hour of agent runtime cost. Kept separate from the
+/// estimated desk-hour figure: one prices the machine doing the work, the
+/// other prices the time the user got back.
+function perAgentHour(costUSD: number, workedMs: number): number | null {
+  return workedMs > 0 ? costUSD / (workedMs / 3_600_000) : null;
+}
+
+function perHumanHourSaved(costUSD: number, savedMinutes: number): number | null {
+  return savedMinutes > 0 ? costUSD / (savedMinutes / 60) : null;
 }
 
 /// " · 24 quiet · 6 spawned work", with the empty halves left out. A row that
@@ -133,6 +144,8 @@ function sortValue(row: WorkerReportRow, key: SortKey): number {
     // worker on the roster.
     case 'perJob':
       return perJob(row) ?? -1;
+    case 'hourly':
+      return perAgentHour(row.costUSD, row.workedMs) ?? -1;
     case 'done':
       return row.itemsDone;
     case 'shifts':
@@ -201,14 +214,27 @@ export function WorkerReportPane() {
 
   const totals = report?.totals;
   const tokens = totals ? totals.inputTokens + totals.outputTokens : 0;
+  const overallPerJob = totals && totals.itemsDone > 0 ? totals.costUSD / totals.itemsDone : null;
+  const overallAgentHour = totals ? perAgentHour(totals.costUSD, totals.workedMs) : null;
+  // Derive this from the measured runtime in the renderer too. `savedMinutes`
+  // is retained on the shared report for consumers, but an older still-running
+  // main process can otherwise send the former per-job estimate while this
+  // renderer already explains the new runtime multiplier.
+  const estimatedSavedMinutes = totals
+    ? (totals.workedMs / 60_000) * WORKER_HUMAN_TIME_SAVED_MULTIPLIER
+    : 0;
+  const overallHumanHourSaved = totals
+    ? perHumanHourSaved(totals.costUSD, estimatedSavedMinutes)
+    : null;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
-      <header className="flex items-start justify-between gap-6 pt-6">
-        <h2 className="text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-          What your workers did
-        </h2>
-        <div className="flex items-center gap-1">
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold text-ink">Crew report</h2>
+          <p className="mt-0.5 text-xs text-ink-muted">What the team delivered, what it cost, and where the time went.</p>
+        </div>
+        <div className="flex items-center gap-1 rounded-lg border border-card-strong bg-card/40 p-1">
           {RANGES.map((r) => (
             <button
               key={r.days}
@@ -218,7 +244,7 @@ export function WorkerReportPane() {
                 'rounded px-2 py-1 text-[12px] transition-colors ' +
                 'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
                 (range === r.days
-                  ? 'bg-card-strong text-ink'
+                  ? 'bg-surface-elevated text-ink shadow-sm'
                   : 'text-ink-muted hover:bg-card hover:text-ink')
               }
             >
@@ -240,47 +266,89 @@ export function WorkerReportPane() {
         </div>
       ) : (
         <>
-          {/* The thesis. These four numbers only mean anything against each
-              other, so they are one sentence rather than four tiles. */}
-          <p className="mt-3 text-[19px] leading-[1.5] text-ink-muted">
-            Your crew worked <Figure>{formatWorkedTime(totals.workedMs)}</Figure> across{' '}
-            <Figure>{totals.shifts}</Figure> shift{totals.shifts === 1 ? '' : 's'} and finished{' '}
-            <Figure>{totals.itemsDone}</Figure> job{totals.itemsDone === 1 ? '' : 's'} — about{' '}
-            <Figure>{Math.max(1, Math.round(totals.savedMinutes / 60))}h</Figure> off your desk, for{' '}
-            <Figure>{money(totals.costUSD)}</Figure>.
-          </p>
+          <div className="mt-5 grid items-stretch gap-3 lg:grid-cols-[minmax(0,1.35fr)_minmax(380px,0.85fr)]">
+            <section className="flex h-full flex-col rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+              <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">
+                Work completed
+              </div>
+              <div className="mt-2 text-3xl font-semibold tracking-tight tabular-nums text-ink">
+                {totals.itemsDone} finished job{totals.itemsDone === 1 ? '' : 's'}
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                Delivered across the selected reporting window.
+              </p>
+              <div className="mt-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <ReportMetric label="Agent time" value={formatWorkedTime(totals.workedMs)} />
+                <ReportMetric label="Shifts run" value={`${totals.shifts}`} />
+                <ReportMetric label="Recorded run spend" value={money(totals.costUSD)} />
+                <ReportMetric label="Quiet checks" value={`${totals.quietShifts}`} />
+              </div>
+              <p className="mt-auto pt-4 text-[11px] leading-relaxed text-ink-faint">
+                Quiet checks found nothing worth launching; they are successful monitoring, not idle time.
+                {totals.rejected > 0 && (
+                  <>
+                    {' '}You turned down <span className="text-ink-muted tabular-nums">{totals.rejected}</span>.
+                  </>
+                )}{' '}
+                <span className="tabular-nums">{formatTokens(tokens)}</span> tokens used.
+                {totals.skippedShifts > 0 && (
+                  <>
+                    {' '}<span className="text-amber-500 tabular-nums">{totals.skippedShifts}</span>{' '}
+                    shift{totals.skippedShifts === 1 ? '' : 's'} never ran — missed while the app was closed or out of budget.
+                  </>
+                )}
+              </p>
+              <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+                Spend uses each run's model-specific cost reported by its backend. Backends that do not report a
+                price contribute $0; worker planning and chat turns are not included.
+              </p>
+            </section>
 
-          <p className="mt-2.5 text-[12px] leading-relaxed text-ink-faint">
-            <span className="text-ink-muted tabular-nums">{totals.quietShifts}</span> of those
-            shifts looked and found nothing to do — that's the crew watching, not idling.
-            {totals.rejected > 0 && (
-              <>
-                {' '}
-                You turned down <span className="text-ink-muted tabular-nums">
-                  {totals.rejected}
-                </span>
-                .
-              </>
-            )}{' '}
-            <span className="tabular-nums">{formatTokens(tokens)}</span> tokens spent. The desk-time
-            figure is an estimate at {WORKER_MINUTES_SAVED_PER_ITEM} minutes a job; everything else
-            here is measured.
-            {totals.skippedShifts > 0 && (
-              <>
-                {' '}
-                <span className="text-amber-500 tabular-nums">{totals.skippedShifts}</span> shift
-                {totals.skippedShifts === 1 ? '' : 's'} never ran — missed while the app was closed,
-                or out of budget.
-              </>
-            )}
-          </p>
+            <section className="flex h-full flex-col rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+              <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">
+                Estimated value
+              </div>
+              <div className="mt-2 text-3xl font-semibold tracking-tight tabular-nums text-ink">
+                ≈{formatWorkedTime(estimatedSavedMinutes * 60_000)} saved
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+                Estimated at {WORKER_HUMAN_TIME_SAVED_MULTIPLIER}× measured agent runtime: one active agent hour
+                replaces about {WORKER_HUMAN_TIME_SAVED_MULTIPLIER} hours of human effort.
+              </p>
+              <div className="mt-auto pt-5">
+                <div className="divide-y divide-card-strong rounded-lg border border-card-strong bg-surface-elevated/40 px-3">
+                  <EconomyRow
+                    label="Spend per finished job"
+                    value={overallPerJob === null ? '—' : money(overallPerJob)}
+                    note={`recorded run spend ÷ ${totals.itemsDone} completed`}
+                  />
+                  <EconomyRow
+                    label="Spend per active agent hour"
+                    value={overallAgentHour === null ? '—' : money(overallAgentHour)}
+                    note={`recorded run spend ÷ ${formatWorkedTime(totals.workedMs)} measured runtime`}
+                  />
+                  <EconomyRow
+                    label="Break-even value of your hour"
+                    value={overallHumanHourSaved === null ? '—' : money(overallHumanHourSaved)}
+                    note="If your time is worth more than this, estimated value exceeds recorded spend."
+                  />
+                </div>
+              </div>
+            </section>
+          </div>
 
           {/* Small multiples rather than one chart with a switch. The four
               measures have four different units, so they can never share an
               axis — and a switch would keep three of them one click out of
               sight, which is where a number nobody is looking for goes to
               be missed. Four small charts, four labelled axes, one glance. */}
-          <div className="mt-6 grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <div className="mt-7 flex items-end justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-ink">Daily activity</div>
+              <div className="mt-0.5 text-xs text-ink-muted">The shape of work across the selected window.</div>
+            </div>
+          </div>
+          <div className="mt-3 grid grid-cols-2 gap-3 xl:grid-cols-4">
             {METRICS.map((spec) => (
               <MetricChart
                 key={spec.key}
@@ -291,40 +359,47 @@ export function WorkerReportPane() {
             ))}
           </div>
 
-          <div className="mt-8 flex items-center justify-between text-[10px] uppercase tracking-wider text-ink-faint">
-            <span>Per worker</span>
+          <div className="mt-8 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-ink">Worker performance</div>
+              <div className="mt-0.5 text-xs text-ink-muted">Click a heading to sort, or open a worker for the underlying shifts.</div>
+            </div>
             {/* Legend. The hues in the table are identities (each worker's own
                 colour, as on its avatar); what the legend has to teach is the
                 INTENSITY, so its swatches are deliberately colourless. */}
-            <span className="flex items-center gap-4">
+            <span className="flex items-center gap-4 text-[10px] uppercase tracking-wider text-ink-faint">
               <Key className="bg-ink-faint">spawned work</Key>
               <Key className="bg-ink-faint opacity-[0.32]">quiet</Key>
               <Key style={{ background: FAILED_TINT }}>failed</Key>
             </span>
           </div>
 
-          <table className="mt-2 w-full border-collapse text-sm">
+          <div className="mt-3 overflow-x-auto rounded-xl border border-card-strong bg-card/20 shadow-sm">
+          <table className="w-full min-w-[1260px] border-collapse text-sm">
             <thead>
-              <tr className="border-b border-card text-[10px] uppercase tracking-wider text-ink-faint">
-                <th className="w-[24%] py-2 text-left font-medium">Worker</th>
-                <th className="w-[22%] py-2 text-left font-medium">
+              <tr className="border-b border-card-strong bg-card/50 text-[10px] uppercase tracking-wider text-ink-faint">
+                <th className="w-[24%] px-4 py-3 text-left font-medium">Worker</th>
+                <th className="w-[22%] px-2 py-3 text-left font-medium">
                   <SortHead label="Shifts" k="shifts" sort={sort} onSort={setSort} align="left" />
                 </th>
-                <th className="py-2 text-right font-medium">
+                <th className="px-2 py-3 text-right font-medium">
                   <SortHead label="Done" k="done" sort={sort} onSort={setSort} />
                 </th>
-                <th className="py-2 text-right font-medium">Turned down</th>
-                <th className="py-2 text-right font-medium">Failed</th>
-                <th className="py-2 text-right font-medium">
+                <th className="px-2 py-3 text-right font-medium">Turned down</th>
+                <th className="px-2 py-3 text-right font-medium">Failed</th>
+                <th className="px-2 py-3 text-right font-medium">
                   <SortHead label="Time" k="time" sort={sort} onSort={setSort} />
                 </th>
-                <th className="py-2 text-right font-medium">
+                <th className="px-2 py-3 text-right font-medium" title="Recorded model spend per measured hour of active agent runtime">
+                  <SortHead label="$/active hr" k="hourly" sort={sort} onSort={setSort} />
+                </th>
+                <th className="px-2 py-3 text-right font-medium">
                   <SortHead label="Tokens" k="tokens" sort={sort} onSort={setSort} />
                 </th>
-                <th className="py-2 text-right font-medium">
+                <th className="px-2 py-3 text-right font-medium">
                   <SortHead label="Cost" k="cost" sort={sort} onSort={setSort} />
                 </th>
-                <th className="py-2 pl-3 text-right font-medium">
+                <th className="px-4 py-3 text-right font-medium">
                   <SortHead label="Per job" k="perJob" sort={sort} onSort={setSort} />
                 </th>
               </tr>
@@ -333,14 +408,15 @@ export function WorkerReportPane() {
               {view.rows.map((row) => {
                 const worker = workers[row.workerId];
                 const rate = perJob(row);
+                const hourly = perAgentHour(row.costUSD, row.workedMs);
                 const tint = workerColorFor(colors, row.workerId);
                 return (
                   <tr
                     key={row.workerId}
                     onClick={() => selectWorker(row.workerId)}
-                    className="group cursor-pointer hover:bg-card"
+                    className="group cursor-pointer border-b border-card/70 transition-colors hover:bg-card/60"
                   >
-                    <td className="py-2.5 pr-3">
+                    <td className="px-4 py-3 pr-3">
                       <div className="flex items-center gap-2">
                         {worker && <WorkerAvatar worker={worker} />}
                         <div className="min-w-0">
@@ -367,7 +443,7 @@ export function WorkerReportPane() {
                       </div>
                     </td>
 
-                    <td className="py-2.5 pr-6">
+                    <td className="px-2 py-3 pr-6">
                       <ShiftBand row={row} max={view.maxShifts} tint={tint} />
                       <div className="mt-1 text-[11px] tabular-nums text-ink-faint">
                         <span className="text-ink-muted">{row.shifts}</span> shift
@@ -380,12 +456,13 @@ export function WorkerReportPane() {
                     <Cell value={row.rejected} />
                     <Cell value={row.itemsFailed} />
                     <Cell text={formatWorkedTime(row.workedMs)} muted={row.workedMs === 0} />
+                    <Cell text={hourly === null ? '—' : money(hourly)} muted={hourly === null || hourly === 0} />
                     <Cell
                       text={formatTokens(row.inputTokens + row.outputTokens)}
                       muted={row.inputTokens + row.outputTokens === 0}
                     />
                     <Cell text={money(row.costUSD)} muted={row.costUSD === 0} />
-                    <td className="py-2.5 pl-3 text-right tabular-nums">
+                    <td className="px-4 py-3 text-right tabular-nums">
                       {rate === null ? (
                         <span className="text-ink-faint" title="Nothing finished in this window">
                           —
@@ -408,9 +485,9 @@ export function WorkerReportPane() {
               })}
             </tbody>
             <tfoot>
-              <tr className="border-t border-card text-[13px]">
-                <td className="py-2.5 text-ink-muted">Roster total</td>
-                <td className="py-2.5 pr-6 text-[11px] tabular-nums text-ink-faint">
+              <tr className="bg-card/50 text-[13px]">
+                <td className="px-4 py-3 font-medium text-ink-muted">Roster total</td>
+                <td className="px-2 py-3 pr-6 text-[11px] tabular-nums text-ink-faint">
                   <span className="text-ink-muted">{totals.shifts}</span> shifts ·{' '}
                   {totals.quietShifts} quiet · {totals.workingShifts} spawned work
                 </td>
@@ -418,14 +495,16 @@ export function WorkerReportPane() {
                 <Cell value={totals.rejected} />
                 <Cell value={totals.itemsFailed} />
                 <Cell text={formatWorkedTime(totals.workedMs)} />
+                <Cell text={overallAgentHour === null ? '—' : money(overallAgentHour)} muted={overallAgentHour === null || overallAgentHour === 0} />
                 <Cell text={formatTokens(tokens)} />
                 <Cell text={money(totals.costUSD)} />
-                <td className="py-2.5 pl-3 text-right tabular-nums text-ink-muted">
+                <td className="px-4 py-3 text-right tabular-nums text-ink-muted">
                   {totals.itemsDone > 0 ? money(totals.costUSD / totals.itemsDone) : '—'}
                 </td>
               </tr>
             </tfoot>
           </table>
+          </div>
         </>
       )}
     </div>
@@ -470,7 +549,7 @@ function MetricChart({
   const gap = daily.length > 45 ? 'gap-px' : daily.length > 14 ? 'gap-[2px]' : 'gap-1';
 
   return (
-    <div className="rounded-lg border border-card bg-card p-3">
+    <div className="rounded-xl border border-card-strong bg-card/30 p-4 shadow-sm">
       <div className="flex items-baseline justify-between gap-2">
         <span className="truncate text-[10px] uppercase tracking-wider text-ink-faint">
           {spec.label} a day
@@ -574,11 +653,25 @@ function ShiftBand({ row, max, tint }: { row: WorkerReportRow; max: number; tint
   );
 }
 
-/// A number inside the opening sentence. Numerals step up to the ink and to
-/// tabular figures; the prose around them stays muted, so the sentence reads
-/// as a sentence and scans as a row of figures.
-function Figure({ children }: { children: React.ReactNode }) {
-  return <span className="font-medium tabular-nums text-ink">{children}</span>;
+function ReportMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-card-strong bg-surface-elevated/50 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wider text-ink-faint">{label}</div>
+      <div className="mt-1 text-base font-medium tabular-nums text-ink">{value}</div>
+    </div>
+  );
+}
+
+function EconomyRow({ label, value, note }: { label: string; value: string; note: string }) {
+  return (
+    <div className="flex items-center justify-between gap-5 py-3">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-ink">{label}</div>
+        <div className="mt-0.5 truncate text-[10px] text-ink-faint" title={note}>{note}</div>
+      </div>
+      <div className="shrink-0 text-base font-semibold tabular-nums text-ink">{value}</div>
+    </div>
+  );
 }
 
 function Key({
@@ -616,7 +709,7 @@ function Cell({
   return (
     <td
       className={
-        'py-2.5 text-right tabular-nums ' +
+        'px-2 py-3 text-right tabular-nums ' +
         (zero ? 'text-ink-faint' : strong ? 'text-ink' : 'text-ink-muted')
       }
     >

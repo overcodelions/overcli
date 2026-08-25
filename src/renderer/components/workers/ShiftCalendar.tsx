@@ -262,13 +262,16 @@ export function ShiftCalendar() {
   }, [parkMinute, from]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col px-6 pb-4">
-      <div className="mb-2 flex shrink-0 items-center gap-2">
-        <div className="text-sm font-medium text-ink">
-          {rangeLabel(days)}
-          {offset === 0 && <span className="ml-2 text-[11px] text-ink-faint">this week</span>}
+    <div className="flex min-h-0 flex-1 flex-col px-6 pb-4 pt-4">
+      <div className="mb-4 flex shrink-0 flex-wrap items-end gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-ink">Shift calendar</h2>
+          <div className="mt-0.5 text-xs text-ink-muted">
+            {rangeLabel(days)}
+            {offset === 0 && <span className="ml-2 text-ink-faint">this week</span>}
+          </div>
         </div>
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1 rounded-lg border border-card-strong bg-card/40 p-1">
           {Object.keys(allSchedules).length > 0 && (
             <button
               onClick={() => setShowSchedules((v) => !v)}
@@ -280,8 +283,8 @@ export function ShiftCalendar() {
               className={
                 'mr-1 flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] focus:outline-none ' +
                 (showSchedules
-                  ? 'border-card-strong text-ink-muted hover:bg-white/5'
-                  : 'border-transparent text-ink-faint hover:bg-white/5')
+                  ? 'border-card-strong bg-surface-elevated text-ink-muted shadow-sm'
+                  : 'border-transparent text-ink-faint hover:bg-card')
               }
             >
               <ClockMark color={showSchedules ? SCHEDULE_TINT : 'currentColor'} />
@@ -320,7 +323,7 @@ export function ShiftCalendar() {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-card-strong">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-card-strong bg-card/20 shadow-sm">
         {/* Day headers sit outside the scroller so the dates stay put while
             the hours move under them. */}
         <div className="flex shrink-0 border-b border-card-strong bg-card">
@@ -350,7 +353,7 @@ export function ShiftCalendar() {
       {(roster.length > 0 || armedSchedules.length > 0) && (
         // The legend does what the grid can't: say in words what each cadence
         // IS, so a column that looks wrong traces back to the rule that made it.
-        <div className="mt-2 flex shrink-0 flex-wrap gap-x-5 gap-y-1">
+        <div className="mt-3 flex shrink-0 flex-wrap gap-x-5 gap-y-1 rounded-xl border border-card-strong bg-card/30 px-3 py-2 shadow-sm">
           {roster.map((w) => (
             <button
               key={w.id}
@@ -402,7 +405,7 @@ function UpNextStrip({
   onOpen: (subject: AutomationSubject) => void;
 }) {
   return (
-    <div className="mb-2 flex shrink-0 flex-wrap items-center gap-1.5">
+    <div className="mb-3 flex shrink-0 flex-wrap items-center gap-1.5 rounded-xl border border-card-strong bg-card/30 px-3 py-2 shadow-sm">
       <span className="mr-0.5 text-[10px] uppercase tracking-wider text-ink-faint">
         Up next
       </span>

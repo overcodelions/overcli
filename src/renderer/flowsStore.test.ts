@@ -722,6 +722,27 @@ describe('renameRun', () => {
   });
 });
 
+describe('noteUserTurn', () => {
+  beforeEach(() => {
+    mockInvoke.mockResolvedValue({ ok: true });
+    useFlowsStore.getState().applyRunUpdate(minimalRun('r1'));
+  });
+
+  it('stamps the run optimistically so the row moves at once', () => {
+    const before = Date.now();
+    useFlowsStore.getState().noteUserTurn('r1');
+    expect(useFlowsStore.getState().runs['r1'].lastUserTurnAt).toBeGreaterThanOrEqual(before);
+    expect(mockInvoke).toHaveBeenCalledWith('flows:noteUserTurn', { runId: 'r1' });
+  });
+
+  it('swallows a rejection — a stale sort order is not worth an error', async () => {
+    mockInvoke.mockRejectedValue(new Error('No handler registered'));
+    expect(() => useFlowsStore.getState().noteUserTurn('r1')).not.toThrow();
+    await Promise.resolve();
+    expect(useFlowsStore.getState().runs['r1'].lastUserTurnAt).toBeDefined();
+  });
+});
+
 // ─── browseRegistries ─────────────────────────────────────────────────────────
 
 describe('browseRegistries', () => {
@@ -768,5 +789,22 @@ describe('browseRegistries', () => {
 
     expect(mockInvoke).toHaveBeenCalledTimes(2);
     expect(mockInvoke).toHaveBeenLastCalledWith('flows:browseRegistry', { force: true });
+  });
+});
+
+describe('claimFirstFlowsVisit', () => {
+  beforeEach(() => {
+    useFlowsStore.setState({ flowsTabVisited: false });
+  });
+
+  it('is true exactly once per session', () => {
+    expect(useFlowsStore.getState().claimFirstFlowsVisit()).toBe(true);
+    expect(useFlowsStore.getState().claimFirstFlowsVisit()).toBe(false);
+    expect(useFlowsStore.getState().claimFirstFlowsVisit()).toBe(false);
+  });
+
+  it('records the visit, so a later reader sees it without claiming', () => {
+    useFlowsStore.getState().claimFirstFlowsVisit();
+    expect(useFlowsStore.getState().flowsTabVisited).toBe(true);
   });
 });

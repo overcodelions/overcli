@@ -59,7 +59,13 @@ function makeFlow(overrides: Partial<Flow> = {}): Flow {
     name: 'Drafted Flow',
     input: 'user_prompt',
     participants: [
-      { id: 'primary', name: 'P', backend: 'claude', model: 'claude-sonnet-5', kind: 'primary' },
+      {
+        id: 'primary',
+        name: 'P',
+        backend: 'claude',
+        model: 'claude-sonnet-5',
+        kind: 'primary',
+      },
     ],
     steps: [
       {
@@ -116,15 +122,19 @@ afterEach(() => {
 /// `reload` fans out over two channels, so a per-call queue would depend on
 /// the order Promise.all happens to resolve them in. Answer by channel.
 function mockChannels(rows: unknown[], treasury: unknown): void {
-  mockInvoke.mockImplementation(async (channel: string) =>
-    channel === 'workers:treasury' ? treasury : rows,
-  );
+  mockInvoke.mockImplementation(async (channel: string) => (channel === 'workers:treasury' ? treasury : rows));
 }
 
 describe('workersStore mirror', () => {
   it('reload lands workers, nextShiftAt, scorecards and the treasury keyed by id', async () => {
     mockChannels(
-      [{ worker: makeWorker(), nextShiftAt: 123, scorecard: makeScorecard({ proposed: 2 }) }],
+      [
+        {
+          worker: makeWorker(),
+          nextShiftAt: 123,
+          scorecard: makeScorecard({ proposed: 2 }),
+        },
+      ],
       {
         treasury: { monthlyUSD: 40 },
         allocation: allocateTreasury([makeWorker()], () => 0, 40),
@@ -137,7 +147,10 @@ describe('workersStore mirror', () => {
     expect(s.nextShiftAt['worker-1']).toBe(123);
     expect(s.scorecards['worker-1'].proposed).toBe(2);
     expect(s.treasury).toEqual({ monthlyUSD: 40 });
-    expect(s.allocation?.byWorker[0]).toMatchObject({ workerId: 'worker-1', availableUSD: 20 });
+    expect(s.allocation?.byWorker[0]).toMatchObject({
+      workerId: 'worker-1',
+      availableUSD: 20,
+    });
   });
 
   it('openWorkerDesk arrives on the desk, dropping a draft and run that would cover it', () => {
@@ -162,8 +175,18 @@ describe('workersStore mirror', () => {
   });
 
   it('moveWorker re-prices the roster locally so the money moves with the row', async () => {
-    const first = makeWorker({ id: 'a', name: 'A', order: 0, budgetUSDPerMonth: 10 });
-    const second = makeWorker({ id: 'b', name: 'B', order: 1, budgetUSDPerMonth: 10 });
+    const first = makeWorker({
+      id: 'a',
+      name: 'A',
+      order: 0,
+      budgetUSDPerMonth: 10,
+    });
+    const second = makeWorker({
+      id: 'b',
+      name: 'B',
+      order: 1,
+      budgetUSDPerMonth: 10,
+    });
     mockInvoke.mockResolvedValue({ ok: true });
     useWorkersStore.setState({
       workers: { a: first, b: second },
@@ -178,13 +201,30 @@ describe('workersStore mirror', () => {
     expect(alloc.byWorker.map((f) => f.workerId)).toEqual(['b', 'a']);
     // Not waiting on main's echo: B is funded the moment it is on top.
     expect(alloc.byWorker.map((f) => f.availableUSD)).toEqual([10, 0]);
-    expect(mockInvoke).toHaveBeenCalledWith('workers:reorder', { ids: ['b', 'a'] });
+    expect(mockInvoke).toHaveBeenCalledWith('workers:reorder', {
+      ids: ['b', 'a'],
+    });
   });
 
   it('dropWorker lands a row at an arbitrary slot and re-prices from there', async () => {
-    const a = makeWorker({ id: 'a', name: 'A', order: 0, budgetUSDPerMonth: 10 });
-    const b = makeWorker({ id: 'b', name: 'B', order: 1, budgetUSDPerMonth: 10 });
-    const c = makeWorker({ id: 'c', name: 'C', order: 2, budgetUSDPerMonth: 10 });
+    const a = makeWorker({
+      id: 'a',
+      name: 'A',
+      order: 0,
+      budgetUSDPerMonth: 10,
+    });
+    const b = makeWorker({
+      id: 'b',
+      name: 'B',
+      order: 1,
+      budgetUSDPerMonth: 10,
+    });
+    const c = makeWorker({
+      id: 'c',
+      name: 'C',
+      order: 2,
+      budgetUSDPerMonth: 10,
+    });
     mockInvoke.mockResolvedValue({ ok: true });
     useWorkersStore.setState({
       workers: { a, b, c },
@@ -199,13 +239,42 @@ describe('workersStore mirror', () => {
     const alloc = useWorkersStore.getState().allocation!;
     expect(alloc.byWorker.map((f) => f.workerId)).toEqual(['c', 'a', 'b']);
     expect(alloc.byWorker.map((f) => f.availableUSD)).toEqual([10, 0, 0]);
-    expect(mockInvoke).toHaveBeenCalledWith('workers:reorder', { ids: ['c', 'a', 'b'] });
+    expect(mockInvoke).toHaveBeenCalledWith('workers:reorder', {
+      ids: ['c', 'a', 'b'],
+    });
   });
 
   it('surfaces a rejected pot instead of pretending it landed', async () => {
-    mockInvoke.mockResolvedValue({ ok: false, error: 'The monthly pool has to be more than zero.' });
+    mockInvoke.mockResolvedValue({
+      ok: false,
+      error: 'The monthly pool has to be more than zero.',
+    });
     await expect(useWorkersStore.getState().setTreasury(0)).resolves.toBe(false);
     expect(useWorkersStore.getState().error).toContain('more than zero');
+  });
+
+  it('lands a distributed roster and allocation from main together', async () => {
+    const first = makeWorker({ id: 'a', name: 'A', budgetUSDPerMonth: 10 });
+    const second = makeWorker({ id: 'b', name: 'B', budgetUSDPerMonth: 10 });
+    const updated = [
+      { ...first, budgetUSDPerMonth: 25 },
+      { ...second, budgetUSDPerMonth: 25 },
+    ];
+    const allocation = allocateTreasury(updated, () => 0, 50);
+    mockInvoke.mockResolvedValue({
+      ok: true,
+      workers: updated,
+      treasury: { monthlyUSD: 50 },
+      allocation,
+    });
+    useWorkersStore.setState({ workers: { a: first, b: second } });
+
+    await expect(useWorkersStore.getState().distributeFunds()).resolves.toBe(true);
+
+    expect(mockInvoke).toHaveBeenCalledWith('workers:distributeFunds');
+    expect(useWorkersStore.getState().workers.a.budgetUSDPerMonth).toBe(25);
+    expect(useWorkersStore.getState().workers.b.budgetUSDPerMonth).toBe(25);
+    expect(useWorkersStore.getState().allocation).toEqual(allocation);
   });
 
   it('applyUpdate patches one worker without touching the rest', () => {
@@ -229,6 +298,7 @@ describe('workersStore mirror', () => {
       errandError: { 'worker-1': 'nope' },
       errandResult: {
         'worker-1': {
+          intent: 'work',
           orchestrationId: 'orch-1',
           count: 0,
           queued: 0,
@@ -283,10 +353,13 @@ describe('workersStore reset', () => {
     useWorkersStore.setState({
       journals: { 'worker-1': [{ id: 'j1' } as never] },
       errandBusy: { 'worker-1': false },
-      errandSending: { 'worker-1': [{ id: 'send-1', text: 'old errand', at: 1 }] },
+      errandSending: {
+        'worker-1': [{ id: 'send-1', text: 'old errand', intent: 'work', at: 1 }],
+      },
       errandError: { 'worker-1': 'old error' },
       errandResult: {
         'worker-1': {
+          intent: 'work',
           orchestrationId: 'orch-1',
           count: 0,
           queued: 0,
@@ -311,7 +384,9 @@ describe('workersStore reset', () => {
       errands: 1,
       runs: 3,
     });
-    expect(mockInvoke).toHaveBeenCalledWith('workers:resetMemory', { id: 'worker-1' });
+    expect(mockInvoke).toHaveBeenCalledWith('workers:resetMemory', {
+      id: 'worker-1',
+    });
     const state = useWorkersStore.getState();
     expect(state.journals['worker-1']).toEqual([]);
     expect(state.errandBusy['worker-1']).toBeUndefined();
@@ -327,6 +402,7 @@ describe('workersStore errands', () => {
       errandError: { 'worker-1': 'Monthly budget spent.' },
       errandResult: {
         'worker-1': {
+          intent: 'work',
           orchestrationId: 'orch-1',
           count: 0,
           queued: 0,
@@ -346,6 +422,7 @@ describe('workersStore errands', () => {
     mockInvoke.mockResolvedValueOnce({
       ok: true,
       result: {
+        intent: 'work',
         orchestrationId: 'orch-1',
         count: 2,
         queued: 1,
@@ -353,21 +430,31 @@ describe('workersStore errands', () => {
         reply: 'Planned.',
       },
     });
-    const task = useWorkersStore.getState().runErrand('worker-1', 'Investigate this.');
+    const task = useWorkersStore.getState().runErrand('worker-1', 'Investigate this.', 'chat');
     expect(useWorkersStore.getState().errandBusy['worker-1']).toBe(true);
+    expect(useWorkersStore.getState().errandSending['worker-1'][0]).toMatchObject({
+      intent: 'chat',
+    });
     await expect(task).resolves.toBe(true);
     expect(useWorkersStore.getState().errandBusy['worker-1']).toBe(false);
-    expect(useWorkersStore.getState().errandResult['worker-1']).toMatchObject({ count: 2, queued: 1 });
+    expect(useWorkersStore.getState().errandResult['worker-1']).toMatchObject({
+      count: 2,
+      queued: 1,
+    });
     expect(mockInvoke).toHaveBeenCalledWith('workers:runErrand', {
       id: 'worker-1',
       instruction: 'Investigate this.',
+      intent: 'chat',
     });
 
     useWorkersStore.getState().clearErrand('worker-1');
     expect(useWorkersStore.getState().errandResult['worker-1']).toBeUndefined();
 
-    mockInvoke.mockResolvedValueOnce({ ok: false, error: 'Monthly budget spent.' });
-    await expect(useWorkersStore.getState().runErrand('worker-1', 'Try again.')).resolves.toBe(false);
+    mockInvoke.mockResolvedValueOnce({
+      ok: false,
+      error: 'Monthly budget spent.',
+    });
+    await expect(useWorkersStore.getState().runErrand('worker-1', 'Try again.', 'work')).resolves.toBe(false);
     expect(useWorkersStore.getState().errandError['worker-1']).toBe('Monthly budget spent.');
     useWorkersStore.getState().clearErrand('worker-1');
     expect(useWorkersStore.getState().errandError['worker-1']).toBeUndefined();
@@ -377,7 +464,12 @@ describe('workersStore errands', () => {
 describe('workersStore save', () => {
   it('persists a riding-along flow first and wires it into an empty flowIds', async () => {
     useWorkersStore.setState({
-      draft: { ...newWorkerDraft('/repo'), name: 'Scout', jobDescription: 'x'.repeat(30), flowIds: [] },
+      draft: {
+        ...newWorkerDraft('/repo'),
+        name: 'Scout',
+        jobDescription: 'x'.repeat(30),
+        flowIds: [],
+      },
       draftedFlow: makeFlow(),
     });
     mockInvoke
@@ -439,9 +531,10 @@ describe('workersStore save', () => {
 
   it('applyRevision patches the draft and parks the revised flow', () => {
     useWorkersStore.setState({ draft: newWorkerDraft('/repo') });
-    useWorkersStore
-      .getState()
-      .applyRevision({ jobDescription: 'the new job', flow: makeFlow({ id: 'revised' }) });
+    useWorkersStore.getState().applyRevision({
+      jobDescription: 'the new job',
+      flow: makeFlow({ id: 'revised' }),
+    });
     const s = useWorkersStore.getState();
     expect(s.draft?.jobDescription).toBe('the new job');
     expect(s.draftedFlow?.id).toBe('revised');
@@ -455,7 +548,9 @@ describe('draft factories', () => {
   });
 
   it('draftFromWorker copies without sharing nested references', () => {
-    const w = makeWorker({ cadence: { kind: 'daily', time: '09:00', days: [1, 2] } });
+    const w = makeWorker({
+      cadence: { kind: 'daily', time: '09:00', days: [1, 2] },
+    });
     const d = draftFromWorker(w);
     (d.cadence as { days: number[] }).days.push(6);
     d.flowIds.push('other');
@@ -468,7 +563,11 @@ describe('draft factories', () => {
       name: 'Release Nanny',
       jobDescription: 'Watch the release branch and report what is not green.',
       cadence: { kind: 'daily', time: '08:00' },
-      caps: { maxItemsPerShift: 2, runIn: 'worktree', allowExternalActions: true },
+      caps: {
+        maxItemsPerShift: 2,
+        runIn: 'worktree',
+        allowExternalActions: true,
+      },
       budgetUSDPerMonth: 12,
       heartbeatModel: 'cheap',
       flowIds: ['here', 'gone'],
@@ -498,7 +597,11 @@ describe('draft factories', () => {
     };
     const d = draftFromPortable(shared, '/repo', ['here']);
     (d.cadence as { days: number[] }).days.push(6);
-    expect(shared.cadence).toEqual({ kind: 'daily', time: '08:00', days: [1, 2] });
+    expect(shared.cadence).toEqual({
+      kind: 'daily',
+      time: '08:00',
+      days: [1, 2],
+    });
   });
 
   it('draftFromContract starts on worktree with the given project and flow', () => {
@@ -575,9 +678,7 @@ describe('sharing a worker', () => {
       return [];
     });
 
-    const opened = await useWorkersStore
-      .getState()
-      .importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
+    const opened = await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
     expect(opened).toBe(true);
     const s = useWorkersStore.getState();
     expect(s.draft).toMatchObject({
@@ -593,19 +694,18 @@ describe('sharing a worker', () => {
 
   it('a dismissed import dialog opens no editor and reports no error', async () => {
     mockInvoke.mockResolvedValue({ ok: true, canceled: true });
-    const opened = await useWorkersStore
-      .getState()
-      .importFromFile({ projectPath: '/repo', projectPaths: [] });
+    const opened = await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: [] });
     expect(opened).toBe(false);
     expect(useWorkersStore.getState().draft).toBeNull();
     expect(useWorkersStore.getState().error).toBeNull();
   });
 
   it('a file that will not parse leaves the roster alone and says why', async () => {
-    mockInvoke.mockResolvedValue({ ok: false, error: "That's a flow, not a worker." });
-    const opened = await useWorkersStore
-      .getState()
-      .importFromFile({ projectPath: '/repo', projectPaths: [] });
+    mockInvoke.mockResolvedValue({
+      ok: false,
+      error: "That's a flow, not a worker.",
+    });
+    const opened = await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: [] });
     expect(opened).toBe(false);
     expect(useWorkersStore.getState().draft).toBeNull();
     expect(useWorkersStore.getState().error).toBe("That's a flow, not a worker.");
@@ -649,16 +749,34 @@ describe('hiring in the background', () => {
   });
 
   it('sends attached files with the job description', async () => {
-    mockInvoke.mockResolvedValueOnce({ ok: true, contract: CONTRACT, summary: '' });
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      contract: CONTRACT,
+      summary: '',
+    });
     useWorkersStore.getState().openHire('/repo');
     useWorkersStore.getState().patchHire({
       jobDescription: 'Build what the spec says.',
-      attachments: [{ id: 'a1', mimeType: 'application/pdf', dataBase64: 'x', label: 'spec.pdf' }],
+      attachments: [
+        {
+          id: 'a1',
+          mimeType: 'application/pdf',
+          dataBase64: 'x',
+          label: 'spec.pdf',
+        },
+      ],
     });
     await useWorkersStore.getState().startHire();
     expect(mockInvoke).toHaveBeenCalledWith('workers:draftFromPrompt', {
       jobDescription: 'Build what the spec says.',
-      attachments: [{ id: 'a1', mimeType: 'application/pdf', dataBase64: 'x', label: 'spec.pdf' }],
+      attachments: [
+        {
+          id: 'a1',
+          mimeType: 'application/pdf',
+          dataBase64: 'x',
+          label: 'spec.pdf',
+        },
+      ],
     });
   });
 
@@ -681,7 +799,11 @@ describe('revising in the background', () => {
     const task = useWorkersStore.getState().startRevise();
     expect(useWorkersStore.getState().revise.startedAt).not.toBeNull();
 
-    land({ ok: true, jobDescription: 'Twice daily now.', note: 'Cadence doubled.' });
+    land({
+      ok: true,
+      jobDescription: 'Twice daily now.',
+      note: 'Cadence doubled.',
+    });
     await task;
     expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
     expect(selectRevise(useWorkersStore.getState()).note).toBe('Cadence doubled.');
@@ -700,7 +822,11 @@ describe('revising in the background', () => {
     useWorkersStore.getState().closeEditor();
     useWorkersStore.getState().openEditor({ ...newWorkerDraft('/other'), id: 'worker-2' });
 
-    land({ ok: true, jobDescription: 'Twice daily now.', note: 'Cadence doubled.' });
+    land({
+      ok: true,
+      jobDescription: 'Twice daily now.',
+      note: 'Cadence doubled.',
+    });
     await task;
     // Not on the worker that happens to be open…
     expect(useWorkersStore.getState().draft?.jobDescription).not.toBe('Twice daily now.');
@@ -724,7 +850,11 @@ describe('revising in the background', () => {
     useWorkersStore.getState().closeEditor();
     useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
 
-    land({ ok: true, jobDescription: 'Twice daily now.', note: 'Cadence doubled.' });
+    land({
+      ok: true,
+      jobDescription: 'Twice daily now.',
+      note: 'Cadence doubled.',
+    });
     await task;
     expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
     expect(selectRevise(useWorkersStore.getState()).error).toBeNull();
@@ -742,7 +872,14 @@ describe('revising in the background', () => {
       'workers:reviseFromPrompt',
       expect.objectContaining({
         instruction: 'Make the report look like this.',
-        attachments: [{ id: 'a1', mimeType: 'image/png', dataBase64: 'x', label: 'shot.png' }],
+        attachments: [
+          {
+            id: 'a1',
+            mimeType: 'image/png',
+            dataBase64: 'x',
+            label: 'shot.png',
+          },
+        ],
       }),
     );
   });
@@ -783,7 +920,10 @@ describe('working a shift by hand', () => {
   });
 
   it('releases the worker and reports the error when the shift is refused', async () => {
-    mockInvoke.mockResolvedValueOnce({ ok: false, error: 'A shift is already starting.' });
+    mockInvoke.mockResolvedValueOnce({
+      ok: false,
+      error: 'A shift is already starting.',
+    });
     await useWorkersStore.getState().workShiftNow('worker-1');
     expect(useWorkersStore.getState().shiftStarting['worker-1']).toBeUndefined();
     expect(useWorkersStore.getState().error).toBe('A shift is already starting.');

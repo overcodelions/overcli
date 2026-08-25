@@ -435,3 +435,79 @@ describe('where a run sits on the Stream timeline', () => {
     expect(candidate?.promptedAt).toBe(NOW - 10 * DAY);
   });
 });
+
+// Reported from the running app: a run being hijack-chatted showed LAST in
+// Working on. Order keys off `promptedAt` — what the user did — and a hijack
+// turn is exactly that, but it goes out over the generic conversation path,
+// so the run's only user timestamp was its launch.
+describe('a run the user is chatting with', () => {
+  it('climbs Working on when the user types at it', () => {
+    const older = run('r1', { createdAt: NOW - 5 * MIN, lastUserTurnAt: NOW - MIN } as never);
+    const newer = run('r2', { createdAt: NOW - 2 * MIN } as never);
+    const ordered = selectActiveEntries(
+      collectActiveCandidates(
+        [],
+        [],
+        { r1: older, r2: newer } as unknown as Record<UUID, FlowRun>,
+        {},
+        NO_SELECTION,
+        NOW,
+      ),
+      { now: NOW },
+    );
+    expect(ordered.map((c) => (c.entry as { run: FlowRun }).run.id)).toEqual(['r1', 'r2']);
+  });
+
+  it('still ignores the steps the runtime takes on its own', () => {
+    // The other half of the rule: backend progress must not reorder anything.
+    const r = run('r1', {
+      createdAt: NOW - 5 * MIN,
+      attempts: [{ stepId: 's1', startedAt: NOW - MIN, endedAt: NOW }],
+    } as never);
+    const candidate = collectActiveCandidates(
+      [],
+      [],
+      { r1: r } as unknown as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+    ).find((c) => c.entry.kind === 'flow');
+    expect(candidate?.promptedAt).toBe(NOW - 5 * MIN);
+  });
+});
+
+// Reported from the running app: the same "unifyr · workspace" header printed
+// three times in a row, once per row. Lanes are run-length groups keyed on
+// `owner.id`, and a flow run keyed itself on its PATH while the chats in the
+// same place were keyed on the project's id — so a run sitting between two
+// chats could never share their lane, and split it in two.
+describe('which lane a flow run lands in', () => {
+  const ownerIds = (projects: Project[], runs: FlowRun[]) =>
+    collectStreamItems(
+      projects,
+      [],
+      Object.fromEntries(runs.map((r) => [r.id, r])) as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+    ).map((e) => e.owner.id);
+
+  it('shares an owner with the chats living in the same project', () => {
+    const p = project('a', [conv('c1')]);
+    const ids = ownerIds([p], [run('r1', { projectPath: '/repo/a' } as never)]);
+    expect(new Set(ids)).toEqual(new Set([p.id]));
+  });
+
+  it('falls back to the path when the run is somewhere we do not know', () => {
+    // Two unknown paths sharing a basename must stay apart: a merged lane
+    // would claim work happened somewhere it didn't.
+    const ids = ownerIds(
+      [],
+      [
+        run('r1', { projectPath: '/elsewhere/one/api' } as never),
+        run('r2', { projectPath: '/elsewhere/two/api' } as never),
+      ],
+    );
+    expect(ids).toEqual(['path:/elsewhere/one/api', 'path:/elsewhere/two/api']);
+  });
+});

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useStore } from '../store';
+import { mostRecentConversationId } from '../conversationLookup';
 import { useFlowsStore } from '../flowsStore';
+import { flowsLandingSegment, runAttentionBadge } from './flows/runTriage';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
@@ -36,6 +38,7 @@ export function TitleBar() {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const closeFlowEditor = useFlowsStore((s) => s.closeEditor);
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
+  const flowRuns = useFlowsStore((s) => s.runs);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const showWorkersQueue = useWorkersStore((s) => s.showQueue);
   const closeWorkerEditor = useWorkersStore((s) => s.closeEditor);
@@ -45,6 +48,8 @@ export function TitleBar() {
   const nextShiftAt = useWorkersStore((s) => s.nextShiftAt);
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
+
+  const flowsBadge = useMemo(() => runAttentionBadge(flowRuns), [flowRuns]);
 
   // The idle state shows a countdown, which is a lie the moment it's painted
   // unless something re-renders it. One 30s tick, and only while something is
@@ -98,16 +103,38 @@ export function TitleBar() {
   // session, and where clicking it while you're already inside it takes you
   // back up to.
   function chatRoot(): void {
+    // Chat's front page is the conversation you were last in, not the empty
+    // composer. Every other tab's front page is a list you can look at and
+    // choose from; Chat's would be a blank prompt, which answers "start
+    // something new" — a question the sidebar's + already answers, and not
+    // the one you're asking when you press Chat.
+    //
+    // Always the latest, even when an older thread is already open. Ranked
+    // the way the sidebar ranks Recent, so the destination is the row at the
+    // top of the list you can see. (The Chat pane can't show a flow run's
+    // conversation — that's a Flows page — so those never win.)
+    const s = useStore.getState();
+    const recent = mostRecentConversationId(s, s.lastSelectedAt);
+    if (recent) {
+      s.selectConversation(recent);
+      return;
+    }
     setDetailMode('conversation');
   }
 
   function flowsRoot(): void {
-    // Never the run detail, the editor, or the Schedules segment. The user's
-    // mental model is "Flows tab = the list of flows"; opening on a
-    // half-edited draft or a run that finished overnight breaks it.
+    // Never the run detail or the editor: opening on a half-edited draft or a
+    // run that finished overnight is not a front page.
+    //
+    // Which segment is the front page is the one conditional part, and only
+    // on the session's first visit — see `flowsLandingSegment`. Chat already
+    // works this way (`chatRoot` opens your most recent conversation, not the
+    // new-chat screen); a Flows tab that always opens the list of flow
+    // DEFINITIONS while three runs sit waiting was the odd one out.
     setActiveRun(null);
     closeFlowEditor();
-    setLibrarySegment('flows');
+    const first = useFlowsStore.getState().claimFirstFlowsVisit();
+    setLibrarySegment(flowsLandingSegment(useFlowsStore.getState().runs, first));
     setDetailMode('flows');
   }
 
@@ -150,31 +177,35 @@ export function TitleBar() {
       </button>
       <HistoryArrows />
       <div className="flex items-center gap-1 no-drag">
-        {/* A tab you are not on returns you to where you last were inside it
-            — leaving a flow run to check Workers and coming back to the
-            library instead of the run reads as the app losing your place. A
-            tab you ARE on takes you up to its front page instead, which is
-            the only way back out of a run, a desk or an editor without
-            hunting for a breadcrumb. */}
+        {/* Every tab click means the same thing: take me to this tab's front
+            page. Not "where I last was inside it" — that made the button you
+            press to escape a run the one control that wouldn't, and made the
+            click do different things depending on state you can't see.
+            Retracing your steps is the Back arrow's job. */}
         <NavButton
           label="Chat"
           active={detailMode === 'conversation'}
-          onClick={() => navigateToTab('conversation', chatRoot)}
+          onClick={() => navigateToTab(chatRoot)}
         />
+        {/* The only tab that carries a count. Without it the fact that runs
+            are waiting is invisible from every other tab — you had to open
+            Flows to find out there was a reason to. Same helper the Runs
+            segment uses, so the two can't disagree. */}
         <NavButton
           label="Flows"
           active={detailMode === 'flows'}
-          onClick={() => navigateToTab('flows', flowsRoot)}
+          onClick={() => navigateToTab(flowsRoot)}
+          badge={flowsBadge}
         />
         <NavButton
           label="Orchestrator"
           active={detailMode === 'orchestrator'}
-          onClick={() => navigateToTab('orchestrator', orchestratorRoot)}
+          onClick={() => navigateToTab(orchestratorRoot)}
         />
         <NavButton
           label="Workers"
           active={detailMode === 'workers'}
-          onClick={() => navigateToTab('workers', workersRoot)}
+          onClick={() => navigateToTab(workersRoot)}
         />
       </div>
       <div className="flex-1" />
@@ -188,7 +219,7 @@ export function TitleBar() {
             status={status}
             onClick={
               status.source === 'worker'
-                ? () => navigateToTab('workers', workersRoot)
+                ? () => navigateToTab(workersRoot)
                 : openSchedules
             }
           />
@@ -362,18 +393,51 @@ function HistoryArrow({
   );
 }
 
-function NavButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function NavButton({
+  label,
+  active,
+  onClick,
+  badge,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  /// Live count, same shape and tones as the segmented control's: violet for
+  /// blocked-on-you, sky for merely-working.
+  badge?: { count: number; tone: 'waiting' | 'running' };
+}) {
   return (
     <button
       onClick={onClick}
       className={
-        'px-3 py-1 rounded-md text-xs font-medium ' +
+        'px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 ' +
         (active
           ? 'bg-white/10 text-ink'
           : 'text-ink-muted hover:text-ink hover:bg-card-strong')
       }
     >
       {label}
+      {badge && (
+        <span
+          className={
+            'flex items-center gap-1 text-[10px] ' +
+            (badge.tone === 'waiting'
+              ? 'text-violet-700 dark:text-violet-300'
+              : 'text-sky-700 dark:text-sky-300')
+          }
+        >
+          <span
+            aria-hidden
+            className={
+              'w-1.5 h-1.5 rounded-full ' +
+              (badge.tone === 'waiting'
+                ? 'bg-violet-500 dark:bg-violet-400'
+                : 'bg-sky-500 dark:bg-sky-400')
+            }
+          />
+          {badge.count}
+        </span>
+      )}
     </button>
   );
 }

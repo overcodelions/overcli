@@ -207,6 +207,7 @@ describe('buildWorkerReport', () => {
     expect(r.byWorker[0].outputTokens).toBe(50);
     expect(r.byWorker[0].costUSD).toBe(1.5);
     expect(r.byWorker[0].workedMs).toBe(60_000);
+    expect(r.byWorker[0].savedMinutes).toBe(1.5);
   });
 
   it('sums totals across two workers', () => {

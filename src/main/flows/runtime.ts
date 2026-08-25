@@ -2394,6 +2394,21 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Record that the user just typed at this run. Hijack turns go out over
+  /// the generic `runner:send` path, which is conversation-shaped and knows
+  /// nothing about runs — so without this the run's only user-driven
+  /// timestamps are its launch and a Continue, and the sidebar orders a run
+  /// you have been chatting with for ten minutes by when it started.
+  /// Display-only: nothing in orchestration reads it.
+  noteUserTurn(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(args.runId);
+    if (!run) return { ok: false, error: `Run ${args.runId} not found.` };
+    run.lastUserTurnAt = Date.now();
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   /// Queue a course correction for the next step to run. Valid while a step
   /// is running AND while the run is paused: a pause is the moment the user
   /// is most likely to want to correct what happens next, and the pending
@@ -2418,6 +2433,9 @@ export class FlowRuntimeImpl {
         queuedDuringStepId:
           run.state.kind === 'running' ? run.state.currentStepId : undefined,
       };
+      // Holding a correction is the user driving the run just as much as a
+      // hijack turn is. Withdrawing one isn't, so only the set case stamps.
+      run.lastUserTurnAt = run.pendingSteer.at;
     }
     this.checkpoint(run);
     this.emitRunUpdate(run);

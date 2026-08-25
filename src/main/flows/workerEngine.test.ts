@@ -33,7 +33,9 @@ const { archiveMock, deleteDeliverableMock, fileDeliverableMock } = vi.hoisted((
 const { publishMock } = vi.hoisted(() => ({
   publishMock: vi.fn(() => ({ written: [] as string[] })),
 }));
-vi.mock('./workerPublish', () => ({ publishDeliverableToProject: publishMock }));
+vi.mock('./workerPublish', () => ({
+  publishDeliverableToProject: publishMock,
+}));
 vi.mock('./workerFiles', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./workerFiles')>()),
   archiveWorkerFiles: archiveMock,
@@ -41,12 +43,7 @@ vi.mock('./workerFiles', async (importOriginal) => ({
   fileWorkerDeliverable: fileDeliverableMock,
 }));
 
-import {
-  WorkerEngine,
-  parseFlowRequest,
-  type WorkerEngineDeps,
-  type WorkerParker,
-} from './workerEngine';
+import { WorkerEngine, parseFlowRequest, type WorkerEngineDeps, type WorkerParker } from './workerEngine';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import type { Worker, WorkerJournalEntry } from '../../shared/flows/worker';
 import { WORKER_MAX_HANDOFFS_PER_TURN } from '../../shared/flows/worker';
@@ -132,8 +129,7 @@ function makeHarness(
         journal.push(structuredClone(entry));
         return true;
       },
-      load: (workerId) =>
-        journal.filter((e) => e.workerId === workerId).sort((a, b) => b.at - a.at),
+      load: (workerId) => journal.filter((e) => e.workerId === workerId).sort((a, b) => b.at - a.at),
       has: (entryId) => journal.some((e) => e.id === entryId),
       rejectedTitles: (workerId) => [
         ...new Set(
@@ -163,8 +159,7 @@ function makeHarness(
           const e = journal[i];
           if (e.workerId !== workerId) continue;
           const hit =
-            (match.orchestrationId !== undefined && e.orchestrationId === match.orchestrationId) ||
-            ids.has(e.id);
+            (match.orchestrationId !== undefined && e.orchestrationId === match.orchestrationId) || ids.has(e.id);
           if (hit) journal.splice(i, 1);
         }
         return before - journal.length;
@@ -251,7 +246,10 @@ describe('WorkerEngine flow supervision', () => {
       seed: [seedWorker()],
       supervisorTurn: async (args) => {
         prompt = args.prompt;
-        return { ok: true, text: '<worker_answer>Use Unknown.</worker_answer>' };
+        return {
+          ok: true,
+          text: '<worker_answer>Use Unknown.</worker_answer>',
+        };
       },
     });
     h.journal.push({
@@ -346,9 +344,7 @@ function workerBatch(over: Partial<Orchestration> = {}): Orchestration {
 /// `origin` is a union — a batch can come from a schedule or a worker — so the
 /// worker id needs narrowing. The engine only ever parks worker batches; a
 /// schedule origin here would be a bug, and surfaces as an `undefined` id.
-function parkedWorkerIds(
-  parked: Array<Parameters<WorkerParker['parkProposal']>[0]>,
-): Array<string | undefined> {
+function parkedWorkerIds(parked: Array<Parameters<WorkerParker['parkProposal']>[0]>): Array<string | undefined> {
   return parked.map((p) => (p.origin?.kind === 'worker' ? p.origin.workerId : undefined));
 }
 
@@ -423,7 +419,10 @@ describe('WorkerEngine shifts', () => {
   });
 
   it('skips shifts once the monthly budget is spent, journaling once a day', async () => {
-    const h = makeHarness({ seed: [seedWorker({ budgetUSDPerMonth: 5 })], spend: 5 });
+    const h = makeHarness({
+      seed: [seedWorker({ budgetUSDPerMonth: 5 })],
+      spend: 5,
+    });
     h.engine.start();
     await h.advanceTo(local(2026, 3, 2, 9, 0));
 
@@ -434,7 +433,10 @@ describe('WorkerEngine shifts', () => {
   });
 
   it('refuses a manual shift when over budget instead of silently skipping', async () => {
-    const h = makeHarness({ seed: [seedWorker({ budgetUSDPerMonth: 5 })], spend: 6 });
+    const h = makeHarness({
+      seed: [seedWorker({ budgetUSDPerMonth: 5 })],
+      spend: 6,
+    });
     h.engine.start();
     const res = await h.engine.workShiftNow('worker-1');
     expect(res.ok).toBe(false);
@@ -514,7 +516,9 @@ describe('WorkerEngine shifts', () => {
 
     expect(h.engine.setTreasury(40)).toEqual({ ok: true });
     expect(h.treasury()).toEqual({ monthlyUSD: 40 });
-    await expect(h.engine.workShiftNow('worker-2')).resolves.toEqual({ ok: true });
+    await expect(h.engine.workShiftNow('worker-2')).resolves.toEqual({
+      ok: true,
+    });
     expect(h.parked).toHaveLength(1);
   });
 
@@ -538,6 +542,40 @@ describe('WorkerEngine shifts', () => {
       priority: 1,
       availableUSD: 20,
     });
+  });
+
+  it('distributes remaining funds by active-worker priority in one update', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', order: 0, budgetUSDPerMonth: 5 }),
+        seedWorker({ id: 'worker-2', order: 1, budgetUSDPerMonth: 25 }),
+        seedWorker({
+          id: 'paused',
+          order: 2,
+          budgetUSDPerMonth: 99,
+          enabled: false,
+        }),
+      ],
+      pool: 40,
+    });
+    h.engine.start();
+    h.emitted.length = 0;
+
+    const result = h.engine.distributeFunds();
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(result.workers.map((worker) => [worker.id, worker.budgetUSDPerMonth])).toEqual([
+      ['worker-1', 26.67],
+      ['worker-2', 13.33],
+    ]);
+    expect(result.allocation.byWorker.map((row) => [row.workerId, Number(row.availableUSD.toFixed(2))])).toEqual([
+      ['worker-1', 26.67],
+      ['worker-2', 13.33],
+      ['paused', 0],
+    ]);
+    expect(h.saved.find((worker) => worker.id === 'paused')).toBeUndefined();
+    expect(h.emitted.filter((event) => event.type === 'treasuryUpdate')).toHaveLength(1);
   });
 
   it('seeds an upgrading install with the caps it already had, so nothing changes on day one', async () => {
@@ -579,7 +617,10 @@ describe('WorkerEngine shifts', () => {
   });
 
   it('journals a missed shift instead of replaying it after a long sleep', async () => {
-    const h = makeHarness({ seed: [seedWorker()], startAt: local(2026, 3, 2, 8, 0) });
+    const h = makeHarness({
+      seed: [seedWorker()],
+      startAt: local(2026, 3, 2, 8, 0),
+    });
     h.engine.start();
     // Jump straight past the 9:00 occurrence by more than the grace window,
     // as a laptop shut overnight would.
@@ -602,6 +643,60 @@ describe('errand triage', () => {
 });
 
 describe('WorkerEngine errands', () => {
+  it('answers Ask mode without auto-approval, handoffs, or generated flows', async () => {
+    const generated = vi.fn(async () => ({
+      ok: true as const,
+      orchestrationId: 'generated',
+      flowId: 'flow',
+    }));
+    const h = makeHarness({ seed: [seedWorker()], generatedFlow: generated });
+    h.engine.start();
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 0,
+      queued: 0,
+      excluded: 0,
+    });
+    h.orchestrations.set(
+      'orch-1',
+      workerBatch({
+        origin: {
+          kind: 'worker',
+          workerId: 'worker-1',
+          workerName: 'Scout',
+          task: 'errand',
+          errand: 'What changed?',
+          intent: 'chat',
+        },
+        producer: {
+          prompt: 'p',
+          reply: 'Nothing material. <candidates>[{"id":"rogue"}]</candidates><flow_request>build it</flow_request>',
+        },
+        items: [],
+      }),
+    );
+
+    const res = await h.engine.runErrand('worker-1', 'What changed?', 'chat');
+    expect(h.parked[0]).toMatchObject({
+      maxItems: 0,
+      origin: { intent: 'chat' },
+    });
+    expect(h.parked[0].autoApprove).toBeUndefined();
+    expect(h.parked[0].prompt).toContain(
+      'Answer conversationally from the job, journal, files, project, and tools. Emit <candidates>[]</candidates>. Never request, draft, launch, or hand off work.',
+    );
+    expect(generated).not.toHaveBeenCalled();
+    expect(res).toMatchObject({
+      ok: true,
+      result: {
+        intent: 'chat',
+        launchedNothing: true,
+        reply: 'Nothing material.',
+      },
+    });
+  });
+
   it('plans an errand through the job description and worker contract', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.engine.start();
@@ -672,7 +767,12 @@ describe('WorkerEngine errands', () => {
 
   it('honours an autonomous worker’s working-copy execution setting', async () => {
     const h = makeHarness({
-      seed: [seedWorker({ trust: 'autonomous', caps: { maxItemsPerShift: 3, runIn: 'cwd' } })],
+      seed: [
+        seedWorker({
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'cwd' },
+        }),
+      ],
     });
     h.engine.start();
 
@@ -683,7 +783,13 @@ describe('WorkerEngine errands', () => {
 
   it('returns and journals a no-launch reply without labeling it a refusal', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 0,
+      queued: 0,
+      excluded: 0,
+    });
     h.orchestrations.set(
       'orch-1',
       workerBatch({
@@ -707,7 +813,13 @@ describe('WorkerEngine errands', () => {
 
   it('journals a completed errand and collision-proofs two errands on one clock', async () => {
     const h = makeHarness({ seed: [seedWorker()] });
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 3, queued: 1, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 3,
+      queued: 1,
+      excluded: 0,
+    });
     h.engine.start();
     await h.engine.runErrand('worker-1', 'Check the flaky test.');
     await h.engine.runErrand('worker-1', 'Check the other flaky test.');
@@ -719,7 +831,9 @@ describe('WorkerEngine errands', () => {
   it('refuses over-budget, empty, unknown, and concurrent errands', async () => {
     const budget = makeHarness({ seed: [seedWorker()], spend: 999 });
     budget.engine.start();
-    await expect(budget.engine.runErrand('worker-1', 'do a thing')).resolves.toMatchObject({ ok: false });
+    await expect(budget.engine.runErrand('worker-1', 'do a thing')).resolves.toMatchObject({
+      ok: false,
+    });
     expect(budget.parked).toHaveLength(0);
     expect(budget.journal).toHaveLength(0);
     await expect(budget.engine.runErrand('worker-1', '   ')).resolves.toMatchObject({ ok: false });
@@ -759,11 +873,7 @@ describe('WorkerEngine errands', () => {
     release();
     await Promise.all([first, second]);
 
-    expect(h.parked.map((p) => p.title)).toEqual([
-      '[Shift 1] Scout',
-      '[Errand] first',
-      '[Errand] second',
-    ]);
+    expect(h.parked.map((p) => p.title)).toEqual(['[Shift 1] Scout', '[Errand] first', '[Errand] second']);
   });
 
   it('keeps the queue moving when an errand fails', async () => {
@@ -774,7 +884,13 @@ describe('WorkerEngine errands', () => {
     h.setParkResult({ ok: false, error: 'planner exploded' });
     await expect(h.engine.runErrand('worker-1', 'first')).resolves.toMatchObject({ ok: false });
 
-    h.setParkResult({ ok: true, orchestrationId: 'o-2', count: 1, queued: 1, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'o-2',
+      count: 1,
+      queued: 1,
+      excluded: 0,
+    });
     await expect(h.engine.runErrand('worker-1', 'second')).resolves.toMatchObject({ ok: true });
   });
 });
@@ -783,7 +899,11 @@ describe('WorkerEngine hiring and trust', () => {
   it('forces every new hire onto probation', () => {
     const h = makeHarness();
     h.engine.start();
-    const res = h.engine.save({ ...seedWorker(), id: undefined, trust: 'autonomous' } as never);
+    const res = h.engine.save({
+      ...seedWorker(),
+      id: undefined,
+      trust: 'autonomous',
+    } as never);
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.worker.trust).toBe('probation');
   });
@@ -799,7 +919,9 @@ describe('WorkerEngine hiring and trust', () => {
   it('remembers which output to render, and survives an edit that never mentions it', () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.engine.start();
-    expect(h.engine.setAutoRender('worker-1', 'dashboard.html')).toEqual({ ok: true });
+    expect(h.engine.setAutoRender('worker-1', 'dashboard.html')).toEqual({
+      ok: true,
+    });
     expect(h.engine.get('worker-1')?.autoRender).toBe('dashboard.html');
     // The contract editor sends a draft with no `autoRender` key at all —
     // renaming a worker must not silently unpin its report.
@@ -820,7 +942,12 @@ describe('WorkerEngine hiring and trust', () => {
 
   it('flips a cwd worker back to worktrees on demotion', () => {
     const h = makeHarness({
-      seed: [seedWorker({ trust: 'autonomous', caps: { maxItemsPerShift: 3, runIn: 'cwd' } })],
+      seed: [
+        seedWorker({
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'cwd' },
+        }),
+      ],
     });
     h.engine.start();
     const res = h.engine.setTrust('worker-1', 'trusted');
@@ -843,9 +970,7 @@ describe('WorkerEngine notes', () => {
     expect(notes[0].orchestrationId).toBe('orch-1');
     // The point of storing it as a journal entry rather than a UI annotation:
     // the digest is what the next planning turn reads.
-    expect(h.journal.map((e) => `${e.kind}: ${e.note}`)).toContain(
-      'note: Panasonic is blocked their side.',
-    );
+    expect(h.journal.map((e) => `${e.kind}: ${e.note}`)).toContain('note: Panasonic is blocked their side.');
   });
 
   it('takes two identical notes on one turn as two things the user said', () => {
@@ -877,7 +1002,11 @@ describe('WorkerEngine delivery to the project folder', () => {
     workerBatch({
       items: [
         {
-          candidate: { id: 'c1', title: 'Summarise the course material', prompt: 'p' },
+          candidate: {
+            id: 'c1',
+            title: 'Summarise the course material',
+            prompt: 'p',
+          },
           flowId: 'fix-it',
           status: 'done',
           runId: 'run-1',
@@ -892,13 +1021,20 @@ describe('WorkerEngine delivery to the project folder', () => {
       seed: [
         seedWorker({
           projectPath: '/documents/Course',
-          caps: { maxItemsPerShift: 3, runIn: 'worktree', fileIntoProject: true },
+          caps: {
+            maxItemsPerShift: 3,
+            runIn: 'worktree',
+            fileIntoProject: true,
+          },
         }),
       ],
       deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
     });
     h.engine.start();
-    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+    h.engine.observeEvent({
+      type: 'orchestrationUpdate',
+      orchestration: doneBatch(),
+    });
 
     expect(publishMock).toHaveBeenCalledWith({
       workerId: 'worker-1',
@@ -906,19 +1042,28 @@ describe('WorkerEngine delivery to the project folder', () => {
       runId: 'run-1',
       artifacts: [{ name: 'Summary.md', body: 'hello' }],
     });
-    expect(h.checkpoints).toEqual([
-      { projectPath: '/documents/Course', message: 'Scout added Summary.md' },
-    ]);
+    expect(h.checkpoints).toEqual([{ projectPath: '/documents/Course', message: 'Scout added Summary.md' }]);
   });
 
   it('saves no version when the deliverable did not land in the folder', () => {
     publishMock.mockReturnValue({ written: [] });
     const h = makeHarness({
-      seed: [seedWorker({ caps: { maxItemsPerShift: 3, runIn: 'worktree', fileIntoProject: true } })],
+      seed: [
+        seedWorker({
+          caps: {
+            maxItemsPerShift: 3,
+            runIn: 'worktree',
+            fileIntoProject: true,
+          },
+        }),
+      ],
       deliverablesFor: () => [{ name: 'notes.py', body: 'x' }],
     });
     h.engine.start();
-    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+    h.engine.observeEvent({
+      type: 'orchestrationUpdate',
+      orchestration: doneBatch(),
+    });
     expect(h.checkpoints).toEqual([]);
   });
 
@@ -929,7 +1074,10 @@ describe('WorkerEngine delivery to the project folder', () => {
       deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
     });
     h.engine.start();
-    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+    h.engine.observeEvent({
+      type: 'orchestrationUpdate',
+      orchestration: doneBatch(),
+    });
     expect(publishMock).not.toHaveBeenCalled();
     expect(h.checkpoints).toEqual([]);
   });
@@ -954,12 +1102,12 @@ describe('WorkerEngine journal projection', () => {
         ],
       }),
     });
-    expect(h.journal.filter((entry) => entry.title === 'Repair CI spec').map((entry) => entry.kind).sort()).toEqual([
-      'approved',
-      'completed',
-      'launched',
-      'proposed',
-    ]);
+    expect(
+      h.journal
+        .filter((entry) => entry.title === 'Repair CI spec')
+        .map((entry) => entry.kind)
+        .sort(),
+    ).toEqual(['approved', 'completed', 'launched', 'proposed']);
   });
 
   it('folds batch item statuses into journal kinds', () => {
@@ -990,14 +1138,15 @@ describe('WorkerEngine journal projection', () => {
     h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: o });
 
     const kinds = (id: string) =>
-      h.journal.filter((e) => e.id.includes(`:${id}:`)).map((e) => e.kind).sort();
+      h.journal
+        .filter((e) => e.id.includes(`:${id}:`))
+        .map((e) => e.kind)
+        .sort();
     expect(kinds('c1')).toEqual(['proposed']);
     expect(kinds('c2')).toEqual(['approved', 'completed', 'launched', 'proposed']);
     expect(kinds('c3')).toEqual(['proposed', 'rejected']);
     // Rejected titles now feed the dedup filter.
-    expect(
-      h.journal.some((e) => e.kind === 'rejected' && e.title === 'Rename the module'),
-    ).toBe(true);
+    expect(h.journal.some((e) => e.kind === 'rejected' && e.title === 'Rename the module')).toBe(true);
   });
 
   it('is idempotent across repeated updates', () => {
@@ -1036,7 +1185,9 @@ describe('WorkerEngine journal projection', () => {
     // not a verdict: no rejected entry, no title ban, no streak food.
     h.engine.observeEvent({
       type: 'orchestrationUpdate',
-      orchestration: workerBatch({ items: [{ ...item, status: 'cancelled', finishedAt: 9 }] }),
+      orchestration: workerBatch({
+        items: [{ ...item, status: 'cancelled', finishedAt: 9 }],
+      }),
     });
     expect(h.journal.some((e) => e.kind === 'rejected')).toBe(false);
     expect(h.engine.get('worker-1')?.trust).toBe('trusted');
@@ -1097,7 +1248,10 @@ describe('WorkerEngine journal projection', () => {
       }));
     h.engine.observeEvent({
       type: 'orchestrationUpdate',
-      orchestration: workerBatch({ id: 'orch-1', items: rejectedItems(['a', 'b', 'c'], 5) }),
+      orchestration: workerBatch({
+        id: 'orch-1',
+        items: rejectedItems(['a', 'b', 'c'], 5),
+      }),
     });
     expect(h.engine.get('worker-1')?.trust).toBe('trusted');
     // A fresh rejection AFTER the demotion starts a new streak of 1 — it
@@ -1224,7 +1378,10 @@ describe('WorkerEngine weekly compaction', () => {
 describe('WorkerEngine generated flows', () => {
   function replyRequesting(request: string): Orchestration {
     return workerBatch({
-      producer: { prompt: 'p', reply: `This needs digging.\n<flow_request>\n${request}\n</flow_request>` },
+      producer: {
+        prompt: 'p',
+        reply: `This needs digging.\n<flow_request>\n${request}\n</flow_request>`,
+      },
       items: [],
     });
   }
@@ -1234,12 +1391,26 @@ describe('WorkerEngine generated flows', () => {
     const h = makeHarness({
       seed: [seedWorker()],
       generatedFlow: async (args) => {
-        calls.push({ request: args.request, errand: args.errand, runIn: args.runIn });
-        return { ok: true, orchestrationId: 'orch-gen', flowId: 'generated-abcd1234' };
+        calls.push({
+          request: args.request,
+          errand: args.errand,
+          runIn: args.runIn,
+        });
+        return {
+          ok: true,
+          orchestrationId: 'orch-gen',
+          flowId: 'generated-abcd1234',
+        };
       },
     });
     h.engine.start();
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 0,
+      queued: 0,
+      excluded: 0,
+    });
     h.orchestrations.set('orch-1', replyRequesting('Read the CI logs and correlate.'));
 
     const res = await h.engine.runErrand('worker-1', 'why did CI get slower this month');
@@ -1267,7 +1438,13 @@ describe('WorkerEngine generated flows', () => {
       },
     });
     h.engine.start();
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 2, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 2,
+      queued: 0,
+      excluded: 0,
+    });
     h.orchestrations.set('orch-1', replyRequesting('build me one'));
     await h.engine.runErrand('worker-1', 'do the thing');
     // A turn that proposed work AND asked for machinery is confused; the
@@ -1281,7 +1458,13 @@ describe('WorkerEngine generated flows', () => {
       generatedFlow: async () => ({ ok: false, error: 'drafter offline' }),
     });
     h.engine.start();
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 0,
+      queued: 0,
+      excluded: 0,
+    });
     h.orchestrations.set('orch-1', replyRequesting('investigate'));
     const res = await h.engine.runErrand('worker-1', 'big ask');
     expect(res).toEqual({ ok: false, error: 'drafter offline' });
@@ -1289,14 +1472,15 @@ describe('WorkerEngine generated flows', () => {
   });
 });
 
-describe('WorkerEngine errand threads', () => {
-  it('replays the whole errand thread, oldest first, so follow-ups land', async () => {
-    const h = makeHarness({ seed: [seedWorker()] });
+describe('WorkerEngine daily errand conversations', () => {
+  it("replays only today's thread, oldest first, so same-day follow-ups land", async () => {
+    const today = local(2026, 3, 2, 8, 0);
+    const h = makeHarness({ seed: [seedWorker()], startAt: today });
     h.engine.start();
     // Two settled errands already on the books, newest last by createdAt.
-    for (const [id, ask, reply, at] of [
-      ['e1', 'which spec is flaky', 'WOW-4921 is.', 10],
-      ['e2', 'why', 'A race in the fixture.', 20],
+    for (const [id, ask, reply, at, intent] of [
+      ['e1', 'which spec is flaky', 'WOW-4921 is.', today + 1_000, 'chat'],
+      ['e2', 'why', 'A race in the fixture.', today + 2_000, 'work'],
     ] as const) {
       h.orchestrations.set(
         id,
@@ -1310,6 +1494,7 @@ describe('WorkerEngine errand threads', () => {
             workerName: 'Scout',
             task: 'errand',
             errand: ask,
+            intent,
           },
           producer: { prompt: 'assembled planning prompt', reply },
           items: [],
@@ -1317,12 +1502,46 @@ describe('WorkerEngine errand threads', () => {
       );
     }
 
-    await h.engine.runErrand('worker-1', 'fix it then');
+    await h.engine.runErrand('worker-1', 'fix it then', 'chat');
     const turns = h.parked[0].priorTurns;
     expect(turns).toEqual([
       { prompt: 'which spec is flaky', reply: 'WOW-4921 is.' },
       { prompt: 'why', reply: 'A race in the fixture.' },
     ]);
+  });
+
+  it('starts a fresh thread each day and carries a compact prior-day brief', async () => {
+    const today = local(2026, 3, 3, 8, 0);
+    const yesterday = local(2026, 3, 2, 15, 0);
+    const h = makeHarness({ seed: [seedWorker()], startAt: today });
+    h.engine.start();
+    h.orchestrations.set(
+      'e1',
+      workerBatch({
+        id: 'e1',
+        createdAt: yesterday,
+        origin: {
+          kind: 'worker',
+          workerId: 'worker-1',
+          workerName: 'Scout',
+          task: 'errand',
+          errand: 'which spec is flaky',
+          intent: 'chat',
+        },
+        producer: {
+          prompt: 'assembled prompt',
+          reply: 'WOW-4921 has a fixture race.',
+        },
+        items: [],
+      }),
+    );
+
+    await h.engine.runErrand('worker-1', 'what should I check today', 'chat');
+
+    expect(h.parked[0].priorTurns).toBeUndefined();
+    expect(h.parked[0].prompt).toContain('PREVIOUS CONVERSATION HANDOFF');
+    expect(h.parked[0].prompt).toContain('which spec is flaky');
+    expect(h.parked[0].prompt).toContain('WOW-4921 has a fixture race.');
   });
 
   it('carries no thread on the first errand, and ignores shifts', async () => {
@@ -1331,7 +1550,11 @@ describe('WorkerEngine errand threads', () => {
     // A worked shift is not something the user said, so it is not a turn.
     h.orchestrations.set(
       's1',
-      workerBatch({ id: 's1', producer: { prompt: 'p', reply: 'shift prose' }, items: [] }),
+      workerBatch({
+        id: 's1',
+        producer: { prompt: 'p', reply: 'shift prose' },
+        items: [],
+      }),
     );
     await h.engine.runErrand('worker-1', 'first thing i have asked');
     expect(h.parked[0].priorTurns).toBeUndefined();
@@ -1344,9 +1567,7 @@ describe('WorkerEngine shift clock', () => {
     h.engine.start();
 
     await h.advanceTo(local(2026, 3, 2, 9, 0));
-    expect(h.parked[0].prompt).toContain(
-      `This shift started at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}.`,
-    );
+    expect(h.parked[0].prompt).toContain(`This shift started at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}.`);
     expect(h.parked[0].prompt).toContain('never worked a shift before');
 
     await h.advanceTo(local(2026, 3, 3, 9, 0));
@@ -1378,7 +1599,10 @@ describe('WorkerEngine shift clock', () => {
 
     // Editing the cadence re-anchors the schedule — which must not tell the
     // worker it has never looked at the project.
-    const saved = h.engine.save({ ...seed, cadence: { kind: 'interval', everyMinutes: 60 } });
+    const saved = h.engine.save({
+      ...seed,
+      cadence: { kind: 'interval', everyMinutes: 60 },
+    });
     expect(saved.ok).toBe(true);
     if (!saved.ok) return;
     expect(saved.worker.lastShiftAt).toBeUndefined();
@@ -1387,9 +1611,7 @@ describe('WorkerEngine shift clock', () => {
     // The next shift under the new cadence still knows when the last one was.
     await h.advanceTo(local(2026, 3, 2, 11, 0));
     expect(h.parked.length).toBeGreaterThan(1);
-    expect(h.parked[1].prompt).toContain(
-      `Your previous shift planned at ${new Date(firstShiftAt).toISOString()}`,
-    );
+    expect(h.parked[1].prompt).toContain(`Your previous shift planned at ${new Date(firstShiftAt).toISOString()}`);
   });
 
   it('does not let an errand move the anchor a shift has to catch up from', async () => {
@@ -1403,9 +1625,7 @@ describe('WorkerEngine shift clock', () => {
     h.setNow(local(2026, 3, 3, 9, 0));
     await h.advanceTo(local(2026, 3, 3, 9, 0));
     const last = h.parked[h.parked.length - 1];
-    expect(last.prompt).toContain(
-      `Your previous shift planned at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}`,
-    );
+    expect(last.prompt).toContain(`Your previous shift planned at ${new Date(local(2026, 3, 2, 9, 0)).toISOString()}`);
   });
 });
 
@@ -1521,7 +1741,10 @@ describe('WorkerEngine memory reset', () => {
     await h.flush();
 
     const res = h.engine.resetMemory('worker-1');
-    expect(res).toEqual({ ok: false, error: 'This worker is mid-shift. Wait for it to finish, then reset.' });
+    expect(res).toEqual({
+      ok: false,
+      error: 'This worker is mid-shift. Wait for it to finish, then reset.',
+    });
 
     release();
     await shift;
@@ -1530,7 +1753,10 @@ describe('WorkerEngine memory reset', () => {
   it('reports an unknown worker rather than clearing nothing quietly', () => {
     const h = makeHarness();
     h.engine.start();
-    expect(h.engine.resetMemory('nobody')).toEqual({ ok: false, error: 'Worker not found.' });
+    expect(h.engine.resetMemory('nobody')).toEqual({
+      ok: false,
+      error: 'Worker not found.',
+    });
   });
 });
 
@@ -1547,30 +1773,29 @@ describe('WorkerEngine delegation', () => {
     const triage = seedWorker({
       id: 'triage',
       name: 'Triage',
-      jobDescription:
-        'You are the Ticket Triage Worker. Every weekday morning, find and solve the open tickets.',
+      jobDescription: 'You are the Ticket Triage Worker. Every weekday morning, find and solve the open tickets.',
       trust: 'trusted',
     });
     const h = makeHarness({ seed: [chief, ...(over.roster ?? [triage])] });
     // A shift that proposed nothing still has item budget for a referral,
     // which is the case the handoff path exists for.
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 0,
+      queued: 0,
+      excluded: 0,
+    });
     return h;
   }
 
   function seedReply(h: ReturnType<typeof makeHarness>, reply: string): void {
-    h.orchestrations.set(
-      'orch-1',
-      workerBatch({ producer: { prompt: 'plan the shift', reply } }),
-    );
+    h.orchestrations.set('orch-1', workerBatch({ producer: { prompt: 'plan the shift', reply } }));
   }
 
   it('sends a shift handoff on as an errand stamped with the sender', async () => {
     const h = delegationHarness();
-    seedReply(
-      h,
-      'Nothing for me today.\n<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>',
-    );
+    seedReply(h, 'Nothing for me today.\n<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
@@ -1620,9 +1845,7 @@ describe('WorkerEngine delegation', () => {
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
 
-    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
-      false,
-    );
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(false);
     const handed = h.journal.find((e) => e.kind === 'delegated');
     expect(handed?.note).toContain('"Ticket Triage", who is not a colleague');
     expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain('matched no colleague');
@@ -1630,7 +1853,13 @@ describe('WorkerEngine delegation', () => {
 
   it('never offers, and never reaches, a colleague on another project', async () => {
     const h = delegationHarness({
-      roster: [seedWorker({ id: 'triage', name: 'Triage', projectPath: '/other-workspace' })],
+      roster: [
+        seedWorker({
+          id: 'triage',
+          name: 'Triage',
+          projectPath: '/other-workspace',
+        }),
+      ],
     });
     seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
     h.engine.start();
@@ -1638,9 +1867,7 @@ describe('WorkerEngine delegation', () => {
     await h.flush();
 
     expect(h.parked[0].prompt).not.toContain('YOUR COLLEAGUES');
-    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
-      false,
-    );
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(false);
   });
 
   it('gives no roster to a worker without the capability', async () => {
@@ -1669,16 +1896,24 @@ describe('WorkerEngine delegation', () => {
 
   /// A dropped referral must not read, to its author, exactly like a sent one.
   it('drops handoffs past the turn item budget and says so', async () => {
-    const h = delegationHarness({ chief: { caps: { maxItemsPerShift: 1, runIn: 'worktree', canDelegate: true } } });
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 1, queued: 0, excluded: 0 });
+    const h = delegationHarness({
+      chief: {
+        caps: { maxItemsPerShift: 1, runIn: 'worktree', canDelegate: true },
+      },
+    });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 1,
+      queued: 0,
+      excluded: 0,
+    });
     seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
 
-    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(
-      false,
-    );
+    expect(h.parked.some((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand')).toBe(false);
     expect(h.journal.find((e) => e.kind === 'shift')?.note).toContain(
       '1 more handoff dropped — no item budget left this turn.',
     );
@@ -1704,9 +1939,7 @@ describe('WorkerEngine delegation', () => {
     await h.engine.workShiftNow(CHIEF);
     await h.flush();
 
-    expect(h.journal.filter((e) => e.kind === 'delegated')).toHaveLength(
-      WORKER_MAX_HANDOFFS_PER_TURN,
-    );
+    expect(h.journal.filter((e) => e.kind === 'delegated')).toHaveLength(WORKER_MAX_HANDOFFS_PER_TURN);
   });
 
   /// Without this the same unresolved finding is re-read and re-sent every
@@ -1749,7 +1982,10 @@ describe('WorkerEngine delegation', () => {
     const kept = h.engine.save(chief);
     expect(kept.ok && kept.worker.delegatesTo).toEqual(['triage']);
 
-    const emptied = h.engine.save({ ...chief, delegatesTo: ['far', 'deleted'] });
+    const emptied = h.engine.save({
+      ...chief,
+      delegatesTo: ['far', 'deleted'],
+    });
     expect(emptied.ok && emptied.worker.delegatesTo).toBeUndefined();
   });
 
@@ -1765,12 +2001,23 @@ describe('WorkerEngine delegation', () => {
           caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
           budgetUSDPerMonth: 1000,
         }),
-        seedWorker({ id: 'triage', name: 'Triage', trust: 'trusted', budgetUSDPerMonth: 1 }),
+        seedWorker({
+          id: 'triage',
+          name: 'Triage',
+          trust: 'trusted',
+          budgetUSDPerMonth: 1,
+        }),
       ],
       spend: 500,
       pool: 100_000,
     });
-    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-1',
+      count: 0,
+      queued: 0,
+      excluded: 0,
+    });
     seedReply(h, '<handoff to="Triage">Look at RED-6814.</handoff>');
     h.engine.start();
     await h.engine.workShiftNow(CHIEF);
@@ -1807,7 +2054,12 @@ describe('WorkerEngine re-running and deleting one shift', () => {
 
     const res = h.engine.forgetActivity('worker-1', 'orch-1');
 
-    expect(res).toMatchObject({ ok: true, task: 'shift', label: 'Shift 1', runs: 2 });
+    expect(res).toMatchObject({
+      ok: true,
+      task: 'shift',
+      label: 'Shift 1',
+      runs: 2,
+    });
     expect(deleted).toEqual(['orch-1']);
     // Its journal entries are gone — including the shift note, whose id is
     // built from the number the redo is about to reuse.
@@ -1834,7 +2086,13 @@ describe('WorkerEngine re-running and deleting one shift', () => {
     const { h } = await afterOneShift();
     const first = h.parked.length;
     h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 1] Scout' }));
-    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-2',
+      count: 3,
+      queued: 0,
+      excluded: 0,
+    });
 
     const res = await h.engine.redoShift('worker-1', 'orch-1');
 
@@ -1844,16 +2102,20 @@ describe('WorkerEngine re-running and deleting one shift', () => {
     expect(h.engine.get('worker-1')!.shiftCount).toBe(1);
     // The re-run's own shift note landed: the deleted one shared its id, and
     // an append that silently deduped against it would leave no record at all.
-    expect(
-      h.journal.filter((e) => e.kind === 'shift' && e.orchestrationId === 'orch-2'),
-    ).toHaveLength(1);
+    expect(h.journal.filter((e) => e.kind === 'shift' && e.orchestrationId === 'orch-2')).toHaveLength(1);
   });
 
   it('refuses to re-run anything but the most recent shift', async () => {
     const { h, deleted } = await afterOneShift();
     // A second shift makes the first one history — its number cannot come back.
     h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 2] Scout' }));
-    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-2',
+      count: 3,
+      queued: 0,
+      excluded: 0,
+    });
     await h.advanceTo(local(2026, 3, 3, 9, 0));
     expect(h.engine.get('worker-1')!.shiftCount).toBe(2);
 
@@ -1871,7 +2133,13 @@ describe('WorkerEngine re-running and deleting one shift', () => {
   it('keeps numbering when an older shift is deleted, and only forgets that one', async () => {
     const { h } = await afterOneShift();
     h.orchestrations.set('orch-2', workerBatch({ id: 'orch-2', title: '[Shift 2] Scout' }));
-    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 3, queued: 0, excluded: 0 });
+    h.setParkResult({
+      ok: true,
+      orchestrationId: 'orch-2',
+      count: 3,
+      queued: 0,
+      excluded: 0,
+    });
     await h.advanceTo(local(2026, 3, 3, 9, 0));
 
     const res = h.engine.forgetActivity('worker-1', 'orch-1');

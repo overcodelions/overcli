@@ -88,10 +88,50 @@ export interface TreasuryAllocation {
   byWorker: WorkerFunding[];
 }
 
-type FundableWorker = Pick<
-  Worker,
-  'id' | 'name' | 'order' | 'createdAt' | 'enabled' | 'budgetUSDPerMonth'
->;
+export interface DistributedWorkerCap {
+  workerId: string;
+  budgetUSDPerMonth: number;
+}
+
+/// Split what remains in the pot across the workers who can use it, weighted
+/// by funding order. With N active workers the first receives N shares, the
+/// next N-1, down to one share for the last. A cap is a lifetime-for-the-month
+/// ceiling, so each new cap includes that worker's spend to date plus its
+/// priority share of the money still available.
+/// Paused workers are intentionally absent: pausing already releases their
+/// reserve, and distributing must not erase the cap they resume with.
+export function distributeRemainingFunds(allocation: TreasuryAllocation): DistributedWorkerCap[] {
+  const active = allocation.byWorker.filter((row) => row.enabled);
+  if (active.length === 0) return [];
+
+  const remainingCents = Math.max(0, Math.round(allocation.remainingUSD * 100));
+  const totalWeight = (active.length * (active.length + 1)) / 2;
+  const shares = active.map((row, index) => {
+    const weight = active.length - index;
+    const exact = (remainingCents * weight) / totalWeight;
+    return {
+      row,
+      cents: Math.floor(exact),
+      fraction: exact - Math.floor(exact),
+    };
+  });
+  let centsLeft = remainingCents - shares.reduce((sum, share) => sum + share.cents, 0);
+  // Largest-remainder apportionment keeps the total exact without always
+  // handing rounding pennies to the first worker. Roster order breaks ties.
+  const remainderOrder = shares
+    .map((share, index) => ({ index, fraction: share.fraction }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let i = 0; i < centsLeft; i += 1) shares[remainderOrder[i].index].cents += 1;
+
+  return shares.map(({ row, cents }) => ({
+    workerId: row.workerId,
+    // Keep model-cost precision in spend while distributing the user-facing
+    // remainder in cents. Six decimals avoids binary-float tails on disk.
+    budgetUSDPerMonth: Number((row.spentUSD + cents / 100).toFixed(6)),
+  }));
+}
+
+type FundableWorker = Pick<Worker, 'id' | 'name' | 'order' | 'createdAt' | 'enabled' | 'budgetUSDPerMonth'>;
 
 /// Run the waterfall.
 ///
@@ -119,8 +159,7 @@ export function allocateTreasury(
     spend.set(w.id, s);
     rosterSpent += s;
   }
-  const spentUSD =
-    totalSpentUSD === undefined ? rosterSpent : Math.max(0, totalSpentUSD);
+  const spentUSD = totalSpentUSD === undefined ? rosterSpent : Math.max(0, totalSpentUSD);
   const remainingUSD = Math.max(0, poolTotal - spentUSD);
 
   let claimedAbove = 0;
@@ -161,10 +200,7 @@ export function allocateTreasury(
   return { poolUSD: poolTotal, spentUSD, remainingUSD, byWorker };
 }
 
-export function fundingFor(
-  allocation: TreasuryAllocation | null,
-  workerId: string,
-): WorkerFunding | null {
+export function fundingFor(allocation: TreasuryAllocation | null, workerId: string): WorkerFunding | null {
   return allocation?.byWorker.find((f) => f.workerId === workerId) ?? null;
 }
 
@@ -178,10 +214,7 @@ export function starvedWorkers(allocation: TreasuryAllocation): WorkerFunding[] 
 /// One sentence explaining an unfunded worker, written once so the journal
 /// entry main writes, the notification it sends, and the row the renderer
 /// draws cannot drift into three different explanations.
-export function describeFundingBlock(
-  funding: WorkerFunding,
-  allocation: TreasuryAllocation,
-): string {
+export function describeFundingBlock(funding: WorkerFunding, allocation: TreasuryAllocation): string {
   const money = (n: number) => `$${n.toFixed(2)}`;
   switch (funding.blocked) {
     case 'cap':
@@ -206,8 +239,7 @@ export function describeFundingBlock(
 }
 
 export function validateTreasury(monthlyUSD: number): string | null {
-  if (!Number.isFinite(monthlyUSD) || monthlyUSD <= 0)
-    return 'The monthly pool has to be more than zero.';
+  if (!Number.isFinite(monthlyUSD) || monthlyUSD <= 0) return 'The monthly pool has to be more than zero.';
   return null;
 }
 

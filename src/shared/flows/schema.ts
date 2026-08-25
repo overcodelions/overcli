@@ -495,6 +495,15 @@ export interface FlowRun {
   /// sends, publishes, and service updates without the runtime boundary.
   /// Missing on historical runs is deliberately equivalent to false.
   allowExternalActions?: boolean;
+  /// When the user last typed AT this run: a hijack turn sent to one of its
+  /// participants, or a correction held for the next step. Persisted, and
+  /// deliberately distinct from `attempts` — those are the runtime's own
+  /// progress, and a flow walking itself through ten steps must not outrank
+  /// something the user actually typed in. This is the other half: a hijack
+  /// chat IS the user driving the run, and without it a run you have been
+  /// talking to for ten minutes sits at the bottom of Working on, ordered by
+  /// the moment it was launched.
+  lastUserTurnAt?: number;
   /// User-supplied name for THIS run, set from the sidebar / library row.
   /// Overrides the prompt-derived title everywhere a run is listed (see
   /// `flowRunTitle`). Absent until the user renames the run — a run is
