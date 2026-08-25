@@ -3,10 +3,14 @@
 
 import type { Backend } from './types';
 
-/// Backends with at least one turbo lever. Claude has all three (effort, MCP,
-/// consolidation); codex has two. Copilot's CLI exposes no effort or MCP flags
-/// at all, and ollama/gemini run through different transports entirely — a
-/// toggle there would be decoration.
+export const BATCHING_DIRECTIVE =
+  'Prefer fewer, larger tool calls. Batch independent calls into a single message, ' +
+  'and combine several shell steps into one command rather than issuing them one at ' +
+  'a time. Never skip a check you would otherwise run just to reduce the call count.';
+
+/// Backends with at least one transport-level turbo lever. Response modes can
+/// still provide speed-first prompting for other hosted backends, but this
+/// helper describes the lower-level flow-step Turbo switch.
 export function turboSupported(backend: Backend): boolean {
   return backend === 'claude' || backend === 'codex';
 }

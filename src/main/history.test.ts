@@ -9,6 +9,97 @@ describe('loadHistory', () => {
     vi.restoreAllMocks();
   });
 
+  it('replays modern Codex custom tools with durations after restart', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-codex-custom-tools-'));
+    const rollout = path.join(home, 'rollout.jsonl');
+    const lines = [
+      {
+        timestamp: '2026-08-24T12:00:00.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'run it' }],
+        },
+      },
+      {
+        timestamp: '2026-08-24T12:00:01.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call',
+          call_id: 'call-1',
+          name: 'exec',
+          input: 'await tools.exec_command({ cmd: "npm test" })',
+        },
+      },
+      {
+        timestamp: '2026-08-24T12:00:03.000Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'call-1',
+          output: [{ type: 'input_text', text: 'passed' }],
+        },
+      },
+    ];
+    fs.writeFileSync(rollout, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8');
+
+    const events = loadHistory({
+      backend: 'codex',
+      projectPath: home,
+      codexRolloutPaths: [rollout],
+    });
+    expect(events.map((event) => event.kind.type)).toEqual(['localUser', 'assistant', 'toolResult']);
+    const start = events[1];
+    const result = events[2];
+    expect(start.kind).toEqual({
+      type: 'assistant',
+      info: {
+        model: 'codex',
+        text: '',
+        toolUses: [
+          expect.objectContaining({ id: 'call-1', name: 'Bash' }),
+        ],
+        thinking: [],
+      },
+    });
+    expect(result.kind).toEqual({
+      type: 'toolResult',
+      results: [{ id: 'call-1', content: 'passed', isError: false }],
+    });
+    expect(result.timestamp - start.timestamp).toBe(2000);
+  });
+
+  it('does not deduplicate distinct Codex tool calls in the same second', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-codex-tool-dedupe-'));
+    const rollout = path.join(home, 'rollout.jsonl');
+    const lines = [
+      {
+        timestamp: '2026-08-24T12:00:00.000Z',
+        type: 'response_item',
+        payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+      },
+      {
+        timestamp: '2026-08-24T12:00:01.100Z',
+        type: 'response_item',
+        payload: { type: 'custom_tool_call', call_id: 'call-1', name: 'exec', input: 'first' },
+      },
+      {
+        timestamp: '2026-08-24T12:00:01.200Z',
+        type: 'response_item',
+        payload: { type: 'custom_tool_call', call_id: 'call-2', name: 'exec', input: 'second' },
+      },
+    ];
+    fs.writeFileSync(rollout, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8');
+
+    const events = loadHistory({ backend: 'codex', projectPath: home, codexRolloutPaths: [rollout] });
+    const tools = events.flatMap((event) =>
+      event.kind.type === 'assistant' ? event.kind.info.toolUses : [],
+    );
+
+    expect(tools.map((tool) => tool.id)).toEqual(['call-1', 'call-2']);
+  });
+
   it('normalizes Claude tool_result arrays on history reload', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-history-'));
     vi.spyOn(os, 'homedir').mockReturnValue(home);

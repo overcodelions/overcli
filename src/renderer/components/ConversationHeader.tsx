@@ -16,6 +16,7 @@ import {
   ReviewPreset,
   UUID,
   EffortLevel,
+  ResponseMode,
   StreamEvent,
 } from '@shared/types';
 import {
@@ -27,9 +28,8 @@ import {
   resolvePreset,
 } from '@shared/reboundPresets';
 import { pathBasename } from '@shared/workspaceNames';
-import { turboSummary, turboSupported } from '@shared/turbo';
 import { effortForBackend } from '@shared/effort';
-import { PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
+import { latestAtTier, PREMIUM_MODELS, friendlyModelLabel } from '@shared/modelCatalog';
 import { backendColor, backendName, shortModel } from '../theme';
 import { useConversation, useConversationRoot } from '../hooks';
 import { findOwningProjectPath } from '../diff-utils';
@@ -40,8 +40,6 @@ import {
   isBackendEnabled,
   modeLabel,
   permissionTone,
-  turboLabel,
-  turboTone,
 } from './conversationHeaderHelpers';
 
 /// Full-featured header matching the Swift ConversationHeader:
@@ -68,7 +66,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     setPrimary,
     setPermission,
     setEffort,
-    setTurbo,
+    setResponseMode,
     setModel,
     setReviewBackend,
     setReviewMode,
@@ -98,7 +96,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       setPrimary: s.setPrimaryBackend,
       setPermission: s.setPermissionMode,
       setEffort: s.setEffortLevel,
-      setTurbo: s.setTurbo,
+      setResponseMode: s.setResponseMode,
       setModel: s.setBackendModel,
       setReviewBackend: s.setReviewBackend,
       setReviewMode: s.setReviewMode,
@@ -184,6 +182,13 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       ? conv.copilotModel ?? conv.currentModel
       : conv.claudeModel ?? conv.currentModel;
   const sessionModel = runnerModel || configuredModel || settings.backendDefaultModels[backend] || '';
+  const responseMode: ResponseMode =
+    conv.responseMode ??
+    (conv.turbo
+      ? 'turbo'
+      : conv.responseStyle && conv.responseStyle !== 'normal'
+        ? 'swift'
+        : 'full');
   const refocusComposer = useCallback(() => {
     requestAnimationFrame(() => {
       const el = document.querySelector('textarea');
@@ -328,17 +333,36 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           />
         )}
 
-        {turboSupported(backend) && (
+        {backend !== 'ollama' && (
           <IconPicker
-            icon={<BoltIcon />}
-            label={turboLabel(conv.turbo)}
-            tone={turboTone(conv.turbo)}
+            icon={<ResponseModeIcon mode={responseMode} />}
+            label={responseModeLabel(responseMode)}
+            tone={responseModeTone(responseMode)}
             iconOnly={iconsOnly}
-            items={[
-              { value: 'off', label: 'Turbo off — full depth' },
-              { value: 'on', label: `Turbo on — ${turboSummary(backend)}` },
-            ]}
-            onPick={(v) => void setTurbo(conversationId, v === 'on')}
+            items={([
+              { value: 'full', label: 'Full — default model, complete progress and answer' },
+              { value: 'swift', label: 'Swift — concise + consolidated tools' },
+              {
+                value: 'turbo',
+                label:
+                  backend === 'claude'
+                    ? 'Turbo — Swift + low effort, no MCP'
+                    : backend === 'codex'
+                      ? 'Turbo — Swift + low effort'
+                      : 'Turbo — Swift + speed-first execution',
+              },
+              {
+                value: 'warp',
+                label: `Warp — Turbo + ${friendlyModelLabel(
+                  backend,
+                  latestAtTier(backend, 'fast') ?? 'fast-tier model',
+                )}`,
+              },
+            ] as { value: ResponseMode; label: string }[]).map((item) => ({
+              ...item,
+              leading: <ResponseModeIcon mode={item.value} />,
+            }))}
+            onPick={(v) => void setResponseMode(conversationId, backend, v as ResponseMode)}
           />
         )}
 
@@ -674,10 +698,45 @@ function ShieldIcon({ tone }: { tone?: string }) {
   );
 }
 
-function BoltIcon() {
+function responseModeLabel(mode: ResponseMode): string {
+  return mode[0].toUpperCase() + mode.slice(1);
+}
+
+function responseModeTone(mode: ResponseMode): string {
+  if (mode === 'full') return '#4ade80';
+  if (mode === 'swift') return '#60a5fa';
+  if (mode === 'turbo') return '#fbbf24';
+  return '#c084fc';
+}
+
+function ResponseModeIcon({ mode }: { mode: ResponseMode }) {
+  const style = { color: responseModeTone(mode) };
+  if (mode === 'full') {
+    return (
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={style}>
+        <circle cx="8" cy="8" r="5" stroke="currentColor" strokeWidth="1.4" />
+        <circle cx="8" cy="8" r="1.5" fill="currentColor" />
+      </svg>
+    );
+  }
+  if (mode === 'swift') {
+    return (
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={style}>
+        <path d="m3 4 4 4-4 4M8 4l4 4-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (mode === 'turbo') {
+    return (
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={style}>
+        <path d="M9.2 1.5 3.8 9h3.8l-.8 5.5L12.2 7H8.4l.8-5.5Z" fill="currentColor" />
+      </svg>
+    );
+  }
   return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-      <path d="M9 1L3.5 9H7.5L7 15L12.5 7H8.5L9 1Z" stroke="currentColor" strokeWidth="1.1" strokeLinejoin="round" />
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" style={style}>
+      <path d="m8 1.5 1.45 4.05L13.5 7l-4.05 1.45L8 12.5 6.55 8.45 2.5 7l4.05-1.45L8 1.5Z" fill="currentColor" />
+      <path d="m12.5 11 .55 1.45 1.45.55-1.45.55L12.5 15l-.55-1.45L10.5 13l1.45-.55.55-1.45Z" fill="currentColor" opacity=".7" />
     </svg>
   );
 }

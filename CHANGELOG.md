@@ -4,6 +4,17 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ## [Unreleased]
 
+### Added
+- **Full, Swift, Turbo, and Warp response modes for every hosted backend.** Swift keeps answers concise and consolidates independent tool work; Turbo enables each backend's speed-first behavior while keeping the selected model; Warp also selects its fast-tier model (Sonnet for Claude, Luna for Codex, Flash-Lite for Gemini, and Haiku for Copilot). Color-coded icons make the ladder visible at a glance; Ollama remains manually controlled. Measured repeated-tool rounds give the next turn a targeted batching hint.
+- **Detailed turn latency diagnostics.** Debug timing now separates transport readiness, first model activity, first visible text, tool execution, and answer streaming, exports every stage, and flags turns that spread the same tool across several model round trips.
+- **Chronological, comparable request timelines.** Each Debug timing row visualizes actual model/tool round trips in order, including overlapping tools, and scales against the conversation's longest turn. An explicit legend explains model color, named tool colors, and the slowest-to-fastest tool ramp; balanced sheet gutters improve scanning.
+
+### Fixed
+- **Codex tool timing survives app restarts.** History replay now understands current `custom_tool_call` rollout records and preserves distinct tool calls that start within the same second.
+- **Claude SDK Turbo now applies low effort.**
+- **Leaving Warp restores the previous model and effort.** Full always reselects the configured backend default, so returning from Warp—or reselecting Full on an older conversation—no longer leaves the fast-tier model selected.
+- **User-facing conversation and timing views no longer expose internal prompt scaffolding.** Injected batching guidance and attachment filesystem paths remain available to the model and raw Debug stream but are replaced by the user-authored text and friendly attachment labels in chat and timing rows.
+
 ## [0.16.1] - 2026-08-24
 
 ### Added

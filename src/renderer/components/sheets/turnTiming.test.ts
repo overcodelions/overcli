@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ModelUsage, StreamEvent, ToolUseBlock } from '@shared/types';
-import { summarizeTurns, totalTiming } from './turnTiming';
+import { BATCHING_DIRECTIVE } from '@shared/turbo';
+import { relativeTimelineWidth, summarizeTurns, totalTiming } from './turnTiming';
 
 let nextId = 0;
 
@@ -60,6 +61,40 @@ function toolResult(timestamp: number, ...ids: string[]): StreamEvent {
 }
 
 describe('summarizeTurns', () => {
+  it('uses display-safe user text for timing row labels', () => {
+    const [turn] = summarizeTurns([
+      user(
+        0,
+        `<image name=[Image #1] path="/private/screenshot.png"></image>${BATCHING_DIRECTIVE}\n\nWhat is shown?`,
+      ),
+      assistant(1000, { text: 'An app' }),
+    ]);
+
+    expect(turn.prompt).toBe('What is shown?');
+    expect(turn.prompt).not.toContain('/private/');
+    expect(turn.prompt).not.toContain('Prefer fewer');
+  });
+
+  it('shows unresolved tools through the live clock for an active turn', () => {
+    const [turn] = summarizeTurns(
+      [
+        user(0, 'go'),
+        assistant(1000, { toolUses: [toolUse('{}', 'bash')], usage: usage({ outputTokens: 10 }) }),
+      ],
+      5000,
+    );
+
+    expect(turn.wallMs).toBe(5000);
+    expect(turn.toolMs).toBe(4000);
+    expect(turn.tools).toEqual([
+      expect.objectContaining({ name: 'Bash', calls: 1, busyMs: 4000 }),
+    ]);
+    expect(turn.timeline).toEqual([
+      { kind: 'model', startMs: 0, endMs: 1000, toolNames: [] },
+      { kind: 'tool', startMs: 1000, endMs: 5000, toolNames: ['Bash'] },
+    ]);
+  });
+
   it('splits on localUser and drops events before the first prompt', () => {
     const turns = summarizeTurns([
       ev(0, { type: 'assistant', info: { model: null, text: 'resumed history', toolUses: [], thinking: [] } }),
@@ -88,6 +123,30 @@ describe('summarizeTurns', () => {
     expect(turn.modelMs).toBe(8000);
     expect(turn.wallMs).toBe(10000);
     expect(turn.toolCalls).toBe(1);
+    expect(turn.timeline).toEqual([
+      { kind: 'model', startMs: 0, endMs: 5000, toolNames: [] },
+      { kind: 'tool', startMs: 5000, endMs: 7000, toolNames: ['Bash'] },
+      { kind: 'model', startMs: 7000, endMs: 10000, toolNames: [] },
+    ]);
+  });
+
+  it('shows parallel tools as overlapping phases in the request timeline', () => {
+    const [turn] = summarizeTurns([
+      user(0, 'go'),
+      assistant(1000, {
+        toolUses: [toolUse('{}', 'bash'), { ...toolUse('{}', 'read'), name: 'Read' }],
+      }),
+      toolResult(3000, 'bash'),
+      toolResult(4000, 'read'),
+      assistant(5000, { text: 'done' }),
+    ]);
+
+    expect(turn.timeline).toEqual([
+      { kind: 'model', startMs: 0, endMs: 1000, toolNames: [] },
+      { kind: 'tool', startMs: 1000, endMs: 3000, toolNames: ['Bash', 'Read'] },
+      { kind: 'tool', startMs: 3000, endMs: 4000, toolNames: ['Read'] },
+      { kind: 'model', startMs: 4000, endMs: 5000, toolNames: [] },
+    ]);
   });
 
   it('derives reasoning tokens as the residual of visible output', () => {
@@ -140,6 +199,42 @@ describe('summarizeTurns', () => {
     expect(turn.textTokensEst).toBe(3);
   });
 
+  it('measures first response from the first partial assistant event and ignores system events', () => {
+    const [turn] = summarizeTurns([
+      user(0, 'go'),
+      ev(250, { type: 'systemNotice', text: 'still preparing' }),
+      assistant(500, { text: 'hel', isPartial: true }),
+      assistant(1000, { text: 'hello', usage: usage({ outputTokens: 10 }) }),
+    ]);
+
+    expect(turn.firstResponseMs).toBe(500);
+  });
+
+  it('reports null first response when no assistant event arrives', () => {
+    const [turn] = summarizeTurns([user(0, 'go'), ev(1000, { type: 'systemNotice', text: 'still preparing' })]);
+
+    expect(turn.firstResponseMs).toBeNull();
+  });
+
+  it('separates transport readiness, first model activity, visible text, and streaming', () => {
+    const final = assistant(1400, { text: 'hello there' });
+    final.firstSeenAt = 400;
+    final.firstVisibleAt = 700;
+    const [turn] = summarizeTurns([
+      user(0, 'go'),
+      ev(100, {
+        type: 'systemInit',
+        info: { sessionId: 's', model: 'claude', cwd: '/repo', apiKeySource: 'login', tools: [], slashCommands: [], mcpServers: [] },
+      }),
+      final,
+    ]);
+
+    expect(turn.transportReadyMs).toBe(100);
+    expect(turn.firstResponseMs).toBe(400);
+    expect(turn.firstVisibleMs).toBe(700);
+    expect(turn.streamingMs).toBe(1000);
+  });
+
   it('surfaces a cache-write spike, the tell for a respawn and resume', () => {
     const [turn] = summarizeTurns([
       user(0, 'go'),
@@ -186,6 +281,28 @@ describe('totalTiming', () => {
 
   it('returns null with no turns', () => {
     expect(totalTiming([])).toBeNull();
+  });
+
+  it('averages only non-null first response timings', () => {
+    const turns = summarizeTurns([
+      user(0, 'a'),
+      assistant(1000),
+      user(2000, 'b'),
+      ev(5000, { type: 'systemNotice', text: 'still preparing' }),
+      user(6000, 'c'),
+      assistant(9000),
+    ]);
+
+    expect(totalTiming(turns)?.firstResponseMs).toBe(2000);
+  });
+});
+
+describe('relativeTimelineWidth', () => {
+  it('scales every request against the longest turn', () => {
+    expect(relativeTimelineWidth(5000, 10000)).toBe(50);
+    expect(relativeTimelineWidth(10000, 10000)).toBe(100);
+    expect(relativeTimelineWidth(12000, 10000)).toBe(100);
+    expect(relativeTimelineWidth(5000, 0)).toBe(0);
   });
 });
 
