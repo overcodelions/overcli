@@ -26,6 +26,12 @@ import {
   type FlowScope, type FlowSort,
 } from './flowLibraryFilters';
 import { compactStepModel } from './flowSpine';
+import {
+  STALL_AFTER_DAYS,
+  STALL_AFTER_MS,
+  runAttentionBadge,
+  triageRunCounts,
+} from './runTriage';
 import { FlowOverviewPanel } from './FlowOverviewPanel';
 import { FlowEditor } from './FlowEditor';
 import { FlowRunPane } from './FlowRunPane';
@@ -75,13 +81,9 @@ export function FlowsLibraryPane() {
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const allRuns = useFlowsStore((s) => s.runs);
   // The Runs tab's badge mirrors the schedule one: blocked-on-you outranks
-  // merely-working.
-  const runsBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
-    const t = triageRunCounts(allRuns);
-    if (t.needsYou > 0) return { count: t.needsYou, tone: 'waiting' };
-    if (t.running > 0) return { count: t.running, tone: 'running' };
-    return undefined;
-  }, [allRuns]);
+  // merely-working. Same helper the title bar's Flows tab uses, so the two
+  // badges are the same claim rather than two rules that agree by luck.
+  const runsBadge = useMemo(() => runAttentionBadge(allRuns), [allRuns]);
   // A parked proposal outranks a running run on the tab: one is blocked on the
   // user, the other is just working and will notify when it's done.
   const scheduleBadge = useMemo((): { count: number; tone: 'waiting' | 'running' } | undefined => {
@@ -359,33 +361,6 @@ function ScheduleStrip({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-
-/// A paused run this quiet isn't waiting for a decision — it's been left
-/// behind. Five days keeps a long weekend's worth of honest "I'll get to it"
-/// out of the stalled pile.
-const STALL_AFTER_DAYS = 5;
-const STALL_AFTER_MS = STALL_AFTER_DAYS * 24 * 60 * 60 * 1000;
-
-/// One triage, three consumers: the Runs tab badge, the library's one-line
-/// strip, and the overview's sections — so the counts can never disagree.
-function triageRunCounts(runs: Record<string, FlowRun>): {
-  running: number;
-  needsYou: number;
-  stalled: number;
-} {
-  const now = Date.now();
-  let running = 0;
-  let needsYou = 0;
-  let stalled = 0;
-  for (const r of Object.values(runs)) {
-    if (r.state.kind === 'running' || r.state.kind === 'watching') running++;
-    else if (r.state.kind === 'paused') {
-      if (now - flowRunActivityAt(r) <= STALL_AFTER_MS) needsYou++;
-      else stalled++;
-    }
-  }
-  return { running, needsYou, stalled };
-}
 
 /// The library's one-line teaser for the Runs tab — activity belongs to Runs
 /// now, so the library only says how much of it there is and where it went.

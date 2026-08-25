@@ -43,6 +43,12 @@ interface FlowsState {
   /// local state in the pane so the title bar's schedule indicator can deep-
   /// link straight into Schedules from any tab.
   librarySegment: 'flows' | 'runs' | 'schedules';
+  /// Whether the Flows tab has been opened yet this session. Only the FIRST
+  /// visit is allowed to land on Runs instead of the library, so this has to
+  /// be session-scoped and NOT persisted — coming back tomorrow and being
+  /// dropped on a list of runs that finished overnight is the case the
+  /// land-on-library rule exists to prevent.
+  flowsTabVisited: boolean;
   /// Editor target — drives FlowEditor render.
   editor: EditorTarget;
   /// Working copy of the flow being edited. Lifted out of the library so
@@ -89,6 +95,10 @@ interface FlowsActions {
   ): void;
   setActiveRun(id: string | null): void;
   setLibrarySegment(segment: 'flows' | 'runs' | 'schedules'): void;
+  /// Mark the Flows tab as seen this session and report whether this call was
+  /// the first. Read-and-set in one step so two roots racing can't both come
+  /// back "first".
+  claimFirstFlowsVisit(): boolean;
   openEditor(target: EditorTarget, blank?: Flow): void;
   closeEditor(): void;
   updateDraft(patch: Partial<Flow>): void;
@@ -255,6 +265,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   activeRunId: null,
   lastOpenedAtByRun: {},
   librarySegment: 'flows',
+  flowsTabVisited: false,
   editor: { kind: 'idle' },
   editorDraft: null,
   editorSaveError: null,
@@ -345,6 +356,12 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
 
   setLibrarySegment(segment) {
     set({ librarySegment: segment });
+  },
+
+  claimFirstFlowsVisit() {
+    if (get().flowsTabVisited) return false;
+    set({ flowsTabVisited: true });
+    return true;
   },
 
   openEditor(target, blank) {

@@ -791,3 +791,20 @@ describe('browseRegistries', () => {
     expect(mockInvoke).toHaveBeenLastCalledWith('flows:browseRegistry', { force: true });
   });
 });
+
+describe('claimFirstFlowsVisit', () => {
+  beforeEach(() => {
+    useFlowsStore.setState({ flowsTabVisited: false });
+  });
+
+  it('is true exactly once per session', () => {
+    expect(useFlowsStore.getState().claimFirstFlowsVisit()).toBe(true);
+    expect(useFlowsStore.getState().claimFirstFlowsVisit()).toBe(false);
+    expect(useFlowsStore.getState().claimFirstFlowsVisit()).toBe(false);
+  });
+
+  it('records the visit, so a later reader sees it without claiming', () => {
+    useFlowsStore.getState().claimFirstFlowsVisit();
+    expect(useFlowsStore.getState().flowsTabVisited).toBe(true);
+  });
+});
