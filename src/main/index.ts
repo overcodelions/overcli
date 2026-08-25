@@ -6,17 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import {
-  app,
-  BrowserWindow,
-  dialog,
-  ipcMain,
-  session,
-  shell,
-  Menu,
-  nativeTheme,
-  Notification,
-} from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme, Notification } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -66,39 +56,21 @@ import {
   gitInstallCommand,
   forgetGitAvailability,
 } from './git';
-import {
-  copyIntoProject,
-  createEverydayProject,
-  setEverydayMarker,
-  syncProjectMarkers,
-} from './everydayProject';
+import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
 import { checkpointProject, checkpointStatusPorcelain, listVersions, restoreVersion } from './versions';
 import { commitAllAsync, readVersionDiff } from './git';
-import {
-  scanWorktrees,
-  sweepWorktrees,
-  conversationWorktreeStates,
-} from './worktreeSweep';
+import { scanWorktrees, sweepWorktrees, conversationWorktreeStates } from './worktreeSweep';
 import { computeStats } from './stats';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
-import {
-  listMcpCatalog,
-  installMcpCatalogEntry,
-  uninstallMcpCatalogEntry,
-} from './mcpCatalog';
+import { listMcpCatalog, installMcpCatalogEntry, uninstallMcpCatalogEntry } from './mcpCatalog';
 import { loginCodexMcp } from './mcpLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
 import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
-import {
-  closeAllTreeWatchers,
-  noteRelistCost,
-  unwatchTree,
-  watchTree,
-} from './fileTreeWatch';
+import { closeAllTreeWatchers, noteRelistCost, unwatchTree, watchTree } from './fileTreeWatch';
 import { readHtmlPreviewAssets } from './htmlPreviewAssets';
 import { convertOfficeToPreview, officeFamilyForExtension } from './officePreview';
 import { buildReactPreviewBundle } from './reactPreviewBundle';
@@ -153,13 +125,16 @@ import { loadRunSummaries } from './flows/runSummaryLog';
 import { renderProvenFlowsSection } from './flows/provenFlows';
 import { emptyWorkerReportTotals } from '../shared/flows/workerReport';
 import { flowDeletionBlocker } from './flows/flowGuards';
-import {
-  listRecentPrompts,
-  recordRecentPrompt,
-  deleteRecentPrompt,
-} from './flows/recentPromptsStore';
+import { listRecentPrompts, recordRecentPrompt, deleteRecentPrompt } from './flows/recentPromptsStore';
 import { listWatchSources } from './flows/watch/source';
-import { listRegistries, upsertRegistry, removeRegistry, browseRegistries, installFromRegistry, previewRegistryFlow } from './flows/registry';
+import {
+  listRegistries,
+  upsertRegistry,
+  removeRegistry,
+  browseRegistries,
+  installFromRegistry,
+  previewRegistryFlow,
+} from './flows/registry';
 import { FLOW_TEMPLATES } from '../shared/flows/templates';
 import { draftFlowFromPrompt, reviseFlowFromPrompt, type DraftDeps } from './flows/drafter';
 import {
@@ -359,8 +334,7 @@ function registerIpc(): void {
     // the user's checked-out tree, which is exactly what picking a worktree is
     // supposed to prevent.
     isGitRepo: (projectPath) =>
-      currentBranch(projectPath).isRepo ||
-      Store.load().workspaces.some((w) => w.rootPath === projectPath),
+      currentBranch(projectPath).isRepo || Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
   });
@@ -378,8 +352,7 @@ function registerIpc(): void {
   workerEngine = new WorkerEngine({
     parker: orchestrator,
     isGitRepo: (projectPath) =>
-      currentBranch(projectPath).isRepo ||
-      Store.load().workspaces.some((w) => w.rootPath === projectPath),
+      currentBranch(projectPath).isRepo || Store.load().workspaces.some((w) => w.rootPath === projectPath),
     emit: flowAwareEmit,
     notify: showDesktopNotification,
     supervisorTurn: async ({ worker, prompt, cwd }) => {
@@ -391,13 +364,12 @@ function registerIpc(): void {
         isEnabled: (candidate) => settings.disabledBackends[candidate] !== true,
       });
       if (!backend) {
-        return { ok: false, error: 'No signed-in model is available to answer the flow.' };
+        return {
+          ok: false,
+          error: 'No signed-in model is available to answer the flow.',
+        };
       }
-      const model = resolveProducerModel(
-        backend,
-        worker.heartbeatModel,
-        settings.flowModelDefaults,
-      );
+      const model = resolveProducerModel(backend, worker.heartbeatModel, settings.flowModelDefaults);
       return runner!.oneShot({
         backend,
         model,
@@ -472,7 +444,9 @@ function registerIpc(): void {
       // root and hands back a receipt — the receipt is the artifact, so
       // filing artifacts alone kept the note and dropped the thing it
       // described, which then died with the run's coordinator root.
-      for (const file of looseSyntheticRootFiles(run.projectPath, { since: run.createdAt })) {
+      for (const file of looseSyntheticRootFiles(run.projectPath, {
+        since: run.createdAt,
+      })) {
         if (seen.has(file.name)) continue;
         seen.add(file.name);
         out.push({ name: file.name, sourcePath: file.path });
@@ -538,7 +512,11 @@ function registerIpc(): void {
         ],
       });
       if (!launched.ok) return launched;
-      return { ok: true, orchestrationId: launched.orchestrationId, flowId: flow.id };
+      return {
+        ok: true,
+        orchestrationId: launched.orchestrationId,
+        flowId: flow.id,
+      };
     },
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
@@ -576,9 +554,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('store:saveProjects', (_e, projects) => Store.saveProjects(projects));
   ipcMain.handle('store:saveWorkspaces', (_e, workspaces) => Store.saveWorkspaces(workspaces));
-  ipcMain.handle('store:patchConversation', (_e, { id, patch }) =>
-    Store.patchConversation(id, patch),
-  );
+  ipcMain.handle('store:patchConversation', (_e, { id, patch }) => Store.patchConversation(id, patch));
   ipcMain.handle('store:saveColosseums', (_e, colosseums) => Store.saveColosseums(colosseums));
   ipcMain.handle('store:saveSettings', (_e, settings) => {
     Store.saveSettings(settings);
@@ -595,20 +571,14 @@ function registerIpc(): void {
   ipcMain.handle('runner:send', (_e, args) => runner!.send(args));
   ipcMain.handle('runner:prewarm', (_e, args) => runner!.prewarm({ ...args, prompt: '' }));
   ipcMain.handle('runner:stop', (_e, { conversationId }) => runner!.stop(conversationId));
-  ipcMain.handle('runner:newConversation', (_e, { conversationId }) =>
-    runner!.newConversation(conversationId),
-  );
+  ipcMain.handle('runner:newConversation', (_e, { conversationId }) => runner!.newConversation(conversationId));
   ipcMain.handle('runner:release', (_e, { conversationId, onlyIfIdle }) =>
     runner!.release(conversationId, { onlyIfIdle }),
   );
-  ipcMain.handle(
-    'runner:respondPermission',
-    (_e, { conversationId, requestId, approved, addDir, scope, toolName }) =>
+  ipcMain.handle('runner:respondPermission', (_e, { conversationId, requestId, approved, addDir, scope, toolName }) =>
       runner!.respondPermission(conversationId, requestId, approved, addDir, scope, toolName),
   );
-  ipcMain.handle(
-    'runner:respondCodexApproval',
-    (_e, { conversationId, callId, kind, approved }) =>
+  ipcMain.handle('runner:respondCodexApproval', (_e, { conversationId, callId, kind, approved }) =>
       runner!.respondCodexApproval(conversationId, callId, kind, approved),
   );
   ipcMain.handle('runner:respondUserInput', (_e, { conversationId, requestId, answers }) =>
@@ -628,9 +598,7 @@ function registerIpc(): void {
   ipcMain.handle('health:invalidate', () => invalidateHealthCache());
   ipcMain.handle('capabilities:scan', () => scanCapabilities());
   ipcMain.handle('skills:listMarketplace', () => listMarketplaceSkills());
-  ipcMain.handle('skills:installMarketplace', (_e, { skillId, targets }) =>
-    installMarketplaceSkill(skillId, targets),
-  );
+  ipcMain.handle('skills:installMarketplace', (_e, { skillId, targets }) => installMarketplaceSkill(skillId, targets));
   ipcMain.handle('skills:uninstallMarketplace', (_e, { skillId, targets }) =>
     uninstallMarketplaceSkill(skillId, targets),
   );
@@ -640,12 +608,18 @@ function registerIpc(): void {
       return { ok: false as const, error: `Unsupported CLI for MCP copy.` };
     }
     if (fromCli === toCli) {
-      return { ok: false as const, error: `Source and target CLI are the same.` };
+      return {
+        ok: false as const,
+        error: `Source and target CLI are the same.`,
+      };
     }
     try {
       const config = readMcpServer(fromCli, name);
       if (!config) {
-        return { ok: false as const, error: `MCP server "${name}" not found in ${fromCli} config.` };
+        return {
+          ok: false as const,
+          error: `MCP server "${name}" not found in ${fromCli} config.`,
+        };
       }
       writeMcpServer(toCli, name, config);
       return { ok: true as const };
@@ -655,12 +629,8 @@ function registerIpc(): void {
   });
   ipcMain.handle('capabilities:addMcp', (_e, args) => addMcpServerToTargets(args));
   ipcMain.handle('mcp:listCatalog', () => listMcpCatalog());
-  ipcMain.handle('mcp:installCatalog', (_e, { id, targets, secrets }) =>
-    installMcpCatalogEntry(id, targets, secrets),
-  );
-  ipcMain.handle('mcp:uninstallCatalog', (_e, { id, targets }) =>
-    uninstallMcpCatalogEntry(id, targets),
-  );
+  ipcMain.handle('mcp:installCatalog', (_e, { id, targets, secrets }) => installMcpCatalogEntry(id, targets, secrets));
+  ipcMain.handle('mcp:uninstallCatalog', (_e, { id, targets }) => uninstallMcpCatalogEntry(id, targets));
   ipcMain.handle('mcp:login', async (_e, { cli, name }) => {
     if (cli !== 'codex') {
       return {
@@ -674,7 +644,10 @@ function registerIpc(): void {
     const settings = Store.load().settings;
     const binary = resolveBackendPath('codex', settings.backendPaths.codex);
     if (!binary) {
-      return { ok: false as const, error: 'Codex binary not found. Set its path in Settings.' };
+      return {
+        ok: false as const,
+        error: 'Codex binary not found. Set its path in Settings.',
+      };
     }
     return loginCodexMcp({
       binary,
@@ -695,7 +668,9 @@ function registerIpc(): void {
     if (res.canceled || res.filePaths.length === 0) return null;
     return res.filePaths;
   });
-  ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) => fileInfo(args?.path ?? '', args?.rootPath));
+  ipcMain.handle('fs:fileInfo', (_e, args: { path: string; rootPath?: string }) =>
+    fileInfo(args?.path ?? '', args?.rootPath),
+  );
   ipcMain.handle('fs:readFile', (_e, args: { path: string; rootPath?: string }) => {
     const hint = args?.path ?? '';
     const resolved = resolveFilePath(hint, args?.rootPath);
@@ -707,10 +682,16 @@ function registerIpc(): void {
       if (path.isAbsolute(hint) && isReadablePath(hint)) {
         return { ok: false, error: `File not found at ${hint}.` };
       }
-      return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+      return {
+        ok: false,
+        error: `Could not find "${hint}" in any registered project.`,
+      };
     }
     if (!isReadablePath(resolved)) {
-      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+      return {
+        ok: false,
+        error: 'File is outside any registered project, workspace, or worktree.',
+      };
     }
     try {
       const stat = fs.statSync(resolved);
@@ -718,11 +699,17 @@ function registerIpc(): void {
         return { ok: false, error: fileTooLargeMessage(stat.size) };
       }
       if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
-        return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
+        return {
+          ok: false,
+          error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.',
+        };
       }
       const content = fs.readFileSync(resolved, 'utf-8');
       if (content.includes('\0')) {
-        return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
+        return {
+          ok: false,
+          error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.',
+        };
       }
       return { ok: true, content, resolvedPath: resolved };
     } catch (err: any) {
@@ -753,7 +740,10 @@ function registerIpc(): void {
       };
     }
     if (!isPathUnderRegisteredRoot(target)) {
-      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+      return {
+        ok: false,
+        error: 'File is outside any registered project, workspace, or worktree.',
+      };
     }
     try {
       fs.writeFileSync(target, content, 'utf-8');
@@ -793,7 +783,10 @@ function registerIpc(): void {
   ipcMain.handle('fs:openPath', async (_e, p: string) => {
     const resolved = resolveFilePath(p);
     if (!resolved || !isReadablePath(resolved)) {
-      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+      return {
+        ok: false,
+        error: 'File is outside any registered project, workspace, or worktree.',
+      };
     }
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
@@ -801,7 +794,10 @@ function registerIpc(): void {
   ipcMain.handle('fs:saveToDownloads', async (_e, p: string) => {
     const resolved = resolveFilePath(p);
     if (!resolved || !isReadablePath(resolved)) {
-      return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+      return {
+        ok: false,
+        error: 'File is outside any registered project, workspace, or worktree.',
+      };
     }
     try {
       const downloads = app.getPath('downloads');
@@ -818,16 +814,17 @@ function registerIpc(): void {
       await fs.promises.copyFile(resolved, target);
       return { ok: true, savedPath: target };
     } catch (err: any) {
-      return { ok: false, error: err?.message ?? 'Could not save to Downloads' };
+      return {
+        ok: false,
+        error: err?.message ?? 'Could not save to Downloads',
+      };
     }
   });
   /// Shared guard for both symbol entry points: the file and the project
   /// root both have to be inside something the user registered.
   const resolveSymbolArgs = (
     args: { cwd?: string; filePath?: string; symbol?: string; line?: number } | undefined,
-  ):
-    | { ok: true; cwd: string; filePath: string; symbol: string; line: number }
-    | { ok: false; error: string } => {
+  ): { ok: true; cwd: string; filePath: string; symbol: string; line: number } | { ok: false; error: string } => {
     const filePath = resolveFilePath(args?.filePath ?? '');
     if (!filePath || !isReadablePath(filePath)) {
       return { ok: false, error: 'File is outside any registered project.' };
@@ -845,7 +842,13 @@ function registerIpc(): void {
     if (!symbolLookup) {
       return { ok: false, error: 'Symbol lookup is not available.' };
     }
-    return { ok: true, cwd, filePath, symbol: args?.symbol ?? '', line: args?.line ?? 1 };
+    return {
+      ok: true,
+      cwd,
+      filePath,
+      symbol: args?.symbol ?? '',
+      line: args?.line ?? 1,
+    };
   };
 
   ipcMain.handle('symbols:findDefinition', async (_e, args) => {
@@ -878,9 +881,7 @@ function registerIpc(): void {
       }
     },
   );
-  ipcMain.handle(
-    'preview:htmlAssets',
-    (_e, args: { path: string; rootPath?: string; refs: string[] }) =>
+  ipcMain.handle('preview:htmlAssets', (_e, args: { path: string; rootPath?: string; refs: string[] }) =>
       readHtmlPreviewAssets(
         {
           path: resolveFilePath(args?.path ?? '', args?.rootPath) ?? '',
@@ -890,9 +891,7 @@ function registerIpc(): void {
         isReadablePath,
       ),
   );
-  ipcMain.handle(
-    'preview:reactBundle',
-    (_e, args: { path: string; rootPath?: string; contents?: string }) =>
+  ipcMain.handle('preview:reactBundle', (_e, args: { path: string; rootPath?: string; contents?: string }) =>
       buildReactPreviewBundle(
         {
           path: resolveFilePath(args?.path ?? '', args?.rootPath) ?? '',
@@ -902,30 +901,35 @@ function registerIpc(): void {
         { isReadable: isReadablePath },
       ),
   );
-  ipcMain.handle(
-    'preview:publishDocument',
-    (_e, args: { html: string; policy?: PreviewPolicy }) =>
+  ipcMain.handle('preview:publishDocument', (_e, args: { html: string; policy?: PreviewPolicy }) =>
       publishPreviewDocument(args?.html ?? '', args?.policy),
   );
   ipcMain.handle('preview:projectHints', (_e, args: { path: string; rootPath?: string }) =>
     projectPreviewHints(args?.path ?? '', args?.rootPath),
   );
-  ipcMain.handle(
-    'preview:runProjectCommand',
-    (_e, { cwd, command }: { cwd: string; command: string }) => {
+  ipcMain.handle('preview:runProjectCommand', (_e, { cwd, command }: { cwd: string; command: string }) => {
       if (!isPathUnderRegisteredRoot(cwd)) {
-        return { ok: false, error: 'Preview command cwd is outside registered project roots.' };
+      return {
+        ok: false,
+        error: 'Preview command cwd is outside registered project roots.',
+      };
       }
       if (!/^[A-Za-z0-9 .:_/-]+$/.test(command)) {
-        return { ok: false, error: 'Preview command contains unsupported characters.' };
+      return {
+        ok: false,
+        error: 'Preview command contains unsupported characters.',
+      };
       }
       return openTerminalAt(cwd, command, 'workspace-command');
-    },
-  );
+  });
 
   ipcMain.handle('git:run', (_e, { args, cwd }) => {
     if (!isRendererSafeGitInvocation(args, cwd)) {
-      return { stdout: '', stderr: 'Refused: git args outside the renderer allowlist.', exitCode: 1 };
+      return {
+        stdout: '',
+        stderr: 'Refused: git args outside the renderer allowlist.',
+        exitCode: 1,
+      };
     }
     return runGit(args, cwd);
   });
@@ -944,14 +948,10 @@ function registerIpc(): void {
       if (run.worktreePath) runPaths.push(run.worktreePath);
       for (const m of run.workspaceWorktrees ?? []) runPaths.push(m.worktreePath);
     }
-    return scanWorktrees({ ...args, runPaths }, (p) =>
-      emitToRenderer({ type: 'worktreeScanProgress', ...p }),
-    );
+    return scanWorktrees({ ...args, runPaths }, (p) => emitToRenderer({ type: 'worktreeScanProgress', ...p }));
   });
   ipcMain.handle('git:sweepWorktrees', (_e, args) => sweepWorktrees(args));
-  ipcMain.handle('git:conversationWorktreeStates', (_e, args) =>
-    conversationWorktreeStates(args),
-  );
+  ipcMain.handle('git:conversationWorktreeStates', (_e, args) => conversationWorktreeStates(args));
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
     const res = checkoutAgentLocally(args);
     if (!res.ok) return res;
@@ -969,12 +969,8 @@ function registerIpc(): void {
     return res;
   });
   ipcMain.handle('git:listBaseBranches', (_e, projectPath: string) => listBaseBranches(projectPath));
-  ipcMain.handle('git:listBaseBranchesFresh', (_e, projectPath: string) =>
-    listBaseBranchesFresh(projectPath),
-  );
-  ipcMain.handle('git:detectBaseBranch', (_e, projectPath: string) =>
-    detectBaseBranch(projectPath),
-  );
+  ipcMain.handle('git:listBaseBranchesFresh', (_e, projectPath: string) => listBaseBranchesFresh(projectPath));
+  ipcMain.handle('git:detectBaseBranch', (_e, projectPath: string) => detectBaseBranch(projectPath));
   ipcMain.handle('git:mergeAgent', (_e, args) => mergeAgent(args));
   ipcMain.handle('git:rebaseAgent', (_e, args) => rebaseAgent(args));
   ipcMain.handle('git:pushBranch', (_e, args) => pushBranch(args));
@@ -990,7 +986,10 @@ function registerIpc(): void {
     // Destructive git write — re-validate the cwd here rather than trusting
     // the renderer, mirroring the `git:run` allowlist gate.
     if (typeof cwd !== 'string' || typeof path !== 'string' || !isPathUnderRegisteredRoot(cwd)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return restoreFileToHead({ cwd, path });
   });
@@ -999,15 +998,16 @@ function registerIpc(): void {
   ipcMain.handle('git:workspaceCommitAll', (_e, args) => workspaceCommitAll(args));
   ipcMain.handle('git:initRepo', async (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return initRepo(args);
   });
   /// "Is git here?" — asked by any surface that promises undo, so it can say
   /// what is wrong before the user hits a raw git error.
-  ipcMain.handle('git:availability', (_e, args) =>
-    gitAvailability({ refresh: args?.refresh === true }),
-  );
+  ipcMain.handle('git:availability', (_e, args) => gitAvailability({ refresh: args?.refresh === true }));
   /// Install git the same way Overcli installs everything else the user
   /// needs: a visible Terminal window they can watch and answer. On Linux
   /// there is no single command, so `runInTerminal` opens nothing and the
@@ -1029,7 +1029,10 @@ function registerIpc(): void {
   });
   ipcMain.handle('git:removeHistory', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return removeRepoHistory(args);
   });
@@ -1039,20 +1042,25 @@ function registerIpc(): void {
   ipcMain.handle('fs:syncProjectMarkers', (_e, args) =>
     syncProjectMarkers(
       (Array.isArray(args?.projects) ? args.projects : []).filter(
-        (p: { path?: unknown }) =>
-          typeof p?.path === 'string' && isPathUnderRegisteredRoot(p.path),
+        (p: { path?: unknown }) => typeof p?.path === 'string' && isPathUnderRegisteredRoot(p.path),
       ),
     ),
   );
   ipcMain.handle('fs:listDocuments', (_e, args) => {
     if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return listDocuments(args);
   });
   ipcMain.handle('versions:checkpoint', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return checkpointProject(args, {
       statusPorcelain: checkpointStatusPorcelain,
@@ -1061,40 +1069,64 @@ function registerIpc(): void {
   });
   ipcMain.handle('versions:list', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return listVersions(args);
   });
   ipcMain.handle('versions:diff', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     if (typeof args?.sha !== 'string' || !/^[0-9a-f]{7,40}$/i.test(args.sha)) {
       return { ok: false as const, error: 'Refused: not a valid version id.' };
     }
-    return readVersionDiff({ cwd: args.projectPath, sha: args.sha, file: args.file });
+    return readVersionDiff({
+      cwd: args.projectPath,
+      sha: args.sha,
+      file: args.file,
+    });
   });
   ipcMain.handle('versions:restore', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return restoreVersion(args);
   });
   ipcMain.handle('fs:cancelRevise', (_e, args) => {
     const requestId = typeof args?.requestId === 'string' ? args.requestId : '';
-    return { stopped: requestId ? (runner?.cancelOneShot(requestId) ?? false) : false };
+    return {
+      stopped: requestId ? (runner?.cancelOneShot(requestId) ?? false) : false,
+    };
   });
   ipcMain.handle('fs:reviseDocument', (_e, args) => {
     if (typeof args?.path !== 'string' || !isPathUnderRegisteredRoot(args.path)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     if (args.rootPath !== undefined) {
       if (typeof args.rootPath !== 'string' || !isPathUnderRegisteredRoot(args.rootPath)) {
-        return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+        return {
+          ok: false as const,
+          error: 'Refused: path outside a registered project root.',
+        };
       }
       const rel = path.relative(args.rootPath, args.path);
       if (rel.startsWith('..') || path.isAbsolute(rel)) {
-        return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+        return {
+          ok: false as const,
+          error: 'Refused: path outside a registered project root.',
+        };
       }
     }
     const requestId = typeof args?.requestId === 'string' ? args.requestId : '';
@@ -1104,31 +1136,44 @@ function registerIpc(): void {
   });
   ipcMain.handle('fs:createBlankDocument', (_e, args) => {
     if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return createBlankDocument(args);
   });
   ipcMain.handle('fs:createDocumentFromPrompt', (_e, args) => {
     if (typeof args?.dirPath !== 'string' || !isPathUnderRegisteredRoot(args.dirPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return createDocumentFromPrompt(drafterDeps(), args);
   });
   ipcMain.handle('fs:copyIntoProject', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return copyIntoProject(args);
   });
   ipcMain.handle('fs:setEverydayMarker', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
-      return { ok: false as const, error: 'Refused: path outside a registered project root.' };
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
     }
     return setEverydayMarker(args.projectPath, args.everyday === true);
   });
   ipcMain.handle('fs:createEverydayProject', async (_e, args) => {
     const made = createEverydayProject({
-      title: String(args?.title ?? ''), goal: String(args?.goal ?? ''),
+      title: String(args?.title ?? ''),
+      goal: String(args?.goal ?? ''),
     });
     if (!made.ok) return made;
     const init = await initRepo({ projectPath: made.path });
@@ -1137,21 +1182,22 @@ function registerIpc(): void {
     // missing undo honestly instead of inventing a cause.
     return init.ok
       ? { ...made, historyOn: true as const }
-      : { ...made, historyOn: false as const, historyReason: init.reason, historyError: init.error };
+      : {
+          ...made,
+          historyOn: false as const,
+          historyReason: init.reason,
+          historyError: init.error,
+        };
   });
 
   ipcMain.handle('workspace:ensureSymlinkRoot', (_e, { workspaceId, projects, instructions }) =>
     ensureWorkspaceSymlinkRoot(workspaceId, projects, instructions),
   );
-  ipcMain.handle('workspace:removeSymlinkRoot', (_e, workspaceId: string) =>
-    removeWorkspaceSymlinkRoot(workspaceId),
-  );
+  ipcMain.handle('workspace:removeSymlinkRoot', (_e, workspaceId: string) => removeWorkspaceSymlinkRoot(workspaceId));
   ipcMain.handle('workspace:ensureCoordinatorSymlinkRoot', (_e, { coordinatorId, members }) =>
     ensureCoordinatorSymlinkRoot(coordinatorId, members),
   );
-  ipcMain.handle(
-    'workspace:rebindCoordinatorRootToProjects',
-    (_e, { coordinatorId, projects }) =>
+  ipcMain.handle('workspace:rebindCoordinatorRootToProjects', (_e, { coordinatorId, projects }) =>
       rebindCoordinatorRootToProjects(coordinatorId, projects),
   );
   ipcMain.handle('workspace:removeCoordinatorSymlinkRoot', (_e, coordinatorId: string) =>
@@ -1198,7 +1244,10 @@ function registerIpc(): void {
 
   ipcMain.handle('auth:openCliLogin', (_e, backend: Backend) => {
     if (backend === 'ollama') {
-      return { ok: false, error: 'Ollama does not need CLI login — start the server from the banner.' };
+      return {
+        ok: false,
+        error: 'Ollama does not need CLI login — start the server from the banner.',
+      };
     }
     const settings = Store.load().settings;
     const bin = resolveBackendPath(backend, settings.backendPaths[backend]);
@@ -1213,20 +1262,18 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'terminal:popConversation',
-    (
-      _e,
-      {
-        cwd,
-        backend,
-        sessionId,
-        model,
-      }: { cwd: string; backend: Backend; sessionId?: string; model?: string },
-    ) => {
+    (_e, { cwd, backend, sessionId, model }: { cwd: string; backend: Backend; sessionId?: string; model?: string }) => {
       if (backend === 'ollama') {
-        return { ok: false, error: 'Ollama runs in-app — there is no CLI to resume in a terminal.' };
+        return {
+          ok: false,
+          error: 'Ollama runs in-app — there is no CLI to resume in a terminal.',
+        };
       }
       if (!isPathUnderRegisteredRoot(cwd)) {
-        return { ok: false, error: 'Workspace path is not inside a registered project root.' };
+        return {
+          ok: false,
+          error: 'Workspace path is not inside a registered project root.',
+        };
       }
       // Only Claude/Gemini support `--resume`; Codex ignores sessionId
       // entirely when popping to terminal. Validate only the backends that
@@ -1236,7 +1283,10 @@ function registerIpc(): void {
       // Anything with shell metacharacters is rejected so it can't escape
       // into the `do script` line as a separate command.
       if (needsResumeId && sessionId && !/^[A-Za-z0-9._-]+$/.test(sessionId)) {
-        return { ok: false, error: 'Session ID contains unexpected characters.' };
+        return {
+          ok: false,
+          error: 'Session ID contains unexpected characters.',
+        };
       }
       const settings = Store.load().settings;
       const bin = resolveBackendPath(backend, settings.backendPaths[backend]);
@@ -1250,8 +1300,7 @@ function registerIpc(): void {
       // Same metacharacter guard as the session id — this lands in a `do script`
       // line, so anything exotic is dropped rather than escaped.
       const modelFlag = backend === 'claude' || backend === 'copilot' ? '--model' : '-m';
-      const modelSuffix =
-        model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
+      const modelSuffix = model && /^[A-Za-z0-9._-]+$/.test(model) ? ` ${modelFlag} ${model}` : '';
       return openTerminalAt(cwd, `${quoted}${resumeSuffix}${modelSuffix}`, 'agent-launch');
     },
   );
@@ -1260,7 +1309,10 @@ function registerIpc(): void {
     // Same containment rule as popping a conversation out: only folders
     // inside a project, workspace or worktree the user has registered.
     if (!isPathUnderRegisteredRoot(target)) {
-      return { ok: false, error: 'That folder is not inside a registered project root.' };
+      return {
+        ok: false,
+        error: 'That folder is not inside a registered project root.',
+      };
     }
     try {
       const stat = await fs.promises.stat(target);
@@ -1276,9 +1328,7 @@ function registerIpc(): void {
   ipcMain.handle('ollama:detect', () => detectOllama());
   ipcMain.handle('ollama:hardware', () => detectHardware());
   ipcMain.handle('ollama:catalog', () => OLLAMA_CATALOG);
-  ipcMain.handle(
-    'ollama:install',
-    () =>
+  ipcMain.handle('ollama:install', () =>
       installOllama((url) => {
         void shell.openExternal(url);
       }),
@@ -1333,9 +1383,7 @@ function registerIpc(): void {
     });
   });
 
-  ipcMain.handle(
-    'ollama:applyFix',
-    async (_e, { fixId }: { fixId: 'update-ollama' | 'restart-loopback' }) => {
+  ipcMain.handle('ollama:applyFix', async (_e, { fixId }: { fixId: 'update-ollama' | 'restart-loopback' }) => {
       if (fixId === 'update-ollama') {
         // detectOllama() only fills installHint when Ollama is MISSING, so ask
         // Homebrew directly — a Mac that has brew but installed Ollama from
@@ -1353,9 +1401,11 @@ function registerIpc(): void {
       ollamaServer.stop();
       await new Promise((r) => setTimeout(r, 1200));
       const res = await ollamaServer.start();
-      return { ok: res.ok, message: `Restarted bound to 127.0.0.1 only. ${res.message}` };
-    },
-  );
+    return {
+      ok: res.ok,
+      message: `Restarted bound to 127.0.0.1 only. ${res.message}`,
+    };
+  });
   ipcMain.handle('diagnostics:list', () => listSilentLog());
   ipcMain.handle('diagnostics:clear', () => clearSilentLog());
   ipcMain.handle('diagnostics:log', (_e, args) => {
@@ -1398,26 +1448,21 @@ function registerIpc(): void {
   ipcMain.handle('flows:validate', (_e, args) => validateFlowYaml(args));
   ipcMain.handle('flows:toolCatalog', (_e, args) => listToolCatalog(args));
   ipcMain.handle('flows:listTemplates', () => FLOW_TEMPLATES);
-  ipcMain.handle('flows:draftFromPrompt', (_e, args) =>
-    draftFlowFromPrompt(args, drafterDeps()),
-  );
-  ipcMain.handle('flows:reviseFromPrompt', (_e, args) =>
-    reviseFlowFromPrompt(args, drafterDeps()),
-  );
+  ipcMain.handle('flows:draftFromPrompt', (_e, args) => draftFlowFromPrompt(args, drafterDeps()));
+  ipcMain.handle('flows:reviseFromPrompt', (_e, args) => reviseFlowFromPrompt(args, drafterDeps()));
   ipcMain.handle('flows:startRun', (_e, args) =>
     flowRuntime ? flowRuntime.startRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:listRuns', async () =>
     flowRuntime
-      ? { runs: flowRuntime.listRuns(), unreviewedRunIds: await flowRuntime.unreviewedDoneRunIds() }
+      ? {
+          runs: flowRuntime.listRuns(),
+          unreviewedRunIds: await flowRuntime.unreviewedDoneRunIds(),
+        }
       : { runs: [], unreviewedRunIds: [] },
   );
-  ipcMain.handle('flows:listUnreviewedRuns', async () =>
-    flowRuntime ? await flowRuntime.unreviewedDoneRunIds() : [],
-  );
-  ipcMain.handle('flows:getRun', (_e, { runId }) =>
-    flowRuntime ? flowRuntime.getRun(runId) : null,
-  );
+  ipcMain.handle('flows:listUnreviewedRuns', async () => (flowRuntime ? await flowRuntime.unreviewedDoneRunIds() : []));
+  ipcMain.handle('flows:getRun', (_e, { runId }) => (flowRuntime ? flowRuntime.getRun(runId) : null));
   ipcMain.handle('flows:resumeRun', (_e, args) =>
     flowRuntime ? flowRuntime.resumeRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
@@ -1439,6 +1484,9 @@ function registerIpc(): void {
   );
   ipcMain.handle('flows:renameRun', (_e, args) =>
     flowRuntime ? flowRuntime.renameRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:noteUserTurn', (_e, args) =>
+    flowRuntime ? flowRuntime.noteUserTurn(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
   ipcMain.handle('flows:steerRun', (_e, args) =>
     flowRuntime ? flowRuntime.steerRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
@@ -1467,41 +1515,27 @@ function registerIpc(): void {
 
   // Orchestrator: producer turn + batch dispatch over flows.
   ipcMain.handle('orchestrator:propose', (_e, args) =>
-    orchestrator
-      ? orchestrator.propose(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.propose(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:startBatch', (_e, args) =>
-    orchestrator
-      ? orchestrator.startBatch(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.startBatch(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:list', () => (orchestrator ? orchestrator.list() : []));
   ipcMain.handle('orchestrator:get', (_e, { id }) => (orchestrator ? orchestrator.get(id) : null));
   ipcMain.handle('orchestrator:abort', (_e, args) =>
-    orchestrator
-      ? orchestrator.abort(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.abort(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:retry', (_e, args) =>
-    orchestrator
-      ? orchestrator.retry(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.retry(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:approveBatch', (_e, args) =>
-    orchestrator
-      ? orchestrator.approveBatch(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.approveBatch(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:rejectItem', (_e, args) =>
-    orchestrator
-      ? orchestrator.rejectItem(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.rejectItem(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   ipcMain.handle('orchestrator:delete', (_e, args) =>
-    orchestrator
-      ? orchestrator.delete(args)
-      : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
+    orchestrator ? orchestrator.delete(args) : ({ ok: false, error: 'Orchestrator not initialized.' } as const),
   );
   // Recent producer prompts live in their own tiny store, independent of
   // whether the orchestrator engine is up — they're just a UI convenience.
@@ -1518,32 +1552,22 @@ function registerIpc(): void {
       : [],
   );
   ipcMain.handle('schedules:save', (_e, { schedule }) =>
-    scheduler
-      ? scheduler.save(schedule)
-      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+    scheduler ? scheduler.save(schedule) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
   ipcMain.handle('schedules:setEnabled', (_e, { id, enabled }) =>
-    scheduler
-      ? scheduler.setEnabled(id, enabled)
-      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+    scheduler ? scheduler.setEnabled(id, enabled) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
   ipcMain.handle('schedules:delete', (_e, { id }) =>
-    scheduler
-      ? scheduler.remove(id)
-      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+    scheduler ? scheduler.remove(id) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
   ipcMain.handle('schedules:runNow', (_e, { id }) =>
-    scheduler
-      ? scheduler.runNow(id)
-      : ({ ok: false, error: 'Scheduler not initialized.' } as const),
+    scheduler ? scheduler.runNow(id) : ({ ok: false, error: 'Scheduler not initialized.' } as const),
   );
 
   // Workers: standing personas that plan their own shifts.
   ipcMain.handle('workers:list', () => (workerEngine ? workerEngine.list() : []));
   ipcMain.handle('workers:save', (_e, { worker }) =>
-    workerEngine
-      ? workerEngine.save(worker)
-      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+    workerEngine ? workerEngine.save(worker) : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:note', (_e, { id, orchestrationId, note }) =>
     workerEngine
@@ -1561,23 +1585,17 @@ function registerIpc(): void {
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:setTrust', (_e, { id, trust }) =>
-    workerEngine
-      ? workerEngine.setTrust(id, trust)
-      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+    workerEngine ? workerEngine.setTrust(id, trust) : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:delete', (_e, { id }) =>
-    workerEngine
-      ? workerEngine.remove(id)
-      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+    workerEngine ? workerEngine.remove(id) : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:workShiftNow', (_e, { id }) =>
-    workerEngine
-      ? workerEngine.workShiftNow(id)
-      : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+    workerEngine ? workerEngine.workShiftNow(id) : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
-  ipcMain.handle('workers:runErrand', (_e, { id, instruction, attachments }) =>
+  ipcMain.handle('workers:runErrand', (_e, { id, instruction, intent, attachments }) =>
     workerEngine
-      ? workerEngine.runErrand(id, instruction, attachments)
+      ? workerEngine.runErrand(id, instruction, intent, attachments)
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:reorder', (_e, { ids }) =>
@@ -1607,6 +1625,9 @@ function registerIpc(): void {
       ? workerEngine.setTreasury(monthlyUSD)
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
+  ipcMain.handle('workers:distributeFunds', () =>
+    workerEngine ? workerEngine.distributeFunds() : ({ ok: false, error: 'Worker engine not initialized.' } as const),
+  );
   ipcMain.handle('workers:files', (_e, { id }) => ({
     root: workerFilesDir(id),
     files: listWorkerFiles(id),
@@ -1621,7 +1642,10 @@ function registerIpc(): void {
       shell.openPath(ensureWorkerFilesDir(id));
       return { ok: true } as const;
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      } as const;
     }
   });
   // Sharing a worker. The file is the JOB — see workerShare.ts for what is
@@ -1633,7 +1657,9 @@ function registerIpc(): void {
     const store = Store.load();
     const share = buildWorkerShare({
       worker,
-      library: loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
+      library: loadAllFlows({
+        projectPaths: store.projects.map((p) => p.path),
+      }),
     });
     return {
       ok: true,
@@ -1648,7 +1674,9 @@ function registerIpc(): void {
     const store = Store.load();
     const share = buildWorkerShare({
       worker,
-      library: loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }),
+      library: loadAllFlows({
+        projectPaths: store.projects.map((p) => p.path),
+      }),
     });
     if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
     const res = await dialog.showSaveDialog(mainWindow, {
@@ -1660,7 +1688,10 @@ function registerIpc(): void {
     try {
       fs.writeFileSync(res.filePath, share.yaml, 'utf-8');
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      } as const;
     }
     return { ok: true, filePath: res.filePath } as const;
   });
@@ -1677,13 +1708,14 @@ function registerIpc(): void {
     try {
       body = fs.readFileSync(res.filePaths[0], 'utf-8');
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      } as const;
     }
     return receiveWorkerYaml(body);
   });
-  ipcMain.handle('workers:journal', (_e, { id }) =>
-    workerEngine ? workerEngine.journalFor(id) : [],
-  );
+  ipcMain.handle('workers:journal', (_e, { id }) => (workerEngine ? workerEngine.journalFor(id) : []));
   ipcMain.handle('workers:deleteActivity', (_e, { id, orchestrationId }) =>
     workerEngine
       ? workerEngine.forgetActivity(id, orchestrationId)
@@ -1695,9 +1727,7 @@ function registerIpc(): void {
       : ({ ok: false, error: 'Workers are not running.' } as const),
   );
   ipcMain.handle('workers:resetMemory', (_e, { id }) =>
-    workerEngine
-      ? workerEngine.resetMemory(id)
-      : ({ ok: false, error: 'Workers are not running.' } as const),
+    workerEngine ? workerEngine.resetMemory(id) : ({ ok: false, error: 'Workers are not running.' } as const),
   );
   ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription, attachments }) => {
     const store = Store.load();
@@ -1707,7 +1737,11 @@ function registerIpc(): void {
         attachments,
         flows: loadAllFlows({
           projectPaths: store.projects.map((p) => p.path),
-        }).map((f) => ({ id: f.id, name: f.name, description: f.description })),
+        }).map((f) => ({
+          id: f.id,
+          name: f.name,
+          description: f.description,
+        })),
         // Workspaces first: a job that names one should land on the whole
         // workspace, not one member repo that happens to share the name.
         projects: [
@@ -1735,14 +1769,11 @@ function registerIpc(): void {
       const flow =
         unsavedFlow ??
         (flowId
-          ? loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }).find(
-              (f) => f.id === flowId,
-            )
+          ? loadAllFlows({
+              projectPaths: store.projects.map((p) => p.path),
+            }).find((f) => f.id === flowId)
           : undefined);
-      return reviseWorkerFromPrompt(
-        { jobDescription, instruction, flow, attachments },
-        drafterDeps(),
-      );
+      return reviseWorkerFromPrompt({ jobDescription, instruction, flow, attachments }, drafterDeps());
     },
   );
 }
@@ -1764,14 +1795,16 @@ function fileInfo(hint: string, rootPath?: string) {
     };
   }
   if (!isReadablePath(resolved)) {
-    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    return {
+      ok: false,
+      error: 'File is outside any registered project, workspace, or worktree.',
+    };
   }
   try {
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) return { ok: false, error: 'Path is not a regular file.' };
     const artifactPreview = isArtifactPreviewExtension(resolved);
-    const largeText =
-      !artifactPreview && stat.size > MAX_TEXT_FILE_BYTES && stat.size <= MAX_OPEN_FILE_BYTES;
+    const largeText = !artifactPreview && stat.size > MAX_TEXT_FILE_BYTES && stat.size <= MAX_OPEN_FILE_BYTES;
     const tooLarge = stat.size > MAX_OPEN_FILE_BYTES;
     const unsupportedBinary =
       !artifactPreview && (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size));
@@ -1790,7 +1823,11 @@ function fileInfo(hint: string, rootPath?: string) {
     };
   } catch (err: any) {
     if (err?.code === 'ENOENT') {
-      return { ok: false, missing: true, error: `File not found at ${resolved}.` };
+      return {
+        ok: false,
+        missing: true,
+        error: `File not found at ${resolved}.`,
+      };
     }
     return { ok: false, error: err?.message ?? 'Could not inspect file' };
   }
@@ -1798,15 +1835,25 @@ function fileInfo(hint: string, rootPath?: string) {
 
 function readLargeTextPreview(hint: string, rootPath?: string) {
   const resolved = resolveFilePath(hint, rootPath);
-  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!resolved)
+    return {
+      ok: false,
+      error: `Could not find "${hint}" in any registered project.`,
+    };
   if (!isReadablePath(resolved)) {
-    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    return {
+      ok: false,
+      error: 'File is outside any registered project, workspace, or worktree.',
+    };
   }
   try {
     const stat = fs.statSync(resolved);
     if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
     if (isKnownBinaryExtension(resolved) || isLikelyBinaryFile(resolved, stat.size)) {
-      return { ok: false, error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.' };
+      return {
+        ok: false,
+        error: 'This file cannot be previewed in Overcli. Open it with the system app or reveal it in Finder.',
+      };
     }
     const fd = fs.openSync(resolved, 'r');
     try {
@@ -1825,15 +1872,25 @@ function readLargeTextPreview(hint: string, rootPath?: string) {
       fs.closeSync(fd);
     }
   } catch (err: any) {
-    return { ok: false, error: err?.message ?? 'Could not read large text preview' };
+    return {
+      ok: false,
+      error: err?.message ?? 'Could not read large text preview',
+    };
   }
 }
 
 async function readArtifactPreview(hint: string, rootPath?: string): Promise<ArtifactPreviewResult> {
   const resolved = resolveFilePath(hint, rootPath);
-  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!resolved)
+    return {
+      ok: false,
+      error: `Could not find "${hint}" in any registered project.`,
+    };
   if (!isReadablePath(resolved)) {
-    return { ok: false, error: 'File is outside any registered project, workspace, or worktree.' };
+    return {
+      ok: false,
+      error: 'File is outside any registered project, workspace, or worktree.',
+    };
   }
   try {
     const stat = fs.statSync(resolved);
@@ -1853,7 +1910,11 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
     }
 
     const mimeType = mimeForPreviewExtension(ext);
-    if (!mimeType) return { ok: false, error: `No artifact preview available for .${ext || 'file'}.` };
+    if (!mimeType)
+      return {
+        ok: false,
+        error: `No artifact preview available for .${ext || 'file'}.`,
+      };
     if (stat.size > MAX_OPEN_FILE_BYTES) return { ok: false, error: fileTooLargeMessage(stat.size) };
     if (mimeType === 'application/pdf') {
       const data = fs.readFileSync(resolved).toString('base64');
@@ -1877,7 +1938,10 @@ async function readArtifactPreview(hint: string, rootPath?: string): Promise<Art
       dataUrl: `data:${mimeType};base64,${data}`,
     };
   } catch (err: any) {
-    return { ok: false, error: err?.message ?? 'Could not read artifact preview' };
+    return {
+      ok: false,
+      error: err?.message ?? 'Could not read artifact preview',
+    };
   }
 }
 
@@ -1965,7 +2029,11 @@ function isLikelyBinaryFile(filePath: string, sizeBytes: number): boolean {
 
 function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHintsResult {
   const resolved = resolveFilePath(hint, rootPath);
-  if (!resolved) return { ok: false, error: `Could not find "${hint}" in any registered project.` };
+  if (!resolved)
+    return {
+      ok: false,
+      error: `Could not find "${hint}" in any registered project.`,
+    };
   const packageRoot = findNearestPackageRoot(path.dirname(resolved));
   if (!packageRoot) return { ok: false, error: 'No package.json found for this component.' };
   try {
@@ -1974,11 +2042,17 @@ function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHin
     const packageManager = detectPackageManager(packageRoot);
     const commands = previewCommandsForScripts(scripts, packageManager);
     if (commands.length === 0) {
-      return { ok: false, error: 'No dev, preview, Storybook, or visual test scripts found.' };
+      return {
+        ok: false,
+        error: 'No dev, preview, Storybook, or visual test scripts found.',
+      };
     }
     return { ok: true, rootPath: packageRoot, packageManager, commands };
   } catch (err: any) {
-    return { ok: false, error: err?.message ?? 'Could not read package preview scripts.' };
+    return {
+      ok: false,
+      error: err?.message ?? 'Could not read package preview scripts.',
+    };
   }
 }
 
@@ -1987,7 +2061,9 @@ function projectPreviewHints(hint: string, rootPath?: string): ProjectPreviewHin
 /// hired here — see src/main/flows/workerShare.ts.
 function receiveWorkerYaml(yaml: string) {
   const store = Store.load();
-  const library = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) });
+  const library = loadAllFlows({
+    projectPaths: store.projects.map((p) => p.path),
+  });
   const res = importWorkerYaml({
     yaml: typeof yaml === 'string' ? yaml : '',
     existingFlowIds: library.map((f) => f.id),
@@ -2032,7 +2108,12 @@ function previewCommandsForScripts(
   const commands: ProjectPreviewCommand[] = [];
   const add = (id: string, label: string, kind: ProjectPreviewCommand['kind']) => {
     if (typeof scripts[id] !== 'string') return;
-    commands.push({ id, label, kind, command: scriptCommand(packageManager, id) });
+    commands.push({
+      id,
+      label,
+      kind,
+      command: scriptCommand(packageManager, id),
+    });
   };
   add('dev', 'Run dev server', 'dev');
   add('start', 'Run start', 'dev');
@@ -2256,11 +2337,7 @@ function isReadablePlanPath(target: string): boolean {
 /// reached the user. `isAgentWrittenPath` opens exactly those, by provenance:
 /// a path this session watched a tool create. Writes keep the strict rule.
 function isReadablePath(target: string): boolean {
-  return (
-    isPathUnderRegisteredRoot(target) ||
-    isReadablePlanPath(target) ||
-    isAgentWrittenPath(target)
-  );
+  return isPathUnderRegisteredRoot(target) || isReadablePlanPath(target) || isAgentWrittenPath(target);
 }
 
 // `fs.realpathSync` throws if any segment is missing (e.g. a file about
@@ -2331,9 +2408,7 @@ function searchScope(rootPath?: string): string[] | undefined {
   for (const workspace of state.workspaces) {
     const owns =
       isTarget(workspace.rootPath) ||
-      (workspace.conversations ?? []).some(
-        (c) => isTarget(c.worktreePath) || isTarget(c.coordinatorRootPath),
-      );
+      (workspace.conversations ?? []).some((c) => isTarget(c.worktreePath) || isTarget(c.coordinatorRootPath));
     if (!owns) continue;
     add(workspace.rootPath);
     // Workspace roots front their members through symlinks, but a hint can
@@ -2400,12 +2475,11 @@ function listFilesRecursive(root: string): string[] {
   return files;
 }
 
-
 function buildMenu(): void {
   const isMac = process.platform === 'darwin';
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
-      ? ([
+      ? [
           {
             label: app.name,
             submenu: [
@@ -2420,7 +2494,7 @@ function buildMenu(): void {
               { role: 'quit' },
             ],
           } as Electron.MenuItemConstructorOptions,
-        ])
+        ]
       : []),
     {
       label: 'File',
@@ -2428,7 +2502,12 @@ function buildMenu(): void {
         {
           label: 'New Conversation',
           accelerator: 'CmdOrCtrl+N',
-          click: () => emitToRenderer({ type: 'running', conversationId: '__menu_new_conversation__', isRunning: false }),
+          click: () =>
+            emitToRenderer({
+              type: 'running',
+              conversationId: '__menu_new_conversation__',
+              isRunning: false,
+            }),
         },
         { type: 'separator' },
         { role: 'close' },
@@ -2446,8 +2525,16 @@ function buildMenu(): void {
       // own undo handling.
       label: 'Edit',
       submenu: [
-        { role: 'undo', accelerator: 'CmdOrCtrl+Z', registerAccelerator: false },
-        { role: 'redo', accelerator: 'Shift+CmdOrCtrl+Z', registerAccelerator: false },
+        {
+          role: 'undo',
+          accelerator: 'CmdOrCtrl+Z',
+          registerAccelerator: false,
+        },
+        {
+          role: 'redo',
+          accelerator: 'Shift+CmdOrCtrl+Z',
+          registerAccelerator: false,
+        },
         { type: 'separator' },
         { role: 'cut' },
         { role: 'copy' },

@@ -43,6 +43,12 @@ interface FlowsState {
   /// local state in the pane so the title bar's schedule indicator can deep-
   /// link straight into Schedules from any tab.
   librarySegment: 'flows' | 'runs' | 'schedules';
+  /// Whether the Flows tab has been opened yet this session. Only the FIRST
+  /// visit is allowed to land on Runs instead of the library, so this has to
+  /// be session-scoped and NOT persisted — coming back tomorrow and being
+  /// dropped on a list of runs that finished overnight is the case the
+  /// land-on-library rule exists to prevent.
+  flowsTabVisited: boolean;
   /// Editor target — drives FlowEditor render.
   editor: EditorTarget;
   /// Working copy of the flow being edited. Lifted out of the library so
@@ -89,6 +95,10 @@ interface FlowsActions {
   ): void;
   setActiveRun(id: string | null): void;
   setLibrarySegment(segment: 'flows' | 'runs' | 'schedules'): void;
+  /// Mark the Flows tab as seen this session and report whether this call was
+  /// the first. Read-and-set in one step so two roots racing can't both come
+  /// back "first".
+  claimFirstFlowsVisit(): boolean;
   openEditor(target: EditorTarget, blank?: Flow): void;
   closeEditor(): void;
   updateDraft(patch: Partial<Flow>): void;
@@ -127,6 +137,11 @@ interface FlowsActions {
   /// prompt-derived title. Optimistic, then reconciled by the main
   /// process's `flowRunUpdate`.
   renameRun(runId: string, title: string): Promise<void>;
+  /// Stamp "the user just typed at this run" so the sidebar orders it by
+  /// that rather than by when it was launched. Fire-and-forget: the turn it
+  /// accompanies has already gone out, and a failed stamp is a stale sort
+  /// order, not a lost message.
+  noteUserTurn(runId: string): void;
   /// Queue a course correction for the next step of a running flow. Pass an
   /// empty string to withdraw one. Not optimistic — the main process guards
   /// on run state and echoes the authoritative run back.
@@ -250,6 +265,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   activeRunId: null,
   lastOpenedAtByRun: {},
   librarySegment: 'flows',
+  flowsTabVisited: false,
   editor: { kind: 'idle' },
   editorDraft: null,
   editorSaveError: null,
@@ -340,6 +356,12 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
 
   setLibrarySegment(segment) {
     set({ librarySegment: segment });
+  },
+
+  claimFirstFlowsVisit() {
+    if (get().flowsTabVisited) return false;
+    set({ flowsTabVisited: true });
+    return true;
   },
 
   openEditor(target, blank) {
@@ -608,6 +630,24 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       return { runs: { ...s.runs, [runId]: { ...run, title: trimmed || undefined } } };
     });
     await window.overcli.invoke('flows:renameRun', { runId: runId as UUID, title: trimmed });
+  },
+
+  noteUserTurn(runId) {
+    const at = Date.now();
+    // Optimistic so the row moves under the pointer the moment the message
+    // is sent, not a round-trip later; the main process echoes an
+    // authoritative flowRunUpdate that reconciles.
+    set((s) => {
+      const run = s.runs[runId];
+      if (!run) return {};
+      return { runs: { ...s.runs, [runId]: { ...run, lastUserTurnAt: at } } };
+    });
+    // A renderer-only reload leaves the main process on a build without this
+    // channel, and `invoke` REJECTS when no handler is registered. The stamp
+    // is cosmetic, so swallow it rather than surfacing an unhandled rejection.
+    void Promise.resolve(window.overcli.invoke('flows:noteUserTurn', { runId: runId as UUID })).catch(
+      () => {},
+    );
   },
 
   async steerRun(runId, text) {

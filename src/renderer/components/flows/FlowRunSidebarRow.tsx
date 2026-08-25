@@ -35,6 +35,15 @@ export function runIsLive(
   return Object.values(run.conversationIds).some((cid) => runners[cid]?.isRunning);
 }
 
+/// Whether the badge should spin: the run isn't orchestrating, but a
+/// participant is streaming, so something IS happening even though the run's
+/// own state says it stopped. True for a `done` run you're hijack-chatting
+/// and for a `paused` step you're talking your way through — both are runs
+/// whose resting badge (✓ / ⏸) would otherwise claim nothing is going on.
+export function runIsResponding(state: FlowRun['state']['kind'], isLive: boolean): boolean {
+  return isLive && (state === 'done' || state === 'paused');
+}
+
 /// Whether a run's badge should say it finished with work nobody reviewed.
 /// `unreviewed` comes from the main process (`unreviewedDoneRunIds`), which
 /// only ever flags `done` runs; the state check here keeps the badge honest
@@ -281,14 +290,14 @@ export function resolveOwner(
   projectPath: string,
   projects: { id: string; name: string; path: string }[],
   workspaces: { id: string; name: string; rootPath: string }[],
-): { kind: 'project' | 'workspace' | 'unknown'; name: string } {
+): { kind: 'project' | 'workspace' | 'unknown'; name: string; id: string | null } {
   const ws = workspaces.find((w) => w.rootPath === projectPath);
-  if (ws) return { kind: 'workspace', name: ws.name };
+  if (ws) return { kind: 'workspace', name: ws.name, id: ws.id };
   const p = projects.find((p) => p.path === projectPath);
-  if (p) return { kind: 'project', name: p.name };
+  if (p) return { kind: 'project', name: p.name, id: p.id };
   // Last resort: basename of the path so the row isn't blank.
   const tail = projectPath.split('/').filter(Boolean).pop() ?? projectPath;
-  return { kind: 'unknown', name: tail };
+  return { kind: 'unknown', name: tail, id: null };
 }
 
 export function FlowRunRow({
@@ -511,16 +520,30 @@ function StateBadge({
       </span>
     );
   }
-  if (state === 'running' || (state === 'done' && isLive)) {
+  // A paused run that is streaming gets the spinner too, not the ⏸ glyph.
+  // The step is genuinely paused, but while you're mid-conversation with the
+  // participant the row saying only "waiting for you" is the sidebar
+  // contradicting the words appearing on screen — there was no sign at all
+  // that anything was happening. It keeps the amber of its paused state
+  // rather than borrowing the blue of a run that resumed, and drops back to
+  // ⏸ the moment the reply lands.
+  const respondingWhilePaused = state === 'paused' && isLive;
+  if (state === 'running' || runIsResponding(state, isLive)) {
+    const label = state === 'running' ? 'running' : 'responding';
     return (
       <svg
-        className="w-3 h-3 animate-spin text-sky-700 dark:text-sky-300 flex-shrink-0"
+        className={
+          'w-3 h-3 animate-spin flex-shrink-0 ' +
+          (respondingWhilePaused
+            ? 'text-amber-700 dark:text-amber-300'
+            : 'text-sky-700 dark:text-sky-300')
+        }
         viewBox="0 0 16 16"
         fill="none"
-        aria-label={state === 'done' ? 'responding' : 'running'}
+        aria-label={respondingWhilePaused ? 'paused, responding' : label}
         role="img"
       >
-        <title>{state === 'done' ? 'responding' : 'running'}</title>
+        <title>{respondingWhilePaused ? 'paused — responding to you' : label}</title>
         <circle cx="8" cy="8" r="6" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
         <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </svg>

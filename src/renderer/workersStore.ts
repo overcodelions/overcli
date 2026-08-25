@@ -13,18 +13,14 @@ import type { Attachment, Backend, UUID } from '@shared/types';
 import { flowProjectPath, type Flow } from '@shared/flows/schema';
 import { moveInRoster, placeInRoster } from '@shared/flows/worker';
 import { isEverydayProject } from '@shared/everydayProjects';
-import {
-  allocateTreasury,
-  fundingFor,
-  type Treasury,
-  type TreasuryAllocation,
-} from '@shared/flows/treasury';
+import { allocateTreasury, fundingFor, type Treasury, type TreasuryAllocation } from '@shared/flows/treasury';
 import type {
   Worker,
   WorkerCaps,
   WorkerContract,
   WorkerErrandResult,
   WorkerJournalEntry,
+  WorkerMessageIntent,
   WorkerScorecard,
   WorkerTrustLevel,
 } from '@shared/flows/worker';
@@ -74,7 +70,7 @@ interface WorkersState {
   /// doing, so two sent in a row are both in flight from your side and both
   /// have to be on screen. One overwriting the other looked like the first
   /// message vanished.
-  errandSending: Record<string, Array<{ id: string; text: string; at: number }>>;
+  errandSending: Record<string, Array<{ id: string; text: string; intent: WorkerMessageIntent; at: number }>>;
   /// Each worker's own directory, learned when its Files tab loads. The file
   /// editor is scoped to it so opening one worker's file cannot walk up into
   /// the others — they are all siblings under userData.
@@ -239,7 +235,11 @@ interface WorkersActions {
   removeLocal(id: string): void;
   openEditor(
     draft: WorkerDraft,
-    extras?: { draftedFlow?: Flow; hireSummary?: string; hireFlowError?: string },
+    extras?: {
+      draftedFlow?: Flow;
+      hireSummary?: string;
+      hireFlowError?: string;
+    },
   ): void;
   closeEditor(): void;
   patchDraft(patch: Partial<WorkerDraft>): void;
@@ -283,6 +283,7 @@ interface WorkersActions {
   showReport(): void;
   applyTreasury(treasury: Treasury, allocation: TreasuryAllocation): void;
   setTreasury(monthlyUSD: number): Promise<boolean>;
+  distributeFunds(): Promise<boolean>;
   setPreviewEmpty(on: boolean): void;
   openWorkerActivity(workerId: string, orchestrationId: string, at: number): void;
   clearDeskFocus(): void;
@@ -291,7 +292,12 @@ interface WorkersActions {
   /// the current order — what a drop indicator drawn between two rows means.
   dropWorker(id: string, insertBefore: number): Promise<void>;
   setFilesRoot(id: string, root: string): void;
-  runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
+  runErrand(
+    id: string,
+    instruction: string,
+    intent: import('@shared/flows/worker').WorkerMessageIntent,
+    attachments?: Attachment[],
+  ): Promise<boolean>;
   clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
   /// Leave a note against one of this worker's turns. It becomes a journal
@@ -598,11 +604,27 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async setTreasury(monthlyUSD) {
-    const res = await window.overcli.invoke('workers:setTreasury', { monthlyUSD });
+    const res = await window.overcli.invoke('workers:setTreasury', {
+      monthlyUSD,
+    });
     if (!res.ok) {
       set({ error: res.error });
       return false;
     }
+    return true;
+  },
+
+  async distributeFunds() {
+    const res = await window.overcli.invoke('workers:distributeFunds');
+    if (!res.ok) {
+      set({ error: res.error });
+      return false;
+    }
+    set((state) => ({
+      workers: res.workers.reduce((all, worker) => ({ ...all, [worker.id]: worker }), state.workers),
+      treasury: res.treasury,
+      allocation: res.allocation,
+    }));
     return true;
   },
 
@@ -621,9 +643,12 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       // announced task win — it is the authoritative label for what is running.
       if (active) {
         const prior = shiftProgress[id];
-        shiftProgress[id] = { text: prior?.text ?? '', tools: prior?.tools ?? [], task };
-      }
-      else delete shiftProgress[id];
+        shiftProgress[id] = {
+          text: prior?.text ?? '',
+          tools: prior?.tools ?? [],
+          task,
+        };
+      } else delete shiftProgress[id];
       return { shiftProgress };
     });
   },
@@ -752,9 +777,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const key = reviseKey(draft, draftSeq)!;
       const held = st.revise[key]?.pending ?? null;
       return {
-        draft: held?.jobDescription
-          ? { ...draft, jobDescription: held.jobDescription }
-          : draft,
+        draft: held?.jobDescription ? { ...draft, jobDescription: held.jobDescription } : draft,
         draftedFlow: held?.flow ?? extras?.draftedFlow ?? null,
         hireSummary: extras?.hireSummary ?? null,
         hireFlowError: held?.flow ? null : (extras?.hireFlowError ?? null),
@@ -794,7 +817,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set((st) => ({
       hire: st.hire.startedAt
         ? { ...st.hire, open: true }
-        : { ...st.hire, open: true, projectPath: st.hire.projectPath || defaultProjectPath },
+        : {
+            ...st.hire,
+            open: true,
+            projectPath: st.hire.projectPath || defaultProjectPath,
+          },
     }));
   },
 
@@ -830,14 +857,18 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       }));
       return;
     }
-    set((st) => ({ hire: { ...st.hire, startedAt: Date.now(), error: null } }));
+    set((st) => ({
+      hire: { ...st.hire, startedAt: Date.now(), error: null },
+    }));
     try {
       const result = await window.overcli.invoke('workers:draftFromPrompt', {
         jobDescription,
         attachments: hire.attachments.length > 0 ? hire.attachments : undefined,
       });
       if (!result.ok) {
-        set((st) => ({ hire: { ...st.hire, startedAt: null, error: result.error } }));
+        set((st) => ({
+          hire: { ...st.hire, startedAt: null, error: result.error },
+        }));
         return;
       }
       // The picker may have moved while the turn ran; read it fresh.
@@ -845,14 +876,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const chosenPath = current.projectTouched
         ? current.projectPath
         : (result.contract.projectPath ?? current.projectPath);
-      get().openEditor(
-        draftFromContract(result.contract, chosenPath, result.contract.flowId),
-        {
+      get().openEditor(draftFromContract(result.contract, chosenPath, result.contract.flowId), {
           draftedFlow: result.draftedFlow,
           hireSummary: result.summary || undefined,
           hireFlowError: result.flowError,
-        },
-      );
+      });
       // The hire's own form is done with; other workers' revisions are not
       // this hire's business and keep running.
       set({ hire: { ...IDLE_HIRE } });
@@ -872,7 +900,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const key = reviseKey(st.draft, st.draftSeq);
       if (!key) return {};
       return {
-        revise: { ...st.revise, [key]: { ...(st.revise[key] ?? IDLE_REVISE), ...patch } },
+        revise: {
+          ...st.revise,
+          [key]: { ...(st.revise[key] ?? IDLE_REVISE), ...patch },
+        },
       };
     });
   },
@@ -890,13 +921,14 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     // when the flow was revised before. But only when it's still the SELECTED
     // flow — after a manual re-pick, the saved pick wins.
     const rideAlong =
-      draftedFlow && (draft.flowIds.length === 0 || draft.flowIds[0] === draftedFlow.id)
-        ? draftedFlow
-        : undefined;
+      draftedFlow && (draft.flowIds.length === 0 || draft.flowIds[0] === draftedFlow.id) ? draftedFlow : undefined;
     const editedWorkerId = draft.id ?? null;
     const patchEntry = (patch: Partial<ReviseState>) =>
       set((st) => ({
-        revise: { ...st.revise, [key]: { ...(st.revise[key] ?? IDLE_REVISE), ...patch } },
+        revise: {
+          ...st.revise,
+          [key]: { ...(st.revise[key] ?? IDLE_REVISE), ...patch },
+        },
       }));
 
     patchEntry({
@@ -922,8 +954,13 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       // belongs to the worker it was asked about and to no other, so it lands
       // only when that same editor is what's open.
       if (reviseKey(get().draft, get().draftSeq) === key) {
-        get().applyRevision({ jobDescription: res.jobDescription, flow: res.flow });
-        set((st) => ({ revise: { ...st.revise, [key]: { ...IDLE_REVISE, note: res.note } } }));
+        get().applyRevision({
+          jobDescription: res.jobDescription,
+          flow: res.flow,
+        });
+        set((st) => ({
+          revise: { ...st.revise, [key]: { ...IDLE_REVISE, note: res.note } },
+        }));
         return;
       }
       if (editedWorkerId) {
@@ -953,15 +990,16 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         return { revise: next };
       });
     } catch (err) {
-      patchEntry({ startedAt: null, error: err instanceof Error ? err.message : String(err) });
+      patchEntry({
+        startedAt: null,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   },
 
   applyRevision(patch) {
     set((s) => ({
-      ...(s.draft && patch.jobDescription
-        ? { draft: { ...s.draft, jobDescription: patch.jobDescription } }
-        : {}),
+      ...(s.draft && patch.jobDescription ? { draft: { ...s.draft, jobDescription: patch.jobDescription } } : {}),
       ...(patch.flow ? { draftedFlow: patch.flow, hireFlowError: null } : {}),
       error: null,
     }));
@@ -997,7 +1035,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         // An emptied tagline field is "no tagline", not a blank one: the
         // roster falls back to the job description only when the field is
         // absent, and a stored '' would render an empty second line forever.
-        worker: { ...draft, tagline: draft.tagline?.trim() || undefined, flowIds },
+        worker: {
+          ...draft,
+          tagline: draft.tagline?.trim() || undefined,
+          flowIds,
+        },
       });
       if (!res.ok) {
         set({ error: res.error });
@@ -1018,17 +1060,26 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async setEnabled(id, enabled) {
-    const res = await window.overcli.invoke('workers:setEnabled', { id, enabled });
+    const res = await window.overcli.invoke('workers:setEnabled', {
+      id,
+      enabled,
+    });
     if (!res.ok) set({ error: res.error });
   },
 
   async setTrust(id, trust) {
-    const res = await window.overcli.invoke('workers:setTrust', { id, trust });
+    const res = await window.overcli.invoke('workers:setTrust', {
+      id,
+      trust,
+    });
     if (!res.ok) set({ error: res.error });
   },
 
   async setAutoRender(id, autoRender) {
-    const res = await window.overcli.invoke('workers:setAutoRender', { id, autoRender });
+    const res = await window.overcli.invoke('workers:setAutoRender', {
+      id,
+      autoRender,
+    });
     if (!res.ok) set({ error: res.error });
   },
 
@@ -1038,7 +1089,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async workShiftNow(id) {
-    set((s) => ({ shiftStarting: { ...s.shiftStarting, [id]: true }, error: null }));
+    set((s) => ({
+      shiftStarting: { ...s.shiftStarting, [id]: true },
+      error: null,
+    }));
     try {
       const res = await window.overcli.invoke('workers:workShiftNow', { id });
       if (!res.ok) set({ error: res.error });
@@ -1054,20 +1108,21 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     }
   },
 
-  async runErrand(id, instruction, attachments) {
+  async runErrand(id, instruction, intent, attachments) {
     const sendId = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     set((s) => ({
       errandBusy: { ...s.errandBusy, [id]: true },
       errandError: { ...s.errandError, [id]: '' },
       errandSending: {
         ...s.errandSending,
-        [id]: [...(s.errandSending[id] ?? []), { id: sendId, text: instruction, at: Date.now() }],
+        [id]: [...(s.errandSending[id] ?? []), { id: sendId, text: instruction, intent, at: Date.now() }],
       },
     }));
     try {
       const res = await window.overcli.invoke('workers:runErrand', {
         id,
         instruction,
+        intent,
         attachments,
       });
       if (!res.ok) {
@@ -1084,7 +1139,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         const errandSending = { ...s.errandSending };
         if (rest.length > 0) errandSending[id] = rest;
         else delete errandSending[id];
-        return { errandBusy: { ...s.errandBusy, [id]: rest.length > 0 }, errandSending };
+        return {
+          errandBusy: { ...s.errandBusy, [id]: rest.length > 0 },
+          errandSending,
+        };
       });
     }
   },
@@ -1100,7 +1158,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async addNote(id, orchestrationId, note) {
-    const res = await window.overcli.invoke('workers:note', { id, orchestrationId, note });
+    const res = await window.overcli.invoke('workers:note', {
+      id,
+      orchestrationId,
+      note,
+    });
     if (!res.ok) {
       set({ error: res.error });
       return false;
@@ -1115,7 +1177,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async deleteActivity(id, orchestrationId) {
-    const res = await window.overcli.invoke('workers:deleteActivity', { id, orchestrationId });
+    const res = await window.overcli.invoke('workers:deleteActivity', {
+      id,
+      orchestrationId,
+    });
     if (!res.ok) {
       set({ error: res.error });
       return null;
@@ -1127,7 +1192,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   },
 
   async redoShift(id, orchestrationId) {
-    const res = await window.overcli.invoke('workers:redoShift', { id, orchestrationId });
+    const res = await window.overcli.invoke('workers:redoShift', {
+      id,
+      orchestrationId,
+    });
     if (!res.ok) {
       set({ error: res.error });
       return null;

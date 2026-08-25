@@ -4,6 +4,7 @@ import {
   DEFAULT_TREASURY_USD,
   allocateTreasury,
   describeFundingBlock,
+  distributeRemainingFunds,
   fundingFor,
   seedTreasury,
   starvedWorkers,
@@ -52,34 +53,28 @@ describe('allocateTreasury', () => {
     // The whole promise of the waterfall: `b` is hungry and `a` is idle, but
     // `a` is above it, so `a`'s reserve survives the month.
     const spent = new Map([['b', 8]]);
-    const alloc = allocateTreasury(
-      roster(['a', 10], ['b', 20]),
-      (id) => spent.get(id) ?? 0,
-      20,
-    );
+    const alloc = allocateTreasury(roster(['a', 10], ['b', 20]), (id) => spent.get(id) ?? 0, 20);
     expect(fundingFor(alloc, 'a')?.availableUSD).toBe(10);
     // 20 pot − 8 spent = 12 left, 10 of which is a's reserve.
     expect(fundingFor(alloc, 'b')?.availableUSD).toBe(2);
   });
 
   it('releases a reserve as its owner spends it, so money trickles down', () => {
-    const alloc = allocateTreasury(
-      roster(['a', 10], ['b', 20]),
-      (id) => (id === 'a' ? 10 : 0),
-      20,
-    );
+    const alloc = allocateTreasury(roster(['a', 10], ['b', 20]), (id) => (id === 'a' ? 10 : 0), 20);
     // `a` is done; its claim is gone, and the remaining $10 all reaches `b`.
-    expect(fundingFor(alloc, 'a')).toMatchObject({ availableUSD: 0, blocked: 'cap' });
+    expect(fundingFor(alloc, 'a')).toMatchObject({
+      availableUSD: 0,
+      blocked: 'cap',
+    });
     expect(fundingFor(alloc, 'b')?.availableUSD).toBe(10);
   });
 
   it('frees a paused worker’s reserve to everyone below it', () => {
-    const paused = allocateTreasury(
-      roster(['a', 10, { enabled: false }], ['b', 10]),
-      noSpend,
-      10,
-    );
-    expect(fundingFor(paused, 'a')).toMatchObject({ availableUSD: 0, blocked: 'paused' });
+    const paused = allocateTreasury(roster(['a', 10, { enabled: false }], ['b', 10]), noSpend, 10);
+    expect(fundingFor(paused, 'a')).toMatchObject({
+      availableUSD: 0,
+      blocked: 'paused',
+    });
     expect(fundingFor(paused, 'b')?.availableUSD).toBe(10);
 
     // ...but pausing does NOT refund what it already spent.
@@ -96,18 +91,17 @@ describe('allocateTreasury', () => {
     const before = allocateTreasury(roster(['a', 10], ['b', 10]), noSpend, 10);
     expect(before.byWorker.map((f) => f.availableUSD)).toEqual([10, 0]);
 
-    const after = allocateTreasury(
-      [w('a', 10, { order: 1 }), w('b', 10, { order: 0 })],
-      noSpend,
-      10,
-    );
+    const after = allocateTreasury([w('a', 10, { order: 1 }), w('b', 10, { order: 0 })], noSpend, 10);
     expect(after.byWorker.map((f) => f.name)).toEqual(['B', 'A']);
     expect(after.byWorker.map((f) => f.availableUSD)).toEqual([10, 0]);
   });
 
   it('stops a worker at its own cap even when the pot is deep', () => {
     const alloc = allocateTreasury(roster(['a', 5]), (id) => (id === 'a' ? 5 : 0), 500);
-    expect(fundingFor(alloc, 'a')).toMatchObject({ availableUSD: 0, blocked: 'cap' });
+    expect(fundingFor(alloc, 'a')).toMatchObject({
+      availableUSD: 0,
+      blocked: 'cap',
+    });
     expect(alloc.remainingUSD).toBe(495);
   });
 
@@ -134,11 +128,7 @@ describe('allocateTreasury', () => {
   });
 
   it('numbers priorities from one, in roster order, falling back to newest hire first', () => {
-    const alloc = allocateTreasury(
-      [w('old', 5, { createdAt: 1 }), w('new', 5, { createdAt: 2 })],
-      noSpend,
-      10,
-    );
+    const alloc = allocateTreasury([w('old', 5, { createdAt: 1 }), w('new', 5, { createdAt: 2 })], noSpend, 10);
     expect(alloc.byWorker.map((f) => [f.name, f.priority])).toEqual([
       ['NEW', 1],
       ['OLD', 2],
@@ -146,11 +136,7 @@ describe('allocateTreasury', () => {
   });
 
   it('numbers the QUEUE over enabled workers only, so a paused row takes no place in it', () => {
-    const alloc = allocateTreasury(
-      roster(['a', 10], ['paused', 10, { enabled: false }], ['b', 10]),
-      noSpend,
-      30,
-    );
+    const alloc = allocateTreasury(roster(['a', 10], ['paused', 10, { enabled: false }], ['b', 10]), noSpend, 30);
     expect(alloc.byWorker.map((f) => [f.name, f.priority, f.queuePosition])).toEqual([
       ['A', 1, 1],
       ['PAUSED', 2, 0],
@@ -173,11 +159,7 @@ describe('describeFundingBlock', () => {
   it('counts the workers ahead of a starved one over the queue, not the roster', () => {
     // `paused` sits above `c` in the roster but claims nothing, so blaming the
     // empty pot on "2 workers ahead" would name a row that is not touching it.
-    const alloc = allocateTreasury(
-      roster(['a', 10], ['paused', 10, { enabled: false }], ['c', 10]),
-      noSpend,
-      10,
-    );
+    const alloc = allocateTreasury(roster(['a', 10], ['paused', 10, { enabled: false }], ['c', 10]), noSpend, 10);
     const starved = fundingFor(alloc, 'c')!;
     expect(starved.blocked).toBe('pool');
     expect(describeFundingBlock(starved, alloc)).toContain('1 worker ahead');
@@ -197,5 +179,23 @@ describe('validateTreasury / seedTreasury', () => {
       monthlyUSD: 35,
     });
     expect(seedTreasury([])).toEqual({ monthlyUSD: DEFAULT_TREASURY_USD });
+  });
+});
+
+describe('distributeRemainingFunds', () => {
+  it('gives higher-priority workers more while preserving spend and paused caps', () => {
+    const workers = roster(['a', 10], ['paused', 99, { enabled: false }], ['b', 20]);
+    const allocation = allocateTreasury(workers, (id) => (id === 'a' ? 4 : id === 'b' ? 10 : 2), 30);
+    expect(distributeRemainingFunds(allocation)).toEqual([
+      { workerId: 'a', budgetUSDPerMonth: 13.33 },
+      { workerId: 'b', budgetUSDPerMonth: 14.67 },
+    ]);
+  });
+
+  it('uses weighted shares and remainder cents that total exactly', () => {
+    const allocation = allocateTreasury(roster(['a', 1], ['b', 1], ['c', 1]), noSpend, 10);
+    const caps = distributeRemainingFunds(allocation);
+    expect(caps.map((cap) => cap.budgetUSDPerMonth)).toEqual([5, 3.33, 1.67]);
+    expect(caps.reduce((sum, cap) => sum + cap.budgetUSDPerMonth, 0)).toBe(10);
   });
 });

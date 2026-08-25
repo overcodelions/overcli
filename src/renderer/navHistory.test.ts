@@ -249,10 +249,10 @@ describe('nav history', () => {
     });
   });
 
-  // Leaving a flow run to check Workers and coming back must return you to
-  // the run, not to the Flows library. The run is a Flows location (the
-  // sidebar row sets detailMode 'flows'), so Flows is the tab that owns it.
-  it('returns a tab to the last place you were inside it', () => {
+  // The rule the tabs follow now: a tab click is always "this tab's front
+  // page", never "the last place I was inside it". Reported as pressing
+  // Flows to reach the flows list and landing back on the run instead.
+  it('takes a tab to its front page even when you were deep inside it', () => {
     useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
     useStore.setState({
       projects: [
@@ -269,25 +269,28 @@ describe('nav history', () => {
     useStore.getState().setDetailMode('flows');
     settle();
 
-    navigateToTab('workers', () => useStore.getState().setDetailMode('workers'));
+    navigateToTab(() => useStore.getState().setDetailMode('workers'));
     settle();
     expect(useStore.getState().detailMode).toBe('workers');
 
-    navigateToTab('flows', () => {
+    const flowsRoot = vi.fn(() => {
       useFlowsStore.getState().setActiveRun(null);
       useStore.getState().setDetailMode('flows');
     });
+    navigateToTab(flowsRoot);
     settle();
+    expect(flowsRoot).toHaveBeenCalledOnce();
     expect(useStore.getState().detailMode).toBe('flows');
-    expect(useFlowsStore.getState().activeRunId).toBe('run-9');
+    expect(useFlowsStore.getState().activeRunId).toBeNull();
 
-    // And Chat still comes back to the conversation, not the run.
-    navigateToTab('conversation', () => useStore.getState().setDetailMode('conversation'));
+    // The run isn't lost — Back is the control that promises to retrace, and
+    // it walks the tab clicks in order rather than jumping over them.
+    useNavHistory.getState().goBack();
     settle();
-    expect(readLocation()).toMatchObject({
-      detailMode: 'conversation',
-      selectedConversationId: 'conv-1',
-    });
+    expect(useStore.getState().detailMode).toBe('workers');
+    useNavHistory.getState().goBack();
+    settle();
+    expect(readLocation()).toMatchObject({ detailMode: 'flows', activeRunId: 'run-9' });
   });
 
   // Reported: "if I click from a flow to a worker then back, it takes me to
@@ -333,7 +336,7 @@ describe('nav history', () => {
       useFlowsStore.getState().setActiveRun(null);
       useStore.getState().setDetailMode('flows');
     });
-    navigateToTab('flows', root);
+    navigateToTab(root);
     settle();
     expect(root).toHaveBeenCalledOnce();
     expect(useFlowsStore.getState().activeRunId).toBeNull();
@@ -357,13 +360,12 @@ describe('nav history', () => {
 
   it('runs the tab default on the first visit of the session', () => {
     const fallback = vi.fn(() => useStore.getState().setDetailMode('flows'));
-    navigateToTab('flows', fallback);
+    navigateToTab(fallback);
     expect(fallback).toHaveBeenCalledOnce();
   });
 
-  // The reason the Flows tab resets to the library in the first place: not
-  // being dropped onto a run that has since gone away.
-  it('falls back when the remembered run no longer exists', () => {
+  // A tab click is a forward navigation like any other, so it stacks.
+  it('stacks a tab click so Back undoes it', () => {
     useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
     useFlowsStore.getState().setActiveRun('run-9');
     useStore.getState().setDetailMode('flows');
@@ -371,23 +373,8 @@ describe('nav history', () => {
     useStore.getState().setDetailMode('workers');
     settle();
 
-    useFlowsStore.setState({ runs: {} }); // run deleted while we were away
-    const fallback = vi.fn(() => useStore.getState().setDetailMode('flows'));
-    navigateToTab('flows', fallback);
-    expect(fallback).toHaveBeenCalledOnce();
-  });
-
-  it('stacks a tab restore so Back still undoes it', () => {
-    useFlowsStore.setState({ runs: { 'run-9': makeRun() } as never });
-    useFlowsStore.getState().setActiveRun('run-9');
-    useStore.getState().setDetailMode('flows');
+    navigateToTab(() => useStore.getState().setDetailMode('flows'));
     settle();
-    useStore.getState().setDetailMode('workers');
-    settle();
-
-    navigateToTab('flows', () => useStore.getState().setDetailMode('flows'));
-    settle();
-    expect(useFlowsStore.getState().activeRunId).toBe('run-9');
 
     useNavHistory.getState().goBack();
     expect(useStore.getState().detailMode).toBe('workers');

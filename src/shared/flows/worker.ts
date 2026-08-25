@@ -11,6 +11,7 @@ import type { ScheduleTrigger } from './schedule';
 import { SCHEDULE_AUTO_APPROVE_MAX, parseTimeOfDay } from './schedule';
 
 export type WorkerTrustLevel = 'probation' | 'trusted' | 'autonomous';
+export type WorkerMessageIntent = 'chat' | 'work';
 
 export interface WorkerCaps {
   maxItemsPerShift: number;
@@ -376,6 +377,7 @@ export interface WorkerScorecard {
 /// What one errand turn produced. Returned to the renderer so a desk can show
 /// the outcome inline, including the case where the worker launched nothing.
 export interface WorkerErrandResult {
+  intent: WorkerMessageIntent;
   orchestrationId: string;
   /// Candidates recorded after the orchestrator's exclusion and item caps.
   count: number;
@@ -839,6 +841,7 @@ export function workerOrigin(
   task: 'shift' | 'errand',
   errand?: string,
   from?: { workerId: UUID; workerName: string },
+  intent?: WorkerMessageIntent,
 ): {
   kind: 'worker';
   workerId: UUID;
@@ -847,6 +850,7 @@ export function workerOrigin(
   errand?: string;
   allowExternalActions?: boolean;
   from?: { workerId: UUID; workerName: string };
+  intent?: WorkerMessageIntent;
 } {
   return {
     kind: 'worker',
@@ -854,6 +858,7 @@ export function workerOrigin(
     workerName: w.name,
     task,
     ...(errand !== undefined ? { errand } : {}),
+    ...(task === 'errand' && intent !== undefined ? { intent } : {}),
     ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
     ...(from ? { from } : {}),
   };

@@ -619,8 +619,15 @@ export function Sidebar() {
           <SidebarStream
             entries={query ? streamMatches : streamEntries}
             currentOwnerId={currentOwnerId}
+            // The open run wins over `selectedId`. Opening a flow run doesn't
+            // clear the conversation selection — nothing does — so with a
+            // chat id left over from before, the stream lit up that chat's
+            // row while you were looking at a run, and the run you actually
+            // had open sat unhighlighted next to it. `openedRunId` is
+            // already null unless the Flows pane is what's on screen, so
+            // this only takes precedence when the run really is the page.
             selectedKey={
-              selectedId ? `c:${selectedId}` : openedRunId ? `f:${openedRunId}` : null
+              openedRunId ? `f:${openedRunId}` : selectedId ? `c:${selectedId}` : null
             }
             onOpenConversation={(id) => {
               setDetailMode('conversation');

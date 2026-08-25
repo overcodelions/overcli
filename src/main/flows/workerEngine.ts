@@ -60,6 +60,7 @@ import {
   type WorkerErrandResult,
   type WorkerHandoff,
   type WorkerJournalEntry,
+  type WorkerMessageIntent,
   type WorkerScorecard,
   type WorkerTrustLevel,
 } from '../../shared/flows/worker';
@@ -67,19 +68,14 @@ import {
   DEFAULT_TREASURY_USD,
   allocateTreasury,
   describeFundingBlock,
+  distributeRemainingFunds,
   fundingFor,
   seedTreasury,
   validateTreasury,
   type Treasury,
   type TreasuryAllocation,
 } from '../../shared/flows/treasury';
-import {
-  deleteWorker,
-  loadAllWorkers,
-  loadTreasury,
-  saveTreasury,
-  saveWorker,
-} from './workersStore';
+import { deleteWorker, loadAllWorkers, loadTreasury, saveTreasury, saveWorker } from './workersStore';
 import {
   appendWorkerJournalEntry,
   clearWorkerJournal,
@@ -98,11 +94,7 @@ import {
   workerFilesDir,
 } from './workerFiles';
 import { publishDeliverableToProject } from './workerPublish';
-import {
-  WORKER_COMPACTION_KEEP_DAYS,
-  compactionCutoff,
-  isCompactionDue,
-} from '../../shared/flows/workerCompaction';
+import { WORKER_COMPACTION_KEEP_DAYS, compactionCutoff, isCompactionDue } from '../../shared/flows/workerCompaction';
 import type { FlowWorkerQuestionRequest, FlowWorkerQuestionResult } from './runtime';
 import { buildWorkerReport, type WorkerReport, type WorkerRunFact } from '../../shared/flows/workerReport';
 
@@ -126,6 +118,12 @@ const MAX_PENDING_REFERRALS = 3;
 /// make the worker a persona rather than a chat window.
 const ERRAND_THREAD_TURNS = 6;
 const ERRAND_THREAD_REPLY_CHARS = 2000;
+/// A new calendar day is a new conversation. The most recent earlier day is
+/// carried in as a deliberately small brief, rather than replaying that
+/// conversation as though it were still today's live thread.
+const ERRAND_HANDOFF_TURNS = 3;
+const ERRAND_HANDOFF_ASK_CHARS = 240;
+const ERRAND_HANDOFF_REPLY_CHARS = 600;
 /// A filename, or one of the two keywords. Long enough for any name the
 /// filer produces, short enough that the field can't be used as storage.
 const WORKER_AUTO_RENDER_MAX = 200;
@@ -155,7 +153,13 @@ export interface WorkerParker {
     priorTurns?: Array<{ prompt: string; reply: string }>;
     attachments?: Attachment[];
   }): Promise<
-    | { ok: true; orchestrationId: UUID; count: number; queued: number; excluded: number }
+    | {
+        ok: true;
+        orchestrationId: UUID;
+        count: number;
+        queued: number;
+        excluded: number;
+      }
     | { ok: false; error: string }
   >;
   get(id: UUID): Orchestration | null;
@@ -214,9 +218,7 @@ export interface WorkerEngineDeps {
     /// The `<flow_request>` body: what the flow must do, in the worker's words.
     request: string;
     runIn: 'cwd' | 'worktree';
-  }) => Promise<
-    { ok: true; orchestrationId: UUID; flowId: string } | { ok: false; error: string }
-  >;
+  }) => Promise<{ ok: true; orchestrationId: UUID; flowId: string } | { ok: false; error: string }>;
   /// A finished run's final artifact, so the engine can file it under the
   /// worker. The engine has no handle on the runtime, and it needs one here
   /// because run artifacts are pruned with the run — copying the deliverable
@@ -234,7 +236,11 @@ export interface WorkerEngineDeps {
   /// flow runs. Main wires this across the orchestrator + runtime; keeping it
   /// as one dependency lets the worker reset stay the single owner of what
   /// "start fresh" means without coupling this engine to either store.
-  clearActivity?: (workerId: UUID) => { shifts: number; errands: number; runs: number };
+  clearActivity?: (workerId: UUID) => {
+    shifts: number;
+    errands: number;
+    runs: number;
+  };
   /// The same removal for ONE batch: forget the ledger and delete the flow
   /// runs it launched. Split from `clearActivity` rather than generalised
   /// because the whole-worker reset counts shifts and errands for its
@@ -307,7 +313,10 @@ export class WorkerEngine {
     };
     this.spend = deps.spend ?? workerSpendSince;
     this.spendAll = deps.spendAll ?? workerSpendByWorkerSince;
-    this.treasuryStore = deps.treasuryStore ?? { load: loadTreasury, save: saveTreasury };
+    this.treasuryStore = deps.treasuryStore ?? {
+      load: loadTreasury,
+      save: saveTreasury,
+    };
   }
 
   /// Load persisted workers, reconcile batches that settled while the app was
@@ -338,10 +347,12 @@ export class WorkerEngine {
 
   // ---- READS ------------------------------------------------------------
 
-  list(): Array<{ worker: Worker; nextShiftAt: number | null; scorecard: WorkerScorecard }> {
-    return [...this.workers.values()]
-      .sort((a, b) => b.createdAt - a.createdAt)
-      .map((w) => this.snapshot(w));
+  list(): Array<{
+    worker: Worker;
+    nextShiftAt: number | null;
+    scorecard: WorkerScorecard;
+  }> {
+    return [...this.workers.values()].sort((a, b) => b.createdAt - a.createdAt).map((w) => this.snapshot(w));
   }
 
   /// Ids only. `list()` builds a scorecard per worker — two whole-file log
@@ -366,7 +377,10 @@ export class WorkerEngine {
       const worker = this.workers.get(request.workerId);
       if (!worker) return { kind: 'error', error: 'The owning Worker no longer exists.' };
       if (!this.deps.supervisorTurn) {
-        return { kind: 'error', error: 'Worker supervision is not available in this build.' };
+        return {
+          kind: 'error',
+          error: 'Worker supervision is not available in this build.',
+        };
       }
 
       const prompt = this.buildFlowQuestionPrompt(worker, request);
@@ -397,7 +411,10 @@ export class WorkerEngine {
   /// is: a cached allocation and the run-summary log would eventually
   /// disagree, and the one that gates spending has to be the true one.
   treasury(): { treasury: Treasury; allocation: TreasuryAllocation } {
-    return { treasury: { ...this.pool }, allocation: this.allocate(this.now()) };
+    return {
+      treasury: { ...this.pool },
+      allocation: this.allocate(this.now()),
+    };
   }
 
   /// The roster's report card for the window starting at `sinceMs` (0 = all time).
@@ -459,8 +476,70 @@ export class WorkerEngine {
     return { ok: true };
   }
 
+  /// Divide this month's remaining money by funding priority: the first
+  /// active worker receives the largest share and each row below receives
+  /// progressively less. Existing spend stays attached to its worker;
+  /// paused caps survive unchanged so resuming restores the prior promise.
+  distributeFunds():
+    | {
+        ok: true;
+        workers: Worker[];
+        treasury: Treasury;
+        allocation: TreasuryAllocation;
+      }
+    | { ok: false; error: string } {
+    const before = this.allocate(this.now());
+    const active = before.byWorker.filter((row) => row.enabled);
+    if (active.length === 0) return { ok: false, error: 'Resume a worker before distributing funds.' };
+    if (Math.round(before.remainingUSD * 100) < active.length) {
+      return {
+        ok: false,
+        error: `There is not enough left to give each of the ${active.length} active workers at least one cent.`,
+      };
+    }
+
+    const distributedCaps = distributeRemainingFunds(before);
+    if (
+      distributedCaps.some((cap) => {
+        const spent = before.byWorker.find((row) => row.workerId === cap.workerId)?.spentUSD ?? 0;
+        return cap.budgetUSDPerMonth - spent < 0.01 - Number.EPSILON;
+      })
+    ) {
+      return {
+        ok: false,
+        error: `There is not enough left to give each of the ${active.length} active workers at least one cent.`,
+      };
+    }
+
+    const changed: Worker[] = [];
+    for (const cap of distributedCaps) {
+      const worker = this.workers.get(cap.workerId);
+      if (!worker || worker.budgetUSDPerMonth === cap.budgetUSDPerMonth) continue;
+      worker.budgetUSDPerMonth = cap.budgetUSDPerMonth;
+      this.store.save(worker);
+      this.emitWorker(worker);
+      changed.push(structuredClone(worker));
+    }
+    this.poolNoticeDay = null;
+    const after = this.allocate(this.now());
+    this.deps.emit({
+      type: 'treasuryUpdate',
+      treasury: this.pool,
+      allocation: after,
+    });
+    return {
+      ok: true,
+      workers: changed,
+      treasury: structuredClone(this.pool),
+      allocation: after,
+    };
+  }
+
   save(
-    input: Omit<Worker, 'id' | 'createdAt' | 'trust'> & { id?: UUID; trust?: WorkerTrustLevel },
+    input: Omit<Worker, 'id' | 'createdAt' | 'trust'> & {
+      id?: UUID;
+      trust?: WorkerTrustLevel;
+    },
   ): { ok: true; worker: Worker } | { ok: false; error: string } {
     const existing = input.id ? this.workers.get(input.id) : undefined;
     if (input.id !== undefined && !isSafeIdSegment(input.id)) {
@@ -509,8 +588,7 @@ export class WorkerEngine {
 
     // Re-anchor when the cadence changed or the worker was re-enabled, so an
     // edit against a stale anchor can't fire the moment it saves.
-    const cadenceChanged =
-      !existing || JSON.stringify(existing.cadence) !== JSON.stringify(candidate.cadence);
+    const cadenceChanged = !existing || JSON.stringify(existing.cadence) !== JSON.stringify(candidate.cadence);
     const reEnabled = !!existing && !existing.enabled && candidate.enabled;
     if (cadenceChanged || reEnabled) {
       candidate.anchorAt = now;
@@ -568,11 +646,7 @@ export class WorkerEngine {
   /// Not idempotent by content: two identical notes on the same turn are two
   /// things the user chose to say, so the id carries the timestamp rather
   /// than hashing the text.
-  note(
-    id: UUID,
-    orchestrationId: string,
-    note: string,
-  ): { ok: true } | { ok: false; error: string } {
+  note(id: UUID, orchestrationId: string, note: string): { ok: true } | { ok: false; error: string } {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
     const owner = this.deps.parker.get(orchestrationId);
@@ -583,7 +657,10 @@ export class WorkerEngine {
     const text = (note ?? '').trim();
     if (!text) return { ok: false, error: 'Write the note first.' };
     if (text.length > WORKER_NOTE_MAX) {
-      return { ok: false, error: `A note is at most ${WORKER_NOTE_MAX} characters.` };
+      return {
+        ok: false,
+        error: `A note is at most ${WORKER_NOTE_MAX} characters.`,
+      };
     }
     const at = this.now();
     const wrote = this.journal.append({
@@ -640,14 +717,24 @@ export class WorkerEngine {
   /// about this worker, not things the worker learned. Historical spend also
   /// remains in the usage ledger so resetting cannot mint a fresh allowance.
   resetMemory(id: UUID):
-    | { ok: true; entries: number; files: number; shifts: number; errands: number; runs: number }
+    | {
+        ok: true;
+        entries: number;
+        files: number;
+        shifts: number;
+        errands: number;
+        runs: number;
+      }
     | { ok: false; error: string } {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
     if (this.firing.has(id)) {
       // A planning turn in flight is about to journal against the shift number
       // we are resetting, so it would write the old life into the new one.
-      return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then reset.' };
+      return {
+        ok: false,
+        error: 'This worker is mid-shift. Wait for it to finish, then reset.',
+      };
     }
     // The journal rewrite is the retry-safe step: it either lands or throws
     // having changed nothing. File deletion is irreversible, so it goes
@@ -657,14 +744,21 @@ export class WorkerEngine {
     try {
       entries = this.journal.clear(id);
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
 
     const cleared = clearWorkerFiles(id);
     if (!cleared.ok) return { ok: false, error: cleared.error };
     const files = cleared.removed;
 
-    const activity = this.deps.clearActivity?.(id) ?? { shifts: 0, errands: 0, runs: 0 };
+    const activity = this.deps.clearActivity?.(id) ?? {
+      shifts: 0,
+      errands: 0,
+      runs: 0,
+    };
 
     w.shiftCount = undefined;
     w.lastShiftAt = undefined;
@@ -698,14 +792,25 @@ export class WorkerEngine {
     id: UUID,
     orchestrationId: UUID,
   ):
-    | { ok: true; task: 'shift' | 'errand'; label: string; entries: number; files: number; runs: number; shiftGivenBack: number | null }
+    | {
+        ok: true;
+        task: 'shift' | 'errand';
+        label: string;
+        entries: number;
+        files: number;
+        runs: number;
+        shiftGivenBack: number | null;
+      }
     | { ok: false; error: string } {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
     if (this.firing.has(id)) {
       // A planning turn in flight is about to journal against the shift number
       // this may be handing back — it would write the old turn into the new one.
-      return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then try again.' };
+      return {
+        ok: false,
+        error: 'This worker is mid-shift. Wait for it to finish, then try again.',
+      };
     }
     const o = this.deps.parker.get(orchestrationId);
     if (!o) return { ok: false, error: 'That turn is already gone.' };
@@ -730,7 +835,10 @@ export class WorkerEngine {
         ids: number === null ? [] : [`shift-${id}-${number}`],
       });
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
     }
 
     // The filed copies, addressed exactly as the filing addressed them. Only
@@ -747,7 +855,9 @@ export class WorkerEngine {
       }).removed;
     }
 
-    const { runs } = this.deps.deleteActivity?.(id, orchestrationId) ?? { runs: 0 };
+    const { runs } = this.deps.deleteActivity?.(id, orchestrationId) ?? {
+      runs: 0,
+    };
 
     // Hand the number back only if this WAS the last shift. Rewinding a hole
     // in the middle would renumber nothing and collide with everything after.
@@ -784,7 +894,10 @@ export class WorkerEngine {
       return { ok: false, error: 'That shift belongs to a different worker.' };
     }
     if (o.origin.task === 'errand') {
-      return { ok: false, error: 'That was an errand — send it again rather than re-running it.' };
+      return {
+        ok: false,
+        error: 'That was an errand — send it again rather than re-running it.',
+      };
     }
     const number = shiftNumberOf(o.title);
     if (number === null || (w.shiftCount ?? 0) !== number) {
@@ -794,7 +907,10 @@ export class WorkerEngine {
       };
     }
     if (this.firing.has(id)) {
-      return { ok: false, error: 'This worker is mid-shift. Wait for it to finish, then try again.' };
+      return {
+        ok: false,
+        error: 'This worker is mid-shift. Wait for it to finish, then try again.',
+      };
     }
     const allocation = this.allocate(this.now());
     const funding = fundingFor(allocation, id);
@@ -860,6 +976,7 @@ export class WorkerEngine {
   async runErrand(
     id: UUID,
     instruction: string,
+    intent: WorkerMessageIntent = 'work',
     attachments?: Attachment[],
   ): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }> {
     const w = this.workers.get(id);
@@ -870,7 +987,12 @@ export class WorkerEngine {
     // before it — a desk you can leave a note on, in the order the notes were
     // left. `this.workers.get` is re-read inside, because the wait can be
     // minutes and the worker may have been edited meanwhile.
-    const res = await this.fire(w, { manual: true, errand, attachments });
+    const res = await this.fire(w, {
+      manual: true,
+      errand,
+      intent,
+      attachments,
+    });
     this.arm();
     if (!res.ok) return res;
     if (!res.errand) return { ok: false, error: 'The errand produced no result.' };
@@ -914,7 +1036,9 @@ export class WorkerEngine {
     const now = this.now();
     let soonest = Number.POSITIVE_INFINITY;
     for (const w of this.workers.values()) {
-      const decision = evaluateSchedule(this.timing(w), now, { busy: this.firing.has(w.id) });
+      const decision = evaluateSchedule(this.timing(w), now, {
+        busy: this.firing.has(w.id),
+      });
       if (decision.action === 'fire') {
         soonest = now;
         break;
@@ -953,7 +1077,10 @@ export class WorkerEngine {
         if (this.firing.has(id)) continue;
         this.compactIfDue(w);
         const now = this.now();
-        const decision = evaluateSchedule(this.timing(w), now, { busy: false, awakeSince });
+        const decision = evaluateSchedule(this.timing(w), now, {
+          busy: false,
+          awakeSince,
+        });
         if (decision.action === 'wait') continue;
         if (decision.action === 'skip') {
           // Missed while the app was closed. Journal it honestly (idempotent
@@ -1005,6 +1132,7 @@ export class WorkerEngine {
     opts: {
       manual?: boolean;
       errand?: string;
+      intent?: WorkerMessageIntent;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string };
     },
@@ -1027,6 +1155,7 @@ export class WorkerEngine {
     opts: {
       manual?: boolean;
       errand?: string;
+      intent?: WorkerMessageIntent;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string };
     },
@@ -1071,7 +1200,10 @@ export class WorkerEngine {
           });
         }
       } else if (wrote) {
-        this.deps.notify({ title: `${w.name} is out of budget`, body: message });
+        this.deps.notify({
+          title: `${w.name} is out of budget`,
+          body: message,
+        });
       }
       w.lastShiftAt = now;
       this.persistAndEmit(w);
@@ -1080,8 +1212,7 @@ export class WorkerEngine {
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
-    if (opts.errand)
-      return await this.fireErrand(w, opts.errand, opts.attachments, opts.from);
+    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.intent ?? 'work', opts.attachments, opts.from);
 
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
@@ -1102,12 +1233,22 @@ export class WorkerEngine {
     // The planning turn can run for minutes; tell the renderer the shift is
     // live so the row shows work happening instead of nothing. Cleared in
     // the finally so a thrown park can't leave a row spinning forever.
-    this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: true, task: 'shift' });
+    this.deps.emit({
+      type: 'workerShiftProgress',
+      workerId: w.id,
+      active: true,
+      task: 'shift',
+    });
     let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
     try {
       res = await this.parkShift(w, sequence, runIn, autoCap, rejected, previousPlannedAt);
     } finally {
-      this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: false, task: 'shift' });
+      this.deps.emit({
+        type: 'workerShiftProgress',
+        workerId: w.id,
+        active: false,
+        task: 'shift',
+      });
     }
 
     // The planning turn ran for a while — the user may have edited the
@@ -1126,7 +1267,10 @@ export class WorkerEngine {
         note: `Failed: ${res.error}`,
       });
       this.emitWorker(fresh);
-      this.deps.notify({ title: `${fresh.name}'s shift failed`, body: res.error });
+      this.deps.notify({
+        title: `${fresh.name}'s shift failed`,
+        body: res.error,
+      });
       return { ok: false, error: res.error };
     }
 
@@ -1145,9 +1289,7 @@ export class WorkerEngine {
       kind: 'shift',
       at: this.now(),
       title: `Shift ${sequence}`,
-      note: [describeShift(res.count, res.queued, res.excluded), handoffs]
-        .filter(Boolean)
-        .join(' '),
+      note: [describeShift(res.count, res.queued, res.excluded), handoffs].filter(Boolean).join(' '),
       orchestrationId: res.orchestrationId,
     });
     this.emitWorker(fresh);
@@ -1189,6 +1331,7 @@ export class WorkerEngine {
   private async fireErrand(
     w: Worker,
     errand: string,
+    intent: WorkerMessageIntent,
     attachments?: Attachment[],
     from?: { workerId: UUID; workerName: string },
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
@@ -1199,30 +1342,44 @@ export class WorkerEngine {
     // Calculate before awaiting the planner: tests and fast callers can share
     // a frozen clock, and journal append is intentionally idempotent.
     const entryId = this.errandEntryId(w.id, at);
-    const priorTurns = this.priorErrandTurns(w.id);
+    const priorTurns = this.priorErrandTurns(w.id, at);
+    const priorDayHandoff = this.priorDayHandoff(w.id, at);
 
-    this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: true, task: 'errand' });
+    this.deps.emit({
+      type: 'workerShiftProgress',
+      workerId: w.id,
+      active: true,
+      task: 'errand',
+    });
     let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
     try {
       res = await this.deps.parker.parkProposal({
-        origin: workerOrigin(w, 'errand', errand, from),
+        origin: workerOrigin(w, 'errand', errand, from, intent),
         projectPath: w.projectPath,
-        prompt: this.buildErrandPrompt(w, errand, rejected, from),
+        prompt:
+          intent === 'chat'
+            ? this.buildChatPrompt(w, errand, priorDayHandoff, from)
+            : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
         ...(priorTurns.length > 0 ? { priorTurns } : {}),
         attachments,
         flowId: w.flowIds[0],
         runIn,
         maxConcurrent: Math.min(w.caps.maxItemsPerShift, 4),
         title: `[Errand] ${errandLabel(errand)}`,
-        autoApprove: autoCap > 0 ? { maxItems: autoCap } : undefined,
+        ...(intent === 'work' && autoCap > 0 ? { autoApprove: { maxItems: autoCap } } : {}),
         model: w.heartbeatModel,
         backend: w.heartbeatBackend,
-        maxItems: w.caps.maxItemsPerShift,
+        maxItems: intent === 'chat' ? 0 : w.caps.maxItemsPerShift,
         excludeTitles: rejected,
         allowedFlowIds: w.flowIds,
       });
     } finally {
-      this.deps.emit({ type: 'workerShiftProgress', workerId: w.id, active: false, task: 'errand' });
+      this.deps.emit({
+        type: 'workerShiftProgress',
+        workerId: w.id,
+        active: false,
+        task: 'errand',
+      });
     }
 
     const fresh = this.workers.get(w.id) ?? w;
@@ -1236,7 +1393,10 @@ export class WorkerEngine {
         note: `Failed: ${res.error}`,
       });
       this.emitWorker(fresh);
-      this.deps.notify({ title: `${fresh.name}'s errand failed`, body: res.error });
+      this.deps.notify({
+        title: `${fresh.name}'s errand failed`,
+        body: res.error,
+      });
       return { ok: false, error: res.error };
     }
 
@@ -1250,14 +1410,20 @@ export class WorkerEngine {
     // A delegated errand never gets a roster block, so it should never emit a
     // handoff; guarding on `from` as well means a turn that invented one
     // anyway cannot bounce the parcel onward.
-    const handoffs = from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
+    const handoffs =
+      intent === 'chat' || from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
     // Path 3: the worker judged the errand too big for a prose answer and
     // found nothing on its contract that fits, so it asked for machinery. Only
     // honored when it proposed nothing — a turn that did both is confused, and
     // the candidates it did produce are the safer half to act on.
-    const request = res.count === 0 ? parseFlowRequest(rawReply) : null;
+    const request = intent === 'work' && res.count === 0 ? parseFlowRequest(rawReply) : null;
     if (request && this.deps.generatedFlow) {
-      const built = await this.deps.generatedFlow({ worker: w, errand, request, runIn });
+      const built = await this.deps.generatedFlow({
+        worker: w,
+        errand,
+        request,
+        runIn,
+      });
       if (built.ok) {
         this.journal.append({
           id: entryId,
@@ -1276,6 +1442,7 @@ export class WorkerEngine {
         return {
           ok: true,
           errand: {
+            intent,
             orchestrationId: built.orchestrationId,
             count: 1,
             queued: 1,
@@ -1297,7 +1464,10 @@ export class WorkerEngine {
         orchestrationId: res.orchestrationId,
       });
       this.emitWorker(fresh);
-      this.deps.notify({ title: `${fresh.name} could not build a flow`, body: built.error });
+      this.deps.notify({
+        title: `${fresh.name} could not build a flow`,
+        body: built.error,
+      });
       return { ok: false, error: built.error };
     }
     const launchedNothing = res.count === 0;
@@ -1327,6 +1497,7 @@ export class WorkerEngine {
     return {
       ok: true,
       errand: {
+        intent,
         orchestrationId: res.orchestrationId,
         count: res.count,
         queued: res.queued,
@@ -1339,12 +1510,7 @@ export class WorkerEngine {
   /// The planning turn's user request (the producer system prompt rides in
   /// front of it — see orchestrator.propose). Rebuilt from the journal every
   /// shift: this is the difference between a worker and a saved prompt.
-  private buildShiftPrompt(
-    w: Worker,
-    sequence: number,
-    rejected: string[],
-    previousPlannedAt?: number,
-  ): string {
+  private buildShiftPrompt(w: Worker, sequence: number, rejected: string[], previousPlannedAt?: number): string {
     const digest = this.journal.digest(w.id);
     const parts = [
       `You are "${w.name}", a standing worker on this project. This is your shift #${sequence}.`,
@@ -1379,7 +1545,8 @@ export class WorkerEngine {
   }
 
   private buildFlowQuestionPrompt(worker: Worker, request: FlowWorkerQuestionRequest): string {
-    const artifacts = request.artifacts.length > 0
+    const artifacts =
+      request.artifacts.length > 0
       ? request.artifacts
           .map(
             (artifact) =>
@@ -1402,9 +1569,7 @@ export class WorkerEngine {
       request.runTitle ? `Run: ${request.runTitle}` : '',
       `Original request: ${request.userPrompt}`,
       `Current step: ${request.step.id} (${request.step.role})`,
-      request.step.systemPromptOverride
-        ? `Step instructions: ${request.step.systemPromptOverride}`
-        : '',
+      request.step.systemPromptOverride ? `Step instructions: ${request.step.systemPromptOverride}` : '',
       '',
       'EARLIER ARTIFACTS',
       artifacts,
@@ -1602,14 +1767,7 @@ export class WorkerEngine {
     const sent: string[] = [];
     const failed: string[] = [];
     requested.slice(0, allowed).forEach((h, i) => {
-      const outcome = this.dispatchOne(
-        sender,
-        h,
-        targets,
-        `handoff-${sender.id}-${at}-${i}`,
-        at,
-        orchestrationId,
-      );
+      const outcome = this.dispatchOne(sender, h, targets, `handoff-${sender.id}-${at}-${i}`, at, orchestrationId);
       (outcome.ok ? sent : failed).push(outcome.summary);
     });
 
@@ -1620,9 +1778,7 @@ export class WorkerEngine {
     // Never silent: a turn whose referral was dropped for want of item budget
     // read, to its author, exactly like one that was sent.
     if (dropped > 0) {
-      notes.push(
-        `${dropped} more handoff${dropped === 1 ? '' : 's'} dropped — no item budget left this turn.`,
-      );
+      notes.push(`${dropped} more handoff${dropped === 1 ? '' : 's'} dropped — no item budget left this turn.`);
     }
     return notes.join(' ');
   }
@@ -1664,7 +1820,10 @@ export class WorkerEngine {
     // handed off (see `handedOffTitles`) — bury the errand for good.
     const pending = this.pendingReferrals.get(target.id) ?? 0;
     if (pending >= MAX_PENDING_REFERRALS) {
-      return { ok: false, summary: `"${h.to}" already has ${pending} referrals waiting` };
+      return {
+        ok: false,
+        summary: `"${h.to}" already has ${pending} referrals waiting`,
+      };
     }
     this.pendingReferrals.set(target.id, pending + 1);
 
@@ -1737,10 +1896,35 @@ export class WorkerEngine {
   /// rather than by a cycle detector because absence cannot be argued with —
   /// there is no instruction here for a confused turn to misread, and no
   /// depth counter to get the arithmetic wrong on.
+  private buildChatPrompt(w: Worker, errand: string, priorDayHandoff: string, from?: { workerName: string }): string {
+    return [
+      from
+        ? `You are "${w.name}", answering a colleague's one-off message.`
+        : `You are "${w.name}", answering your manager's one-off message.`,
+      '',
+      'YOUR JOB DESCRIPTION',
+      w.jobDescription,
+      '',
+      'YOUR JOURNAL (newest first):',
+      this.journal.digest(w.id) || '(no journal yet)',
+      ...this.filesBlock(w),
+      ...this.contextBlock(),
+      ...(priorDayHandoff
+        ? ['', 'PREVIOUS CONVERSATION HANDOFF (background only — today is a new conversation)', priorDayHandoff]
+        : []),
+      '',
+      'THE MESSAGE',
+      errand,
+      '',
+      'Answer conversationally from the job, journal, files, project, and tools. Emit <candidates>[]</candidates>. Never request, draft, launch, or hand off work.',
+    ].join('\n');
+  }
+
   private buildErrandPrompt(
     w: Worker,
     errand: string,
     rejected: string[],
+    priorDayHandoff: string,
     from?: { workerName: string },
   ): string {
     const parts = [
@@ -1755,6 +1939,9 @@ export class WorkerEngine {
       this.journal.digest(w.id) || '(no journal yet)',
       ...this.filesBlock(w),
       ...this.contextBlock(),
+      ...(priorDayHandoff
+        ? ['', 'PREVIOUS CONVERSATION HANDOFF (background only — today is a new conversation)', priorDayHandoff]
+        : []),
       ...(from ? [] : this.delegationBlock(w)),
     ];
     if (rejected.length > 0) {
@@ -1852,20 +2039,25 @@ export class WorkerEngine {
       const base = { workerId: w.id, orchestrationId: o.id, title: c.title };
 
       changed =
-        this.journal.append({ ...base, id: key('proposed'), kind: 'proposed', at: o.createdAt }) ||
-        changed;
+        this.journal.append({
+          ...base,
+          id: key('proposed'),
+          kind: 'proposed',
+          at: o.createdAt,
+        }) || changed;
 
       const launched =
-        item.status === 'running' ||
-        item.status === 'paused' ||
-        item.status === 'done' ||
-        item.status === 'failed';
+        item.status === 'running' || item.status === 'paused' || item.status === 'done' || item.status === 'failed';
       // Reaching `queued` or beyond means the item was accepted — by a human
       // approving the batch, or standing acceptance via the trust cap.
       if (item.status === 'queued' || launched) {
         changed =
-          this.journal.append({ ...base, id: key('approved'), kind: 'approved', at: now }) ||
-          changed;
+          this.journal.append({
+            ...base,
+            id: key('approved'),
+            kind: 'approved',
+            at: now,
+          }) || changed;
       }
       if (launched && item.runId) {
         changed =
@@ -1943,11 +2135,7 @@ export class WorkerEngine {
       // earned an `approved` entry on its way to `queued`), or a restart
       // settled it — which is the app's doing and must never cost a worker
       // its trust level.
-      if (
-        item.status === 'cancelled' &&
-        !item.settledByRestart &&
-        !this.journal.has(key('approved'))
-      ) {
+      if (item.status === 'cancelled' && !item.settledByRestart && !this.journal.has(key('approved'))) {
         const wrote = this.journal.append({
           ...base,
           id: key('rejected'),
@@ -2013,7 +2201,7 @@ export class WorkerEngine {
   /// The clock alone is not enough: two errands can run under a frozen clock
   /// in a test or after a timestamp collision. The ordinal keeps append ids
   /// deterministic while preserving both entries.
-  /// The errand thread for this worker, oldest first, bounded.
+  /// Today's errand conversation for this worker, oldest first, bounded.
   ///
   /// An errand is not a one-off: you send one, read the answer, and say "no,
   /// the other spec" or "now do staging". The producer is a one-shot with no
@@ -2024,7 +2212,9 @@ export class WorkerEngine {
   /// Read off the batches rather than a separate transcript: an errand batch
   /// already stores the instruction that made it and the reply it produced,
   /// which is exactly one turn.
-  private priorErrandTurns(workerId: string): Array<{ prompt: string; reply: string }> {
+  private priorErrandTurns(workerId: string, at: number): Array<{ prompt: string; reply: string }> {
+    const day = localDayStart(at);
+    const tomorrow = nextLocalDayStart(day);
     return this.deps.parker
       .list()
       .filter(
@@ -2032,17 +2222,55 @@ export class WorkerEngine {
           o.origin?.kind === 'worker' &&
           o.origin.workerId === workerId &&
           o.origin.task === 'errand' &&
+          o.createdAt >= day &&
+          o.createdAt < tomorrow &&
           !!o.producer?.reply,
       )
       .sort((a, b) => a.createdAt - b.createdAt)
       .slice(-ERRAND_THREAD_TURNS)
       .map((o) => ({
-        prompt:
-          (o.origin?.kind === 'worker' ? o.origin.errand : undefined) ?? o.producer!.prompt,
+        prompt: (o.origin?.kind === 'worker' ? o.origin.errand : undefined) ?? o.producer!.prompt,
         // Bound each replayed reply: a thread of six full investigations would
         // crowd out the job description and journal that make it a worker.
         reply: o.producer!.reply.slice(0, ERRAND_THREAD_REPLY_CHARS),
       }));
+  }
+
+  /// A compact bridge into a new daily conversation. This is intentionally
+  /// not supplied as `priorTurns`: the producer must understand it as
+  /// background from an earlier session, not as messages spoken today.
+  private priorDayHandoff(workerId: string, at: number): string {
+    const today = localDayStart(at);
+    const earlier = this.deps.parker
+      .list()
+      .filter(
+        (o) =>
+          o.origin?.kind === 'worker' &&
+          o.origin.workerId === workerId &&
+          o.origin.task === 'errand' &&
+          o.createdAt < today &&
+          !!o.producer?.reply,
+      )
+      .sort((a, b) => a.createdAt - b.createdAt);
+    const latest = earlier[earlier.length - 1];
+    if (!latest) return '';
+    const previousDay = localDayStart(latest.createdAt);
+    const turns = earlier.filter((o) => localDayStart(o.createdAt) === previousDay).slice(-ERRAND_HANDOFF_TURNS);
+    const label = new Date(previousDay).toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+    return [
+      `From ${label}:`,
+      ...turns.map((o) => {
+        const ask = (o.origin?.kind === 'worker' ? o.origin.errand : undefined) ?? o.producer!.prompt;
+        return [
+          `- Manager: ${ask.slice(0, ERRAND_HANDOFF_ASK_CHARS)}`,
+          `  ${o.origin?.kind === 'worker' ? o.origin.workerName : 'Worker'}: ${o.producer!.reply.slice(0, ERRAND_HANDOFF_REPLY_CHARS)}`,
+        ].join('\n');
+      }),
+    ].join('\n');
   }
 
   private errandEntryId(workerId: string, at: number): string {
@@ -2063,10 +2291,7 @@ export class WorkerEngine {
   }
 
   private scorecard(w: Worker): WorkerScorecard {
-    return computeWorkerScorecard(
-      this.journal.load(w.id),
-      this.spend(w.id, monthStart(this.now())),
-    );
+    return computeWorkerScorecard(this.journal.load(w.id), this.spend(w.id, monthStart(this.now())));
   }
 
   private persistAndEmit(w: Worker): void {
@@ -2124,6 +2349,16 @@ function shiftNumberOf(title: string): number | null {
 function dayKey(now: number): string {
   const d = new Date(now);
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
+}
+
+function localDayStart(now: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function nextLocalDayStart(day: number): number {
+  const d = new Date(day);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
 }
 
 function describeShift(count: number, queued: number, excluded: number): string {

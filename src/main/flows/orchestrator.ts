@@ -448,7 +448,7 @@ export class OrchestratorImpl {
     // Hard bound on how many items one firing may record at all (a worker's
     // items-per-shift cap). Producer order is best-first, so take the prefix.
     if (args.maxItems !== undefined) {
-      kept = kept.slice(0, Math.max(1, Math.floor(args.maxItems)));
+      kept = kept.slice(0, Math.max(0, Math.floor(args.maxItems)));
     }
 
     // Clamped here as well as validated at save time: a schedule persisted by

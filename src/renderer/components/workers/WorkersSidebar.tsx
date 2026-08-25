@@ -28,7 +28,7 @@
 //      status, it is noise. An absent line is the correct rendering of nothing
 //      happening.
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
@@ -101,6 +101,8 @@ export function WorkersSidebar({
   const showReport = useWorkersStore((s) => s.showReport);
   const allocation = useWorkersStore((s) => s.allocation);
   const openEditor = useWorkersStore((s) => s.openEditor);
+  const openHire = useWorkersStore((s) => s.openHire);
+  const importFromFile = useWorkersStore((s) => s.importFromFile);
   const runs = useFlowsStore((s) => s.runs);
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
@@ -143,6 +145,8 @@ export function WorkersSidebar({
     [workers, dropWorker],
   );
   const hirePath = workspaces[0]?.rootPath ?? projects[0]?.path ?? "";
+  const [hireMenuOpen, setHireMenuOpen] = useState(false);
+  const hireEveryday = projects.find((project) => project.path === hirePath)?.everyday;
 
   // The attention block: exactly the workers that cannot proceed without a
   // person. Proposed work waiting on approval, a run paused mid-flight, a pay
@@ -345,21 +349,58 @@ export function WorkersSidebar({
         {/* Hiring belongs on the roster, not only in the pane header — this is
             the list you look at when you notice nobody covers something. */}
         {hirePath !== "" && (
-          <button
-            onClick={() =>
-              openEditor(
-                newWorkerDraft(
-                  hirePath,
-                  projects.find((p) => p.path === hirePath)?.everyday,
-                ),
-              )
-            }
-            title="Hire a worker"
-            aria-label="Hire a worker"
-            className="ml-auto rounded px-1 text-[11px] leading-none text-ink-faint hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
-          >
-            +
-          </button>
+          <div className="relative ml-auto">
+            <button
+              onClick={() => setHireMenuOpen((open) => !open)}
+              title="Add a worker"
+              aria-label="Add a worker"
+              aria-haspopup="menu"
+              aria-expanded={hireMenuOpen}
+              className="rounded px-1 text-[11px] leading-none text-ink-faint hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+            >
+              +
+            </button>
+            {hireMenuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full z-40 mt-1 w-36 overflow-hidden rounded-md border border-card-strong bg-surface-elevated py-1 shadow-xl"
+              >
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setHireMenuOpen(false);
+                    openHire(hirePath);
+                  }}
+                  className="w-full px-3 py-1.5 text-left text-xs text-ink hover:bg-card-strong"
+                >
+                  ✨ Hire with AI
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setHireMenuOpen(false);
+                    openEditor(newWorkerDraft(hirePath, hireEveryday));
+                  }}
+                  className="w-full px-3 py-1.5 text-left text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+                >
+                  Add by hand
+                </button>
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    setHireMenuOpen(false);
+                    void importFromFile({
+                      projectPath: hirePath,
+                      projectPaths: projects.map((project) => project.path),
+                    });
+                  }}
+                  className="w-full px-3 py-1.5 text-left text-xs text-ink-muted hover:bg-card-strong hover:text-ink"
+                >
+                  Import…
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 

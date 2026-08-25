@@ -242,6 +242,48 @@ describe('steerRun', () => {
   });
 });
 
+// Reported from the running app: a run the user had been hijack-chatting for
+// ten minutes sat LAST in the Working-on section, ordered by the moment it was
+// launched. Hijack turns ride the generic `runner:send` path, so nothing ever
+// told the run its owner was typing at it.
+describe('noteUserTurn', () => {
+  it('stamps the run so the sidebar can order by it', () => {
+    const { rt, emitted } = harness();
+    const r = run();
+    (rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+
+    const before = Date.now();
+    const res = rt.noteUserTurn({ runId: RUN_ID });
+
+    expect(res.ok).toBe(true);
+    expect(r.lastUserTurnAt).toBeGreaterThanOrEqual(before);
+    // The renderer only learns about it through the echoed run.
+    expect(emitted.some((e) => e.type === 'flowRunUpdate')).toBe(true);
+  });
+
+  it('accepts a finished run — you can still chat with a run that has stopped', () => {
+    const { rt } = harness();
+    const r = run('done');
+    (rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+
+    expect(rt.noteUserTurn({ runId: RUN_ID }).ok).toBe(true);
+    expect(r.lastUserTurnAt).toBeDefined();
+  });
+
+  it('is stamped by holding a correction too, but not by withdrawing one', () => {
+    const { rt } = harness();
+    const r = run();
+    (rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+
+    rt.steerRun({ runId: RUN_ID, text: 'use per-tenant limits' });
+    const held = r.lastUserTurnAt;
+    expect(held).toBe(r.pendingSteer?.at);
+
+    rt.steerRun({ runId: RUN_ID, text: '' });
+    expect(r.lastUserTurnAt).toBe(held);
+  });
+});
+
 // The seam between the three builders above: does a queued steer actually
 // reach the prompt the model is sent, ahead of a pending retry, and does it
 // actually get spent so the step after doesn't see it again?
