@@ -32,6 +32,8 @@ import {
   type RecentConversationItem,
 } from './sidebarItems';
 import { WorkersSidebar } from './workers/WorkersSidebar';
+import { newConversationLabel, resolveNewConversationTarget } from '../newConversationTarget';
+import { formatShortcutDef, SHORTCUTS, startNewConversationHere } from '../shortcuts';
 import { anyDeskLive, workersForPath } from './workers/workerDeskSelectors';
 
 // Collecting what the sidebar shows moved to ./sidebarItems so both layouts
@@ -84,6 +86,7 @@ export function Sidebar() {
   // a different selection (a flow run row) is also highlighted there.
   const selectedId = detailMode === 'conversation' ? rawSelectedId : null;
   const focusedProjectId = useStore((s) => s.focusedProjectId);
+  const focusedWorkspaceId = useStore((s) => s.focusedWorkspaceId);
   const selectConversation = useStore((s) => s.selectConversation);
   const pickProject = useStore((s) => s.pickProject);
   const openSheet = useStore((s) => s.openSheet);
@@ -110,6 +113,26 @@ export function Sidebar() {
   // milliseconds is harmless; two memos each taking their own reading is how
   // a row ends up warm in one list and asleep in the next.
   const now = Date.now();
+  // What the compose button says it will do. Resolved from the same helper ⌘N
+  // runs, so the tooltip cannot promise one project while the click makes a
+  // chat in another.
+  const newTarget = useMemo(
+    () =>
+      resolveNewConversationTarget({
+        projects,
+        workspaces,
+        selectedConversationId: rawSelectedId,
+        focusedProjectId,
+        focusedWorkspaceId,
+      }),
+    [projects, workspaces, rawSelectedId, focusedProjectId, focusedWorkspaceId],
+  );
+  // The shortcut rides along in the tooltip: the users who will end up
+  // preferring ⌘N are the ones who click the button first.
+  const newConversationHint = useMemo(() => {
+    const def = SHORTCUTS.find((d) => d.id === 'conversation.new');
+    return def ? formatShortcutDef(def) : '';
+  }, []);
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
   const workers = useWorkersStore((s) => s.workers);
@@ -498,6 +521,25 @@ export function Sidebar() {
           placeholder="Search"
           className="field flex-1 min-w-0 px-2 py-1 text-xs"
         />
+        {/* Starting a chat was reachable only from a project row in Places, or
+            from ⌘N / ⌘K if you happened to know them — so Recent, the default
+            tab, offered no visible way to begin one. This button is that way,
+            and it names its destination rather than making the user find out
+            by creating one. It sits directly after the search field so it does
+            not move when the fold control comes and goes. */}
+        <button
+          onClick={() => startNewConversationHere()}
+          disabled={cliBlocked}
+          title={
+            cliBlocked
+              ? 'Install a CLI first to start a conversation'
+              : `${newConversationLabel(newTarget)} (${newConversationHint})`
+          }
+          aria-label={newConversationLabel(newTarget)}
+          className="p-1 rounded text-ink-faint hover:text-ink-muted hover:bg-card-strong disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
+        >
+          <PlusIcon />
+        </button>
         {/* Nothing to fold in Stream — it has no groups to collapse — so the
             control goes rather than sitting there permanently disabled. */}
         {showTree && (
@@ -584,6 +626,7 @@ export function Sidebar() {
               setDetailMode('conversation');
               selectConversation(id);
             }}
+            onNewConversation={cliBlocked ? undefined : () => startNewConversationHere()}
             now={now}
           />
         )}

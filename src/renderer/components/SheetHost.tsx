@@ -148,7 +148,7 @@ export function SheetHost() {
         )}
         {sheet.type === 'bulkConversationActions' && <BulkConversationActionsSheet />}
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
-        {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet />}
+        {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet initialScope={sheet.scope} />}
         {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}
         {sheet.type === 'whatsNew' && <WhatsNewSheet />}
       </div>
