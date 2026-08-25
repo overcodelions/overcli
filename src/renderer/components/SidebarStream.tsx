@@ -32,6 +32,10 @@ export interface SidebarStreamProps {
   currentOwnerId: string | null;
   selectedKey: string | null;
   onOpenConversation: (id: string) => void;
+  /// Absent when there is nowhere to start one (no project added yet, or the
+  /// CLI is unavailable) — an empty state whose only button cannot work is
+  /// worse than one that just says the place is empty.
+  onNewConversation?: () => void;
   now: number;
 }
 
@@ -43,6 +47,7 @@ export function SidebarStream({
   currentOwnerId,
   selectedKey,
   onOpenConversation,
+  onNewConversation,
   now,
 }: SidebarStreamProps) {
   const [sleepOpen, setSleepOpen] = useState(false);
@@ -71,12 +76,28 @@ export function SidebarStream({
     />
   );
 
+  // The empty stream is the first thing a new user sees, so "start a
+  // conversation" has to be something you can press, not advice.
   if (entries.length === 0) {
     return (
       <div className="px-2 py-6 text-center text-[11px] leading-relaxed text-ink-faint">
         Nothing here yet.
-        <br />
-        Start a conversation or run a flow.
+        {onNewConversation ? (
+          <>
+            <br />
+            <button
+              onClick={onNewConversation}
+              className="mt-2 px-2 py-1 rounded border border-card-strong text-ink-muted hover:text-ink hover:bg-card-strong"
+            >
+              Start a conversation
+            </button>
+          </>
+        ) : (
+          <>
+            <br />
+            Start a conversation or run a flow.
+          </>
+        )}
       </div>
     );
   }

@@ -1,6 +1,7 @@
 import { useStore } from './store';
 import { isMac } from './platform';
-import { findContainerPath, findOwnerProject } from './conversationLookup';
+import { findContainerPath } from './conversationLookup';
+import { resolveNewConversationTarget } from './newConversationTarget';
 import { navigateBack, navigateForward } from './navHistory';
 
 export type ShortcutGroup = 'Navigation' | 'View' | 'Conversation' | 'App' | 'Editor';
@@ -79,6 +80,22 @@ function resolveFileFinderRoot(): string | null {
   return findContainerPath(state, convId);
 }
 
+/// Start a chat in the place the user is plainly in, and ask when there is no
+/// such place. Shared by ⌘N and the sidebar's compose button so the two can
+/// never land in different projects from the same standing state.
+export function startNewConversationHere(): void {
+  const state = useStore.getState();
+  const target = resolveNewConversationTarget(state);
+  if (!target) {
+    // Places scope, not All: the question on screen is "which project", and a
+    // palette opening on yesterday's chats makes the user retype the answer.
+    state.openSheet({ type: 'quickSwitcher', scope: 'places' });
+    return;
+  }
+  if (target.kind === 'workspace') state.startNewConversationInWorkspace(target.id);
+  else state.startNewConversation(target.id);
+}
+
 // ⌘K belongs to the app shell (palette). If an in-app terminal is added
 // later, give it a different binding rather than yielding ⌘K.
 export const SHORTCUTS: ShortcutDef[] = [
@@ -151,18 +168,9 @@ export const SHORTCUTS: ShortcutDef[] = [
   {
     id: 'conversation.new',
     keys: [{ key: 'n', mod: true }],
-    label: 'New conversation in current project',
+    label: 'New conversation in the current project or workspace',
     group: 'Conversation',
-    run: () => {
-      const state = useStore.getState();
-      const convId = state.selectedConversationId;
-      let projectId: string | null = null;
-      if (convId) {
-        projectId = findOwnerProject(state, convId)?.id ?? null;
-      }
-      if (!projectId) projectId = state.projects[0]?.id ?? null;
-      if (projectId) state.startNewConversation(projectId);
-    },
+    run: () => startNewConversationHere(),
   },
   {
     id: 'settings.open',
