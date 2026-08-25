@@ -1483,6 +1483,7 @@ export class RunnerManager {
     args: SendArgs,
     options: { userEventAlreadyEmitted: boolean },
   ): { ok: true } | { ok: false; error: string } {
+    args = { ...args, effortLevel: resolveTurboEffort(args.turbo, args.effortLevel) };
     const convId = args.conversationId;
     if (!options.userEventAlreadyEmitted) {
       this.emitLocalUser(convId, args.prompt, args.attachments, args.localUserId, args.displayText);
@@ -1494,6 +1495,7 @@ export class RunnerManager {
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchModel !== args.model ||
+          existing.launchTurbo !== (args.turbo ?? false) ||
           existing.launchEffort !== args.effortLevel ||
           existing.cwd !== args.cwd ||
           existing.claudeTransport !== 'sdk');

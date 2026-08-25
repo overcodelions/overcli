@@ -18,6 +18,11 @@
 // side by side is the whole reason this is worth building.
 
 import type { ModelUsage, StreamEvent } from '../../../shared/types';
+import {
+  type ConsolidationOpportunity,
+  detectConsolidationOpportunity,
+} from '../../responseMode';
+import { visibleUserPrompt } from '../../visibleUserPrompt';
 
 /// Rough chars-per-token for content we can see. Only used to subtract
 /// *visible* output (text + tool arguments) from the API's authoritative
@@ -47,6 +52,15 @@ export interface ToolTiming {
   errors: number;
 }
 
+export interface TurnTimelineSegment {
+  kind: 'model' | 'tool';
+  /// Offsets from the opening localUser event.
+  startMs: number;
+  endMs: number;
+  /// Empty for model spans; one or more names when tools overlap.
+  toolNames: string[];
+}
+
 export interface TurnTiming {
   /// Stream-event id of the `localUser` event that opened the turn — stable
   /// React key, and lets a caller scroll the Stream tab to the same turn.
@@ -58,6 +72,16 @@ export interface TurnTiming {
   /// Excludes the time the user spent reading and typing the *next* prompt,
   /// because the turn ends at its last event, not at the next `localUser`.
   wallMs: number;
+  /// First transport initialization reported after send. Warm transports and
+  /// backends without per-turn init events leave this null.
+  transportReadyMs: number | null;
+  /// First assistant event, including an empty content-block start.
+  firstResponseMs: number | null;
+  /// First assistant snapshot containing user-visible prose.
+  firstVisibleMs: number | null;
+  /// Time from the first assistant event to the last assistant event.
+  streamingMs: number | null;
+  consolidationOpportunity: ConsolidationOpportunity | null;
   /// Time attributable to the model: waiting for a response plus streaming
   /// it out. Everything in the turn that isn't tool execution.
   modelMs: number;
@@ -66,6 +90,8 @@ export interface TurnTiming {
   /// Non-partial assistant messages — i.e. API requests that reported usage.
   requests: number;
   toolCalls: number;
+  /// Chronological wall-clock partition for the round-trip visualization.
+  timeline: TurnTimelineSegment[];
   /// Tool time broken out by tool name, slowest first.
   tools: ToolTiming[];
   outputTokens: number;
@@ -102,7 +128,7 @@ export interface TurnTiming {
 ///
 /// Events before the first `localUser` (a resumed transcript's history, the
 /// `systemInit` line) belong to no turn and are dropped.
-export function summarizeTurns(events: StreamEvent[]): TurnTiming[] {
+export function summarizeTurns(events: StreamEvent[], activeTurnNow?: number): TurnTiming[] {
   const turns: TurnTiming[] = [];
   let current: StreamEvent[] | null = null;
 
@@ -114,7 +140,7 @@ export function summarizeTurns(events: StreamEvent[]): TurnTiming[] {
       current.push(e);
     }
   }
-  if (current) turns.push(measureTurn(current));
+  if (current) turns.push(measureTurn(current, activeTurnNow));
   return turns;
 }
 
@@ -125,15 +151,30 @@ export function totalTiming(turns: TurnTiming[]): TurnTiming | null {
   const sum = (pick: (t: TurnTiming) => number) => turns.reduce((n, t) => n + pick(t), 0);
   const modelMs = sum((t) => t.modelMs);
   const outputTokens = sum((t) => t.outputTokens);
+  const firstResponses = turns
+    .map((t) => t.firstResponseMs)
+    .filter((ms): ms is number => ms !== null);
+  const average = (values: Array<number | null>): number | null => {
+    const present = values.filter((value): value is number => value !== null);
+    return present.length ? present.reduce((total, value) => total + value, 0) / present.length : null;
+  };
   return {
     id: 'total',
     prompt: `${turns.length} turn${turns.length === 1 ? '' : 's'}`,
     startedAt: turns[0].startedAt,
     wallMs: sum((t) => t.wallMs),
+    transportReadyMs: average(turns.map((t) => t.transportReadyMs)),
+    firstResponseMs: firstResponses.length
+      ? firstResponses.reduce((sum, ms) => sum + ms, 0) / firstResponses.length
+      : null,
+    firstVisibleMs: average(turns.map((t) => t.firstVisibleMs)),
+    streamingMs: average(turns.map((t) => t.streamingMs)),
+    consolidationOpportunity: null,
     modelMs,
     toolMs: sum((t) => t.toolMs),
     requests: sum((t) => t.requests),
     toolCalls: sum((t) => t.toolCalls),
+    timeline: [],
     tools: mergeToolTimings(turns),
     outputTokens,
     textTokensEst: sum((t) => t.textTokensEst),
@@ -147,12 +188,40 @@ export function totalTiming(turns: TurnTiming[]): TurnTiming | null {
   };
 }
 
-function measureTurn(events: StreamEvent[]): TurnTiming {
+function measureTurn(events: StreamEvent[], activeTurnNow?: number): TurnTiming {
   const first = events[0];
-  const prompt = first.kind.type === 'localUser' ? first.kind.text : '';
+  const prompt = first.kind.type === 'localUser'
+    ? visibleUserPrompt(first.kind.text, true) || visibleUserPrompt(first.kind.text)
+    : '';
 
-  const wallMs = events[events.length - 1].timestamp - first.timestamp;
-  const { toolMs, tools } = measureTools(events);
+  const turnEndedAt = Math.max(events[events.length - 1].timestamp, activeTurnNow ?? 0);
+  const wallMs = turnEndedAt - first.timestamp;
+  const transportReady = events.find((e) => e.kind.type === 'systemInit');
+  const firstAssistant = events.find((e) => e.kind.type === 'assistant');
+  const firstVisible = events.find(
+    (e) =>
+      e.kind.type === 'assistant' &&
+      (e.firstVisibleAt !== undefined || e.kind.info.text.trim().length > 0),
+  );
+  const assistantEvents = events.filter((e) => e.kind.type === 'assistant');
+  const lastAssistant = assistantEvents[assistantEvents.length - 1];
+  const transportReadyMs = transportReady ? transportReady.timestamp - first.timestamp : null;
+  const firstResponseMs = firstAssistant
+    ? (firstAssistant.firstSeenAt ?? firstAssistant.timestamp) - first.timestamp
+    : null;
+  const firstVisibleMs = firstVisible
+    ? (firstVisible.firstVisibleAt ?? firstVisible.timestamp) - first.timestamp
+    : null;
+  const streamingMs =
+    firstAssistant && lastAssistant
+      ? Math.max(0, lastAssistant.timestamp - (lastAssistant.firstSeenAt ?? lastAssistant.timestamp))
+      : null;
+  const { toolMs, tools, timeline } = measureTools(
+    events,
+    first.timestamp,
+    turnEndedAt,
+    activeTurnNow !== undefined,
+  );
   // Whatever wasn't a tool was the model: waiting on the API, or streaming
   // a response out. Deriving it by subtraction rather than by summing gaps
   // guarantees the two shares add up to the wall clock exactly.
@@ -198,10 +267,16 @@ function measureTurn(events: StreamEvent[]): TurnTiming {
     prompt: prompt.split('\n')[0].slice(0, 120),
     startedAt: first.timestamp,
     wallMs,
+    transportReadyMs,
+    firstResponseMs,
+    firstVisibleMs,
+    streamingMs,
+    consolidationOpportunity: detectConsolidationOpportunity(events),
     modelMs,
     toolMs,
     requests,
     toolCalls,
+    timeline,
     tools,
     outputTokens,
     textTokensEst,
@@ -242,9 +317,15 @@ function isColdResume(first: ModelUsage | undefined): boolean {
 /// adding the four durations would report more tool time than the turn took.
 /// The per-tool split then divides that merged total in proportion to each
 /// tool's own busy time, so the slices always sum back to `toolMs`.
-function measureTools(events: StreamEvent[]): { toolMs: number; tools: ToolTiming[] } {
+function measureTools(
+  events: StreamEvent[],
+  turnStartedAt: number,
+  turnEndedAt: number,
+  includePending: boolean,
+): { toolMs: number; tools: ToolTiming[]; timeline: TurnTimelineSegment[] } {
   const pending = new Map<string, { at: number; name: string }>();
   const spans: Array<[number, number]> = [];
+  const namedSpans: Array<{ from: number; to: number; name: string }> = [];
   const byName = new Map<string, ToolTiming>();
 
   for (const e of events) {
@@ -260,6 +341,7 @@ function measureTools(events: StreamEvent[]): { toolMs: number; tools: ToolTimin
         const started = pending.get(r.id);
         if (!started || e.timestamp <= started.at) continue;
         spans.push([started.at, e.timestamp]);
+        namedSpans.push({ from: started.at, to: e.timestamp, name: started.name });
         const ms = e.timestamp - started.at;
         const entry = byName.get(started.name) ?? {
           name: started.name,
@@ -274,7 +356,32 @@ function measureTools(events: StreamEvent[]): { toolMs: number; tools: ToolTimin
         entry.slowestMs = Math.max(entry.slowestMs, ms);
         if (r.isError) entry.errors += 1;
         byName.set(started.name, entry);
+        pending.delete(r.id);
       }
+    }
+  }
+
+  // The active turn has no toolResult yet for tools that are still running.
+  // Extend those spans to the caller's live clock so the timeline shows work
+  // in progress instead of reporting the whole unfinished turn as model time.
+  if (includePending) {
+    for (const started of pending.values()) {
+      if (turnEndedAt <= started.at) continue;
+      spans.push([started.at, turnEndedAt]);
+      namedSpans.push({ from: started.at, to: turnEndedAt, name: started.name });
+      const ms = turnEndedAt - started.at;
+      const entry = byName.get(started.name) ?? {
+        name: started.name,
+        calls: 0,
+        busyMs: 0,
+        ms: 0,
+        slowestMs: 0,
+        errors: 0,
+      };
+      entry.calls += 1;
+      entry.busyMs += ms;
+      entry.slowestMs = Math.max(entry.slowestMs, ms);
+      byName.set(started.name, entry);
     }
   }
 
@@ -285,7 +392,62 @@ function measureTools(events: StreamEvent[]): { toolMs: number; tools: ToolTimin
     ms: busyTotal > 0 ? (t.busyMs / busyTotal) * toolMs : 0,
   }));
   tools.sort((a, b) => b.ms - a.ms || a.name.localeCompare(b.name));
-  return { toolMs, tools };
+  return {
+    toolMs,
+    tools,
+    timeline: buildRoundTripTimeline(turnStartedAt, turnEndedAt, namedSpans),
+  };
+}
+
+function buildRoundTripTimeline(
+  turnStartedAt: number,
+  turnEndedAt: number,
+  toolSpans: Array<{ from: number; to: number; name: string }>,
+): TurnTimelineSegment[] {
+  if (turnEndedAt <= turnStartedAt) return [];
+  const clipped = toolSpans
+    .map((span) => ({
+      ...span,
+      from: Math.max(turnStartedAt, span.from),
+      to: Math.min(turnEndedAt, span.to),
+    }))
+    .filter((span) => span.to > span.from);
+  const boundaries = Array.from(
+    new Set([
+      turnStartedAt,
+      turnEndedAt,
+      ...clipped.flatMap((span) => [span.from, span.to]),
+    ]),
+  ).sort((a, b) => a - b);
+  const result: TurnTimelineSegment[] = [];
+  for (let i = 0; i < boundaries.length - 1; i += 1) {
+    const from = boundaries[i];
+    const to = boundaries[i + 1];
+    const toolNames = Array.from(
+      new Set(
+        clipped
+          .filter((span) => span.from < to && span.to > from)
+          .map((span) => span.name),
+      ),
+    ).sort();
+    const segment: TurnTimelineSegment = {
+      kind: toolNames.length ? 'tool' : 'model',
+      startMs: from - turnStartedAt,
+      endMs: to - turnStartedAt,
+      toolNames,
+    };
+    const previous = result[result.length - 1];
+    if (
+      previous &&
+      previous.kind === segment.kind &&
+      previous.toolNames.join('\0') === segment.toolNames.join('\0')
+    ) {
+      previous.endMs = segment.endMs;
+    } else {
+      result.push(segment);
+    }
+  }
+  return result;
 }
 
 /// Union of a set of intervals, in ms.
@@ -342,4 +504,9 @@ export function formatTokens(n: number): string {
 export function shareOfWork(part: number, turn: TurnTiming): number {
   const work = turn.modelMs + turn.toolMs;
   return work > 0 ? (part / work) * 100 : 0;
+}
+
+export function relativeTimelineWidth(wallMs: number, longestWallMs: number): number {
+  if (longestWallMs <= 0) return 0;
+  return Math.max(0, Math.min(100, (wallMs / longestWallMs) * 100));
 }
