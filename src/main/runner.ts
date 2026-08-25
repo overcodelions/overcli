@@ -432,6 +432,32 @@ export function shouldSkipIdleOnClose(args: {
   return args.backend === 'claude' && args.claudeSendPending;
 }
 
+/// Whether tearing down a conversation's process should also release its
+/// Claude permission broker registration.
+///
+/// It must NOT when the caller is killing the process only to relaunch the
+/// same conversation with changed argv. `prepareClaudeBroker` runs before
+/// `sendSubprocess` and is the only thing that registers a session, but the
+/// respawn happens synchronously inside `sendSubprocess` — so releasing here
+/// unlinks the mcp-config file and drops `claudeMcpByConv` with no chance to
+/// re-register before `spawnFor` reads it. `buildArgs` then omits
+/// `--mcp-config` and `--permission-prompt-tool` silently, and the replacement
+/// process has no way to ask for permission for the rest of the session.
+///
+/// Holding the registration across a respawn is safe: the config file carries
+/// only the broker port, token and conversation id — nothing about the argv
+/// that changed — and the broker rebinds `session.socket` when the new helper
+/// authenticates, with its close handler guarded on socket identity so the
+/// dying helper can't unbind its replacement.
+export function shouldReleaseClaudeBroker(args: {
+  backend: Backend;
+  /// True when the caller relaunches this same conversation synchronously
+  /// after the kill, rather than ending it.
+  respawning: boolean;
+}): boolean {
+  return args.backend === 'claude' && !args.respawning;
+}
+
 /// Explain a child-process spawn failure using the actual missing resource.
 /// Node reports ENOENT for both a missing executable and a missing `cwd`; the
 /// latter was previously mislabeled as an uninstalled CLI and then followed
@@ -2047,7 +2073,7 @@ export class RunnerManager {
 
   // --- Internals ---
 
-  private killProc(conversationId: UUID): void {
+  private killProc(conversationId: UUID, opts: { respawning?: boolean } = {}): void {
     const active = this.procs.get(conversationId);
     if (!active) return;
     if (active.codexMode === 'app-server' && active.codexAppServer) {
@@ -2067,7 +2093,7 @@ export class RunnerManager {
       } catch {}
     }
     this.procs.delete(conversationId);
-    if (active.backend === 'claude') {
+    if (shouldReleaseClaudeBroker({ backend: active.backend, respawning: opts.respawning ?? false })) {
       this.claudeBroker.unregisterSession(conversationId);
       this.claudeMcpByConv.delete(conversationId);
       // Explicit teardown (stop / backend switch) clears the SDK-fallback
@@ -2126,7 +2152,12 @@ export class RunnerManager {
         // brand-new, context-free session. See resumeSessionAfterParamChange.
         const resumeId = resumeSessionAfterParamChange(args.sessionId, existing?.sessionId);
         if (resumeId !== args.sessionId) args = { ...args, sessionId: resumeId };
-        this.killProc(convId);
+        // `respawning` keeps the Claude permission broker registered across
+        // the relaunch below. The broker is only ever registered by
+        // `prepareClaudeBroker`, which already ran before this method — so
+        // releasing it here would leave `spawnFor` with no mcp-config path and
+        // silently drop `--permission-prompt-tool`. See shouldReleaseClaudeBroker.
+        this.killProc(convId, { respawning: true });
       }
       const spawnedNow = !this.procs.get(convId);
       const active = this.procs.get(convId) ?? this.spawnFor(args);
