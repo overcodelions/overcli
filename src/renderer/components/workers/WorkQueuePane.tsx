@@ -139,12 +139,27 @@ export function WorkQueuePane() {
     queue.running.length === 0 && queue.needsYou.length === 0 && queue.finished.length === 0;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10">
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4">
       {nothing ? (
         <EmptyQueue nextShiftAt={nextShiftAt} workers={workers} />
       ) : (
         <>
-          <p className="pt-1 text-[17px] leading-[1.5] text-ink-muted">{describeQueue(queue)}</p>
+          <div>
+            <h2 className="text-sm font-semibold text-ink">Work queue</h2>
+            <p className="mt-0.5 text-xs text-ink-muted">What is moving, what needs a decision, and what landed today.</p>
+          </div>
+
+          <section className="mt-5 flex flex-wrap items-center justify-between gap-5 rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">Crew status</div>
+              <p className="mt-2 text-[20px] leading-[1.45] text-ink-muted">{describeQueue(queue)}</p>
+            </div>
+            <div className="grid min-w-[360px] grid-cols-3 divide-x divide-card-strong">
+              <QueueMetric label="Running" value={queue.running.length} />
+              <QueueMetric label="Needs you" value={queue.needsYou.length} attention={queue.needsYou.length > 0} />
+              <QueueMetric label="Finished today" value={queue.finishedToday} />
+            </div>
+          </section>
 
           <Band
             title="Running now"
@@ -217,16 +232,16 @@ function Band({
   );
 
   return (
-    <section className="mt-7">
-      <h3 className="flex items-baseline gap-2 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+    <section className="mt-5 overflow-hidden rounded-xl border border-card-strong bg-card/20 shadow-sm">
+      <h3 className="flex items-baseline gap-2 border-b border-card-strong bg-card/50 px-4 py-3 text-sm font-semibold text-ink">
         {title}
-        <span className="tabular-nums text-ink-muted">{count}</span>
-        {countLabel && <span className="normal-case tracking-normal">{countLabel}</span>}
+        <span className="rounded-full bg-card-strong px-2 py-0.5 text-[10px] font-medium tabular-nums text-ink-muted">{count}</span>
+        {countLabel && <span className="text-[11px] font-normal text-ink-faint">{countLabel}</span>}
       </h3>
       {rows.length === 0 ? (
-        <p className="mt-2 text-[12px] text-ink-faint">{EMPTY_BAND[title]}</p>
+        <p className="px-4 py-4 text-[12px] text-ink-faint">{EMPTY_BAND[title]}</p>
       ) : days ? (
-        <div className="mt-1.5">
+        <div className="py-1.5">
           {days.map((day, i) => (
             <div key={day.at} className={i > 0 ? 'mt-4' : undefined}>
               <DayRule label={day.label} />
@@ -235,7 +250,7 @@ function Band({
           ))}
         </div>
       ) : (
-        <div className="mt-1.5">{rows.map(renderRow)}</div>
+        <div className="py-1.5">{rows.map(renderRow)}</div>
       )}
     </section>
   );
@@ -282,7 +297,7 @@ function QueueRowView({
   // The wrapper holds the hover state the trailing arrow reads, so the arrow
   // is a sibling of the link rather than a child of it.
   return (
-    <div className="group flex items-start gap-2 rounded-md pr-1 transition-colors hover:bg-card">
+    <div className="group mx-1 flex items-start gap-2 rounded-lg pr-1 transition-colors hover:bg-card/70">
       <button
         onClick={onOpen}
         className={
@@ -483,8 +498,10 @@ function EmptyQueue({
     .sort((a, b) => (a[1] as number) - (b[1] as number))[0];
 
   return (
-    <div className="pt-2">
-      <p className="text-[17px] leading-[1.5] text-ink-muted">
+    <div>
+      <h2 className="text-sm font-semibold text-ink">Work queue</h2>
+      <div className="mt-5 rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+      <p className="text-[20px] leading-[1.5] text-ink-muted">
         Nothing in flight, and nothing waiting on you.
       </p>
       <p className="mt-2 text-[13px] text-ink-faint">
@@ -492,6 +509,18 @@ function EmptyQueue({
           ? `${workers[next[0]].name} is on next, ${whenNext(next[1] as number)}. Whatever a shift or an errand starts shows up here first.`
           : 'No shifts are scheduled. Give a worker a cadence, or send one an errand, and its work shows up on this page.'}
       </p>
+      </div>
+    </div>
+  );
+}
+
+function QueueMetric({ label, value, attention = false }: { label: string; value: number; attention?: boolean }) {
+  return (
+    <div className="px-5 first:pl-0 last:pr-0">
+      <div className="text-[10px] uppercase tracking-wider text-ink-faint">{label}</div>
+      <div className={'mt-1 text-2xl font-semibold tabular-nums ' + (attention ? 'text-amber-500' : 'text-ink')}>
+        {value}
+      </div>
     </div>
   );
 }

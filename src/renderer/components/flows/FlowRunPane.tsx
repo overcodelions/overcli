@@ -1984,6 +1984,7 @@ function HijackComposer({
   // the store, which is where Composer keeps it, so both buttons act on
   // exactly the text on screen.
   const steerRun = useFlowsStore((s) => s.steerRun);
+  const noteUserTurn = useFlowsStore((s) => s.noteUserTurn);
   const [steerError, setSteerError] = useState<string | null>(null);
   // Short-lived acknowledgement on the button itself. The queued strip above
   // the composer is the durable signal, but it appears away from the cursor —
@@ -2064,6 +2065,11 @@ function HijackComposer({
       permissionMode: 'bypassPermissions',
       attachments,
     });
+    // Tell the run the user just drove it. Both kinds of turn count — a
+    // button-driven compact turn is still the user's click — and neither
+    // reaches the run any other way, since `runner:send` is
+    // conversation-shaped and knows nothing about flows.
+    noteUserTurn(run.id);
     if (!clearComposer) return;
     setDraft(draftKey, '');
     clearAttachments(draftKey);

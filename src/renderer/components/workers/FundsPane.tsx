@@ -44,7 +44,7 @@ import {
   type TreasuryAllocation,
   type WorkerFunding,
 } from '@shared/flows/treasury';
-import type { Worker } from '@shared/flows/worker';
+import { workerTagline, type Worker } from '@shared/flows/worker';
 import { WorkerAvatar } from './WorkerAvatar';
 
 const money = (n: number) => `$${n.toFixed(2)}`;
@@ -64,6 +64,7 @@ export function FundsPane() {
   const treasury = useWorkersStore((s) => s.treasury);
   const allocation = useWorkersStore((s) => s.allocation);
   const setTreasury = useWorkersStore((s) => s.setTreasury);
+  const distributeFunds = useWorkersStore((s) => s.distributeFunds);
   const moveWorker = useWorkersStore((s) => s.moveWorker);
   const dropWorker = useWorkersStore((s) => s.dropWorker);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
@@ -103,38 +104,36 @@ export function FundsPane() {
   /// Without this, dragging anything past the bench divider lands wherever
   /// the first paused worker happens to sit in the roster.
   const rosterGap = (gap: number) =>
-    gap >= shown.length
-      ? rows.length
-      : rows.findIndex((f) => f.workerId === shown[gap].workerId);
+    gap >= shown.length ? rows.length : rows.findIndex((f) => f.workerId === shown[gap].workerId);
   const starved = rows.filter((f) => f.blocked === 'pool');
   // What the enabled roster still has claim on. Above the pot's remainder,
   // this is the overcommitment — the number that says the waterfall is doing
   // something rather than sitting idle.
-  const committed = rows
-    .filter((f) => f.enabled)
-    .reduce((total, f) => total + Math.max(0, f.capUSD - f.spentUSD), 0);
+  const committed = rows.filter((f) => f.enabled).reduce((total, f) => total + Math.max(0, f.capUSD - f.spentUSD), 0);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-8">
+    <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4">
+      <div className="w-full">
       <PotHeader
         allocation={allocation}
         committed={committed}
         onSet={(monthlyUSD) => void setTreasury(monthlyUSD)}
+          onDistribute={distributeFunds}
       />
 
       {rows.length === 0 ? (
-        <div className="mt-6 text-sm text-ink-muted">
-          Nobody is hired yet, so the pot is untouched.
-        </div>
+          <div className="mt-6 text-sm text-ink-muted">Nobody is hired yet, so the pot is untouched.</div>
       ) : (
         <>
-          <div className="mt-7 flex items-baseline gap-2">
-            <div className="text-[11px] uppercase tracking-wider text-ink-faint">
-              Funding order
+            <div className="mt-7 flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-ink">Funding priority</div>
+                <div className="mt-0.5 text-xs text-ink-muted">
+                  Higher rows receive a larger share. Drag to change the hierarchy.
             </div>
-            <div className="text-xs text-ink-muted">
-              paid top down — each worker draws up to its cap, the rest falls
-              through. Drag a row to change who gets paid first.
+              </div>
+              <div className="rounded-full border border-card-strong bg-card/50 px-2.5 py-1 text-[11px] text-ink-muted">
+                {queue.length} active · {bench.length} paused
             </div>
           </div>
 
@@ -142,7 +141,7 @@ export function FundsPane() {
               the padding between two rows — or below the last one — still
               lands somewhere rather than silently cancelling. */}
           <div
-            className="relative mt-2 border-y border-card-strong"
+              className="relative mt-3 overflow-hidden rounded-xl border border-card-strong bg-card/20 shadow-sm"
             onDragOver={(e) => {
               if (dragId) e.preventDefault();
             }}
@@ -160,8 +159,11 @@ export function FundsPane() {
             {shown.map((funding, index) => {
               const worker = workers[funding.workerId];
               if (!worker) return null;
+                const startsWaterline =
+                  funding.blocked === 'pool' && (index === 0 || shown[index - 1]?.blocked !== 'pool');
               return (
                 <div key={funding.workerId}>
+                    {startsWaterline && <WaterlineDivider />}
                   {index === queue.length && <BenchDivider count={bench.length} />}
                   <FundingRow
                     worker={worker}
@@ -191,27 +193,23 @@ export function FundsPane() {
           {starved.length > 0 && (
             <div className="mt-4 rounded-md border border-amber-400/40 bg-amber-500/5 px-3 py-2 text-xs text-ink-muted">
               <span className="text-amber-500">
-                {starved.length} worker{starved.length === 1 ? '' : 's'} below
-                the waterline.
+                  {starved.length} worker{starved.length === 1 ? '' : 's'} below the waterline.
               </span>{' '}
-              {starved.map((f) => f.name).join(', ')}{' '}
-              {starved.length === 1 ? 'gets' : 'get'} nothing this month until
-              the pot goes up, somebody above{' '}
-              {starved.length === 1 ? 'it' : 'them'} is paused, or{' '}
-              {starved.length === 1 ? 'it moves' : 'they move'} up the order.
-              Shifts skip quietly rather than failing — the desk journals why.
+                {starved.map((f) => f.name).join(', ')} {starved.length === 1 ? 'gets' : 'get'} nothing this month until
+                the pot goes up, somebody above {starved.length === 1 ? 'it' : 'them'} is paused, or{' '}
+                {starved.length === 1 ? 'it moves' : 'they move'} up the order. Shifts skip quietly rather than failing
+                — the desk journals why.
             </div>
           )}
 
-          <p className="mt-5 max-w-2xl text-xs leading-relaxed text-ink-faint">
-            A worker&apos;s unspent cap is held for it, not handed down — so the
-            worker that runs your morning can&apos;t be starved by the one that
-            tidies changelogs, whatever order they happen to burn money in. Cap
-            spent, reserve gone: what it no longer needs falls through the same
-            month.
+            <p className="mt-5 max-w-3xl text-xs leading-relaxed text-ink-faint">
+              A worker&apos;s unspent cap is held for it, not handed down — so the worker that runs your morning
+              can&apos;t be starved by the one that tidies changelogs, whatever order they happen to burn money in. Cap
+              spent, reserve gone: what it no longer needs falls through the same month.
           </p>
         </>
       )}
+    </div>
     </div>
   );
 }
@@ -222,13 +220,18 @@ function PotHeader({
   allocation,
   committed,
   onSet,
+  onDistribute,
 }: {
   allocation: TreasuryAllocation;
   committed: number;
   onSet: (monthlyUSD: number) => void;
+  onDistribute: () => Promise<boolean>;
 }) {
   const [text, setText] = useState(String(allocation.poolUSD));
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [distributing, setDistributing] = useState(false);
+  const [distributed, setDistributed] = useState(false);
   const cancelled = useRef(false);
 
   // Follow main unless the user is mid-edit — a `treasuryUpdate` landing
@@ -256,20 +259,30 @@ function PotHeader({
   // Claimed is drawn on top of spent, and clipped to what's actually left —
   // a roster whose caps exceed the pot shows a FULL bar, which is the honest
   // picture: there is no free money, there is a queue.
-  const claimedPct = Math.min(
-    100 - spentPct,
-    (Math.min(committed, allocation.remainingUSD) / pool) * 100,
-  );
+  const claimedPct = Math.min(100 - spentPct, (Math.min(committed, allocation.remainingUSD) / pool) * 100);
   const free = Math.max(0, allocation.remainingUSD - committed);
+  const activeCount = allocation.byWorker.filter((row) => row.enabled).length;
+  const totalWeight = (activeCount * (activeCount + 1)) / 2;
+  const topShare = totalWeight > 0 ? (allocation.remainingUSD * activeCount) / totalWeight : 0;
+  const bottomShare = totalWeight > 0 ? allocation.remainingUSD / totalWeight : 0;
+
+  const distribute = async () => {
+    setDistributing(true);
+    setDistributed(false);
+    const ok = await onDistribute();
+    setDistributing(false);
+    if (ok) {
+      setConfirming(false);
+      setDistributed(true);
+    }
+  };
 
   return (
-    <div>
-      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <div className="text-[11px] uppercase tracking-wider text-ink-faint">
-          The pot
-        </div>
-        <div className="flex items-baseline gap-1">
-          <span className="text-lg text-ink-muted">$</span>
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.65fr)_minmax(310px,0.75fr)]">
+      <section className="rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+        <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">Monthly team budget</div>
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <span className="text-2xl text-ink-muted">$</span>
           <input
             type="number"
             min={1}
@@ -288,13 +301,15 @@ function PotHeader({
               }
             }}
             aria-label="Monthly pool for all workers"
-            className="w-24 border-b border-card-strong bg-transparent pb-0.5 text-2xl font-semibold tabular-nums text-ink outline-none focus:border-accent"
+            className="w-32 border-b border-transparent bg-transparent pb-0.5 text-4xl font-semibold tracking-tight tabular-nums text-ink outline-none hover:border-card-strong focus:border-accent"
           />
-          <span className="text-sm text-ink-muted">/ month, all workers</span>
-        </div>
+          <span className="text-sm text-ink-muted">per month</span>
       </div>
 
-      <div className="mt-3 flex h-2 overflow-hidden rounded-full bg-card-strong">
+        <div
+          className="mt-5 flex h-2.5 overflow-hidden rounded-full bg-card-strong"
+          aria-label={`${money(allocation.spentUSD)} spent, ${money(Math.min(committed, allocation.remainingUSD))} reserved, ${money(free)} unassigned`}
+        >
         <div className="h-full bg-accent" style={{ width: `${spentPct}%` }} />
         <div
           className="h-full"
@@ -305,24 +320,93 @@ function PotHeader({
         />
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-ink-muted">
-        <span>
-          <span className="tabular-nums text-ink">
-            {money(allocation.spentUSD)}
-          </span>{' '}
-          spent this month
-        </span>
-        <span>
-          <span className="tabular-nums text-ink">
-            {money(Math.min(committed, allocation.remainingUSD))}
-          </span>{' '}
-          claimed by caps
-        </span>
-        <span>
-          <span className="tabular-nums text-ink">{money(free)}</span>{' '}
-          unclaimed
-        </span>
+        <div className="mt-4 grid grid-cols-3 divide-x divide-card-strong">
+          <BudgetMetric label="Spent" value={money(allocation.spentUSD)} tone="bg-accent" />
+          <BudgetMetric
+            label="Reserved"
+            value={money(Math.min(committed, allocation.remainingUSD))}
+            tone="bg-accent/40"
+          />
+          <BudgetMetric label="Unassigned" value={money(free)} tone="bg-ink-faint" />
       </div>
+      </section>
+
+      <section className="flex flex-col rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+        <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">Priority distribution</div>
+        <div className="mt-2 text-xl font-semibold tracking-tight text-ink">
+          {activeCount > 0 ? `${money(topShare)} → ${money(bottomShare)}` : 'No active workers'}
+        </div>
+        <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+          The first active worker receives {activeCount || 0} share
+          {activeCount === 1 ? '' : 's'}, then one fewer per row. Paused workers receive nothing.
+        </p>
+        <div className="mt-auto pt-5" aria-live="polite">
+          {!confirming ? (
+            <button
+              type="button"
+              className="review-btn-primary w-full justify-center"
+              disabled={activeCount === 0 || allocation.remainingUSD < activeCount / 100}
+              onClick={() => {
+                setDistributed(false);
+                setConfirming(true);
+              }}
+            >
+              Distribute funds
+            </button>
+          ) : (
+            <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 text-xs text-ink-muted">
+              <div className="font-medium text-ink">Replace active worker caps?</div>
+              <div className="mt-1">Existing spend is preserved. New caps follow the current funding order.</div>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  className="review-btn-primary flex-1 justify-center"
+                  disabled={distributing}
+                  onClick={() => void distribute()}
+                >
+                  {distributing ? 'Distributing…' : 'Distribute by priority'}
+                </button>
+                <button
+                  type="button"
+                  className="review-btn"
+                  disabled={distributing}
+                  onClick={() => setConfirming(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {distributed && !confirming && (
+            <div role="status" className="mt-2 text-center text-xs text-emerald-500">
+              Funds distributed by priority across {activeCount} active worker
+              {activeCount === 1 ? '' : 's'}.
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function BudgetMetric({ label, value, tone }: { label: string; value: string; tone: string }) {
+  return (
+    <div className="px-4 first:pl-0 last:pr-0">
+      <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-ink-faint">
+        <span className={`h-1.5 w-1.5 rounded-full ${tone}`} />
+        {label}
+      </div>
+      <div className="mt-1 text-base font-medium tabular-nums text-ink">{value}</div>
+    </div>
+  );
+}
+
+function WaterlineDivider() {
+  return (
+    <div className="flex items-center gap-3 border-y border-amber-400/30 bg-amber-500/5 px-4 py-1.5">
+      <span className="h-px flex-1 bg-amber-400/30" />
+      <span className="text-[10px] font-medium uppercase tracking-[0.14em] text-amber-500">Funding stops here</span>
+      <span className="h-px flex-1 bg-amber-400/30" />
     </div>
   );
 }
@@ -333,13 +417,11 @@ function PotHeader({
 /// never has to.
 function BenchDivider({ count }: { count: number }) {
   return (
-    <div className="flex items-baseline gap-2 border-t border-card-strong bg-card/40 px-0 py-1.5 pl-7">
-      <span className="text-[10px] uppercase tracking-wider text-ink-faint">
-        Bench
-      </span>
+    <div className="flex items-baseline gap-2 border-t border-card-strong bg-card/60 px-4 py-2">
+      <span className="text-[10px] uppercase tracking-wider text-ink-faint">Bench</span>
       <span className="text-[11px] text-ink-faint">
-        {count} paused worker{count === 1 ? '' : 's'} — held out of the queue,
-        claiming nothing. Resume one and it rejoins at its place in the order.
+        {count} paused worker{count === 1 ? '' : 's'} — held out of the queue, claiming nothing. Resume one and it
+        rejoins at its place in the order.
       </span>
     </div>
   );
@@ -378,10 +460,7 @@ function FundingRow({
   onDragOverRow: (insertBefore: number) => void;
   onDragEnd: () => void;
 }) {
-  const explanation = useMemo(
-    () => describeFundingBlock(funding, allocation),
-    [funding, allocation],
-  );
+  const explanation = useMemo(() => describeFundingBlock(funding, allocation), [funding, allocation]);
   // The row's own bar is scaled to its CAP, not to the pot: the question a row
   // answers is "how much of what this worker was promised has it got", and
   // scaling six rows to a shared pot makes the small ones unreadable.
@@ -411,7 +490,7 @@ function FundingRow({
       }}
       onDragEnd={onDragEnd}
       className={
-        'group/row relative flex items-center gap-3 py-2 ' +
+        'group/row relative grid grid-cols-[12px_34px_minmax(180px,0.7fr)_minmax(260px,2fr)_130px_22px] items-center gap-3 px-4 py-3 transition-colors hover:bg-card/50 ' +
         (last ? '' : 'border-b border-card-strong ') +
         // The dragged row stays in place and dims rather than being removed:
         // a list that reflows under the cursor moves the target you are
@@ -435,27 +514,25 @@ function FundingRow({
           without one, and the cursor change alone arrives too late. */}
       <span
         aria-hidden
-        className="w-2 shrink-0 cursor-grab select-none text-[11px] leading-none text-ink-faint opacity-0 transition-opacity group-hover/row:opacity-100 active:cursor-grabbing"
+        className="cursor-grab select-none text-[11px] leading-none text-ink-faint opacity-30 transition-opacity group-hover/row:opacity-100 active:cursor-grabbing"
       >
         ⠿
       </span>
 
       {/* Only the queue is numbered. A benched worker has no place in it —
           giving it one is the whole misreading this screen used to invite. */}
-      <div className="w-5 shrink-0 text-right text-xs tabular-nums text-ink-faint">
+      <div className="flex h-7 w-7 items-center justify-center rounded-full border border-card-strong bg-surface-elevated text-[11px] font-medium tabular-nums text-ink-muted">
         {funding.enabled ? funding.queuePosition : ''}
       </div>
 
       <button
         onClick={onOpen}
-        className="flex min-w-0 flex-1 items-center gap-2.5 text-left focus:outline-none"
+        className="flex min-w-0 items-center gap-2.5 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
       >
         <WorkerAvatar worker={worker} size="sm" />
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0">
           <div className="flex items-baseline gap-2">
-            <span className="truncate text-sm text-ink group-hover/row:underline">
-              {worker.name}
-            </span>
+            <span className="truncate text-sm font-medium text-ink group-hover/row:underline">{worker.name}</span>
             {funding.blocked !== 'none' && (
               <span className={`shrink-0 text-[10px] ${BLOCK_TONE[funding.blocked]}`}>
                 {funding.blocked === 'pool'
@@ -466,17 +543,23 @@ function FundingRow({
               </span>
             )}
           </div>
+          <div className="mt-0.5 truncate text-[11px] text-ink-faint">{workerTagline(worker)}</div>
+        </div>
+      </button>
+
+      <div className="min-w-0">
+        <div className="flex items-center justify-between gap-3 text-[10px] text-ink-faint">
+          <span>{money(funding.spentUSD)} spent</span>
+          <span>{dollars(funding.capUSD)} cap</span>
+        </div>
           {/* Cap-scaled: solid is spent, translucent is what it may still
               draw. A gap on the right is the pot failing to reach it. */}
-          <div className="mt-1 flex h-1 overflow-hidden rounded-full bg-card-strong">
+        <div className="mt-1.5 flex h-1.5 overflow-hidden rounded-full bg-card-strong">
             <div
               className="h-full"
               style={{
                 width: `${spentPct}%`,
-                background:
-                  funding.blocked === 'pool'
-                    ? 'var(--c-ink-faint)'
-                    : 'var(--c-accent)',
+              background: funding.blocked === 'pool' ? 'var(--c-ink-faint)' : 'var(--c-accent)',
               }}
             />
             <div
@@ -487,37 +570,24 @@ function FundingRow({
               }}
             />
           </div>
-          <div className={`mt-1 text-[11px] ${BLOCK_TONE[funding.blocked]}`}>
+        <div className={`mt-1.5 truncate text-[11px] ${BLOCK_TONE[funding.blocked]}`} title={explanation}>
             {explanation}
           </div>
         </div>
-      </button>
 
-      <div className="shrink-0 text-right">
-        <div className="text-sm tabular-nums text-ink">
+      <div className="text-right">
+        <div className="text-base font-medium tabular-nums text-ink">
           {funding.funded ? money(funding.availableUSD) : '—'}
         </div>
-        <div className="text-[10px] text-ink-faint">
-          available of {dollars(funding.capUSD)}
-        </div>
+        <div className="text-[10px] text-ink-faint">available</div>
       </div>
 
       {/* The keyboard path. Dragging is the primary gesture on this screen, so
           these recede until you reach for them — but they stay, because a
           drag-only list cannot be reordered without a mouse. */}
-      <div className="flex shrink-0 flex-col opacity-0 transition-opacity focus-within:opacity-100 group-hover/row:opacity-100">
-        <MoveButton
-          label={`Fund ${worker.name} sooner`}
-          glyph="▲"
-          disabled={!canMoveUp}
-          onClick={() => onMove(-1)}
-        />
-        <MoveButton
-          label={`Fund ${worker.name} later`}
-          glyph="▼"
-          disabled={!canMoveDown}
-          onClick={() => onMove(1)}
-        />
+      <div className="flex flex-col opacity-0 transition-opacity focus-within:opacity-100 group-hover/row:opacity-100">
+        <MoveButton label={`Fund ${worker.name} sooner`} glyph="▲" disabled={!canMoveUp} onClick={() => onMove(-1)} />
+        <MoveButton label={`Fund ${worker.name} later`} glyph="▼" disabled={!canMoveDown} onClick={() => onMove(1)} />
       </div>
     </div>
   );

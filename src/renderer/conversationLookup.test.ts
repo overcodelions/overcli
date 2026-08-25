@@ -5,6 +5,7 @@ import {
   findConvWithProjectPath,
   findConversation,
   findOwnerProject,
+  mostRecentConversationId,
 } from './conversationLookup';
 import type { Conversation, Project, Workspace } from '../shared/types';
 
@@ -111,5 +112,42 @@ describe('conversationLookup', () => {
     const p2 = project('p2', '/repo2', [c2]);
     expect(findConversation({ projects: [p2], workspaces: [] }, 'c1')).toBeNull();
     expect(findConversation({ projects: [p2], workspaces: [] }, 'c2')).toBe(c2);
+  });
+
+  describe('mostRecentConversationId', () => {
+    it('returns null when there is nothing to return to', () => {
+      expect(mostRecentConversationId({ projects: [], workspaces: [] })).toBeNull();
+    });
+
+    it('picks the most recently prompted conversation across projects and workspaces', () => {
+      const older = conv('older', { lastPromptAt: 100 });
+      const newer = conv('newer', { lastPromptAt: 300 });
+      const src = {
+        projects: [project('p1', '/repo', [older])],
+        workspaces: [workspace('ws1', '/wsroot', [newer])],
+      };
+      expect(mostRecentConversationId(src)).toBe('newer');
+    });
+
+    it('counts opening a conversation as recency, like the sidebar does', () => {
+      const typed = conv('typed', { lastPromptAt: 300 });
+      const opened = conv('opened', { lastPromptAt: 100 });
+      const src = { projects: [project('p1', '/repo', [typed, opened])], workspaces: [] };
+      expect(mostRecentConversationId(src, { opened: 900 })).toBe('opened');
+    });
+
+    it('never returns a hidden conversation', () => {
+      const machinery = conv('flow-participant', { lastPromptAt: 900, hidden: true });
+      const real = conv('real', { lastPromptAt: 100 });
+      const src = { projects: [project('p1', '/repo', [machinery, real])], workspaces: [] };
+      expect(mostRecentConversationId(src)).toBe('real');
+    });
+
+    it('falls back to activity for conversations with no lastPromptAt', () => {
+      const a = conv('a', { lastActiveAt: 50 });
+      const b = conv('b', { lastActiveAt: 500 });
+      const src = { projects: [project('p1', '/repo', [a, b])], workspaces: [] };
+      expect(mostRecentConversationId(src)).toBe('b');
+    });
   });
 });
