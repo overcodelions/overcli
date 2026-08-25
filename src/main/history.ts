@@ -620,21 +620,22 @@ export function parseCodexHistoryLine(line: string): StreamEvent | null {
         timestamp,
       );
     }
-    case 'function_call': {
+    case 'function_call':
+    case 'custom_tool_call': {
       const name = payload.name ?? 'tool';
-      const argsStr = payload.arguments ?? '{}';
+      const argsStr = payload.arguments ?? payload.input ?? '{}';
       let argsJSON: any = {};
       try {
         argsJSON = JSON.parse(argsStr);
       } catch {}
-      const isBash = name === 'shell' || name === 'exec_command';
-      let inputJSON = argsStr;
+      const isBash = name === 'shell' || name === 'exec_command' || name === 'exec';
+      let inputJSON = typeof argsStr === 'string' ? argsStr : JSON.stringify(argsStr);
       if (isBash) {
         const cmd = Array.isArray(argsJSON.command)
           ? argsJSON.command.join(' ')
           : typeof argsJSON.command === 'string'
             ? argsJSON.command
-            : argsStr;
+            : inputJSON;
         inputJSON = JSON.stringify({ command: cmd });
       }
       const tool: ToolUseBlock = {
@@ -652,7 +653,8 @@ export function parseCodexHistoryLine(line: string): StreamEvent | null {
         timestamp,
       );
     }
-    case 'function_call_output': {
+    case 'function_call_output':
+    case 'custom_tool_call_output': {
       const callId = payload.call_id ?? '';
       return event(
         {
@@ -766,7 +768,9 @@ function codexEventSignature(ev: StreamEvent): string | null {
     case 'localUser':
       return `u:${normalizeSigText(ev.kind.text)}`;
     case 'assistant':
-      return `a:${normalizeSigText(ev.kind.info.text)}|t:${normalizeSigText(ev.kind.info.thinking.join('\n'))}`;
+      return `a:${normalizeSigText(ev.kind.info.text)}|t:${normalizeSigText(ev.kind.info.thinking.join('\n'))}|u:${ev.kind.info.toolUses
+        .map((tool) => `${tool.id}:${tool.name}:${normalizeSigText(tool.inputJSON)}`)
+        .join('|')}`;
     case 'toolResult':
       return `r:${ev.kind.results
         .map((r) => `${r.id}:${normalizeSigText(r.content)}:${r.isError ? 1 : 0}`)

@@ -74,6 +74,7 @@ export function SheetHost() {
     );
   }
   const wide = WIDE_SHEETS.has(sheet.type);
+  const isDebug = sheet.type === 'debug';
   // About sits between the two tiers: wider than the default shell so the
   // feature grids and flows showcase have room to breathe, but height stays
   // content-driven (max-h) rather than locked to the viewport.
@@ -97,7 +98,9 @@ export function SheetHost() {
           // sheets keep `max-h` since their content varies more
           // legitimately (a short About vs. a long Settings).
           (wide
-            ? 'max-w-[1240px] h-[88vh]'
+            ? isDebug
+              ? 'max-w-[1240px] max-h-[88vh]'
+              : 'max-w-[1240px] h-[88vh]'
             : isAbout
               ? 'max-w-[1040px] max-h-[90vh]'
               : isPalette

@@ -25,6 +25,8 @@ export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
 export type PermissionMode = 'default' | 'plan' | 'auto' | 'acceptEdits' | 'bypassPermissions';
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max' | '';
+export type ResponseStyle = 'normal' | 'concise' | 'efficient';
+export type ResponseMode = 'full' | 'swift' | 'turbo' | 'warp';
 
 /// Curated rebound presets surfaced in the UI. 'custom' means the user
 /// edited the underlying fields directly and we shouldn't try to pin a
@@ -314,6 +316,12 @@ export type StreamEventKind =
 export interface StreamEvent {
   id: string;
   timestamp: number;
+  /// Timestamp of the first partial snapshot for this stable event id. The
+  /// renderer replaces partial assistant snapshots in place, so `timestamp`
+  /// advances while this anchor stays fixed for latency diagnostics.
+  firstSeenAt?: number;
+  /// Timestamp when this assistant id first contained visible prose.
+  firstVisibleAt?: number;
   raw: string;
   kind: StreamEventKind;
   /// Bumps on in-place mutation of the partial-assistant slot so the renderer
@@ -429,12 +437,27 @@ export interface Conversation {
   /// has no --resume, each spawn writes a fresh file — we merge on load.
   codexRolloutPaths?: string[];
   effortLevel?: EffortLevel;
+  /// Controls visible answer length and, in efficient mode, asks the model
+  /// to consolidate independent tool work. It does not lower reasoning
+  /// effort or change the selected model.
+  responseStyle?: ResponseStyle;
+  /// Named speed preset shown in the conversation header. The underlying
+  /// responseStyle/turbo/model fields remain explicit so runners do not need
+  /// to interpret a UI concept.
+  responseMode?: ResponseMode;
+  /// Values displaced by Warp so selecting Full/Swift/Turbo can restore the
+  /// user's prior model and effort. Models are kept per backend because a
+  /// conversation can switch providers while Warp remains selected.
+  responseModeRestore?: {
+    models: Partial<Record<Exclude<Backend, 'ollama'>, string>>;
+    effortLevel?: EffortLevel;
+  };
   /// Trade depth for latency on this conversation: `--effort low`,
   /// `--strict-mcp-config`, and a directive to consolidate tool calls.
   /// Absent means off — there is deliberately no global default, because
   /// turbo is a per-task judgement, not a mode to leave running.
-  /// Only honored on the `cli` Claude transport; the SDK transport builds
-  /// its options directly and never calls `claudeBackend.buildArgs`.
+  /// Claude CLI also uses this to suppress global MCP startup. The SDK
+  /// transport honors the low-effort half but has no CLI argv to tighten.
   turbo?: boolean;
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
