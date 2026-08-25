@@ -42,7 +42,7 @@ const SCOPES: Array<{ id: PaletteScope; label: string }> = [
   { id: 'archived', label: 'Archived' },
 ];
 
-export function QuickSwitcherSheet() {
+export function QuickSwitcherSheet({ initialScope }: { initialScope?: PaletteScope } = {}) {
   const projects = useStore((s) => s.projects);
   const workspaces = useStore((s) => s.workspaces);
   const lastSelectedAt = useStore((s) => s.lastSelectedAt);
@@ -84,7 +84,7 @@ export function QuickSwitcherSheet() {
   }, [runningMap]);
 
   const [query, setQuery] = useState('');
-  const [scope, setScope] = useState<PaletteScope>('all');
+  const [scope, setScope] = useState<PaletteScope>(initialScope ?? 'all');
   const [selected, setSelected] = useState(0);
   const [renamingKey, setRenamingKey] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');

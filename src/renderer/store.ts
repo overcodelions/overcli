@@ -79,6 +79,7 @@ import {
   pickDefaultBackend,
 } from './components/conversationHeaderHelpers';
 import { isSupportedPremiumModel, latestAtTier, premiumModelsForBackend } from '@shared/modelCatalog';
+import type { PaletteScope } from './components/sheets/commandPalette';
 const ALL_BACKENDS: Backend[] = ['claude', 'codex', 'gemini', 'copilot', 'ollama'];
 
 /// Forward a diagnostic line to the main-process session log. Fire-and-forget:
@@ -116,7 +117,10 @@ export type ActiveSheet =
   | { type: 'archiveAllInWorkspace'; workspaceId: UUID }
   | { type: 'bulkConversationActions' }
   | { type: 'fileFinder'; rootPath: string }
-  | { type: 'quickSwitcher' }
+  /// `scope` preselects a filter chip. The compose button opens it on
+  /// Places when it cannot tell which project the user means; ⌘K opens it
+  /// bare.
+  | { type: 'quickSwitcher'; scope?: PaletteScope }
   /// Launch a flow from outside the Flows pane (today: the ⌘K palette).
   /// Renders bare — the launcher panel is already a floating card, so the
   /// sheet host must not wrap it in a second one.
