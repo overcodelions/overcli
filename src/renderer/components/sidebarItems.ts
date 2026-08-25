@@ -80,12 +80,23 @@ export interface ActiveSelection {
   lastOpenedAtByRun: Record<string, number>;
 }
 
-/// When the user last drove this run: launching it, or clicking Continue on
-/// a paused step. Deliberately NOT flowRunActivityAt — attempts are pushed by
-/// the runtime for every step it takes, so keying off those would let a flow
-/// walking itself through ten steps outrank a chat the user just typed in.
+/// When the user last drove this run: launching it, clicking Continue on a
+/// paused step, hijack-chatting a participant, or holding a correction.
+/// Deliberately NOT flowRunActivityAt — attempts are pushed by the runtime
+/// for every step it takes, so keying off those would let a flow walking
+/// itself through ten steps outrank a chat the user just typed in.
+///
+/// `lastUserTurnAt` is the other half of that rule and has to be in here:
+/// a hijack turn rides the generic conversation path, so a run the user had
+/// been talking to for ten minutes was still ordered by the moment it was
+/// launched and sat at the BOTTOM of the section listing what they were
+/// working on.
 export function flowRunPromptedAt(run: FlowRun): number {
-  return Math.max(run.createdAt ?? 0, run.pendingContinue?.startedAt ?? 0);
+  return Math.max(
+    run.createdAt ?? 0,
+    run.pendingContinue?.startedAt ?? 0,
+    run.lastUserTurnAt ?? 0,
+  );
 }
 
 /// Turns per hour, decayed. `turnCount` is the whole history and
@@ -347,10 +358,12 @@ export function collectStreamItems(
     out.push({
       key: `f:${run.id}`,
       item: { kind: 'flow', run, ownerName: resolved.name, ownerKind: resolved.kind, isLive },
-      // Keyed on the owner PATH, not the resolved name: two projects can
-      // share a basename, and a lane that silently merged them would claim
-      // work happened somewhere it didn't.
-      owner: { id: `path:${path}`, name: resolved.name, kind: resolved.kind },
+      // Keyed on the resolved owner's id, so a run and the chats that live in
+      // the same project share a lane instead of printing the same header
+      // twice. Unresolved paths fall back to the PATH rather than the name:
+      // two projects can share a basename, and a lane that silently merged
+      // them would claim work happened somewhere it didn't.
+      owner: { id: resolved.id ?? `path:${path}`, name: resolved.name, kind: resolved.kind },
       at: streamAt(run),
       touchedAt: Math.max(flowRunPromptedAt(run), selection.lastOpenedAtByRun[run.id] ?? 0),
       momentum: flowMomentum(run, now),

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { useStore } from '../store';
+import { mostRecentConversationId } from '../conversationLookup';
 import { useFlowsStore } from '../flowsStore';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
@@ -98,6 +99,22 @@ export function TitleBar() {
   // session, and where clicking it while you're already inside it takes you
   // back up to.
   function chatRoot(): void {
+    // Chat's front page is the conversation you were last in, not the empty
+    // composer. Every other tab's front page is a list you can look at and
+    // choose from; Chat's would be a blank prompt, which answers "start
+    // something new" — a question the sidebar's + already answers, and not
+    // the one you're asking when you press Chat.
+    //
+    // Always the latest, even when an older thread is already open. Ranked
+    // the way the sidebar ranks Recent, so the destination is the row at the
+    // top of the list you can see. (The Chat pane can't show a flow run's
+    // conversation — that's a Flows page — so those never win.)
+    const s = useStore.getState();
+    const recent = mostRecentConversationId(s, s.lastSelectedAt);
+    if (recent) {
+      s.selectConversation(recent);
+      return;
+    }
     setDetailMode('conversation');
   }
 
@@ -159,22 +176,22 @@ export function TitleBar() {
         <NavButton
           label="Chat"
           active={detailMode === 'conversation'}
-          onClick={() => navigateToTab('conversation', chatRoot)}
+          onClick={() => navigateToTab(chatRoot)}
         />
         <NavButton
           label="Flows"
           active={detailMode === 'flows'}
-          onClick={() => navigateToTab('flows', flowsRoot)}
+          onClick={() => navigateToTab(flowsRoot)}
         />
         <NavButton
           label="Orchestrator"
           active={detailMode === 'orchestrator'}
-          onClick={() => navigateToTab('orchestrator', orchestratorRoot)}
+          onClick={() => navigateToTab(orchestratorRoot)}
         />
         <NavButton
           label="Workers"
           active={detailMode === 'workers'}
-          onClick={() => navigateToTab('workers', workersRoot)}
+          onClick={() => navigateToTab(workersRoot)}
         />
       </div>
       <div className="flex-1" />
@@ -188,7 +205,7 @@ export function TitleBar() {
             status={status}
             onClick={
               status.source === 'worker'
-                ? () => navigateToTab('workers', workersRoot)
+                ? () => navigateToTab(workersRoot)
                 : openSchedules
             }
           />

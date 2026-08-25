@@ -777,6 +777,13 @@ describe('OrchestratorImpl worker batches', () => {
     expect(h.engine.list()[0].items.map((i) => i.candidate.id)).toEqual(['a', 'b']);
   });
 
+  it('permits a zero-item cap even when the producer returned candidates', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    const res = await parkAsWorker(h, { maxItems: 0 });
+    expect(res).toMatchObject({ ok: true, count: 0 });
+    expect(h.engine.list()[0].items).toEqual([]);
+  });
+
   it('honours a suggested flow on the contract and clamps one off it', async () => {
     const h = makeHarness({ producerReply: REPLY });
     await parkAsWorker(h, { allowedFlowIds: ['contract-main', 'contract-alt'] });

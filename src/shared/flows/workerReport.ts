@@ -7,10 +7,10 @@
 import type { Orchestration } from './orchestration';
 import type { Worker, WorkerJournalEntry } from './worker';
 
-/// Desk time one completed item would have cost a person — reviewing the
-/// context, doing the work, checking it. A round estimate, labelled as one
-/// wherever it is shown; the honest measured number next to it is `workedMs`.
-export const WORKER_MINUTES_SAVED_PER_ITEM = 25;
+/// Estimated human effort replaced by one measured hour of agent runtime.
+/// This is deliberately a single, visible assumption: unlike a flat estimate
+/// per completed item, it scales with the size and duration of the work.
+export const WORKER_HUMAN_TIME_SAVED_MULTIPLIER = 1.5;
 
 /// One terminal run, as the report needs it. Structurally the subset of
 /// main's `RunSummary` — declared here so shared owns no main imports.
@@ -53,7 +53,8 @@ export interface WorkerReportRow {
   costUSD: number;
   /// Measured: how long this worker's runs actually spent working.
   workedMs: number;
-  /// Estimated: `itemsDone × WORKER_MINUTES_SAVED_PER_ITEM`.
+  /// Estimated: measured agent runtime in minutes ×
+  /// `WORKER_HUMAN_TIME_SAVED_MULTIPLIER`.
   savedMinutes: number;
   lastShiftAt: number | null;
   /// This worker's own day-by-day, on the report's shared axis — same length
@@ -253,7 +254,7 @@ export function buildWorkerReport(input: WorkerReportInput): WorkerReport {
       });
       mark(r.terminalAt);
     }
-    row.savedMinutes = row.itemsDone * WORKER_MINUTES_SAVED_PER_ITEM;
+    row.savedMinutes = (row.workedMs / 60_000) * WORKER_HUMAN_TIME_SAVED_MULTIPLIER;
     return row;
   });
 

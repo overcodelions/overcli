@@ -98,12 +98,6 @@ const SETTLE_MS = 150;
 interface NavHistoryState {
   back: NavLocation[];
   forward: NavLocation[];
-  /// Last place you were inside each tab, so clicking a tab returns you
-  /// there instead of resetting it. Session-scoped on purpose: coming back
-  /// to the app tomorrow and being dropped into a run that finished
-  /// overnight is the case the Flows tab's reset-to-library rule exists to
-  /// prevent, and that rule still holds on a cold start.
-  lastByTab: Partial<Record<DetailMode, NavLocation>>;
   /// Where we believe the user is right now. Kept here rather than re-read
   /// from the stores so a push knows what to file away as the *previous*
   /// page without racing the store update that triggered it.
@@ -120,22 +114,17 @@ interface NavHistoryState {
 export const useNavHistory = create<NavHistoryState>((set, get) => ({
   back: [],
   forward: [],
-  lastByTab: {},
   current: null,
   applying: false,
 
   record(next) {
-    const { current, applying, back, lastByTab } = get();
-    // Every location we come to rest on is that tab's new "last place",
-    // however we got there — tab click, sidebar, Back, or a flow finishing
-    // and opening itself.
-    const tabs = { ...lastByTab, [next.detailMode]: next };
+    const { current, applying, back } = get();
     if (applying) {
-      set({ current: next, lastByTab: tabs });
+      set({ current: next });
       return;
     }
     if (!current || locationKey(current) === locationKey(next)) {
-      set({ current: next, lastByTab: tabs });
+      set({ current: next });
       return;
     }
     // A fresh navigation truncates the forward stack — same as a browser.
@@ -143,7 +132,6 @@ export const useNavHistory = create<NavHistoryState>((set, get) => ({
       back: [...back, current].slice(-MAX_DEPTH),
       forward: [],
       current: next,
-      lastByTab: tabs,
     });
   },
 
@@ -181,7 +169,6 @@ export const useNavHistory = create<NavHistoryState>((set, get) => ({
     set({
       back: [],
       forward: [],
-      lastByTab: { [current.detailMode]: current },
       current,
       applying: false,
     });
@@ -304,83 +291,29 @@ export function installNavHistory(): () => void {
   };
 }
 
-/// Restore the last place the user was inside `mode`.
+/// Take the user to `toRoot` — the tab's own front page.
 ///
-/// `toRoot` is the tab's own top-level page — the flows library, the shift
-/// calendar — and stays owned by the title bar rather than being duplicated
-/// here. It runs in two cases: when there's nothing to restore (the first
-/// visit of the session, or a remembered spot whose subject has since been
-/// deleted), and when you're already inside the tab you clicked.
+/// A tab click means one thing: "put me on this tab's front page", every
+/// time, whichever tab you were on and whatever you were doing there. It used
+/// to mean "put me back where I last was inside this tab", which sounds
+/// friendlier and isn't: pressing Flows to reach the flows list landed you
+/// back on the run you had been reading, and the tab you press to escape
+/// something was the one control that wouldn't. Two rules that fire on the
+/// same click ("front page" when you're already in the tab, "last place"
+/// otherwise) also meant the button did different things depending on state
+/// you can't see.
 ///
-/// That second case is the whole point of a tab you can click twice. Sitting
-/// on a flow run and pressing Flows restoring "the last place in Flows" means
-/// restoring the run you are already looking at, so the click does nothing
-/// visible and the tab reads as dead. Clicking the tab you're on means "take
-/// me up to this tab's front page"; clicking a tab you're not on still means
-/// "put me back where I was".
-export function navigateToTab(mode: DetailMode, toRoot: () => void): void {
+/// Retracing your steps is the Back arrow's job, and it still restores the
+/// run, the desk, or the chat exactly — that's the control whose whole
+/// promise is "where I was", and it doesn't have to share it with the tabs.
+///
+/// `toRoot` stays owned by the title bar, which is where each tab's idea of
+/// its front page belongs.
+export function navigateToTab(toRoot: () => void): void {
+  // Bank the page we're leaving before it moves, so Back returns to it
+  // rather than to whatever preceded it.
   flushPending();
-  if (useStore.getState().detailMode === mode) {
-    // A normal forward navigation: the deep page we're leaving lands on the
-    // back stack through the usual subscriber, so Back returns to it.
-    toRoot();
-    return;
-  }
-  const remembered = useNavHistory.getState().lastByTab[mode];
-  const target = remembered ? sanitize(remembered) : null;
-  if (!target) {
-    toRoot();
-    return;
-  }
-  const { current, back } = useNavHistory.getState();
-  if (current && locationKey(current) === locationKey(target)) return;
-  // Unlike goBack/goForward this is a forward move, so it stacks and clears
-  // the forward list exactly like any other navigation.
-  useNavHistory.setState({
-    back: current ? [...back, current].slice(-MAX_DEPTH) : back,
-    forward: [],
-  });
-  applyLocation(target);
-}
-
-/// Drop references to things that have since been deleted, so returning to a
-/// tab can't land on a run or worker that no longer exists. Returns null when
-/// what made the location worth restoring is gone.
-function sanitize(loc: NavLocation): NavLocation | null {
-  const next = { ...loc };
-  if (next.activeRunId && !useFlowsStore.getState().runs[next.activeRunId]) {
-    next.activeRunId = null;
-  }
-  if (next.selectedWorkerId && !useWorkersStore.getState().workers[next.selectedWorkerId]) {
-    next.selectedWorkerId = null;
-  }
-  if (
-    next.activeOrchestrationId &&
-    !useOrchestratorStore.getState().orchestrations[next.activeOrchestrationId]
-  ) {
-    next.activeOrchestrationId = null;
-  }
-  if (next.selectedConversationId && !findConversation(useStore.getState(), next.selectedConversationId)) {
-    next.selectedConversationId = null;
-  }
-  // Nothing left that distinguishes this from the tab's default landing
-  // spot — let the fallback run instead, so Flows still opens the library.
-  return locationKey(next) === locationKey({ ...blankFor(next.detailMode) }) ? null : next;
-}
-
-function blankFor(detailMode: DetailMode): NavLocation {
-  return {
-    detailMode,
-    selectedConversationId: null,
-    focusedProjectId: null,
-    focusedWorkspaceId: null,
-    explorerRootPath: null,
-    activeRunId: null,
-    librarySegment: 'flows',
-    activeOrchestrationId: null,
-    selectedWorkerId: null,
-    workersView: 'queue',
-  };
+  toRoot();
 }
 
 /// Plain-language name for a place, for the history arrows' tooltips.

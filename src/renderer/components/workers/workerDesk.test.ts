@@ -6,6 +6,7 @@ import type { Worker } from '@shared/flows/worker';
 import {
   activityOnDay,
   carriedOverTurns,
+  conversationActivity,
   deskTimeline,
   adjacentDeskDay,
   anyDeskLive,
@@ -34,6 +35,7 @@ import {
   sidebarShifts,
   workersForPath,
   workerAutoRenderTarget,
+  shiftActivity,
   workerRenderableOutputs,
 } from './workerDeskSelectors';
 
@@ -84,6 +86,7 @@ function batch(
     title?: string;
     reply?: string;
     from?: { workerId: string; workerName: string };
+    intent?: 'chat' | 'work';
   } = {},
 ): Orchestration {
   return {
@@ -96,6 +99,7 @@ function batch(
       workerId,
       workerName: 'Spec Hygiene',
       task: extra.task,
+      ...(extra.intent ? { intent: extra.intent } : {}),
       ...(extra.from ? { from: extra.from } : {}),
     },
     ...(extra.reply ? { producer: { prompt: 'p', reply: extra.reply } } : {}),
@@ -169,6 +173,17 @@ describe('worker activity', () => {
     expect(toWorkerActivity(batch('1', 'worker-1', [], { task: 'errand' })).task).toBe('errand');
     // Batches written before errands existed carry no `task`.
     expect(toWorkerActivity(batch('2')).task).toBe('shift');
+  });
+
+  it('maps legacy errands to work and filters conversation and shifts', () => {
+    const legacy = toWorkerActivity(batch('1', 'worker-1', [], { task: 'errand' }));
+    const chat = toWorkerActivity(batch('2', 'worker-1', [], { task: 'errand', intent: 'chat' }));
+    const work = toWorkerActivity(batch('3', 'worker-1', [], { task: 'errand', intent: 'work' }));
+    const shift = toWorkerActivity(batch('4'));
+    expect(legacy.intent).toBe('work');
+    expect([chat.intent, work.intent]).toEqual(['chat', 'work']);
+    expect(conversationActivity([shift, chat, work])).toEqual([chat, work]);
+    expect(shiftActivity([shift, chat, work])).toEqual([shift]);
   });
 
   /// The bubble reads as the user's own words. For an errand a colleague sent,

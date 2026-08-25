@@ -13,6 +13,7 @@
 // one source of truth for the shapes that cross IPC.
 
 import type { UUID } from '../types';
+import type { WorkerMessageIntent } from './worker';
 
 /// Where a run does its work: `cwd` = the project's own working tree,
 /// `worktree` = a fresh git worktree forked from a base branch.
@@ -155,6 +156,9 @@ export interface Orchestration {
         /// which is display text. Absent on batches written before errands
         /// existed — read those as `shift`, which is what they were.
         task?: 'shift' | 'errand';
+        /// How an errand was sent. Missing intent on legacy errands means
+        /// `'work'`, preserving their original flow-capable behavior.
+        intent?: WorkerMessageIntent;
         /// The raw instruction the user typed, for `task: 'errand'`. Kept
         /// because `producer.prompt` is the assembled planning prompt — job
         /// description, journal, rejections and all — which is the wrong thing

@@ -127,6 +127,11 @@ interface FlowsActions {
   /// prompt-derived title. Optimistic, then reconciled by the main
   /// process's `flowRunUpdate`.
   renameRun(runId: string, title: string): Promise<void>;
+  /// Stamp "the user just typed at this run" so the sidebar orders it by
+  /// that rather than by when it was launched. Fire-and-forget: the turn it
+  /// accompanies has already gone out, and a failed stamp is a stale sort
+  /// order, not a lost message.
+  noteUserTurn(runId: string): void;
   /// Queue a course correction for the next step of a running flow. Pass an
   /// empty string to withdraw one. Not optimistic — the main process guards
   /// on run state and echoes the authoritative run back.
@@ -608,6 +613,24 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       return { runs: { ...s.runs, [runId]: { ...run, title: trimmed || undefined } } };
     });
     await window.overcli.invoke('flows:renameRun', { runId: runId as UUID, title: trimmed });
+  },
+
+  noteUserTurn(runId) {
+    const at = Date.now();
+    // Optimistic so the row moves under the pointer the moment the message
+    // is sent, not a round-trip later; the main process echoes an
+    // authoritative flowRunUpdate that reconciles.
+    set((s) => {
+      const run = s.runs[runId];
+      if (!run) return {};
+      return { runs: { ...s.runs, [runId]: { ...run, lastUserTurnAt: at } } };
+    });
+    // A renderer-only reload leaves the main process on a build without this
+    // channel, and `invoke` REJECTS when no handler is registered. The stamp
+    // is cosmetic, so swallow it rather than surfacing an unhandled rejection.
+    void Promise.resolve(window.overcli.invoke('flows:noteUserTurn', { runId: runId as UUID })).catch(
+      () => {},
+    );
   },
 
   async steerRun(runId, text) {

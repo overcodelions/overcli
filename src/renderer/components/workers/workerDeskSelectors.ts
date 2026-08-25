@@ -3,6 +3,7 @@ import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { FlowArtifact, FlowRun } from '@shared/flows/schema';
 import { isWorkerRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
+import type { WorkerMessageIntent } from '@shared/flows/worker';
 import {
   WORKER_AUTO_RENDER_NEWEST,
   WORKER_AUTO_RENDER_OFF,
@@ -90,6 +91,7 @@ export const WORKER_ACTIVITY_LIMIT = 12;
 export interface WorkerActivity {
   orchestration: Orchestration;
   task: 'shift' | 'errand';
+  intent: WorkerMessageIntent;
   at: number;
   /// What to CALL this turn — the worker's own subject for an errand, the
   /// number for a shift. A label, for lists.
@@ -188,6 +190,7 @@ export function toWorkerActivity(orchestration: Orchestration): WorkerActivity {
   return {
     orchestration,
     task,
+    intent: task === 'errand' && orchestration.origin?.kind === 'worker' ? orchestration.origin.intent ?? 'work' : 'work',
     at: orchestration.createdAt,
     title: activityTitle(orchestration, task),
     ask: task === 'errand' ? errandAsk(orchestration) : '',
@@ -201,6 +204,14 @@ export function toWorkerActivity(orchestration: Orchestration): WorkerActivity {
     failed,
     launchedNothing: orchestration.items.length === 0,
   };
+}
+
+export function conversationActivity(items: WorkerActivity[]): WorkerActivity[] {
+  return items.filter((item) => item.task === 'errand');
+}
+
+export function shiftActivity(items: WorkerActivity[]): WorkerActivity[] {
+  return items.filter((item) => item.task === 'shift');
 }
 
 /// A worker's shifts and errands as one list, newest first, bounded.

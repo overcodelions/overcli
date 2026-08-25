@@ -33,23 +33,12 @@ export type ResponseMode = 'full' | 'swift' | 'turbo' | 'warp';
 /// preset name on the result. See `src/main/reboundPresets.ts` for the
 /// source of truth on how each one resolves to backend/model/persona.
 export type ReviewPreset =
-  | 'half-finished'
-  | 'security'
-  | 'cheap-paranoid'
-  | 'skeptical-user'
-  | 'design-review'
-  | 'independent'
-  | 'custom';
+  'half-finished' | 'security' | 'cheap-paranoid' | 'skeptical-user' | 'design-review' | 'independent' | 'custom';
 
 /// Persona keys for the reviewer prompt preamble. The actual prompt
 /// text lives in the same table — storing the key lets us tweak wording
 /// without migrating saved conversations.
-export type PersonaKey =
-  | 'half-finished'
-  | 'security'
-  | 'critic'
-  | 'skeptical-user'
-  | 'design';
+export type PersonaKey = 'half-finished' | 'security' | 'critic' | 'skeptical-user' | 'design';
 
 export interface ToolUseBlock {
   id: string;
@@ -345,7 +334,12 @@ export interface StreamEvent {
   /// text bubbles to intermediate styling. While the round is still in
   /// flight no event carries `verdict`, so nothing is dimmed and no
   /// check appears prematurely.
-  reviewer?: { backend: Backend; round: number; mode: 'review' | 'collab'; verdict?: boolean };
+  reviewer?: {
+    backend: Backend;
+    round: number;
+    mode: 'review' | 'collab';
+    verdict?: boolean;
+  };
 }
 
 export interface Conversation {
@@ -567,14 +561,7 @@ export type RemoteKind = 'github' | 'other' | 'none';
 /// different folder / nothing you can do), and guessing one of them in the UI
 /// is how someone with no git installed got told their folder was nested
 /// inside another project.
-export type InitRepoFailure =
-  | 'no-folder'
-  | 'no-git'
-  | 'needs-xcode-tools'
-  | 'already-tracked'
-  | 'too-large'
-  | 'failed';
-
+export type InitRepoFailure = 'no-folder' | 'no-git' | 'needs-xcode-tools' | 'already-tracked' | 'too-large' | 'failed';
 
 export interface WorktreeStatus {
   filesChanged: number;
@@ -654,10 +641,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 /// When a conversation was last touched. `lastActiveAt` is only written when
 /// a turn streams or the conversation is opened, so a never-run conversation
 /// falls back to when it was created.
-export function conversationActiveAt(conv: {
-  lastActiveAt?: number;
-  createdAt?: number;
-}): number {
+export function conversationActiveAt(conv: { lastActiveAt?: number; createdAt?: number }): number {
   return conv.lastActiveAt ?? conv.createdAt ?? 0;
 }
 
@@ -842,7 +826,14 @@ export interface OllamaHardwareReport {
 
 export type OllamaPullEvent =
   | { type: 'status'; tag: string; message: string }
-  | { type: 'progress'; tag: string; percent: number; completed: number; total: number; message?: string }
+  | {
+      type: 'progress';
+      tag: string;
+      percent: number;
+      completed: number;
+      total: number;
+      message?: string;
+    }
   | { type: 'done'; tag: string; success: boolean; message?: string };
 
 export type OllamaServerStatus = 'stopped' | 'starting' | 'running' | 'error';
@@ -1256,9 +1247,7 @@ export interface IPCInvokeMap {
   /// Removes any installed skill — marketplace or hand-rolled. Validates
   /// the path lives directly under ~/.claude/skills or ~/.codex/skills
   /// before deleting the skill's directory.
-  'skills:uninstallByPath': (args: {
-    path: string;
-  }) => { ok: true } | { ok: false; error: string };
+  'skills:uninstallByPath': (args: { path: string }) => { ok: true } | { ok: false; error: string };
   /// Copies an MCP server config from one CLI to another, translating
   /// between JSON (`mcpServers`) and TOML (`[mcp_servers.<name>]`) as
   /// needed. The source CLI must already have the server configured;
@@ -1274,9 +1263,7 @@ export interface IPCInvokeMap {
     name: string;
     config: Record<string, unknown>;
     targets: Backend[];
-  }) =>
-    | { ok: true; written: Backend[]; errors: string[] }
-    | { ok: false; error: string };
+  }) => { ok: true; written: Backend[]; errors: string[] } | { ok: false; error: string };
   /// Curated MCP catalog: list entries with per-CLI installed status.
   'mcp:listCatalog': () => McpCatalogItem[];
   /// Install a catalog entry into the given CLIs, merging any collected
@@ -1286,33 +1273,43 @@ export interface IPCInvokeMap {
     id: string;
     targets: Backend[];
     secrets?: Record<string, string>;
-  }) =>
-    | { ok: true; written: Backend[]; errors: string[] }
-    | { ok: false; error: string };
+  }) => { ok: true; written: Backend[]; errors: string[] } | { ok: false; error: string };
   /// Remove a catalog entry from the given CLIs.
-  'mcp:uninstallCatalog': (args: { id: string; targets: Backend[] }) =>
-    | { ok: true; removed: Backend[]; errors: string[] }
-    | { ok: false; error: string };
+  'mcp:uninstallCatalog': (args: {
+    id: string;
+    targets: Backend[];
+  }) => { ok: true; removed: Backend[]; errors: string[] } | { ok: false; error: string };
   /// Trigger a remote MCP server's OAuth login. Only Codex supports this
   /// (spawns `codex mcp login <name>`); Claude/Gemini return a message
   /// pointing at their in-session login.
-  'mcp:login': (args: { cli: Backend; name: string }) =>
-    | { ok: true; output: string }
-    | { ok: false; error: string; output?: string };
+  'mcp:login': (args: {
+    cli: Backend;
+    name: string;
+  }) => { ok: true; output: string } | { ok: false; error: string; output?: string };
   'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
-  'fs:readFile': (args: { path: string; rootPath?: string }) =>
-    | { ok: true; content: string; resolvedPath: string }
-    | { ok: false; error: string };
+  'fs:readFile': (args: {
+    path: string;
+    rootPath?: string;
+  }) => { ok: true; content: string; resolvedPath: string } | { ok: false; error: string };
   'fs:readLargeTextPreview': (args: { path: string; rootPath?: string }) =>
-    | { ok: true; content: string; resolvedPath: string; truncated: boolean; totalBytes: number; previewBytes: number }
+    | {
+        ok: true;
+        content: string;
+        resolvedPath: string;
+        truncated: boolean;
+        totalBytes: number;
+        previewBytes: number;
+      }
     | { ok: false; error: string };
   'fs:readArtifactPreview': (args: { path: string; rootPath?: string }) => ArtifactPreviewResult;
   /// `path` may be a hint relative to `rootPath` (workspace/flow tabs keep
   /// their `<member>/…` prefix); it goes through the same resolver as reads.
-  'fs:writeFile': (args: { path: string; content: string; rootPath?: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'fs:writeFile': (args: {
+    path: string;
+    content: string;
+    rootPath?: string;
+  }) => { ok: true } | { ok: false; error: string };
   'fs:listFiles': (root: string) => string[];
   'fs:listFileEntries': (root: string) => FileTreeEntry[];
   /// Start watching `root` so the file tree can relist itself when an agent
@@ -1362,19 +1359,11 @@ export interface IPCInvokeMap {
   /// Read the local files an HTML preview references (stylesheets, images,
   /// fonts) so the renderer can inline them. The preview iframe is
   /// sandboxed onto an opaque origin and cannot fetch `file://` itself.
-  'preview:htmlAssets': (args: {
-    path: string;
-    rootPath?: string;
-    refs: string[];
-  }) => HtmlPreviewAssetsResult;
+  'preview:htmlAssets': (args: { path: string; rootPath?: string; refs: string[] }) => HtmlPreviewAssetsResult;
   /// Compile a .tsx/.jsx component into a self-contained script the
   /// preview iframe can run. `contents` carries the editor's unsaved
   /// buffer so the preview tracks what you are looking at.
-  'preview:reactBundle': (args: {
-    path: string;
-    rootPath?: string;
-    contents?: string;
-  }) => ReactPreviewBundleResult;
+  'preview:reactBundle': (args: { path: string; rootPath?: string; contents?: string }) => ReactPreviewBundleResult;
   /// Hand a finished preview document to the main process and get back an
   /// `overcli-preview://` URL for it. The renderer's own CSP forbids the
   /// inline script a compiled component needs, and a srcDoc frame inherits
@@ -1383,14 +1372,12 @@ export interface IPCInvokeMap {
   /// component Overcli compiled and inlined itself, `document` for a
   /// hand-written .html file, which is nearly always a CDN page and renders
   /// blank without remote script.
-  'preview:publishDocument': (args: { html: string; policy?: 'bundle' | 'local' | 'document' }) =>
-    | { ok: true; url: string }
-    | { ok: false; error: string };
+  'preview:publishDocument': (args: {
+    html: string;
+    policy?: 'bundle' | 'local' | 'document';
+  }) => { ok: true; url: string } | { ok: false; error: string };
   'preview:projectHints': (args: { path: string; rootPath?: string }) => ProjectPreviewHintsResult;
-  'preview:runProjectCommand': (args: {
-    cwd: string;
-    command: string;
-  }) => { ok: true } | { ok: false; error: string };
+  'preview:runProjectCommand': (args: { cwd: string; command: string }) => { ok: true } | { ok: false; error: string };
   'git:run': (args: { args: string[]; cwd: string }) => {
     stdout: string;
     stderr: string;
@@ -1399,9 +1386,7 @@ export interface IPCInvokeMap {
   /// Discard uncommitted changes to a single file, resetting it to HEAD.
   /// Destructive; the renderer confirms first and the main process
   /// re-validates the cwd against registered roots.
-  'git:restoreFile': (args: { cwd: string; path: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'git:restoreFile': (args: { cwd: string; path: string }) => { ok: true } | { ok: false; error: string };
   'git:createWorktree': (args: {
     projectPath: string;
     agentName: string;
@@ -1484,9 +1469,7 @@ export interface IPCInvokeMap {
     /// When present, relocate the Claude session file from the worktree's
     /// cwd slug to the project's cwd slug so history + --resume survive.
     sessionId?: string;
-  }) =>
-    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
-    | { ok: false; error: string };
+  }) => { ok: true; message: string; stashed: boolean; autoCommitted: boolean } | { ok: false; error: string };
   'git:listBaseBranches': (projectPath: string) => string[];
   /// Same list, but fetches from origin first so branches pushed
   /// elsewhere (a PR opened on another machine) show up in the picker.
@@ -1531,11 +1514,7 @@ export interface IPCInvokeMap {
     baseBranch: string;
     baselineCommit?: string | null;
   }) => WorktreeStatus;
-  'git:worktreeDiff': (args: {
-    cwd: string;
-    baseBranch: string;
-    baselineCommit?: string | null;
-  }) => {
+  'git:worktreeDiff': (args: { cwd: string; baseBranch: string; baselineCommit?: string | null }) => {
     stdout: string;
     stderr: string;
     exitCode: number;
@@ -1551,28 +1530,39 @@ export interface IPCInvokeMap {
     // `commitState` splits committed-on-branch from uncommitted working-tree
     // edits (`'both'` = committed with further pending edits). HEAD-relative,
     // so `git:commitStatus` reports every file as `'uncommitted'`.
-    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
+    changes: Array<{
+      path: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      commitState: 'committed' | 'uncommitted' | 'both';
+    }>;
     insertions: number;
     deletions: number;
   };
   /// Base-relative twin of `git:commitStatus` for flow worktrees: counts
   /// committed + uncommitted changes vs the run's fork point so the chat
   /// ChangesBar matches the review sheet's diff.
-  'git:worktreeChanges': (args: {
-    worktreePath: string;
-    baseBranch: string;
-    baselineCommit?: string | null;
-  }) => {
+  'git:worktreeChanges': (args: { worktreePath: string; baseBranch: string; baselineCommit?: string | null }) => {
     isRepo: boolean;
     currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
+    changes: Array<{
+      path: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      commitState: 'committed' | 'uncommitted' | 'both';
+    }>;
     insertions: number;
     deletions: number;
     /// Ref the counts were measured against, for labelling the bar. Null
     /// when we fell back to the run's frozen fork point.
     baseRef: string | null;
   };
-  'git:currentBranch': (args: { cwd: string }) => { isRepo: boolean; branch: string };
+  'git:currentBranch': (args: { cwd: string }) => {
+    isRepo: boolean;
+    branch: string;
+  };
   'git:workspaceCommitStatus': (args: {
     projects: Array<{
       name: string;
@@ -1583,7 +1573,13 @@ export interface IPCInvokeMap {
   }) => {
     isRepo: boolean;
     currentBranch: string;
-    changes: Array<{ path: string; status: string; additions: number; deletions: number; commitState: 'committed' | 'uncommitted' | 'both' }>;
+    changes: Array<{
+      path: string;
+      status: string;
+      additions: number;
+      deletions: number;
+      commitState: 'committed' | 'uncommitted' | 'both';
+    }>;
     insertions: number;
     deletions: number;
     /// Set only when every member agreed on the same base ref.
@@ -1592,55 +1588,57 @@ export interface IPCInvokeMap {
   /// Resolve the commit a base-relative diff should start from, live. The
   /// renderer needs this for per-file diffs, which run through `git:run`
   /// rather than one of the aggregate probes.
-  'git:resolveDiffBase': (args: {
+  'git:resolveDiffBase': (args: { cwd: string; preferredBranch?: string | null; fallbackCommit?: string | null }) => {
+    commit: string;
+    ref: string | null;
+  };
+  'git:commitAll': (args: {
     cwd: string;
-    preferredBranch?: string | null;
-    fallbackCommit?: string | null;
-  }) => { commit: string; ref: string | null };
-  'git:commitAll': (args: { cwd: string; message: string }) =>
-    | { ok: true; sha: string; subject: string }
-    | { ok: false; error: string };
-  'git:initRepo': (args: { projectPath: string }) =>
-    | { ok: true; branch: string }
-    | { ok: false; reason: InitRepoFailure; error: string };
+    message: string;
+  }) => { ok: true; sha: string; subject: string } | { ok: false; error: string };
+  'git:initRepo': (args: {
+    projectPath: string;
+  }) => { ok: true; branch: string } | { ok: false; reason: InitRepoFailure; error: string };
   /// Whether git is usable on this machine. `needs-xcode-tools` is macOS
   /// with the Command Line Tools stub — git is one dialog away, not absent.
-  'git:availability': (args?: { refresh?: boolean }) =>
-    | { state: 'ok'; version: string }
-    | { state: 'needs-xcode-tools' }
-    | { state: 'missing' };
+  'git:availability': (args?: {
+    refresh?: boolean;
+  }) => { state: 'ok'; version: string } | { state: 'needs-xcode-tools' } | { state: 'missing' };
   /// Opens a Terminal window running the platform's git install command.
   /// `command` comes back either way so the UI can offer it as copyable text
   /// when we could not open a window (Linux, or a refused Apple Event).
-  'git:install': () =>
-    | { ok: true; command: string }
-    | { ok: false; error: string; command?: string };
-  'git:removeHistory': (args: { projectPath: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'git:install': () => { ok: true; command: string } | { ok: false; error: string; command?: string };
+  'git:removeHistory': (args: { projectPath: string }) => { ok: true } | { ok: false; error: string };
   /// Convert an existing project folder to or from an everyday project by
   /// writing or deleting its marker. The store's `everyday` flag alone would
   /// not survive a reinstall or a second machine.
-  'fs:setEverydayMarker': (args: { projectPath: string; everyday: boolean }) =>
-    | { ok: true }
-    | { ok: false; error: string };
-  'fs:syncProjectMarkers': (args: {
-    projects: Array<{ path: string; everyday?: boolean }>;
-  }) => Record<string, boolean>;
-  'fs:listDocuments': (args: { dirPath: string }) =>
-    | { ok: true; entries: DocumentEntry[] }
-    | { ok: false; error: string };
-  'versions:checkpoint': (args: { projectPath: string; message: string }) =>
-    { ok: boolean; skipped?: 'nothing-to-save' | 'too-large'; error?: string };
-  'versions:list': (args: { projectPath: string; limit?: number }) =>
-    | { ok: true; versions: ProjectVersion[] }
-    | { ok: false; error: string };
-  'versions:diff': (args: { projectPath: string; sha: string; file?: string }) =>
-    | { ok: true; diff: string }
-    | { ok: false; error: string };
-  'versions:restore': (args: { projectPath: string; sha: string; label: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'fs:setEverydayMarker': (args: {
+    projectPath: string;
+    everyday: boolean;
+  }) => { ok: true } | { ok: false; error: string };
+  'fs:syncProjectMarkers': (args: { projects: Array<{ path: string; everyday?: boolean }> }) => Record<string, boolean>;
+  'fs:listDocuments': (args: {
+    dirPath: string;
+  }) => { ok: true; entries: DocumentEntry[] } | { ok: false; error: string };
+  'versions:checkpoint': (args: { projectPath: string; message: string }) => {
+    ok: boolean;
+    skipped?: 'nothing-to-save' | 'too-large';
+    error?: string;
+  };
+  'versions:list': (args: {
+    projectPath: string;
+    limit?: number;
+  }) => { ok: true; versions: ProjectVersion[] } | { ok: false; error: string };
+  'versions:diff': (args: {
+    projectPath: string;
+    sha: string;
+    file?: string;
+  }) => { ok: true; diff: string } | { ok: false; error: string };
+  'versions:restore': (args: {
+    projectPath: string;
+    sha: string;
+    label: string;
+  }) => { ok: true } | { ok: false; error: string };
   'fs:cancelRevise': (args: { requestId: string }) => { stopped: boolean };
   'fs:reviseDocument': (args: {
     path: string;
@@ -1653,15 +1651,16 @@ export interface IPCInvokeMap {
     /// The passage is what gets rewritten; this is the surrounding document,
     /// passed as read-only context so the rewrite fits where it lands.
     fullDocument?: string;
-  }) =>
-    | { ok: true; content: string }
-    | { ok: false; error: string };
-  'fs:createBlankDocument': (args: { dirPath: string; name: string; ext: string }) =>
-    | { ok: true; path: string }
-    | { ok: false; error: string };
-  'fs:createDocumentFromPrompt': (args: { dirPath: string; description: string }) =>
-    | { ok: true; path: string; backend: string }
-    | { ok: false; error: string };
+  }) => { ok: true; content: string } | { ok: false; error: string };
+  'fs:createBlankDocument': (args: {
+    dirPath: string;
+    name: string;
+    ext: string;
+  }) => { ok: true; path: string } | { ok: false; error: string };
+  'fs:createDocumentFromPrompt': (args: {
+    dirPath: string;
+    description: string;
+  }) => { ok: true; path: string; backend: string } | { ok: false; error: string };
   'fs:copyIntoProject': (args: {
     projectPath: string;
     files: Array<{ name: string; dataBase64: string }>;
@@ -1672,12 +1671,15 @@ export interface IPCInvokeMap {
   /// decides how much of a problem that is.
   'fs:createEverydayProject': (args: { title: string; goal: string }) =>
     | { ok: true; path: string; historyOn: true }
-    | { ok: true; path: string; historyOn: false; historyReason: InitRepoFailure; historyError: string }
+    | {
+        ok: true;
+        path: string;
+        historyOn: false;
+        historyReason: InitRepoFailure;
+        historyError: string;
+      }
     | { ok: false; error: string };
-  'git:workspaceCommitAll': (args: {
-    projects: Array<{ name: string; path: string }>;
-    message: string;
-  }) =>
+  'git:workspaceCommitAll': (args: { projects: Array<{ name: string; path: string }>; message: string }) =>
     | {
         ok: true;
         committed: Array<{ name: string; sha: string }>;
@@ -1697,17 +1699,17 @@ export interface IPCInvokeMap {
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
   'workspace:rebindCoordinatorRootToProjects': (args: {
     coordinatorId: UUID;
-    projects: Array<{ name: string; projectPath: string; branchName?: string | null }>;
+    projects: Array<{
+      name: string;
+      projectPath: string;
+      branchName?: string | null;
+    }>;
   }) => { ok: true; rootPath: string } | { ok: false; error: string };
-  'workspace:removeCoordinatorSymlinkRoot': (
-    coordinatorId: UUID,
-  ) => { ok: true } | { ok: false; error: string };
+  'workspace:removeCoordinatorSymlinkRoot': (coordinatorId: UUID) => { ok: true } | { ok: false; error: string };
   /// `command` is present on failure when we know what the user should run
   /// themselves — a blocked Apple Event means we opened a window but couldn't
   /// type into it, so the UI offers the line to copy.
-  'auth:openCliLogin': (
-    backend: Backend,
-  ) => { ok: true } | { ok: false; error: string; command?: string };
+  'auth:openCliLogin': (backend: Backend) => { ok: true } | { ok: false; error: string; command?: string };
   'terminal:popConversation': (args: {
     cwd: string;
     backend: Backend;
@@ -1736,18 +1738,27 @@ export interface IPCInvokeMap {
   'ollama:detect': () => OllamaDetectionReport;
   'ollama:hardware': () => OllamaHardwareReport;
   'ollama:catalog': () => OllamaRecommendedModel[];
-  'ollama:install': () => { started: 'brew' | 'browser'; detail?: string; command?: string };
+  'ollama:install': () => {
+    started: 'brew' | 'browser';
+    detail?: string;
+    command?: string;
+  };
   'ollama:startServer': () => { ok: boolean; message: string };
   'ollama:stopServer': () => { ok: boolean; message: string };
-  'ollama:serverStatus': () => { status: OllamaServerStatus; log: OllamaServerLogLine[] };
+  'ollama:serverStatus': () => {
+    status: OllamaServerStatus;
+    log: OllamaServerLogLine[];
+  };
   'ollama:pullModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:cancelPull': (args: { tag: string }) => void;
   'ollama:deleteModel': (args: { tag: string }) => { ok: true } | { ok: false; error: string };
   'ollama:deleteSession': (sessionId: string) => void;
   'ollama:securityAudit': (args?: { force?: boolean }) => OllamaSecurityReport;
-  'ollama:applyFix': (args: {
-    fixId: 'update-ollama' | 'restart-loopback';
-  }) => { ok: boolean; message: string; command?: string };
+  'ollama:applyFix': (args: { fixId: 'update-ollama' | 'restart-loopback' }) => {
+    ok: boolean;
+    message: string;
+    command?: string;
+  };
   'diagnostics:list': () => SilentLogEntry[];
   'diagnostics:clear': () => void;
   'diagnostics:log': (args: { level: LogLevel; scope: string; message: string }) => void;
@@ -1769,9 +1780,10 @@ export interface IPCInvokeMap {
     source: Flow['source'];
     projectPath?: string;
   }) => { ok: true } | { ok: false; error: string };
-  'flows:validate': (args: { yaml: string; id?: string }) =>
-    | { ok: true; flow: Flow }
-    | { ok: false; errors: Array<{ path: string; message: string }> };
+  'flows:validate': (args: {
+    yaml: string;
+    id?: string;
+  }) => { ok: true; flow: Flow } | { ok: false; errors: Array<{ path: string; message: string }> };
   'flows:toolCatalog': (args: { backend: Backend }) => FlowToolDescriptor[];
   /// Bundled-with-the-app curated templates shown in the "+ New flow"
   /// picker. Not part of the user/project library — these are immutable
@@ -1780,9 +1792,7 @@ export interface IPCInvokeMap {
   /// Draft a flow from a natural-language description using Claude. The
   /// renderer surfaces this behind a "✨ Describe a flow" button. On
   /// success, the user drops into the editor with the generated draft.
-  'flows:draftFromPrompt': (args: { description: string }) =>
-    | { ok: true; flow: Flow }
-    | { ok: false; error: string };
+  'flows:draftFromPrompt': (args: { description: string }) => { ok: true; flow: Flow } | { ok: false; error: string };
   /// Revise the flow currently open in the builder. Takes the draft's YAML
   /// plus a plain-English instruction ("drop the test step", "review for
   /// security before shipping") and returns the whole flow with that change
@@ -1790,9 +1800,11 @@ export interface IPCInvokeMap {
   /// draft's existing id through — the YAML body doesn't hold it, and a
   /// revision must keep it so the next save updates the flow rather than
   /// forking a new file.
-  'flows:reviseFromPrompt': (args: { yaml: string; instruction: string; id?: string }) =>
-    | { ok: true; flow: Flow }
-    | { ok: false; error: string };
+  'flows:reviseFromPrompt': (args: {
+    yaml: string;
+    instruction: string;
+    id?: string;
+  }) => { ok: true; flow: Flow } | { ok: false; error: string };
   'flows:startRun': (args: {
     flowId: string;
     projectPath: string;
@@ -1809,7 +1821,13 @@ export interface IPCInvokeMap {
     baseBranch?: string;
   }) =>
     | { ok: true; runId: UUID }
-    | { ok: false; error: string; preflight?: { problems: Array<{ path: string; message: string; hint?: string }> } };
+    | {
+        ok: false;
+        error: string;
+        preflight?: {
+          problems: Array<{ path: string; message: string; hint?: string }>;
+        };
+      };
   /// Every retained run, plus the ids of the `done` ones whose worktree still
   /// holds uncommitted work. The dirty ids ride alongside the runs rather than
   /// on them: `flowRunUpdate` echoes runs back wholesale and `saveRun` persists
@@ -1839,8 +1857,7 @@ export interface IPCInvokeMap {
   /// their own outputs — so edits made to an upstream artifact via hijack
   /// chat finally propagate downstream. Valid only from a settled state
   /// (paused / done / aborted), never while a step is actively running.
-  'flows:rerunFromStep': (args: { runId: UUID; stepId: string }) =>
-    { ok: true } | { ok: false; error: string };
+  'flows:rerunFromStep': (args: { runId: UUID; stepId: string }) => { ok: true } | { ok: false; error: string };
   /// Bring a single-project flow worktree into the main project checkout,
   /// then re-home every Claude participant session and persistently rebind
   /// the run's cwd so post-completion chat can continue there.
@@ -1848,9 +1865,7 @@ export interface IPCInvokeMap {
     runId: UUID;
     commitSubject: string;
     commitBody?: string;
-  }) =>
-    | { ok: true; message: string; stashed: boolean; autoCommitted: boolean }
-    | { ok: false; error: string };
+  }) => { ok: true; message: string; stashed: boolean; autoCommitted: boolean } | { ok: false; error: string };
   'flows:abortRun': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Put a completed run into the post-completion `watching` state — it
   /// stops doing work and periodically polls `binding` (via the named
@@ -1887,14 +1902,16 @@ export interface IPCInvokeMap {
   /// any point in a run's life — including mid-flight, which is when a
   /// user most wants to label what's in the list. Pass an empty string to
   /// clear it and fall back to the prompt-derived title.
-  'flows:renameRun': (args: {
-    runId: UUID;
-    title: string;
-  }) => { ok: true } | { ok: false; error: string };
+  'flows:renameRun': (args: { runId: UUID; title: string }) => { ok: true } | { ok: false; error: string };
+  /// Stamp "the user just typed at this run". Sent when a hijack turn goes
+  /// out to a participant — the turn itself rides the generic `runner:send`
+  /// path, which knows nothing about runs, so the run would otherwise have
+  /// no record that the user drove it. Ordering-only; nothing in the runtime
+  /// reads it.
+  'flows:noteUserTurn': (args: { runId: UUID }) => { ok: true } | { ok: false; error: string };
   /// Queue a course correction to be injected at the top of the next step's
   /// prompt. Empty `text` withdraws a queued steer.
-  'flows:steerRun': (args: { runId: UUID; text: string }) =>
-    { ok: true } | { ok: false; error: string };
+  'flows:steerRun': (args: { runId: UUID; text: string }) => { ok: true } | { ok: false; error: string };
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
@@ -1911,16 +1928,26 @@ export interface IPCInvokeMap {
         dirty: Array<{ name: string; worktreePath: string; fileCount: number }>;
       };
   'flows:listRegistries': () => FlowRegistry[];
-  'flows:upsertRegistry': (args: { registry: FlowRegistry; authHeader?: string | null }) =>
-    { ok: true } | { ok: false; error: string };
-  'flows:removeRegistry': (args: { registryId: string }) =>
-    { ok: true } | { ok: false; error: string };
-  'flows:browseRegistry': (args: { registryId?: string; force?: boolean }) =>
-    { ok: true; entries: FlowRegistryEntry[]; errors: Array<{ registryId: string; error: string }> };
-  'flows:installFromRegistry': (args: { registryId: string; id: string; version: string }) =>
-    { ok: true; filePath: string } | { ok: false; error: string };
-  'flows:previewRegistryFlow': (args: { registryId: string; id: string; version: string }) =>
-    { ok: true; flow: Flow } | { ok: false; error: string };
+  'flows:upsertRegistry': (args: {
+    registry: FlowRegistry;
+    authHeader?: string | null;
+  }) => { ok: true } | { ok: false; error: string };
+  'flows:removeRegistry': (args: { registryId: string }) => { ok: true } | { ok: false; error: string };
+  'flows:browseRegistry': (args: { registryId?: string; force?: boolean }) => {
+    ok: true;
+    entries: FlowRegistryEntry[];
+    errors: Array<{ registryId: string; error: string }>;
+  };
+  'flows:installFromRegistry': (args: {
+    registryId: string;
+    id: string;
+    version: string;
+  }) => { ok: true; filePath: string } | { ok: false; error: string };
+  'flows:previewRegistryFlow': (args: {
+    registryId: string;
+    id: string;
+    version: string;
+  }) => { ok: true; flow: Flow } | { ok: false; error: string };
 
   // ---- Orchestrator (batch fan-out over flows) --------------------------
   /// Run one producer turn: ask the user's preferred AI (with its MCP
@@ -1934,9 +1961,7 @@ export interface IPCInvokeMap {
     projectPath: string;
     priorPrompt?: string;
     priorReply?: string;
-  }) =>
-    | { ok: true; reply: string; candidates: Candidate[] }
-    | { ok: false; error: string };
+  }) => { ok: true; reply: string; candidates: Candidate[] } | { ok: false; error: string };
   /// Launch a batch: one child flow run per item, never more than
   /// `maxConcurrent` in flight. `runIn` decides where those runs work —
   /// `worktree` (the default) gives each item its own fresh worktree forked
@@ -1974,9 +1999,7 @@ export interface IPCInvokeMap {
   /// Re-queue failed/cancelled items. With `candidateId`, retry just that
   /// item; without, retry all failed/cancelled items in the batch. Each
   /// retry launches a fresh child run in a new worktree.
-  'orchestrator:retry': (args: { id: UUID; candidateId?: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'orchestrator:retry': (args: { id: UUID; candidateId?: string }) => { ok: true } | { ok: false; error: string };
   /// Permanently delete a batch record (does not touch the child runs'
   /// own history). Idempotent.
   'orchestrator:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
@@ -1985,7 +2008,11 @@ export interface IPCInvokeMap {
   /// Omit `approve` to accept the whole batch as proposed.
   'orchestrator:approveBatch': (args: {
     id: UUID;
-    approve?: Array<{ candidateId: string; flowId?: string; baseBranch?: string }>;
+    approve?: Array<{
+      candidateId: string;
+      flowId?: string;
+      baseBranch?: string;
+    }>;
   }) => { ok: true; queued: number } | { ok: false; error: string };
   /// Reject ONE paused item — the per-item form of the decline that
   /// approveBatch applies to unpicked proposals. Settles the item to
@@ -1993,23 +2020,22 @@ export interface IPCInvokeMap {
   /// batch and feeds the demotion streak. The child run is the CALLER's to
   /// delete first (via `flows:deleteRun`), so the dirty-worktree confirm
   /// stays in one place and a decline there leaves the item untouched.
-  'orchestrator:rejectItem': (args: { id: UUID; candidateId: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'orchestrator:rejectItem': (args: { id: UUID; candidateId: string }) => { ok: true } | { ok: false; error: string };
 
   // ---- Schedules --------------------------------------------------------
   /// Every schedule, newest first, each with its computed next fire time.
   /// `nextFireAt` is null for a disabled schedule.
-  'schedules:list': () => Array<{ schedule: Schedule; nextFireAt: number | null }>;
+  'schedules:list': () => Array<{
+    schedule: Schedule;
+    nextFireAt: number | null;
+  }>;
   /// Create (no `id`) or replace (with `id`). Validates with the same
   /// `validateSchedule` the editor uses, so Save can never fail for a reason
   /// the form didn't already show.
   'schedules:save': (args: {
     schedule: Omit<Schedule, 'id' | 'createdAt' | 'history'> & { id?: UUID };
   }) => { ok: true; schedule: Schedule } | { ok: false; error: string };
-  'schedules:setEnabled': (args: { id: UUID; enabled: boolean }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'schedules:setEnabled': (args: { id: UUID; enabled: boolean }) => { ok: true } | { ok: false; error: string };
   /// Delete the trigger. Any run it already started is left alone — it's real
   /// work in a real worktree.
   'schedules:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
@@ -2035,21 +2061,17 @@ export interface IPCInvokeMap {
   /// Write a note against one of a worker's turns. It lands in the worker's
   /// journal, which means the worker reads it before planning its next shift
   /// — a note is a word in its ear, not a sticky on the screen.
-  'workers:note': (args: { id: UUID; orchestrationId: string; note: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
-  'workers:setEnabled': (args: { id: UUID; enabled: boolean }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'workers:note': (args: {
+    id: UUID;
+    orchestrationId: string;
+    note: string;
+  }) => { ok: true } | { ok: false; error: string };
+  'workers:setEnabled': (args: { id: UUID; enabled: boolean }) => { ok: true } | { ok: false; error: string };
   /// Which of the worker's own outputs renders when you open it: `newest`,
   /// `off`, or the filename of one of the outputs it actually produces.
-  'workers:setAutoRender': (args: { id: UUID; autoRender: string }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'workers:setAutoRender': (args: { id: UUID; autoRender: string }) => { ok: true } | { ok: false; error: string };
   /// The explicit promote/demote act — the only way trust goes UP.
-  'workers:setTrust': (args: { id: UUID; trust: WorkerTrustLevel }) =>
-    | { ok: true }
-    | { ok: false; error: string };
+  'workers:setTrust': (args: { id: UUID; trust: WorkerTrustLevel }) => { ok: true } | { ok: false; error: string };
   /// Fire the worker. Its parked batches, launched runs, and journal all
   /// survive — the persona is removed, not its output.
   'workers:delete': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
@@ -2058,9 +2080,12 @@ export interface IPCInvokeMap {
   'workers:workShiftNow': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
   /// Hand a worker a one-off instruction, planned through its standing job
   /// description without advancing its scheduled cadence.
-  'workers:runErrand': (args: { id: UUID; instruction: string; attachments?: Attachment[] }) =>
-    | { ok: true; result: WorkerErrandResult }
-    | { ok: false; error: string };
+  'workers:runErrand': (args: {
+    id: UUID;
+    instruction: string;
+    intent: import('./flows/worker').WorkerMessageIntent;
+    attachments?: Attachment[];
+  }) => { ok: true; result: WorkerErrandResult } | { ok: false; error: string };
   /// Everything in the worker's own directory, newest first. Deliverables the
   /// engine filed there plus anything the worker wrote for itself.
   /// Persist the roster's reading order, top first. The full list, not a
@@ -2071,26 +2096,39 @@ export interface IPCInvokeMap {
   /// come from main because the allocation is priced against the run-summary
   /// log, and a renderer-side copy of that arithmetic could tell the user a
   /// worker was funded that the engine then refused to run.
-  'workers:treasury': () => { treasury: Treasury; allocation: TreasuryAllocation };
+  'workers:treasury': () => {
+    treasury: Treasury;
+    allocation: TreasuryAllocation;
+  };
   /// What the roster has actually done — shifts, outcomes, tokens, time.
   /// `sinceMs` is an epoch-ms floor; 0 means all time.
   'workers:report': (args: { sinceMs: number }) => WorkerReport;
   /// Set the monthly pool every worker draws from.
-  'workers:setTreasury': (args: { monthlyUSD: number }) =>
-    | { ok: true }
+  'workers:setTreasury': (args: { monthlyUSD: number }) => { ok: true } | { ok: false; error: string };
+  /// Split the money left this month by funding order across enabled workers.
+  'workers:distributeFunds': () =>
+    | {
+        ok: true;
+        workers: Worker[];
+        treasury: Treasury;
+        allocation: TreasuryAllocation;
+      }
     | { ok: false; error: string };
   'workers:files': (args: { id: UUID }) => {
     /// The worker's directory. The renderer scopes the file editor to this so
     /// opening a worker's file can't expose its neighbours — every worker's
     /// directory sits next to every other one under userData.
     root: string;
-    files: Array<{ name: string; path: string; bytes: number; modifiedAt: number }>;
+    files: Array<{
+      name: string;
+      path: string;
+      bytes: number;
+      modifiedAt: number;
+    }>;
   };
   /// One file's contents. Refuses paths outside the worker's directory and
   /// files too large to preview.
-  'workers:file': (args: { id: UUID; name: string }) =>
-    | { ok: true; body: string }
-    | { ok: false; error: string };
+  'workers:file': (args: { id: UUID; name: string }) => { ok: true; body: string } | { ok: false; error: string };
   /// Open the worker's directory in the OS file manager.
   /// The on-disk copies of one finished item's output, addressed by the same
   /// facts that filed them. The desk uses this to link a plan row straight at
@@ -2104,12 +2142,18 @@ export interface IPCInvokeMap {
     title: string;
     /// When the item finished, which is the stamp the filing used.
     at: number;
-  }) => Array<{ name: string; path: string; bytes: number; modifiedAt: number }>;
+  }) => Array<{
+    name: string;
+    path: string;
+    bytes: number;
+    modifiedAt: number;
+  }>;
   /// Delete one job's output — a folder and its contents, or a loose file.
   /// `name` is relative to the worker's own root and is validated there.
-  'workers:deleteFile': (args: { id: UUID; name: string }) =>
-    | { ok: true; removed: string }
-    | { ok: false; error: string };
+  'workers:deleteFile': (args: {
+    id: UUID;
+    name: string;
+  }) => { ok: true; removed: string } | { ok: false; error: string };
   'workers:revealFiles': (args: { id: UUID }) => { ok: true } | { ok: false; error: string };
   /// The worker's journal, newest first — its episodic memory, rendered as
   /// the shift history in the Workers pane.
@@ -2118,7 +2162,14 @@ export interface IPCInvokeMap {
   /// shift/errand ledgers and child flow runs, then restart numbering at shift
   /// #1. Trust, budget, job description and historical usage spend remain.
   'workers:resetMemory': (args: { id: UUID }) =>
-    | { ok: true; entries: number; files: number; shifts: number; errands: number; runs: number }
+    | {
+        ok: true;
+        entries: number;
+        files: number;
+        shifts: number;
+        errands: number;
+        runs: number;
+      }
     | { ok: false; error: string };
   /// Rub out ONE turn: its ledger, the flow runs it launched, the output they
   /// filed, and its journal entries. If it was the worker's most recent shift
@@ -2140,33 +2191,43 @@ export interface IPCInvokeMap {
   /// what it did, hand its number back, and plan it afresh over the same
   /// window. Refuses anything but the latest shift — an older one cannot have
   /// its number back, so re-running it would silently be a new shift instead.
-  'workers:redoShift': (args: { id: UUID; orchestrationId: UUID }) =>
-    | { ok: true; shift: number }
-    | { ok: false; error: string };
+  'workers:redoShift': (args: {
+    id: UUID;
+    orchestrationId: UUID;
+  }) => { ok: true; shift: number } | { ok: false; error: string };
   /// The worker as a shareable YAML document: the JOB, with the flows it
   /// launches embedded whole, and none of the employment — no id, no trust,
   /// no project path, no history. See src/shared/flows/workerYaml.ts.
   /// `missingFlowIds` are flows this worker references that the library can
   /// no longer supply, so the sender learns before the recipient does.
-  'workers:share': (args: { id: UUID }) =>
-    | { ok: true; yaml: string; filename: string; missingFlowIds: string[] }
-    | { ok: false; error: string };
+  'workers:share': (args: {
+    id: UUID;
+  }) => { ok: true; yaml: string; filename: string; missingFlowIds: string[] } | { ok: false; error: string };
   /// The same document, written wherever the user points the save dialog.
   /// `filePath: null` means they dismissed it — a cancel is not an error.
-  'workers:shareToFile': (args: { id: UUID }) =>
-    | { ok: true; filePath: string | null }
-    | { ok: false; error: string };
+  'workers:shareToFile': (args: { id: UUID }) => { ok: true; filePath: string | null } | { ok: false; error: string };
   /// Read a share file: installs any flows the library is missing (never
   /// overwriting one it already has) and returns the worker to open in the
   /// hire editor. Hiring is still the user's click — this only prepares it.
   'workers:import': (args: { yaml: string }) =>
-    | { ok: true; worker: PortableWorker; notes: WorkerImportNotes; summary: string }
+    | {
+        ok: true;
+        worker: PortableWorker;
+        notes: WorkerImportNotes;
+        summary: string;
+      }
     | { ok: false; error: string };
   /// The same, from a file the user picks. `canceled` when they dismiss the
   /// dialog, which is neither a success to act on nor an error to show.
   'workers:importFromFile': () =>
     | { ok: true; canceled: true }
-    | { ok: true; canceled?: false; worker: PortableWorker; notes: WorkerImportNotes; summary: string }
+    | {
+        ok: true;
+        canceled?: false;
+        worker: PortableWorker;
+        notes: WorkerImportNotes;
+        summary: string;
+      }
     | { ok: false; error: string };
   /// One hire-drafter turn: a free-text job description in, a reviewed-not-
   /// saved contract out — plus a drafted Flow when no existing flow fit.
@@ -2179,7 +2240,13 @@ export interface IPCInvokeMap {
     /// a screenshot). Sent to the drafting CLI alongside the description.
     attachments?: Attachment[];
   }) =>
-    | { ok: true; contract: WorkerContract; summary: string; draftedFlow?: Flow; flowError?: string }
+    | {
+        ok: true;
+        contract: WorkerContract;
+        summary: string;
+        draftedFlow?: Flow;
+        flowError?: string;
+      }
     | { ok: false; error: string };
   /// One revision turn across a worker's two halves: the instruction is
   /// routed to the job description (planning), the flow (execution), or
@@ -2197,9 +2264,7 @@ export interface IPCInvokeMap {
     /// Files attached to the instruction — they ride with the routing turn
     /// and with any flow edit it delegates to.
     attachments?: Attachment[];
-  }) =>
-    | { ok: true; jobDescription?: string; flow?: Flow; note: string }
-    | { ok: false; error: string };
+  }) => { ok: true; jobDescription?: string; flow?: Flow; note: string } | { ok: false; error: string };
 }
 
 /// One local subresource of an HTML preview. Stylesheets come back as
@@ -2207,14 +2272,11 @@ export interface IPCInvokeMap {
 /// `url()` refs already folded in); everything else comes back as a data
 /// URL that can be dropped straight into the attribute it came from.
 export type HtmlPreviewAsset =
-  | { ok: true; kind: 'css'; text: string }
-  | { ok: true; kind: 'data'; dataUrl: string }
-  | { ok: false; error: string };
+  { ok: true; kind: 'css'; text: string } | { ok: true; kind: 'data'; dataUrl: string } | { ok: false; error: string };
 
 export type HtmlPreviewAssetsResult =
   /// Keyed by the ref exactly as it appeared in the document.
-  | { ok: true; assets: Record<string, HtmlPreviewAsset> }
-  | { ok: false; error: string };
+  { ok: true; assets: Record<string, HtmlPreviewAsset> } | { ok: false; error: string };
 
 /// What happened to the Tailwind pass for a React preview. `not-used` is
 /// a file with no className at all; `unavailable` is a project without
@@ -2792,7 +2854,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   starredFlows: [],
   defaultFlowRunIn: 'cwd',
   flowRegistries: [
-    { id: 'official', name: 'Official', indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json' },
+    {
+      id: 'official',
+      name: 'Official',
+      indexUrl: 'https://raw.githubusercontent.com/overcodelions/overcli-flow-registry/main/index.json',
+    },
   ],
   installedRegistryFlows: [],
   updateChannel: 'stable',

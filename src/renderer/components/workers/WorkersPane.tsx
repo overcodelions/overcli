@@ -8,7 +8,7 @@
 //   - the hire screen (job description → drafted contract → editor)
 //   - the editor (review/adjust the contract; the only place Save lives)
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type { Attachment, Backend } from "@shared/types";
 import { PREMIUM_MODELS, friendlyModelLabel } from "@shared/modelCatalog";
@@ -88,6 +88,8 @@ import {
   CARRIED_OVER_SHOWN,
   adjacentDeskDay,
   carriedOverTurns,
+  conversationActivity,
+  shiftActivity,
   describeActivity,
   orchestrationTask,
   deskDayLabel,
@@ -99,7 +101,6 @@ import {
   groupWorkerFiles,
   startOfDay,
   toWorkerActivity,
-  workerActivity,
   workerAutoRenderTarget,
   workerRenderableOutputs,
   type WorkerFileJob,
@@ -110,6 +111,12 @@ import {
 import { TRUST_LABEL, WorkerPendingProposal } from "./WorkerRowParts";
 import { WorkQueuePane } from "./WorkQueuePane";
 import { pinnedToBottom, shouldFollowLive } from "./deskFollow";
+
+// Zustand selectors are consumed through React's useSyncExternalStore. Returning
+// a new [] while this worker's journal is still loading makes the snapshot look
+// different on every read and can put the Workers pane into an infinite render
+// loop before loadJournal has a chance to populate it.
+const EMPTY_WORKER_JOURNAL: WorkerJournalEntry[] = [];
 
 export function WorkersPane() {
   const projects = useStore((s) => s.projects);
@@ -182,6 +189,15 @@ export function WorkersPane() {
     (p) => p.path === defaultProjectPath,
   )?.everyday;
   const canHire = defaultProjectPath !== "";
+  const showRosterHeader = view !== "worker" || !selected;
+  const revisionNotices = Object.entries(revisions)
+    .filter(([, revision]) => revision.startedAt !== null || revision.pending)
+    .map(([id, revision]) => ({
+      worker: workers[id],
+      done: revision.pending != null,
+    }))
+    .filter((row): row is { worker: Worker; done: boolean } => !!row.worker);
+  const showProgressNotices = hireRunning || revisionNotices.length > 0;
 
   // The editor wins over everything below it: it is the one screen on this
   // tab the user asked for outright. A worker's run outranking it meant that
@@ -205,85 +221,88 @@ export function WorkersPane() {
     // has to scroll under a header and composer that stay put, the way the
     // Chat tab works. Scrolling the whole pane took the composer with it.
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-6 pt-6">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="text-2xl font-semibold">Workers</div>
-          {/* Only with Debug on. The empty state is the screen you can never
+      {(showRosterHeader || showProgressNotices) && (
+        <div className="shrink-0 px-6 pt-6">
+          {showRosterHeader && (
+            <div className="flex items-center gap-3 mb-2">
+              <div className="text-2xl font-semibold">Workers</div>
+              {/* Only with Debug on. The empty state is the screen you can never
             reach again once you have hired anyone, so it needs a way to be
             looked at that is not "fire everybody". */}
-          {showDebug && (
-            <button
-              onClick={() => setPreviewEmpty(!previewEmpty)}
-              title="Render this tab as if nobody had been hired. Nothing is changed."
-              className={
-                "rounded-md border px-2 py-1 text-[11px] " +
-                (previewEmpty
-                  ? "border-amber-400/50 text-amber-500"
-                  : "border-card-strong text-ink-faint hover:text-ink")
-              }
-            >
-              {previewEmpty ? "Previewing empty" : "Preview empty"}
-            </button>
-          )}
-          {/* The other way a worker arrives: somebody else's file. Beside
+              {showDebug && (
+                <button
+                  onClick={() => setPreviewEmpty(!previewEmpty)}
+                  title="Render this tab as if nobody had been hired. Nothing is changed."
+                  className={
+                    "rounded-md border px-2 py-1 text-[11px] " +
+                    (previewEmpty
+                      ? "border-amber-400/50 text-amber-500"
+                      : "border-card-strong text-ink-faint hover:text-ink")
+                  }
+                >
+                  {previewEmpty ? "Previewing empty" : "Preview empty"}
+                </button>
+              )}
+              {/* The other way a worker arrives: somebody else's file. Beside
               "Add by hand" because that is what it is — a hire you did not
               have to describe, landing in the same editor for the same
               confirmation. */}
-          <button
-            disabled={!canHire}
-            onClick={() =>
-              void importFromFile({
-                projectPath: defaultProjectPath,
-                projectPaths: projects.map((p) => p.path),
-              })
-            }
-            title="Hire from a worker YAML someone shared with you"
-            className="ml-auto text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
-          >
-            Import…
-          </button>
-          <button
-            disabled={!canHire}
-            onClick={() => openEditor(newWorkerDraft(defaultProjectPath, defaultProjectEveryday))}
-            className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
-          >
-            Add by hand
-          </button>
-          <button
-            disabled={!canHire}
-            onClick={() => openHire(defaultProjectPath)}
-            className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
-          >
-            ✨ Hire a worker
-          </button>
-        </div>
+              <button
+                disabled={!canHire}
+                onClick={() =>
+                  void importFromFile({
+                    projectPath: defaultProjectPath,
+                    projectPaths: projects.map((p) => p.path),
+                  })
+                }
+                title="Hire from a worker YAML someone shared with you"
+                className="ml-auto text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
+              >
+                Import…
+              </button>
+              <button
+                disabled={!canHire}
+                onClick={() =>
+                  openEditor(
+                    newWorkerDraft(defaultProjectPath, defaultProjectEveryday),
+                  )
+                }
+                className="text-xs px-3 py-1.5 rounded-md border border-card-strong hover:bg-white/5 disabled:opacity-40"
+              >
+                Add by hand
+              </button>
+              <button
+                disabled={!canHire}
+                onClick={() => openHire(defaultProjectPath)}
+                className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+              >
+                ✨ Hire a worker
+              </button>
+            </div>
+          )}
 
-        {/* A hire drafts for minutes and you are not expected to sit there —
+          {/* A hire drafts for minutes and you are not expected to sit there —
             so when you have walked away from it, the tab says so and takes
             you back. The turn itself is running in main either way. */}
-        {hireRunning && (
-          <button
-            onClick={() => openHire(defaultProjectPath)}
-            className="mb-3 flex w-full items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-left text-[11px] hover:bg-accent/10"
-          >
-            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
-            <span className="text-ink-muted">
-              Still drafting a contract — you can keep working; it lands in the
-              editor when it&apos;s done.
-            </span>
-            <span className="ml-auto shrink-0 text-ink-faint">Show me →</span>
-          </button>
-        )}
+          {hireRunning && (
+            <button
+              onClick={() => openHire(defaultProjectPath)}
+              className="mb-3 flex w-full items-center gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2 text-left text-[11px] hover:bg-accent/10"
+            >
+              <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent" />
+              <span className="text-ink-muted">
+                Still drafting a contract — you can keep working; it lands in
+                the editor when it&apos;s done.
+              </span>
+              <span className="ml-auto shrink-0 text-ink-faint">Show me →</span>
+            </button>
+          )}
 
-        {/* Same for a revision, which is easier to lose track of: clicking
+          {/* Same for a revision, which is easier to lose track of: clicking
             any worker in the roster closes the editor it was started from.
             One line per worker being revised — they are independent, and a
             second one starting must not hide the first. */}
-        {Object.entries(revisions)
-          .filter(([, r]) => r.startedAt !== null || r.pending)
-          .map(([id, r]) => ({ worker: workers[id], done: r.pending != null }))
-          .filter((row) => row.worker)
-          .map(({ worker, done }) => (
+          {revisionNotices.map(({ worker, done }) => (
             <button
               key={worker.id}
               onClick={() => openEditor(draftFromWorker(worker))}
@@ -305,8 +324,8 @@ export function WorkersPane() {
               </span>
             </button>
           ))}
-
-      </div>
+        </div>
+      )}
 
       {!loaded ? (
         <div className="px-6 text-sm text-ink-muted">Loading workers…</div>
@@ -327,7 +346,11 @@ export function WorkersPane() {
           <WorkersEmptyState
             canHire={canHire}
             onHire={() => openHire(defaultProjectPath)}
-            onAddByHand={() => openEditor(newWorkerDraft(defaultProjectPath, defaultProjectEveryday))}
+            onAddByHand={() =>
+              openEditor(
+                newWorkerDraft(defaultProjectPath, defaultProjectEveryday),
+              )
+            }
             onImport={() =>
               void importFromFile({
                 projectPath: defaultProjectPath,
@@ -761,10 +784,10 @@ function TrustLadderMark() {
 ///     page. It is the contract — the thing it was hired to do and the thing
 ///     every errand is judged against — not a metadata field.
 ///   - Everything that is not the conversation moves behind a tab. The only
-///     action on the front page is "Work now"; pausing, promoting and firing
+///     action on the front page is "Run shift now"; pausing, promoting and firing
 ///     are deliberate acts that belong on Settings, next to the rules that
 ///     govern them.
-/// Why "Work now" would be refused, before you press it. The engine gates a
+/// Why "Run shift now" would be refused, before you press it. The engine gates a
 /// manual shift on the same funding waterfall the scheduler uses, but it only
 /// answers after the click — and its answer lands in the store's `error`,
 /// which this pane never draws. An out-of-budget worker therefore read as a
@@ -812,8 +835,9 @@ function WorkerRow({
   const workShiftNow = useWorkersStore((s) => s.workShiftNow);
   const shiftBlock = useShiftBlock(worker.id);
   const [tab, setTab] = useState<
-    "desk" | "shift" | "files" | "journal" | "stats" | "settings"
-  >("desk");
+    "chat" | "shifts" | "tasks" | "files" | "journal" | "stats" | "settings"
+  >("chat");
+  const [intent, setIntent] = useState<"chat" | "work">("chat");
   // The desk is cleared nightly: it shows one day, and the rest is one step
   // back. Opening on today rather than on "the last day something happened"
   // is deliberate — a desk whose date changes depending on when the worker
@@ -834,14 +858,6 @@ function WorkerRow({
   const [focusId, setFocusId] = useState<string | null>(
     focus?.workerId === worker.id ? focus.orchestrationId : null,
   );
-  useEffect(() => {
-    if (focus?.workerId !== worker.id) return;
-    setTab("desk");
-    setDay(startOfDay(focus.at));
-    setFocusId(focus.orchestrationId);
-    clearDeskFocus();
-  }, [focus, worker.id, clearDeskFocus]);
-
   // Sending an errand snaps the desk back to today, because that is where the
   // errand lands. Without this you could send from a day you had stepped back
   // to — the composer is there on every day — and watch nothing happen: your
@@ -860,18 +876,27 @@ function WorkerRow({
   // the Files tab lists it, and the thing below renders one of them without
   // being asked.
   const [files, setFiles] = useState<WorkerFile[] | null>(null);
+  const journal = useWorkersStore(
+    (s) => s.journals[worker.id] ?? EMPTY_WORKER_JOURNAL,
+  );
+  const loadJournal = useWorkersStore((s) => s.loadJournal);
   const setFilesRoot = useWorkersStore((s) => s.setFilesRoot);
   useEffect(() => {
     let live = true;
-    void window.overcli.invoke("workers:files", { id: worker.id }).then((res) => {
-      if (!live) return;
-      setFilesRoot(worker.id, res.root);
-      setFiles(res.files);
-    });
+    void window.overcli
+      .invoke("workers:files", { id: worker.id })
+      .then((res) => {
+        if (!live) return;
+        setFilesRoot(worker.id, res.root);
+        setFiles(res.files);
+      });
     return () => {
       live = false;
     };
   }, [worker.id, setFilesRoot]);
+  useEffect(() => {
+    void loadJournal(worker.id);
+  }, [worker.id, loadJournal]);
 
   // Open the worker's report the moment you open the worker.
   //
@@ -904,13 +929,60 @@ function WorkerRow({
     [orchestrations, worker.id],
   );
   const awaiting = useMemo(
-    () => mine.filter(isOrchestrationAwaitingApproval),
+    () =>
+      mine.filter(
+        (item) =>
+          orchestrationTask(item) === "shift" &&
+          isOrchestrationAwaitingApproval(item),
+      ),
     [mine],
   );
   const activity = useMemo(() => mine.map(toWorkerActivity), [mine]);
-  const days = useMemo(() => deskDays(activity), [activity]);
+  const executedTasks = useMemo(
+    () =>
+      mine.flatMap((orchestration) =>
+        orchestration.items.filter((item) =>
+          ["queued", "running", "paused", "done", "failed"].includes(
+            item.status,
+          ),
+        ),
+      ),
+    [mine],
+  );
+  const activeTaskCount = executedTasks.filter((item) =>
+    ["queued", "running", "paused"].includes(item.status),
+  ).length;
+  useEffect(() => {
+    if (focus?.workerId !== worker.id) return;
+    const focused = mine.find((item) => item.id === focus.orchestrationId);
+    setTab(
+      focused && orchestrationTask(focused) === "shift" ? "shifts" : "chat",
+    );
+    setDay(startOfDay(focus.at));
+    setFocusId(focus.orchestrationId);
+    clearDeskFocus();
+  }, [focus, worker.id, mine, clearDeskFocus]);
+  const conversation = useMemo(
+    () => conversationActivity(activity),
+    [activity],
+  );
+  const shifts = useMemo(() => shiftActivity(activity), [activity]);
+  const workSummary = useMemo<WorkerWorkSummary>(
+    () => ({
+      shiftCount: Math.max(worker.shiftCount ?? 0, shifts.length),
+      completed:
+        scorecard?.completed ??
+        shifts.reduce((total, item) => total + item.done, 0),
+      latest: shifts[0] ?? null,
+    }),
+    [worker.shiftCount, shifts, scorecard?.completed],
+  );
+  const days = useMemo(() => deskDays(conversation), [conversation]);
   // Oldest first: a transcript reads down, and the composer is at the bottom.
-  const dayItems = useMemo(() => deskTimeline(activity, day), [activity, day]);
+  const dayItems = useMemo(
+    () => deskTimeline(conversation, day),
+    [conversation, day],
+  );
   const timelineCount = dayItems.length;
 
   const headerTagline = workerTagline(worker);
@@ -921,7 +993,7 @@ function WorkerRow({
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = scroller.current;
-    if (el && tab === "desk") el.scrollTop = el.scrollHeight;
+    if (el && tab === "chat") el.scrollTop = el.scrollHeight;
   }, [tab, worker.id, timelineCount, day]);
 
   // A shift the worker is working right now writes into the bottom of the
@@ -934,7 +1006,7 @@ function WorkerRow({
   const wasLive = useRef(false);
   useEffect(() => {
     const el = scroller.current;
-    if (!el || tab !== "desk") return;
+    if (!el || tab !== "chat") return;
     const follow = shouldFollowLive({
       live: !!live,
       wasLive: wasLive.current,
@@ -954,12 +1026,12 @@ function WorkerRow({
   // the settings form must not yank you back to the top of it.
   useEffect(() => {
     const el = scroller.current;
-    if (el && tab !== "desk") el.scrollTop = 0;
+    if (el && tab !== "chat") el.scrollTop = 0;
   }, [tab, worker.id]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-6">
+      <div className="shrink-0 px-6 pt-6">
         {/* Identity. Name, standing, rhythm — and one action. */}
         <div className="flex items-start gap-4">
           <WorkerAvatar worker={worker} size="lg" live={!!shift} />
@@ -999,19 +1071,20 @@ function WorkerRow({
               shiftBlock?.reason ??
               "Work one shift now, out of band. Does not change the schedule."
             }
-            className="shrink-0 rounded-md border border-card-strong px-3 py-1.5 text-xs text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
+            className="review-btn shrink-0 disabled:opacity-40"
           >
-            {shift ? "Working…" : "Work now"}
+            {shift ? "Shift running…" : "Run shift now"}
           </button>
         </div>
 
         {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
 
-        <div className="mt-5 flex items-center gap-6 border-b border-card-strong">
+        <div className="mt-5 flex items-center gap-6 overflow-x-auto border-b border-card-strong">
           {(
             [
-              ["desk", "Desk"],
-              ["shift", "Shift"],
+              ["chat", "Chat"],
+              ["shifts", "Shifts"],
+              ["tasks", "Tasks"],
               ["files", "Files"],
               ["journal", "Journal"],
               ["stats", "Stats"],
@@ -1022,7 +1095,7 @@ function WorkerRow({
               key={key}
               onClick={() => setTab(key)}
               className={
-                "-mb-px flex items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[13px] transition-colors " +
+                "-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[13px] transition-colors " +
                 "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
                 (tab === key
                   ? "border-accent text-ink"
@@ -1030,14 +1103,19 @@ function WorkerRow({
               }
             >
               {label}
-              {key === "desk" && awaiting.length > 0 && (
+              {key === "shifts" && awaiting.length > 0 && (
                 <span className="rounded-full bg-violet-500/20 px-1.5 text-[10px] text-violet-500">
                   {awaiting.length}
                 </span>
               )}
+              {key === "tasks" && activeTaskCount > 0 && (
+                <span className="rounded-full bg-sky-400/15 px-1.5 text-[10px] text-sky-400">
+                  {activeTaskCount}
+                </span>
+              )}
               {/* A shift in flight is the one thing here that changes while you
                 are not looking at it, so the tab says so. */}
-              {key === "shift" && shift?.task === "shift" && (
+              {key === "shifts" && shift?.task === "shift" && (
                 <span className="relative flex h-1.5 w-1.5">
                   <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
                   <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
@@ -1048,13 +1126,50 @@ function WorkerRow({
         </div>
       </div>
 
-      {tab === "desk" ? (
+      {tab === "chat" ? (
         <>
-          <DeskDayBar day={day} days={days} onSet={setDay} />
+          <DeskDayBar
+            day={day}
+            days={days}
+            onSet={setDay}
+            context={
+              <>
+                <button
+                  onClick={() => setTab("files")}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-card-strong bg-card/20 px-2.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card/50 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                >
+                  Files{" "}
+                  <span className="text-ink-faint">{files?.length ?? 0}</span>
+                </button>
+                <button
+                  onClick={() => setTab("journal")}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-card-strong bg-card/20 px-2.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card/50 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                >
+                  Journal{" "}
+                  <span className="text-ink-faint">{journal.length}</span>
+                </button>
+                {shift?.task === "shift" && (
+                  <button
+                    onClick={() => setTab("shifts")}
+                    className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-400 transition-colors hover:bg-sky-400/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/50"
+                  >
+                    <span
+                      className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400"
+                      aria-hidden="true"
+                    />
+                    Shift {worker.shiftCount ?? 1} planning
+                    <span className="text-sky-300/70">View shift →</span>
+                  </button>
+                )}
+              </>
+            }
+          />
           {/* Outside the scroller on purpose: it is the one thing here that
               must not scroll away, and it is about the desk rather than on
               it. */}
-          <CarriedOver items={activity} day={day} onSet={setDay} />
+          <div className="w-full">
+            <CarriedOver items={conversation} day={day} onSet={setDay} />
+          </div>
           <div
             ref={scroller}
             onScroll={(e) => {
@@ -1063,17 +1178,27 @@ function WorkerRow({
             }}
             className="min-h-0 flex-1 overflow-y-auto px-6 py-4"
           >
-            <WorkerTimeline
-              worker={worker}
-              items={dayItems}
-              day={day}
-              days={days}
-              onSet={setDay}
-              focusId={focusId}
-            />
+            <div className="min-h-full w-full">
+              <WorkerTimeline
+                worker={worker}
+                items={dayItems}
+                day={day}
+                days={days}
+                onSet={setDay}
+                onViewWork={() => setTab("shifts")}
+                workSummary={workSummary}
+                focusId={focusId}
+              />
+            </div>
           </div>
           <div className="shrink-0 border-t border-card px-6 py-3">
-            <WorkerErrandComposer worker={worker} />
+            <div className="w-full">
+              <WorkerErrandComposer
+                worker={worker}
+                intent={intent}
+                onIntentChange={setIntent}
+              />
+            </div>
           </div>
         </>
       ) : (
@@ -1081,8 +1206,20 @@ function WorkerRow({
           ref={scroller}
           className="min-h-0 flex-1 overflow-y-auto px-6 pb-6"
         >
-          {tab === "shift" && (
-            <WorkerShiftPane worker={worker} nextShiftAt={nextShiftAt} />
+          {tab === "shifts" && (
+            <WorkerShiftsPane
+              worker={worker}
+              nextShiftAt={nextShiftAt}
+              focusId={focusId}
+              onFocusConsumed={() => setFocusId(null)}
+            />
+          )}
+          {tab === "tasks" && (
+            <WorkerTasksPane
+              worker={worker}
+              orchestrations={mine}
+              onViewShifts={() => setTab("shifts")}
+            />
           )}
           {tab === "files" && (
             <WorkerFiles
@@ -1489,8 +1626,9 @@ function WorkerSettings({
                   Running work is stopped. It may offer rejected ideas again.
                 </div>
                 <div className="mt-1 text-xs text-ink-faint">
-                  Trust, budget, job description, and historical usage spend stay
-                  as they are. This cannot be undone{files.length ? ` (${files.length} files)` : ""}.
+                  Trust, budget, job description, and historical usage spend
+                  stay as they are. This cannot be undone
+                  {files.length ? ` (${files.length} files)` : ""}.
                 </div>
                 <div className="mt-2 flex gap-1">
                   <button
@@ -1564,7 +1702,10 @@ function ShareCard({ worker }: { worker: Worker }) {
   const shareYaml = useWorkersStore((s) => s.shareYaml);
   const shareToFile = useWorkersStore((s) => s.shareToFile);
   const [open, setOpen] = useState(false);
-  const [share, setShare] = useState<{ yaml: string; missingFlowIds: string[] } | null>(null);
+  const [share, setShare] = useState<{
+    yaml: string;
+    missingFlowIds: string[];
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const [savedTo, setSavedTo] = useState<string | null>(null);
 
@@ -1585,7 +1726,9 @@ function ShareCard({ worker }: { worker: Worker }) {
   return (
     <div className="rounded-xl border border-card-strong p-3">
       <div className="flex items-center gap-2">
-        <div className="text-[11px] uppercase tracking-wider text-ink-faint">Share</div>
+        <div className="text-[11px] uppercase tracking-wider text-ink-faint">
+          Share
+        </div>
         <button
           onClick={() => setOpen((v) => !v)}
           className="ml-auto text-[11px] text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
@@ -1627,7 +1770,10 @@ function ShareCard({ worker }: { worker: Worker }) {
       </div>
 
       {savedTo && (
-        <div className="mt-2 truncate text-[10px] text-ink-faint" title={savedTo}>
+        <div
+          className="mt-2 truncate text-[10px] text-ink-faint"
+          title={savedTo}
+        >
           Saved to {savedTo}
         </div>
       )}
@@ -1639,8 +1785,9 @@ function ShareCard({ worker }: { worker: Worker }) {
       {share && share.missingFlowIds.length > 0 && (
         <div className="mt-2 text-[10px] text-amber-400">
           {share.missingFlowIds.join(", ")}{" "}
-          {share.missingFlowIds.length === 1 ? "is" : "are"} not in your library,
-          so {share.missingFlowIds.length === 1 ? "it travels" : "they travel"} as
+          {share.missingFlowIds.length === 1 ? "is" : "are"} not in your
+          library, so{" "}
+          {share.missingFlowIds.length === 1 ? "it travels" : "they travel"} as
           a name only.
         </div>
       )}
@@ -1662,7 +1809,13 @@ function ShareCard({ worker }: { worker: Worker }) {
 /// declares the note. A worker that has never written a page says so and
 /// offers nothing to pick, which is the honest form of this control: there is
 /// no output to auto-render, so there is no choice to make.
-function AutoRenderSetting({ worker, files }: { worker: Worker; files: WorkerFile[] }) {
+function AutoRenderSetting({
+  worker,
+  files,
+}: {
+  worker: Worker;
+  files: WorkerFile[];
+}) {
   const setAutoRender = useWorkersStore((s) => s.setAutoRender);
   const outputs = useMemo(() => workerRenderableOutputs(files), [files]);
   const value = worker.autoRender ?? WORKER_AUTO_RENDER_NEWEST;
@@ -1704,7 +1857,9 @@ function AutoRenderSetting({ worker, files }: { worker: Worker; files: WorkerFil
               {name}
             </option>
           ))}
-          {missing && <option value={value}>{value} — not filed any more</option>}
+          {missing && (
+            <option value={value}>{value} — not filed any more</option>
+          )}
           <option value={WORKER_AUTO_RENDER_OFF}>Nothing</option>
         </select>
       </div>
@@ -2072,61 +2227,83 @@ function formatBytes(bytes: number): string {
 /// Idle is a real state here, not an empty one. A worker between shifts should
 /// say when the next one is and what the last one did, so the tab answers
 /// "should I be expecting something" without a click.
-function WorkerShiftPane({
+function WorkerShiftsPane({
   worker,
   nextShiftAt,
+  focusId,
+  onFocusConsumed,
 }: {
   worker: Worker;
   nextShiftAt: number | null;
+  focusId: string | null;
+  onFocusConsumed: () => void;
 }) {
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
-  const workShiftNow = useWorkersStore((s) => s.workShiftNow);
-  const starting = useWorkersStore((s) => !!s.shiftStarting[worker.id]);
-  const shiftBlock = useShiftBlock(worker.id);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
 
-  const latest = useMemo(
+  const shifts = useMemo(
     () =>
-      workerActivity(orchestrations, worker.id, 40).find(
-        (a) => a.task === "shift",
-      ),
+      Object.values(orchestrations)
+        .filter(
+          (item) =>
+            item.origin?.kind === "worker" &&
+            item.origin.workerId === worker.id,
+        )
+        .filter((item) => orchestrationTask(item) === "shift")
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 40)
+        .map(toWorkerActivity),
     [orchestrations, worker.id],
   );
+  const latest = shifts[0];
+  const focused = useRef<HTMLDivElement>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!focusId) return;
+    setHighlightedId(focusId);
+    setExpandedId(focusId);
+    focused.current?.scrollIntoView({ block: "center" });
+    onFocusConsumed();
+  }, [focusId, onFocusConsumed, shifts.length]);
   const planning = shift?.task === "shift";
   const working = !!latest && (latest.running > 0 || latest.proposed > 0);
 
   return (
-    <div className="mt-4 space-y-4">
-      <div className="flex items-baseline gap-2">
-        <span className="text-sm text-ink">
-          {planning
-            ? `${worker.name} is planning its shift`
-            : working
-              ? `Shift ${latest?.title.replace(/^Shift\s*/, "") ?? ""} is running`
-              : "No shift running"}
-        </span>
-        <span className="text-[11px] text-ink-faint">
-          {worker.enabled
-            ? nextShiftAt != null
-              ? `next ${untilLabel(nextShiftAt)} · ${describeTrigger(worker.cadence)}`
-              : describeTrigger(worker.cadence)
-            : "paused — no shifts until you resume it"}
-        </span>
-        <button
-          disabled={starting || !!shift || !!shiftBlock}
-          onClick={() => void workShiftNow(worker.id)}
-          title={
-            shiftBlock?.reason ??
-            "Work one shift now, out of band. Does not change the schedule."
-          }
-          className="ml-auto shrink-0 rounded-md border border-card-strong px-2.5 py-1 text-xs text-ink-muted hover:bg-white/5 hover:text-ink disabled:opacity-40"
-        >
-          {shift ? "Working…" : "Work now"}
-        </button>
-      </div>
-
-      {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
+    <div className="space-y-5 pt-4">
+      <section className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
+        <div>
+          <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">
+            Shift status
+          </div>
+          <div className="mt-2 text-xl font-semibold text-ink">
+            {planning
+              ? `${worker.name} is planning its shift`
+              : working
+                ? `Shift ${latest?.title.replace(/^Shift\s*/, "") ?? ""} is running`
+                : "Between shifts"}
+          </div>
+          <div className="mt-1 text-xs text-ink-muted">
+            {worker.enabled
+              ? nextShiftAt != null
+                ? `Next shift ${untilLabel(nextShiftAt)}`
+                : describeTrigger(worker.cadence)
+              : "paused — no shifts until you resume it"}
+          </div>
+        </div>
+        <div className="rounded-lg border border-card-strong bg-surface-elevated/50 px-4 py-3 text-right">
+          <div className="text-[10px] uppercase tracking-wider text-ink-faint">
+            Cadence
+          </div>
+          <div className="mt-1 text-sm font-medium text-ink">
+            {describeTrigger(worker.cadence)}
+          </div>
+          <div className="mt-0.5 text-[11px] text-ink-faint">
+            {shifts.length} recorded shift{shifts.length === 1 ? "" : "s"}
+          </div>
+        </div>
+      </section>
 
       {/* The planning turn, as it arrives. A worker deciding what today's
           version of its job is has reasoning worth reading — it is the part
@@ -2146,7 +2323,7 @@ function WorkerShiftPane({
             )}
           </div>
           {shift.text ? (
-            <div className="max-h-[40vh] overflow-y-auto text-xs text-ink-muted">
+            <div className="text-xs leading-relaxed text-ink-muted">
               <Markdown source={shift.text} />
             </div>
           ) : (
@@ -2158,33 +2335,90 @@ function WorkerShiftPane({
       )}
 
       {latest ? (
-        <div className="rounded-xl border border-card-strong px-4 py-3">
-          <div className="mb-1 flex items-baseline gap-2">
-            <button
-              onClick={() =>
-                openWorkerActivity(
-                  worker.id,
-                  latest.orchestration.id,
-                  latest.at,
-                )
-              }
-              className="text-sm text-ink hover:underline focus:outline-none"
-              title="Open this shift on the desk"
-            >
-              {latest.title}
-            </button>
-            <span className="text-[11px] text-ink-faint">
-              {describeActivity(latest)} · {relativeTime(latest.at)}
-            </span>
-            <span className="ml-auto">
-              <ReadInFull worker={worker} item={latest} />
-            </span>
+        <section>
+          <div className="mb-3 flex items-end justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-ink">
+                Shift history
+              </div>
+              <div className="mt-0.5 text-xs text-ink-muted">
+                Newest first. Open details only when you need the full planning
+                record.
+              </div>
+            </div>
           </div>
-          <ShiftPlan orchestration={latest.orchestration} />
-          {isOrchestrationAwaitingApproval(latest.orchestration) && (
-            <WorkerPendingProposal orchestration={latest.orchestration} />
-          )}
-        </div>
+          <div className="space-y-2">
+            {shifts.map((item, index) => {
+              const expanded =
+                expandedId === item.orchestration.id ||
+                (expandedId === null && index === 0);
+              return (
+                <div
+                  key={item.orchestration.id}
+                  ref={
+                    item.orchestration.id === highlightedId
+                      ? focused
+                      : undefined
+                  }
+                  className={
+                    "overflow-hidden rounded-xl border bg-card/20 shadow-sm " +
+                    (item.orchestration.id === highlightedId
+                      ? "border-accent ring-1 ring-accent/30"
+                      : "border-card-strong")
+                  }
+                >
+                  <div className="group relative flex flex-wrap items-center gap-2 px-4 py-3">
+                    <button
+                      onClick={() =>
+                        setExpandedId(expanded ? "" : item.orchestration.id)
+                      }
+                      className="absolute inset-0 rounded-t-xl transition-colors hover:bg-card/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent/60"
+                      aria-expanded={expanded}
+                      aria-label={`${expanded ? "Hide" : "Show"} details for ${item.title}`}
+                    />
+                    <span className="pointer-events-none relative text-sm font-medium text-ink">
+                      {item.title}
+                    </span>
+                    <span className="pointer-events-none relative text-[11px] text-ink-faint">
+                      {relativeTime(item.at)}
+                    </span>
+                    <ShiftOutcomeBadges item={item} />
+                    {index === 0 && (
+                      <span className="pointer-events-none relative rounded-full bg-accent/10 px-2 py-0.5 text-[9px] font-medium uppercase tracking-wider text-accent">
+                        Latest
+                      </span>
+                    )}
+                    <div className="relative z-10 ml-auto flex h-7 items-center gap-1">
+                      <button
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setExpandedId(expanded ? "" : item.orchestration.id);
+                        }}
+                        className="inline-flex h-7 items-center rounded-md px-2 text-[11px] text-ink-muted transition-colors hover:bg-card hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                        aria-expanded={expanded}
+                      >
+                        {expanded ? "Hide details" : "Show details"}
+                      </button>
+                      <ReadInFull worker={worker} item={item} inline />
+                    </div>
+                  </div>
+                  {expanded && (
+                    <div className="border-t border-card-strong bg-card/30 px-4 py-3">
+                      <div className="rounded-lg bg-surface/40 px-3 py-2">
+                        <ShiftPlan orchestration={item.orchestration} />
+                      </div>
+                      {isOrchestrationAwaitingApproval(item.orchestration) && (
+                        <WorkerPendingProposal
+                          orchestration={item.orchestration}
+                        />
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
       ) : (
         !planning && (
           <div className="rounded-xl border border-dashed border-card-strong px-4 py-8 text-center">
@@ -2198,6 +2432,344 @@ function WorkerShiftPane({
         )
       )}
     </div>
+  );
+}
+
+interface WorkerTaskEntry {
+  orchestration: Orchestration;
+  item: OrchestrationItem;
+  sourceKind: "shift" | "conversation";
+  sourceLabel: string;
+  sourceDetail: string;
+  at: number;
+  durationMs: number | null;
+}
+
+function formatTaskDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1_000));
+  if (seconds < 60) return seconds === 0 ? "<1s" : `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60)
+    return remainingSeconds > 0
+      ? `${minutes}m ${remainingSeconds}s`
+      : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+}
+
+/// Concrete work, separated from the shifts that proposed it. Shifts explains
+/// what the worker considered on each turn; Tasks is the operational ledger of
+/// what actually entered execution, regardless of which shift or Create work
+/// message launched it.
+function WorkerTasksPane({
+  worker,
+  orchestrations,
+  onViewShifts,
+}: {
+  worker: Worker;
+  orchestrations: Orchestration[];
+  onViewShifts: () => void;
+}) {
+  const tasks = useMemo<WorkerTaskEntry[]>(
+    () =>
+      orchestrations
+        .flatMap((orchestration) => {
+          const activity = toWorkerActivity(orchestration);
+          const sourceKind: WorkerTaskEntry["sourceKind"] =
+            activity.task === "shift" ? "shift" : "conversation";
+          const origin =
+            orchestration.origin?.kind === "worker"
+              ? orchestration.origin
+              : null;
+          const sourceLabel =
+            sourceKind === "shift"
+              ? activity.title
+              : origin?.from
+                ? `From ${origin.from.workerName}`
+                : "Conversation";
+          const sourceDetail =
+            sourceKind === "conversation"
+              ? (origin?.errand ??
+                orchestration.title.replace(/^\[Errand\]\s*/i, ""))
+              : "";
+          return orchestration.items
+            .filter((item) =>
+              [
+                "proposed",
+                "queued",
+                "running",
+                "paused",
+                "done",
+                "failed",
+              ].includes(item.status),
+            )
+            .map((item) => ({
+              orchestration,
+              item,
+              sourceKind,
+              sourceLabel,
+              sourceDetail,
+              at: item.finishedAt ?? item.startedAt ?? orchestration.createdAt,
+              durationMs: item.startedAt
+                ? Math.max(0, (item.finishedAt ?? Date.now()) - item.startedAt)
+                : null,
+            }));
+        })
+        .sort((a, b) => b.at - a.at),
+    [orchestrations],
+  );
+  const active = tasks.filter(({ item }) =>
+    ["queued", "running", "paused"].includes(item.status),
+  ).length;
+  const needsReview = tasks.filter(
+    ({ item }) => item.status === "proposed",
+  ).length;
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<
+    "all" | "active" | "review" | "completed" | "failed"
+  >("all");
+  const [sourceFilter, setSourceFilter] = useState<
+    "all" | "shift" | "conversation"
+  >("all");
+  const [visibleCount, setVisibleCount] = useState(25);
+  useEffect(() => {
+    setVisibleCount(25);
+  }, [worker.id, query, statusFilter, sourceFilter]);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return tasks.filter((entry) => {
+      const statusMatches =
+        statusFilter === "all" ||
+        (statusFilter === "active" &&
+          ["queued", "running", "paused"].includes(entry.item.status)) ||
+        (statusFilter === "review" && entry.item.status === "proposed") ||
+        (statusFilter === "completed" && entry.item.status === "done") ||
+        (statusFilter === "failed" && entry.item.status === "failed");
+      const sourceMatches =
+        sourceFilter === "all" || sourceFilter === entry.sourceKind;
+      const queryMatches =
+        !needle ||
+        [
+          entry.item.candidate.title,
+          entry.sourceLabel,
+          entry.sourceDetail,
+        ].some((value) => value.toLowerCase().includes(needle));
+      return statusMatches && sourceMatches && queryMatches;
+    });
+  }, [tasks, query, statusFilter, sourceFilter]);
+  const visible = filtered.slice(0, visibleCount);
+  const clearFilters = () => {
+    setQuery("");
+    setStatusFilter("all");
+    setSourceFilter("all");
+  };
+
+  return (
+    <div className="space-y-4 pt-5">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+            Tasks
+          </div>
+          <div className="mt-1 text-lg font-semibold text-ink">
+            {worker.name}&apos;s tasks
+          </div>
+          <div className="mt-0.5 text-xs text-ink-muted">
+            Work launched from shifts and conversations, newest first.
+          </div>
+        </div>
+        {filtered.length !== tasks.length && (
+          <div className="text-xs text-ink-muted">
+            {filtered.length} of {tasks.length}
+          </div>
+        )}
+      </div>
+
+      {(active > 0 || needsReview > 0) && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-sky-400/20 bg-sky-400/[0.05] px-3 py-2 text-xs">
+          {active > 0 && (
+            <span className="font-medium text-sky-400">{active} active</span>
+          )}
+          {active > 0 && needsReview > 0 && (
+            <span className="text-ink-faint">·</span>
+          )}
+          {needsReview > 0 && (
+            <span className="font-medium text-violet-400">
+              {needsReview} awaiting review
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2 rounded-xl border border-card-strong bg-card/20 p-3 md:flex-row md:items-center">
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label="Search tasks"
+          placeholder="Search tasks…"
+          className="h-8 min-w-0 flex-1 rounded-md border border-card-strong bg-surface px-3 text-xs text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+        />
+        <div
+          className="flex shrink-0 gap-1 overflow-x-auto"
+          role="group"
+          aria-label="Filter tasks by status"
+        >
+          {(
+            [
+              ["all", "All"],
+              ["active", "Active"],
+              ["review", "Needs review"],
+              ["completed", "Completed"],
+              ["failed", "Failed"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setStatusFilter(key)}
+              aria-pressed={statusFilter === key}
+              className={`h-7 shrink-0 rounded-md px-2.5 text-[11px] font-medium transition-colors ${statusFilter === key ? "bg-accent/15 text-accent" : "text-ink-muted hover:bg-card hover:text-ink"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div
+          className="flex shrink-0 gap-1 overflow-x-auto border-l border-card-strong pl-2"
+          role="group"
+          aria-label="Filter tasks by source"
+        >
+          {(
+            [
+              ["all", "All sources"],
+              ["shift", "Shifts"],
+              ["conversation", "Conversations"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setSourceFilter(key)}
+              aria-pressed={sourceFilter === key}
+              className={`h-7 shrink-0 rounded-md px-2.5 text-[11px] font-medium transition-colors ${sourceFilter === key ? "bg-accent/15 text-accent" : "text-ink-muted hover:bg-card hover:text-ink"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tasks.length > 0 && filtered.length > 0 ? (
+        <section>
+          <div className="mb-3">
+            <div className="text-sm font-semibold text-ink">Task history</div>
+            <div className="mt-0.5 text-xs text-ink-muted">
+              Open a task to see its run, steps, transcript, and files.
+            </div>
+          </div>
+          <div className="divide-y divide-card-strong overflow-hidden rounded-xl border border-card-strong bg-card/20">
+            <div className="hidden grid-cols-[minmax(18rem,1fr)_9rem_7rem_7rem] gap-4 border-b border-card-strong bg-card/30 px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.1em] text-ink-muted md:grid">
+              <span>Task</span>
+              <span>Source</span>
+              <span>Duration</span>
+              <span className="text-right">Finished</span>
+            </div>
+            {visible.map(
+              ({
+                orchestration,
+                item,
+                sourceLabel,
+                sourceDetail,
+                at,
+                durationMs,
+              }) => (
+                <PlanItemRow
+                  key={`${orchestration.id}:${item.candidate.id}`}
+                  item={item}
+                  orchestration={orchestration}
+                  context={{
+                    sourceLabel,
+                    sourceDetail,
+                    at,
+                    durationMs,
+                    onReview: onViewShifts,
+                  }}
+                  compactArtifacts
+                />
+              ),
+            )}
+          </div>
+          {visibleCount < filtered.length && (
+            <button
+              onClick={() => setVisibleCount((count) => count + 25)}
+              className="mx-auto mt-4 flex h-9 items-center rounded-md border border-card-strong bg-card/30 px-4 text-xs font-medium text-ink-muted transition-colors hover:bg-card/60 hover:text-ink"
+            >
+              Load 25 more · {filtered.length - visibleCount} remaining
+            </button>
+          )}
+        </section>
+      ) : tasks.length > 0 ? (
+        <div className="rounded-xl border border-dashed border-card-strong px-4 py-10 text-center">
+          <div className="text-sm font-medium text-ink">
+            No tasks match these filters.
+          </div>
+          <button
+            onClick={clearFilters}
+            className="mt-3 text-xs font-medium text-accent hover:underline"
+          >
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-xl border border-dashed border-card-strong px-4 py-10 text-center">
+          <div className="text-sm font-medium text-ink">No tasks yet</div>
+          <div className="mx-auto mt-1 max-w-sm text-xs leading-5 text-ink-muted">
+            Tasks appear here when a shift or Create work message launches a
+            flow.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ShiftOutcomeBadges({ item }: { item: WorkerActivity }) {
+  const badges = item.launchedNothing
+    ? [
+        {
+          label: "Quiet · nothing proposed",
+          cls: "border-sky-400/20 bg-sky-400/10 text-sky-400",
+        },
+      ]
+    : [
+        item.proposed > 0 && {
+          label: `${item.proposed} awaiting review`,
+          cls: "border-violet-400/25 bg-violet-400/10 text-violet-400",
+        },
+        item.running > 0 && {
+          label: `${item.running} running`,
+          cls: "border-sky-400/25 bg-sky-400/10 text-sky-400",
+        },
+        item.done > 0 && {
+          label: `${item.done} completed`,
+          cls: "border-emerald-400/25 bg-emerald-400/10 text-emerald-400",
+        },
+        item.failed > 0 && {
+          label: `${item.failed} failed`,
+          cls: "border-red-400/25 bg-red-400/10 text-red-400",
+        },
+      ].filter((badge): badge is { label: string; cls: string } => !!badge);
+  return (
+    <span className="pointer-events-none relative flex flex-wrap items-center gap-1.5">
+      {badges.map((badge) => (
+        <span
+          key={badge.label}
+          className={`rounded-full border px-2 py-0.5 text-[9px] font-medium ${badge.cls}`}
+        >
+          {badge.label}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -2219,6 +2791,8 @@ function WorkerTimeline({
   day,
   days,
   onSet,
+  onViewWork,
+  workSummary,
   focusId,
 }: {
   worker: Worker;
@@ -2228,6 +2802,8 @@ function WorkerTimeline({
   day: number;
   days: DeskDay[];
   onSet: (day: number) => void;
+  onViewWork: () => void;
+  workSummary: WorkerWorkSummary;
   /// A turn arrived at from somewhere else (the shift calendar): opened and
   /// scrolled to, whatever the default expansion rule would have done.
   focusId: string | null;
@@ -2254,9 +2830,28 @@ function WorkerTimeline({
   // A day whose only content is the turn in flight is not an empty day. The
   // first shift of the morning starts on a cleared desk, which is exactly when
   // "nothing here" would be the most wrong thing the page could say.
-  const pending = isToday && ((sending && sending.length > 0) || !!live);
+  if (items.length === 0 && isToday && live?.task === "shift") {
+    return (
+      <PlanningDesk
+        worker={worker}
+        shiftNumber={worker.shiftCount ?? 1}
+        onViewWork={onViewWork}
+      />
+    );
+  }
+  const pending =
+    isToday && ((sending && sending.length > 0) || live?.task === "errand");
   if (items.length === 0 && !pending) {
-    return <EmptyDesk worker={worker} day={day} days={days} onSet={onSet} />;
+    return (
+      <EmptyDesk
+        worker={worker}
+        day={day}
+        days={days}
+        onSet={onSet}
+        onViewWork={onViewWork}
+        workSummary={workSummary}
+      />
+    );
   }
 
   return (
@@ -2264,23 +2859,12 @@ function WorkerTimeline({
       {items.map((item) => {
         const awaiting = isOrchestrationAwaitingApproval(item.orchestration);
         const id = item.orchestration.id;
-        const produced = item.orchestration.items.length > 0;
+        const produced =
+          item.intent === "work" && item.orchestration.items.length > 0;
         const open = overrides[id] ?? (id === focusId || produced);
         const toggle = () => setOverrides((cur) => ({ ...cur, [id]: !open }));
         const anchor = id === focusId ? focused : undefined;
 
-        if (item.task === "shift") {
-          return (
-            <div key={id} ref={anchor}>
-              <ShiftRule
-                worker={worker}
-                item={item}
-                open={open}
-                onToggle={toggle}
-              />
-            </div>
-          );
-        }
         const launched = item.running + item.done + item.failed;
         return (
           <div key={id} ref={anchor} className="flex flex-col gap-2">
@@ -2301,24 +2885,31 @@ function WorkerTimeline({
               at={item.at}
               reply={item.reply}
               footer={
-                launched > 0 || item.proposed > 0 ? (
-                  <button
-                    onClick={toggle}
-                    className="mt-2 text-[11px] text-ink-faint hover:text-ink focus:outline-none"
-                  >
-                    {[
-                      launched > 0 && `launched ${launched}`,
-                      item.proposed > 0 &&
-                        `${item.proposed} waiting for your review`,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}{" "}
-                    {open ? "▾" : "▸"}
-                  </button>
+                item.intent === "work" ? (
+                  <div className="mt-2 flex items-center gap-2 text-[11px] text-ink-faint">
+                    <span className="rounded bg-violet-500/20 px-1 py-0.5 text-[9px] text-violet-500">
+                      Work
+                    </span>
+                    {(launched > 0 || item.proposed > 0) && (
+                      <button
+                        onClick={toggle}
+                        className="hover:text-ink focus:outline-none"
+                      >
+                        {[
+                          launched > 0 && `launched ${launched}`,
+                          item.proposed > 0 &&
+                            `${item.proposed} waiting for your review`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}{" "}
+                        {open ? "▾" : "▸"}
+                      </button>
+                    )}
+                  </div>
                 ) : null
               }
             />
-            {open && (
+            {item.intent === "work" && open && (
               <div className="rounded-xl border border-card-strong px-3 pb-2">
                 <ReadInFull worker={worker} item={item} />
                 <ShiftPlan
@@ -2333,18 +2924,54 @@ function WorkerTimeline({
           </div>
         );
       })}
-      {/* The turn you just sent. It has no batch yet — one only exists once the
-          planning turn finishes — so it is rendered from the in-flight record
-          instead. Same bubble, so nothing shifts when the real one replaces it. */}
+      {/* The turn you just sent. Its receipt is interface state, not a worker
+          reply: keep it visually light and remove it the moment real prose
+          begins. Later queued messages retain their own position receipt. */}
       {isToday &&
-        sending?.map((pending) => (
-          <UserBubble key={pending.id} text={pending.text} />
-        ))}
+        sending?.map((pending, index) => {
+          const responseStarted =
+            index === 0 && live?.task === "errand" && !!live.text;
+          const status =
+            live?.task === "shift"
+              ? `Queued behind Shift ${worker.shiftCount ?? 1}`
+              : index > 0
+                ? `Queued · ${index} ahead`
+                : pending.intent === "work"
+                  ? "Preparing work"
+                  : "Reading Files and Journal";
+          return (
+            <div key={pending.id} className="flex flex-col gap-2">
+              <UserBubble text={pending.text} />
+              {!responseStarted && <WorkerActivityReceipt status={status} />}
+            </div>
+          );
+        })}
       {/* The turn happening RIGHT NOW, at the bottom where the next thing
           always goes. Today only: a live shift belongs on today's page, and
           appending it to a day you have paged back to would be the desk
           claiming work happened on a day it did not. */}
-      {isToday && live && <LiveTurn worker={worker} tint={tint} live={live} />}
+      {isToday && live?.task === "errand" && (
+        <LiveTurn worker={worker} tint={tint} live={live} />
+      )}
+    </div>
+  );
+}
+
+/// Ephemeral engine state belongs between turns, not inside an assistant
+/// bubble. `aria-live` announces progress without leaving a fake message in
+/// the settled transcript.
+function WorkerActivityReceipt({ status }: { status: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex items-center gap-2 self-start px-1 py-0.5 text-[11px] text-ink-faint"
+    >
+      <span
+        aria-hidden="true"
+        className="h-2.5 w-2.5 animate-spin rounded-full border border-ink-faint/40 border-t-ink-muted"
+      />
+      <span>{status}</span>
     </div>
   );
 }
@@ -2375,9 +3002,7 @@ function LiveTurn({
   // The engine stamps `shiftCount` before the planning turn starts, so the
   // number is already this shift's — not the last one's.
   const label =
-    live.task === "shift"
-      ? `Shift ${worker.shiftCount ?? 1} · starting`
-      : null;
+    live.task === "shift" ? `Shift ${worker.shiftCount ?? 1} · starting` : null;
 
   return (
     <div>
@@ -2415,7 +3040,9 @@ function LiveTurn({
             {tool && <span className="truncate text-ink-faint">· {tool}</span>}
           </div>
           {live.text ? (
-            <Markdown source={live.text} />
+            <div>
+              <Markdown source={live.text} />
+            </div>
           ) : (
             <div className="text-xs text-ink-faint">
               Reading its job description and journal…
@@ -2430,45 +3057,163 @@ function LiveTurn({
 /// A day with nothing on it. Two different silences, and they need different
 /// words: today being empty is the desk working as intended, and an empty past
 /// day is just an empty past day.
+function PlanningDesk({
+  worker,
+  shiftNumber,
+  onViewWork,
+}: {
+  worker: Worker;
+  shiftNumber: number;
+  onViewWork: () => void;
+}) {
+  return (
+    <div className="flex min-h-full items-center justify-center pb-16">
+      <div className="w-full max-w-md text-center">
+        <div className="relative mx-auto flex h-12 w-12 items-center justify-center rounded-2xl border border-sky-400/25 bg-sky-400/10 text-sky-400">
+          <svg
+            viewBox="0 0 24 24"
+            className="h-5 w-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="7" />
+            <path
+              d="M12 8v4l2.5 1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="absolute right-0 top-0 h-2.5 w-2.5 animate-pulse rounded-full border-2 border-surface bg-sky-400" />
+        </div>
+        <div className="mt-4 text-[11px] font-semibold uppercase tracking-[0.14em] text-sky-400">
+          Shift {shiftNumber} in progress
+        </div>
+        <div className="mt-1.5 text-base font-semibold text-ink">
+          {worker.name} is planning today&apos;s work
+        </div>
+        <p className="mx-auto mt-2 max-w-sm text-xs leading-5 text-ink-muted">
+          It&apos;s reading its job description and journal now. Follow the
+          planning turn in Shifts, or send a message below.
+        </p>
+        <button
+          onClick={onViewWork}
+          className="mt-4 inline-flex h-8 items-center rounded-md border border-card-strong bg-card/40 px-3 text-xs font-medium text-ink transition-colors hover:bg-card/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+        >
+          View shift in Shifts →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function EmptyDesk({
   worker,
   day,
   days,
   onSet,
+  onViewWork,
+  workSummary,
 }: {
   worker: Worker;
   day: number;
   days: DeskDay[];
   onSet: (day: number) => void;
+  onViewWork: () => void;
+  workSummary: WorkerWorkSummary;
 }) {
   const previous = adjacentDeskDay(days, day, -1);
   const previousCount = days.find((d) => d.at === previous)?.count ?? 0;
   const everWorked = days.length > 0;
+  const isToday = day === startOfDay(Date.now());
+  const latestOutcome = workSummary.latest
+    ? workSummary.latest.launchedNothing
+      ? "Quiet check"
+      : describeActivity(workSummary.latest)
+    : null;
   return (
-    <div className="rounded-xl border border-dashed border-card-strong px-4 py-8 text-center">
-      <div className="text-sm text-ink">
-        {day === startOfDay(Date.now())
-          ? everWorked
-            ? "Clean desk."
-            : "Nothing yet."
-          : "Nothing on this day."}
+    <div className="flex min-h-full items-center justify-center pb-16">
+      <div className="w-full max-w-lg text-center">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl border border-card-strong bg-card/30 text-ink-muted">
+          <svg
+            viewBox="0 0 24 24"
+            className="h-5 w-5"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            aria-hidden="true"
+          >
+            <path d="M5 6.5h14v9H9l-4 3v-12Z" strokeLinejoin="round" />
+            <path d="M8 10h8M8 13h5" strokeLinecap="round" />
+          </svg>
+        </div>
+        <div className="mt-4 text-sm font-semibold text-ink">
+          {isToday
+            ? everWorked
+              ? "No conversation yet today"
+              : `Start a conversation with ${worker.name}`
+            : `No conversation on ${deskDayLabel(day)}`}
+        </div>
+        <p className="mx-auto mt-1.5 max-w-sm text-xs leading-5 text-ink-muted">
+          {isToday
+            ? `Messages start fresh each day. Scheduled shifts stay in Shifts; work launched from a shift or conversation appears in Tasks.`
+            : `${worker.name} didn’t exchange messages on this day.`}
+        </p>
+        {isToday && workSummary.shiftCount > 0 && (
+          <button
+            onClick={onViewWork}
+            className="mx-auto mt-5 block w-full rounded-xl border border-card-strong bg-card/30 p-4 text-left transition-colors hover:bg-card/50 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+          >
+            <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+              Work continues independently
+            </span>
+            <span className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1">
+              <span className="text-base font-semibold text-ink">
+                {workSummary.shiftCount}{" "}
+                {workSummary.shiftCount === 1 ? "shift" : "shifts"} worked
+              </span>
+              <span className="text-xs text-ink-muted">
+                ·{" "}
+                {workSummary.completed > 0
+                  ? `${workSummary.completed} ${workSummary.completed === 1 ? "job" : "jobs"} completed`
+                  : "No jobs completed yet"}
+              </span>
+            </span>
+            {workSummary.latest && (
+              <span className="mt-2 block text-xs text-ink-muted">
+                Latest:{" "}
+                <span className="font-medium text-ink">
+                  {workSummary.latest.title}
+                </span>
+                {latestOutcome ? ` · ${latestOutcome}` : ""}
+              </span>
+            )}
+            <span className="mt-3 block text-right text-xs font-medium text-accent">
+              View Shifts →
+            </span>
+          </button>
+        )}
+        {/* The way back. A cleared desk must never mean "lost": the last day
+            that had work is one click away, named and counted. */}
+        {previous != null && (
+          <button
+            onClick={() => onSet(previous)}
+            className="mt-4 inline-flex h-8 items-center rounded-md px-3 text-xs font-medium text-accent transition-colors hover:bg-accent/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+          >
+            View {deskDayLabel(previous)} · {previousCount}{" "}
+            {previousCount === 1 ? "turn" : "turns"} →
+          </button>
+        )}
       </div>
-      <div className="mt-1 text-xs text-ink-muted">
-        {worker.name} files its next shift here — or ask it something below.
-      </div>
-      {/* The way back. A cleared desk must never mean "lost": the last day
-          that had work is one click away, named and counted. */}
-      {previous != null && (
-        <button
-          onClick={() => onSet(previous)}
-          className="mt-3 text-xs text-accent hover:underline focus:outline-none"
-        >
-          {deskDayLabel(previous)} · {previousCount}{" "}
-          {previousCount === 1 ? "turn" : "turns"} →
-        </button>
-      )}
     </div>
   );
+}
+
+interface WorkerWorkSummary {
+  shiftCount: number;
+  completed: number;
+  latest: WorkerActivity | null;
 }
 
 /// The in-tray: proposals from earlier days that are still yours to answer,
@@ -2512,7 +3257,8 @@ function CarriedOver({
           className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-violet-500 focus:outline-none"
         >
           <span className="shrink-0 font-medium">
-            {proposals} {proposals === 1 ? "proposal" : "proposals"} carried over
+            {proposals} {proposals === 1 ? "proposal" : "proposals"} carried
+            over
           </span>
           <span className="truncate text-ink-muted">
             from {deskDayLabel(startOfDay(carried[0].at))}
@@ -2569,10 +3315,12 @@ function DeskDayBar({
   day,
   days,
   onSet,
+  context,
 }: {
   day: number;
   days: DeskDay[];
   onSet: (day: number) => void;
+  context?: ReactNode;
 }) {
   const older = adjacentDeskDay(days, day, -1);
   const newer = adjacentDeskDay(days, day, 1);
@@ -2580,45 +3328,50 @@ function DeskDayBar({
   const count = days.find((d) => d.at === day)?.count ?? 0;
 
   return (
-    <div className="flex shrink-0 items-center gap-2 px-6 pt-3">
-      <button
-        onClick={() => older != null && onSet(older)}
-        disabled={older == null}
-        title={
-          older != null ? `Back to ${deskDayLabel(older)}` : "Nothing earlier"
-        }
-        className="rounded border border-card-strong px-1.5 leading-5 text-[11px] text-ink-faint hover:bg-white/5 hover:text-ink focus:outline-none disabled:opacity-30"
-      >
-        ‹
-      </button>
-      <span className="text-[11px] text-ink-muted">
-        {deskDayLabel(day)}
-        {count > 0 && (
-          <span className="text-ink-faint">
-            {" "}
-            · {count} {count === 1 ? "turn" : "turns"}
-          </span>
-        )}
-      </span>
-      <button
-        onClick={() => newer != null && onSet(newer)}
-        disabled={newer == null}
-        title={
-          newer != null ? `Forward to ${deskDayLabel(newer)}` : "Nothing later"
-        }
-        className="rounded border border-card-strong px-1.5 leading-5 text-[11px] text-ink-faint hover:bg-white/5 hover:text-ink focus:outline-none disabled:opacity-30"
-      >
-        ›
-      </button>
+    <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-card-strong/80 px-6 py-2 text-[11px]">
+      <div className="inline-flex h-8 items-center rounded-lg border border-card-strong bg-card/30 p-0.5">
+        <button
+          onClick={() => older != null && onSet(older)}
+          disabled={older == null}
+          title={
+            older != null ? `Back to ${deskDayLabel(older)}` : "Nothing earlier"
+          }
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-white/5 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 disabled:text-ink-faint disabled:opacity-40"
+        >
+          ‹
+        </button>
+        <span className="min-w-16 px-2 text-center text-xs font-semibold text-ink">
+          {deskDayLabel(day)}
+          {count > 0 && (
+            <span className="ml-1 font-normal text-ink-muted">· {count}</span>
+          )}
+        </span>
+        <button
+          onClick={() => newer != null && onSet(newer)}
+          disabled={newer == null}
+          title={
+            newer != null
+              ? `Forward to ${deskDayLabel(newer)}`
+              : "Nothing later"
+          }
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-white/5 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 disabled:text-ink-faint disabled:opacity-40"
+        >
+          ›
+        </button>
+      </div>
       {day !== today && (
         <button
           onClick={() => onSet(today)}
-          className="text-[11px] text-accent hover:underline focus:outline-none"
+          className="rounded-md px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/10 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
         >
           Today
         </button>
       )}
-      <span className="ml-auto h-px flex-1" />
+      {context && (
+        <div className="ml-1 flex min-w-0 flex-1 flex-wrap items-center gap-1.5 border-l border-card-strong pl-3">
+          {context}
+        </div>
+      )}
     </div>
   );
 }
@@ -2666,11 +3419,13 @@ function WorkerReply({
           <span>{worker.name}</span>
           <span className="text-ink-faint">{relativeTime(at)}</span>
         </div>
-        {reply ? (
-          <Markdown source={reply} />
-        ) : (
-          <div className="text-xs text-ink-faint">No reply recorded.</div>
-        )}
+        <div>
+          {reply ? (
+            <Markdown source={reply} />
+          ) : (
+            <div className="text-xs text-ink-faint">No reply recorded.</div>
+          )}
+        </div>
         {footer}
       </div>
     </div>
@@ -2732,27 +3487,33 @@ function ShiftRule({
 function ReadInFull({
   worker,
   item,
+  inline = false,
 }: {
   worker: Worker;
   item: WorkerActivity;
+  inline?: boolean;
 }) {
   const openSheet = useStore((s) => s.openSheet);
-  return (
-    <div className="mt-2 flex justify-end">
-      <button
-        onClick={() =>
-          openSheet({
-            type: "shiftReader",
-            workerId: worker.id,
-            orchestrationId: item.orchestration.id,
-          })
-        }
-        title="Open this turn at reading size — with find, and somewhere to leave a note"
-        className="text-[11px] text-ink-faint hover:text-accent focus:outline-none"
-      >
-        Read in full ⤢
-      </button>
-    </div>
+  const button = (
+    <button
+      onClick={(event) => {
+        event.stopPropagation();
+        openSheet({
+          type: "shiftReader",
+          workerId: worker.id,
+          orchestrationId: item.orchestration.id,
+        });
+      }}
+      title="Open this turn at reading size — with find, and somewhere to leave a note"
+      className="inline-flex h-7 items-center rounded-md px-2 text-[11px] text-ink-faint transition-colors hover:bg-card hover:text-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+    >
+      Read in full ⤢
+    </button>
+  );
+  return inline ? (
+    button
+  ) : (
+    <div className="mt-2 flex justify-end">{button}</div>
   );
 }
 
@@ -2812,10 +3573,24 @@ function ShiftActions({
       {confirmingRedo && (
         <span className="flex items-center gap-2">
           <span className="text-[11px] text-ink-muted">
-            Deletes this shift, its flow runs, the files it filed, and your notes on it — then runs it again.
+            Deletes this shift, its flow runs, the files it filed, and your
+            notes on it — then runs it again.
           </span>
-          <button onClick={() => { setConfirmingRedo(false); void run("redo"); }} className="text-[11px] text-red-300 hover:text-red-200">Re-run</button>
-          <button onClick={() => setConfirmingRedo(false)} className="text-[11px] text-ink-faint hover:text-ink">Cancel</button>
+          <button
+            onClick={() => {
+              setConfirmingRedo(false);
+              void run("redo");
+            }}
+            className="text-[11px] text-red-300 hover:text-red-200"
+          >
+            Re-run
+          </button>
+          <button
+            onClick={() => setConfirmingRedo(false)}
+            className="text-[11px] text-ink-faint hover:text-ink"
+          >
+            Cancel
+          </button>
         </span>
       )}
       {confirming ? (
@@ -2877,7 +3652,7 @@ function ShiftPlan({
     <div className="mt-2">
       {showProse &&
         (prose ? (
-          <div className="max-h-56 overflow-y-auto rounded-md bg-card-strong/30 px-3 py-2 text-xs text-ink-muted">
+          <div className="rounded-md bg-card-strong/30 px-3 py-2 text-xs leading-relaxed text-ink-muted">
             <Markdown source={prose} />
           </div>
         ) : (
@@ -2885,8 +3660,9 @@ function ShiftPlan({
             The planning turn left no notes.
           </div>
         ))}
+      <ShiftResultSummary orchestration={orchestration} />
       {orchestration.items.length > 0 ? (
-        <div className={(showProse ? "mt-2 " : "") + "space-y-1"}>
+        <div className="mt-2 space-y-2">
           {orchestration.items.map((it) => (
             <PlanItemRow
               key={it.candidate.id}
@@ -2895,11 +3671,76 @@ function ShiftPlan({
             />
           ))}
         </div>
-      ) : (
-        <div className="mt-1 text-[11px] text-ink-faint">
-          Nothing proposed — the worker judged there was nothing worth doing.
+      ) : null}
+    </div>
+  );
+}
+
+function ShiftResultSummary({
+  orchestration,
+}: {
+  orchestration: Orchestration;
+}) {
+  const items = orchestration.items;
+  if (items.length === 0) {
+    return (
+      <div className="mt-3 flex items-start gap-2.5 rounded-lg border border-sky-400/20 bg-sky-400/[0.06] px-3 py-2.5">
+        <span
+          className="mt-1 h-2 w-2 shrink-0 rounded-full bg-sky-400"
+          aria-hidden="true"
+        />
+        <div>
+          <div className="text-xs font-semibold text-ink">
+            Quiet shift · nothing proposed
+          </div>
+          <div className="mt-0.5 text-[11px] leading-relaxed text-ink-muted">
+            The worker reviewed its scope and found nothing worth launching.
+            This is a successful monitoring result.
+          </div>
         </div>
-      )}
+      </div>
+    );
+  }
+
+  const done = items.filter((item) => item.status === "done").length;
+  const failed = items.filter((item) => item.status === "failed").length;
+  const proposed = items.filter((item) => item.status === "proposed").length;
+  const active = items.filter((item) =>
+    ["queued", "running", "paused"].includes(item.status),
+  ).length;
+  const cancelled = items.filter((item) => item.status === "cancelled").length;
+  const parts = [
+    done > 0 && `${done} completed`,
+    active > 0 && `${active} in progress`,
+    proposed > 0 && `${proposed} awaiting review`,
+    failed > 0 && `${failed} failed`,
+    cancelled > 0 && `${cancelled} cancelled`,
+  ].filter(Boolean);
+  const tone =
+    failed > 0
+      ? "border-red-400/20 bg-red-400/[0.06]"
+      : proposed > 0
+        ? "border-violet-400/20 bg-violet-400/[0.06]"
+        : active > 0
+          ? "border-sky-400/20 bg-sky-400/[0.06]"
+          : "border-emerald-400/20 bg-emerald-400/[0.06]";
+  const dot =
+    failed > 0
+      ? "bg-red-400"
+      : proposed > 0
+        ? "bg-violet-400"
+        : active > 0
+          ? "bg-sky-400"
+          : "bg-emerald-400";
+  return (
+    <div
+      className={`mt-3 flex items-center gap-2.5 rounded-lg border px-3 py-2.5 ${tone}`}
+    >
+      <span
+        className={`h-2 w-2 shrink-0 rounded-full ${dot}`}
+        aria-hidden="true"
+      />
+      <div className="text-xs font-semibold text-ink">{parts.join(" · ")}</div>
     </div>
   );
 }
@@ -2912,9 +3753,19 @@ function ShiftPlan({
 function PlanItemRow({
   item,
   orchestration,
+  context,
+  compactArtifacts = false,
 }: {
   item: OrchestrationItem;
   orchestration: Orchestration;
+  context?: {
+    sourceLabel: string;
+    sourceDetail: string;
+    at: number;
+    durationMs: number | null;
+    onReview?: () => void;
+  };
+  compactArtifacts?: boolean;
 }) {
   const run = useFlowsStore((s) =>
     item.runId ? s.runs[item.runId] : undefined,
@@ -2939,7 +3790,8 @@ function PlanItemRow({
       : null;
   const finishedAt = item.finishedAt;
   useEffect(() => {
-    if (!workerId || item.status !== "done" || !finishedAt) return;
+    if (compactArtifacts || !workerId || item.status !== "done" || !finishedAt)
+      return;
     let live = true;
     void window.overcli
       .invoke("workers:deliverables", {
@@ -2961,9 +3813,12 @@ function PlanItemRow({
     finishedAt,
     item.candidate.title,
     orchestration.id,
+    compactArtifacts,
   ]);
 
   const pause = run?.state.kind === "paused" ? run.state : null;
+  const activeRun =
+    run?.state.kind === "running" || run?.state.kind === "paused";
   const continuing = !!run?.pendingContinue;
   useEffect(() => {
     setResuming(false);
@@ -3006,106 +3861,170 @@ function PlanItemRow({
         id: orchestration.id,
         candidateId: item.candidate.id,
       });
-      if (r && r.ok === false) window.alert(`Couldn't decline this item: ${r.error}`);
+      if (r && r.ok === false)
+        window.alert(`Couldn't decline this item: ${r.error}`);
     }
     setRejecting(false);
     setConfirmingReject(false);
   };
 
   return (
-    <div>
-      <div className="flex items-baseline gap-2 text-[11px]">
-        <span
-          className={`shrink-0 w-16 ${PLAN_STATUS[item.status]?.cls ?? "text-ink-faint"}`}
+    <div
+      className={
+        context
+          ? "px-4 py-3 transition-colors hover:bg-card/35"
+          : activeRun
+            ? "rounded-lg border border-sky-400/20 bg-sky-400/[0.04] px-3 py-2.5 shadow-sm"
+            : "rounded-lg border border-card-strong bg-surface/40 px-3 py-2.5"
+      }
+    >
+      <div
+        className={
+          context
+            ? "grid gap-x-4 gap-y-2 md:grid-cols-[minmax(18rem,1fr)_9rem_7rem_7rem] md:items-center"
+            : "flex items-center gap-2 text-[11px]"
+        }
+      >
+        <div
+          className={context ? "flex min-w-0 items-center gap-2" : "contents"}
         >
-          {PLAN_STATUS[item.status]?.text ?? item.status}
-        </span>
-        {/* A door only while there is a room: a rejected item keeps its
+          <span
+            className={
+              activeRun
+                ? `inline-flex h-5 shrink-0 items-center gap-1.5 rounded-full border px-2 text-[11px] font-medium ${
+                    pause
+                      ? "border-amber-400/25 bg-amber-400/10 text-amber-500 dark:text-amber-300"
+                      : "border-sky-400/25 bg-sky-400/10 text-sky-500"
+                  }`
+                : `inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium ${PLAN_STATUS[item.status]?.pill ?? "border-card-strong bg-card/50 text-ink-muted"}`
+            }
+          >
+            {activeRun && (
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${pause ? "bg-amber-400" : "animate-pulse bg-sky-400"}`}
+                aria-hidden="true"
+              />
+            )}
+            {PLAN_STATUS[item.status]?.text ?? item.status}
+          </span>
+          {/* A door only while there is a room: a rejected item keeps its
             runId for the record, but the run behind it is deleted, and a
             click that opens nothing reads as broken. */}
-        {run ? (
-          <button
-            onClick={openRun}
-            title="Open the run"
-            className="min-w-0 flex-1 truncate text-left text-ink hover:underline focus:outline-none"
-          >
-            {item.candidate.title}
-          </button>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-ink">
-            {item.candidate.title}
-          </span>
-        )}
-        {item.note && (
-          <span className="shrink-0 truncate text-ink-faint">
-            — {item.note}
-          </span>
-        )}
-        {pause && !confirmingReject && (
-          <button
-            onClick={resume}
-            disabled={inFlight}
-            title={PAUSE_HINT[pause.reason]}
-            className="shrink-0 rounded border border-amber-500/40 px-1.5 py-[1px] text-[10px] text-amber-600 hover:bg-amber-500/10 focus:outline-none disabled:opacity-50 dark:text-amber-300"
-          >
-            {inFlight ? "resuming…" : PAUSE_ACTION[pause.reason]}
-          </button>
-        )}
-        {/* The decline half of the pause's choice. Confirms in place because
+          {run ? (
+            <button
+              onClick={openRun}
+              title="Open the run"
+              className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink hover:underline focus:outline-none"
+            >
+              {item.candidate.title}
+            </button>
+          ) : (
+            <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">
+              {item.candidate.title}
+            </span>
+          )}
+          {item.note && (
+            <span className="shrink-0 truncate text-[11px] text-ink-faint">
+              — {item.note}
+            </span>
+          )}
+          {context?.onReview && item.status === "proposed" && (
+            <button
+              onClick={context.onReview}
+              className="shrink-0 rounded-md border border-violet-400/25 bg-violet-400/10 px-2 py-1 text-[10px] font-medium text-violet-400 hover:bg-violet-400/15"
+            >
+              Review in Shifts →
+            </button>
+          )}
+          {pause && !confirmingReject && (
+            <button
+              onClick={resume}
+              disabled={inFlight}
+              title={PAUSE_HINT[pause.reason]}
+              className="shrink-0 rounded border border-amber-500/40 px-1.5 py-[1px] text-[10px] text-amber-600 hover:bg-amber-500/10 focus:outline-none disabled:opacity-50 dark:text-amber-300"
+            >
+              {inFlight ? "resuming…" : PAUSE_ACTION[pause.reason]}
+            </button>
+          )}
+          {/* The decline half of the pause's choice. Confirms in place because
             it takes out a real run and a real worktree; the message says the
             part that isn't obvious — a rejection is remembered. */}
-        {pause &&
-          item.runId &&
-          (confirmingReject ? (
-            <span className="flex shrink-0 items-center gap-1.5">
-              <span className="text-[10px] text-ink-muted">
-                Deletes the run and its worktree. The worker won&apos;t
-                propose it again.
+          {pause &&
+            item.runId &&
+            (confirmingReject ? (
+              <span className="flex shrink-0 items-center gap-1.5">
+                <span className="text-[10px] text-ink-muted">
+                  Deletes the run and its worktree. The worker won&apos;t
+                  propose it again.
+                </span>
+                <button
+                  onClick={() => void reject()}
+                  disabled={rejecting}
+                  className="shrink-0 rounded bg-red-500/80 px-1.5 py-[1px] text-[10px] text-white disabled:opacity-50 focus:outline-none"
+                >
+                  {rejecting ? "rejecting…" : "Reject"}
+                </button>
+                <button
+                  onClick={() => setConfirmingReject(false)}
+                  className="shrink-0 text-[10px] text-ink-faint hover:text-ink focus:outline-none"
+                >
+                  Cancel
+                </button>
               </span>
+            ) : (
               <button
-                onClick={() => void reject()}
-                disabled={rejecting}
-                className="shrink-0 rounded bg-red-500/80 px-1.5 py-[1px] text-[10px] text-white disabled:opacity-50 focus:outline-none"
+                onClick={() => setConfirmingReject(true)}
+                disabled={inFlight}
+                title="Turn this work down — deletes the run and drops its worktree, and the rejection is journaled so it stays gone"
+                className="shrink-0 rounded border border-red-500/40 px-1.5 py-[1px] text-[10px] text-red-500 hover:bg-red-500/10 focus:outline-none disabled:opacity-50 dark:text-red-400"
               >
-                {rejecting ? "rejecting…" : "Reject"}
+                reject
               </button>
-              <button
-                onClick={() => setConfirmingReject(false)}
-                className="shrink-0 text-[10px] text-ink-faint hover:text-ink focus:outline-none"
-              >
-                Cancel
-              </button>
-            </span>
-          ) : (
-            <button
-              onClick={() => setConfirmingReject(true)}
-              disabled={inFlight}
-              title="Turn this work down — deletes the run and drops its worktree, and the rejection is journaled so it stays gone"
-              className="shrink-0 rounded border border-red-500/40 px-1.5 py-[1px] text-[10px] text-red-500 hover:bg-red-500/10 focus:outline-none disabled:opacity-50 dark:text-red-400"
+            ))}
+        </div>
+        {context && (
+          <>
+            <span
+              className="min-w-0 truncate text-xs font-medium text-ink-muted"
+              title={context.sourceDetail || context.sourceLabel}
             >
-              reject
-            </button>
-          ))}
+              <span className="mr-1 text-ink-faint md:hidden">Source ·</span>
+              {context.sourceLabel}
+            </span>
+            <span className="text-xs tabular-nums text-ink-muted">
+              <span className="mr-1 text-ink-faint md:hidden">Duration ·</span>
+              {context.durationMs == null
+                ? "—"
+                : formatTaskDuration(context.durationMs)}
+            </span>
+            <span className="text-left text-xs tabular-nums text-ink-muted md:text-right">
+              <span className="mr-1 md:hidden">Finished ·</span>
+              {relativeTime(context.at)}
+            </span>
+          </>
+        )}
       </div>
       {/* Where the run is inside its flow — the run pane's pipeline at desk
           density. "running" on a seven-step flow says almost nothing; step
           five of seven with the live one named says how far it got and what
           is left, and when it pauses, exactly where it stopped. */}
-      {run &&
-        (run.state.kind === "running" || run.state.kind === "paused") && (
-          <StepStrip run={run} onOpen={openRun} />
-        )}
+      {run && (run.state.kind === "running" || run.state.kind === "paused") && (
+        <StepStrip run={run} onOpen={openRun} />
+      )}
       {/* What the work was FOR, every file of it, opening in the preview pane
           the same way any other markdown in the app does. These are the filed
           copies on disk, so they outlive the run that made them. */}
-      {files.length > 0 && (
-        <div className="mt-0.5 flex flex-wrap gap-1 pl-[72px]">
+      {!compactArtifacts && files.length > 0 && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-card-strong/70 pt-2">
+          <span className="mr-1 text-[10px] font-medium uppercase tracking-wider text-ink-faint">
+            Files
+          </span>
           {files.map((file) => (
             <button
               key={file.path}
               onClick={() => openFile(file.path, undefined, "preview")}
               title={`${file.path} — ${formatBytes(file.bytes)}`}
-              className="rounded border border-card-strong px-1.5 py-[1px] text-[10px] text-ink-faint hover:bg-card-strong hover:text-ink focus:outline-none"
+              className="inline-flex h-6 items-center rounded-md border border-card-strong bg-card/40 px-2 text-[10px] text-ink-muted transition-colors hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
             >
               {baseName(file.name)}
             </button>
@@ -3115,25 +4034,21 @@ function PlanItemRow({
       {/* A finished item that filed nothing is worth saying out loud: it is the
           difference between "the answer is elsewhere" and "there is no
           answer", and silence reads as the first. */}
-      {files.length === 0 && item.status === "done" && (
-        <div className="pl-[72px] text-[10px] text-ink-faint">
-          nothing filed
+      {!compactArtifacts && files.length === 0 && item.status === "done" && (
+        <div className="mt-2 border-t border-card-strong/70 pt-2 text-[10px] text-ink-faint">
+          Completed without a filed artifact
         </div>
       )}
     </div>
   );
 }
 
-/// One line of step names with the live one lit — the same derivation the
-/// run pane's InlineStepPipeline uses (attempts say what finished; the run
-/// state names the step in flight, or the one waiting when paused), reduced
-/// to desk density. Steps a run never reached stay dim, a failed one goes
-/// red, and the whole line is a door to the run, where the full pipeline
-/// and its transcripts live. Hidden for one-step flows: a strip that reads
-/// "the only step is the current step" is the row's status word again.
+/// A compact progress summary for active work. The full flow pane owns the
+/// detailed pipeline; here the user only needs the current step, position,
+/// and an unmistakable route into the run.
 function StepStrip({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
   const steps = run.flowSnapshot.steps;
-  if (steps.length < 2) return null;
+  if (steps.length === 0) return null;
   const st = run.state;
   const liveId =
     st.kind === "running"
@@ -3141,50 +4056,55 @@ function StepStrip({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
       : st.kind === "paused"
         ? st.nextStepId
         : null;
+  const liveIndex = Math.max(
+    0,
+    steps.findIndex((step) => step.id === liveId),
+  );
+  const completed = steps.filter((step) => {
+    const attempts = run.attempts.filter(
+      (attempt) => attempt.stepId === step.id,
+    );
+    return attempts[attempts.length - 1]?.outcome === "success";
+  }).length;
+  const position = Math.min(steps.length, liveIndex + 1);
+  const progress = Math.max(
+    completed,
+    st.kind === "running" ? Math.max(0.35, liveIndex + 0.35) : liveIndex,
+  );
+  const progressPercent = Math.min(100, (progress / steps.length) * 100);
+  const currentStep = steps[liveIndex]?.id ?? liveId ?? "Starting";
+  const paused = st.kind === "paused";
   return (
     <button
       onClick={onOpen}
       title="Open the run"
-      className="mt-0.5 flex w-full flex-wrap items-center gap-x-1.5 gap-y-0.5 pl-[72px] text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+      className="mt-2 block w-full rounded-md border border-card-strong bg-surface/50 px-3 py-2.5 text-left transition-colors hover:border-accent/40 hover:bg-surface-elevated/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
     >
-      {steps.map((step, idx) => {
-        const attempts = run.attempts.filter((a) => a.stepId === step.id);
-        const last = attempts[attempts.length - 1];
-        const done = last?.outcome === "success";
-        const failed =
-          !!last?.outcome &&
-          last.outcome !== "success" &&
-          last.outcome !== "question";
-        const live = step.id === liveId;
-        const cls = live
-          ? st.kind === "running"
-            ? "text-sky-500"
-            : "text-amber-600 dark:text-amber-300"
-          : failed
-            ? "text-red-400"
-            : done
-              ? "text-ink-faint"
-              : "text-ink-faint opacity-50";
-        return (
-          <span key={step.id} className="flex items-center gap-x-1.5">
-            {idx > 0 && (
-              <span aria-hidden className="text-[9px] text-ink-faint opacity-50">
-                →
-              </span>
-            )}
-            <span className={"whitespace-nowrap text-[10px] " + cls}>
-              {live && st.kind === "running" && (
-                <span
-                  aria-hidden
-                  className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-500 align-middle"
-                />
-              )}
-              {live && st.kind === "paused" ? "⏸ " : done ? "✓ " : ""}
-              {step.id}
-            </span>
+      <span className="flex items-center justify-between gap-3">
+        <span className="min-w-0">
+          <span className="block text-[10px] font-medium uppercase tracking-wider text-ink-faint">
+            {paused ? "Waiting at" : "Current step"}
           </span>
-        );
-      })}
+          <span
+            className={`mt-0.5 block truncate text-xs font-medium ${paused ? "text-amber-500 dark:text-amber-300" : "text-ink"}`}
+          >
+            {currentStep}
+          </span>
+        </span>
+        <span className="shrink-0 text-[10px] text-ink-muted">
+          Step {position} of {steps.length} · Open run →
+        </span>
+      </span>
+      <span className="mt-2 block h-1.5 overflow-hidden rounded-full bg-card-strong">
+        <span
+          className={`block h-full rounded-full transition-[width] duration-500 ${paused ? "bg-amber-400" : "bg-sky-400"}`}
+          style={{ width: `${progressPercent}%` }}
+        />
+      </span>
+      <span className="mt-1.5 flex items-center justify-between text-[10px] text-ink-faint">
+        <span>{completed} completed</span>
+        <span>{Math.max(0, steps.length - completed)} remaining</span>
+      </span>
     </button>
   );
 }
@@ -3204,22 +4124,52 @@ const PAUSE_ACTION: Record<string, string> = {
 const PAUSE_HINT: Record<string, string> = {
   preStep: "Hand the prior step\u2019s output to the next step and keep going",
   externalAction: "Approve the external effect, then run this step",
-  needsInput: "Open the run, read the Worker exchange, answer, and resume the step",
+  needsInput:
+    "Open the run, read the Worker exchange, answer, and resume the step",
   failure:
     "Run the failed step again. To accept its result instead, open the run and Override.",
   interrupted:
     "The app closed mid-step \u2014 run that step again and roll forward",
 };
 
-const PLAN_STATUS: Record<string, { text: string; cls: string }> = {
-  proposed: { text: "proposed", cls: "text-violet-500" },
-  queued: { text: "queued", cls: "text-ink-muted" },
-  running: { text: "running", cls: "text-sky-500" },
-  paused: { text: "paused", cls: "text-amber-500" },
-  done: { text: "done", cls: "text-emerald-500" },
-  failed: { text: "failed", cls: "text-red-500" },
-  cancelled: { text: "rejected", cls: "text-red-400" },
-};
+const PLAN_STATUS: Record<string, { text: string; cls: string; pill: string }> =
+  {
+    proposed: {
+      text: "Awaiting review",
+      cls: "text-violet-500",
+      pill: "border-violet-400/25 bg-violet-400/10 text-violet-400",
+    },
+    queued: {
+      text: "Queued",
+      cls: "text-ink-muted",
+      pill: "border-card-strong bg-card/50 text-ink-muted",
+    },
+    running: {
+      text: "Running",
+      cls: "text-sky-500",
+      pill: "border-sky-400/25 bg-sky-400/10 text-sky-400",
+    },
+    paused: {
+      text: "Paused",
+      cls: "text-amber-500",
+      pill: "border-amber-400/25 bg-amber-400/10 text-amber-400",
+    },
+    done: {
+      text: "Completed",
+      cls: "text-emerald-500",
+      pill: "border-emerald-400/25 bg-emerald-400/10 text-emerald-400",
+    },
+    failed: {
+      text: "Failed",
+      cls: "text-red-500",
+      pill: "border-red-400/25 bg-red-400/10 text-red-400",
+    },
+    cancelled: {
+      text: "Rejected",
+      cls: "text-red-400",
+      pill: "border-red-400/20 bg-red-400/[0.06] text-red-400",
+    },
+  };
 
 // ---- Journal -------------------------------------------------------------
 
@@ -3568,7 +4518,9 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
                 return (
                   <button
                     key={p.name}
-                    onClick={() => patchHire({ jobDescription: p.job, error: null })}
+                    onClick={() =>
+                      patchHire({ jobDescription: p.job, error: null })
+                    }
                     className={
                       "text-left rounded-lg border p-3 transition-colors " +
                       (selected
@@ -3610,7 +4562,10 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
               <select
                 value={projectPath}
                 onChange={(e) =>
-                  patchHire({ projectPath: e.target.value, projectTouched: true })
+                  patchHire({
+                    projectPath: e.target.value,
+                    projectTouched: true,
+                  })
                 }
                 className="w-full max-w-[360px] bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
               >
@@ -3744,7 +4699,10 @@ function WorkerEditor() {
   // Which backend the model list belongs to. An unpinned worker plans on
   // whatever backend is default, so that's the list to offer — otherwise the
   // picker would show Claude models to someone whose shifts run on Codex.
-  const heartbeatBackend = heartbeatBackendOf(draft.heartbeatBackend, preferredBackend);
+  const heartbeatBackend = heartbeatBackendOf(
+    draft.heartbeatBackend,
+    preferredBackend,
+  );
   const heartbeatModels = PREMIUM_MODELS[heartbeatBackend];
 
   // Who this worker could hand work to: the same bound the engine enforces,
@@ -4032,7 +4990,8 @@ function WorkerEditor() {
                   <select
                     value={draft.heartbeatBackend ?? ""}
                     onChange={(e) => {
-                      const next = (e.target.value || undefined) as Backend | undefined;
+                      const next = (e.target.value || undefined) as
+                        Backend | undefined;
                       // Carry the model across with the backend. Leaving a
                       // Claude id selected under Codex is precisely the
                       // mismatch this pairing exists to prevent, and the user
@@ -4070,11 +5029,12 @@ function WorkerEditor() {
                         hired under another provider, or imported. Shown rather
                         than dropped, so the field isn't mysteriously blank and
                         the user can see what will be translated away. */}
-                    {draft.heartbeatModel && !heartbeatModels.includes(draft.heartbeatModel) && (
-                      <option value={draft.heartbeatModel}>
-                        {draft.heartbeatModel} — not on {heartbeatBackend}
-                      </option>
-                    )}
+                    {draft.heartbeatModel &&
+                      !heartbeatModels.includes(draft.heartbeatModel) && (
+                        <option value={draft.heartbeatModel}>
+                          {draft.heartbeatModel} — not on {heartbeatBackend}
+                        </option>
+                      )}
                   </select>
                 </div>
               </Field>
@@ -4105,8 +5065,9 @@ function WorkerEditor() {
                   Allow external actions without approval
                 </span>
                 <span className="block text-[11px] leading-relaxed text-ink-faint">
-                  Lets this worker push, publish, send messages, and update external services.
-                  Flow-authored review checkpoints still pause.
+                  Lets this worker push, publish, send messages, and update
+                  external services. Flow-authored review checkpoints still
+                  pause.
                 </span>
               </span>
             </label>
@@ -4135,9 +5096,10 @@ function WorkerEditor() {
                     Put finished work in the project folder
                   </span>
                   <span className="block text-[11px] leading-relaxed text-ink-faint">
-                    Documents this worker finishes are added to the folder, alongside
-                    everything else in it, and a version is saved so you can undo them.
-                    Everything it produces is kept in its own files either way.
+                    Documents this worker finishes are added to the folder,
+                    alongside everything else in it, and a version is saved so
+                    you can undo them. Everything it produces is kept in its own
+                    files either way.
                   </span>
                 </span>
               </label>
@@ -4162,9 +5124,10 @@ function WorkerEditor() {
                   Let this worker hand work to colleagues
                 </span>
                 <span className="block text-[11px] leading-relaxed text-ink-faint">
-                  Shows it the other workers on this project, and lets it pass anything
-                  outside its own remit to one of them as an errand — spending their budget,
-                  not yours. Off for workers on probation, whatever this says.
+                  Shows it the other workers on this project, and lets it pass
+                  anything outside its own remit to one of them as an errand —
+                  spending their budget, not yours. Off for workers on
+                  probation, whatever this says.
                 </span>
               </span>
             </label>
@@ -4416,7 +5379,9 @@ function AttachmentField({
         >
           +
           {attachments.length > 0 && (
-            <span className="text-[10px] tabular-nums">{attachments.length}</span>
+            <span className="text-[10px] tabular-nums">
+              {attachments.length}
+            </span>
           )}
         </button>
       </>
@@ -4462,7 +5427,8 @@ function AttachmentField({
             (attachments.length > 0 ? "mt-2" : "")
           }
         >
-          Attach files… <span className="text-ink-faint">or drop them here</span>
+          Attach files…{" "}
+          <span className="text-ink-faint">or drop them here</span>
         </button>
       </div>
       {rejection && (
@@ -4506,7 +5472,8 @@ function WorkerAiRevise() {
 
   const instruction = revise.instruction;
   const busy = revise.startedAt !== null;
-  const expanded = focused || instruction.length > 0 || revise.attachments.length > 0;
+  const expanded =
+    focused || instruction.length > 0 || revise.attachments.length > 0;
 
   if (!draft) return null;
 
@@ -4538,7 +5505,10 @@ function WorkerAiRevise() {
                 // pastes before the first FileReader resolves both spread the
                 // same base and one screenshot is silently dropped.
                 patchRevise({
-                  attachments: [...selectRevise(useWorkersStore.getState()).attachments, ...picked],
+                  attachments: [
+                    ...selectRevise(useWorkersStore.getState()).attachments,
+                    ...picked,
+                  ],
                 });
             });
           }}
