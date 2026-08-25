@@ -1,6 +1,7 @@
 import { Attachment } from '@shared/types';
 import { FlowStepCards } from './flows/FlowStepCards';
 import { isFlowStepTurn, isFlowNoteTurn, parseFlowNote } from './flows/flowStepSections';
+import { visibleUserPrompt } from '../visibleUserPrompt';
 
 export function UserBubble({ text, attachments }: { text: string; attachments?: Attachment[] }) {
   const hasAttachments = attachments && attachments.length > 0;
@@ -24,7 +25,8 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
     if (note) return <FlowNote text={note} />;
   }
 
-  const hasText = text && text.trim().length > 0;
+  const visibleText = visibleUserPrompt(text, !!hasAttachments);
+  const hasText = visibleText.trim().length > 0;
   return (
     <div className="flex justify-end">
       <div
@@ -60,7 +62,7 @@ export function UserBubble({ text, attachments }: { text: string; attachments?: 
           </div>
         )}
         {hasText && (
-          <div className="px-3.5 py-2 text-sm whitespace-pre-wrap">{text}</div>
+          <div className="px-3.5 py-2 text-sm whitespace-pre-wrap">{visibleText}</div>
         )}
       </div>
     </div>

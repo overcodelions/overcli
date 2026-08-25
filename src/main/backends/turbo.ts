@@ -14,6 +14,8 @@
 // is the best that backend allows.
 
 import type { EffortLevel } from '../../shared/types';
+import { BATCHING_DIRECTIVE } from '../../shared/turbo';
+export { BATCHING_DIRECTIVE } from '../../shared/turbo';
 
 /// Targets tool-call *count*, not parallelism. Parallel tool use is already
 /// on by default and already prompted for, so the unexploited axis is
@@ -31,11 +33,6 @@ export function resolveTurboEffort(
 ): EffortLevel | undefined {
   return turbo ? 'low' : effortLevel;
 }
-
-export const BATCHING_DIRECTIVE =
-  'Prefer fewer, larger tool calls. Batch independent calls into a single message, ' +
-  'and combine several shell steps into one command rather than issuing them one at ' +
-  'a time. Never skip a check you would otherwise run just to reduce the call count.';
 
 /// Prepend the directive to a prompt, for backends with no system-prompt
 /// flag to put it in. Codex only — claude passes it as argv instead.

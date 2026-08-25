@@ -9,6 +9,10 @@ import {
   isLiveWorkspaceAgent,
   ownsWorktree,
   serializeFileTabs,
+  withClaudeFastPreset,
+  withFastestPreset,
+  withResponseMode,
+  mergeIncomingEvents,
 } from './store';
 
 function settings(over: Partial<AppSettings> = {}): AppSettings {
@@ -68,6 +72,170 @@ describe('ownsWorktree', () => {
 
   it('is false for a plain conversation with no worktree', () => {
     expect(ownsWorktree(conv({}))).toBe(false);
+  });
+});
+
+describe('withClaudeFastPreset', () => {
+  it('selects Claude Sonnet 5 with low effort and Turbo without changing unrelated fields', () => {
+    const conversation = {
+      id: 'c1',
+      name: 'Keep me',
+      claudeModel: 'claude-opus-5',
+      currentModel: 'claude-opus-5',
+      effortLevel: 'high',
+      turbo: false,
+      permissionMode: 'acceptEdits',
+    } as Conversation;
+
+    expect(withClaudeFastPreset(conversation)).toMatchObject({
+      id: 'c1',
+      name: 'Keep me',
+      claudeModel: 'claude-sonnet-5',
+      currentModel: 'claude-sonnet-5',
+      effortLevel: 'low',
+      responseStyle: 'efficient',
+      responseMode: 'warp',
+      turbo: true,
+      permissionMode: 'acceptEdits',
+    });
+  });
+});
+
+describe('withResponseMode', () => {
+  const conversation = {
+    id: 'c1',
+    name: 'Keep me',
+    claudeModel: 'claude-opus-5',
+    currentModel: 'claude-opus-5',
+    effortLevel: 'high',
+    responseStyle: 'concise',
+    turbo: true,
+  } as Conversation;
+
+  it('applies Full and Swift without changing model or effort', () => {
+    expect(withResponseMode(conversation, 'claude', 'full')).toMatchObject({
+      responseStyle: 'normal',
+      responseMode: 'full',
+      turbo: false,
+      claudeModel: 'claude-opus-5',
+      effortLevel: 'high',
+    });
+    expect(withResponseMode(conversation, 'claude', 'swift')).toMatchObject({
+      responseStyle: 'efficient',
+      responseMode: 'swift',
+      turbo: false,
+      claudeModel: 'claude-opus-5',
+      effortLevel: 'high',
+    });
+  });
+
+  it('makes Turbo low effort while retaining the selected model', () => {
+    expect(withResponseMode(conversation, 'claude', 'turbo')).toMatchObject({
+      responseStyle: 'efficient',
+      responseMode: 'turbo',
+      turbo: true,
+      claudeModel: 'claude-opus-5',
+      currentModel: 'claude-opus-5',
+      effortLevel: 'low',
+    });
+  });
+
+  it('makes Warp the lower-latency Claude model preset', () => {
+    const warp = withResponseMode(conversation, 'claude', 'warp');
+    expect(warp).toMatchObject({
+      responseStyle: 'efficient',
+      responseMode: 'warp',
+      turbo: true,
+      claudeModel: 'claude-sonnet-5',
+      currentModel: 'claude-sonnet-5',
+      effortLevel: 'low',
+      responseModeRestore: {
+        models: { claude: 'claude-opus-5' },
+        effortLevel: 'high',
+      },
+    });
+    expect(withResponseMode(warp, 'claude', 'full')).toMatchObject({
+      responseMode: 'full',
+      claudeModel: 'claude-opus-5',
+      currentModel: 'claude-opus-5',
+      effortLevel: 'high',
+      turbo: false,
+    });
+  });
+
+  it('uses the configured default when restoring a legacy Warp conversation', () => {
+    const legacyWarp = {
+      ...conversation,
+      claudeModel: 'claude-sonnet-5',
+      currentModel: 'claude-sonnet-5',
+      effortLevel: 'low',
+      responseMode: 'warp',
+    } as Conversation;
+    expect(withResponseMode(legacyWarp, 'claude', 'full', 'claude-opus-5')).toMatchObject({
+      responseMode: 'full',
+      claudeModel: 'claude-opus-5',
+      currentModel: 'claude-opus-5',
+      turbo: false,
+    });
+  });
+
+  it('reselects the configured default when Full is chosen again', () => {
+    const fullOnFastModel = {
+      ...conversation,
+      claudeModel: 'claude-sonnet-5',
+      currentModel: 'claude-sonnet-5',
+      responseMode: 'full',
+    } as Conversation;
+    expect(withResponseMode(fullOnFastModel, 'claude', 'full', 'claude-opus-5')).toMatchObject({
+      responseMode: 'full',
+      claudeModel: 'claude-opus-5',
+      currentModel: 'claude-opus-5',
+    });
+  });
+
+  it('maps Warp to each hosted backend fast-tier model', () => {
+    expect(withFastestPreset(conversation, 'codex')).toMatchObject({
+      codexModel: 'gpt-5.6-luna',
+      currentModel: 'gpt-5.6-luna',
+      responseMode: 'warp',
+    });
+    expect(withFastestPreset(conversation, 'gemini')).toMatchObject({
+      geminiModel: 'gemini-3.5-flash-lite',
+      currentModel: 'gemini-3.5-flash-lite',
+      responseMode: 'warp',
+    });
+    expect(withFastestPreset(conversation, 'copilot')).toMatchObject({
+      copilotModel: 'claude-haiku-4.5',
+      currentModel: 'claude-haiku-4.5',
+      responseMode: 'warp',
+    });
+  });
+});
+
+describe('mergeIncomingEvents timing anchors', () => {
+  const assistant = (timestamp: number, text: string, isPartial = true): StreamEvent => ({
+    id: 'assistant-1',
+    timestamp,
+    raw: '',
+    revision: 0,
+    kind: {
+      type: 'assistant',
+      info: { model: 'claude', text, thinking: [], toolUses: [], isPartial },
+    },
+  });
+
+  it('retains first activity and first visible text while replacing a streaming slot', () => {
+    let events = mergeIncomingEvents([], [assistant(100, '')]);
+    events = mergeIncomingEvents(events, [assistant(250, 'hel')]);
+    events = mergeIncomingEvents(events, [assistant(600, 'hello', false)]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      timestamp: 600,
+      firstSeenAt: 100,
+      firstVisibleAt: 250,
+      revision: 2,
+    });
   });
 });
 

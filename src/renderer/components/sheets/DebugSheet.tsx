@@ -10,6 +10,7 @@ import {
   TurnTiming,
   formatSeconds,
   formatTokens,
+  relativeTimelineWidth,
   shareOfWork,
   summarizeTurns,
   totalTiming,
@@ -113,12 +114,12 @@ export function DebugSheet() {
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      <div className="px-5 pt-4 pb-2 border-b border-card flex items-center gap-3 text-xs">
+      <div className="px-4 py-3 border-b border-card bg-card/20 flex items-center gap-1 text-xs">
         <button
           onClick={() => setTab('timing')}
           className={
-            'px-2 py-1 rounded font-medium transition-colors ' +
-            (tab === 'timing' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+            'px-2.5 py-1.5 rounded-md font-medium transition-colors ' +
+            (tab === 'timing' ? 'bg-card-strong text-ink shadow-sm' : 'text-ink-muted hover:bg-card/60 hover:text-ink')
           }
         >
           Timing
@@ -126,8 +127,8 @@ export function DebugSheet() {
         <button
           onClick={() => setTab('stream')}
           className={
-            'px-2 py-1 rounded font-medium transition-colors ' +
-            (tab === 'stream' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+            'px-2.5 py-1.5 rounded-md font-medium transition-colors ' +
+            (tab === 'stream' ? 'bg-card-strong text-ink shadow-sm' : 'text-ink-muted hover:bg-card/60 hover:text-ink')
           }
         >
           Stream
@@ -135,8 +136,8 @@ export function DebugSheet() {
         <button
           onClick={() => setTab('diagnostics')}
           className={
-            'px-2 py-1 rounded font-medium transition-colors ' +
-            (tab === 'diagnostics' ? 'bg-card-strong text-ink' : 'text-ink-muted hover:text-ink')
+            'px-2.5 py-1.5 rounded-md font-medium transition-colors ' +
+            (tab === 'diagnostics' ? 'bg-card-strong text-ink shadow-sm' : 'text-ink-muted hover:bg-card/60 hover:text-ink')
           }
         >
           Diagnostics
@@ -158,7 +159,7 @@ export function DebugSheet() {
                     'px-2 py-1 rounded transition-colors truncate ' +
                     (s.participantId === activeParticipantId
                       ? 'bg-card-strong text-ink'
-                      : 'text-ink-muted hover:text-ink')
+                      : 'text-ink-muted hover:bg-card/60 hover:text-ink')
                   }
                 >
                   {s.name}
@@ -172,7 +173,7 @@ export function DebugSheet() {
         <TimingTab events={events} inRun={inRun} />
       ) : (
       <>
-      <div className="px-5 pt-4 pb-3 border-b border-card">
+      <div className="px-4 pt-4 pb-3 border-b border-card">
         <div className="flex items-baseline justify-between mb-2">
           <div>
             <div className="text-lg font-semibold">Debug stream</div>
@@ -241,7 +242,7 @@ export function DebugSheet() {
           )}
         </div>
       </div>
-      <div className="overflow-y-auto px-5 py-2 flex-1 font-mono text-[11px]">
+      <div className="overflow-y-auto px-4 py-2 flex-1 font-mono text-[11px]">
         {filtered.length === 0 ? (
           <div className="text-ink-faint py-3">
             {events.length === 0 ? 'No events yet.' : 'No events match your filter.'}
@@ -270,20 +271,38 @@ export function DebugSheet() {
 /// `turnTiming.ts`. Nothing is persisted and nothing new crosses IPC, so
 /// this tab costs nothing until someone opens it.
 function TimingTab({ events, inRun }: { events: StreamEvent[]; inRun: boolean }) {
-  const turns = useMemo(() => summarizeTurns(events), [events]);
+  const [activeTurnNow, setActiveTurnNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!inRun) return;
+    setActiveTurnNow(Date.now());
+    const timer = window.setInterval(() => setActiveTurnNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [inRun]);
+  const turns = useMemo(
+    () => summarizeTurns(events, inRun ? activeTurnNow : undefined),
+    [events, inRun, activeTurnNow],
+  );
   const total = useMemo(() => totalTiming(turns), [turns]);
   // Ranked once across the whole conversation so a tool holds one color in
   // every turn, rather than being recoloured by each turn's local ordering.
   const colors = useMemo(() => toolColorRamp((total?.tools ?? []).map((t) => t.name)), [total]);
+  const longestWallMs = useMemo(
+    () => turns.reduce((longest, turn) => Math.max(longest, turn.wallMs), 0),
+    [turns],
+  );
   const [copied, setCopied] = useState(false);
 
   const copy = () => {
     const header =
-      'turn\twall\tmodel\ttools\ttop_tool\tout_tok\treasoning_est\tdecode_tok_s\tcache_write';
+      'turn\twall\ttransport_ready\tfirst_response\tfirst_visible\tstreaming\tmodel\ttools\ttop_tool\tout_tok\treasoning_est\tdecode_tok_s\tcache_write';
     const body = turns.map((t, i) =>
       [
         i + 1,
         formatSeconds(t.wallMs),
+        t.transportReadyMs === null ? '' : formatSeconds(t.transportReadyMs),
+        t.firstResponseMs === null ? '' : formatSeconds(t.firstResponseMs),
+        t.firstVisibleMs === null ? '' : formatSeconds(t.firstVisibleMs),
+        t.streamingMs === null ? '' : formatSeconds(t.streamingMs),
         formatSeconds(t.modelMs),
         formatSeconds(t.toolMs),
         t.tools[0] ? `${t.tools[0].name} ${formatSeconds(t.tools[0].busyMs)}` : '',
@@ -300,11 +319,18 @@ function TimingTab({ events, inRun }: { events: StreamEvent[]; inRun: boolean })
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="px-5 pt-4 pb-3 border-b border-card">
-        <div className="flex items-baseline justify-between">
-          <div>
-            <div className="text-lg font-semibold">Turn timing</div>
-            <div className="text-xs text-ink-faint">
+      <div className="px-4 pt-4 pb-3 border-b border-card bg-surface-elevated">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold tracking-tight text-ink">Turn timing</h2>
+              {turns.length > 0 && (
+                <span className="rounded-full bg-card px-2 py-0.5 text-[10px] font-medium tabular-nums text-ink-faint">
+                  {turns.length} turn{turns.length === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 max-w-4xl text-xs leading-relaxed text-ink-faint">
               Where this conversation spent its time. Model time is everything that isn&apos;t
               waiting on a tool; reasoning is estimated as output tokens minus visible prose and
               tool arguments.
@@ -313,15 +339,35 @@ function TimingTab({ events, inRun }: { events: StreamEvent[]; inRun: boolean })
           <button
             onClick={copy}
             disabled={turns.length === 0}
-            className="px-2 py-1 rounded bg-card hover:bg-card-strong text-ink-muted hover:text-ink text-[11px] disabled:opacity-50 disabled:cursor-not-allowed"
+            className="shrink-0 rounded-md border border-card bg-card px-2.5 py-1.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
           >
             {copied ? 'copied' : 'copy tsv'}
           </button>
         </div>
         {total && (
-          <div className="mt-3 grid grid-cols-5 gap-2 text-center">
-            <Stat label="model" value={`${shareOfWork(total.modelMs, total).toFixed(0)}%`} sub={formatSeconds(total.modelMs)} />
-            <Stat label="tools" value={`${shareOfWork(total.toolMs, total).toFixed(0)}%`} sub={formatSeconds(total.toolMs)} />
+          <div className="mt-3 grid grid-cols-3 gap-1.5 text-center lg:grid-cols-5 xl:grid-cols-9">
+            <Stat label="model" value={`${shareOfWork(total.modelMs, total).toFixed(0)}%`} sub={formatSeconds(total.modelMs)} tone="model" />
+            <Stat label="tools" value={`${shareOfWork(total.toolMs, total).toFixed(0)}%`} sub={formatSeconds(total.toolMs)} tone="tools" />
+            <Stat
+              label="transport"
+              value={total.transportReadyMs === null ? '—' : formatSeconds(total.transportReadyMs)}
+              sub="ready avg"
+            />
+            <Stat
+              label="first response"
+              value={total.firstResponseMs === null ? '—' : formatSeconds(total.firstResponseMs)}
+              sub="average"
+            />
+            <Stat
+              label="visible text"
+              value={total.firstVisibleMs === null ? '—' : formatSeconds(total.firstVisibleMs)}
+              sub="average"
+            />
+            <Stat
+              label="streaming"
+              value={total.streamingMs === null ? '—' : formatSeconds(total.streamingMs)}
+              sub="average"
+            />
             <Stat
               label="reasoning"
               value={
@@ -343,18 +389,30 @@ function TimingTab({ events, inRun }: { events: StreamEvent[]; inRun: boolean })
             />
           </div>
         )}
-        {total && total.tools.length > 0 && (
-          <div className="mt-2">
-            <ToolBar tools={total.tools} toolMs={total.toolMs} colors={colors} />
-            <div className="flex flex-wrap gap-x-3 gap-y-1 pt-1.5 text-[10px] font-mono text-ink-faint">
+        {total && (
+          <div className="mt-2 rounded-md border border-card bg-card/30 px-2.5 py-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-ink-faint">
+              <span className="inline-flex items-center gap-1.5" title="Waiting for or streaming a model response">
+                <span className="inline-block h-2 w-3 rounded-sm bg-accent" />
+                <span><span className="font-medium text-ink-muted">Model</span> activity</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5" title="Tool colors rank total tool time within this conversation">
+                <span className="inline-block h-2 w-6 rounded-sm bg-gradient-to-r from-red-500 via-amber-400 to-green-500" />
+                <span><span className="font-medium text-ink-muted">Tool cost</span> slowest → fastest</span>
+              </span>
+              <span className="ml-auto">Bar length is relative to the longest turn · {formatSeconds(longestWallMs)}</span>
+            </div>
+            {total.tools.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5 border-t border-card pt-2 text-[10px] font-mono text-ink-faint">
               {total.tools.map((t) => (
                 <ToolLegendItem key={t.name} tool={t} colors={colors} />
               ))}
-            </div>
+              </div>
+            )}
           </div>
         )}
       </div>
-      <div className="overflow-y-auto px-5 py-2 flex-1 text-[11px]">
+      <div className="overflow-y-auto px-4 py-2 flex-1 text-[11px]">
         {turns.length === 0 ? (
           <div className="text-ink-faint py-3">
             {inRun
@@ -362,19 +420,37 @@ function TimingTab({ events, inRun }: { events: StreamEvent[]; inRun: boolean })
               : 'No turns yet. Send a message and the breakdown appears here.'}
           </div>
         ) : (
-          turns.map((t, i) => <TurnRow key={t.id} turn={t} index={i + 1} colors={colors} />)
+          turns.map((t, i) => (
+            <TurnRow
+              key={t.id}
+              turn={t}
+              index={i + 1}
+              colors={colors}
+              longestWallMs={longestWallMs}
+            />
+          ))
         )}
       </div>
     </div>
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: string; sub: string }) {
+function Stat({
+  label,
+  value,
+  sub,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string;
+  sub: string;
+  tone?: 'neutral' | 'model' | 'tools';
+}) {
   return (
-    <div className="bg-card rounded py-1.5">
-      <div className="text-[10px] uppercase tracking-wide text-ink-faint">{label}</div>
-      <div className="text-sm font-semibold text-ink tabular-nums">{value}</div>
-      <div className="text-[10px] text-ink-faint tabular-nums">{sub}</div>
+    <div className={'rounded-md border px-2 py-2 ' + (tone === 'model' ? 'border-accent/20 bg-accent/10' : tone === 'tools' ? 'border-amber-500/20 bg-amber-500/5' : 'border-card bg-card/60')}>
+      <div className="text-[9px] font-medium uppercase tracking-[0.08em] text-ink-faint">{label}</div>
+      <div className="mt-0.5 text-[15px] font-semibold leading-none text-ink tabular-nums">{value}</div>
+      <div className="mt-1 text-[9px] leading-none text-ink-faint tabular-nums">{sub}</div>
     </div>
   );
 }
@@ -383,105 +459,120 @@ function TurnRow({
   turn,
   index,
   colors,
+  longestWallMs,
 }: {
   turn: TurnTiming;
   index: number;
   colors: Map<string, string>;
+  longestWallMs: number;
 }) {
   const modelPct = shareOfWork(turn.modelMs, turn);
   const toolPct = shareOfWork(turn.toolMs, turn);
   const reprefilled = turn.resumedColdCache;
+  const relativeWall = longestWallMs > 0 ? turn.wallMs / longestWallMs : 0;
+  const isLongest = longestWallMs > 0 && turn.wallMs === longestWallMs;
+  const isSlow = !isLongest && relativeWall >= 0.75;
 
   return (
-    <div className="border-b border-card last:border-b-0 py-1.5">
-      <div className="flex items-baseline gap-2">
-        <span className="text-ink-faint shrink-0 tabular-nums w-5 text-right">{index}</span>
-        <span className="text-ink-muted truncate flex-1">{turn.prompt || '(empty prompt)'}</span>
-        <span className="text-ink font-medium tabular-nums shrink-0">
+    <div className="group rounded-md border-b border-card px-2 py-2.5 transition-colors last:border-b-0 hover:bg-card/30">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="w-4 shrink-0 text-left text-[10px] font-medium text-ink-faint tabular-nums">{index}</span>
+          <span className="truncate text-xs font-medium text-ink-muted" title={turn.prompt || '(empty prompt)'}>{turn.prompt || '(empty prompt)'}</span>
+        </div>
+        <span
+          className={'flex items-center gap-1.5 font-semibold tabular-nums ' + (isLongest || isSlow ? 'text-amber-400' : 'text-ink')}
+          title={`${formatSeconds(turn.wallMs)} wall time`}
+        >
+          {isLongest && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide">longest</span>}
+          {isSlow && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide">slow</span>}
           {formatSeconds(turn.modelMs + turn.toolMs)}
         </span>
-      </div>
-      <div className="flex items-center gap-2 pl-7 pt-1">
-        <div className="flex h-1.5 flex-1 overflow-hidden rounded-full bg-card">
-          <div className="bg-accent" style={{ width: `${modelPct}%` }} title={`model ${formatSeconds(turn.modelMs)}`} />
-          {/* The tool share is split by tool name rather than drawn as one
-              block, so the widest slice names the tool to go fix. */}
-          {turn.tools.map((t) => (
-            <div
-              key={t.name}
-              style={{
-                width: `${shareOfWork(t.ms, turn)}%`,
-                backgroundColor: colors.get(t.name) ?? UNRANKED_TOOL_COLOR,
-              }}
-              title={`${shortToolName(t.name)} — ${formatSeconds(t.busyMs)} over ${t.calls} call${t.calls === 1 ? '' : 's'}, slowest ${formatSeconds(t.slowestMs)}`}
-            />
-          ))}
-          {turn.tools.length === 0 && (
-            <div
-              className="bg-ink-faint"
-              style={{ width: `${toolPct}%` }}
-              title={`tools ${formatSeconds(turn.toolMs)}`}
-            />
-          )}
-        </div>
-        <span className="text-ink-faint tabular-nums shrink-0 font-mono">
-          model {modelPct.toFixed(0)}% · tools {toolPct.toFixed(0)}%
-        </span>
-      </div>
-      <div className="flex flex-wrap gap-x-3 pl-7 pt-1 text-ink-faint font-mono">
-        <span>{turn.requests} req</span>
-        <span>{turn.toolCalls} tools</span>
-        <span>{formatTokens(turn.outputTokens)} out</span>
-        <span>
-          reasoning ~
-          {turn.outputTokens > 0
-            ? `${((turn.reasoningTokensEst / turn.outputTokens) * 100).toFixed(0)}%`
-            : '—'}
-        </span>
-        {turn.decodeTokensPerSec !== null && (
-          <span>{turn.decodeTokensPerSec.toFixed(0)} tok/s</span>
-        )}
-        {reprefilled && (
-          <span className="text-amber-400" title="This turn opened on a cold cache — the backend respawned and resumed, re-prefilling the whole prefix.">
-            cold resume {formatTokens(turn.cacheCreationTokens)}
+        <div className="col-span-2 mt-1.5 flex items-center gap-2">
+          <RoundTripBar turn={turn} colors={colors} longestWallMs={longestWallMs} />
+          <span className="w-28 shrink-0 text-right font-mono text-[10px] text-ink-faint tabular-nums">
+            <span className="text-ink-muted">{modelPct.toFixed(0)}%</span> model · <span className="text-ink-muted">{toolPct.toFixed(0)}%</span> tools
           </span>
+        </div>
+        <div className="col-span-2 mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-ink-faint">
+          <span>{turn.requests} req</span>
+          <span>{turn.toolCalls} tools</span>
+          <span>{formatTokens(turn.outputTokens)} out</span>
+          <span>reasoning ~{turn.outputTokens > 0 ? `${((turn.reasoningTokensEst / turn.outputTokens) * 100).toFixed(0)}%` : '—'}</span>
+          {turn.decodeTokensPerSec !== null && <span>{turn.decodeTokensPerSec.toFixed(0)} tok/s</span>}
+          {turn.firstResponseMs !== null && <span>model activity {formatSeconds(turn.firstResponseMs)}</span>}
+          {turn.transportReadyMs !== null && <span>ready {formatSeconds(turn.transportReadyMs)}</span>}
+          {turn.firstVisibleMs !== null && <span>visible {formatSeconds(turn.firstVisibleMs)}</span>}
+          {turn.streamingMs !== null && <span>stream {formatSeconds(turn.streamingMs)}</span>}
+          {turn.models.length > 0 && <span className="text-ink-muted">{turn.models.join(', ')}</span>}
+        </div>
+        {(turn.consolidationOpportunity || reprefilled) && (
+          <div className="col-span-2 mt-2 flex flex-wrap gap-1.5">
+            {turn.consolidationOpportunity && (
+              <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 font-mono text-[10px] text-amber-400" title="Repeated independent tool calls may be faster when combined into fewer, larger calls.">
+                <span aria-hidden="true">↗</span>
+                Batch opportunity · {shortToolName(turn.consolidationOpportunity.toolName)} ×{turn.consolidationOpportunity.calls} / {turn.consolidationOpportunity.rounds} rounds
+              </span>
+            )}
+            {reprefilled && (
+              <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2 py-1 font-mono text-[10px] text-amber-400" title="This turn opened on a cold cache — the backend respawned and resumed, re-prefilling the whole prefix.">
+                <span aria-hidden="true">↻</span>
+                Cold resume · {formatTokens(turn.cacheCreationTokens)} cache write
+              </span>
+            )}
+          </div>
         )}
-        {turn.models.length > 0 && <span>{turn.models.join(', ')}</span>}
-      </div>
-      {turn.tools.length > 0 && (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-7 pt-1 text-ink-faint font-mono">
+        {turn.tools.length > 0 && (
+          <div className="col-span-2 mt-2 flex flex-wrap gap-1.5 font-mono text-[10px] text-ink-faint">
           {turn.tools.map((t) => (
             <ToolLegendItem key={t.name} tool={t} colors={colors} />
           ))}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
-/// One tool's slice of the whole conversation's tool time.
-function ToolBar({
-  tools,
-  toolMs,
+function RoundTripBar({
+  turn,
   colors,
+  longestWallMs,
 }: {
-  tools: ToolTiming[];
-  toolMs: number;
+  turn: TurnTiming;
   colors: Map<string, string>;
+  longestWallMs: number;
 }) {
-  if (toolMs <= 0) return null;
   return (
-    <div className="flex h-1.5 overflow-hidden rounded-full bg-card">
-      {tools.map((t) => (
-        <div
-          key={t.name}
-          style={{
-            width: `${(t.ms / toolMs) * 100}%`,
-            backgroundColor: colors.get(t.name) ?? UNRANKED_TOOL_COLOR,
-          }}
-          title={`${shortToolName(t.name)} — ${formatSeconds(t.busyMs)}`}
-        />
-      ))}
+    <div className="h-2.5 flex-1 overflow-hidden rounded-full border border-card bg-card-strong shadow-inner" aria-label={`Request round trip: ${formatSeconds(turn.wallMs)}`}>
+      <div
+        className="flex h-full overflow-hidden rounded-full transition-[filter] group-hover:brightness-110"
+        style={{ width: `${relativeTimelineWidth(turn.wallMs, longestWallMs)}%` }}
+        title={`${formatSeconds(turn.wallMs)} total; scaled against ${formatSeconds(longestWallMs)}`}
+      >
+        {turn.timeline.map((segment, index) => {
+          const duration = segment.endMs - segment.startMs;
+          const names = segment.toolNames.map(shortToolName);
+          return (
+            <div
+              key={`${segment.startMs}-${segment.endMs}-${index}`}
+              className={'cursor-help border-r border-surface/60 transition-[filter] last:border-r-0 hover:brightness-125 ' + (segment.kind === 'model' ? 'bg-accent' : '')}
+              style={{
+                width: `${turn.wallMs > 0 ? (duration / turn.wallMs) * 100 : 0}%`,
+                backgroundColor:
+                  segment.kind === 'tool'
+                    ? colors.get(segment.toolNames[0]) ?? UNRANKED_TOOL_COLOR
+                    : undefined,
+              }}
+              title={
+                segment.kind === 'model'
+                  ? `model · ${formatSeconds(duration)} · ${formatSeconds(segment.startMs)}–${formatSeconds(segment.endMs)}`
+                  : `${names.join(' + ')} · ${formatSeconds(duration)} · ${formatSeconds(segment.startMs)}–${formatSeconds(segment.endMs)}`
+              }
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -492,7 +583,7 @@ function ToolBar({
 function ToolLegendItem({ tool, colors }: { tool: ToolTiming; colors: Map<string, string> }) {
   return (
     <span
-      className="inline-flex items-center gap-1"
+      className="inline-flex items-center gap-1 rounded-md border border-card bg-card/60 px-1.5 py-0.5 transition-colors hover:bg-card-strong"
       title={`${tool.name} — ${tool.calls} call${tool.calls === 1 ? '' : 's'}, slowest ${formatSeconds(tool.slowestMs)}${tool.errors > 0 ? `, ${tool.errors} error${tool.errors === 1 ? '' : 's'}` : ''}`}
     >
       <span
@@ -529,7 +620,7 @@ function DiagnosticsTab() {
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="px-5 pt-4 pb-3 border-b border-card flex items-baseline justify-between">
+      <div className="px-4 pt-4 pb-3 border-b border-card flex items-baseline justify-between">
         <div>
           <div className="text-lg font-semibold">Diagnostics log</div>
           <div className="text-xs text-ink-faint">
@@ -554,7 +645,7 @@ function DiagnosticsTab() {
           </button>
         </div>
       </div>
-      <div className="overflow-y-auto px-5 py-2 flex-1 font-mono text-[11px]">
+      <div className="overflow-y-auto px-4 py-2 flex-1 font-mono text-[11px]">
         {loading ? (
           <div className="text-ink-faint py-3">Loading…</div>
         ) : entries.length === 0 ? (
