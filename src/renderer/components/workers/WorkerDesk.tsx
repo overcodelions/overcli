@@ -32,18 +32,35 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-3 text-[11px]">
-        <div className="flex items-center gap-2">
-          <span className={intent === 'work' ? 'font-medium text-violet-500' : 'font-medium text-ink-muted'}>
-            {intent === 'work' ? 'Create work' : 'Ask'}
+        <div className="flex items-center gap-1.5">
+          <span className={intent === 'chat' ? 'font-medium text-ink' : 'text-ink-faint'}>
+            Ask
           </span>
           <button
             type="button"
-            aria-pressed={intent === 'work'}
+            role="switch"
+            aria-checked={intent === 'work'}
+            aria-label="Create work mode"
+            title={intent === 'chat' ? 'Switch to Create work' : 'Switch back to Ask'}
             onClick={() => onIntentChange?.(intent === 'chat' ? 'work' : 'chat')}
-            className="rounded-md border border-card-strong px-2 py-1 text-ink-faint hover:border-violet-400/40 hover:text-ink"
+            className={
+              'relative h-5 w-9 shrink-0 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400/40 ' +
+              (intent === 'work'
+                ? 'border-violet-400/60 bg-violet-500'
+                : 'border-card-strong bg-card-strong hover:border-ink-faint')
+            }
           >
-            {intent === 'chat' ? 'Create work…' : 'Back to Ask'}
+            <span
+              aria-hidden="true"
+              className={
+                'absolute top-0.5 h-3.5 w-3.5 rounded-full shadow-sm transition-all ' +
+                (intent === 'work' ? 'left-[17px] bg-white' : 'left-0.5 bg-ink-muted')
+              }
+            />
           </button>
+          <span className={intent === 'work' ? 'font-medium text-violet-500' : 'text-ink-faint'}>
+            Create work
+          </span>
         </div>
         <span className="text-ink-faint">{intent === 'chat' ? 'Replies here; no flow starts.' : 'May use or draft a flow; trust rules still apply.'}</span>
       </div>
