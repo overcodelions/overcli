@@ -3784,16 +3784,27 @@ function PlanItemRow({
   // main rather than derived here, so the naming rule that filed them stays in
   // one place — a renderer-side copy would drift and the links would quietly
   // stop resolving.
-  const [files, setFiles] = useState<WorkerFile[]>([]);
+  // `null` until the deliverables answer comes back. Distinguishing "not asked
+  // yet" from "asked, filed nothing" is what keeps the empty state below from
+  // flashing "Completed without a filed artifact" on every finished task for
+  // the length of the fetch — including the ones that filed eight files.
+  const [files, setFiles] = useState<WorkerFile[] | null>(null);
   const workerId =
     orchestration.origin?.kind === "worker"
       ? orchestration.origin.workerId
       : null;
   const finishedAt = item.finishedAt;
   useEffect(() => {
-    if (compactArtifacts || !workerId || item.status !== "done" || !finishedAt)
+    if (compactArtifacts || !workerId || item.status !== "done" || !finishedAt) {
+      // Nothing to ask: settle on "filed nothing" rather than leaving the row
+      // in the pending state forever.
+      setFiles([]);
       return;
+    }
     let live = true;
+    // Back to pending for the duration of the ask, so a task that finishes
+    // while you are watching it does not flash the empty state on its way in.
+    setFiles(null);
     void fetchDeliverables({
       id: workerId,
       task: orchestrationTask(orchestration),
@@ -4013,12 +4024,12 @@ function PlanItemRow({
       {/* What the work was FOR, every file of it, opening in the preview pane
           the same way any other markdown in the app does. These are the filed
           copies on disk, so they outlive the run that made them. */}
-      {!compactArtifacts && files.length > 0 && (
+      {!compactArtifacts && (files?.length ?? 0) > 0 && (
         <div className="mt-2 flex flex-wrap items-center gap-1.5 border-t border-card-strong/70 pt-2">
           <span className="mr-1 text-[10px] font-medium uppercase tracking-wider text-ink-faint">
             Files
           </span>
-          {files.map((file) => (
+          {files!.map((file) => (
             <button
               key={file.path}
               onClick={() => openFile(file.path, undefined, "preview")}
@@ -4033,7 +4044,7 @@ function PlanItemRow({
       {/* A finished item that filed nothing is worth saying out loud: it is the
           difference between "the answer is elsewhere" and "there is no
           answer", and silence reads as the first. */}
-      {!compactArtifacts && files.length === 0 && item.status === "done" && (
+      {!compactArtifacts && files?.length === 0 && item.status === "done" && (
         <div className="mt-2 border-t border-card-strong/70 pt-2 text-[10px] text-ink-faint">
           Completed without a filed artifact
         </div>
