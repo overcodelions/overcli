@@ -177,6 +177,9 @@ export const FileEditorPane = memo(function FileEditorPane({
   // Bumped to force a re-read of the file + diff after a revert, so the
   // view reflects the restored-to-HEAD content.
   const [refreshToken, setRefreshToken] = useState(0);
+  /// The path the load effect last ran for, so it can tell "the user opened a
+  /// different file" from "this file changed underneath us".
+  const lastLoadedPath = useRef<string | null>(null);
   const versionRestoreToken = useStore((s) => s.versionRestoreToken);
   const previewKind = detectFilePreviewKind(path);
   const binaryPreview = isBinaryPreviewKind(previewKind);
@@ -319,11 +322,20 @@ export const FileEditorPane = memo(function FileEditorPane({
         cancelled = true;
       };
     }
-    setLoading(true);
+    // A re-read of the file already on screen is QUIET: no spinner, no
+    // blanked preview. This effect re-runs for a mode flip and for every
+    // external write (see the watcher below), and flashing an empty pane
+    // each time an agent touches the document you are reading makes a
+    // live preview read as a glitch rather than as the document updating.
+    const quiet = lastLoadedPath.current === path;
+    lastLoadedPath.current = path;
     setError(null);
-    setArtifactPreview(null);
-    setLargeTextPreview(null);
-    setFileInfo(null);
+    if (!quiet) {
+      setLoading(true);
+      setArtifactPreview(null);
+      setLargeTextPreview(null);
+      setFileInfo(null);
+    }
     // Unsaved edits beat disk. This effect also runs when the user comes
     // back to a tab (or reopens a file they closed with edits pending), and
     // re-reading from disk there would silently throw their work away.
@@ -591,6 +603,43 @@ export const FileEditorPane = memo(function FileEditorPane({
     dropBuffer(path);
     setRefreshToken((t) => t + 1);
   }, [versionRestoreToken, path, clearFileDirty]);
+
+  // Someone else wrote the file. Almost always the agent you just asked to
+  // change it — which is exactly when a stale preview is worst, because the
+  // whole point of having it open was to watch the document change.
+  //
+  // Rides the tree watcher the explorer already uses: it is refcounted per
+  // root and debounced in main (see fileTreeWatch.ts), so taking a second
+  // reference costs one ref and no extra fs watch. It reports only THAT the
+  // root changed, not which file, so this re-reads on any change under the
+  // root — cheap for one file, and the read is quiet.
+  useEffect(() => {
+    if (!path || !rootPath) return;
+    // Unsaved edits beat disk, always. Re-reading here would either be a
+    // no-op (the load effect prefers the buffer) or, if the flag ever got
+    // out of step, silently discard the user's typing. Skip outright.
+    if (dirty) return;
+    let watchedKey: string | null = null;
+    let disposed = false;
+    void window.overcli.invoke('fs:watchTree', rootPath).then((res) => {
+      if (!res.ok) return; // no recursive watch here — the file stays as read
+      if (disposed) {
+        void window.overcli.invoke('fs:unwatchTree', rootPath);
+        return;
+      }
+      watchedKey = res.key;
+    });
+    const unsub = window.overcli.onMainEvent((e) => {
+      if (e.type === 'fileTreeChanged' && watchedKey && e.root === watchedKey) {
+        setRefreshToken((t) => t + 1);
+      }
+    });
+    return () => {
+      disposed = true;
+      unsub();
+      if (watchedKey) void window.overcli.invoke('fs:unwatchTree', rootPath);
+    };
+  }, [path, rootPath, dirty]);
 
   useEffect(() => {
     if (!autoSaves || !dirty || !path || reviewPending) return;

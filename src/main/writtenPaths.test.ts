@@ -37,6 +37,19 @@ function assistantEvent(
   } as StreamEvent;
 }
 
+function toolResultEvent(results: Array<{ id: string; isError?: boolean }>): StreamEvent {
+  return {
+    id: 'r1',
+    timestamp: 2,
+    raw: '',
+    revision: 0,
+    kind: {
+      type: 'toolResult',
+      results: results.map((r) => ({ id: r.id, content: '', isError: r.isError ?? false })),
+    },
+  } as StreamEvent;
+}
+
 afterEach(() => resetWrittenPathsForTest());
 
 describe('isWritingTool', () => {
@@ -140,7 +153,10 @@ describe('recordWritesFromEvents', () => {
     const dir = mkdtempSync(join(tmpdir(), 'overcli-written-'));
     try {
       const file = join(dir, 'chunk_19.json');
-      recordWritesFromEvents([assistantEvent([{ name: 'Write', filePath: file }])]);
+      recordWritesFromEvents([
+        assistantEvent([{ name: 'Write', filePath: file }]),
+        toolResultEvent([{ id: 't0' }]),
+      ]);
       expect(isAgentWrittenPath(file)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -169,6 +185,7 @@ describe('recordWritesFromEvents', () => {
           { name: 'Bash' },
           { name: 'Edit', filePath: b },
         ]),
+        toolResultEvent([{ id: 't0' }, { id: 't1' }, { id: 't2' }]),
       ]);
       expect(isAgentWrittenPath(a)).toBe(true);
       expect(isAgentWrittenPath(b)).toBe(true);
@@ -185,6 +202,20 @@ describe('recordWritesFromEvents', () => {
         { id: 'u1', timestamp: 1, raw: '', revision: 0, kind: { type: 'user', text: file } } as unknown as StreamEvent,
       ]);
       expect(isAgentWrittenPath(file)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not record a write the user denied', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-written-'));
+    try {
+      const target = join(dir, 'denied.txt');
+      recordWritesFromEvents([
+        assistantEvent([{ name: 'Write', filePath: target }]),
+        toolResultEvent([{ id: 't0', isError: true }]),
+      ]);
+      expect(isAgentWrittenPath(target)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

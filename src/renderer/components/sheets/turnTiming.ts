@@ -214,7 +214,7 @@ function measureTurn(events: StreamEvent[], activeTurnNow?: number): TurnTiming 
     : null;
   const streamingMs =
     firstAssistant && lastAssistant
-      ? Math.max(0, lastAssistant.timestamp - (lastAssistant.firstSeenAt ?? lastAssistant.timestamp))
+      ? Math.max(0, lastAssistant.timestamp - (firstAssistant.firstSeenAt ?? firstAssistant.timestamp))
       : null;
   const { toolMs, tools, timeline } = measureTools(
     events,

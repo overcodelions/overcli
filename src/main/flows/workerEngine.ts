@@ -429,7 +429,28 @@ export class WorkerEngine {
     });
   }
 
+  /// Put back the budgets a Distribute overwrote, once the month it was run
+  /// for has passed. See `Worker.distribution` for why a distributed cap
+  /// cannot survive the spend window resetting.
+  ///
+  /// This sits on the allocation path rather than on a timer because there is
+  /// no guarantee the app is running at midnight on the 1st — the roster has
+  /// to be correct on the first allocation of the new month, whenever that
+  /// happens. Idempotent: a stamp for the current month is left alone, so the
+  /// read paths that call `allocate` repeatedly do no work and emit nothing.
+  private settleDistributions(now: number): void {
+    const month = monthStart(now);
+    for (const w of this.workers.values()) {
+      if (!w.distribution || w.distribution.month >= month) continue;
+      w.budgetUSDPerMonth = w.distribution.budgetUSDPerMonth;
+      delete w.distribution;
+      this.store.save(w);
+      this.emitWorker(w);
+    }
+  }
+
   private allocate(now: number): TreasuryAllocation {
+    this.settleDistributions(now);
     const spend = this.spendAll(monthStart(now));
     return allocateTreasury(
       [...this.workers.values()],
@@ -512,9 +533,22 @@ export class WorkerEngine {
     }
 
     const changed: Worker[] = [];
+    const month = monthStart(this.now());
     for (const cap of distributedCaps) {
       const worker = this.workers.get(cap.workerId);
       if (!worker || worker.budgetUSDPerMonth === cap.budgetUSDPerMonth) continue;
+      // Park the configured budget so `settleDistributions` can put it back
+      // when this month ends — see `Worker.distribution`. Distributing twice
+      // in the same month must keep the ORIGINAL, not the cap the previous
+      // distribution wrote, or the budget the user set is lost after two
+      // clicks.
+      worker.distribution = {
+        month,
+        budgetUSDPerMonth:
+          worker.distribution?.month === month
+            ? worker.distribution.budgetUSDPerMonth
+            : worker.budgetUSDPerMonth,
+      };
       worker.budgetUSDPerMonth = cap.budgetUSDPerMonth;
       this.store.save(worker);
       this.emitWorker(worker);

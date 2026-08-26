@@ -2175,6 +2175,8 @@ export class RunnerManager {
         active.launchPermissionMode = args.permissionMode;
         active.launchModel = args.model;
         active.launchEffort = configuredEffort;
+        active.launchTurbo = args.turbo ?? false;
+        active.cwd = args.cwd;
         const perms = codexTransportPermissions(args.permissionMode);
         this.emit({
           type: 'codexRuntimeMode',
