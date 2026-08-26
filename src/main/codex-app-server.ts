@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { backendNeedsShell } from './backendPaths';
+import { backendNeedsShell, spawnFailureMessage } from './backendPaths';
 import { Attachment, EffortLevel } from '../shared/types';
 
 type JsonRpcId = string | number | null;
@@ -74,6 +74,11 @@ export declare interface CodexAppServerClient {
   on(event: 'request', listener: (evt: CodexAppServerRequestEvent) => void): this;
   on(event: 'stderr', listener: (chunk: string) => void): this;
   on(event: 'close', listener: (code: number | null) => void): this;
+  /// Emitted when the child never launched. Deliberately not named 'error':
+  /// EventEmitter throws on an emitted 'error' with no listener, which is the
+  /// very crash the spawn handler exists to prevent. Optional to subscribe —
+  /// teardown always also fires 'close'.
+  on(event: 'spawnError', listener: (message: string) => void): this;
 }
 
 export class CodexAppServerClient extends EventEmitter {
@@ -84,6 +89,11 @@ export class CodexAppServerClient extends EventEmitter {
   private pending = new Map<JsonRpcId, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private initialized = false;
   private closed = false;
+  /// Set when the child never launched. Spawn failure is asynchronous, so a
+  /// request issued *after* it never becomes pending — it hits the `closed`
+  /// guard in `request()` instead, which would otherwise report a generic
+  /// "connection is closed" and lose the real cause.
+  private spawnError: string | null = null;
   private threadId?: string;
   private startPromise?: Promise<{ threadId: string }>;
   /// Persisted thread id we should attempt to resume on first start.
@@ -115,14 +125,44 @@ export class CodexAppServerClient extends EventEmitter {
     this.proc.stderr.setEncoding('utf-8');
     this.proc.stderr.on('data', (chunk: string) => this.emit('stderr', chunk));
 
-    this.proc.on('close', (code) => {
-      this.closed = true;
-      for (const pending of this.pending.values()) {
-        pending.reject(new Error(`codex app-server exited with status ${code ?? 'unknown'}`));
-      }
-      this.pending.clear();
-      this.emit('close', code);
+    // A spawn failure (CLI not installed, not on PATH, not executable, or a
+    // cwd that no longer exists) emits 'error'. With no listener Node rethrows
+    // it as an uncaught exception, and `index.ts` only installs an
+    // `uncaughtException` handler under `isDev` — so in a packaged build one
+    // bad `codex` path killed the whole main process, taking every other
+    // conversation, flow run and worker shift with it.
+    let spawnFailed = false;
+    this.proc.on('error', (err: NodeJS.ErrnoException) => {
+      spawnFailed = true;
+      this.spawnError = spawnFailureMessage(
+        { backend: 'codex', binary: args.binary, cwd: args.cwd },
+        err,
+      );
+      // Deliberately NOT the 'error' event: EventEmitter special-cases it and
+      // throws when it is emitted with no listener, which would reintroduce
+      // exactly the crash this handler exists to prevent. Teardown still runs
+      // through the 'close' channel every consumer already subscribes to.
+      this.emit('spawnError', this.spawnError);
+      this.teardown(this.spawnError, null);
     });
+    this.proc.on('close', (code) => {
+      // Node emits BOTH 'error' and 'close' (status -2) for one failed spawn.
+      // The error handler already tore down with the useful cause; processing
+      // close too would overwrite it with "exited with status -2".
+      if (spawnFailed) return;
+      this.teardown(`codex app-server exited with status ${code ?? 'unknown'}`, code);
+    });
+  }
+
+  /// Single teardown path shared by 'error' and 'close': fail everything that
+  /// is waiting, then notify consumers exactly once.
+  private teardown(message: string, code: number | null): void {
+    this.closed = true;
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error(message));
+    }
+    this.pending.clear();
+    this.emit('close', code);
   }
 
   async start(opts: CodexAppServerStartOptions): Promise<{ threadId: string }> {
@@ -281,12 +321,24 @@ export class CodexAppServerClient extends EventEmitter {
   }
 
   private async request(method: string, params?: any): Promise<any> {
-    if (this.closed) throw new Error('codex app-server connection is closed');
+    if (this.closed) throw new Error(this.spawnError ?? 'codex app-server connection is closed');
     const id = this.nextId++;
     const promise = new Promise<any>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
-    await this.write({ jsonrpc: '2.0', id, method, params });
+    // The real event order for a failed spawn is 'error' → stdin write rejects
+    // EPIPE → 'close'. `teardown` therefore rejects this promise while nobody
+    // is holding it yet (we haven't returned it), which surfaces as an
+    // unhandled rejection — its own main-process crash path. The caller still
+    // observes the rejection through its own await of the returned promise.
+    promise.catch(() => {});
+    try {
+      await this.write({ jsonrpc: '2.0', id, method, params });
+    } catch (err: any) {
+      // Report the spawn failure rather than the opaque EPIPE it caused.
+      this.pending.delete(id);
+      throw new Error(this.spawnError ?? err?.message ?? String(err));
+    }
     return promise;
   }
 
