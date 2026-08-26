@@ -7,6 +7,7 @@ import type { FlowRun } from '@shared/flows/schema';
 import { flowRunOwnerPath } from '@shared/flows/schema';
 import { SheetActionButton } from './SettingsSheet';
 import { isAgentConversation } from '../Sidebar';
+import { describeWorkAtRisk } from '../flows/deleteRun';
 
 type Props =
   | { projectId: UUID; workspaceId?: undefined }
@@ -101,26 +102,41 @@ export function ArchiveAllSheet(props: Props) {
       } else {
         await archiveInactiveInWorkspace(props.workspaceId);
       }
-      // First pass: delete every run whose worktree is clean. Runs with
-      // uncommitted changes come back `needsConfirm` and are held aside so
-      // we can warn ONCE in aggregate rather than prompting per run.
-      const dirtyRuns: typeof flowTargets = [];
+      // First pass: delete every run whose worktree is clean. Runs still
+      // holding work — uncommitted changes, or commits never merged into the
+      // run's base branch — come back `needsConfirm` and are held aside so we
+      // can warn ONCE in aggregate rather than prompting per run. Their counts
+      // travel with them so the aggregate warning can name both kinds instead
+      // of describing committed work as "uncommitted changes".
+      const dirtyRuns: Array<{
+        run: (typeof flowTargets)[number];
+        files: number;
+        commits: number;
+      }> = [];
       for (const run of flowTargets) {
         const result = await window.overcli.invoke('flows:deleteRun', { runId: run.id });
         if (result.ok) {
           removeFlowRun(run.id);
         } else if ('needsConfirm' in result && result.needsConfirm) {
-          dirtyRuns.push(run);
+          dirtyRuns.push({
+            run,
+            files: result.dirty.reduce((n, d) => n + d.fileCount, 0),
+            commits: result.dirty.reduce((n, d) => n + d.unmergedCommits, 0),
+          });
         }
       }
       if (dirtyRuns.length > 0) {
         const plural = dirtyRuns.length === 1 ? '' : 's';
+        const what = describeWorkAtRisk(
+          dirtyRuns.reduce((n, d) => n + d.files, 0),
+          dirtyRuns.reduce((n, d) => n + d.commits, 0),
+        );
         const proceed = window.confirm(
-          `${dirtyRuns.length} flow run${plural} have uncommitted changes in their worktrees ` +
+          `${dirtyRuns.length} flow run${plural} still hold ${what} in their worktrees ` +
             `that will be permanently lost.\n\nDelete them too?`,
         );
         if (proceed) {
-          for (const run of dirtyRuns) {
+          for (const { run } of dirtyRuns) {
             const result = await window.overcli.invoke('flows:deleteRun', {
               runId: run.id,
               force: true,
