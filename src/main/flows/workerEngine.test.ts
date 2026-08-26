@@ -578,6 +578,52 @@ describe('WorkerEngine shifts', () => {
     expect(h.emitted.filter((event) => event.type === 'treasuryUpdate')).toHaveLength(1);
   });
 
+  it('distributes a valid one-cent share even when spend carries a 7th decimal', () => {
+    const h = makeHarness({
+      seed: [seedWorker({ id: 'worker-1', order: 0, budgetUSDPerMonth: 20 })],
+      spend: 12.3456784,
+      pool: 12.3556784,
+    });
+    h.engine.start();
+
+    const result = h.engine.distributeFunds();
+
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    expect(result.workers[0].budgetUSDPerMonth).toBeCloseTo(12.355678, 6);
+  });
+
+  it('drops a parked distribution on an explicit budget edit, and the new budget survives into next month', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', order: 0, budgetUSDPerMonth: 5 }),
+        seedWorker({ id: 'worker-2', order: 1, budgetUSDPerMonth: 25 }),
+      ],
+      pool: 40,
+    });
+    h.engine.start();
+
+    const distributed = h.engine.distributeFunds();
+    expect(distributed).toMatchObject({ ok: true });
+    if (!distributed.ok) return;
+    expect(distributed.workers.find((w) => w.id === 'worker-1')?.distribution?.budgetUSDPerMonth).toBe(5);
+
+    // An explicit budget edit while a distribution is still parked must win —
+    // otherwise settleDistributions puts the OLD number back on the 1st.
+    const current = h.engine.get('worker-1');
+    expect(current).not.toBeNull();
+    const edited = h.engine.save({ ...(current as Worker), budgetUSDPerMonth: 50 });
+    expect(edited).toMatchObject({ ok: true });
+    if (!edited.ok) return;
+    expect(edited.worker.distribution).toBeUndefined();
+
+    // September: the spend window resets and settleDistributions runs again —
+    // it must not have anything parked to restore, so the edit sticks.
+    h.setNow(new Date(2026, 8, 1, 0, 30).getTime());
+    const after = h.engine.treasury().allocation;
+    expect(after.byWorker.find((row) => row.workerId === 'worker-1')?.capUSD).toBe(50);
+  });
+
   it('gives back the configured budget when the distributed month ends', () => {
     const h = makeHarness({
       seed: [

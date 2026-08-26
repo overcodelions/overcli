@@ -104,7 +104,12 @@ export function publishDeliverableToProject(args: {
   // that as-is rather than partially trusting the array as `doneNames`: the
   // old array held LANDED (uniquified) filenames like `Summary 2.md`, which
   // would never match an original artifact name and would re-file it.
-  if (entry?.legacyComplete) return { written: [], skipped: 'already-published' };
+  // An EMPTY legacy array carried no filenames, so it proves nothing was ever
+  // filed — honouring it as "complete" preserves the shift-10 defect forever.
+  // A non-empty one is still honoured: its names are already uniquified.
+  if (entry?.legacyComplete && (entry.written?.length ?? 0) > 0) {
+    return { written: [], skipped: 'already-published' };
+  }
   // Named by the ORIGINAL artifact name, not the uniquified filename it lands
   // as — that's what lets a retry recognize "already filed" even though the
   // destination name (`Summary 2.md`) depends on what else is in the folder.

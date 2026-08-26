@@ -348,6 +348,10 @@ export const FileEditorPane = memo(function FileEditorPane({
     (async () => {
       const info = await window.overcli.invoke('fs:fileInfo', { path, rootPath: rootPath ?? undefined });
       if (cancelled) return;
+      // Not gated on `!quiet`: a watcher-driven re-read of a file that shrank
+      // below the large-text threshold must drop the old preview, or the pane
+      // keeps rendering a stale 25MB excerpt until the tab is reopened.
+      if (!(info.ok && info.largeText)) setLargeTextPreview(null);
       setFileInfo({ ...info, requestedPath: path });
       if (!info.ok) {
         // A deleted file isn't an error to surface — the diff effect picks
@@ -604,6 +608,11 @@ export const FileEditorPane = memo(function FileEditorPane({
     setRefreshToken((t) => t + 1);
   }, [versionRestoreToken, path, clearFileDirty]);
 
+  const pathRef = useRef(path);
+  useEffect(() => {
+    pathRef.current = path;
+  }, [path]);
+
   // Someone else wrote the file. Almost always the agent you just asked to
   // change it — which is exactly when a stale preview is worst, because the
   // whole point of having it open was to watch the document change.
@@ -614,11 +623,7 @@ export const FileEditorPane = memo(function FileEditorPane({
   // root changed, not which file, so this re-reads on any change under the
   // root — cheap for one file, and the read is quiet.
   useEffect(() => {
-    if (!path || !rootPath) return;
-    // Unsaved edits beat disk, always. Re-reading here would either be a
-    // no-op (the load effect prefers the buffer) or, if the flag ever got
-    // out of step, silently discard the user's typing. Skip outright.
-    if (dirty) return;
+    if (!rootPath) return;
     let watchedKey: string | null = null;
     let disposed = false;
     void window.overcli.invoke('fs:watchTree', rootPath).then((res) => {
@@ -631,6 +636,10 @@ export const FileEditorPane = memo(function FileEditorPane({
     });
     const unsub = window.overcli.onMainEvent((e) => {
       if (e.type === 'fileTreeChanged' && watchedKey && e.root === watchedKey) {
+        // Unsaved edits beat disk, always. Re-reading here would either be a
+        // no-op (the load effect prefers the buffer) or, if the flag ever got
+        // out of step, silently discard the user's typing. Skip outright.
+        if (useStore.getState().dirtyFiles[pathRef.current ?? '']) return;
         setRefreshToken((t) => t + 1);
       }
     });
@@ -639,7 +648,7 @@ export const FileEditorPane = memo(function FileEditorPane({
       unsub();
       if (watchedKey) void window.overcli.invoke('fs:unwatchTree', rootPath);
     };
-  }, [path, rootPath, dirty]);
+  }, [rootPath]);
 
   useEffect(() => {
     if (!autoSaves || !dirty || !path || reviewPending) return;

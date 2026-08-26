@@ -22,7 +22,7 @@
 // runner pipeline drives.
 
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join, resolve, sep } from 'node:path';
 import { log } from '../diagnostics';
@@ -568,6 +568,32 @@ export class FlowRuntimeImpl {
       const run = this.runs.get(runId);
       if (!run) return;
       this.markStepActivity(runId);
+
+      // An unattended worker with no grant for external actions runs under
+      // `acceptEdits` (see resolvePermissionMode), which keeps the approval
+      // broker wired instead of bypassing it — so a call outside the step's
+      // declared allowlist routes to mcp__overcli__approve and waits for a
+      // human to click Allow/Deny. Nobody is watching a nightly shift, so
+      // that wait is forever. Auto-deny it: the CLI gets a clean refusal it
+      // can report or work around, instead of the run hanging in `running`.
+      // EXCEPT the one step the user just approved via the externalAction
+      // pause (see resumeRunInner) — that is a real human clicking Continue,
+      // and auto-denying it anyway would silently discard their approval.
+      const currentStepId = run.state.kind === 'running' ? run.state.currentStepId : undefined;
+      const stepIsApproved =
+        !!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId;
+      if (run.workerId && !run.allowExternalActions && !stepIsApproved) {
+        for (const ev of event.events) {
+          if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
+            log(
+              'info',
+              'flows.permission',
+              `auto-denied "${ev.kind.info.toolName}" for worker run ${runId} (no grant for external actions)`,
+            );
+            this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, false);
+          }
+        }
+      }
 
       // Capture the latest non-partial assistant text per participant,
       // regardless of run state. Hijack replies during a `preStep` pause
@@ -1172,6 +1198,16 @@ export class FlowRuntimeImpl {
     const pausedReason = run.state.reason;
     const nextStepId = run.state.nextStepId;
 
+    // Clicking Continue on an externalAction pause is an explicit, one-shot
+    // approval for exactly the step that was paused — not a standing grant
+    // for the rest of the run. Recorded before any resume path below
+    // advances into that step; `onStepFinished` clears it once the step
+    // completes, so it can never leak into a later, unapproved step.
+    if (pausedReason === 'externalAction') {
+      run.externalActionApprovedStepId = nextStepId;
+      this.checkpoint(run);
+    }
+
     // Gate override: on a FAILURE pause, `nextStepId` is the step that
     // failed (a rejecting reviewer, or a step whose on_fail is `pause`).
     // A plain Continue re-runs it — which loops forever when the failure
@@ -1387,10 +1423,17 @@ export class FlowRuntimeImpl {
   ): { ok: true } | { ok: false; error: string } {
     const run = this.runs.get(runId);
     if (!run || this.pendingWorkspaceMembers(run).length === 0) return proceed();
-    void this.adoptWorkspaceMembers(run).then(proceed, (err) => {
-      log('warn', 'flows', `Workspace adoption failed for run ${runId}`, err);
-      proceed();
-    });
+    void this.adoptWorkspaceMembers(run).then(
+      () => {
+        const r = proceed();
+        if (!r.ok) this.failRun(run, r.error);
+      },
+      (err) => {
+        log('warn', 'flows', `Workspace adoption failed for run ${runId}`, err);
+        const r = proceed();
+        if (!r.ok) this.failRun(run, r.error);
+      },
+    );
     return { ok: true };
   }
 
@@ -2591,11 +2634,14 @@ export class FlowRuntimeImpl {
       // `review` mode ignores this by design — its round count is fixed
       // (see the round gate in runner.sendClaude and friends).
       collabMaxTurns: step.rebound?.maxIters ?? null,
-      // Tool allowlist is only enforceable on the Ollama path (overcli
-      // owns the dispatch). For Claude/Codex/Gemini/Copilot, the CLI's
-      // permission mode is the gate — the user opts into autonomy via
-      // bypassPermissions/acceptEdits, or gets prompted per call.
-      enabledTools: stepModel.backend === 'ollama' ? step.tools : undefined,
+      // The allowlist the approval gate classifies by is the allowlist the
+      // process gets: Ollama enforces it in-dispatcher, claude via
+      // --allowedTools (see backends/claude.ts). See resolveStepEffect.
+      // `step.tools` is never undefined (schema.ts) and a bare `[]` must stay
+      // an empty allowlist rather than becoming "no restriction" — Ollama
+      // reads `undefined` as its own read-only default (runner.ts), and
+      // claude.ts already guards on `length > 0` before emitting the flag.
+      enabledTools: step.tools,
     });
     if (!sendResult.ok) {
       this.finishAttempt(run, step.id, { outcome: 'error', errorMessage: sendResult.error });
@@ -2706,6 +2752,13 @@ export class FlowRuntimeImpl {
     if (!run) return;
     const step = run.flowSnapshot.steps.find(s => s.id === stepId);
     if (!step) return;
+    // The externalAction approval is one-shot: consumed the moment the step
+    // it was granted for finishes, so it can never carry into whichever step
+    // runs next. See resumeRunInner (where it's set) and resolvePermissionMode
+    // / observeEvent (where it's consulted).
+    if (run.externalActionApprovedStepId === stepId) {
+      delete run.externalActionApprovedStepId;
+    }
     const buf = this.stepBuffers.get(runId);
     const text = buf?.assistantText ?? '';
 
@@ -2731,9 +2784,10 @@ export class FlowRuntimeImpl {
         backend: resolveRunStepModel(run, step).backend,
       })
     ) {
-      const porcelain = runGit(['status', '--porcelain'], run.projectPath);
-      if (porcelain.exitCode === 0 && porcelain.stdout.trim() === '') { incrementalDiff = null; }
-      else { incrementalDiff = this.computeIncrementalDiffForRun(run); }
+      // No `git status` precheck: computeIncrementalDiffForRun already runs
+      // `git diff` and returns empty for a clean tree, so the precheck was a
+      // second blocking spawn that answered a question the diff answers.
+      incrementalDiff = this.computeIncrementalDiffForRun(run);
       if (treeChanged(incrementalDiff)) artifactBody = '';
     }
 
@@ -3008,11 +3062,18 @@ export class FlowRuntimeImpl {
       this.pointerRejections.set(key, { path: ref, reason: 'missing' });
       return this.recoverTypedBody(text, outputName);
     }
-    let read = readArtifactFile(abs, this.lastAttemptStartedAt(run, stepId));
+    const attemptStartedAt = this.lastAttemptStartedAt(run, stepId);
+    let read = readArtifactFile(abs, attemptStartedAt);
     // Older than this attempt, but the run's own work — the usual shape is a
     // re-run, or a step that read the file, found it already correct, and
     // changed nothing. Re-read with the floor lifted.
-    if (!read.ok && read.reason === 'stale' && this.runOwnsPath(run, abs)) {
+    //
+    // `runOwnsPath` gets the RUN's start, not this attempt's: it exists
+    // specifically to lift a floor a file already failed (`attemptStartedAt`
+    // above), so reusing that same floor inside it would make the gitignored
+    // fallback it guards permanently unreachable — an ignored file the run
+    // wrote at step 1 has to still count as owned when step 4 asks.
+    if (!read.ok && read.reason === 'stale' && this.runOwnsPath(run, abs, run.createdAt)) {
       read = readArtifactFile(abs, 0);
       if (read.ok) {
         log('info', 'flows.outputFile', `pointer file predates the attempt but is the run's own work: ${abs}`);
@@ -3029,13 +3090,30 @@ export class FlowRuntimeImpl {
   /// Whether git in the repo holding `abs` reports it as this run's own
   /// change. Workspace runs carry a baseline per member, so the question is
   /// asked of the member repo that contains the file.
-  private runOwnsPath(run: FlowRun, abs: string): boolean {
+  private runOwnsPath(run: FlowRun, abs: string, runStartedAt: number): boolean {
+    // Workspace runs hand the step a symlink farm; the member repos live
+    // elsewhere. Without realpath the ownership fallback never matches.
+    let probe = abs;
+    try {
+      probe = realpathSync(abs);
+    } catch {
+      /* not on disk yet */
+    }
     let repoRoot = run.projectPath;
     let baseline = run.baselineCommit;
     if (run.baselineCommitsByMember) {
       for (const info of Object.values(run.baselineCommitsByMember)) {
-        const root = resolve(info.path);
-        if (abs === root || abs.startsWith(root + sep)) {
+        // Realpath this side too: `probe` is already realpath'd above, and a
+        // member root that itself sits behind a symlink would otherwise never
+        // match a literally-resolved comparison — the exact workspace case
+        // this fallback exists for.
+        let root = resolve(info.path);
+        try {
+          root = realpathSync(root);
+        } catch {
+          /* not on disk yet */
+        }
+        if (probe === root || probe.startsWith(root + sep)) {
           repoRoot = info.path;
           baseline = info.commit;
           break;
@@ -3043,7 +3121,7 @@ export class FlowRuntimeImpl {
       }
     }
     if (!repoRoot) return false;
-    return pathChangedInRun(repoRoot, baseline, abs);
+    return pathChangedInRun(repoRoot, baseline, probe, runStartedAt);
   }
 
   /// The pointer was claimed and refused. If the model ALSO typed a body into
@@ -3513,6 +3591,11 @@ export class FlowRuntimeImpl {
     if (step.permissionMode) return step.permissionMode;
     // Flows are designed to run unattended — the user has already opted
     // into "automate this whole pipeline".
+    //   - A worker with no grant for external actions is the one exception,
+    //     handled below: it must not auto-approve everything, whatever the
+    //     backend. Nobody watches a nightly shift to click Allow/Deny, so
+    //     `observeEvent` auto-denies any request that reaches the broker —
+    //     the step gets a clean refusal instead of a permanent hang.
     //   - Ollama: step.tools is an authoritative allowlist; only flip
     //     into bypassPermissions when a write tool is actually granted.
     //   - Claude/Codex/Gemini/Copilot: the CLI owns the tool surface,
@@ -3520,6 +3603,17 @@ export class FlowRuntimeImpl {
     //     stall on every Bash/Edit prompt — the user can downgrade to
     //     'default'/'acceptEdits' on the step itself.
     const stepModel = resolveStepModel(run.flowSnapshot, step);
+    // An unattended worker with no grant for external actions must never run
+    // under a mode that auto-approves every call. `acceptEdits` keeps the
+    // approval broker wired (backends/claude.ts skips it only for
+    // bypassPermissions), so anything outside the step's declared allowlist
+    // routes through mcp__overcli__approve instead of just firing. Skipped
+    // when THIS step is the one the user just approved via the externalAction
+    // pause — that approval is one-shot (see resumeRunInner / onStepFinished)
+    // and must not still force through the broker only to auto-deny it.
+    if (run.workerId && !run.allowExternalActions && run.externalActionApprovedStepId !== step.id) {
+      return 'acceptEdits';
+    }
     if (stepModel.backend !== 'ollama') return 'bypassPermissions';
     const writeTools = new Set(['write_file', 'edit_file', 'bash']);
     const hasWrite = step.tools.some(t => writeTools.has(t));
@@ -3798,8 +3892,18 @@ export function resolveStepEffect(
     'read', 'grep', 'glob', 'ls', 'edit', 'write', 'notebookedit', 'todowrite', 'task',
     'read_file', 'list_dir', 'write_file', 'edit_file',
   ]);
-  const hasUnknownTool = (step.tools ?? []).some((t) => !LOCAL_TOOLS.has(t.toLowerCase().split('__')[0]));
-  return hasUnknownTool ? 'external' : 'local';
+  // Scoped read-only git is local: `Bash(git diff:*)` cannot mutate anything,
+  // and forcing a pause on it made two shipped templates stall at step 1.
+  const READONLY_BASH = /^bash\(\s*git\s+(?:diff|log|show|status|ls-files|rev-parse|branch)\b[^)]*\)$/;
+  const isLocalTool = (t: string): boolean => {
+    const name = t.toLowerCase().trim();
+    return LOCAL_TOOLS.has(name.split('__')[0]) || READONLY_BASH.test(name);
+  };
+  const declared = step.tools ?? [];
+  // Fail closed on an absent or empty declaration: a step that names nothing
+  // is granted everything by the CLI, which is the opposite of "local".
+  if (declared.length === 0) return 'external';
+  return declared.some((t) => !isLocalTool(t)) ? 'external' : 'local';
 }
 
 export function pauseReasonBeforeStep(
@@ -4338,11 +4442,33 @@ export function pathChangedInRun(
   repoRoot: string,
   baselineCommit: string | undefined,
   abs: string,
+  // Floor for the gitignored-file fallback below. `git status`/`git diff`
+  // cannot see an ignored path at all, so unlike the tracked/untracked
+  // branches above, there is no git signal that scopes an ignored file to
+  // THIS run — every caller must pass the timestamp a file has to beat.
+  // Required (not defaulted) so a new caller can't silently fall back to "any
+  // ignored file that exists" the way the un-parameterized version did.
+  runStartedAt: number,
 ): boolean {
   // `-uall` so an untracked file inside an untracked directory is listed by
   // name rather than collapsed into its parent.
   const status = runGit(['status', '--porcelain', '-uall', '--', abs], repoRoot);
   if (status.exitCode === 0 && status.stdout.trim() !== '') return true;
+  // `git status` never lists an ignored file, so a run that legitimately wrote
+  // to a gitignored path got a misleading "nothing wrote or changed that file".
+  // `check-ignore` alone can't scope that to this run's own writes though —
+  // it answers "is this path ignored", not "did this run produce it" — so a
+  // pre-existing ignored file (`.env`, `node_modules/**`) would otherwise be
+  // handed back as though the run had written it. Require its mtime to beat
+  // the run's own floor, exactly like the tracked-file mtime check above it.
+  const ignored = runGit(['check-ignore', '-q', '--', abs], repoRoot);
+  if (ignored.exitCode === 0) {
+    try {
+      return statSync(abs).mtimeMs >= runStartedAt;
+    } catch {
+      return false;
+    }
+  }
   if (!baselineCommit) return false;
   const committed = runGit(['diff', '--name-only', baselineCommit, '--', abs], repoRoot);
   return committed.exitCode === 0 && committed.stdout.trim() !== '';
@@ -4549,14 +4675,42 @@ function computeRunDiff(cwd: string, baselineCommit: string): string | null {
   const newFileBlocks: string[] = [];
   for (const p of untrackedPaths.slice(0, UNTRACKED_DIFF_MAX)) {
     if (isNoisyPath(p)) continue;
-    // `git diff --no-index` exits 1 when the files differ — that's the
-    // normal case here (we're diffing against /dev/null), so don't
-    // treat exit 1 as failure. Anything else (-no such file, etc.) we
-    // silently skip rather than abort the whole diff.
-    const r = runGit(['diff', '--no-color', '--no-ext-diff', '--no-index', '/dev/null', p], cwd);
-    if (r.exitCode === 0 || r.exitCode === 1) {
-      if (r.stdout) newFileBlocks.push(r.stdout);
+    // Synthesized rather than spawned: one `git diff --no-index` per new file
+    // cost up to 50 blocking subprocesses on the step-advance path.
+    let text: string;
+    try {
+      const abs = join(cwd, p);
+      const sizeBytes = statSync(abs).size;
+      // A file skipped here used to just vanish from the diff with no trace —
+      // the same silent-drop shape as the oversize-publish bug fixed
+      // elsewhere in this release. Leave a marker instead of `continue`ing
+      // straight past it, so a reviewer sees that something was left out.
+      if (sizeBytes > 512 * 1024) {
+        newFileBlocks.push(`\ndiff --git a/${p} b/${p}\nnew file: ${p} — not shown (${sizeBytes} bytes).\n`);
+        continue;
+      }
+      text = readFileSync(abs, 'utf-8');
+      if (text.includes('\0')) {
+        newFileBlocks.push(`\ndiff --git a/${p} b/${p}\nnew file: ${p} — not shown (binary).\n`);
+        continue;
+      }
+    } catch {
+      continue;
     }
+    const lines = text.split('\n');
+    // A trailing '\n' splits into a final empty element — drop it. Its
+    // absence means the file itself has no trailing newline, which the
+    // marker below records the way a real `git diff` would.
+    const noTrailingNewline = lines[lines.length - 1] !== '';
+    if (!noTrailingNewline) lines.pop();
+    if (lines.length === 0) {
+      newFileBlocks.push(`\ndiff --git a/${p} b/${p}\nnew file: ${p} — empty file.\n`);
+      continue;
+    }
+    const body = lines.map((l) => `+${l}`).join('\n') + (noTrailingNewline ? '\n\\ No newline at end of file\n' : '\n');
+    newFileBlocks.push(
+      `diff --git a/${p} b/${p}\nnew file mode 100644\n--- /dev/null\n+++ b/${p}\n@@ -0,0 +1,${lines.length} @@\n${body}`,
+    );
   }
   if (untrackedPaths.length > UNTRACKED_DIFF_MAX) {
     newFileBlocks.push(`\n… ${untrackedPaths.length - UNTRACKED_DIFF_MAX} more untracked files not shown.\n`);

@@ -64,7 +64,15 @@ export function saveOrchestration(o: Orchestration): void {
   const now = Date.now();
   if (now - lastPruneAt > 60_000) {
     lastPruneAt = now;
-    pruneOrchestrations(loadAllOrchestrations());
+    // One readdir instead of up to 600 JSON.parse calls: pruneOrchestrations
+    // is a no-op below the cap, so there is nothing to load until we are over.
+    let count = 0;
+    try {
+      count = fs.readdirSync(dir()).filter((n) => n.endsWith('.json')).length;
+    } catch {
+      count = 0;
+    }
+    if (count > MAX_RETAINED_ORCHESTRATIONS) pruneOrchestrations(loadAllOrchestrations());
   }
 }
 
