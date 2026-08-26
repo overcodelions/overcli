@@ -198,4 +198,12 @@ describe('distributeRemainingFunds', () => {
     expect(caps.map((cap) => cap.budgetUSDPerMonth)).toEqual([5, 3.33, 1.67]);
     expect(caps.reduce((sum, cap) => sum + cap.budgetUSDPerMonth, 0)).toBe(10);
   });
+
+  it('gives every active worker a cent when the pot has exactly one each', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j'];
+    const allocation = allocateTreasury(roster(...ids.map((id) => [id, 0] as [string, number])), noSpend, 0.1);
+    const caps = distributeRemainingFunds(allocation);
+    expect(caps.every((cap) => cap.budgetUSDPerMonth >= 0.01)).toBe(true);
+    expect(Number(caps.reduce((sum, cap) => sum + cap.budgetUSDPerMonth, 0).toFixed(2))).toBe(0.1);
+  });
 });

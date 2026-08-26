@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { buildStream, bucketFor, groupIntoLanes } from './sidebarStream';
+import { ownerPathFor } from './components/SidebarStream';
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -120,5 +121,31 @@ describe('buildStream', () => {
 
   it('handles an empty list', () => {
     expect(buildStream([], read, NOON)).toEqual([]);
+  });
+});
+
+describe('ownerPathFor', () => {
+  const projects = [{ id: 'p1', path: '/home/me/Overcli Projects/Marketing' }];
+  const workspaces = [{ id: 'w1', rootPath: '/home/me/work' }];
+
+  it('opens a project lane at the project folder', () => {
+    expect(ownerPathFor('p1', projects, workspaces)).toBe(
+      '/home/me/Overcli Projects/Marketing',
+    );
+  });
+
+  it('opens a workspace lane at its root', () => {
+    expect(ownerPathFor('w1', projects, workspaces)).toBe('/home/me/work');
+  });
+
+  it('opens a path-keyed lane at that path', () => {
+    expect(ownerPathFor('path:/tmp/loose-repo', projects, workspaces)).toBe('/tmp/loose-repo');
+  });
+
+  // A worker's runs live in its own scratch directory, which is not somewhere
+  // the user put anything — so the label stays plain text.
+  it('gives a worker lane nowhere to go', () => {
+    expect(ownerPathFor('worker:abc', projects, workspaces)).toBeUndefined();
+    expect(ownerPathFor('gone', projects, workspaces)).toBeUndefined();
   });
 });

@@ -39,6 +39,9 @@ export interface OllamaUsageEntry {
 /// lines on every round would be absurd.
 const MAX_ENTRIES = 50_000;
 const TRIM_SLACK = 5_000;
+/// Conservative floor on a serialized line's byte length. Used to rule out the
+/// full-file read without counting lines; a real entry is ~90 bytes.
+const MIN_BYTES_PER_ENTRY = 60;
 
 export function ollamaUsageLogPath(): string {
   let base: string;
@@ -99,6 +102,10 @@ function endsWithNewline(file: string): boolean {
 
 function maybeTrim(file: string): void {
   try {
+    // `logOllamaUsage` fires once per model ROUND, and at steady state this
+    // file sits near 4.5MB — reading it whole just to decide whether to trim
+    // costs a multi-megabyte synchronous read on the main process every round.
+    if (fs.statSync(file).size < (MAX_ENTRIES + TRIM_SLACK) * MIN_BYTES_PER_ENTRY) return;
     const lines = fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean);
     if (lines.length <= MAX_ENTRIES + TRIM_SLACK) return;
     const tmp = `${file}.tmp`;

@@ -46,6 +46,7 @@ import { effortForBackend } from '@shared/effort';
 import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects';
+import { documentToReveal } from './turnDocuments';
 import { isPathUnder } from '@shared/pathScope';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
@@ -525,7 +526,10 @@ interface StoreState {
   clearDocumentRevision(requestId: string): void;
   refreshEverydayRoots(): void;
   syncProjectMarkers(): Promise<void>;
-  checkpointProject(projectPath: string, message: string): Promise<void>;
+  checkpointProject(
+    projectPath: string,
+    message: string,
+  ): Promise<{ ok: boolean; skipped?: string }>;
   noteVersionsRestored(projectPath: string): void;
   askAboutDocument(filePath: string): void;
   protectProject(projectId: UUID): Promise<ReturnType<IPCInvokeMap['git:initRepo']>>;
@@ -3447,11 +3451,12 @@ export const useStore = create<StoreState>((set, get) => ({
   /// never interrupt the thing the user was actually doing, and "nothing
   /// changed" is the ordinary case rather than an error.
   async checkpointProject(projectPath, message) {
-    if (!projectPath) return;
+    if (!projectPath) return { ok: false };
     try {
-      await window.overcli.invoke('versions:checkpoint', { projectPath, message });
+      return await window.overcli.invoke('versions:checkpoint', { projectPath, message });
     } catch {
       // Best effort by design.
+      return { ok: false };
     }
   },
 
@@ -3728,12 +3733,24 @@ export const useStore = create<StoreState>((set, get) => ({
       // sixteen files leaves them all sitting as one undifferentiated "new
       // change" with nothing in the history to go back to.
       if (justCompleted) {
-        const project = get().projects.find(
-          (p) =>
-            isEverydayProject(p) &&
-            p.conversations.some((c) => c.id === event.conversationId),
+        const owner = get().projects.find((p) =>
+          p.conversations.some((c) => c.id === event.conversationId),
         );
-        const conv = project?.conversations.find((c) => c.id === event.conversationId);
+        const project = owner && isEverydayProject(owner) ? owner : undefined;
+        const conv = owner?.conversations.find((c) => c.id === event.conversationId);
+        // A code project gets no checkpoint — overcli must never commit
+        // someone's repo for them — so there is no version to read "what did
+        // this turn make?" off. The turn itself is the record: if it WROTE a
+        // document, that document is the answer it just handed back, and
+        // leaving the user to find the path in the transcript is the same
+        // hunt the everyday reveal exists to remove.
+        if (owner && !project && conv && !conv.worktreePath && !get().openFilePath) {
+          const runner = getRunner(event.conversationId);
+          const doc = runner?.runningSince
+            ? documentToReveal(runner.events, runner.runningSince)
+            : undefined;
+          if (doc) get().openFile(doc, undefined, 'preview');
+        }
         // An agent conversation runs in its own worktree (see the cwd
         // resolution in `refreshGitStatus`). Nothing it wrote is in the
         // user's folder yet — it lands on merge — so checkpointing the
@@ -3746,7 +3763,14 @@ export const useStore = create<StoreState>((set, get) => ({
           // the file?" after a turn that wrote sixteen of them is the whole
           // problem — the answer should already be on screen.
           void (async () => {
-            await get().checkpointProject(project.path, message);
+            const saved = await get().checkpointProject(project.path, message);
+            // Only show a document when this turn actually wrote one. A chat
+            // that answered a question changes nothing, so the checkpoint is
+            // skipped and `versions[0]` is still the PREVIOUS version — which
+            // in a young project is the scaffold commit, i.e. the brief. That
+            // is how "ask a question, get the brief opened at you" happened,
+            // every turn, for as long as nothing else had been written.
+            if (!saved.ok) return;
             // Never yank someone off a file they are already reading.
             if (get().openFilePath) return;
             const latest = await window.overcli.invoke('versions:list', {
@@ -3755,7 +3779,13 @@ export const useStore = create<StoreState>((set, get) => ({
             });
             if (!latest.ok || latest.versions.length === 0) return;
             const pick = pickDocumentToShow(latest.versions[0].files.map((f) => f.path));
-            if (pick) get().openFile(`${project.path}/${pick}`);
+            // Rendered, not split. A document you are being SHOWN is one to
+            // read — the editing half of a split is answering a question the
+            // user has not asked yet, and for markdown it lands them in
+            // syntax rather than in the thing that was written. Opening one
+            // yourself still respects the everyday split default; this is the
+            // one path where the app chose the file, not the person.
+            if (pick) get().openFile(`${project.path}/${pick}`, undefined, 'preview');
           })();
         }
       }

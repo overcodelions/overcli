@@ -2546,7 +2546,8 @@ export class FlowRuntimeImpl {
     // The model still receives the full `prompt` with role + contract,
     // so behavior doesn't change.
     const displayText = this.buildStepDisplayText(run, step);
-    if (run.pendingSteer) {
+    const spentSteer = run.pendingSteer;
+    if (spentSteer) {
       delete run.pendingSteer;
       this.checkpoint(run);
       // The pill in SteerBanner is driven by `pendingSteer`; without this
@@ -2598,6 +2599,14 @@ export class FlowRuntimeImpl {
     });
     if (!sendResult.ok) {
       this.finishAttempt(run, step.id, { outcome: 'error', errorMessage: sendResult.error });
+      // The send never reached the model, so the steer was not spent. Put it
+      // back — otherwise the next Continue runs without the user's correction
+      // and says nothing about having dropped it.
+      if (spentSteer) {
+        run.pendingSteer = spentSteer;
+        this.checkpoint(run);
+        this.emitRunUpdate(run);
+      }
       this.handleStepFailure(runId, step, sendResult.error);
       return;
     }
@@ -3782,8 +3791,11 @@ export function resolveStepEffect(
   // Covers both the Claude-style tool names and the Ollama built-in kit
   // (read_file/list_dir/write_file/edit_file/grep/bash — see ollamaTools.ts)
   // used by the shipped templates' `build`/`tests` steps.
+  // `bash`, `websearch` and `webfetch` are NOT here on purpose: bash reaches
+  // curl/git push/ssh/aws with the user's on-disk credentials, and webfetch is
+  // a bare SSRF primitive. An unattended worker must stop and ask first.
   const LOCAL_TOOLS = new Set([
-    'read', 'grep', 'glob', 'ls', 'bash', 'edit', 'write', 'notebookedit', 'todowrite', 'task', 'websearch', 'webfetch',
+    'read', 'grep', 'glob', 'ls', 'edit', 'write', 'notebookedit', 'todowrite', 'task',
     'read_file', 'list_dir', 'write_file', 'edit_file',
   ]);
   const hasUnknownTool = (step.tools ?? []).some((t) => !LOCAL_TOOLS.has(t.toLowerCase().split('__')[0]));

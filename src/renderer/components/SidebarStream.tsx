@@ -16,6 +16,7 @@
 import { useMemo, useState } from 'react';
 
 import { useFlowsStore } from '../flowsStore';
+import { useStore } from '../store';
 
 
 import { buildStream, groupIntoLanes, type Lane } from '../sidebarStream';
@@ -146,6 +147,12 @@ function StreamLane({
   // run counts only while you are on Workers), and it can only do that if it
   // is told which run is active, not which one the Chat tab thinks is.
   const activeRunId = useFlowsStore((s) => s.activeRunId);
+  // Recent prints the owner's name and nothing else, so the folder those rows
+  // live in was reachable only from Places — you could read the project's
+  // name all day with no way to open it. The label is the door: it is already
+  // the one place in this layout that names the owner.
+  const ownerPath = useStore((s) => ownerPathFor(lane.ownerId, s.projects, s.workspaces));
+  const openExplorer = useStore((s) => s.openExplorer);
   return (
     <div className="mt-1.5">
       <div
@@ -154,7 +161,17 @@ function StreamLane({
           (here ? 'text-accent' : 'text-ink-faint')
         }
       >
-        <span className="min-w-0 truncate">{lane.ownerName}</span>
+        {ownerPath ? (
+          <button
+            onClick={() => openExplorer(ownerPath)}
+            title={`Browse the files in ${lane.ownerName}`}
+            className="min-w-0 truncate uppercase tracking-wider hover:text-ink hover:underline"
+          >
+            {lane.ownerName}
+          </button>
+        ) : (
+          <span className="min-w-0 truncate">{lane.ownerName}</span>
+        )}
         <span className="h-px flex-1 bg-card" />
         <span className="flex-shrink-0 text-[8.5px] tracking-wide opacity-55">
           {lane.ownerKind === 'unknown' ? '' : lane.ownerKind}
@@ -194,6 +211,25 @@ function StreamLane({
       </div>
     </div>
   );
+}
+
+/// The folder behind a lane, or `undefined` when there isn't one to open.
+///
+/// Lane ids are owner ids, and `buildStream` mints four kinds: a project id, a
+/// workspace id, `worker:<id>` for a live worker run, and `path:<dir>` for a
+/// run whose folder matches no registered project. Only the first three name
+/// somewhere the explorer can go — a worker's runs live in its own scratch
+/// directory, which is not a place the user put anything.
+export function ownerPathFor(
+  ownerId: string,
+  projects: readonly { id: string; path: string }[],
+  workspaces: readonly { id: string; rootPath: string }[],
+): string | undefined {
+  if (ownerId.startsWith('path:')) return ownerId.slice('path:'.length) || undefined;
+  if (ownerId.startsWith('worker:')) return undefined;
+  const project = projects.find((p) => p.id === ownerId);
+  if (project) return project.path;
+  return workspaces.find((w) => w.id === ownerId)?.rootPath;
 }
 
 /// What a resting row says about itself on the right: a momentum meter when
