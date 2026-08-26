@@ -17,6 +17,11 @@ import type { FlowRun } from '../../shared/flows/schema';
 // `runtime.localCheckout.test.ts`.
 const seeded = vi.hoisted(() => ({ runs: [] as FlowRun[] }));
 
+// Counts blocking git invocations made by the SYNC path. `runDirtyWorktrees`
+// is `spawnSync` and `pruneOldRuns` drives it on every `startRun`, so the
+// number of calls is a UI-freeze budget, not an implementation detail.
+const syncGitCalls = vi.hoisted(() => ({ n: 0 }));
+
 // An actual eviction (`pruneOldRuns`) calls `clearAttachments`, which
 // resolves its root through `app.getPath('userData')`. No suite in this file
 // evicted anything before the prune suite below, which is why this mock
@@ -76,6 +81,17 @@ vi.mock('../git', () => ({
         ? { stdout: '', stderr: '', exitCode: 0 }
         : { stdout: ' M file.txt\n', stderr: '', exitCode: 0 };
     }
+    // Commits ahead of the run's base branch. Keyed off the cwd exactly like
+    // `status`, and it MUST be explicit: the fall-through at the bottom
+    // returns an empty stdout, which parses to 0, so any assertion about
+    // unmerged commits would pass vacuously without this branch. A cwd marked
+    // `ahead-of-base` reports one unmerged commit; everything else reports
+    // none, which keeps every pre-existing suite unaffected.
+    if (args[0] === 'rev-list') {
+      return cwd && cwd.includes('ahead-of-base')
+        ? { stdout: '1\n', stderr: '', exitCode: 0 }
+        : { stdout: '0\n', stderr: '', exitCode: 0 };
+    }
     return { stdout: '', stderr: '', exitCode: 0 };
   },
   // Branches so the diff-rescue suite can drive a real "the tree changed"
@@ -88,10 +104,22 @@ vi.mock('../git', () => ({
   // exit is treated as clean by `runDirtyWorktrees`, so an error fixture
   // would pass the assertion for the wrong reason.
   runGit: (args: string[], cwd?: string) => {
+    syncGitCalls.n += 1;
     if (args[0] === 'status') {
       return cwd && cwd.includes('clean-worktree')
         ? { stdout: '', stderr: '', exitCode: 0 }
         : { stdout: ' M file.txt\n', stderr: '', exitCode: 0 };
+    }
+    // Commits ahead of the run's base branch. Keyed off the cwd exactly like
+    // `status`, and it MUST be explicit: the fall-through at the bottom
+    // returns an empty stdout, which parses to 0, so any assertion about
+    // unmerged commits would pass vacuously without this branch. A cwd marked
+    // `ahead-of-base` reports one unmerged commit; everything else reports
+    // none, which keeps every pre-existing suite unaffected.
+    if (args[0] === 'rev-list') {
+      return cwd && cwd.includes('ahead-of-base')
+        ? { stdout: '1\n', stderr: '', exitCode: 0 }
+        : { stdout: '0\n', stderr: '', exitCode: 0 };
     }
     if (args[0] === 'write-tree') return { stdout: 'tree-sha\n', stderr: '', exitCode: 0 };
     if (args[0] === 'diff') return { stdout: 'diff --git a/x b/x\n+added\n', stderr: '', exitCode: 0 };
@@ -1391,5 +1419,248 @@ describe('FlowRuntimeImpl — prune keeps runs with unreviewed work', () => {
     expect(runtime.getRun('run-00')).toBeNull();
     // Exactly one victim: `overflow = 50 - 50 + 1`.
     expect(runtime.getRun('run-01')).not.toBeNull();
+  });
+});
+
+/// The data-loss case a `git status`-only check waved straight through: a run
+/// whose agent FINISHED and COMMITTED, on a branch its base has never seen.
+/// Its working tree is spotless, so before this suite's fix it read as fully
+/// reviewed by all three gates — auto-eviction, the sidebar badge, and
+/// `deleteRun`'s confirm — and `deleteRun` went on to `removeWorktreeAsync`,
+/// whose `git branch -d` → `-D` fallback force-deletes the branch and its
+/// commits with nothing but a `log('warn', …)` to show for it.
+///
+/// The fixture is the whole point: `clean-worktree` in the cwd makes
+/// `git status` report EMPTY (exit 0, not an error — a non-zero exit is read
+/// as clean, so an error fixture would pass for the wrong reason), while
+/// `ahead-of-base` makes `git rev-list --count` report 1. A run must also
+/// carry `baseBranch`, since that is what gates the commit count at all.
+describe('FlowRuntimeImpl — committed-but-unmerged work counts as unreviewed', () => {
+  const MAX_RETAINED_RUNS = 50;
+  /// Clean working tree AND one commit the base branch has never seen.
+  const COMMITTED_UNMERGED_WT = '/tmp/wt/clean-worktree-ahead-of-base';
+
+  function seedRun(over: Partial<FlowRun>): FlowRun {
+    return {
+      id: 'run-x',
+      flowId: 'diff-flow',
+      flowSnapshot: { id: 'diff-flow', name: 'Diff flow', steps: [], participants: [] },
+      projectPath: '/tmp/project',
+      userPrompt: 'do the thing',
+      conversationIds: {},
+      artifacts: {},
+      state: { kind: 'done' },
+      createdAt: 1,
+      attempts: [],
+      ...over,
+    } as FlowRun;
+  }
+
+  function runtimeWith(runs: FlowRun[]): FlowRuntimeImpl {
+    seeded.runs = runs;
+    return new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+    vi.mocked(deleteRunFromDisk).mockClear();
+  });
+
+  // (a) — eviction. `pruneOldRuns` is private and fires from `startRun` before
+  // the new run is added, so seeding exactly MAX_RETAINED_RUNS gives
+  // `overflow = 50 - 50 + 1` — exactly one victim, no counting needed.
+  it('spares the oldest run from eviction when its branch has unmerged commits', async () => {
+    const runs = Array.from({ length: MAX_RETAINED_RUNS }, (_, i) => {
+      const id = `run-${String(i).padStart(2, '0')}`;
+      return seedRun(
+        i === 0
+          ? { id, createdAt: 1, worktreePath: COMMITTED_UNMERGED_WT, baseBranch: 'main' }
+          : { id, createdAt: i + 1, worktreePath: `/tmp/wt/clean-worktree-${id}` },
+      );
+    });
+    const runtime = runtimeWith(runs);
+    vi.mocked(deleteRunFromDisk).mockClear();
+
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+
+    // The committed-but-unmerged oldest survives, in memory and on disk...
+    expect(runtime.getRun('run-00')).not.toBeNull();
+    expect(vi.mocked(deleteRunFromDisk).mock.calls.flat()).not.toContain('run-00');
+    // ...and the next-oldest, genuinely clean, is evicted in its place, so
+    // retention still does its job rather than silently giving up.
+    expect(vi.mocked(deleteRunFromDisk).mock.calls.flat()).toContain('run-01');
+    expect(runtime.getRun('run-01')).toBeNull();
+  });
+
+  // (b) — the sidebar's amber "unreviewed changes" badge.
+  it('flags a done run with unmerged commits as unreviewed', async () => {
+    const runtime = runtimeWith([
+      seedRun({
+        id: 'committed-unmerged',
+        worktreePath: COMMITTED_UNMERGED_WT,
+        baseBranch: 'main',
+      }),
+    ]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual(['committed-unmerged']);
+  });
+
+  it('does not flag a clean run whose branch is fully merged', async () => {
+    // Same spotless working tree, but `rev-list` reports 0 — nothing at risk.
+    const runtime = runtimeWith([
+      seedRun({ id: 'merged', worktreePath: '/tmp/wt/clean-worktree-merged', baseBranch: 'main' }),
+    ]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual([]);
+  });
+
+  it('does not flag a cwd run, which records no baseBranch and owns no worktree', async () => {
+    // `runIn: 'cwd'` shares the project checkout, so its dirtiness belongs to
+    // the user, not the run. No `baseBranch` means no commit count is even
+    // attempted — the guard that keeps this fix off non-worktree runs.
+    const runtime = runtimeWith([seedRun({ id: 'cwd-run' })]);
+    expect(await runtime.unreviewedDoneRunIds()).toEqual([]);
+  });
+
+  // (c) — the confirm-before-delete guard, and the payload that lets the
+  // dialog say "1 unmerged commit" instead of "0 uncommitted changes".
+  it('makes deleteRun ask for confirmation, reporting the unmerged commits', () => {
+    const runtime = runtimeWith([
+      seedRun({
+        id: 'committed-unmerged',
+        worktreePath: COMMITTED_UNMERGED_WT,
+        baseBranch: 'main',
+      }),
+    ]);
+
+    const result = runtime.deleteRun({ runId: 'committed-unmerged' as never });
+
+    expect(result.ok).toBe(false);
+    if (result.ok || !('needsConfirm' in result)) throw new Error('expected needsConfirm');
+    expect(result.needsConfirm).toBe(true);
+    expect(result.dirty).toHaveLength(1);
+    expect(result.dirty[0].unmergedCommits).toBe(1);
+    // The working tree really is clean — this run would have sailed through
+    // the old files-only check.
+    expect(result.dirty[0].fileCount).toBe(0);
+    // Nothing was destroyed: a declined confirm must leave the run intact.
+    expect(runtime.getRun('committed-unmerged' as never)).not.toBeNull();
+    expect(vi.mocked(deleteRunFromDisk).mock.calls.flat()).not.toContain('committed-unmerged');
+  });
+
+  it('still deletes in one round-trip when force is set', () => {
+    const runtime = runtimeWith([
+      seedRun({
+        id: 'committed-unmerged',
+        worktreePath: COMMITTED_UNMERGED_WT,
+        baseBranch: 'main',
+      }),
+    ]);
+
+    expect(runtime.deleteRun({ runId: 'committed-unmerged' as never, force: true })).toEqual({
+      ok: true,
+    });
+    expect(runtime.getRun('committed-unmerged' as never)).toBeNull();
+  });
+});
+
+/// `pruneOldRuns` runs on every `startRun` and reaches `runDirtyWorktrees`,
+/// which is `spawnSync`. Every invocation is main-thread time the UI is frozen
+/// for. Measured on a warm repo: ~38ms for `git status --porcelain`, ~32ms for
+/// `git rev-list --count`. At MAX_RETAINED_RUNS that is seconds of beachball,
+/// so the count is a budget worth asserting on rather than a detail.
+describe('FlowRuntimeImpl — prune does not stat every retained run', () => {
+  const MAX_RETAINED_RUNS = 50;
+
+  function seedRun(over: Partial<FlowRun>): FlowRun {
+    return {
+      id: 'run-x',
+      flowId: 'diff-flow',
+      flowSnapshot: { id: 'diff-flow', name: 'Diff flow', steps: [], participants: [] },
+      projectPath: '/tmp/project',
+      userPrompt: 'do the thing',
+      conversationIds: {},
+      artifacts: {},
+      state: { kind: 'done' },
+      createdAt: 1,
+      attempts: [],
+      ...over,
+    } as FlowRun;
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+    syncGitCalls.n = 0;
+  });
+
+  it('stops at the first evictable run instead of scanning all 50', async () => {
+    // Every run clean, so the oldest is evictable immediately and `overflow`
+    // is 1. A lazy walk needs ONE run's worth of git; the old filter-then-slice
+    // did all 50 and discarded 49 answers.
+    seeded.runs = Array.from({ length: MAX_RETAINED_RUNS }, (_, i) => {
+      const id = `run-${String(i).padStart(2, '0')}`;
+      return seedRun({ id, createdAt: i + 1, worktreePath: `/tmp/wt/clean-worktree-${id}` });
+    });
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+    syncGitCalls.n = 0;
+
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+
+    // The oldest still gets evicted — laziness must not change WHICH run goes.
+    expect(runtime.getRun('run-00')).toBeNull();
+    expect(runtime.getRun('run-01')).not.toBeNull();
+    // ...and it cost a handful of git calls, not fifty.
+    expect(syncGitCalls.n).toBeLessThan(5);
+  });
+
+  it('still finds a victim further down when the oldest runs hold work', async () => {
+    // Two oldest are dirty, so the walk has to keep going — and must land on
+    // the third. Laziness must not mean giving up early.
+    seeded.runs = Array.from({ length: MAX_RETAINED_RUNS }, (_, i) => {
+      const id = `run-${String(i).padStart(2, '0')}`;
+      return seedRun({
+        id,
+        createdAt: i + 1,
+        worktreePath: i < 2 ? `/tmp/wt/dirty-${id}` : `/tmp/wt/clean-worktree-${id}`,
+      });
+    });
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+
+    expect(runtime.getRun('run-00')).not.toBeNull();
+    expect(runtime.getRun('run-01')).not.toBeNull();
+    expect(runtime.getRun('run-02')).toBeNull();
   });
 });

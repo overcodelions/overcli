@@ -250,6 +250,19 @@ function countPorcelainFiles(stdout: string): number {
   return stdout.split('\n').filter((l) => l.trim().length > 0).length;
 }
 
+/// Parse `git rev-list --count <base>..HEAD` output into a commit count.
+/// Fails OPEN to 0: a non-zero exit (base branch not present in this
+/// checkout, worktree path gone, not a git dir) or unparsable output must
+/// never be read as "there is work at risk here", exactly as a failed
+/// `git status` is treated as clean by the callers below. Over-reporting
+/// would block eviction and nag on every delete for reasons the user can't
+/// see or fix.
+function parseCommitCount(result: { stdout: string; exitCode: number }): number {
+  if (result.exitCode !== 0) return 0;
+  const n = Number.parseInt(result.stdout.trim(), 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
 export class FlowRuntimeImpl {
   private runs = new Map<UUID, FlowRun>();
   /// Reverse index: which run owns this conversation id. With participants,
@@ -1062,8 +1075,13 @@ export class FlowRuntimeImpl {
   /// stream buffers that were tied to evicted runs and removes the
   /// run's on-disk checkpoint so the persistent store stays bounded too.
   ///
-  /// A finished run whose worktree still has UNCOMMITTED CHANGES is exempt,
-  /// gated on the same `runDirtyWorktrees` predicate `deleteRun` refuses on.
+  /// A finished run whose worktree still holds work is exempt — either
+  /// UNCOMMITTED CHANGES or commits that were never merged into the run's
+  /// base branch. Gated on the same `runDirtyWorktrees` predicate `deleteRun`
+  /// refuses on, so the two paths can never disagree about what counts as
+  /// reviewed. The unmerged half matters most here: a run whose agent
+  /// finished AND committed looks spotless to `git status`, and it is exactly
+  /// that run whose branch is most worth keeping reachable.
   /// Do not "simplify" that conjunct away. Eviction never runs
   /// `git worktree remove` — `removeRunWorktrees` is reachable only from the
   /// explicit `deleteRun` path — so it is tempting to read this as harmless
@@ -1082,17 +1100,34 @@ export class FlowRuntimeImpl {
   private pruneOldRuns(): void {
     const all = Array.from(this.runs.values());
     if (all.length < FlowRuntimeImpl.MAX_RETAINED_RUNS) return;
+    const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
+    // Order by age FIRST, then check worktrees lazily oldest-first, stopping
+    // the moment we have enough victims. Same result as filtering the whole
+    // set and slicing — the eviction order is unchanged — but it doesn't pay
+    // for answers it throws away.
+    //
+    // This matters because `runDirtyWorktrees` is `spawnSync` and this runs on
+    // every `startRun`, blocking the main thread. `overflow` is almost always
+    // 1, yet the filter used to stat all MAX_RETAINED_RUNS (50) runs: measured
+    // at ~38ms for `git status` and ~32ms for `git rev-list` on a warm repo,
+    // that was ~1.9s of frozen UI before the unmerged-commit check existed and
+    // ~3.5s after. Walking lazily makes the common case one or two
+    // invocations. The pathological case (every retained run holding work) is
+    // unchanged, and is the starvation trade documented above.
     const evictable = all
       .filter(
         (r) =>
-          (r.state.kind === 'done' ||
-            r.state.kind === 'aborted' ||
-            r.state.kind === 'archived') &&
-          this.runDirtyWorktrees(r).length === 0,
+          r.state.kind === 'done' ||
+          r.state.kind === 'aborted' ||
+          r.state.kind === 'archived',
       )
       .sort((a, b) => a.createdAt - b.createdAt);
-    const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
-    for (const victim of evictable.slice(0, overflow)) {
+    const victims: FlowRun[] = [];
+    for (const candidate of evictable) {
+      if (victims.length >= overflow) break;
+      if (this.runDirtyWorktrees(candidate).length === 0) victims.push(candidate);
+    }
+    for (const victim of victims) {
       this.runs.delete(victim.id);
       for (const convId of Object.values(victim.conversationIds)) {
         this.convIdToRun.delete(convId);
@@ -1134,8 +1169,9 @@ export class FlowRuntimeImpl {
     return Array.from(this.runs.values()).sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  /// Ids of finished runs that still have uncommitted work sitting in their
-  /// worktree — work the flow produced and nobody has looked at. Reuses the
+  /// Ids of finished runs that still have work sitting in their worktree that
+  /// nobody has looked at — uncommitted changes, or commits the run's base
+  /// branch has never seen. Reuses the
   /// same `runDirtyWorktrees` predicate `deleteRun` gates its confirm on, so
   /// the sidebar can show that fact passively instead of only revealing it
   /// at the moment the user tries to destroy it.
@@ -1726,26 +1762,60 @@ export class FlowRuntimeImpl {
     this.advanceToStep(runId, nextStepId);
   }
 
-  /// Report each of a run's worktrees that has uncommitted changes (a
-  /// dirty working tree, including untracked files). Used by `deleteRun`
-  /// to warn before `removeRunWorktrees` discards that work with
-  /// `git worktree remove --force`. A worktree whose status can't be read
-  /// (path gone, not a git dir) is treated as clean — we don't block a
-  /// delete on a directory we can't inspect.
+  /// Report each of a run's worktrees still holding work that removing it
+  /// would destroy. Two distinct kinds, both counted:
+  ///   - UNCOMMITTED changes — a dirty working tree, including untracked
+  ///     files — which `git worktree remove --force` discards outright.
+  ///   - Commits NOT MERGED into the run's base branch, which the
+  ///     `git branch -d` → `-D` fallback inside `removeWorktreeAsync`
+  ///     force-deletes, warning about it only in the log.
+  ///
+  /// Counting only the first kind was a data-loss bug: a run whose agent
+  /// finished AND committed has a perfectly clean `git status`, so it read as
+  /// fully reviewed and was waved straight through eviction, the sidebar
+  /// badge, and `deleteRun`'s confirm — into the force delete. Both counts are
+  /// returned separately rather than summed so the confirm dialog can name
+  /// what is actually at risk instead of saying "uncommitted changes" about
+  /// commits.
+  ///
+  /// A worktree whose status can't be read (path gone, not a git dir) is
+  /// treated as clean — we don't block a delete on a directory we can't
+  /// inspect. The commit count fails open the same way (see
+  /// `parseCommitCount`) and is only attempted when the run recorded a
+  /// `baseBranch`: `runIn: 'cwd'` runs have none, and own no worktree to
+  /// count against either.
   private runDirtyWorktrees(
     run: FlowRun,
-  ): Array<{ name: string; worktreePath: string; fileCount: number }> {
-    const out: Array<{ name: string; worktreePath: string; fileCount: number }> = [];
+  ): Array<{
+    name: string;
+    worktreePath: string;
+    fileCount: number;
+    unmergedCommits: number;
+  }> {
+    const out: Array<{
+      name: string;
+      worktreePath: string;
+      fileCount: number;
+      unmergedCommits: number;
+    }> = [];
+    const base = run.baseBranch;
     for (const { name, worktreePath } of runWorktreeTargets(run)) {
       const status = runGit(['status', '--porcelain'], worktreePath);
       if (status.exitCode !== 0) continue;
       const fileCount = countPorcelainFiles(status.stdout);
-      if (fileCount > 0) out.push({ name, worktreePath, fileCount });
+      const unmergedCommits = base
+        ? parseCommitCount(runGit(['rev-list', '--count', `${base}..HEAD`], worktreePath))
+        : 0;
+      if (fileCount > 0 || unmergedCommits > 0) {
+        out.push({ name, worktreePath, fileCount, unmergedCommits });
+      }
     }
     return out;
   }
 
-  /// Async twin of `runDirtyWorktrees`, answering only yes/no. Used by the
+  /// Async twin of `runDirtyWorktrees`, answering only yes/no — true when a
+  /// worktree has uncommitted changes OR commits its base branch has never
+  /// seen. Used by the
   /// unreviewed-run scan, which runs across every retained `done` run and can
   /// be triggered by something as ordinary as focusing the window — at that
   /// frequency `runGit`'s `spawnSync` would block the main thread (and so the
@@ -1753,13 +1823,21 @@ export class FlowRuntimeImpl {
   /// keeps the synchronous version: it runs once, on an explicit click, and
   /// needs the per-worktree file counts for its confirm dialog.
   private async runIsDirtyAsync(run: FlowRun): Promise<boolean> {
+    const base = run.baseBranch;
     for (const { worktreePath } of runWorktreeTargets(run)) {
       const status = await runGitAsync(['status', '--porcelain'], worktreePath);
       // A worktree we can't read is treated as clean, exactly as the
       // synchronous version does — we don't raise an alarm on a directory
       // that's gone or was never a git checkout.
       if (status.exitCode !== 0) continue;
+      // Files first: once the tree is dirty the answer is already yes and the
+      // second spawn buys nothing. This twin answers yes/no, so it can
+      // short-circuit where `runDirtyWorktrees` — which owes its caller a
+      // per-worktree breakdown for the confirm dialog — cannot.
       if (countPorcelainFiles(status.stdout) > 0) return true;
+      if (!base) continue;
+      const ahead = await runGitAsync(['rev-list', '--count', `${base}..HEAD`], worktreePath);
+      if (parseCommitCount(ahead) > 0) return true;
     }
     return false;
   }
@@ -1832,7 +1910,12 @@ export class FlowRuntimeImpl {
     | {
         ok: false;
         needsConfirm: true;
-        dirty: Array<{ name: string; worktreePath: string; fileCount: number }>;
+        dirty: Array<{
+          name: string;
+          worktreePath: string;
+          fileCount: number;
+          unmergedCommits: number;
+        }>;
       } {
     const run = this.runs.get(args.runId);
     if (!run) {
@@ -1843,11 +1926,14 @@ export class FlowRuntimeImpl {
       clearAttachments(args.runId);
       return { ok: true };
     }
-    // Guard uncommitted work: unless the caller already confirmed via
-    // `force`, refuse to delete a run whose worktree(s) are dirty and
-    // hand the renderer the details so it can prompt. Checked before any
-    // mutation (stop / evict / disk delete) so a declined confirm leaves
-    // the run completely intact.
+    // Guard unreviewed work: unless the caller already confirmed via
+    // `force`, refuse to delete a run whose worktree(s) still hold
+    // uncommitted changes OR commits that were never merged into the base,
+    // and hand the renderer the per-worktree counts so it can name both in
+    // the prompt. Checked before any mutation (stop / evict / disk delete) so
+    // a declined confirm leaves the run completely intact. Reaching
+    // `removeRunWorktrees` below un-forced is what would let its
+    // `git branch -d` → `-D` fallback destroy those commits silently.
     if (!args.force) {
       const dirty = this.runDirtyWorktrees(run);
       if (dirty.length > 0) {
