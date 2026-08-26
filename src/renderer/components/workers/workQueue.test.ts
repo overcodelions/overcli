@@ -69,7 +69,13 @@ function run(id: string, overrides: Record<string, unknown> = {}): FlowRun {
 function batch(
   id: string,
   items: Array<{ status: string; runId?: string; at?: number; note?: string }>,
-  extra: { workerId?: string; task?: 'shift' | 'errand'; createdAt?: number } = {},
+  extra: {
+    workerId?: string;
+    task?: 'shift' | 'errand';
+    intent?: 'chat' | 'work';
+    createdAt?: number;
+    completedAt?: number;
+  } = {},
 ): Orchestration {
   return {
     id,
@@ -81,8 +87,10 @@ function batch(
       workerId: extra.workerId ?? 'w1',
       workerName: 'Spec Hygiene',
       task: extra.task,
+      intent: extra.intent,
     },
     createdAt: extra.createdAt ?? NOON - HOUR,
+    ...(extra.completedAt ? { completedAt: extra.completedAt } : {}),
     items: items.map((item, i) => ({
       candidate: { id: `${id}-${i}`, title: `Job ${i}`, prompt: 'p' },
       flowId: 'flow',
@@ -130,6 +138,52 @@ describe('buildWorkQueue', () => {
     expect(q.finished).toHaveLength(1);
     expect(q.finished[0].status).toBe('quiet');
     expect(q.finished[0].title).toContain('Shift 3');
+  });
+
+  it('rolls a day of chat answers from one worker into a single row', () => {
+    const answer = (id: string, at: number, workerId = 'w1') =>
+      batch(id, [], { workerId, task: 'errand', intent: 'chat', completedAt: at });
+    const q = buildWorkQueue(
+      {
+        a1: answer('a1', NOON - HOUR),
+        a2: answer('a2', NOON - 2 * HOUR),
+        a3: answer('a3', NOON - 3 * HOUR),
+        // A different worker's answer is a different line — the group's one
+        // sentence has to be true of everyone inside it.
+        a4: answer('a4', NOON - HOUR, 'w2'),
+        // A work errand that launched nothing is still a job that was tried.
+        e1: batch('e1', [], { task: 'errand', intent: 'work', completedAt: NOON - HOUR }),
+      },
+      {},
+      WORKERS,
+      {},
+      NOON,
+    );
+
+    const group = q.finished.find((r) => r.answers);
+    expect(group).toMatchObject({ workerId: 'w1', title: '3 answers' });
+    expect(group!.answers).toHaveLength(3);
+    // Newest first inside the group, and the group sits where its newest
+    // member sat.
+    expect(group!.at).toBe(NOON - HOUR);
+    expect(q.finished[0].key).toBe(group!.key);
+    // The other worker's lone answer, and the work errand, stay as they were.
+    expect(q.finished.filter((r) => !r.answers)).toHaveLength(2);
+    // Three answers are three things that finished, however they are drawn.
+    expect(q.finishedToday).toBe(5);
+  });
+
+  it('leaves a single chat answer alone — a group of one says less', () => {
+    const q = buildWorkQueue(
+      { a1: batch('a1', [], { task: 'errand', intent: 'chat', completedAt: NOON - HOUR }) },
+      {},
+      WORKERS,
+      {},
+      NOON,
+    );
+    expect(q.finished).toHaveLength(1);
+    expect(q.finished[0].answers).toBeUndefined();
+    expect(q.finished[0].intent).toBe('chat');
   });
 
   it('puts a worker still planning at the top of the running band', () => {

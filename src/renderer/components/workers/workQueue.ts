@@ -20,7 +20,7 @@
 
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 import type { FlowRun } from '@shared/flows/schema';
-import type { Worker } from '@shared/flows/worker';
+import type { Worker, WorkerMessageIntent } from '@shared/flows/worker';
 
 import { isRenderableOutput } from '@shared/flows/worker';
 
@@ -84,6 +84,14 @@ export interface QueueRow {
   /// Which entry point produced the work: the worker's standing cadence, or
   /// something somebody asked for.
   task: 'shift' | 'errand';
+  /// How an errand was sent. `chat` is a question answered in prose — it
+  /// launched nothing and was never going to. Absent on shifts, and on
+  /// errands from before intent was recorded (read those as `work`).
+  intent?: WorkerMessageIntent;
+  /// The chat answers a consolidated row stands for, newest first. Present
+  /// only on a row built by `consolidateAnswers`; a lone answer stays an
+  /// ordinary row rather than a group of one.
+  answers?: Array<{ key: string; title: string; at: number; orchestrationId?: string }>;
   status: QueueStatus;
   /// The job, in the worker's own words. A `quiet` row is titled by its
   /// batch instead, since there is no job to name.
@@ -171,6 +179,7 @@ export function buildWorkQueue(
         workerName: origin.workerName,
         orchestrationId: batch.id,
         task,
+        ...(task === 'errand' ? { intent: origin.intent ?? 'work' } : {}),
         status: 'quiet',
         title: toWorkerActivity(batch).title,
         steps: [],
@@ -200,6 +209,7 @@ export function buildWorkQueue(
         candidateId: item.candidate.id,
         batchLabel: batch.title,
         task,
+        ...(task === 'errand' ? { intent: origin.intent ?? 'work' } : {}),
         status,
         title: item.candidate.title,
         steps: run ? stepTrack(run) : [],
@@ -225,9 +235,79 @@ export function buildWorkQueue(
   return {
     running,
     needsYou,
-    finished: finished.slice(0, FINISHED_LIMIT),
+    // Consolidated BEFORE the cap, not in the view: a morning of questions
+    // would otherwise spend the whole tail, and the jobs the tail exists to
+    // show would fall off the bottom of the page.
+    finished: consolidateAnswers(finished).slice(0, FINISHED_LIMIT),
+    // Counted from the un-consolidated list. Three answers are three things
+    // the crew finished, whatever the tail chooses to draw them as.
     finishedToday: finished.filter((r) => r.at >= midnight).length,
   };
+}
+
+/// Roll a worker's chat answers on one day into a single row.
+///
+/// A chat answer is a real outcome — you asked, it answered — but it is not a
+/// JOB: nothing launched, nothing is filed, nothing can be opened but the
+/// conversation you already had. Mixed one-per-row into the tail, a morning
+/// of questions reads exactly like a morning of work, and the shift that
+/// actually produced something sits below three rows of talk.
+///
+/// Grouped per worker per day, because those are the two facts the group's
+/// one line has to be true about ("Chief of Staff · 3 answers", under today).
+/// A single answer is left exactly as it was: a group of one is a heavier row
+/// that says less than the row it replaced.
+export function consolidateAnswers(rows: QueueRow[]): QueueRow[] {
+  const groups = new Map<string, QueueRow[]>();
+  for (const row of rows) {
+    if (!isChatAnswer(row)) continue;
+    const key = `${row.workerId}:${startOfDay(row.at)}`;
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
+  }
+
+  const out: QueueRow[] = [];
+  const drawn = new Set<string>();
+  for (const row of rows) {
+    if (!isChatAnswer(row)) {
+      out.push(row);
+      continue;
+    }
+    const key = `${row.workerId}:${startOfDay(row.at)}`;
+    const group = groups.get(key)!;
+    if (group.length === 1) {
+      out.push(row);
+      continue;
+    }
+    // The group takes the place of its NEWEST member, which is where the
+    // whole group already sorted to — so consolidating never moves a row up
+    // the page past work that finished after it.
+    if (drawn.has(key)) continue;
+    drawn.add(key);
+    out.push({
+      key: `answers:${key}`,
+      workerId: row.workerId,
+      workerName: row.workerName,
+      task: 'errand',
+      intent: 'chat',
+      status: 'quiet',
+      title: `${group.length} answers`,
+      steps: [],
+      at: group[0].at,
+      answers: group.map((r) => ({
+        key: r.key,
+        title: r.title,
+        at: r.at,
+        ...(r.orchestrationId ? { orchestrationId: r.orchestrationId } : {}),
+      })),
+    });
+  }
+  return out;
+}
+
+function isChatAnswer(row: QueueRow): boolean {
+  return row.status === 'quiet' && row.task === 'errand' && row.intent === 'chat';
 }
 
 /// THE RUN IS THE TRUTH. An item's status is a mirror the orchestrator keeps
