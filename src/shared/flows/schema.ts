@@ -448,6 +448,15 @@ export interface FlowRun {
     worktreePath: string;
     branchName: string;
   }>;
+  /// Project paths the user dismissed the "workspace grew" banner for.
+  ///
+  /// Keyed by PATH, not a single "hide it" flag, so dismissal can't blind the
+  /// run permanently: dismissing the repos pending today leaves a repo added
+  /// tomorrow un-dismissed, and the banner comes back for that one alone.
+  ///
+  /// Purely a display record. Adoption on resume / re-run still picks these
+  /// up — dismissing means "stop offering", not "never add this repo".
+  dismissedWorkspaceMemberPaths?: string[];
   /// Set while a Continue click is being processed and the runtime is
   /// round-tripping a synthetic "finalize" turn through the prior step's
   /// participant before advancing. Cleared once the next step actually

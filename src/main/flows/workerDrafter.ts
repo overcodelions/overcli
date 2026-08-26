@@ -11,9 +11,9 @@ import type { Attachment, Backend } from '../../shared/types';
 import type { FlowModelDefaults } from '../../shared/modelCatalog';
 import type { Flow } from '../../shared/flows/schema';
 import { drafterModelHints } from '../../shared/flows/drafterBackend';
-import { describeTrigger } from '../../shared/flows/schedule';
 import {
   WORKER_MAX_ITEMS_PER_SHIFT,
+  describeCadence,
   parseWorkerContract,
   type WorkerContract,
 } from '../../shared/flows/worker';
@@ -51,7 +51,7 @@ function hireSystemPrompt(
       : ['  (none exist yet)'];
   return [
     'You are the hiring assistant for overcli. The user describes a standing WORKER — a named',
-    'persona with a job description that will run on a cadence, plan each of its own shifts, and',
+    'persona with a job description that plans each of its own shifts and',
     'file proposals for the user to approve. Your job is to turn the description into ONE',
     'complete worker contract.',
     '',
@@ -91,6 +91,10 @@ function hireSystemPrompt(
     '  - Cadence: match the job. Morning triage → daily on weekdays. Monitoring → interval',
     '    with a waking-hours window. Never more often than every 15 minutes.',
     '    Interval cadence uses everyMinutes, days, and an optional start/end window.',
+    '    If the job is one the USER drives — a colleague to think with, break an epic down',
+    '    with, or hand occasional one-off work to — there is no right time of day, and you',
+    '    MUST use "cadence": null instead of inventing one. That worker still has a desk,',
+    '    a budget and a journal; it simply never wakes on its own.',
     `  - maxItemsPerShift is a number from 1 to ${WORKER_MAX_ITEMS_PER_SHIFT}.`,
     '  - projectPath is optional and must be an exact path from the projects list when clear.',
     '  - Budget: modest by default ($5–$25/month) unless the description implies heavy work.',
@@ -227,7 +231,7 @@ function flowDraftDescription(flowRequest: string, jobDescription: string): stri
 function flowRequestFromJob(contract: WorkerContract): string {
   return [
     `A flow for items produced by a standing worker named "${contract.name}"`,
-    `(cadence: ${describeTrigger(contract.cadence)}). The worker's job: ${contract.jobDescription}`,
+    `(cadence: ${describeCadence(contract.cadence)}). The worker's job: ${contract.jobDescription}`,
     'Each run receives ONE self-contained candidate prompt from that job. Investigate, do the',
     'work the candidate asks for, and include a review step before anything ships. If the',
     'job ships nothing — if its deliverable IS a report, audit, or assessment — then the',

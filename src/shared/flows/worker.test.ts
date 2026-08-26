@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   computeWorkerScorecard,
   demotedTrust,
+  coerceCadence,
+  describeCadence,
   describeWorker,
   moveInRoster,
   placeInRoster,
@@ -78,6 +80,14 @@ describe('worker', () => {
     expect(validateWorker(makeWorker({ cadence: { kind: 'daily', time: '09:00', days: [] } }))).toBe(
       'Pick at least one day, or leave every day selected.',
     );
+  });
+
+  it('accepts a worker with no cadence at all — a desk, not a rota', () => {
+    expect(validateWorker(makeWorker({ cadence: null }))).toBeNull();
+  });
+
+  it('still rejects an ABSENT cadence, which is a malformed record', () => {
+    expect(validateWorker(makeWorker({ cadence: undefined }))).toBe('Pick when this worker works.');
   });
 
   it('limits interval cadence frequency', () => {
@@ -673,5 +683,27 @@ describe('workerTagline', () => {
     })}</worker>`;
     expect(parseWorkerContract(reply, { knownFlowIds: [], defaultHeartbeatModel: 'm' })?.tagline)
       .toBe('the overcli innovator');
+  });
+});
+
+
+describe('on-demand cadence', () => {
+  it('reads an explicit null or the on-demand marker as no clock', () => {
+    expect(coerceCadence(null)).toBeNull();
+    expect(coerceCadence('onDemand')).toBeNull();
+    expect(coerceCadence({ kind: 'onDemand' })).toBeNull();
+  });
+
+  it('does NOT read a missing or mangled cadence as on demand', () => {
+    // The difference that matters: a drafter that forgot to emit a cadence
+    // must get the weekday-mornings default, not a silently unscheduled
+    // worker somebody hired to run every morning.
+    expect(coerceCadence(undefined)).toEqual({ kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] });
+    expect(coerceCadence({ kind: 'hourly' })).toEqual({ kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] });
+  });
+
+  it('describes itself in words the roster can print', () => {
+    expect(describeCadence(null)).toBe('On demand');
+    expect(describeCadence({ kind: 'daily', time: '09:00' })).toBe('Every day at 9am');
   });
 });

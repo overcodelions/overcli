@@ -54,6 +54,7 @@ import {
   validateWorker,
   workerAutoApproveCap,
   WORKER_TAGLINE_MAX,
+  describeCadence,
   workerTagline,
   type Worker,
   type WorkerJournalEntry,
@@ -1466,7 +1467,9 @@ function WorkerSettings({
             <div className="flex items-baseline justify-between py-1.5">
               <dt className="text-xs text-ink-muted">Works</dt>
               <dd className="text-sm text-ink">
-                {describeTrigger(worker.cadence)}
+                {worker.cadence === null
+                  ? "Only when you ask"
+                  : describeTrigger(worker.cadence)}
               </dd>
             </div>
             <div className="flex items-baseline justify-between py-1.5">
@@ -1563,9 +1566,11 @@ function WorkerSettings({
                 {worker.enabled ? "On the clock" : "Paused"}
               </div>
               <div className="text-xs text-ink-muted">
-                {worker.enabled
-                  ? "Works its cadence while overcli is open."
-                  : "Fires no shifts. You can still send it an errand."}
+                {!worker.enabled
+                  ? "Off the roster: no shifts, no funding, and its desk is shut."
+                  : worker.cadence === null
+                    ? "On demand — funded and at its desk, but it never wakes on its own."
+                    : "Works its cadence while overcli is open."}
               </div>
             </div>
             <button
@@ -2288,11 +2293,13 @@ function WorkerShiftsPane({
                 : "Between shifts"}
           </div>
           <div className="mt-1 text-xs text-ink-muted">
-            {worker.enabled
-              ? nextShiftAt != null
-                ? `Next shift ${untilLabel(nextShiftAt)}`
-                : describeTrigger(worker.cadence)
-              : "paused — no shifts until you resume it"}
+            {!worker.enabled
+              ? "paused — no shifts until you resume it"
+              : worker.cadence === null
+                ? "no clock — it works when you ask it to"
+                : nextShiftAt != null
+                  ? `Next shift ${untilLabel(nextShiftAt)}`
+                  : describeTrigger(worker.cadence)}
           </div>
         </div>
         <div className="rounded-lg border border-card-strong bg-surface-elevated/50 px-4 py-3 text-right">
@@ -2300,7 +2307,7 @@ function WorkerShiftsPane({
             Cadence
           </div>
           <div className="mt-1 text-sm font-medium text-ink">
-            {describeTrigger(worker.cadence)}
+            {describeCadence(worker.cadence)}
           </div>
           <div className="mt-0.5 text-[11px] text-ink-faint">
             {shifts.length} recorded shift{shifts.length === 1 ? "" : "s"}
@@ -2427,9 +2434,11 @@ function WorkerShiftsPane({
           <div className="rounded-xl border border-dashed border-card-strong px-4 py-8 text-center">
             <div className="text-sm text-ink">No shift worked yet.</div>
             <div className="mt-1 text-xs text-ink-muted">
-              {worker.enabled
-                ? `${worker.name} files its first shift here when its clock comes round.`
-                : `${worker.name} is paused — resume it in Settings, or work one now.`}
+              {!worker.enabled
+                ? `${worker.name} is paused — resume it in Settings, or work one now.`
+                : worker.cadence === null
+                  ? `${worker.name} has no clock. Ask it something below, or work a shift now.`
+                  : `${worker.name} files its first shift here when its clock comes round.`}
             </div>
           </div>
         )
@@ -3044,7 +3053,9 @@ function LiveTurn({
           message. */}
       {tools.length === 0 && !live.text && (
         <div className="pl-3.5 text-[11px] text-ink-faint">
-          Reading its job description and journal…
+          {live.task === "errand" && inTodaysDeskThread(worker)
+            ? "Picking up where you left off…"
+            : "Reading its job description and journal…"}
         </div>
       )}
 
@@ -3111,6 +3122,18 @@ function LiveTurn({
 
 /// How many tool rows the live trail draws. Enough to read the shape of what
 /// the worker is doing, short enough that the answer stays on screen under it.
+/// Whether this worker is already sitting in today's desk conversation, so
+/// the turn now starting resumes it rather than establishing the worker from
+/// scratch. Read off the record the engine persisted after the LAST turn —
+/// at the moment a turn starts that is exactly the thread it will resume.
+function inTodaysDeskThread(worker: Worker): boolean {
+  const held = worker.deskSession;
+  if (!held?.sessionId) return false;
+  const midnight = new Date();
+  midnight.setHours(0, 0, 0, 0);
+  return held.day === midnight.getTime();
+}
+
 const LIVE_TOOL_TRAIL = 6;
 
 /// `mcp__claude_ai_Superhuman_Mail__list_threads` is thirty characters of
@@ -4460,7 +4483,9 @@ const CATALOG_GROUPS: Array<{
 /// a grid instead of eight wrapping pills: the sequence reads left-to-right
 /// in one pass, and each stage has room for its one sentence of detail.
 function WorkerLifecycle(props: {
-  cadence?: ScheduleTrigger;
+  /// `null` is a real answer here (on demand) and `undefined` is "the caller
+  /// has no worker yet" — the hire page. They read differently.
+  cadence?: ScheduleTrigger | null;
   heartbeatModel?: string;
   maxItemsPerShift?: number;
   trust?: WorkerTrustLevel;
@@ -4476,10 +4501,13 @@ function WorkerLifecycle(props: {
   const n = props.maxItemsPerShift;
   const stages: Array<{ title: string; detail: string }> = [
     {
-      title: "Wakes",
-      detail: props.cadence
-        ? describeTrigger(props.cadence)
-        : "On its cadence, while overcli is open.",
+      title: props.cadence === null ? "Waits" : "Wakes",
+      detail:
+        props.cadence === null
+          ? "Never on its own. It works when you ask it to, at its desk."
+          : props.cadence
+            ? describeTrigger(props.cadence)
+            : "On its cadence, while overcli is open.",
     },
     {
       title: "Plans",
@@ -4818,6 +4846,19 @@ function WorkerEditor() {
     path: draft.projectPath,
     everyday: projects.find((p) => p.path === draft.projectPath)?.everyday,
   });
+
+  const capabilities = useStore((s) => s.capabilities);
+
+  // Every MCP server the Claude CLI would boot for this worker's turns, off
+  // the capability scan the Capabilities sheet already runs. Nothing to load
+  // here: if the scan hasn't happened the picker simply doesn't appear, and
+  // the worker keeps the inherit-everything default.
+  const mcpServerNames = useMemo(() => {
+    const names = (capabilities?.entries ?? [])
+      .filter((e) => e.kind === "mcp" && e.clis.includes("claude"))
+      .map((e) => e.name);
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
+  }, [capabilities]);
 
   const colleagues = useMemo(
     () =>
@@ -5290,6 +5331,81 @@ function WorkerEditor() {
                 </div>
               </div>
             )}
+
+            {/* Tool access, priced. Every server this worker may use is booted
+                on every shift and every desk message, and its whole tool list
+                is carried in the prompt — so a worker that reads this repo and
+                nothing else is paying for Jira, Slack and the rest all day.
+                Absent means "all of them", which is what every worker hired
+                before this existed still gets. */}
+            {mcpServerNames.length > 0 && (
+              <div className="rounded-lg border border-line px-3 py-2.5">
+                <div className="text-sm text-ink">Tools it may reach for</div>
+                <div className="mb-2 text-[11px] leading-relaxed text-ink-faint">
+                  {draft.mcpServers === undefined
+                    ? "Every connected service. Each one is loaded on every shift and every message at the desk, whether the job needs it or not — pick just the ones this job uses and the rest stop being paid for."
+                    : draft.mcpServers.length === 0
+                      ? "No connected services. This worker reads the project and nothing else — the cheapest a shift gets."
+                      : "Only the ticked services are loaded."}
+                </div>
+                <div className="flex flex-col gap-1">
+                  {mcpServerNames.map((name) => {
+                    const picked = draft.mcpServers?.includes(name) ?? true;
+                    return (
+                      <label
+                        key={name}
+                        className="flex items-start gap-2 text-[12px] text-ink-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={picked}
+                          onChange={(e) => {
+                            // First tick turns the inherit-everything default
+                            // into a real list, which is the whole roster minus
+                            // whatever was just unticked.
+                            const cur = draft.mcpServers ?? mcpServerNames;
+                            patch({
+                              mcpServers: e.target.checked
+                                ? Array.from(new Set([...cur, name]))
+                                : cur.filter((n) => n !== name),
+                            });
+                          }}
+                          className="mt-0.5"
+                        />
+                        <span className="truncate">{name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {/* The trap this warns about: `--strict-mcp-config` drops the
+                    account-level claude.ai connectors (Gmail, Calendar,
+                    Superhuman, Atlassian Rovo, Drive) as well as the local
+                    config, and they cannot be named here because they are not
+                    configured on this machine. A worker that lives in one of
+                    them has to keep everything. Shown BEFORE the first tick,
+                    not after: the first untick is what silently switches
+                    strict mode on, so a warning that waits for it has already
+                    missed the decision it exists to inform. */}
+                {(
+                  <div className="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
+                    Picking any of these also switches off the services
+                    connected through your Claude account — Gmail, Calendar,
+                    Superhuman, Atlassian Rovo, Drive. They can&rsquo;t be
+                    listed here. If this worker reads mail, your calendar or
+                    Jira through one of those, leave it on everything.
+                  </div>
+                )}
+                {draft.mcpServers !== undefined && (
+                  <button
+                    type="button"
+                    className="mt-2 text-[11px] text-ink-faint underline underline-offset-2 hover:text-ink"
+                    onClick={() => patch({ mcpServers: undefined })}
+                  >
+                    Let it use everything
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {(problem || error) && (
@@ -5758,39 +5874,64 @@ function CadenceField({
   cadence,
   onChange,
 }: {
-  cadence: ScheduleTrigger;
-  onChange: (t: ScheduleTrigger) => void;
+  cadence: ScheduleTrigger | null;
+  onChange: (t: ScheduleTrigger | null) => void;
 }) {
+  // Remembered so switching to On demand and back doesn't throw away the
+  // times you typed. The last real trigger is also what "At a time of day"
+  // restores, rather than snapping back to 09:00.
+  const lastRef = useRef<ScheduleTrigger>(cadence ?? { kind: "daily", time: "09:00" });
+  if (cadence) lastRef.current = cadence;
+  const last = lastRef.current;
   return (
     <div className="space-y-4">
       <Field label="Shift cadence">
         <div className="flex gap-2">
           <Segment
-            active={cadence.kind === "daily"}
+            active={cadence?.kind === "daily"}
             onClick={() =>
-              cadence.kind !== "daily" &&
-              onChange({ kind: "daily", time: "09:00", days: cadence.days })
+              cadence?.kind !== "daily" &&
+              onChange(
+                last.kind === "daily"
+                  ? last
+                  : { kind: "daily", time: "09:00", days: last.days },
+              )
             }
           >
             At a time of day
           </Segment>
           <Segment
-            active={cadence.kind === "interval"}
+            active={cadence?.kind === "interval"}
             onClick={() =>
-              cadence.kind !== "interval" &&
-              onChange({
-                kind: "interval",
-                everyMinutes: 120,
-                days: cadence.days,
-              })
+              cadence?.kind !== "interval" &&
+              onChange(
+                last.kind === "interval"
+                  ? last
+                  : { kind: "interval", everyMinutes: 120, days: last.days },
+              )
             }
           >
             Every N minutes
           </Segment>
+          <Segment active={cadence === null} onClick={() => onChange(null)}>
+            On demand
+          </Segment>
         </div>
       </Field>
 
-      {cadence.kind === "daily" ? (
+      {/* On demand has nothing to configure, and saying so is better than an
+          empty panel: this is the option people reach for having assumed a
+          worker must be scheduled, so it is worth one line telling them what
+          they just chose. */}
+      {cadence === null ? (
+        <div className="rounded-lg border border-card-strong bg-card px-4 py-3 text-xs leading-relaxed text-ink-muted">
+          No clock. This worker never wakes on its own — you talk to it at its
+          desk, and it plans whatever you ask through its job description, its
+          journal and its trust level like any other worker. Use{" "}
+          <span className="text-ink">Work a shift now</span> when you want it to
+          do a full shift on your say-so.
+        </div>
+      ) : cadence.kind === "daily" ? (
         <Field label="Time" hint="24h local">
           <input
             value={cadence.time}
@@ -5850,12 +5991,14 @@ function CadenceField({
         </div>
       )}
 
-      <Field label="Days" hint="none selected = every day">
-        <DayPicker
-          days={cadence.days}
-          onChange={(days) => onChange({ ...cadence, days })}
-        />
-      </Field>
+      {cadence !== null && (
+        <Field label="Days" hint="none selected = every day">
+          <DayPicker
+            days={cadence.days}
+            onChange={(days) => onChange({ ...cadence, days })}
+          />
+        </Field>
+      )}
     </div>
   );
 }

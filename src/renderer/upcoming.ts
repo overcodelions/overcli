@@ -20,6 +20,7 @@ import { isOrchestrationAwaitingApproval } from '@shared/flows/orchestration';
 import type { Orchestration } from '@shared/flows/orchestration';
 import { describeTrigger, untilLabel } from '@shared/flows/schedule';
 import type { Schedule } from '@shared/flows/schedule';
+import { describeCadence } from '@shared/flows/worker';
 import type { Worker } from '@shared/flows/worker';
 
 export type AutomationSource = 'worker' | 'schedule';
@@ -96,7 +97,7 @@ export function workerSubjects(
     enabled: w.enabled,
     nextAt: nextShiftAt[w.id] ?? null,
     running: shiftProgress[w.id]?.task === 'shift',
-    cadence: describeTrigger(w.cadence),
+    cadence: describeCadence(w.cadence),
   }));
 }
 

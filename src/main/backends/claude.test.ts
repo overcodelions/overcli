@@ -233,3 +233,37 @@ describe('claudeBackend.buildEnvelope', () => {
     expect(parsed.message.content[1]).toEqual({ type: 'text', text: '(no text)' });
   });
 });
+
+describe('claudeBackend.buildArgs MCP scoping', () => {
+  it('narrows a turn to an allowlist and goes strict alongside it', () => {
+    const config = JSON.stringify({ mcpServers: { atlassian: { command: 'npx' } } });
+    const a = claudeBackend.buildArgs({ ...baseArgs, mcpAllowlistConfig: config }, noMcpCtx);
+    expect(a).toContain('--mcp-config');
+    expect(a[a.indexOf('--mcp-config') + 1]).toBe(config);
+    // Without strict the allowlist would only ADD to the user's global
+    // config, which is the opposite of the point.
+    expect(a).toContain('--strict-mcp-config');
+  });
+
+  it('keeps the permission broker when a turn is narrowed', () => {
+    // Scoping a turn must not cost it the
+    // prompt tool — a turn that loses the broker cannot ask for permission
+    // at all for the rest of its life.
+    const a = claudeBackend.buildArgs(
+      { ...baseArgs, mcpAllowlistConfig: '{"mcpServers":{}}' },
+      withMcpCtx,
+    );
+    // One flag, both values: `--mcp-config` is variadic, and a second
+    // occurrence would replace the first rather than add to it.
+    expect(a.filter((x) => x === '--mcp-config')).toHaveLength(1);
+    const at = a.indexOf('--mcp-config');
+    expect(a.slice(at + 1, at + 3)).toEqual(['/tmp/mcp.json', '{"mcpServers":{}}']);
+    expect(a).toContain('mcp__overcli__approve');
+  });
+
+  it('leaves every flag off when no scoping was asked for', () => {
+    const a = claudeBackend.buildArgs(baseArgs, noMcpCtx);
+    expect(a).not.toContain('--mcp-config');
+    expect(a).not.toContain('--strict-mcp-config');
+  });
+});

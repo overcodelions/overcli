@@ -15,8 +15,8 @@
 
 import type { Backend, Conversation, Project, UUID, Workspace } from '@shared/types';
 import type { Flow, FlowRun } from '@shared/flows/schema';
+import { describeCadence } from '@shared/flows/worker';
 import type { Worker } from '@shared/flows/worker';
-import { describeTrigger } from '@shared/flows/schedule';
 import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle, isSelectableFlow } from '@shared/flows/schema';
 import { conversationPromptAt } from '../../conversationLookup';
 
@@ -232,7 +232,7 @@ export function buildPaletteItems(input: PaletteBuildInput): PaletteItem[] {
       key: `worker:${worker.id}`,
       kind: 'worker',
       title: worker.name,
-      subtitle: `${worker.trust} worker · ${describeTrigger(worker.cadence)}`,
+      subtitle: `${worker.trust} worker · ${describeCadence(worker.cadence)}`,
       status: 'idle',
       // A paused worker is shelved, which is what the archived lane means
       // here — it stays findable without outranking the active roster.

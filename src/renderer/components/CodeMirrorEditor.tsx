@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import {
   Compartment,
   EditorState,
+  RangeSet,
   RangeSetBuilder,
   StateEffect,
   StateField,
@@ -10,7 +11,9 @@ import {
 import {
   Decoration,
   EditorView,
+  GutterMarker,
   drawSelection,
+  gutter,
   keymap,
   lineNumbers,
   type DecorationSet,
@@ -27,6 +30,7 @@ import {
 } from '@codemirror/language';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { tags as t } from '@lezer/highlight';
+import { changedLinesKey, type ChangedLines } from '../changedLines';
 
 // Tier 1: dedicated language packages (full Lezer parsers).
 import { cpp } from '@codemirror/lang-cpp';
@@ -232,6 +236,34 @@ const overcliTheme = EditorView.theme(
       minWidth: '2.5em',
       textAlign: 'right',
     },
+    // Change gutter — a thin colour bar next to the line numbers marking
+    // what this run touched, so the FILE view carries the same information
+    // as the diff while you read the code with its context around it.
+    '.cm-gutter.cm-overcli-changes': {
+      width: '3px',
+      padding: 0,
+      marginRight: '5px',
+    },
+    '.cm-overcli-changes .cm-gutterElement': {
+      padding: 0,
+    },
+    '.cm-overcli-change-added': {
+      backgroundColor: 'var(--c-diff-add-ink)',
+    },
+    '.cm-overcli-change-modified': {
+      backgroundColor: 'rgba(245, 158, 11, 0.9)',
+    },
+    // A deletion has no line of its own to colour, so it marks the seam:
+    // a stub at the top edge of the line that took the removed lines' place.
+    '.cm-overcli-change-deleted': {
+      backgroundImage:
+        'linear-gradient(to bottom, var(--c-diff-remove-ink) 0 3px, transparent 3px)',
+    },
+    // Matching wash on the line itself — the same token the diff view's
+    // added rows use, so a line reads as "new" the same way in both places.
+    '.cm-overcli-line-changed': {
+      backgroundColor: 'var(--c-diff-add-bg)',
+    },
     '.cm-activeLine': {
       backgroundColor: 'rgba(255, 255, 255, 0.025)',
     },
@@ -394,6 +426,117 @@ function buildRangeDecorations(
   return builder.finish();
 }
 
+/// Git change marks for the open file, or null when there's nothing to
+/// show (clean file, non-git folder). Dispatched by the host whenever it
+/// re-reads the diff.
+const setChangedLines = StateEffect.define<ChangedLines | null>();
+
+/// One bar in the change gutter. `elementClass` rather than `toDOM` so the
+/// gutter element itself is the bar — no inner node to size against the
+/// line height.
+class ChangeBar extends GutterMarker {
+  constructor(readonly kind: 'added' | 'modified' | 'deleted') {
+    super();
+    this.elementClass = `cm-overcli-change-${kind}`;
+  }
+  eq(other: GutterMarker): boolean {
+    return other instanceof ChangeBar && other.kind === this.kind;
+  }
+}
+
+function hasChanges(marks: ChangedLines | null): boolean {
+  return !!marks && (marks.changed.length > 0 || marks.deletedAt.length > 0);
+}
+
+const CHANGE_BARS = {
+  added: new ChangeBar('added'),
+  modified: new ChangeBar('modified'),
+  deleted: new ChangeBar('deleted'),
+};
+
+/// Walk changed lines and deletion seams together in line order — both
+/// RangeSetBuilders below require ascending positions, and the two lists
+/// interleave.
+function eachMark(
+  marks: ChangedLines | null,
+  doc: { lines: number; line: (n: number) => { from: number } },
+  visit: (from: number, kind: 'added' | 'modified' | 'deleted') => void,
+) {
+  if (!marks) return;
+  let ci = 0;
+  let di = 0;
+  while (ci < marks.changed.length || di < marks.deletedAt.length) {
+    const c = marks.changed[ci];
+    const d = marks.deletedAt[di];
+    const takeChanged = c != null && (d == null || c.line <= d);
+    const line = takeChanged ? c.line : d;
+    if (takeChanged) ci++;
+    else di++;
+    // The diff is fetched asynchronously and the buffer can be edited in
+    // the meantime, so a stale mark past the end of the document is
+    // ordinary, not a bug — drop it.
+    if (line < 1 || line > doc.lines) continue;
+    visit(doc.line(line).from, takeChanged ? c.kind : 'deleted');
+  }
+}
+
+function buildChangeGutter(
+  marks: ChangedLines | null,
+  doc: { lines: number; line: (n: number) => { from: number } },
+): RangeSet<GutterMarker> {
+  const builder = new RangeSetBuilder<GutterMarker>();
+  eachMark(marks, doc, (from, kind) => builder.add(from, from, CHANGE_BARS[kind]));
+  return builder.finish();
+}
+
+function buildChangeDecorations(
+  marks: ChangedLines | null,
+  doc: { lines: number; line: (n: number) => { from: number } },
+): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  eachMark(marks, doc, (from, kind) => {
+    // Only lines that exist in the new file get a wash; a deletion seam is
+    // a boundary, and tinting the surviving line would misreport it.
+    if (kind === 'deleted') return;
+    builder.add(from, from, Decoration.line({ class: 'cm-overcli-line-changed' }));
+  });
+  return builder.finish();
+}
+
+/// Both change views are editor state for the same reason the highlight
+/// range is: typing above a marked line has to carry its bar and wash
+/// along with it, which `map(tr.changes)` does for free.
+const changeGutterField = StateField.define<RangeSet<GutterMarker>>({
+  create: () => RangeSet.empty,
+  update(marks, tr) {
+    let next = marks.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setChangedLines)) next = buildChangeGutter(e.value, tr.state.doc);
+    }
+    return next;
+  },
+});
+
+const changeLinesField = StateField.define<DecorationSet>({
+  create: () => Decoration.none,
+  update(deco, tr) {
+    let next = deco.map(tr.changes);
+    for (const e of tr.effects) {
+      if (e.is(setChangedLines)) next = buildChangeDecorations(e.value, tr.state.doc);
+    }
+    return next;
+  },
+  provide: (f) => EditorView.decorations.from(f),
+});
+
+/// The gutter extension itself. Held apart from the fields so it can be
+/// swapped in and out of a compartment — a file with no changes shouldn't
+/// pay a blank column's worth of indent for a gutter with nothing in it.
+const changeGutter = gutter({
+  class: 'cm-overcli-changes',
+  markers: (v) => v.state.field(changeGutterField),
+});
+
 /// Hovered-symbol underline. Carries the word range under the pointer
 /// while the go-to-definition modifier is held, or null.
 const setHoverSymbol = StateEffect.define<{ from: number; to: number } | null>();
@@ -473,6 +616,7 @@ export function CodeMirrorEditor({
   onChange,
   highlightRange,
   language,
+  changedLines = null,
   onSymbolNavigate,
   onSelectionChange,
 }: {
@@ -480,6 +624,10 @@ export function CodeMirrorEditor({
   onChange: (v: string) => void;
   highlightRange: HighlightRange;
   language: string | null;
+  /// Lines this file's git diff touched, in new-file numbering. Drives the
+  /// change gutter; null (the default) leaves the gutter empty, which is
+  /// what a clean file or a non-git folder wants.
+  changedLines?: ChangedLines | null;
   /// Cmd-click (Ctrl-click off macOS) on an identifier. The host resolves
   /// it to a definition site and opens it; this component only reports
   /// which word was clicked and on what line.
@@ -493,6 +641,7 @@ export function CodeMirrorEditor({
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const languageCompartment = useRef(new Compartment());
+  const changeGutterCompartment = useRef(new Compartment());
   // Wrap onChange in a ref so the updateListener below sees the latest
   // callback without us having to tear down the editor on every parent
   // re-render that hands us a new function identity.
@@ -507,6 +656,10 @@ export function CodeMirrorEditor({
   // see the current closure.
   const onSymbolNavigateRef = useRef(onSymbolNavigate);
   onSymbolNavigateRef.current = onSymbolNavigate;
+  // Read through a ref by the mount-once extension list; the effect below
+  // owns every update after that.
+  const changedLinesRef = useRef(changedLines);
+  changedLinesRef.current = changedLines;
 
   // Mount once. Subsequent prop changes are handled by the focused
   // effects below; rebuilding the EditorView on every keystroke would
@@ -545,6 +698,12 @@ export function CodeMirrorEditor({
       doc: content,
       extensions: [
         lineNumbers(),
+        // Seeded on mount like the highlight range, so a file opened
+        // straight into the editor shows its bars on the first paint
+        // rather than after a re-render.
+        changeGutterField.init((st) => buildChangeGutter(changedLinesRef.current, st.doc)),
+        changeLinesField.init((st) => buildChangeDecorations(changedLinesRef.current, st.doc)),
+        changeGutterCompartment.current.of(hasChanges(changedLinesRef.current) ? changeGutter : []),
         history(),
         drawSelection(),
         indentOnInput(),
@@ -710,6 +869,23 @@ export function CodeMirrorEditor({
     }
     view.dispatch({ effects });
   }, [rangeStart, rangeEnd]);
+
+  // Change-mark update. Keyed on the marks' content rather than the object
+  // identity: the host rebuilds the array whenever it re-reads the diff,
+  // and re-dispatching identical marks would throw away the mapping that
+  // has been tracking the user's edits.
+  const marksKey = changedLinesKey(changedLines);
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    const marks = changedLinesRef.current;
+    view.dispatch({
+      effects: [
+        setChangedLines.of(marks),
+        changeGutterCompartment.current.reconfigure(hasChanges(marks) ? changeGutter : []),
+      ],
+    });
+  }, [marksKey]);
 
   return <div ref={containerRef} className="h-full w-full overflow-hidden" />;
 }
