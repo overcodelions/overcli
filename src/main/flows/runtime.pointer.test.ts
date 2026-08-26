@@ -62,7 +62,7 @@ describe('pathChangedInRun', () => {
       // fail forever, because nothing rewrites an already-correct file.
       const old = new Date(Date.now() - 600_000);
       utimesSync(report, old, old);
-      expect(pathChangedInRun(dir, head(dir), report)).toBe(true);
+      expect(pathChangedInRun(dir, head(dir), report, 0)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -85,7 +85,7 @@ describe('pathChangedInRun', () => {
           GIT_COMMITTER_EMAIL: 't@t',
         },
       });
-      expect(pathChangedInRun(dir, baseline, report)).toBe(true);
+      expect(pathChangedInRun(dir, baseline, report, 0)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -96,7 +96,62 @@ describe('pathChangedInRun', () => {
     // pointing at an input or a source file is not this run's deliverable.
     const dir = repo();
     try {
-      expect(pathChangedInRun(dir, head(dir), join(dir, 'preexisting.md'))).toBe(false);
+      expect(pathChangedInRun(dir, head(dir), join(dir, 'preexisting.md'), 0)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a gitignored file that predates the run, even though git status cannot see it', () => {
+    // `git status`/`git diff` never list an ignored path at all, so the
+    // ignored-file fallback has no git signal to scope itself to this run —
+    // it must fall back to the same mtime floor the tracked-file path uses.
+    // Skipping that floor would hand back ANY ignored file that exists on
+    // disk (`.env`, `node_modules/**`, …) as though the run had produced it.
+    const dir = repo();
+    try {
+      const secret = join(dir, '.env');
+      writeFileSync(join(dir, '.gitignore'), '.env\n');
+      execFileSync('git', ['add', '-f', '.gitignore'], { cwd: dir });
+      execFileSync('git', ['commit', '-m', 'ignore env'], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'T',
+          GIT_AUTHOR_EMAIL: 't@t',
+          GIT_COMMITTER_NAME: 'T',
+          GIT_COMMITTER_EMAIL: 't@t',
+        },
+      });
+      writeFileSync(secret, 'SECRET=1\n');
+      const old = new Date(Date.now() - 600_000);
+      utimesSync(secret, old, old);
+      const runStartedAt = Date.now();
+      expect(pathChangedInRun(dir, head(dir), secret, runStartedAt)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('claims a gitignored file the run wrote after it started', () => {
+    const dir = repo();
+    try {
+      const secret = join(dir, '.env');
+      writeFileSync(join(dir, '.gitignore'), '.env\n');
+      execFileSync('git', ['add', '-f', '.gitignore'], { cwd: dir });
+      execFileSync('git', ['commit', '-m', 'ignore env'], {
+        cwd: dir,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: 'T',
+          GIT_AUTHOR_EMAIL: 't@t',
+          GIT_COMMITTER_NAME: 'T',
+          GIT_COMMITTER_EMAIL: 't@t',
+        },
+      });
+      const runStartedAt = Date.now() - 1000;
+      writeFileSync(secret, 'GENERATED=1\n');
+      expect(pathChangedInRun(dir, head(dir), secret, runStartedAt)).toBe(true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -137,14 +192,25 @@ function flow(): Flow {
 }
 
 function harness() {
-  const sends: Array<{ prompt: string; displayText?: string }> = [];
+  const sends: Array<{
+    prompt: string;
+    displayText?: string;
+    permissionMode?: string;
+    conversationId?: string;
+  }> = [];
   const runner = {
     prewarm: () => {},
     dropIfPrewarmed: () => {},
-    send: (args: { prompt: string; displayText?: string }) => {
-      sends.push({ prompt: args.prompt, displayText: args.displayText });
+    send: (args: { prompt: string; displayText?: string; permissionMode?: string; conversationId?: string }) => {
+      sends.push({
+        prompt: args.prompt,
+        displayText: args.displayText,
+        permissionMode: args.permissionMode,
+        conversationId: args.conversationId,
+      });
       return { ok: true as const };
     },
+    respondPermission: (_convId: string, _reqId: string, _approved: boolean) => {},
   };
   const emitted: MainToRendererEvent[] = [];
   const rt = new FlowRuntimeImpl(
@@ -153,7 +219,7 @@ function harness() {
     () => [],
     () => ({ backends: {} }) as unknown as AppSettings,
   );
-  return { rt, sends, emitted };
+  return { rt, sends, emitted, runner };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -258,6 +324,203 @@ describe('a pointer at a file the attempt did not rewrite', () => {
     expect(h.sends[0]!.prompt).toContain('nothing in this run wrote or changed that file');
     expect(h.sends[0]!.prompt).toContain('do not point at a file again');
     expect(h.sends[0]!.displayText).toContain('stale');
+  });
+});
+
+// Round-1 finding RRW-pointer-gitignored-not-owned, exercised end to end
+// through `onStepFinished` → `resolveArtifactBody` → `runOwnsPath` →
+// `pathChangedInRun` — not by calling `pathChangedInRun` directly. Direct
+// calls can't catch a wrong floor being threaded through `runOwnsPath`
+// (the round-2 regression this pins down: the branch was reachable only
+// with `run.createdAt`, never with the per-attempt floor `runOwnsPath`
+// used to be passed).
+describe('a pointer at a gitignored file across steps', () => {
+  const gitignoreCommit = (dir: string, pattern: string) => {
+    writeFileSync(join(dir, '.gitignore'), `${pattern}\n`);
+    // Force-add: some machines carry a global excludesfile that ignores
+    // `.gitignore` itself, which would otherwise make this a no-op setup.
+    execFileSync('git', ['add', '-f', '.gitignore'], { cwd: dir });
+    execFileSync('git', ['commit', '-m', 'ignore report'], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'T',
+        GIT_AUTHOR_EMAIL: 't@t',
+        GIT_COMMITTER_NAME: 'T',
+        GIT_COMMITTER_EMAIL: 't@t',
+      },
+    });
+  };
+
+  it('is accepted when an earlier step in this run wrote it, even though it predates this attempt', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-run-ignored-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir });
+      gitignoreCommit(dir, 'throughput_report.html');
+
+      const runCreatedAt = Date.now() - 5000;
+      const report = join(dir, 'throughput_report.html');
+      writeFileSync(report, '<html><body>generated at an earlier step</body></html>');
+      // Written after the RUN started but before THIS attempt did — the
+      // shape a multi-step run produces when an earlier step wrote the file
+      // and a later one just points at it again.
+      const producedAt = new Date(runCreatedAt + 2000);
+      utimesSync(report, producedAt, producedAt);
+
+      const h = harness();
+      const r: FlowRun = {
+        id: RUN_ID,
+        flowId: 'report-flow',
+        flowSnapshot: flow(),
+        projectPath: dir,
+        userPrompt: 'render the report',
+        conversationIds: { primary: 'conv-1' as UUID },
+        artifacts: {},
+        state: { kind: 'running', currentStepId: 'render-report' },
+        createdAt: runCreatedAt,
+        attempts: [
+          { stepId: 'render-report', startedAt: Date.now(), conversationId: 'conv-1' as UUID },
+        ],
+      };
+      (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+
+      await finishWith(
+        h,
+        'Verified the report is correct.\n<output name="throughput_report.html" file="throughput_report.html" />',
+      );
+
+      expect(r.artifacts['throughput_report.html']?.body).toBe(
+        '<html><body>generated at an earlier step</body></html>',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is refused when the gitignored file predates the run entirely', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-run-ignored-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir });
+      gitignoreCommit(dir, 'throughput_report.html');
+
+      const report = join(dir, 'throughput_report.html');
+      writeFileSync(report, '<html><body>stale leftover</body></html>');
+      // Predates the run entirely — left behind by something else.
+      const old = new Date(Date.now() - 600_000);
+      utimesSync(report, old, old);
+
+      const h = harness();
+      const r: FlowRun = {
+        id: RUN_ID,
+        flowId: 'report-flow',
+        flowSnapshot: flow(),
+        projectPath: dir,
+        userPrompt: 'render the report',
+        conversationIds: { primary: 'conv-1' as UUID },
+        artifacts: {},
+        state: { kind: 'running', currentStepId: 'render-report' },
+        createdAt: Date.now(),
+        attempts: [
+          { stepId: 'render-report', startedAt: Date.now(), conversationId: 'conv-1' as UUID },
+        ],
+      };
+      (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+
+      await finishWith(h, '<output name="throughput_report.html" file="throughput_report.html" />');
+
+      expect(r.artifacts['throughput_report.html']).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Round-2 finding B: the auto-deny loop added to close round-1 finding #4
+// (an unattended worker hanging on a permission request) must not also
+// discard a real human clicking Continue on an `externalAction` pause.
+describe('resuming an externalAction pause', () => {
+  it('runs the approved step without forcing it through the broker, and consumes the grant once the step finishes', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'overcli-run-approve-'));
+    try {
+      execFileSync('git', ['init'], { cwd: dir });
+
+      const h = harness();
+      const r: FlowRun = {
+        id: RUN_ID,
+        flowId: 'report-flow',
+        flowSnapshot: flow(),
+        projectPath: dir,
+        userPrompt: 'render the report',
+        conversationIds: { primary: 'conv-1' as UUID },
+        artifacts: {},
+        state: { kind: 'paused', nextStepId: 'render-report', reason: 'externalAction' },
+        createdAt: Date.now(),
+        attempts: [],
+        workerId: 'worker-1' as UUID,
+        // No allowExternalActions grant — this worker is exactly the
+        // "must never auto-approve" case the broker exists to gate.
+      };
+      (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+
+      const res = h.rt.resumeRun({ runId: RUN_ID });
+      expect(res.ok).toBe(true);
+      await flush();
+
+      // The step the user just approved must run under a real permission
+      // mode, not `acceptEdits` — clicking Continue must not still route
+      // every call of THIS step through a broker that then auto-denies it.
+      expect(h.sends).toHaveLength(1);
+      expect(h.sends[0]!.permissionMode).not.toBe('acceptEdits');
+      expect(r.externalActionApprovedStepId).toBe('render-report');
+
+      // The grant is one-shot: consumed the moment the approved step
+      // finishes, so it can't leak into whatever step runs after it.
+      await finishWith(h, '<output name="throughput_report.html" file="throughput_report.html" />');
+      expect(r.externalActionApprovedStepId).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still auto-denies a permission request for a step that was never approved', () => {
+    const h = harness();
+    const r: FlowRun = {
+      id: RUN_ID,
+      flowId: 'report-flow',
+      flowSnapshot: flow(),
+      projectPath: '/tmp/does-not-matter',
+      userPrompt: 'render the report',
+      conversationIds: { primary: 'conv-1' as UUID },
+      artifacts: {},
+      state: { kind: 'running', currentStepId: 'render-report' },
+      createdAt: Date.now(),
+      attempts: [{ stepId: 'render-report', startedAt: Date.now(), conversationId: 'conv-1' as UUID }],
+      workerId: 'worker-1' as UUID,
+      // Approval on record, but for a DIFFERENT step — must not cover this one.
+      externalActionApprovedStepId: 'design-polish',
+    };
+    (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    (h.rt as never as { convIdToRun: Map<UUID, UUID> }).convIdToRun.set('conv-1' as UUID, RUN_ID);
+
+    let denied = false;
+    h.runner.respondPermission = (_convId: string, _reqId: string, approved: boolean) => {
+      denied = approved === false;
+    };
+    (h.rt as never as { observeEvent: (e: MainToRendererEvent) => void }).observeEvent({
+      type: 'stream',
+      conversationId: 'conv-1' as UUID,
+      events: [
+        {
+          timestamp: Date.now(),
+          kind: {
+            type: 'permissionRequest',
+            info: { requestId: 'req-1', toolName: 'Bash', description: '', toolInput: '' },
+          },
+        } as never,
+      ],
+    });
+
+    expect(denied).toBe(true);
   });
 });
 

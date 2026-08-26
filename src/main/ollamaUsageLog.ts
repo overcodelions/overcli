@@ -37,11 +37,13 @@ export interface OllamaUsageEntry {
 /// ~90 bytes a line, so this caps the file around 5MB. Trimming happens on
 /// append, and only once the file is meaningfully over — rewriting 50k
 /// lines on every round would be absurd.
-const MAX_ENTRIES = 50_000;
-const TRIM_SLACK = 5_000;
-/// Conservative floor on a serialized line's byte length. Used to rule out the
-/// full-file read without counting lines; a real entry is ~90 bytes.
-const MIN_BYTES_PER_ENTRY = 60;
+export const MAX_ENTRIES = 50_000;
+export const TRIM_SLACK = 5_000;
+/// Conservative floor on a serialized line's byte length; a real entry is ~90
+/// bytes. Must stay BELOW 90 (or the precheck skips a real trim) and ABOVE
+/// the ~80 that a freshly-trimmed 50k-line file averages, or the precheck
+/// never trips at steady state.
+export const MIN_BYTES_PER_ENTRY = 85;
 
 export function ollamaUsageLogPath(): string {
   let base: string;
