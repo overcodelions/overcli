@@ -288,7 +288,9 @@ function drafterDeps(): DraftDeps {
   };
 }
 
-function registerIpc(): void {
+// Exported for tests only — production code always reaches this through the
+// `app.whenReady()` wiring at the bottom of the file.
+export function registerIpc(): void {
   // The flow runtime needs to tap every stream event the runner emits so
   // it can detect step completion + accumulate assistant text for artifact
   // extraction. Wrap the renderer emit callback to tee events into the
@@ -1636,6 +1638,11 @@ function registerIpc(): void {
   ipcMain.handle('workers:deleteFile', (_e, { id, name }) => deleteWorkerFile(id, name));
   ipcMain.handle('workers:deliverables', (_e, { id, task, label, title, at }) =>
     deliverableFiles({ workerId: id, task, label, title, at }),
+  );
+  ipcMain.handle('workers:deliverablesBatch', (_e, { requests }) =>
+    (requests as Array<{ id: string; task: any; label: string; title: string; at: number }>).map((r) =>
+      deliverableFiles({ workerId: r.id, task: r.task, label: r.label, title: r.title, at: r.at }),
+    ),
   );
   ipcMain.handle('workers:revealFiles', (_e, { id }) => {
     try {

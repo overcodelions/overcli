@@ -495,6 +495,13 @@ export interface FlowRun {
   /// sends, publishes, and service updates without the runtime boundary.
   /// Missing on historical runs is deliberately equivalent to false.
   allowExternalActions?: boolean;
+  /// A one-shot grant, not a standing one: the id of the step the user just
+  /// approved by clicking Continue on an `externalAction` pause. Consulted
+  /// by `resolvePermissionMode` and the auto-deny loop in `observeEvent` so
+  /// that ONE step's approval doesn't leave the run's tool broker open, and
+  /// cleared by `onStepFinished` once that step completes so it can never
+  /// carry into a later step nobody approved.
+  externalActionApprovedStepId?: string;
   /// When the user last typed AT this run: a hijack turn sent to one of its
   /// participants, or a correction held for the next step. Persisted, and
   /// deliberately distinct from `attempts` — those are the runtime's own

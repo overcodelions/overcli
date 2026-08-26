@@ -599,6 +599,7 @@ interface ActiveProcess {
   /// inherit the wrong launch args without this in the change check.
   launchTurbo: boolean;
   launchPermissionMode: PermissionMode;
+  launchAllowedTools: string;
   /// Effort this process was spawned with. Claude bakes `--effort` into its
   /// argv and codex into `-c model_reasoning_effort`, so neither can be
   /// changed on a live subprocess — without this stamp a mid-conversation
@@ -1348,6 +1349,7 @@ export class RunnerManager {
       effortLevel: resolveTurboEffort(args.turbo, args.effortLevel),
       attachments: args.attachments,
       allowedDirs: args.allowedDirs,
+      allowedTools: args.backend === 'ollama' ? undefined : args.enabledTools,
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       turbo: args.turbo ?? false,
       skipGlobalMcp: args.skipGlobalMcp,
@@ -1454,6 +1456,7 @@ export class RunnerManager {
       !!existing &&
       existing.backend === 'claude' &&
       existing.launchPermissionMode === args.permissionMode &&
+      existing.launchAllowedTools === (args.enabledTools ?? []).join(' ') &&
       existing.launchModel === args.model &&
       existing.cwd === args.cwd;
     if (paramsMatch && this.claudeMcpByConv.has(convId)) return;
@@ -1494,6 +1497,7 @@ export class RunnerManager {
       const paramsChanged =
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
+          existing.launchAllowedTools !== (args.enabledTools ?? []).join(' ') ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
           existing.launchEffort !== args.effortLevel ||
@@ -1568,6 +1572,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
+      launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',
@@ -2135,6 +2140,7 @@ export class RunnerManager {
       const paramsChanged =
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
+          existing.launchAllowedTools !== (args.enabledTools ?? []).join(' ') ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
           existing.launchEffort !== configuredEffort ||
@@ -3457,6 +3463,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
+      launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',
@@ -4058,6 +4065,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
+      launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',

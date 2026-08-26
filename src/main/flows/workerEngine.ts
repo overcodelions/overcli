@@ -26,6 +26,7 @@
 // fold safe to run on every event, restart, or replay.
 
 import { randomUUID } from 'node:crypto';
+import { log } from '../diagnostics';
 
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
@@ -523,7 +524,10 @@ export class WorkerEngine {
     if (
       distributedCaps.some((cap) => {
         const spent = before.byWorker.find((row) => row.workerId === cap.workerId)?.spentUSD ?? 0;
-        return cap.budgetUSDPerMonth - spent < 0.01 - Number.EPSILON;
+        // Compare in whole cents. `budgetUSDPerMonth` is a toFixed(6) dollar
+        // value, so a spend with a 7th decimal made a valid one-cent share
+        // read as 0.0099996 and falsely refused the distribution.
+        return Math.round((cap.budgetUSDPerMonth - spent) * 100) < 1;
       })
     ) {
       return {
@@ -597,7 +601,18 @@ export class WorkerEngine {
       // it must not tell the worker it has never looked at the project.
       lastPlannedAt: existing?.lastPlannedAt,
       lastCompactedAt: existing?.lastCompactedAt,
+      // An explicit budget edit wins over a parked distribution: otherwise
+      // settleDistributions puts the OLD number back on the 1st and the
+      // user's change disappears with no event.
+      distribution:
+        existing && input.budgetUSDPerMonth !== existing.budgetUSDPerMonth
+          ? undefined
+          : existing?.distribution,
     };
+    if (candidate.distribution === undefined) delete candidate.distribution;
+    if (input.caps.fileIntoProject && !existing?.caps.fileIntoProject) {
+      candidate.fileIntoProjectSince = now;
+    }
     // A non-autonomous worker may not run in the working copy; repair rather
     // than reject, since trust wasn't the caller's to choose here.
     if (candidate.trust !== 'autonomous' && candidate.caps.runIn === 'cwd') {
@@ -2132,7 +2147,11 @@ export class WorkerEngine {
             // `publishDeliverableToProject` refuses anything that is not a
             // marked everyday folder and keeps its own ledger, so this is
             // safe on the same re-fold the cabinet copy survives.
-            if (w.caps.fileIntoProject) {
+            // Only file runs that finished AFTER the cap was switched on.
+            // Otherwise flipping the toggle dumps up to MAX_RETAINED_RUNS
+            // past deliverables into the folder at once on the next fold.
+            const finishedAtMs = item.finishedAt ?? now;
+            if (w.caps.fileIntoProject && finishedAtMs >= (w.fileIntoProjectSince ?? 0)) {
               const published = publishDeliverableToProject({
                 workerId: w.id,
                 projectPath: w.projectPath,
@@ -2148,6 +2167,13 @@ export class WorkerEngine {
                   projectPath: w.projectPath,
                   message: `${w.name} added ${published.written.join(', ')}`,
                 });
+              }
+              if (published.skippedNames?.length) {
+                log(
+                  'warn',
+                  'worker-publish',
+                  `${w.name}: not filed into the project (too large): ${published.skippedNames.join(', ')}`,
+                );
               }
             }
           }

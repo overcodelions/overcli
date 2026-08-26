@@ -770,6 +770,15 @@ describe('worker effect boundary', () => {
       ),
     ).toBeNull();
   });
+
+  it('fails closed on an absent or empty tool declaration, and treats scoped read-only git as local', () => {
+    expect(resolveStepEffect(step('Do the work.', { tools: [] }))).toBe('external');
+    expect(resolveStepEffect(step('Do the work.', { tools: undefined }))).toBe('external');
+    expect(
+      resolveStepEffect(step('Do the work.', { tools: ['Bash(git diff:*)', 'Read'] })),
+    ).toBe('local');
+    expect(resolveStepEffect(step('Do the work.', { tools: ['Bash'] }))).toBe('external');
+  });
 });
 
 describe('extractWorkerQuestion', () => {

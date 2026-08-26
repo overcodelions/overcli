@@ -93,7 +93,7 @@ steps:
     model: { backend: claude, model: claude-sonnet-5 }
     role: researcher
     inputs: [user_prompt]
-    tools: [Bash, Read, Grep, Glob]
+    tools: ["Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", Read, Grep, Glob]
     output: diff.md
 
   - id: review
@@ -114,7 +114,7 @@ steps:
     model: { backend: claude, model: claude-sonnet-5 }
     role: researcher
     inputs: [user_prompt]
-    tools: [Bash, Read, Grep, Glob]
+    tools: ["Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)", Read, Grep, Glob]
     output: survey.md
 
   - id: write-tests
