@@ -1471,6 +1471,16 @@ export function registerIpc(): void {
   ipcMain.handle('flows:rerunFromStep', (_e, args) =>
     flowRuntime ? flowRuntime.rerunFromStep(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:adoptWorkspaceMembers', (_e, { runId }) =>
+    flowRuntime
+      ? flowRuntime.adoptPendingWorkspaceMembers(runId)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
+  ipcMain.handle('flows:dismissWorkspaceMembers', (_e, { runId }) =>
+    flowRuntime
+      ? flowRuntime.dismissWorkspaceMembers(runId)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
   ipcMain.handle('flows:checkoutRunLocally', (_e, args) =>
     flowRuntime
       ? flowRuntime.checkoutRunLocally(args)

@@ -76,6 +76,10 @@ import {
 } from '../git';
 import { branchSlugFromPrompt } from './branchName';
 import { ensureCoordinatorSymlinkRoot, removeCoordinatorSymlinkRoot } from '../workspace';
+import {
+  pendingWorkspaceMembers,
+  type WorkspaceMemberRef,
+} from '../../shared/flows/workspaceMembers';
 import { deleteRun as deleteRunFromDisk, loadAllRuns, saveRun } from './runsStore';
 import { getWatchSource, parseWatchReport, type WatchTickReport } from './watch/source';
 import { notifyWatch } from './watch/notify';
@@ -221,29 +225,10 @@ function uniqueWorktreeName(repoPaths: string[], base: string, branchPrefix: str
   return name;
 }
 
-/// Which of a workspace's current members a live run has no worktree for.
-///
-/// A workspace run resolves its members ONCE, at launch (see `startRun`), and
-/// the agent's cwd is a symlink farm built from exactly that set. Add a
-/// project to the workspace afterwards and the running flow simply cannot see
-/// it — which is worst precisely when a step has PAUSED asking for the repo
-/// that is missing, and adding it is the obvious fix.
-///
-/// Matching is by project path, not id, so a project re-added under a new id
-/// doesn't mint a second worktree over the same repo. Pure so the adoption
-/// rule can be tested without git.
-export function workspaceMembersMissingFromRun(
-  currentMemberPaths: readonly string[],
-  runMemberPaths: readonly string[],
-): string[] {
-  const have = new Set(runMemberPaths);
-  const out: string[] = [];
-  for (const p of currentMemberPaths) {
-    if (!p || have.has(p) || out.includes(p)) continue;
-    out.push(p);
-  }
-  return out;
-}
+// `workspaceMembersMissingFromRun` / `pendingWorkspaceMembers` live in
+// shared/flows/workspaceMembers so the renderer's "adopt these" banner and the
+// adoption below can never disagree about what's missing.
+export { workspaceMembersMissingFromRun } from '../../shared/flows/workspaceMembers';
 
 /// The worktree(s) a run owns, if any. A workspace run forks one per member
 /// project; a single-project run has at most one; a `runIn: 'cwd'` run has
@@ -386,6 +371,27 @@ export class FlowRuntimeImpl {
   /// Runs with a watch tick currently in flight — guards the sweep against
   /// firing a second tick before the first reply lands.
   private watchTicking = new Set<UUID>();
+  /// Conversation the in-flight DETECT tick is running on, keyed by run id.
+  /// Deliberately NOT stored in `run.conversationIds`: detect gets a throwaway
+  /// conversation, minted fresh per tick and released when the tick drains.
+  ///
+  /// Detect asks one yes/no question — "is there a new comment worth a reply?"
+  /// — and its prompt already carries everything needed to answer it (the
+  /// user's instructions, the guardrails, the already-answered id list, a work
+  /// summary). Running it on the participant's conversation instead meant every
+  /// tick re-sent the entire flow transcript PLUS every prior tick's "nothing
+  /// new" report, growing without bound for as long as the watch lived — at the
+  /// 60s poll floor, ~1,440 ticks a day each larger than the last. The cheap
+  /// `watchModel` made those tokens cost less; it didn't make there be fewer.
+  ///
+  /// Keeping detect out of `run.conversationIds` also keeps it invisible to the
+  /// `sessionConfigured` handler, which resolves a participant by searching that
+  /// map — so a detect session can never overwrite the participant's session
+  /// pointer and strand the chat panel.
+  ///
+  /// The ANSWER pass is unchanged: it still runs on the participant's
+  /// conversation, so replies stay grounded in the actual work.
+  private watchDetectConv = new Map<UUID, UUID>();
   /// Which tier the in-flight tick is on: 'detect' (cheap, every tick) or
   /// 'answer' (premium, only after detect escalates). Keyed by run id.
   private watchPhase = new Map<UUID, 'detect' | 'answer'>();
@@ -635,8 +641,11 @@ export class FlowRuntimeImpl {
       // can parse the <watch_report> from it. A watch tick isn't a step, so
       // it has its own buffer rather than touching `stepBuffers`.
       if (run.state.kind === 'watching' && this.watchTicking.has(runId)) {
+        // Detect runs on a throwaway conversation, answer on the participant's
+        // (see `watchDetectConv`) — a tick's reply can arrive on either.
         const watcherConv = run.conversationIds[run.state.watch.participantId];
-        if (watcherConv === event.conversationId) {
+        const detectConv = this.watchDetectConv.get(runId);
+        if (watcherConv === event.conversationId || detectConv === event.conversationId) {
           let acc = this.watchBuffers.get(runId) ?? '';
           for (const ev of event.events) {
             if (
@@ -1341,22 +1350,8 @@ export class FlowRuntimeImpl {
   /// or while the run is watching (archive it first).
   /// Projects added to this run's workspace since it launched, as
   /// `{ name, path }`. Empty for anything that isn't a workspace-worktree run.
-  private pendingWorkspaceMembers(run: FlowRun): Array<{ name: string; path: string }> {
-    const minted = run.workspaceWorktrees;
-    if (!minted || minted.length === 0 || !run.sourceProjectPath) return [];
-    const workspace = this.getWorkspaces().find((w) => w.rootPath === run.sourceProjectPath);
-    if (!workspace) return [];
-    const projectsById = new Map(this.getProjects().map((p) => [p.id, p]));
-    const current = workspace.projectIds
-      .map((pid) => projectsById.get(pid))
-      .filter((p): p is NonNullable<typeof p> => !!p && !!p.path);
-    const missing = new Set(
-      workspaceMembersMissingFromRun(
-        current.map((p) => p.path),
-        minted.map((m) => m.projectPath),
-      ),
-    );
-    return current.filter((p) => missing.has(p.path)).map((p) => ({ name: p.name, path: p.path }));
+  private pendingWorkspaceMembers(run: FlowRun): WorkspaceMemberRef[] {
+    return pendingWorkspaceMembers(run, this.getWorkspaces(), this.getProjects());
   }
 
   /// Adopt those projects into the live run: a worktree each, a symlink in the
@@ -1431,6 +1426,64 @@ export class FlowRuntimeImpl {
     }
     this.emitRunUpdate(run);
     this.checkpoint(run);
+  }
+
+  /// The "workspace grew" banner's action: adopt the pending members and
+  /// nothing else. Resume and re-run already do this on their way through
+  /// (`withWorkspaceAdoption`), but a paused run the user is CHATTING with
+  /// never reaches either — and chatting is exactly what people do when a
+  /// step stalls on a repo that isn't there. This gives them the worktree
+  /// without also advancing the run, so the participant can be asked to look
+  /// again in the same pause.
+  ///
+  /// Returns the member names actually adopted; a repo that failed to check
+  /// out is logged and skipped by `adoptWorkspaceMembers`, so a short list
+  /// back means some member didn't make it.
+  async adoptPendingWorkspaceMembers(
+    runId: UUID,
+  ): Promise<{ ok: true; adopted: string[] } | { ok: false; error: string }> {
+    const run = this.runs.get(runId);
+    if (!run) return { ok: false, error: `Run ${runId} not found.` };
+    // Adoption rebuilds the symlink farm, and the farm IS a running step's
+    // cwd — reconciling it out from under a live subprocess would yank
+    // directories the step has open. Settled states only, same rule
+    // `rerunFromStep` enforces.
+    if (run.state.kind === 'running') {
+      return { ok: false, error: 'Wait for the current step to settle before adding projects.' };
+    }
+    const pending = this.pendingWorkspaceMembers(run);
+    if (pending.length === 0) return { ok: true, adopted: [] };
+    const before = new Set((run.workspaceWorktrees ?? []).map((m) => m.projectPath));
+    try {
+      await this.adoptWorkspaceMembers(run);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      log('warn', 'flows', `Workspace adoption failed for run ${runId}`, err);
+      return { ok: false, error };
+    }
+    const adopted = (run.workspaceWorktrees ?? [])
+      .filter((m) => !before.has(m.projectPath))
+      .map((m) => m.name);
+    return { ok: true, adopted };
+  }
+
+  /// Dismiss the "workspace grew" banner for whatever is pending right now.
+  ///
+  /// Records the PATHS rather than setting a hide flag, so this can't blind
+  /// the run: add another project tomorrow and it isn't in the dismissed set,
+  /// so the banner returns for that one. Display-only — `adoptWorkspaceMembers`
+  /// still picks these up on resume / re-run.
+  dismissWorkspaceMembers(runId: UUID): { ok: true; dismissed: string[] } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run) return { ok: false, error: `Run ${runId} not found.` };
+    const pending = this.pendingWorkspaceMembers(run);
+    if (pending.length === 0) return { ok: true, dismissed: [] };
+    const merged = new Set(run.dismissedWorkspaceMemberPaths ?? []);
+    for (const m of pending) merged.add(m.path);
+    run.dismissedWorkspaceMemberPaths = [...merged];
+    this.emitRunUpdate(run);
+    this.checkpoint(run);
+    return { ok: true, dismissed: pending.map((m) => m.path) };
   }
 
   /// Resume/rerun entry points run the adoption first when the workspace has
@@ -1825,6 +1878,7 @@ export class FlowRuntimeImpl {
     this.watchTicking.delete(args.runId);
     this.watchPhase.delete(args.runId);
     this.watchBuffers.delete(args.runId);
+    this.releaseWatchDetectConv(args.runId);
     for (const key of this.retryCounts.keys()) {
       if (key.startsWith(`${args.runId}:`)) this.retryCounts.delete(key);
     }
@@ -2005,7 +2059,12 @@ export class FlowRuntimeImpl {
     // If a tick is in flight, stop the watcher's subprocess so it doesn't
     // post a stray reply after the user closed the watch.
     if (run.state.kind === 'watching' && this.watchTicking.has(run.id)) {
-      const convId = run.conversationIds[run.state.watch.participantId];
+      // A detect tick runs on the throwaway conversation, an answer tick on
+      // the participant's — stop the one that's actually in flight.
+      const convId =
+        this.watchPhase.get(run.id) === 'detect'
+          ? this.watchDetectConv.get(run.id)
+          : run.conversationIds[run.state.watch.participantId];
       if (convId) {
         try {
           this.runner.stop(convId);
@@ -2017,6 +2076,7 @@ export class FlowRuntimeImpl {
     this.watchTicking.delete(run.id);
     this.watchPhase.delete(run.id);
     this.watchBuffers.delete(run.id);
+    this.releaseWatchDetectConv(run.id);
     // The run is terminal now — drop its conversation routing entries so
     // observeEvent doesn't keep resolving them to an archived run. A resume
     // re-registers the watcher conversation via watchTick.
@@ -2125,6 +2185,34 @@ export class FlowRuntimeImpl {
     }
   }
 
+  /// Mint a fresh throwaway conversation for a detect tick, releasing any
+  /// previous one. Fresh per tick rather than reused: a reused detect
+  /// conversation would accumulate its own tick history and reproduce exactly
+  /// the unbounded growth this split exists to remove. The cost is a cold
+  /// start per tick, which is free at a 60s floor — nothing is waiting on it.
+  private mintWatchDetectConv(runId: UUID): UUID {
+    this.releaseWatchDetectConv(runId);
+    const convId = randomUUID();
+    this.watchDetectConv.set(runId, convId);
+    this.convIdToRun.set(convId, runId);
+    return convId;
+  }
+
+  /// Tear down the run's detect conversation: stop its subprocess and drop its
+  /// routing entry. Safe to call when there isn't one.
+  private releaseWatchDetectConv(runId: UUID): void {
+    const prev = this.watchDetectConv.get(runId);
+    if (!prev) return;
+    this.watchDetectConv.delete(runId);
+    this.convIdToRun.delete(prev);
+    this.dropPrewarmed(prev);
+    try {
+      this.runner.stop(prev);
+    } catch {
+      // best-effort — the tick is over either way
+    }
+  }
+
   /// Fire one DETECT tick: send the source's detect prompt to the watcher
   /// participant's conversation on the cheap watch model. The reply streams
   /// back through `observeEvent`, which calls `onWatchTickFinished` when it
@@ -2135,12 +2223,15 @@ export class FlowRuntimeImpl {
     if (!run || run.state.kind !== 'watching') return;
     const w = run.state.watch;
     const participant = run.flowSnapshot.participants.find((p) => p.id === w.participantId);
-    const convId = run.conversationIds[w.participantId];
-    if (!participant || !convId) {
-      // Can't tick without a participant conversation — back off a cycle.
+    // The participant conversation isn't what detect sends on any more, but it
+    // is still required: escalation hands off to the answer pass, which runs
+    // there. Without it a watch could detect forever and never reply, so back
+    // off rather than tick blind.
+    if (!participant || !run.conversationIds[w.participantId]) {
       w.lastTickAt = Date.now();
       return;
     }
+    const convId = this.mintWatchDetectConv(runId);
     const source = getWatchSource(w.sourceId);
     const prompt = source.buildDetectPrompt({
       binding: w.binding,
@@ -2151,7 +2242,6 @@ export class FlowRuntimeImpl {
     this.watchTicking.add(runId);
     this.watchPhase.set(runId, 'detect');
     this.watchBuffers.set(runId, '');
-    this.convIdToRun.set(convId, runId);
     // Detect runs on the cheap watch model (the frequent no-op case). Falls
     // back to the participant's full model when no cheap model was resolved.
     const detectModel = w.watchModel || effectiveParticipantModel(run, w.participantId);
@@ -2168,6 +2258,7 @@ export class FlowRuntimeImpl {
       this.watchTicking.delete(runId);
       this.watchPhase.delete(runId);
       this.watchBuffers.delete(runId);
+      this.releaseWatchDetectConv(runId);
       w.lastTickAt = Date.now(); // back off; the sweep retries next interval
       w.lastNote = `Watch tick could not start: ${sendResult.error}`;
       this.emitRunUpdate(run);
@@ -2179,6 +2270,9 @@ export class FlowRuntimeImpl {
   /// participant's FULL model, told to post a grounded reply. `detected` is
   /// the detect pass's note describing what to answer.
   private sendWatchAnswer(runId: UUID, detected: string): void {
+    // Detect is done and the answer pass runs on the participant's
+    // conversation, so the throwaway one has no further use.
+    this.releaseWatchDetectConv(runId);
     const run = this.runs.get(runId);
     if (!run || run.state.kind !== 'watching') return;
     const w = run.state.watch;
@@ -2261,6 +2355,7 @@ export class FlowRuntimeImpl {
     if (!run || run.state.kind !== 'watching') {
       this.watchTicking.delete(runId);
       this.watchPhase.delete(runId);
+      this.releaseWatchDetectConv(runId);
       return;
     }
     const report = parseWatchReport(text);
@@ -2334,6 +2429,7 @@ export class FlowRuntimeImpl {
   private finalizeWatchTick(runId: UUID, report: WatchTickReport | null): void {
     this.watchTicking.delete(runId);
     this.watchPhase.delete(runId);
+    this.releaseWatchDetectConv(runId);
     const run = this.runs.get(runId);
     if (!run || run.state.kind !== 'watching') return;
     const w = run.state.watch;
@@ -3348,6 +3444,51 @@ export class FlowRuntimeImpl {
     }
   }
 
+  /// Input names this step's participant produced ITSELF, in the very
+  /// conversation this step is about to resume — so the bytes are already
+  /// in the model's context and re-inlining them pays for the same text
+  /// twice. These get handed over as a path reference instead (see
+  /// `buildStepPrompt`), which keeps them recoverable if the conversation
+  /// was compacted while dropping them from the prompt.
+  ///
+  /// Deliberately strict. An input only qualifies when:
+  ///   - the backend isn't Ollama — there a participant gets a FRESH
+  ///     conversation per step (see `ollamaConvNeedsReset`), so nothing
+  ///     carries forward and every input is genuinely new to the model;
+  ///   - a SUCCESSFUL attempt on the producing step ran on the exact
+  ///     conversation id this step will use. Same id means the transcript
+  ///     literally contains the model's own `<output>` block. A re-minted
+  ///     conversation fails this test and the input inlines as usual;
+  ///   - the artifact isn't a diff. Diff bodies are re-derived from the
+  ///     worktree rather than taken from the model's text
+  ///     (`refreshDiffInputsFromWorktree`, and the `kind === 'diff'` branch
+  ///     when the artifact is committed), so what's in `run.artifacts` is
+  ///     usually NOT what this participant emitted. Telling it otherwise
+  ///     would point it at a stale copy in its own history.
+  private selfProducedInputs(run: FlowRun, step: FlowStep, backend: string): Set<string> {
+    const empty = new Set<string>();
+    const participantId = step.participantId;
+    if (!participantId || backend === 'ollama') return empty;
+    const convId = run.conversationIds[participantId];
+    if (!convId) return empty;
+
+    // Steps whose output this participant emitted on THIS conversation.
+    const ownStepIds = new Set(
+      run.attempts
+        .filter((a) => a.outcome === 'success' && a.conversationId === convId)
+        .map((a) => a.stepId),
+    );
+    if (ownStepIds.size === 0) return empty;
+
+    const names = new Set<string>();
+    for (const [name, art] of Object.entries(run.artifacts)) {
+      if (art.kind === 'diff') continue;
+      if (art.producedByStepId === step.id) continue; // this step's own prior attempt
+      if (ownStepIds.has(art.producedByStepId)) names.add(name);
+    }
+    return names;
+  }
+
   private buildStepPrompt(run: FlowRun, step: FlowStep): string {
     const stepModel = resolveRunStepModel(run, step);
     const systemPrompt = resolveSystemPrompt({
@@ -3363,10 +3504,20 @@ export class FlowRuntimeImpl {
     // user_prompt is always inline — it's the user's words and tends
     // to be short.
     type InlineInput = { kind: 'inline'; name: string; body: string };
-    type AttachedInput = { kind: 'attached'; name: string; path: string; size: number };
+    type AttachedInput = {
+      kind: 'attached';
+      name: string;
+      path: string;
+      size: number;
+      /// This participant wrote this artifact itself, earlier in the very
+      /// conversation it is resuming — so it is referenced rather than
+      /// re-sent at any size. See `selfProducedInputs`.
+      recalled: boolean;
+    };
     type InputPart = InlineInput | AttachedInput;
 
     const canAttach = stepModel.backend !== 'ollama';
+    const selfProduced = this.selfProducedInputs(run, step, stepModel.backend);
 
     const rawInputs: Array<{ name: string; body: string }> = [];
     for (const ref of step.inputs) {
@@ -3405,10 +3556,14 @@ export class FlowRuntimeImpl {
 
     const inputParts: InputPart[] = rawInputs.map((p) => {
       const isLarge = p.body.length > FlowRuntimeImpl.INLINE_THRESHOLD_BYTES;
-      if (canAttach && isLarge && p.name !== 'user_prompt') {
+      // Self-produced inputs are referenced at ANY size, not just past the
+      // inline threshold: the model already has the full text in the
+      // transcript it's resuming, so inlining a second copy buys nothing.
+      const recalled = selfProduced.has(p.name);
+      if (canAttach && (isLarge || recalled) && p.name !== 'user_prompt') {
         try {
           const att = writeAttachment(run.id, p.name, p.body);
-          return { kind: 'attached', name: p.name, path: att.path, size: att.size };
+          return { kind: 'attached', name: p.name, path: att.path, size: att.size, recalled };
         } catch (err) {
           // Disk write failed — fall back to inlining, the budget
           // truncation below will keep us from sending too much.
@@ -3468,6 +3623,16 @@ export class FlowRuntimeImpl {
       if (p.kind === 'inline') {
         return `<input name="${p.name}">\n${p.body}\n</input>`;
       }
+      if (p.recalled) {
+        return (
+          `<input name="${p.name}" attached="${p.path}" size="${p.size}" recalled="true">\n` +
+          `You produced this artifact yourself earlier in THIS conversation, so ` +
+          `it is not repeated here. Scroll back to your own output for it. If you ` +
+          `cannot find it above, read the path "${p.path}" with your file-reading ` +
+          `tool (Read / read_file / similar) — that file holds the exact bytes.\n` +
+          `</input>`
+        );
+      }
       return (
         `<input name="${p.name}" attached="${p.path}" size="${p.size}">\n` +
         `This input is too large to inline. Use your file-reading tool ` +
@@ -3478,12 +3643,22 @@ export class FlowRuntimeImpl {
     });
     const inputs = renderedInputs.length > 0 ? renderedInputs.join('\n\n') : '(no inputs provided)';
 
-    const attachedCount = inputParts.filter((p) => p.kind === 'attached').length;
+    const attachedCount = inputParts.filter((p) => p.kind === 'attached' && !p.recalled).length;
+    const recalledNames = inputParts
+      .filter((p) => p.kind === 'attached' && p.recalled)
+      .map((p) => p.name);
     const preambleNotes: string[] = [];
     if (attachedCount > 0) {
       preambleNotes.push(
         `${attachedCount} input(s) were attached as files rather than inlined. ` +
           'Read them with your file-reading tool — do not assume they are empty.',
+      );
+    }
+    if (recalledNames.length > 0) {
+      preambleNotes.push(
+        `${recalledNames.join(', ')} ${recalledNames.length === 1 ? 'is' : 'are'} your own ` +
+          'earlier output in this conversation and so appear as references rather than ' +
+          'repeated text — they are NOT empty, and each carries the path to re-read if needed.',
       );
     }
     if (truncationNotes.length > 0) {

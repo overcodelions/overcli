@@ -26,6 +26,7 @@ import { dirName, fileName, tabLabels } from '../tabLabels';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
+import { parseChangedLines } from '../changedLines';
 import { Diff } from './DiffView';
 import { isEverydayProject, isProseDocumentPath } from '@shared/everydayProjects';
 import { isPathAtOrUnder, isPathUnder } from '@shared/pathScope';
@@ -177,6 +178,10 @@ export const FileEditorPane = memo(function FileEditorPane({
   // Bumped to force a re-read of the file + diff after a revert, so the
   // view reflects the restored-to-HEAD content.
   const [refreshToken, setRefreshToken] = useState(0);
+  // Bumped when only the DIFF needs re-reading — after a save, so the
+  // change gutter catches up without re-reading the file underneath the
+  // user's caret and scroll position.
+  const [diffToken, setDiffToken] = useState(0);
   /// The path the load effect last ran for, so it can tell "the user opened a
   /// different file" from "this file changed underneath us".
   const lastLoadedPath = useRef<string | null>(null);
@@ -430,23 +435,28 @@ export const FileEditorPane = memo(function FileEditorPane({
       ),
     [path, rootPath, workspaceMembers, conv?.baseBranch, flowSingleBase, flowSingleBaseline],
   );
+  // The edit views want the same diff the Diff tab shows, to paint their
+  // change gutter — but only as decoration. `quiet` keeps that fetch out of
+  // the loading spinner and the error panel: a folder that isn't a git repo
+  // must not replace the file you asked for with a git error.
+  const quiet = mode !== 'diff' && !missingFile;
   useEffect(() => {
     // A missing file has no readable content, so we fetch its diff whatever
     // the mode says — the deletion is the only thing left to show.
-    if (!path || !diffTarget || (mode !== 'diff' && !missingFile)) return;
+    if (!path || !diffTarget) return;
     if (!fileInfo || fileInfo.requestedPath !== path) return;
     // A file that's gone from disk still has a diff — the deletion itself.
     // Only bail on failures that aren't "it isn't there".
     const deleted = !fileInfo.ok && !!fileInfo.missing;
     if (!fileInfo.ok && !deleted) {
       setDiffText('');
-      setError(fileInfo.error);
+      if (!quiet) setError(fileInfo.error);
       return;
     }
     if (fileInfo.ok) {
       if (fileInfo.tooLarge || fileInfo.unsupportedBinary || fileInfo.largeText) {
         setDiffText('');
-        setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
+        if (!quiet) setError(fileInfo.error ?? 'Large files are not diffed inside Overcli.');
         return;
       }
       if (unsupportedBinary) {
@@ -454,8 +464,10 @@ export const FileEditorPane = memo(function FileEditorPane({
         return;
       }
     }
-    setLoading(true);
-    setError(null);
+    if (!quiet) {
+      setLoading(true);
+      setError(null);
+    }
     setDiffUntracked(false);
     (async () => {
       // Agents commit as they go, so `HEAD` already includes their
@@ -520,9 +532,20 @@ export const FileEditorPane = memo(function FileEditorPane({
       }
       setDiffText(text);
     })()
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
-  }, [path, mode, diffTarget, unsupportedBinary, fileInfo, missingFile, refreshToken]);
+      .catch((e: unknown) => {
+        // In the edit views a failed diff costs the gutter its marks and
+        // nothing else — the file is still perfectly readable.
+        if (quiet) setDiffText('');
+        else setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!quiet) setLoading(false);
+      });
+  }, [path, mode, quiet, diffTarget, unsupportedBinary, fileInfo, missingFile, refreshToken, diffToken]);
+
+  /// Lines the run touched, in the open document's numbering. The gutter
+  /// marks are advisory — a stale or empty diff simply means no bars.
+  const changedLines = useMemo(() => parseChangedLines(diffText), [diffText]);
 
   const save = useCallback(async () => {
     if (!path || !dirty) return;
@@ -546,6 +569,9 @@ export const FileEditorPane = memo(function FileEditorPane({
     if (res.ok) {
       clearFileDirty(path);
       dropBuffer(path);
+      // What's on disk moved, so the marks the gutter is showing are now
+      // one edit out of date.
+      setDiffToken((t) => t + 1);
     } else setError(res.error);
   }, [path, dirty, content, clearFileDirty, rootPath, fileInfo]);
 
@@ -1028,6 +1054,7 @@ export const FileEditorPane = memo(function FileEditorPane({
                   onChange={onEdit}
                   highlightRange={null}
                   language={detectLanguage(path)}
+                  changedLines={changedLines}
                   onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
                   onSelectionChange={setSelection}
                 />
@@ -1065,6 +1092,7 @@ export const FileEditorPane = memo(function FileEditorPane({
               onChange={onEdit}
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
+              changedLines={changedLines}
               onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
               onSelectionChange={setSelection}
             />

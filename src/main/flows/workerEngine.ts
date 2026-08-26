@@ -158,6 +158,12 @@ export interface WorkerParker {
     priorReply?: string;
     priorTurns?: Array<{ prompt: string; reply: string }>;
     attachments?: Attachment[];
+    /// The worker's MCP allowlist, when it has one.
+    mcpAllowlist?: string[];
+    /// Desk-thread plumbing: run the producer inside this conversation and
+    /// resume this session, instead of a throwaway one-shot.
+    conversationId?: UUID;
+    resumeSessionId?: string;
   }): Promise<
     | {
         ok: true;
@@ -165,6 +171,9 @@ export interface WorkerParker {
         count: number;
         queued: number;
         excluded: number;
+        /// The session the turn actually ran under. Differs from
+        /// `resumeSessionId` when the resume was refused.
+        sessionId?: string;
       }
     | { ok: false; error: string }
   >;
@@ -409,6 +418,9 @@ export class WorkerEngine {
     const w = this.workers.get(id);
     if (!w || !w.enabled) return null;
     const timing = this.timing(w);
+    // On demand: there is no next shift, and saying so is the point. The
+    // renderer already reads null as "nothing scheduled" for a paused worker.
+    if (!timing) return null;
     return nextOccurrenceAfter(timing.trigger, scheduleAnchor(timing));
   }
 
@@ -606,6 +618,10 @@ export class WorkerEngine {
       // it must not tell the worker it has never looked at the project.
       lastPlannedAt: existing?.lastPlannedAt,
       lastCompactedAt: existing?.lastCompactedAt,
+      // The desk thread is a conversation in progress, not a contract term.
+      // Editing the budget mid-morning must not make the worker forget what
+      // you were just talking about.
+      deskSession: existing?.deskSession,
       // An explicit budget edit wins over a parked distribution: otherwise
       // settleDistributions puts the OLD number back on the 1st and the
       // user's change disappears with no event.
@@ -661,7 +677,8 @@ export class WorkerEngine {
     if (w.enabled === enabled) return { ok: true };
     w.enabled = enabled;
     // Re-enabling restarts the clock — a worker paused for a week is not owed
-    // a shift the moment it's unpaused.
+    // a shift the moment it's unpaused. Harmless for an on-demand worker,
+    // which has no clock to restart.
     if (enabled) {
       w.anchorAt = this.now();
       w.lastShiftAt = undefined;
@@ -1014,7 +1031,9 @@ export class WorkerEngine {
   }
 
   /// Work one shift right now, out of band — the "will this do what I think"
-  /// button. Advances the shift number but not the cadence.
+  /// button. Advances the shift number but not the cadence. For an on-demand
+  /// worker this is not a preview at all: it is the only way its shifts ever
+  /// run, which is the point of hiring one.
   async workShiftNow(id: UUID): Promise<{ ok: true } | { ok: false; error: string }> {
     const w = this.workers.get(id);
     if (!w) return { ok: false, error: 'Worker not found.' };
@@ -1066,7 +1085,12 @@ export class WorkerEngine {
 
   // ---- FIRING -----------------------------------------------------------
 
-  private timing(w: Worker): ScheduleTiming {
+  /// The worker as the shared scheduler sees it, or null when it has no
+  /// clock — an on-demand worker is not a schedule with an unreachable
+  /// trigger, it is the absence of one, and every caller has to say what it
+  /// does with that rather than be handed a fabricated cadence.
+  private timing(w: Worker): ScheduleTiming | null {
+    if (w.cadence === null) return null;
     return {
       enabled: w.enabled,
       trigger: w.cadence,
@@ -1090,7 +1114,9 @@ export class WorkerEngine {
     const now = this.now();
     let soonest = Number.POSITIVE_INFINITY;
     for (const w of this.workers.values()) {
-      const decision = evaluateSchedule(this.timing(w), now, {
+      const timing = this.timing(w);
+      if (!timing) continue; // on demand — nothing to wake up for
+      const decision = evaluateSchedule(timing, now, {
         busy: this.firing.has(w.id),
       });
       if (decision.action === 'fire') {
@@ -1130,8 +1156,10 @@ export class WorkerEngine {
         if (!w) continue;
         if (this.firing.has(id)) continue;
         this.compactIfDue(w);
+        const timing = this.timing(w);
+        if (!timing) continue; // on demand — the clock never brings it round
         const now = this.now();
-        const decision = evaluateSchedule(this.timing(w), now, {
+        const decision = evaluateSchedule(timing, now, {
           busy: false,
           awakeSince,
         });
@@ -1375,6 +1403,7 @@ export class WorkerEngine {
       backend: w.heartbeatBackend,
       maxItems: w.caps.maxItemsPerShift,
       excludeTitles: rejected,
+      mcpAllowlist: w.mcpServers,
       // The planner may route a candidate to any flow ON THE CONTRACT, but a
       // hallucinated flow id falls back to the primary — under autoApprove a
       // free choice would be an unattended launch into unvetted machinery.
@@ -1399,24 +1428,41 @@ export class WorkerEngine {
     const priorTurns = this.priorErrandTurns(w.id, at);
     const priorDayHandoff = this.priorDayHandoff(w.id, at);
 
+    // The desk thread this message belongs to, when it is desk chat from the
+    // manager. A colleague's message is deliberately excluded: it is a
+    // different speaker, and folding it into the manager's conversation would
+    // let one worker read the other half of that conversation.
+    const desk = intent === 'chat' && !from ? this.deskThread(w, at) : null;
+
     this.deps.emit({
       type: 'workerShiftProgress',
       workerId: w.id,
       active: true,
       task: 'errand',
     });
-    let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
-    try {
-      res = await this.deps.parker.parkProposal({
+    /// One desk/errand turn. `resumeSessionId` set means the worker is
+    /// already sitting in this conversation and holds everything a cold turn
+    /// would have to re-state — so the turn is the message and nothing else.
+    const fire = (resumeSessionId?: string) => {
+      const warm = !!resumeSessionId;
+      return this.deps.parker.parkProposal({
         origin: workerOrigin(w, 'errand', errand, from, intent),
         projectPath: w.projectPath,
+        // The pace directives lead every turn, warm or cold: they are two
+        // lines, and a resumed session drifting back to essays because we
+        // only said it once in the morning is the failure they exist to stop.
         prompt: paced(
           w,
-          intent === 'chat'
-            ? this.buildChatPrompt(w, errand, priorDayHandoff, from)
-            : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
+          warm
+            ? errand
+            : intent === 'chat'
+              ? this.buildChatPrompt(w, errand, priorDayHandoff, from)
+              : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
         ),
-        ...(priorTurns.length > 0 ? { priorTurns } : {}),
+        // Replay is the fallback for a thread we cannot resume. A warm turn
+        // remembers the exchanges for itself, and re-sending them would read
+        // as the manager saying it all a second time.
+        ...(!warm && priorTurns.length > 0 ? { priorTurns } : {}),
         attachments,
         flowId: w.flowIds[0],
         runIn,
@@ -1427,8 +1473,23 @@ export class WorkerEngine {
         backend: w.heartbeatBackend,
         maxItems: intent === 'chat' ? 0 : w.caps.maxItemsPerShift,
         excludeTitles: rejected,
+        mcpAllowlist: w.mcpServers,
+        ...(desk ? { conversationId: desk.conversationId } : {}),
+        ...(resumeSessionId ? { resumeSessionId } : {}),
         allowedFlowIds: w.flowIds,
       });
+    };
+    let res: Awaited<ReturnType<WorkerParker['parkProposal']>>;
+    try {
+      res = await fire(desk?.sessionId);
+      // The CLI refused the resume (history wiped, session expired) and
+      // answered cold — from a prompt that was only the bare message, because
+      // we expected it to remember the rest. Redo the turn properly rather
+      // than hand back an answer produced with no idea who it is.
+      if (desk?.sessionId && res.ok && res.sessionId && res.sessionId !== desk.sessionId) {
+        res = await fire(undefined);
+      }
+      if (desk) this.rememberDeskSession(w, desk, res);
     } finally {
       this.deps.emit({
         type: 'workerShiftProgress',
@@ -2279,6 +2340,36 @@ export class WorkerEngine {
   /// Read off the batches rather than a separate transcript: an errand batch
   /// already stores the instruction that made it and the reply it produced,
   /// which is exactly one turn.
+  /// The desk conversation to speak into, minted fresh when the held one
+  /// belongs to an earlier day. A thread with no `sessionId` yet is cold —
+  /// the first message of the day always establishes the worker in full.
+  private deskThread(w: Worker, at: number): { conversationId: UUID; sessionId?: string } {
+    const day = localDayStart(at);
+    const held = w.deskSession;
+    if (held && held.day === day && held.conversationId) {
+      return { conversationId: held.conversationId as UUID, sessionId: held.sessionId };
+    }
+    return { conversationId: randomUUID() as UUID };
+  }
+
+  /// Persist the session a desk turn ran under, so the next message resumes
+  /// it. Written against the LIVE worker record rather than the snapshot this
+  /// turn started with — a desk turn can take minutes, and a cap edit made
+  /// while it ran must not be rolled back by saving a stale copy.
+  private rememberDeskSession(
+    w: Worker,
+    desk: { conversationId: UUID; sessionId?: string },
+    res: Awaited<ReturnType<WorkerParker['parkProposal']>>,
+  ): void {
+    if (!res.ok || !res.sessionId) return;
+    const fresh = this.workers.get(w.id) ?? w;
+    const held = fresh.deskSession;
+    const day = localDayStart(this.now());
+    if (held?.day === day && held.sessionId === res.sessionId) return;
+    fresh.deskSession = { day, conversationId: desk.conversationId, sessionId: res.sessionId };
+    this.store.save(fresh);
+  }
+
   private priorErrandTurns(workerId: string, at: number): Array<{ prompt: string; reply: string }> {
     const day = localDayStart(at);
     const tomorrow = nextLocalDayStart(day);

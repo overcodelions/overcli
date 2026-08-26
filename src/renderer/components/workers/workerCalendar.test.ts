@@ -89,6 +89,13 @@ describe('projectShifts', () => {
     expect(projectShifts(makeWorker({ enabled: false }), MONDAY_9AM, end)).toEqual([]);
   });
 
+  it('draws nothing for an on-demand worker', () => {
+    // The calendar answers "what happens while I'm not watching". For a desk
+    // the honest answer is nothing — it works only when asked.
+    const { end } = calendarWindow(MONDAY_9AM, 7);
+    expect(projectShifts(makeWorker({ cadence: null }), MONDAY_9AM, end)).toEqual([]);
+  });
+
   it('keeps an interval cadence inside its window', () => {
     const worker = makeWorker({
       cadence: {

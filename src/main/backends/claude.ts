@@ -55,10 +55,11 @@ export const claudeBackend: BackendSpec = {
     // `auto` mode keeps the prompt tool wired: Claude classifies each
     // tool call and only routes to us when it wants confirmation; safe
     // calls just don't invoke the prompt tool.
+    const mcpConfigs: string[] = [];
     if (args.permissionMode !== 'bypassPermissions') {
       const mcpConfigPath = ctx.mcpConfigPathFor(args.conversationId);
       if (mcpConfigPath) {
-        a.push('--mcp-config', mcpConfigPath);
+        mcpConfigs.push(mcpConfigPath);
         a.push('--permission-prompt-tool', 'mcp__overcli__approve');
       }
     }
@@ -68,7 +69,15 @@ export const claudeBackend: BackendSpec = {
     // this loads zero servers; in `auto` mode the broker config above is
     // still passed, so strict keeps exactly that one and drops the rest —
     // which is what makes the flag safe to set unconditionally here.
-    if (args.turbo || args.skipGlobalMcp) {
+    // An allowlist is the same trade made finer: strict drops the user's
+    // global config, and this hands back exactly the servers this turn was
+    // told it may use. It joins the broker config in ONE `--mcp-config` —
+    // the flag is variadic (`<configs...>`), so a second occurrence would be
+    // read as replacing the first, which in `auto` mode would cost the turn
+    // its permission-prompt tool for the rest of its life.
+    if (args.mcpAllowlistConfig) mcpConfigs.push(args.mcpAllowlistConfig);
+    if (mcpConfigs.length > 0) a.push('--mcp-config', ...mcpConfigs);
+    if (args.turbo || args.skipGlobalMcp || args.mcpAllowlistConfig) {
       a.push('--strict-mcp-config');
     }
     // Unconditional, not turbo-gated: consolidating tool calls costs nothing

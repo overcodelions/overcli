@@ -79,9 +79,10 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
           setDraft(draftKey, '');
           for (const attachment of attachments) removeAttachment(draftKey, attachment.id);
           void runErrand(worker.id, prompt, intent, attachments);
-          // Create work is an explicit one-message escalation. Follow-ups go
-          // back to normal conversation unless the user chooses it again.
-          if (intent === 'work') onIntentChange?.('chat');
+          // The toggle is sticky: it stays where you put it. Snapping back to
+          // Ask after every send meant a run of work requests had to be
+          // re-armed each time, and the switch flicking under your own hand
+          // read as the app undoing your choice.
         }}
       />
       {error && (
