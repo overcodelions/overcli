@@ -29,6 +29,10 @@ import { randomUUID } from 'node:crypto';
 import { log } from '../diagnostics';
 
 import { isSafeIdSegment } from '../../shared/flows/safeId';
+import {
+  CONCISE_RESPONSE_DIRECTIVE,
+  EFFICIENT_TOOL_DIRECTIVE,
+} from '../../shared/responseDirectives';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration } from '../../shared/flows/orchestration';
 import {
@@ -56,6 +60,7 @@ import {
   validateWorker,
   workerAutoApproveCap,
   workerOrigin,
+  workerPace,
   WORKER_NOTE_MAX,
   type Worker,
   type WorkerErrandResult,
@@ -1405,10 +1410,12 @@ export class WorkerEngine {
       res = await this.deps.parker.parkProposal({
         origin: workerOrigin(w, 'errand', errand, from, intent),
         projectPath: w.projectPath,
-        prompt:
+        prompt: paced(
+          w,
           intent === 'chat'
             ? this.buildChatPrompt(w, errand, priorDayHandoff, from)
             : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
+        ),
         ...(priorTurns.length > 0 ? { priorTurns } : {}),
         attachments,
         flowId: w.flowIds[0],
@@ -2440,6 +2447,19 @@ function describeShiftNotification(count: number, queued: number, excluded: numb
   if (queued === 0) return `${count} proposal${count === 1 ? '' : 's'} waiting for your review.`;
   if (held === 0) return `${queued} run${queued === 1 ? '' : 's'} launched under its trust cap.`;
   return `${queued} launched, ${held} waiting for your review.`;
+}
+
+/// Put a swift worker's errand behind the same two directives the chat
+/// header's Swift mode sends. They lead rather than trail because the prompt
+/// they precede is long — job description, journal, files — and a model that
+/// truncates its attention to the top must still see them.
+///
+/// Only the OUTPUT and the tool batching change. Nothing here tells a worker
+/// to look at less, skip a check, or answer from memory: an errand answered
+/// fast and wrong is worse than one answered slowly.
+function paced(w: Worker, prompt: string): string {
+  if (workerPace(w) !== 'swift') return prompt;
+  return [CONCISE_RESPONSE_DIRECTIVE, EFFICIENT_TOOL_DIRECTIVE, prompt].join('\n\n');
 }
 
 function errandLabel(errand: string): string {

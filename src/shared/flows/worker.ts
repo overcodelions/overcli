@@ -13,6 +13,26 @@ import { SCHEDULE_AUTO_APPROVE_MAX, parseTimeOfDay } from './schedule';
 export type WorkerTrustLevel = 'probation' | 'trusted' | 'autonomous';
 export type WorkerMessageIntent = 'chat' | 'work';
 
+/// How fast a worker answers something you are waiting for.
+///
+/// `swift` is the same bargain the chat header's Swift mode strikes — the
+/// visible answer is compact and independent tool work is batched, while the
+/// reasoning behind it is untouched. It costs nothing in judgement and buys
+/// back the minutes an errand spent narrating itself. `full` is the older
+/// behaviour, for a worker whose answers you read as documents.
+///
+/// Applies to ERRANDS only, in both intents: an errand has somebody sitting in
+/// front of it. A shift runs unattended at 8am, where a shorter answer buys
+/// nobody anything, so shifts are always full.
+export type WorkerPace = 'swift' | 'full';
+
+/// Absent means swift — including for every worker hired before the field
+/// existed. A standing worker answering a question is a conversation, and the
+/// conversational default in the rest of the app is the fast one.
+export function workerPace(w: Pick<Worker, 'pace'>): WorkerPace {
+  return w.pace === 'full' ? 'full' : 'swift';
+}
+
 export interface WorkerCaps {
   maxItemsPerShift: number;
   runIn: 'worktree' | 'cwd';
@@ -84,6 +104,9 @@ export interface Worker {
     budgetUSDPerMonth: number;
   };
   heartbeatModel: string;
+  /// How fast this worker answers an errand. Absent means swift — see
+  /// `workerPace`.
+  pace?: WorkerPace;
   /// The backend `heartbeatModel` was chosen for. Optional because workers
   /// hired before this field existed only stored the bare id — those fall
   /// back to the user's default backend, with the model translated to its

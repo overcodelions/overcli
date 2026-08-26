@@ -21,6 +21,7 @@ import type {
   WorkerErrandResult,
   WorkerJournalEntry,
   WorkerMessageIntent,
+  WorkerPace,
   WorkerScorecard,
   WorkerTrustLevel,
 } from '@shared/flows/worker';
@@ -40,6 +41,8 @@ export interface WorkerDraft {
   budgetUSDPerMonth: number;
   heartbeatModel: string;
   heartbeatBackend?: Backend;
+  /// How fast errands are answered. Absent means swift — see `workerPace`.
+  pace?: WorkerPace;
   flowIds: string[];
   enabled: boolean;
   /// Narrowed handoff targets. Absent/empty means every colleague on the
@@ -390,6 +393,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     budgetUSDPerMonth: w.budgetUSDPerMonth,
     heartbeatModel: w.heartbeatModel,
     heartbeatBackend: w.heartbeatBackend,
+    pace: w.pace,
     flowIds: [...w.flowIds],
     enabled: w.enabled,
   };
