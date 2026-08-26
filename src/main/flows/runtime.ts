@@ -1052,13 +1052,34 @@ export class FlowRuntimeImpl {
   /// active and the renderer is watching them. Also frees any per-step
   /// stream buffers that were tied to evicted runs and removes the
   /// run's on-disk checkpoint so the persistent store stays bounded too.
+  ///
+  /// A finished run whose worktree still has UNCOMMITTED CHANGES is exempt,
+  /// gated on the same `runDirtyWorktrees` predicate `deleteRun` refuses on.
+  /// Do not "simplify" that conjunct away. Eviction never runs
+  /// `git worktree remove` — `removeRunWorktrees` is reachable only from the
+  /// explicit `deleteRun` path — so it is tempting to read this as harmless
+  /// bookkeeping. It is not. Evicting drops the LAST HANDLE that can reach
+  /// the tree: the in-memory run goes, `deleteRunFromDisk` takes the
+  /// checkpoint so the next boot can't rehydrate it, and `checkoutRunLocally`
+  /// resolves through `this.runs` and so can no longer find it. The files
+  /// survive on disk with nothing in the product able to reach them — work
+  /// the user never reviewed, orphaned silently, at launch time, with no
+  /// prompt. The run stays retained and ages out normally once its work is
+  /// committed or discarded.
+  ///
+  /// Accepted trade: if every retained run is dirty, `evictable` is empty and
+  /// `this.runs` grows past the cap with nothing surfaced to the user.
+  /// Unbounded memory beats silent loss of work nobody has looked at.
   private pruneOldRuns(): void {
     const all = Array.from(this.runs.values());
     if (all.length < FlowRuntimeImpl.MAX_RETAINED_RUNS) return;
     const evictable = all
       .filter(
         (r) =>
-          r.state.kind === 'done' || r.state.kind === 'aborted' || r.state.kind === 'archived',
+          (r.state.kind === 'done' ||
+            r.state.kind === 'aborted' ||
+            r.state.kind === 'archived') &&
+          this.runDirtyWorktrees(r).length === 0,
       )
       .sort((a, b) => a.createdAt - b.createdAt);
     const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
