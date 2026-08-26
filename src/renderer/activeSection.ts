@@ -1,4 +1,6 @@
-// Who gets a slot in the top-of-sidebar "Active" section.
+// Who gets a slot in the top-of-sidebar section the UI calls "Working on".
+// (This module kept its original name; "Active" below means that same section
+// — see Sidebar.tsx's `label="Working on"`.)
 //
 // Chats, agents and flow runs all compete for the same slots. An item earns
 // one while it's live or waiting on the user (`active`), and independently
