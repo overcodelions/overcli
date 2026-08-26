@@ -42,6 +42,7 @@ import type { Backend } from '../types';
 import {
   WORKER_MAX_ITEMS_PER_SHIFT,
   WORKER_MIN_JOB_DESCRIPTION,
+  ON_DEMAND,
   coerceCadence,
   type Worker,
   type WorkerCaps,
@@ -63,13 +64,19 @@ export interface PortableWorker {
   /// the job description, which is the operating instructions.
   description?: string;
   jobDescription: string;
-  cadence: ScheduleTrigger;
+  cadence: ScheduleTrigger | null;
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
   heartbeatBackend?: Backend;
   flowIds: string[];
   autoRender?: string;
+  /// Which MCP servers the job needs, by name. Portable because it is about
+  /// the WORK — a worker that lives in Jira needs Jira wherever it is hired —
+  /// even though whether those servers exist is about the install. Names the
+  /// receiver hasn't configured are simply not loaded (see
+  /// `buildClaudeMcpConfigArg`), so an import never fails on this.
+  mcpServers?: string[];
 }
 
 /// A worker plus the flows it needs. `flows` may be empty when the sender's
@@ -102,7 +109,11 @@ function timeScalar(time: string): Scalar {
   return s;
 }
 
-function serializeCadence(c: ScheduleTrigger): Record<string, unknown> {
+function serializeCadence(c: ScheduleTrigger | null): Record<string, unknown> | string {
+  // A scalar, not `~`: YAML's null round-trips through too many hands to
+  // carry a meaning this load-bearing, and a reader who opens the file should
+  // see the word rather than an empty value they'd read as "not set".
+  if (c === null) return ON_DEMAND;
   if (c.kind === 'interval') {
     const out: Record<string, unknown> = { kind: 'interval', every_minutes: c.everyMinutes };
     if (c.days && c.days.length > 0) out.days = c.days;
@@ -131,7 +142,7 @@ export function serializeWorker(args: {
     | 'heartbeatModel'
     | 'heartbeatBackend'
     | 'flowIds'
-  > & { autoRender?: string };
+  > & { autoRender?: string; mcpServers?: string[] };
   flows: Flow[];
   description?: string;
 }): string {
@@ -158,6 +169,9 @@ export function serializeWorker(args: {
   // pre-field worker gets.
   if (worker.heartbeatBackend) doc.heartbeat_backend = worker.heartbeatBackend;
   if (worker.autoRender) doc.auto_render = worker.autoRender;
+  // An empty list is meaningful — "this job needs no MCP servers" — so it is
+  // written out, and only an ABSENT allowlist (inherit everything) is omitted.
+  if (worker.mcpServers) doc.mcp_servers = [...worker.mcpServers];
   doc.flows = [...worker.flowIds];
 
   const byId = new Map(args.flows.map((f) => [f.id, f]));
@@ -215,7 +229,8 @@ function coerceCaps(raw: unknown): WorkerCaps {
 /// translated object to the same coercion the hire drafter's output goes
 /// through, so a hand-written cadence can't be stricter or looser than one the
 /// model produced.
-function coerceSharedCadence(raw: unknown): ScheduleTrigger {
+function coerceSharedCadence(raw: unknown): ScheduleTrigger | null {
+  if (raw === null || raw === ON_DEMAND) return null;
   if (!raw || typeof raw !== 'object') return coerceCadence(undefined);
   const c = raw as Record<string, unknown>;
   return coerceCadence({
@@ -311,6 +326,7 @@ export function parseWorkerYaml(yaml: string): WorkerYamlResult {
     // an author who embedded a definition and forgot the list meant to ship it.
     flowIds: flowIds.length > 0 ? flowIds : flows.map((f) => f.id),
     autoRender: asString(y.auto_render ?? y.autoRender).trim() || undefined,
+    mcpServers: coerceMcpServers(y.mcp_servers ?? y.mcpServers),
   };
 
   const supplied = new Set(flows.map((f) => f.id));
@@ -319,4 +335,12 @@ export function parseWorkerYaml(yaml: string): WorkerYamlResult {
     bundle: { worker, flows },
     missingFlowIds: worker.flowIds.filter((id) => !supplied.has(id)),
   };
+}
+
+/// An MCP allowlist off a share file. Undefined for an absent key (inherit
+/// everything, the pre-field behavior) and `[]` for an explicit empty list —
+/// the difference is the whole point of the field.
+function coerceMcpServers(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  return raw.filter((n): n is string => typeof n === 'string' && n.trim() !== '').map((n) => n.trim());
 }

@@ -315,6 +315,73 @@ describe('WorkerEngine flow supervision', () => {
   });
 });
 
+describe('WorkerEngine on-demand workers', () => {
+  it('never fires on the clock, and reports no next shift', async () => {
+    const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+    h.engine.start();
+    // Well past the 09:00 a scheduled Scout would have worked, and past the
+    // next day's too — a desk has no morning.
+    await h.advanceTo(local(2026, 3, 3, 12, 0));
+    expect(h.parked).toEqual([]);
+    expect(h.engine.nextShiftAt('worker-1')).toBeNull();
+    // And nothing was journalled as missed: an occurrence that does not exist
+    // cannot have been slept through.
+    expect(h.journal.filter((e) => e.note?.startsWith('Missed'))).toEqual([]);
+  });
+
+  it('still answers an errand, which pausing would have refused', async () => {
+    const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+    h.engine.start();
+    const res = await h.engine.runErrand('worker-1', 'Break the search epic down with me.', 'chat');
+    expect(res.ok).toBe(true);
+    expect(parkedWorkerIds(h.parked)).toEqual(['worker-1']);
+  });
+
+  it('works a shift on demand when asked', async () => {
+    const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+    h.engine.start();
+    const res = await h.engine.workShiftNow('worker-1');
+    expect(res.ok).toBe(true);
+    expect(h.parked[0].title).toBe('[Shift 1] Scout');
+  });
+
+  it('is funded, where a paused worker is not', async () => {
+    const paused = makeHarness({ seed: [seedWorker({ enabled: false })], pool: 20 });
+    paused.engine.start();
+    const refused = await paused.engine.runErrand('worker-1', 'Help me plan.', 'chat');
+    expect(refused).toEqual({ ok: false, error: 'Paused — it holds no funds and works no shifts.' });
+
+    const desk = makeHarness({ seed: [seedWorker({ cadence: null })], pool: 20 });
+    desk.engine.start();
+    const answered = await desk.engine.runErrand('worker-1', 'Help me plan.', 'chat');
+    expect(answered.ok).toBe(true);
+  });
+
+  it('leaves the pool for the workers below it instead of reserving its cap', () => {
+    // Scout is FIRST in the funding order with a $20 cap and no clock; Nadia
+    // is second with a $20 cap and a daily shift. The pot is $20 — enough for
+    // exactly one of them to be fully funded. Before on-demand existed, the
+    // only worker that released its reserve was a paused one, whose desk was
+    // shut; here the desk stays open and the reserve is still released.
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', order: 0, cadence: null, budgetUSDPerMonth: 20 }),
+        seedWorker({ id: 'worker-2', name: 'Nadia', order: 1, budgetUSDPerMonth: 20 }),
+      ],
+      pool: 20,
+    });
+    h.engine.start();
+    const { allocation } = h.engine.treasury();
+    const scout = allocation.byWorker.find((f) => f.workerId === 'worker-1')!;
+    const nadia = allocation.byWorker.find((f) => f.workerId === 'worker-2')!;
+    expect(scout.availableUSD).toBe(20);
+    expect(scout.blocked).toBe('none');
+    // The whole pot is still reachable by the scheduled worker below it.
+    expect(nadia.availableUSD).toBe(20);
+    expect(nadia.blocked).toBe('none');
+  });
+});
+
 function seedWorker(over: Partial<Worker> = {}): Worker {
   return {
     id: 'worker-1',
@@ -811,6 +878,86 @@ describe('WorkerEngine errands', () => {
     full.engine.start();
     await full.engine.runErrand('worker-1', 'What changed?', 'chat');
     expect(full.parked[0].prompt).not.toContain(CONCISE_RESPONSE_DIRECTIVE);
+  });
+
+  it('holds one desk conversation for the day instead of re-hiring the worker every message', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+
+    await h.engine.runErrand('worker-1', 'How did the release go?', 'chat');
+    // First message of the day: cold. Nothing to resume, so it carries the
+    // whole worker — job description, journal, the lot.
+    expect(h.parked[0].resumeSessionId).toBeUndefined();
+    expect(h.parked[0].prompt).toContain('Find the most valuable maintenance work');
+    const conversationId = h.parked[0].conversationId;
+    expect(conversationId).toBeTruthy();
+
+    await h.engine.runErrand('worker-1', 'And the one before it?', 'chat');
+    // Second message: the worker is still sitting there. Resume the session
+    // and say the new thing — re-sending the contract would be paying twice
+    // for context it never lost.
+    expect(h.parked[1]).toMatchObject({
+      conversationId,
+      resumeSessionId: 'sess-a',
+      prompt: `${CONCISE_RESPONSE_DIRECTIVE}\n\n${EFFICIENT_TOOL_DIRECTIVE}\n\nAnd the one before it?`,
+    });
+    expect(h.parked[1].prompt).not.toContain('Find the most valuable maintenance work');
+    // And no replay: the replayed thread exists only for a thread we cannot
+    // resume, and re-sending it reads as the manager repeating themselves.
+    expect(h.parked[1].priorTurns).toBeUndefined();
+  });
+
+  it('starts a new desk conversation the next day', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'How did the release go?', 'chat');
+
+    h.setNow(local(2026, 3, 3, 8, 0));
+    await h.engine.runErrand('worker-1', 'And today?', 'chat');
+    // Yesterday's thread is not resumed — a desk conversation that ran for a
+    // week would carry Monday's tangent into Friday. The handoff block is how
+    // yesterday gets across.
+    expect(h.parked[1].resumeSessionId).toBeUndefined();
+    expect(h.parked[1].conversationId).not.toBe(h.parked[0].conversationId);
+    expect(h.parked[1].prompt).toContain('Find the most valuable maintenance work');
+  });
+
+  it('re-asks in full when the CLI refuses the resume', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'How did the release go?', 'chat');
+
+    // The session is gone (history wiped), so the CLI answered cold — from a
+    // prompt that was only the bare message, because we expected it to
+    // remember the rest.
+    h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 0, queued: 0, excluded: 0, sessionId: 'sess-b' });
+    await h.engine.runErrand('worker-1', 'And the one before it?', 'chat');
+
+    expect(h.parked).toHaveLength(3);
+    expect(h.parked[1].resumeSessionId).toBe('sess-a');
+    // The redo: same conversation, no resume, the whole worker again.
+    expect(h.parked[2].resumeSessionId).toBeUndefined();
+    expect(h.parked[2].conversationId).toBe(h.parked[0].conversationId);
+    expect(h.parked[2].prompt).toContain('Find the most valuable maintenance work');
+  });
+
+  it('carries the worker\'s MCP allowlist into every shift and errand', async () => {
+    const h = makeHarness({ seed: [seedWorker({ mcpServers: ['atlassian'] })] });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    await h.engine.runErrand('worker-1', 'What changed?', 'chat');
+    expect(h.parked[0].mcpAllowlist).toEqual(['atlassian']);
+    expect(h.parked[1].mcpAllowlist).toEqual(['atlassian']);
+
+    // Absent stays absent: a worker hired before the field existed inherits
+    // everything, exactly as it did.
+    const legacy = makeHarness({ seed: [seedWorker()] });
+    legacy.engine.start();
+    await legacy.engine.workShiftNow('worker-1');
+    expect(legacy.parked[0].mcpAllowlist).toBeUndefined();
   });
 
   it('leaves a shift at full pace whatever the worker is set to', async () => {

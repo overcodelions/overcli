@@ -26,6 +26,7 @@ import {
   shouldSkipIdleOnClose,
   spawnFailureMessage,
   staleRunningReason,
+  resolveMcpScope,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
 
@@ -857,5 +858,47 @@ describe('safeAttachmentBase', () => {
     const file = safeAttachmentBase(undefined, dir, '.json');
     expect(file.startsWith(dir + path.sep)).toBe(true);
     expect(file.endsWith('.json')).toBe(true);
+  });
+});
+
+describe('resolveMcpScope', () => {
+  const build = (names: string[]) => (names.length ? JSON.stringify({ mcpServers: { [names[0]]: {} } }) : null);
+
+  it('inherits the whole config when nothing asked for scoping', () => {
+    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo' }, build)).toEqual({
+      skipGlobalMcp: undefined,
+    });
+  });
+
+  it('narrows to the named servers', () => {
+    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['jira'] }, build)).toEqual({
+      skipGlobalMcp: undefined,
+      mcpAllowlistConfig: JSON.stringify({ mcpServers: { jira: {} } }),
+    });
+  });
+
+  it('loads none for an explicitly empty list, on any backend', () => {
+    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: [] }, build)).toEqual({
+      skipGlobalMcp: true,
+    });
+    expect(resolveMcpScope({ backend: 'codex', cwd: '/repo', mcpAllowlist: [] }, build)).toEqual({
+      skipGlobalMcp: true,
+    });
+  });
+
+  it('loads none — not all — when named servers resolve to nothing', () => {
+    // The failure this guards: a worker that named one server, which the user
+    // has since removed, silently going back to inheriting all seven.
+    expect(
+      resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['gone'] }, () => null),
+    ).toEqual({ skipGlobalMcp: true });
+  });
+
+  it('lets a backend it cannot narrow keep everything', () => {
+    // Stripping tools the job needs breaks the worker; paying for tools it
+    // doesn't costs what it already cost yesterday.
+    expect(resolveMcpScope({ backend: 'codex', cwd: '/repo', mcpAllowlist: ['jira'] }, build)).toEqual({
+      skipGlobalMcp: undefined,
+    });
   });
 });

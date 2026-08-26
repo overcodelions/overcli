@@ -23,6 +23,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
+import {
+  pendingWorkspaceMembers,
+  undismissedWorkspaceMembers,
+} from '../../../shared/flows/workspaceMembers';
 import { useRunner, useRunnerIsRunning } from '../../runnersStore';
 import { ChatView } from '../ChatView';
 import { RunningIndicator } from '../RunningIndicator';
@@ -424,6 +428,11 @@ export function FlowRunPane({ runId }: { runId: string }) {
           click is being processed (`pendingContinue`), so the user gets
           explicit "Continuing…" feedback instead of the banner vanishing
           instantly on click. */}
+      {/* "The workspace grew" banner — sits ABOVE the pause banner because
+          it's a precondition for the pause: the step often stalled on the
+          very repo that isn't in the run yet. */}
+      <WorkspaceGrewBanner run={run} />
+
       {(run.state.kind === 'paused' || run.pendingContinue) && (
         <PauseBanner run={run} />
       )}
@@ -2525,6 +2534,128 @@ export function pausedStepFailure(run: FlowRun): string | undefined {
     if (a.stepId === stepId && a.errorMessage) return a.errorMessage;
   }
   return undefined;
+}
+
+/// Offered when projects have been added to this run's workspace since it
+/// launched. A workspace run's cwd is a symlink farm frozen at launch, so a
+/// newly-added repo is invisible to every participant until it's adopted.
+///
+/// Resume and re-run adopt implicitly on their way through, but a PAUSED run
+/// the user is chatting with reaches neither — and chatting is exactly what
+/// people do when a step stalls on a repo that isn't there ("I just added it,
+/// do you see it now?"). Hence a banner with its own button: get the worktree
+/// without also advancing the run, then ask the participant to look again.
+///
+/// Paused-only. Adoption rebuilds the symlink farm, which must not happen
+/// under a live step's feet; the runtime refuses it while running anyway, so
+/// showing the button then would only offer an error.
+function WorkspaceGrewBanner({ run }: { run: FlowRun }) {
+  const workspaces = useStore((s) => s.workspaces);
+  const projects = useStore((s) => s.projects);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Dismissal is filtered HERE, not in the detector, so the runtime's adoption
+  // path keeps seeing the full pending set.
+  const pending = useMemo(
+    () =>
+      undismissedWorkspaceMembers(
+        pendingWorkspaceMembers(run, workspaces, projects),
+        run.dismissedWorkspaceMemberPaths,
+      ),
+    [run, workspaces, projects],
+  );
+
+  if (run.state.kind !== 'paused' || run.pendingContinue) return null;
+  if (pending.length === 0) return null;
+
+  const adopt = () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    void window.overcli
+      .invoke('flows:adoptWorkspaceMembers', { runId: run.id })
+      .then((res) => {
+        // On success the runtime emits a run update whose grown
+        // `workspaceWorktrees` empties `pending` and unmounts this banner —
+        // so there's nothing to clear on the happy path.
+        if (!res || res.ok === false) {
+          setError(res?.error ?? 'Could not add them.');
+          setBusy(false);
+        } else if (res.adopted.length < pending.length) {
+          // Partial: adoption skips a repo it couldn't check out. The banner
+          // stays up for whatever is still missing, so say why.
+          setError('Some projects could not be checked out — see the log.');
+          setBusy(false);
+        }
+      });
+  };
+
+  // Dismissing records today's pending paths, so this banner goes for good —
+  // but a project added tomorrow raises it again for that project alone.
+  const dismiss = () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    void window.overcli
+      .invoke('flows:dismissWorkspaceMembers', { runId: run.id })
+      .then((res) => {
+        if (!res || res.ok === false) {
+          setError(res?.error ?? 'Could not dismiss.');
+          setBusy(false);
+        }
+      });
+  };
+
+  const names = pending.map((p) => p.name).join(', ');
+
+  return (
+    <div className="px-6 py-3 border-b border-sky-400/30 bg-sky-400/5">
+      <div className="flex items-start gap-2 max-w-[1200px] mx-auto">
+        <div className="flex-1">
+          <div className="text-sm font-semibold text-sky-700 dark:text-sky-200 mb-0.5">
+            {pending.length === 1
+              ? '1 project added to this workspace since the run started'
+              : `${pending.length} projects added to this workspace since the run started`}
+          </div>
+          <div className="text-xs text-sky-800/80 dark:text-sky-100/70">
+            <span className="font-medium text-sky-800 dark:text-sky-100">{names}</span>{' '}
+            {pending.length === 1 ? 'is' : 'are'} not in this run — participants can't see{' '}
+            {pending.length === 1 ? 'it' : 'them'} yet.{' '}
+            <span className="font-semibold">Add to this run</span> forks a worktree on the run's
+            own branch and links it into the shared root; nothing already measured moves. Then ask
+            the participant to look again.
+            {error && (
+              <span className="block mt-1 text-amber-700 dark:text-amber-300">{error}</span>
+            )}
+          </div>
+        </div>
+        <button
+          onClick={dismiss}
+          disabled={busy}
+          title="Stop offering these — a project added later will still show up here"
+          className="text-xs px-3 py-1.5 rounded-md border border-sky-500/50 text-sky-700 dark:text-sky-200 hover:bg-sky-500/10 shrink-0 disabled:opacity-50"
+        >
+          Dismiss
+        </button>
+        <button
+          onClick={adopt}
+          disabled={busy}
+          className={`text-xs px-3 py-1.5 rounded-md text-white flex items-center gap-1.5 shrink-0 ${
+            busy ? 'bg-sky-500/40 cursor-not-allowed' : 'bg-sky-500/80 hover:bg-sky-500'
+          }`}
+        >
+          {busy && (
+            <span
+              aria-hidden
+              className="inline-block h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin"
+            />
+          )}
+          {busy ? 'Adding…' : 'Add to this run →'}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function PauseBanner({ run }: { run: FlowRun }) {

@@ -462,3 +462,65 @@ function backup(file: string): void {
     // failed anyway and the user will see the error from that.
   }
 }
+
+// ---------- Per-turn allowlists ----------
+
+/// Every MCP server the Claude CLI would boot for a turn, by name.
+///
+/// Read from the same user-scope file `readMcpServer` writes, plus the
+/// project-scoped `.mcp.json` a repo may carry — between them that is what
+/// `claude -p` loads when nothing narrows it.
+export function readClaudeMcpServers(
+  projectPath?: string,
+  paths: Paths = defaultPaths(),
+): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const file of [paths.claude, projectPath ? path.join(projectPath, '.mcp.json') : null]) {
+    if (!file || !fs.existsSync(file)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+        mcpServers?: Record<string, McpServerConfig>;
+      };
+      Object.assign(out, parsed?.mcpServers ?? {});
+    } catch {
+      // A hand-broken config is the CLI's problem to report, not ours to
+      // crash on — an unreadable file simply contributes no servers.
+    }
+  }
+  return out;
+}
+
+/// Narrow a server map to `names`, ignoring any that aren't configured.
+///
+/// Pure so the allowlist rule is testable without a filesystem. A name that
+/// matches nothing is dropped silently rather than failing the turn: a worker
+/// pinned to a server the user later removed should still work, just without
+/// it, and the alternative is a whole class of shifts dying on stale config.
+export function filterMcpServers(
+  all: Record<string, McpServerConfig>,
+  names: string[],
+): Record<string, McpServerConfig> {
+  const out: Record<string, McpServerConfig> = {};
+  for (const name of names) {
+    const cfg = all[name.trim()];
+    if (cfg) out[name.trim()] = cfg;
+  }
+  return out;
+}
+
+/// The value to hand `claude --mcp-config` so a turn loads only `names`.
+///
+/// Inline JSON rather than a temp file: there is no lifecycle to get wrong
+/// (no unlink racing a respawn, the way the permission broker's config does),
+/// and the payload is a handful of server definitions. Returns null when the
+/// allowlist resolves to nothing — the caller pairs that with
+/// `--strict-mcp-config` alone, which loads zero servers.
+export function buildClaudeMcpConfigArg(
+  names: string[],
+  projectPath?: string,
+  paths: Paths = defaultPaths(),
+): string | null {
+  const picked = filterMcpServers(readClaudeMcpServers(projectPath, paths), names);
+  if (Object.keys(picked).length === 0) return null;
+  return JSON.stringify({ mcpServers: picked });
+}

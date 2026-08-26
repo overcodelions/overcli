@@ -48,6 +48,7 @@ import {
 } from '../../upcoming';
 import { describeTrigger, untilLabel } from '@shared/flows/schedule';
 import type { Schedule } from '@shared/flows/schedule';
+import { describeCadence } from '@shared/flows/worker';
 import type { Worker, WorkerTrustLevel } from '@shared/flows/worker';
 import { TRUST_LABEL } from './WorkerRowParts';
 import { WorkerAvatar } from './WorkerAvatar';
@@ -363,7 +364,7 @@ export function ShiftCalendar() {
             >
               <WorkerAvatar worker={w} />
               <span className="text-ink-muted">{w.name}</span>
-              <span>{w.enabled ? describeTrigger(w.cadence) : 'paused'}</span>
+              <span>{w.enabled ? describeCadence(w.cadence) : 'paused'}</span>
             </button>
           ))}
           {armedSchedules.map((s) => (

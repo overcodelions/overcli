@@ -1858,6 +1858,24 @@ export interface IPCInvokeMap {
   /// chat finally propagate downstream. Valid only from a settled state
   /// (paused / done / aborted), never while a step is actively running.
   'flows:rerunFromStep': (args: { runId: UUID; stepId: string }) => { ok: true } | { ok: false; error: string };
+  /// Adopt the projects added to this run's workspace since it launched —
+  /// a worktree each, on the run's own branch, symlinked into the run's
+  /// root. Additive only: existing members and their baselines are never
+  /// touched. Resume and re-run already do this implicitly; this is the
+  /// paused run's "the workspace grew" banner asking for it on its own, so
+  /// the user can keep chatting in the same pause. Returns the member names
+  /// actually adopted (short of what was pending means a repo failed to
+  /// check out — see the log).
+  'flows:adoptWorkspaceMembers': (args: {
+    runId: UUID;
+  }) => { ok: true; adopted: string[] } | { ok: false; error: string };
+  /// Stop offering the "workspace grew" banner for the projects pending on
+  /// this run right now. Records those paths, so a project added LATER still
+  /// raises the banner for itself. Display-only: resume / re-run still adopt
+  /// dismissed members. Returns the paths just dismissed.
+  'flows:dismissWorkspaceMembers': (args: {
+    runId: UUID;
+  }) => { ok: true; dismissed: string[] } | { ok: false; error: string };
   /// Bring a single-project flow worktree into the main project checkout,
   /// then re-home every Claude participant session and persistently rebind
   /// the run's cwd so post-completion chat can continue there.
