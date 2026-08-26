@@ -168,6 +168,20 @@ describe('publishDeliverableToProject', () => {
     expect(fs.readdirSync(projectDir).filter((f) => f.endsWith('.md'))).toEqual([]);
   });
 
+  it('re-publishes a pre-0.16.2 ledger entry that is a bare EMPTY array', () => {
+    writeEverydayMarker(projectDir);
+    // An empty legacy array carried no filenames, so it proves nothing was
+    // ever filed — honouring it as "complete" would preserve the shift-10
+    // defect forever.
+    const ledgerFile = path.join(workerFilesDir(WORKER), '.published.json');
+    fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+    fs.writeFileSync(ledgerFile, JSON.stringify({ 'run-1': [] }));
+
+    const res = publish([{ name: 'Summary.md', body: 'hello' }], 'run-1');
+    expect(res.written).toEqual(['Summary.md']);
+    expect(fs.readFileSync(path.join(projectDir, 'Summary.md'), 'utf-8')).toBe('hello');
+  });
+
   it('refuses a name that would escape the folder', () => {
     writeEverydayMarker(projectDir);
     const res = publish([{ name: '../escaped.md', body: 'nope' }]);

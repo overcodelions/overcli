@@ -117,6 +117,11 @@ export interface Worker {
   lastPlannedAt?: number;
   /// When compaction last ran for this worker. Absent means never.
   lastCompactedAt?: number;
+  /// When `caps.fileIntoProject` was last switched on. Runs that finished
+  /// before this are not retroactively filed into the project on the next
+  /// fold — only ones that finish after the cap is granted. Absent means the
+  /// cap has never been turned on for this worker.
+  fileIntoProjectSince?: number;
   /// Where this worker sits on the roster, low first. Absent means "wherever
   /// hire order puts it" — a roster nobody has arranged still reads newest
   /// first, and arranging one worker must not renumber the rest into an order

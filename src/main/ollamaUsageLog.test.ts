@@ -10,7 +10,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let userDataDir: string;
 vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }));
 
-import { ollamaUsageLogPath, readOllamaUsage, recordOllamaUsage } from './ollamaUsageLog';
+import {
+  MAX_ENTRIES,
+  MIN_BYTES_PER_ENTRY,
+  TRIM_SLACK,
+  ollamaUsageLogPath,
+  readOllamaUsage,
+  recordOllamaUsage,
+} from './ollamaUsageLog';
 
 const entry = (over: Partial<Parameters<typeof recordOllamaUsage>[0]> = {}) => ({
   ts: 1_700_000_000_000,
@@ -74,5 +81,13 @@ describe('recordOllamaUsage / readOllamaUsage', () => {
     // The newest round survives; the oldest are the ones dropped.
     expect(rows[rows.length - 1].ts).toBe(1_800_000_000_000);
     expect(rows[0].ts).toBeGreaterThan(1_700_000_000_000);
+  });
+
+  it('sets the precheck threshold above a freshly-trimmed file, not below it', () => {
+    // A freshly-trimmed file holds MAX_ENTRIES lines at ~90 bytes each. The
+    // precheck threshold is (MAX_ENTRIES + TRIM_SLACK) * MIN_BYTES_PER_ENTRY;
+    // if that sits BELOW the trimmed size, every append after a trim would
+    // re-trigger a full read, which is the bug this constant guards against.
+    expect(MAX_ENTRIES * 90 > (MAX_ENTRIES + TRIM_SLACK) * MIN_BYTES_PER_ENTRY).toBe(false);
   });
 });

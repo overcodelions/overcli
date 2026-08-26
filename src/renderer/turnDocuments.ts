@@ -49,6 +49,18 @@ export function documentsWrittenSince(
   events: readonly StreamEvent[],
   since: number,
 ): string[] {
+  // A Write's toolResult arrives after its assistant event in the stream, so
+  // whether a given write was denied/errored can't be known until a later
+  // event — hence two passes: collect the failed tool-use ids first, then
+  // collect paths, skipping any Write whose id came back an error.
+  const failed = new Set<string>();
+  for (const e of events) {
+    if (e.timestamp < since) continue;
+    if (e.kind.type !== 'toolResult') continue;
+    for (const result of e.kind.results ?? []) {
+      if (result.isError) failed.add(result.id);
+    }
+  }
   const out: string[] = [];
   for (const e of events) {
     if (e.timestamp < since) continue;
@@ -59,6 +71,7 @@ export function documentsWrittenSince(
     if (e.kind.type !== 'assistant') continue;
     for (const use of e.kind.info.toolUses) {
       if (use.name !== 'Write') continue;
+      if (use.id && failed.has(use.id)) continue;
       const path = writtenPath(use.inputJSON, use.filePath);
       if (!path || !isProseDocumentPath(path)) continue;
       if (!out.includes(path)) out.push(path);

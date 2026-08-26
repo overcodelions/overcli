@@ -2148,6 +2148,24 @@ export interface IPCInvokeMap {
     bytes: number;
     modifiedAt: number;
   }>;
+  /// Batched form of `workers:deliverables` — one round trip for every row a
+  /// page renders instead of one per row. See renderer/deliverablesCache.ts.
+  'workers:deliverablesBatch': (args: {
+    requests: Array<{
+      id: UUID;
+      task: 'shift' | 'errand';
+      label: string;
+      title: string;
+      at: number;
+    }>;
+  }) => Array<
+    Array<{
+      name: string;
+      path: string;
+      bytes: number;
+      modifiedAt: number;
+    }>
+  >;
   /// Delete one job's output — a folder and its contents, or a loose file.
   /// `name` is relative to the worker's own root and is validated there.
   'workers:deleteFile': (args: {

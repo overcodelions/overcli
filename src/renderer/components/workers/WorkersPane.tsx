@@ -111,6 +111,7 @@ import {
 import { TRUST_LABEL, WorkerPendingProposal } from "./WorkerRowParts";
 import { WorkQueuePane } from "./WorkQueuePane";
 import { pinnedToBottom, shouldFollowLive } from "./deskFollow";
+import { fetchDeliverables } from "../../deliverablesCache";
 
 // Zustand selectors are consumed through React's useSyncExternalStore. Returning
 // a new [] while this worker's journal is still loading makes the snapshot look
@@ -3793,17 +3794,15 @@ function PlanItemRow({
     if (compactArtifacts || !workerId || item.status !== "done" || !finishedAt)
       return;
     let live = true;
-    void window.overcli
-      .invoke("workers:deliverables", {
-        id: workerId,
-        task: orchestrationTask(orchestration),
-        label: orchestration.title,
-        title: item.candidate.title,
-        at: finishedAt,
-      })
-      .then((res) => {
-        if (live) setFiles(res);
-      });
+    void fetchDeliverables({
+      id: workerId,
+      task: orchestrationTask(orchestration),
+      label: orchestration.title,
+      title: item.candidate.title,
+      at: finishedAt,
+    }).then((res) => {
+      if (live) setFiles(res);
+    });
     return () => {
       live = false;
     };

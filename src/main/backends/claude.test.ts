@@ -177,6 +177,18 @@ describe('claudeBackend.buildArgs', () => {
     // cwd is dropped, two distinct allowed dirs remain.
     expect(addDirIdxs).toHaveLength(2);
   });
+
+  it('emits --allowedTools with a space-joined list when allowedTools is set', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, allowedTools: ['Read', 'Grep'] }, noMcpCtx);
+    const i = a.indexOf('--allowedTools');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(a[i + 1]).toBe('Read Grep');
+  });
+
+  it('omits --allowedTools when allowedTools is empty', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, allowedTools: [] }, noMcpCtx);
+    expect(a).not.toContain('--allowedTools');
+  });
 });
 
 describe('claudeBackend.buildEnvelope', () => {

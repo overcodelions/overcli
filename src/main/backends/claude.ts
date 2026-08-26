@@ -79,6 +79,9 @@ export const claudeBackend: BackendSpec = {
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);
     }
+    if (args.allowedTools && args.allowedTools.length > 0) {
+      a.push('--allowedTools', args.allowedTools.join(' '));
+    }
     return a;
   },
 
