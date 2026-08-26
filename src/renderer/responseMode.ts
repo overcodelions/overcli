@@ -1,4 +1,9 @@
 import type { ResponseMode, ResponseStyle, StreamEvent } from '@shared/types';
+import {
+  CONCISE_RESPONSE_DIRECTIVE,
+  EFFICIENT_TOOL_DIRECTIVE,
+  SPEED_FIRST_DIRECTIVE,
+} from '@shared/responseDirectives';
 
 export interface ConsolidationOpportunity {
   toolName: string;
@@ -6,14 +11,13 @@ export interface ConsolidationOpportunity {
   rounds: number;
 }
 
-export const CONCISE_RESPONSE_DIRECTIVE =
-  'Keep progress updates to one short sentence. Give a compact final answer focused on the outcome, important caveats, and any action the user must take. Preserve full reasoning quality; concise refers only to visible output.';
-
-export const EFFICIENT_TOOL_DIRECTIVE =
-  'Before calling tools, collect independent reads, searches, and checks and issue them in one larger parallel batch when the tools allow it. Combine related shell checks into one command. Never skip necessary verification or combine dependent steps.';
-
-export const SPEED_FIRST_DIRECTIVE =
-  'Prioritize response latency. Take the shortest reliable path to the requested outcome, avoid optional exploration, and begin the useful answer as soon as enough evidence is available. Do not skip required checks.';
+// Defined in shared/ because the worker engine (main) sends the same two on a
+// swift errand. Re-exported here so every existing importer keeps working.
+export {
+  CONCISE_RESPONSE_DIRECTIVE,
+  EFFICIENT_TOOL_DIRECTIVE,
+  SPEED_FIRST_DIRECTIVE,
+} from '@shared/responseDirectives';
 
 /// Find the strongest evidence that the most recent completed turn paid for
 /// repeated model round trips to the same tool. Several calls in one assistant

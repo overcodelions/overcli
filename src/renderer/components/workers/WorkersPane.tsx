@@ -58,6 +58,7 @@ import {
   type Worker,
   type WorkerJournalEntry,
   type WorkerScorecard,
+  type WorkerPace,
   type WorkerTrustLevel,
 } from "@shared/flows/worker";
 import { describeFundingBlock, fundingFor } from "@shared/flows/treasury";
@@ -75,6 +76,7 @@ import {
 import { ATTACHMENT_ACCEPT, intakeAttachments } from "../../attachmentIntake";
 import { AttachmentChip } from "../AttachmentChip";
 import { Markdown } from "../Markdown";
+import { CopyActions } from "../CopyActions";
 import { UserBubble } from "../UserBubble";
 import { FlowMonogram } from "../flows/FlowMonogram";
 import { FlowRunPane } from "../flows/FlowRunPane";
@@ -2930,8 +2932,11 @@ function WorkerTimeline({
           begins. Later queued messages retain their own position receipt. */}
       {isToday &&
         sending?.map((pending, index) => {
-          const responseStarted =
-            index === 0 && live?.task === "errand" && !!live.text;
+          // The live bubble carries its own "reading its job description and
+          // journal…" line, so the moment it appears the receipt above it is
+          // the same sentence twice. Hand over as soon as the turn is live,
+          // not once it has produced text.
+          const responseStarted = index === 0 && live?.task === "errand";
           const status =
             live?.task === "shift"
               ? `Queued behind Shift ${worker.shiftCount ?? 1}`
@@ -2999,14 +3004,18 @@ function LiveTurn({
   tint: string;
   live: { text: string; tools: string[]; task: "shift" | "errand" };
 }) {
-  const tool = live.tools[live.tools.length - 1];
   // The engine stamps `shiftCount` before the planning turn starts, so the
   // number is already this shift's — not the last one's.
   const label =
     live.task === "shift" ? `Shift ${worker.shiftCount ?? 1} · starting` : null;
+  const tools = dedupeTools(live.tools);
+  // A long turn can touch a tool a dozen times. The trail is meant to be
+  // glanceable, so only the last few are drawn and the rest are counted.
+  const shown = tools.slice(-LIVE_TOOL_TRAIL);
+  const hidden = tools.length - shown.length;
 
   return (
-    <div>
+    <div className="flex flex-col gap-1.5">
       {label && (
         <div className="flex items-center gap-3 py-1">
           <span className="h-px flex-1 bg-card-strong" />
@@ -3014,45 +3023,117 @@ function LiveTurn({
           <span className="h-px flex-1 bg-card-strong" />
         </div>
       )}
-      <div
-        className="relative mt-2 overflow-hidden rounded-xl"
-        style={{
-          background: `color-mix(in srgb, ${tint} 5%, transparent)`,
-          border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
-        }}
-      >
-        <div
-          className="absolute bottom-0 left-0 top-0 w-[2px]"
-          style={{ background: tint + "cc" }}
-        />
-        <div className="px-4 py-2.5 pl-[14px]">
-          <div className="mb-1 flex items-center gap-2 text-[10px] font-medium">
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
-              <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
-            </span>
-            <span style={{ color: tint }}>{worker.name}</span>
-            <span className="text-ink-faint">
-              {live.task === "shift" ? "planning its shift" : "on your errand"}
-            </span>
-            {/* What it is doing this second. The activity strip above the
-                composer says the same word, but that strip is about the
-                composer being busy; this one is part of the turn. */}
-            {tool && <span className="truncate text-ink-faint">· {tool}</span>}
-          </div>
-          {live.text ? (
-            <div>
-              <Markdown source={live.text} />
-            </div>
-          ) : (
-            <div className="text-xs text-ink-faint">
-              Reading its job description and journal…
+
+      {/* Who is talking, above the turn rather than inside it — the same
+          order chat uses, and the reason the tool calls below can be their
+          own rows instead of a word crammed into a bubble header. */}
+      <div className="flex items-center gap-2 text-[10px] font-medium">
+        <span className="relative flex h-1.5 w-1.5">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
+          <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
+        </span>
+        <span style={{ color: tint }}>{worker.name}</span>
+        <span className="text-ink-faint">
+          {live.task === "shift" ? "planning its shift" : "on your errand"}
+        </span>
+      </div>
+
+      {/* Before the first tool and the first token there is genuinely nothing
+          to show, and the honest thing to say is what it is doing: reading
+          itself in. One faint line, not a bubble — a bubble here is an empty
+          message. */}
+      {tools.length === 0 && !live.text && (
+        <div className="pl-3.5 text-[11px] text-ink-faint">
+          Reading its job description and journal…
+        </div>
+      )}
+
+      {shown.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {hidden > 0 && (
+            <div className="pl-3.5 text-[11px] text-ink-faint">
+              {hidden} earlier {hidden === 1 ? "call" : "calls"}
             </div>
           )}
+          {shown.map((tool, i) => {
+            // Only the last row is in flight; everything above it came back,
+            // or the model would not have called the next one.
+            const current = i === shown.length - 1 && !live.text;
+            return (
+              <div
+                key={tool.name}
+                className="flex items-center gap-2 self-start rounded-lg border border-card-strong bg-card/40 px-2.5 py-1 text-[11px]"
+              >
+                {current ? (
+                  <span
+                    aria-hidden
+                    className="h-2.5 w-2.5 animate-spin rounded-full border border-ink-faint/40 border-t-ink-muted"
+                  />
+                ) : (
+                  <span aria-hidden className="text-ink-faint">
+                    ✓
+                  </span>
+                )}
+                <span className={current ? "text-ink" : "text-ink-muted"}>
+                  {toolLabel(tool.name)}
+                </span>
+                {tool.count > 1 && (
+                  <span className="text-ink-faint">×{tool.count}</span>
+                )}
+              </div>
+            );
+          })}
         </div>
-      </div>
+      )}
+
+      {/* The answer, in the same clothes the settled reply wears — so when
+          the turn lands, the bubble stays put and only stops moving. */}
+      {live.text && (
+        <div
+          className="relative overflow-hidden rounded-xl"
+          style={{
+            background: `color-mix(in srgb, ${tint} 5%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
+          }}
+        >
+          <div
+            className="absolute bottom-0 left-0 top-0 w-[2px]"
+            style={{ background: tint + "cc" }}
+          />
+          <div className="px-4 py-2.5 pl-[14px]">
+            <Markdown source={live.text} />
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/// How many tool rows the live trail draws. Enough to read the shape of what
+/// the worker is doing, short enough that the answer stays on screen under it.
+const LIVE_TOOL_TRAIL = 6;
+
+/// `mcp__claude_ai_Superhuman_Mail__list_threads` is thirty characters of
+/// plumbing and two useful words. The server it came from and what it asked
+/// for is the whole of what a watcher needs.
+function toolLabel(name: string): string {
+  if (!name.startsWith("mcp__")) return name;
+  const parts = name.split("__");
+  if (parts.length < 3) return name.slice(5);
+  const server = parts[1].replace(/^claude_ai_/, "").replace(/_/g, " ");
+  return `${server} · ${parts.slice(2).join(" ").replace(/_/g, " ")}`;
+}
+
+/// Roll the flat call list into ordered unique entries with counts, so a
+/// worker paging one source doesn't push everything else off the trail.
+function dedupeTools(tools: string[]): Array<{ name: string; count: number }> {
+  const out: Array<{ name: string; count: number }> = [];
+  for (const name of tools) {
+    const seen = out.find((t) => t.name === name);
+    if (seen) seen.count += 1;
+    else out.push({ name, count: 1 });
+  }
+  return out;
 }
 
 /// A day with nothing on it. Two different silences, and they need different
@@ -3400,9 +3481,13 @@ function WorkerReply({
   reply: string;
   footer?: React.ReactNode;
 }) {
+  // What a worker says is the same kind of thing an assistant bubble says —
+  // an itinerary you want to paste into a mail, a summary you want to keep —
+  // so it carries the same copy pair, over the same rendered prose.
+  const renderedRef = useRef<HTMLDivElement>(null);
   return (
     <div
-      className="relative overflow-hidden rounded-xl"
+      className="group relative overflow-hidden rounded-xl"
       style={{
         background: `color-mix(in srgb, ${tint} 5%, transparent)`,
         border: `1px solid color-mix(in srgb, ${tint} 18%, transparent)`,
@@ -3420,7 +3505,7 @@ function WorkerReply({
           <span>{worker.name}</span>
           <span className="text-ink-faint">{relativeTime(at)}</span>
         </div>
-        <div>
+        <div ref={renderedRef}>
           {reply ? (
             <Markdown source={reply} />
           ) : (
@@ -3429,6 +3514,13 @@ function WorkerReply({
         </div>
         {footer}
       </div>
+      {reply && (
+        <CopyActions
+          className="absolute right-1.5 top-1.5"
+          getPlain={() => renderedRef.current?.innerText ?? reply}
+          raw={reply}
+        />
+      )}
     </div>
   );
 }
@@ -4990,6 +5082,21 @@ function WorkerEditor() {
                     className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
                   />
                 </div>
+              </Field>
+              <Field label="Pace" hint="how it answers errands">
+                {/* Errands only. A shift runs at 8am with nobody watching,
+                    where a shorter answer buys nothing; this is about the
+                    times you are sitting in front of the desk waiting. */}
+                <select
+                  value={draft.pace ?? "swift"}
+                  onChange={(e) => patch({ pace: e.target.value as WorkerPace })}
+                  className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+                >
+                  <option value="swift">
+                    Swift — compact answers, batched tool work
+                  </option>
+                  <option value="full">Full — answers at length</option>
+                </select>
               </Field>
               <Field label="Heartbeat model" hint="plans shifts; keep it cheap">
                 <div className="flex items-center gap-1">
