@@ -578,6 +578,54 @@ describe('WorkerEngine shifts', () => {
     expect(h.emitted.filter((event) => event.type === 'treasuryUpdate')).toHaveLength(1);
   });
 
+  it('gives back the configured budget when the distributed month ends', () => {
+    const h = makeHarness({
+      seed: [
+        seedWorker({ id: 'worker-1', order: 0, budgetUSDPerMonth: 5 }),
+        seedWorker({ id: 'worker-2', order: 1, budgetUSDPerMonth: 25 }),
+      ],
+      pool: 40,
+    });
+    h.engine.start();
+    h.setNow(new Date(2026, 7, 31, 12).getTime());
+
+    const result = h.engine.distributeFunds();
+    expect(result).toMatchObject({ ok: true });
+    if (!result.ok) return;
+    // In-month the distributed cap stands, and the original is parked on it.
+    expect(result.workers.map((w) => [w.id, w.budgetUSDPerMonth])).toEqual([
+      ['worker-1', 26.67],
+      ['worker-2', 13.33],
+    ]);
+    expect(result.workers.map((w) => w.distribution?.budgetUSDPerMonth)).toEqual([5, 25]);
+
+    // Same month, second click: the ORIGINAL budget must survive, not the cap
+    // the first distribution wrote.
+    h.engine.distributeFunds();
+    expect([...h.saved].reverse().find((w) => w.id === 'worker-1')?.distribution?.budgetUSDPerMonth).toBe(5);
+
+    // September: the spend window resets, so the distributed ceilings have to
+    // go — otherwise the roster carries August's spend as next month's budget.
+    h.saved.length = 0;
+    h.setNow(new Date(2026, 8, 1, 0, 30).getTime());
+    const after = h.engine.treasury().allocation;
+
+    expect(after.byWorker.map((row) => [row.workerId, row.capUSD])).toEqual([
+      ['worker-1', 5],
+      ['worker-2', 25],
+    ]);
+    expect(h.saved.map((w) => [w.id, w.budgetUSDPerMonth])).toEqual([
+      ['worker-1', 5],
+      ['worker-2', 25],
+    ]);
+    expect(h.saved.every((w) => w.distribution === undefined)).toBe(true);
+
+    // Idempotent: a second read in the same month re-saves nothing.
+    h.saved.length = 0;
+    h.engine.treasury();
+    expect(h.saved).toEqual([]);
+  });
+
   it('seeds an upgrading install with the caps it already had, so nothing changes on day one', async () => {
     const h = makeHarness({
       seed: [

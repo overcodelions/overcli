@@ -52,6 +52,17 @@ export function detectConsolidationOpportunity(
   return candidates[0] ?? null;
 }
 
+/// A hostile MCP server can register a tool whose NAME carries instructions,
+/// and that name would otherwise be interpolated verbatim into a directive
+/// prepended to the user's prompt. Only names of the shape real tools use are
+/// quoted back; anything else drops the hint rather than promoting the text.
+/// 128 rather than 64: a fully-qualified MCP tool name is routinely 60+
+/// characters (`mcp__claude_ai_Atlassian_Rovo__getJiraProjectIssueTypesMetadata`
+/// is 63), and silently dropping the hint for a legitimate long name is a
+/// quality regression with no signal. The character class is what bounds the
+/// injection surface; the length is only a sanity cap.
+const TOOL_NAME_SHAPE = /^[A-Za-z0-9_.-]{1,128}$/;
+
 export function buildResponseModePrompt(
   prompt: string,
   style: ResponseStyle | undefined,
@@ -63,7 +74,7 @@ export function buildResponseModePrompt(
   if (style === 'efficient') {
     directives.push(EFFICIENT_TOOL_DIRECTIVE);
     const opportunity = detectConsolidationOpportunity(priorEvents);
-    if (opportunity) {
+    if (opportunity && TOOL_NAME_SHAPE.test(opportunity.toolName)) {
       directives.push(
         `The previous turn used ${opportunity.toolName} in ${opportunity.rounds} separate model rounds ` +
           `(${opportunity.calls} calls). Consolidate independent ${opportunity.toolName} work this turn.`,

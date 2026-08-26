@@ -720,6 +720,16 @@ describe('worker effect boundary', () => {
     ).toBe('externalAction');
   });
 
+  it('treats bash and the web tools as external so an unattended worker pauses', () => {
+    for (const tool of ['bash', 'Bash', 'websearch', 'webfetch']) {
+      expect(resolveStepEffect({ ...step('Run the checks.'), tools: [tool] })).toBe('external');
+    }
+    expect(resolveStepEffect({ ...step('Run the checks.'), tools: ['read', 'grep'] })).toBe('local');
+    expect(
+      pauseReasonBeforeStep({ workerId: 'worker-1' }, { ...step('Run the checks.'), tools: ['bash'] }),
+    ).toBe('externalAction');
+  });
+
   it('honors explicit metadata and leaves ordinary flows unchanged', () => {
     const external = step('Write a local file.', { effect: 'external' as const });
     expect(resolveStepEffect(external)).toBe('external');
@@ -1108,6 +1118,11 @@ describe('FlowRuntimeImpl — diff rescue', () => {
       userPrompt: 'Refactor the module.',
       workerId: 'worker-1',
       workerName: 'Scout',
+      // The fixture's `build` step declares `Bash`, which step 1's fix now
+      // gates behind external-action approval. This suite is about the
+      // diff-rescue/question-preservation path, not that boundary, so the
+      // worker is explicitly authorized to cross it and reach `executeStep`.
+      allowExternalActions: true,
     });
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error(result.error);

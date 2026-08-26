@@ -66,6 +66,23 @@ export interface Worker {
   trust: WorkerTrustLevel;
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
+  /// Set only while a Distribute is in effect for the month it names.
+  ///
+  /// Distributing rewrites `budgetUSDPerMonth` to `spend-so-far + share`,
+  /// because a cap is a lifetime-for-the-month ceiling and `allocateTreasury`
+  /// reads headroom as `cap - spent`. That is right for the rest of THAT
+  /// month and meaningless afterwards: the spend window resets on the 1st and
+  /// the cap does not, so the worker that had spent the MOST would carry the
+  /// largest ceiling into the new month — inverting the funding order the
+  /// feature exists to express. So the configured budget is parked here and
+  /// restored on the first allocation of a later month. Absent on every
+  /// worker that has never been distributed to.
+  distribution?: {
+    /// `monthStart()` of the month the distribution was computed for.
+    month: number;
+    /// The cap the user configured, to be put back when that month ends.
+    budgetUSDPerMonth: number;
+  };
   heartbeatModel: string;
   /// The backend `heartbeatModel` was chosen for. Optional because workers
   /// hired before this field existed only stored the bare id — those fall

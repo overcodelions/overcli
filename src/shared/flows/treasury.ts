@@ -123,6 +123,21 @@ export function distributeRemainingFunds(allocation: TreasuryAllocation): Distri
     .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
   for (let i = 0; i < centsLeft; i += 1) shares[remainderOrder[i].index].cents += 1;
 
+  // Weighting can floor a low-priority share to zero even when the pot holds a
+  // cent for everyone — which made Distribute a dead button that claimed there
+  // was not enough money when there was. Borrow from the largest share instead;
+  // the total stays exact because every cent moved is a cent taken.
+  if (remainingCents >= active.length) {
+    for (const share of shares) {
+      if (share.cents > 0) continue;
+      let donor = shares[0];
+      for (const candidate of shares) if (candidate.cents > donor.cents) donor = candidate;
+      if (donor.cents <= 1) break;
+      donor.cents -= 1;
+      share.cents += 1;
+    }
+  }
+
   return shares.map(({ row, cents }) => ({
     workerId: row.workerId,
     // Keep model-cost precision in spend while distributing the user-facing

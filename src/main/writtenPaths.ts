@@ -78,14 +78,35 @@ export function isAgentWrittenPath(target: string): boolean {
   return !!key && written.has(key);
 }
 
+/// A tool USE is a request, not an outcome — the user may still deny it, or it
+/// may fail. Writes wait here, keyed by tool_use id, until a non-error result
+/// with the same id proves the file actually landed. Bounded, and results can
+/// arrive in a later batch than the use that asked for them.
+const pendingWrites = new Map<string, string>();
+
 /// Harvest the writes out of a batch of stream events. Split from the IPC
 /// bridge that calls it so the rule — which tools count, which paths are
 /// taken — is testable without an Electron window.
 export function recordWritesFromEvents(events: readonly StreamEvent[]): void {
   for (const event of events) {
-    if (event.kind.type !== 'assistant') continue;
-    for (const use of event.kind.info.toolUses ?? []) {
-      if (isWritingTool(use.name)) recordWrittenPath(use.filePath);
+    if (event.kind.type === 'assistant') {
+      for (const use of event.kind.info.toolUses ?? []) {
+        if (isWritingTool(use.name) && use.filePath) {
+          pendingWrites.set(use.id, use.filePath);
+          if (pendingWrites.size > MAX_TRACKED_PATHS) {
+            const oldest = pendingWrites.keys().next();
+            if (!oldest.done) pendingWrites.delete(oldest.value);
+          }
+        }
+      }
+      continue;
+    }
+    if (event.kind.type !== 'toolResult') continue;
+    for (const result of event.kind.results ?? []) {
+      const target = pendingWrites.get(result.id);
+      if (target === undefined) continue;
+      pendingWrites.delete(result.id);
+      if (!result.isError) recordWrittenPath(target);
     }
   }
 }
@@ -93,6 +114,7 @@ export function recordWritesFromEvents(events: readonly StreamEvent[]): void {
 /// Test seam. Nothing in the app clears the set — it is session-scoped.
 export function resetWrittenPathsForTest(): void {
   written.clear();
+  pendingWrites.clear();
 }
 
 /// Resolve a path to compare by identity rather than spelling. Falls back to
