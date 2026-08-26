@@ -1100,17 +1100,34 @@ export class FlowRuntimeImpl {
   private pruneOldRuns(): void {
     const all = Array.from(this.runs.values());
     if (all.length < FlowRuntimeImpl.MAX_RETAINED_RUNS) return;
+    const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
+    // Order by age FIRST, then check worktrees lazily oldest-first, stopping
+    // the moment we have enough victims. Same result as filtering the whole
+    // set and slicing — the eviction order is unchanged — but it doesn't pay
+    // for answers it throws away.
+    //
+    // This matters because `runDirtyWorktrees` is `spawnSync` and this runs on
+    // every `startRun`, blocking the main thread. `overflow` is almost always
+    // 1, yet the filter used to stat all MAX_RETAINED_RUNS (50) runs: measured
+    // at ~38ms for `git status` and ~32ms for `git rev-list` on a warm repo,
+    // that was ~1.9s of frozen UI before the unmerged-commit check existed and
+    // ~3.5s after. Walking lazily makes the common case one or two
+    // invocations. The pathological case (every retained run holding work) is
+    // unchanged, and is the starvation trade documented above.
     const evictable = all
       .filter(
         (r) =>
-          (r.state.kind === 'done' ||
-            r.state.kind === 'aborted' ||
-            r.state.kind === 'archived') &&
-          this.runDirtyWorktrees(r).length === 0,
+          r.state.kind === 'done' ||
+          r.state.kind === 'aborted' ||
+          r.state.kind === 'archived',
       )
       .sort((a, b) => a.createdAt - b.createdAt);
-    const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
-    for (const victim of evictable.slice(0, overflow)) {
+    const victims: FlowRun[] = [];
+    for (const candidate of evictable) {
+      if (victims.length >= overflow) break;
+      if (this.runDirtyWorktrees(candidate).length === 0) victims.push(candidate);
+    }
+    for (const victim of victims) {
       this.runs.delete(victim.id);
       for (const convId of Object.values(victim.conversationIds)) {
         this.convIdToRun.delete(convId);

@@ -17,6 +17,11 @@ import type { FlowRun } from '../../shared/flows/schema';
 // `runtime.localCheckout.test.ts`.
 const seeded = vi.hoisted(() => ({ runs: [] as FlowRun[] }));
 
+// Counts blocking git invocations made by the SYNC path. `runDirtyWorktrees`
+// is `spawnSync` and `pruneOldRuns` drives it on every `startRun`, so the
+// number of calls is a UI-freeze budget, not an implementation detail.
+const syncGitCalls = vi.hoisted(() => ({ n: 0 }));
+
 // An actual eviction (`pruneOldRuns`) calls `clearAttachments`, which
 // resolves its root through `app.getPath('userData')`. No suite in this file
 // evicted anything before the prune suite below, which is why this mock
@@ -99,6 +104,7 @@ vi.mock('../git', () => ({
   // exit is treated as clean by `runDirtyWorktrees`, so an error fixture
   // would pass the assertion for the wrong reason.
   runGit: (args: string[], cwd?: string) => {
+    syncGitCalls.n += 1;
     if (args[0] === 'status') {
       return cwd && cwd.includes('clean-worktree')
         ? { stdout: '', stderr: '', exitCode: 0 }
@@ -1564,5 +1570,97 @@ describe('FlowRuntimeImpl — committed-but-unmerged work counts as unreviewed',
       ok: true,
     });
     expect(runtime.getRun('committed-unmerged' as never)).toBeNull();
+  });
+});
+
+/// `pruneOldRuns` runs on every `startRun` and reaches `runDirtyWorktrees`,
+/// which is `spawnSync`. Every invocation is main-thread time the UI is frozen
+/// for. Measured on a warm repo: ~38ms for `git status --porcelain`, ~32ms for
+/// `git rev-list --count`. At MAX_RETAINED_RUNS that is seconds of beachball,
+/// so the count is a budget worth asserting on rather than a detail.
+describe('FlowRuntimeImpl — prune does not stat every retained run', () => {
+  const MAX_RETAINED_RUNS = 50;
+
+  function seedRun(over: Partial<FlowRun>): FlowRun {
+    return {
+      id: 'run-x',
+      flowId: 'diff-flow',
+      flowSnapshot: { id: 'diff-flow', name: 'Diff flow', steps: [], participants: [] },
+      projectPath: '/tmp/project',
+      userPrompt: 'do the thing',
+      conversationIds: {},
+      artifacts: {},
+      state: { kind: 'done' },
+      createdAt: 1,
+      attempts: [],
+      ...over,
+    } as FlowRun;
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+    syncGitCalls.n = 0;
+  });
+
+  it('stops at the first evictable run instead of scanning all 50', async () => {
+    // Every run clean, so the oldest is evictable immediately and `overflow`
+    // is 1. A lazy walk needs ONE run's worth of git; the old filter-then-slice
+    // did all 50 and discarded 49 answers.
+    seeded.runs = Array.from({ length: MAX_RETAINED_RUNS }, (_, i) => {
+      const id = `run-${String(i).padStart(2, '0')}`;
+      return seedRun({ id, createdAt: i + 1, worktreePath: `/tmp/wt/clean-worktree-${id}` });
+    });
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+    syncGitCalls.n = 0;
+
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+
+    // The oldest still gets evicted — laziness must not change WHICH run goes.
+    expect(runtime.getRun('run-00')).toBeNull();
+    expect(runtime.getRun('run-01')).not.toBeNull();
+    // ...and it cost a handful of git calls, not fifty.
+    expect(syncGitCalls.n).toBeLessThan(5);
+  });
+
+  it('still finds a victim further down when the oldest runs hold work', async () => {
+    // Two oldest are dirty, so the walk has to keep going — and must land on
+    // the third. Laziness must not mean giving up early.
+    seeded.runs = Array.from({ length: MAX_RETAINED_RUNS }, (_, i) => {
+      const id = `run-${String(i).padStart(2, '0')}`;
+      return seedRun({
+        id,
+        createdAt: i + 1,
+        worktreePath: i < 2 ? `/tmp/wt/dirty-${id}` : `/tmp/wt/clean-worktree-${id}`,
+      });
+    });
+    const runtime = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+
+    expect(runtime.getRun('run-00')).not.toBeNull();
+    expect(runtime.getRun('run-01')).not.toBeNull();
+    expect(runtime.getRun('run-02')).toBeNull();
   });
 });
