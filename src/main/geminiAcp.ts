@@ -1,5 +1,5 @@
 import { spawn, spawnSync, ChildProcessWithoutNullStreams } from 'node:child_process';
-import { backendNeedsShell } from './backendPaths';
+import { backendNeedsShell, spawnFailureMessage } from './backendPaths';
 
 type JsonRpcId = string | number | null;
 
@@ -37,6 +37,11 @@ export class GeminiAcpClient {
   private nextId = 1;
   private pending = new Map<JsonRpcId, { resolve: (value: any) => void; reject: (error: any) => void }>();
   private closed = false;
+  /// Set when the child never launched. Spawn failure is asynchronous, so a
+  /// request issued *after* it never becomes pending — it hits the `closed`
+  /// guard in `request()` instead, which would otherwise report a generic
+  /// "connection is closed" and lose the real cause.
+  private spawnError: string | null = null;
 
   constructor(args: {
     binary: string;
@@ -63,23 +68,60 @@ export class GeminiAcpClient {
     this.proc.stderr.setEncoding('utf-8');
     this.proc.stderr.on('data', (chunk: string) => args.onStderr?.(chunk));
 
+    // A spawn failure (CLI not installed, not on PATH, not executable, or a
+    // cwd that no longer exists) emits 'error'. With no listener Node rethrows
+    // it as an uncaught exception, and `index.ts` only installs an
+    // `uncaughtException` handler under `isDev` — so in a packaged build one
+    // bad `gemini` path killed the whole main process, taking every other
+    // conversation, flow run and worker shift with it.
+    let spawnFailed = false;
+    this.proc.on('error', (err: NodeJS.ErrnoException) => {
+      spawnFailed = true;
+      this.spawnError = spawnFailureMessage(
+        { backend: 'gemini', binary: args.binary, cwd: args.cwd },
+        err,
+      );
+      this.teardown(this.spawnError, () => args.onClose?.(null));
+    });
     this.proc.on('close', (code) => {
-      this.closed = true;
-      for (const pending of this.pending.values()) {
-        pending.reject(new Error(`gemini ACP exited with status ${code ?? 'unknown'}`));
-      }
-      this.pending.clear();
-      args.onClose?.(code);
+      // Node emits BOTH 'error' and 'close' (status -2) for one failed spawn.
+      // The error handler already tore down with the useful cause; processing
+      // close too would overwrite it with "exited with status -2".
+      if (spawnFailed) return;
+      this.teardown(`gemini ACP exited with status ${code ?? 'unknown'}`, () => args.onClose?.(code));
     });
   }
 
+  /// Single teardown path shared by 'error' and 'close': fail everything that
+  /// is waiting, then notify the owner exactly once.
+  private teardown(message: string, notify: () => void): void {
+    this.closed = true;
+    for (const pending of this.pending.values()) {
+      pending.reject(new Error(message));
+    }
+    this.pending.clear();
+    notify();
+  }
+
   async request(method: string, params?: any): Promise<any> {
-    if (this.closed) throw new Error('gemini ACP connection is closed');
+    if (this.closed) throw new Error(this.spawnError ?? 'gemini ACP connection is closed');
     const id = this.nextId++;
     const promise = new Promise<any>((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
     });
-    await this.write({ jsonrpc: '2.0', id, method, params });
+    // The real event order for a failed spawn is 'error' → stdin write rejects
+    // EPIPE → 'close'. `teardown` therefore rejects this promise while nobody
+    // is holding it yet (we haven't returned it), which surfaces as an
+    // unhandled rejection — its own main-process crash path. The caller still
+    // observes the rejection through its own await of the returned promise.
+    promise.catch(() => {});
+    try {
+      await this.write({ jsonrpc: '2.0', id, method, params });
+    } catch (err: any) {
+      // Report the spawn failure rather than the opaque EPIPE it caused.
+      this.pending.delete(id);
+      throw new Error(this.spawnError ?? err?.message ?? String(err));
+    }
     return promise;
   }
 

@@ -198,3 +198,32 @@ export function backendNeedsShell(binary: string): boolean {
   const ext = path.extname(binary).toLowerCase();
   return ext === '.cmd' || ext === '.bat';
 }
+
+/// Explain a child-process spawn failure using the actual missing resource.
+/// Node reports ENOENT for both a missing executable and a missing `cwd`; the
+/// latter was previously mislabeled as an uninstalled CLI and then followed
+/// by a second, opaque "status -2" close error.
+///
+/// Lives here rather than in `runner.ts` so the JSON-RPC backend clients can
+/// use it: `runner.ts` imports `geminiAcp` (and `reviewer`, which constructs a
+/// `CodexAppServerClient`), so none of them can import `runner` back without a
+/// cycle. `runner.ts` re-exports it for its existing callers and tests.
+export function spawnFailureMessage(
+  args: { backend: Backend; binary: string; cwd: string },
+  err: NodeJS.ErrnoException,
+  cwdExists: boolean = fs.existsSync(args.cwd),
+): string {
+  if (err.code === 'ENOENT' && !cwdExists) {
+    return (
+      `Couldn't launch ${args.backend}: the working directory no longer exists: ` +
+      `\`${args.cwd}\`. It may have been a worktree that was removed or checked out locally.`
+    );
+  }
+  if (err.code === 'ENOENT') {
+    return (
+      `Couldn't launch ${args.backend}: \`${args.binary}\` was not found. ` +
+      `Make sure the CLI is installed and on your PATH — see the install steps in the README.`
+    );
+  }
+  return `Couldn't launch ${args.backend}: ${err.message}`;
+}

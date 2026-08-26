@@ -59,6 +59,7 @@ import {
   buildBackendEnv,
   listBackendPathCandidates,
   resolveBackendPath,
+  spawnFailureMessage,
 } from './backendPaths';
 import {
   OllamaChatMessage,
@@ -465,29 +466,11 @@ export function shouldReleaseClaudeBroker(args: {
   return args.backend === 'claude' && !args.respawning;
 }
 
-/// Explain a child-process spawn failure using the actual missing resource.
-/// Node reports ENOENT for both a missing executable and a missing `cwd`; the
-/// latter was previously mislabeled as an uninstalled CLI and then followed
-/// by a second, opaque "status -2" close error.
-export function spawnFailureMessage(
-  args: { backend: Backend; binary: string; cwd: string },
-  err: NodeJS.ErrnoException,
-  cwdExists: boolean = fs.existsSync(args.cwd),
-): string {
-  if (err.code === 'ENOENT' && !cwdExists) {
-    return (
-      `Couldn't launch ${args.backend}: the working directory no longer exists: ` +
-      `\`${args.cwd}\`. It may have been a worktree that was removed or checked out locally.`
-    );
-  }
-  if (err.code === 'ENOENT') {
-    return (
-      `Couldn't launch ${args.backend}: \`${args.binary}\` was not found. ` +
-      `Make sure the CLI is installed and on your PATH — see the install steps in the README.`
-    );
-  }
-  return `Couldn't launch ${args.backend}: ${err.message}`;
-}
+/// Re-exported from `./backendPaths`, where it now lives so the JSON-RPC
+/// backend clients (`geminiAcp`, `codex-app-server`) can share it without an
+/// import cycle back through this file. Kept exported here for the existing
+/// callers and `runner.test.ts`.
+export { spawnFailureMessage };
 
 /// Turn a per-turn MCP allowlist into the flags the claude spec understands.
 ///
