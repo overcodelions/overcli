@@ -17,6 +17,12 @@ import type { FlowRun } from '../../shared/flows/schema';
 // `runtime.localCheckout.test.ts`.
 const seeded = vi.hoisted(() => ({ runs: [] as FlowRun[] }));
 
+// An actual eviction (`pruneOldRuns`) calls `clearAttachments`, which
+// resolves its root through `app.getPath('userData')`. No suite in this file
+// evicted anything before the prune suite below, which is why this mock
+// wasn't needed until now. Pattern from `runtime.localCheckout.test.ts`.
+vi.mock('electron', () => ({ app: { getPath: () => '/tmp/overcli-flow-runtime-tests' } }));
+
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => seeded.runs,
   saveRun: vi.fn(),
@@ -124,6 +130,9 @@ import {
   ollamaConvNeedsReset,
   FlowRuntimeImpl,
 } from './runtime';
+// The mock factory above supplies this as a `vi.fn()`; importing it is how
+// the prune suite asserts WHICH run got its checkpoint deleted.
+import { deleteRun as deleteRunFromDisk } from './runsStore';
 
 describe('rebindRunToLocalProject', () => {
   it('moves a checked-out single-project flow off its deleted worktree cwd', () => {
@@ -1277,5 +1286,110 @@ describe('FlowRuntimeImpl — unreviewed done runs', () => {
       } as Partial<FlowRun>),
     ]);
     expect(await runtime.unreviewedDoneRunIds()).toEqual(['workspace-run']);
+  });
+});
+
+/// `pruneOldRuns` evicts the oldest finished runs once the run map hits
+/// `MAX_RETAINED_RUNS`. It never runs `git worktree remove` — but evicting
+/// still drops the last handle that can REACH a worktree (the in-memory run
+/// goes, `deleteRunFromDisk` takes the checkpoint, and `checkoutRunLocally`
+/// resolves through `this.runs`), so a finished run holding uncommitted work
+/// nobody reviewed was silently orphaned the moment 50 others piled up.
+/// The filter now skips dirty runs, on the same predicate `deleteRun` uses.
+describe('FlowRuntimeImpl — prune keeps runs with unreviewed work', () => {
+  /// Mirrors `MAX_RETAINED_RUNS` (private static on FlowRuntimeImpl). Seeding
+  /// exactly this many runs makes `overflow = all.length - MAX + 1` equal 1,
+  /// so there is EXACTLY one victim and the assertion needs no counting.
+  const MAX_RETAINED_RUNS = 50;
+
+  function seedRun(over: Partial<FlowRun>): FlowRun {
+    return {
+      id: 'run-x',
+      flowId: 'diff-flow',
+      flowSnapshot: { id: 'diff-flow', name: 'Diff flow', steps: [], participants: [] },
+      projectPath: '/tmp/project',
+      userPrompt: 'do the thing',
+      conversationIds: {},
+      artifacts: {},
+      state: { kind: 'done' },
+      createdAt: 1,
+      attempts: [],
+      // `sourceProjectPath` / `branchName` deliberately unset: with all three
+      // of those plus `worktreePath` present and the path absent from disk,
+      // the constructor's local-checkout recovery calls `currentBranch()`,
+      // which this file's git mock does not export.
+      ...over,
+    } as FlowRun;
+  }
+
+  /// 50 finished runs, oldest first. `dirtyOldest` decides whether run-00's
+  /// worktree reports uncommitted changes; every other run is clean. The git
+  /// mock keys off the cwd — a path containing `clean-worktree` reports clean
+  /// (exitCode 0, empty stdout), anything else reports dirty.
+  function seedFifty(dirtyOldest: boolean): FlowRun[] {
+    return Array.from({ length: MAX_RETAINED_RUNS }, (_, i) => {
+      const id = `run-${String(i).padStart(2, '0')}`;
+      const clean = `/tmp/wt/clean-worktree-${id}`;
+      return seedRun({
+        id,
+        createdAt: i + 1,
+        worktreePath: i === 0 && dirtyOldest ? '/tmp/wt/dirty-oldest' : clean,
+      });
+    });
+  }
+
+  function runtimeWith(runs: FlowRun[]): FlowRuntimeImpl {
+    seeded.runs = runs;
+    return new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+  }
+
+  /// `pruneOldRuns` is private and fires from `startRun`, before the new run
+  /// is added — so launching a run is how a test drives it, with no reach
+  /// into private state.
+  async function launch(runtime: FlowRuntimeImpl): Promise<void> {
+    const result = await runtime.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Refactor the module.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+    vi.mocked(deleteRunFromDisk).mockClear();
+  });
+
+  it('spares the oldest run when its worktree has uncommitted changes', async () => {
+    const runtime = runtimeWith(seedFifty(true));
+    vi.mocked(deleteRunFromDisk).mockClear();
+
+    await launch(runtime);
+
+    // The dirty oldest survives, in memory and on disk.
+    expect(runtime.getRun('run-00')).not.toBeNull();
+    expect(vi.mocked(deleteRunFromDisk).mock.calls.flat()).not.toContain('run-00');
+    // ...and the next-oldest CLEAN run is evicted in its place, so retention
+    // still does its job rather than silently giving up.
+    expect(vi.mocked(deleteRunFromDisk).mock.calls.flat()).toContain('run-01');
+    expect(runtime.getRun('run-01')).toBeNull();
+  });
+
+  it('still evicts plain oldest-first when every worktree is clean', async () => {
+    const runtime = runtimeWith(seedFifty(false));
+    vi.mocked(deleteRunFromDisk).mockClear();
+
+    await launch(runtime);
+
+    expect(vi.mocked(deleteRunFromDisk).mock.calls.flat()).toContain('run-00');
+    expect(runtime.getRun('run-00')).toBeNull();
+    // Exactly one victim: `overflow = 50 - 50 + 1`.
+    expect(runtime.getRun('run-01')).not.toBeNull();
   });
 });
