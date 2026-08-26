@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import {
+  CONCISE_RESPONSE_DIRECTIVE,
+  EFFICIENT_TOOL_DIRECTIVE,
+} from '../../shared/responseDirectives';
+
 // The engine's default deps touch electron-backed stores at import time.
 // Stub them; the harness injects in-memory replacements anyway.
 vi.mock('./workersStore', () => ({
@@ -789,6 +794,30 @@ describe('WorkerEngine errands', () => {
         reply: 'Nothing material.',
       },
     });
+  });
+
+  it('leads a swift worker\'s errand with the Swift directives, and a full one\'s with the job', async () => {
+    const swift = makeHarness({ seed: [seedWorker()] });
+    swift.engine.start();
+    await swift.engine.runErrand('worker-1', 'What changed?', 'chat');
+    // Default, for a worker hired before `pace` existed and for every new one.
+    expect(swift.parked[0].prompt.startsWith(CONCISE_RESPONSE_DIRECTIVE)).toBe(true);
+    expect(swift.parked[0].prompt).toContain(EFFICIENT_TOOL_DIRECTIVE);
+    // The directives are a preamble, not a replacement: the errand still
+    // carries the whole contract behind them.
+    expect(swift.parked[0].prompt).toContain('Find the most valuable maintenance work');
+
+    const full = makeHarness({ seed: [seedWorker({ pace: 'full' })] });
+    full.engine.start();
+    await full.engine.runErrand('worker-1', 'What changed?', 'chat');
+    expect(full.parked[0].prompt).not.toContain(CONCISE_RESPONSE_DIRECTIVE);
+  });
+
+  it('leaves a shift at full pace whatever the worker is set to', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.engine.start();
+    await h.engine.workShiftNow('worker-1');
+    expect(h.parked[0].prompt).not.toContain(CONCISE_RESPONSE_DIRECTIVE);
   });
 
   it('plans an errand through the job description and worker contract', async () => {

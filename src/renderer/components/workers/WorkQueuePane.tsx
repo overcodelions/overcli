@@ -224,7 +224,7 @@ function Band({
       key={row.key}
       row={row}
       now={now}
-      onOpen={() => onOpen(row)}
+      onOpen={onOpen}
       clock={byDay}
       filed={filed?.[row.key] ?? null}
       onOpenFile={onOpenFile}
@@ -284,7 +284,7 @@ function QueueRowView({
 }: {
   row: QueueRow;
   now: number;
-  onOpen: () => void;
+  onOpen: (row: QueueRow) => void;
   clock?: boolean;
   filed?: WorkerFile | null;
   onOpenFile?: (path: string) => void;
@@ -293,13 +293,20 @@ function QueueRowView({
   const tint = workerColorFor(colors, row.workerId);
   const worker = useWorkersStore((s) => s.workers[row.workerId]);
   const live = row.status === 'running' || row.status === 'planning';
+  // A consolidated row stands for several answers and opens none of them:
+  // clicking it unfolds what it rolled up, and each line inside goes to the
+  // conversation it names.
+  const answers = row.answers;
+  const [unfolded, setUnfolded] = useState(false);
 
   // The wrapper holds the hover state the trailing arrow reads, so the arrow
   // is a sibling of the link rather than a child of it.
   return (
+    <>
     <div className="group mx-1 flex items-start gap-2 rounded-lg pr-1 transition-colors hover:bg-card/70">
       <button
-        onClick={onOpen}
+        onClick={answers ? () => setUnfolded((v) => !v) : () => onOpen(row)}
+        aria-expanded={answers ? unfolded : undefined}
         className={
           'flex min-w-0 flex-1 items-start gap-3 rounded-md py-2 pl-3 pr-2 text-left ' +
           'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
@@ -382,11 +389,43 @@ function QueueRowView({
 
       <span
         aria-hidden
-        className="w-3 shrink-0 pt-2.5 text-[11px] text-ink-faint opacity-0 transition-opacity group-hover:opacity-100"
+        className={
+          'w-3 shrink-0 pt-2.5 text-[11px] text-ink-faint transition-opacity ' +
+          (answers ? '' : 'opacity-0 group-hover:opacity-100')
+        }
       >
-        →
+        {answers ? (unfolded ? '▾' : '▸') : '→'}
       </span>
     </div>
+    {answers && unfolded && (
+      <div className="mb-1 ml-[3.4rem] mr-1 border-l border-card-strong pl-3">
+        {answers.map((answer) => (
+          <button
+            key={answer.key}
+            onClick={() =>
+              onOpen({
+                ...row,
+                key: answer.key,
+                title: answer.title,
+                at: answer.at,
+                orchestrationId: answer.orchestrationId,
+                answers: undefined,
+              })
+            }
+            className={
+              'flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left ' +
+              'hover:bg-card/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
+            }
+          >
+            <span className="min-w-0 flex-1 truncate text-[12px] text-ink-muted">{answer.title}</span>
+            <span className="shrink-0 text-[11px] tabular-nums text-ink-faint">
+              {clockTime(answer.at)}
+            </span>
+          </button>
+        ))}
+      </div>
+    )}
+    </>
   );
 }
 
