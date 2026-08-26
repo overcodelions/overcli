@@ -1933,17 +1933,26 @@ export interface IPCInvokeMap {
   /// Permanently remove a run from memory + disk. Aborts mid-flight
   /// subprocesses if still running. Idempotent — deleting an unknown
   /// id returns ok.
-  /// Pass `force: true` to skip the uncommitted-changes guard. Without it,
-  /// a run whose worktree(s) have uncommitted changes returns
+  /// Pass `force: true` to skip the unreviewed-work guard. Without it, a run
+  /// whose worktree(s) hold uncommitted changes OR commits never merged into
+  /// the run's base branch returns
   /// `{ ok: false, needsConfirm: true, dirty }` and deletes nothing, so the
-  /// renderer can warn before the work is discarded.
+  /// renderer can warn before the work is discarded. `fileCount` and
+  /// `unmergedCommits` stay separate because they are lost by different
+  /// mechanisms — the worktree removal takes the files, the branch delete
+  /// takes the commits — and the dialog names both.
   'flows:deleteRun': (args: { runId: UUID; force?: boolean }) =>
     | { ok: true }
     | { ok: false; error: string }
     | {
         ok: false;
         needsConfirm: true;
-        dirty: Array<{ name: string; worktreePath: string; fileCount: number }>;
+        dirty: Array<{
+          name: string;
+          worktreePath: string;
+          fileCount: number;
+          unmergedCommits: number;
+        }>;
       };
   'flows:listRegistries': () => FlowRegistry[];
   'flows:upsertRegistry': (args: {
