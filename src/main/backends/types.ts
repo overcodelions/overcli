@@ -39,6 +39,17 @@ export interface BackendSendArgs {
   /// wrong for a hidden drafting turn that wants full reasoning and simply
   /// has no use for tools.
   skipGlobalMcp?: boolean;
+  /// Inline `--mcp-config` JSON restricting this turn to a named subset of
+  /// the user's MCP servers (see `buildClaudeMcpConfigArg`). Implies
+  /// `--strict-mcp-config`: the point is to load THESE servers and nothing
+  /// else. Resolved by the runner so specs stay off the filesystem.
+  ///
+  /// A worker whose job is reading this repo has no use for seven MCP
+  /// servers' tool schemas, and it paid for all of them on every shift and
+  /// every desk message. Undefined keeps the old behavior (inherit
+  /// everything); an allowlist that resolves to nothing arrives here as
+  /// undefined with `skipGlobalMcp` set instead.
+  mcpAllowlistConfig?: string;
 }
 
 /// Lookups the runner exposes to a spec. Lets a spec resolve per-conv

@@ -146,7 +146,10 @@ export function distributeRemainingFunds(allocation: TreasuryAllocation): Distri
   }));
 }
 
-type FundableWorker = Pick<Worker, 'id' | 'name' | 'order' | 'createdAt' | 'enabled' | 'budgetUSDPerMonth'>;
+type FundableWorker = Pick<
+  Worker,
+  'id' | 'name' | 'order' | 'createdAt' | 'enabled' | 'budgetUSDPerMonth' | 'cadence'
+>;
 
 /// Run the waterfall.
 ///
@@ -185,6 +188,14 @@ export function allocateTreasury(
     const ownRemaining = Math.max(0, capUSD - workerSpend);
     const fromPool = Math.max(0, remainingUSD - claimedAbove);
     const availableUSD = w.enabled ? Math.min(ownRemaining, fromPool) : 0;
+    // An on-demand worker spends like anyone else but RESERVES like nobody:
+    // it draws from whatever is left at the moment you ask it something, and
+    // between those moments its cap sits over the pool without holding any of
+    // it back. Reserving would be the wrong bargain — a desk you visit twice a
+    // week would starve the CI watcher below it for the other five days — and
+    // so would the paused treatment (zero available), which is what made
+    // pausing a worker also shut its desk.
+    const reserves = w.enabled && w.cadence !== null;
 
     const row: WorkerFunding = {
       workerId: w.id,
@@ -207,8 +218,10 @@ export function allocateTreasury(
     };
 
     // A paused worker holds nothing back. That is what makes pausing the
-    // cheapest way to fund everyone below it.
-    if (w.enabled) claimedAbove += ownRemaining;
+    // cheapest way to fund everyone below it. An on-demand worker holds
+    // nothing back either, for the reason above — but unlike a paused one it
+    // is still funded.
+    if (reserves) claimedAbove += ownRemaining;
     return row;
   });
 

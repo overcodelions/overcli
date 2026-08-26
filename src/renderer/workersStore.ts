@@ -36,7 +36,8 @@ export interface WorkerDraft {
   tagline?: string;
   jobDescription: string;
   projectPath: string;
-  cadence: ScheduleTrigger;
+  /// `null` means on demand — no clock at all. See `Worker.cadence`.
+  cadence: ScheduleTrigger | null;
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
@@ -48,6 +49,9 @@ export interface WorkerDraft {
   /// Narrowed handoff targets. Absent/empty means every colleague on the
   /// same project, which is the default the editor writes.
   delegatesTo?: UUID[];
+  /// MCP servers this worker's turns may load. Absent means all of them —
+  /// see `Worker.mcpServers`.
+  mcpServers?: string[];
 }
 
 interface WorkersState {
@@ -395,6 +399,7 @@ export function draftFromWorker(w: Worker): WorkerDraft {
     heartbeatBackend: w.heartbeatBackend,
     pace: w.pace,
     flowIds: [...w.flowIds],
+    mcpServers: w.mcpServers ? [...w.mcpServers] : undefined,
     enabled: w.enabled,
   };
 }
@@ -468,6 +473,9 @@ export function draftFromPortable(
     heartbeatModel: worker.heartbeatModel,
     heartbeatBackend: worker.heartbeatBackend,
     flowIds: worker.flowIds.filter((id) => available.has(id)),
+    // Carried as sent: it describes the job, and a name this install hasn't
+    // configured is simply not loaded rather than an import failure.
+    mcpServers: worker.mcpServers ? [...worker.mcpServers] : undefined,
     enabled: true,
   };
 }

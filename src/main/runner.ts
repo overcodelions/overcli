@@ -95,6 +95,7 @@ import { codexExecSnapshotText } from './backends/codex';
 import { withBatchingDirective, resolveTurboEffort } from './backends/turbo';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
+import { buildClaudeMcpConfigArg } from './mcpConfig';
 import { isSupportedPremiumModel } from '../shared/modelCatalog';
 import { effortSupported } from '../shared/effort';
 import { isSafeIdSegment } from '../shared/flows/safeId';
@@ -107,7 +108,13 @@ export const ONE_SHOT_CANCELLED = 'Cancelled.';
 
 /// Result of a `RunnerManager.oneShot` call: the assistant's full text on
 /// success, or a surfaced error string.
-export type OneShotResult = { ok: true; text: string } | { ok: false; error: string };
+/// `sessionId` is the CLI session the turn ran under, when one was
+/// announced. Callers that want a THREAD rather than a one-off — the worker
+/// desk — hand it back as `resumeSessionId` on the next turn, which is what
+/// turns a sequence of one-shots into a conversation the model remembers.
+export type OneShotResult =
+  | { ok: true; text: string; sessionId?: string }
+  | { ok: false; error: string };
 
 /// A watchdog that fires only after a stretch of *silence*: every `bump()`
 /// restarts the clock, so work that keeps producing output keeps the timer
@@ -482,6 +489,37 @@ export function spawnFailureMessage(
   return `Couldn't launch ${args.backend}: ${err.message}`;
 }
 
+/// Turn a per-turn MCP allowlist into the flags the claude spec understands.
+///
+/// Three states, and the empty one carries the point: `undefined` inherits
+/// the user's whole config (every caller that never asked for scoping), a
+/// list that resolves to at least one configured server becomes an inline
+/// `--mcp-config`, and a list that resolves to NOTHING — deliberately empty,
+/// or naming servers the user has since removed — collapses to plain
+/// `--strict-mcp-config`, which loads none at all. That last case must not
+/// fall back to "inherit everything": a worker asking for one server it no
+/// longer has should get zero, not seven.
+///
+/// Only claude can be NARROWED this way today. An empty list is expressible
+/// on any backend — that's plain strict — but a backend with no way to say
+/// "these three" inherits everything rather than losing them all: stripping
+/// tools a job needs breaks the worker, where paying for tools it doesn't
+/// only costs what this feature was already costing yesterday.
+export function resolveMcpScope(
+  args: { backend: Backend; cwd: string; mcpAllowlist?: string[]; skipGlobalMcp?: boolean },
+  buildConfig: (names: string[], cwd: string) => string | null = (names, cwd) =>
+    buildClaudeMcpConfigArg(names, cwd),
+): { skipGlobalMcp?: boolean; mcpAllowlistConfig?: string } {
+  if (!args.mcpAllowlist) return { skipGlobalMcp: args.skipGlobalMcp };
+  if (args.mcpAllowlist.length === 0) return { skipGlobalMcp: true };
+  if (args.backend !== 'claude') return { skipGlobalMcp: args.skipGlobalMcp };
+  const config = buildConfig(args.mcpAllowlist, args.cwd);
+  // Named servers, none of which resolve: the user asked for a specific set
+  // and this machine has none of it. Load nothing — falling back to the whole
+  // config would hand the worker the seven it just said it didn't want.
+  return config ? { skipGlobalMcp: args.skipGlobalMcp, mcpAllowlistConfig: config } : { skipGlobalMcp: true };
+}
+
 /// True when CLI stderr indicates the cached --resume id no longer exists
 /// (history wiped, project moved, etc.). Substring-matched against the
 /// messages claude/codex/gemini emit for this case. Intentionally broad —
@@ -546,6 +584,8 @@ interface SendArgs {
   turbo?: boolean;
   /// See the note on `oneShot`'s `skipGlobalMcp`.
   skipGlobalMcp?: boolean;
+  /// See the note on `oneShot`'s `mcpAllowlist`.
+  mcpAllowlist?: string[];
   codexRolloutPaths?: string[];
   attachments?: Attachment[];
   reviewBackend?: string | null;
@@ -855,6 +895,9 @@ export class RunnerManager {
     {
       text: string;
       settled: boolean;
+      /// The CLI session this turn announced, handed back on success so a
+      /// caller can resume the same thread next time.
+      sessionId?: string;
       finish: (r: OneShotResult) => void;
       /// Live progress plumbing — populated only when the caller passed an
       /// `onProgress` hook (the orchestrator producer, which streams its
@@ -1205,11 +1248,29 @@ export class RunnerManager {
     /// Deliberately NOT `turbo`: turbo also pins effort to 'low', which would
     /// quietly downgrade every flow draft and worker hire.
     skipGlobalMcp?: boolean;
+    /// Restrict this turn to a named subset of the user's MCP servers,
+    /// instead of the all-or-nothing choice `skipGlobalMcp` offers.
+    ///
+    /// A worker turn is the case this exists for: the producer's job IS the
+    /// MCP servers, so it cannot go strict, but a worker that reads Jira has
+    /// no use for Slack, Puppeteer, AWS and the rest — and it was paying for
+    /// every one of their tool schemas on every shift and every desk message.
+    /// Undefined inherits everything, as before; `[]` loads none.
+    mcpAllowlist?: string[];
+    /// Pin this turn to a conversation the caller owns, instead of a
+    /// throwaway. Paired with `resumeSessionId` it makes consecutive
+    /// one-shots a single thread — see `OneShotResult.sessionId`.
+    conversationId?: UUID;
+    /// Resume a prior CLI session rather than starting cold. The model keeps
+    /// everything it read and reasoned about last turn, so the caller need
+    /// not replay the conversation as text (and the turn need not re-do the
+    /// exploration that produced the last answer).
+    resumeSessionId?: string;
     /// Handle the caller can later pass to `cancelOneShot` to stop this turn
     /// and reclaim its subprocess.
     cancelKey?: string;
   }): Promise<OneShotResult> {
-    const conversationId = randomUUID();
+    const conversationId = args.conversationId ?? randomUUID();
     const timeoutMs = args.timeoutMs ?? 120_000;
     const idleTimeoutMs = args.idleTimeoutMs;
     return await new Promise<OneShotResult>((resolve) => {
@@ -1252,6 +1313,7 @@ export class RunnerManager {
       this.oneShotWaiters.set(conversationId, {
         text: '',
         settled: false,
+        sessionId: args.resumeSessionId,
         finish,
         partial: '',
         tools: [],
@@ -1267,6 +1329,8 @@ export class RunnerManager {
         cwd: args.cwd,
         model: args.model,
         skipGlobalMcp: args.skipGlobalMcp,
+        mcpAllowlist: args.mcpAllowlist,
+        sessionId: args.resumeSessionId,
         // Default: pure generation with no edits, prompts off so the hidden
         // conversation can't stall on an unanswerable approval. Callers that
         // need unattended tool use (the producer) override this.
@@ -1323,12 +1387,17 @@ export class RunnerManager {
         text: (waiter.text + waiter.partial).trim(),
         tools: waiter.tools.slice(),
       });
+    } else if (event.type === 'sessionConfigured') {
+      // The id the CLI minted (or confirmed, on a resume). Recorded rather
+      // than forwarded: this conversation is invisible to the renderer, and
+      // the only consumer is the caller waiting on the promise.
+      waiter.sessionId = event.sessionId;
     } else if (event.type === 'error') {
       waiter.settled = true;
       waiter.finish({ ok: false, error: event.message });
     } else if (event.type === 'running' && event.isRunning === false) {
       waiter.settled = true;
-      waiter.finish({ ok: true, text: waiter.text });
+      waiter.finish({ ok: true, text: waiter.text, sessionId: waiter.sessionId });
     }
     return true;
   }
@@ -1352,9 +1421,10 @@ export class RunnerManager {
       allowedTools: args.backend === 'ollama' ? undefined : args.enabledTools,
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
       turbo: args.turbo ?? false,
-      skipGlobalMcp: args.skipGlobalMcp,
+      ...resolveMcpScope(args),
     };
   }
+
 
   /// Lookups the runner exposes to BackendSpec implementations. Holds
   /// the per-conv state that specs occasionally need to weave into their

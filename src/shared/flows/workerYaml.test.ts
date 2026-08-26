@@ -275,3 +275,41 @@ describe('heartbeat backend travels with the model', () => {
     expect(res.bundle.worker.heartbeatBackend).toBeUndefined();
   });
 });
+
+
+describe('an on-demand cadence in a share file', () => {
+  it('writes the marker as a word rather than an empty value', () => {
+    const doc = parse(shareOf(worker({ cadence: null })));
+    expect(doc.cadence).toBe('onDemand');
+  });
+
+  it('round-trips back to no clock', () => {
+    const res = parseWorkerYaml(shareOf(worker({ cadence: null })));
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.bundle.worker.cadence).toBeNull();
+  });
+});
+
+describe('MCP allowlists across a share', () => {
+  it('omits the key when the worker inherits everything', () => {
+    // Absent is the pre-field default, and writing it out as an empty list
+    // would import as "this job needs no servers" — the opposite.
+    expect(parse(shareOf()).mcp_servers).toBeUndefined();
+  });
+
+  it('round-trips a named allowlist', () => {
+    const doc = parse(shareOf(worker({ mcpServers: ['atlassian', 'slack'] })));
+    expect(doc.mcp_servers).toEqual(['atlassian', 'slack']);
+    const parsed = parseWorkerYaml(shareOf(worker({ mcpServers: ['atlassian', 'slack'] })));
+    expect(parsed.ok && parsed.bundle.worker.mcpServers).toEqual(['atlassian', 'slack']);
+  });
+
+  it('round-trips an explicitly empty allowlist', () => {
+    // "This job needs no connected services" is a real answer and the
+    // cheapest a worker gets — it must survive the trip.
+    const yaml = shareOf(worker({ mcpServers: [] }));
+    expect(parse(yaml).mcp_servers).toEqual([]);
+    const parsed = parseWorkerYaml(yaml);
+    expect(parsed.ok && parsed.bundle.worker.mcpServers).toEqual([]);
+  });
+});

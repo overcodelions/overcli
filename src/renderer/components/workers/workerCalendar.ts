@@ -116,7 +116,10 @@ export function projectShifts(
   end: number,
   seed?: number | null,
 ): number[] {
-  if (!worker.enabled) return [];
+  // An on-demand worker never appears on the calendar, and that is the
+  // honest drawing: the calendar answers "what will happen while I'm not
+  // watching", and the answer for a desk is nothing.
+  if (!worker.enabled || worker.cadence === null) return [];
   return projectOccurrences(worker.cadence, from, end, seed);
 }
 

@@ -12,6 +12,9 @@ import {
   removeMcpServerFromTargets,
   removeTomlSection,
   writeMcpServer,
+  buildClaudeMcpConfigArg,
+  filterMcpServers,
+  readClaudeMcpServers,
 } from './mcpConfig';
 
 let tmp: string;
@@ -385,5 +388,43 @@ describe('removeMcpServerFromTargets', () => {
     expect(readMcpServer('claude', 'linear', paths)).toBeNull();
     expect(readMcpServer('codex', 'linear', paths)).toBeNull();
     expect(readMcpServer('gemini', 'linear', paths)).toBeNull();
+  });
+});
+
+describe('per-turn MCP allowlists', () => {
+  it('keeps only the named servers, in the order they were asked for', () => {
+    const all = { slack: { command: 'a' }, jira: { command: 'b' }, aws: { command: 'c' } };
+    expect(filterMcpServers(all, ['jira', 'slack'])).toEqual({
+      jira: { command: 'b' },
+      slack: { command: 'a' },
+    });
+  });
+
+  it('drops a name the user has since removed rather than failing the turn', () => {
+    // A worker pinned to a server that is gone should still work, just
+    // without it — the alternative kills a whole class of shifts on stale
+    // config the user has already moved on from.
+    expect(filterMcpServers({ jira: { command: 'b' } }, ['jira', 'zendesk'])).toEqual({
+      jira: { command: 'b' },
+    });
+  });
+
+  it('reads the user config and builds an inline --mcp-config value', () => {
+    addMcpServerToTargets(
+      { name: 'linear', config: { command: 'npx', args: ['-y', '@linear/mcp'] }, targets: ['claude'] },
+      paths,
+    );
+    expect(Object.keys(readClaudeMcpServers(undefined, paths))).toContain('linear');
+    const arg = buildClaudeMcpConfigArg(['linear'], undefined, paths);
+    expect(JSON.parse(arg!)).toEqual({
+      mcpServers: { linear: { command: 'npx', args: ['-y', '@linear/mcp'] } },
+    });
+  });
+
+  it('returns null when the allowlist resolves to nothing', () => {
+    // The caller pairs null with plain `--strict-mcp-config`, i.e. no servers
+    // at all — which is exactly what an empty allowlist asked for.
+    expect(buildClaudeMcpConfigArg([], undefined, paths)).toBeNull();
+    expect(buildClaudeMcpConfigArg(['nope'], undefined, paths)).toBeNull();
   });
 });

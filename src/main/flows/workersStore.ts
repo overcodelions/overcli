@@ -74,7 +74,9 @@ export function loadAllWorkers(): Worker[] {
     try {
       const raw = fs.readFileSync(path.join(dir(), name), 'utf8');
       const w = JSON.parse(raw) as Worker;
-      if (!w || typeof w.id !== 'string' || !w.cadence || !w.caps) continue;
+      // `cadence: null` is a real, readable worker — one that works on
+      // demand. Only an ABSENT cadence is a malformed record.
+      if (!w || typeof w.id !== 'string' || w.cadence === undefined || !w.caps) continue;
       out.push({ ...w, flowIds: Array.isArray(w.flowIds) ? w.flowIds : [] });
     } catch (err) {
       log('warn', 'workers', `Skipping unreadable ${name}: ${String(err)}`);

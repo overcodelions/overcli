@@ -125,7 +125,14 @@ function buildProducerPrompt(args: {
   priorPrompt?: string;
   priorReply?: string;
   priorTurns?: Array<{ prompt: string; reply: string }>;
+  /// Set when this turn RESUMES the session that produced the earlier
+  /// exchanges. The model already holds the persona, the rules and the whole
+  /// thread — re-sending them would be paying twice for context it never
+  /// lost, and replaying turns it remembers reads as the user repeating
+  /// themselves. Send the new message and nothing else.
+  warmResume?: boolean;
 }): string {
+  if (args.warmResume) return args.message;
   const parts = [producerSystemPrompt(), '', '---', ''];
   const turns =
     args.priorTurns && args.priorTurns.length > 0
@@ -220,8 +227,18 @@ export class OrchestratorImpl {
     /// renderer routes attributed progress to the Workers pane instead of
     /// the Orchestrator's Ask pane.
     progressWorkerId?: UUID;
+    /// Load only these MCP servers for the producer turn (see
+    /// `RunnerManager.oneShot`). Undefined inherits the user's whole config.
+    mcpAllowlist?: string[];
+    /// Run the turn as part of a caller-owned conversation rather than a
+    /// throwaway one, resuming `resumeSessionId` when it is set. The worker
+    /// desk uses this to hold one thread per day instead of re-establishing
+    /// the worker from scratch on every message.
+    conversationId?: UUID;
+    resumeSessionId?: string;
   }): Promise<
-    { ok: true; reply: string; candidates: Candidate[] } | { ok: false; error: string }
+    | { ok: true; reply: string; candidates: Candidate[]; sessionId?: string }
+    | { ok: false; error: string }
   > {
     const message = args.message.trim();
     if (!message) return { ok: false, error: 'Message is empty.' };
@@ -249,7 +266,7 @@ export class OrchestratorImpl {
     // Run in the project so MCP servers scoped to that repo (and the model's
     // own file tools) resolve; fall back to home if no project path given.
     const cwd = args.projectPath?.trim() || os.homedir();
-    const prompt = buildProducerPrompt(args);
+    const prompt = buildProducerPrompt({ ...args, warmResume: !!args.resumeSessionId });
 
     // Producer turns can be slow (tool round-trips against a remote source),
     // so give them a longer leash than the default one-shot timeout. They
@@ -266,6 +283,9 @@ export class OrchestratorImpl {
       prompt,
       attachments: args.attachments,
       cwd,
+      mcpAllowlist: args.mcpAllowlist,
+      conversationId: args.conversationId,
+      resumeSessionId: args.resumeSessionId,
       // A producer that searches two issue trackers and diffs three repos is
       // doing dozens of MCP round-trips; a flat 5-minute wall clock killed
       // healthy runs mid-investigation. Budget on SILENCE instead (the same
@@ -296,7 +316,7 @@ export class OrchestratorImpl {
     if (!result.ok) return { ok: false, error: result.error };
 
     const candidates = parseCandidates(result.text);
-    return { ok: true, reply: result.text, candidates };
+    return { ok: true, reply: result.text, candidates, sessionId: result.sessionId };
   }
 
   // ---- DISPATCH ---------------------------------------------------------
@@ -417,8 +437,20 @@ export class OrchestratorImpl {
     /// but this filter is the guarantee: a rejected idea cannot come back
     /// even when the model ignores the instruction.
     excludeTitles?: string[];
+    /// See `propose`. A worker carries its own MCP allowlist and, at the
+    /// desk, its own conversation.
+    mcpAllowlist?: string[];
+    conversationId?: UUID;
+    resumeSessionId?: string;
   }): Promise<
-    | { ok: true; orchestrationId: UUID; count: number; queued: number; excluded: number }
+    | {
+        ok: true;
+        orchestrationId: UUID;
+        count: number;
+        queued: number;
+        excluded: number;
+        sessionId?: string;
+      }
     | { ok: false; error: string }
   > {
     const projectPath = args.projectPath?.trim();
@@ -432,6 +464,9 @@ export class OrchestratorImpl {
       priorReply: args.priorReply,
       priorTurns: args.priorTurns,
       attachments: args.attachments,
+      mcpAllowlist: args.mcpAllowlist,
+      conversationId: args.conversationId,
+      resumeSessionId: args.resumeSessionId,
       progressWorkerId: args.origin?.kind === 'worker' ? args.origin.workerId : undefined,
     });
     if (!produced.ok) return { ok: false, error: produced.error };
@@ -514,6 +549,7 @@ export class OrchestratorImpl {
       count: orchestration.items.length,
       queued,
       excluded: excludedCount,
+      sessionId: produced.sessionId,
     };
   }
 

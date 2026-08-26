@@ -12,7 +12,10 @@ import {
 } from './treasury';
 import type { Worker } from './worker';
 
-type Seed = Pick<Worker, 'id' | 'name' | 'order' | 'createdAt' | 'enabled' | 'budgetUSDPerMonth'>;
+type Seed = Pick<
+  Worker,
+  'id' | 'name' | 'order' | 'createdAt' | 'enabled' | 'budgetUSDPerMonth' | 'cadence'
+>;
 
 function w(id: string, cap: number, over: Partial<Seed> = {}): Seed {
   return {
@@ -22,6 +25,7 @@ function w(id: string, cap: number, over: Partial<Seed> = {}): Seed {
     createdAt: 1,
     enabled: true,
     budgetUSDPerMonth: cap,
+    cadence: { kind: 'daily', time: '09:00' },
     ...over,
   };
 }
@@ -205,5 +209,39 @@ describe('distributeRemainingFunds', () => {
     const caps = distributeRemainingFunds(allocation);
     expect(caps.every((cap) => cap.budgetUSDPerMonth >= 0.01)).toBe(true);
     expect(Number(caps.reduce((sum, cap) => sum + cap.budgetUSDPerMonth, 0).toFixed(2))).toBe(0.1);
+  });
+});
+
+
+describe('on-demand workers in the waterfall', () => {
+  const onDemand = (id: string, cap: number, order: number): Seed =>
+    w(id, cap, { order, cadence: null });
+
+  it('is funded to its cap while reserving nothing from the rows below', () => {
+    // $20 pot, two $20 caps. The top worker has no clock, so the scheduled
+    // worker beneath it still sees the whole pot — but the desk is NOT
+    // defunded the way pausing it would be.
+    const alloc = allocateTreasury([onDemand('desk', 20, 0), w('cron', 20, { order: 1 })], noSpend, 20);
+    expect(alloc.byWorker.map((f) => f.availableUSD)).toEqual([20, 20]);
+    expect(alloc.byWorker.map((f) => f.blocked)).toEqual(['none', 'none']);
+  });
+
+  it('is not a paused worker: pausing zeroes the row, no clock does not', () => {
+    const paused = allocateTreasury([w('desk', 20, { order: 0, enabled: false })], noSpend, 20);
+    expect(paused.byWorker[0]).toMatchObject({ availableUSD: 0, blocked: 'paused' });
+    const desk = allocateTreasury([onDemand('desk', 20, 0)], noSpend, 20);
+    expect(desk.byWorker[0]).toMatchObject({ availableUSD: 20, blocked: 'none' });
+  });
+
+  it('still stops at its own cap and at an empty pot', () => {
+    const spent = (id: string) => (id === 'desk' ? 20 : 0);
+    expect(allocateTreasury([onDemand('desk', 20, 0)], spent, 50).byWorker[0].blocked).toBe('cap');
+    // Everything above it is claimed, so there is nothing left to draw on.
+    const drained = allocateTreasury(
+      [w('cron', 20, { order: 0 }), onDemand('desk', 20, 1)],
+      noSpend,
+      20,
+    );
+    expect(drained.byWorker[1].blocked).toBe('pool');
   });
 });

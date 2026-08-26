@@ -761,6 +761,42 @@ describe('OrchestratorImpl worker batches', () => {
     });
   }
 
+  it('sends only the message when it is resuming the session that heard the rest', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, {
+      prompt: 'and the one before it?',
+      conversationId: 'conv-desk',
+      resumeSessionId: 'sess-a',
+      priorTurns: [{ prompt: 'how did the release go?', reply: 'Clean.' }],
+    });
+    const call = h.oneShotCalls[0];
+    expect(call.conversationId).toBe('conv-desk');
+    expect(call.resumeSessionId).toBe('sess-a');
+    // No producer system prompt, no replayed thread: the model is still
+    // holding both, and re-sending them pays twice for context it never lost.
+    expect(call.prompt).toBe('and the one before it?');
+  });
+
+  it('still establishes the producer on a cold turn', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, {
+      prompt: 'and the one before it?',
+      conversationId: 'conv-desk',
+      priorTurns: [{ prompt: 'how did the release go?', reply: 'Clean.' }],
+    });
+    const call = h.oneShotCalls[0];
+    expect(call.resumeSessionId).toBeUndefined();
+    expect(call.prompt).toContain('CONTEXT');
+    expect(call.prompt).toContain('how did the release go?');
+    expect(call.prompt).toContain('and the one before it?');
+  });
+
+  it('carries an MCP allowlist through to the producer turn', async () => {
+    const h = makeHarness({ producerReply: REPLY });
+    await parkAsWorker(h, { mcpAllowlist: ['atlassian'] });
+    expect(h.oneShotCalls[0].mcpAllowlist).toEqual(['atlassian']);
+  });
+
   it('drops journaled rejections case-insensitively and reports the count', async () => {
     const h = makeHarness({ producerReply: REPLY });
     const res = await parkAsWorker(h, { excludeTitles: ['  FIX THE FLAKY TEST '] });

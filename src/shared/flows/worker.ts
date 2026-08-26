@@ -8,7 +8,7 @@
 
 import type { Backend, UUID } from '../types';
 import type { ScheduleTrigger } from './schedule';
-import { SCHEDULE_AUTO_APPROVE_MAX, parseTimeOfDay } from './schedule';
+import { SCHEDULE_AUTO_APPROVE_MAX, describeTrigger, parseTimeOfDay } from './schedule';
 
 export type WorkerTrustLevel = 'probation' | 'trusted' | 'autonomous';
 export type WorkerMessageIntent = 'chat' | 'work';
@@ -82,7 +82,21 @@ export interface Worker {
   tagline?: string;
   jobDescription: string;
   projectPath: string;
-  cadence: ScheduleTrigger;
+  /// When the clock wakes this worker — or `null` for a worker with no
+  /// clock at all.
+  ///
+  /// `null` is ON DEMAND: a desk rather than a shift rota. It works only when
+  /// you ask it to, through an errand at its desk or an explicit "work a shift
+  /// now", and the scheduler never touches it. That is a different fact from
+  /// `enabled: false`, which this deliberately does not reuse: a paused worker
+  /// is off the roster entirely — it holds no funds and its desk is shut — and
+  /// an on-demand worker is a full employee that simply has no rota. Before
+  /// this existed the only way to stop the shifts was to pause, which also
+  /// took the desk away, so "help me break down an epic" had nowhere to sit.
+  ///
+  /// Never `undefined`: an absent cadence is a malformed record, not a desk.
+  /// See `coerceCadence`, which only reads an EXPLICIT null as on demand.
+  cadence: ScheduleTrigger | null;
   trust: WorkerTrustLevel;
   caps: WorkerCaps;
   budgetUSDPerMonth: number;
@@ -117,8 +131,44 @@ export interface Worker {
   /// pinned every existing worker to a model its new backend rejects.
   heartbeatBackend?: Backend;
   flowIds: string[];
+  /// Which of the user's MCP servers this worker's turns may load, by name.
+  ///
+  /// Absent means all of them, which is what every worker hired before this
+  /// field existed gets — and what it costs: a planning turn boots every
+  /// configured server and carries every one of their tool schemas, on every
+  /// shift and every desk message, whether the job touches them or not. A
+  /// worker that reads this repository and nothing else should say so with
+  /// an empty list; one that lives in Jira should name Jira.
+  ///
+  /// Names that no longer resolve are dropped rather than failing the turn —
+  /// a worker pinned to a server the user has since removed keeps working,
+  /// just without it. See `buildClaudeMcpConfigArg`.
+  mcpServers?: string[];
   enabled: boolean;
   createdAt: number;
+  /// The desk conversation this worker is currently holding.
+  ///
+  /// Chat at the desk used to be a sequence of unrelated one-shots stitched
+  /// together by replaying the last six exchanges as text — which re-paid for
+  /// the persona, the journal and the rules every message, and threw away the
+  /// EXPLORATION behind each answer, so the follow-up re-read everything the
+  /// first turn had already read. This holds the real CLI session instead:
+  /// the first message of the day establishes the worker, and the rest of the
+  /// day resumes it.
+  ///
+  /// Scoped to a day on purpose, matching what the replay always did — a desk
+  /// thread that ran for a week would carry Monday's tangent into Friday, and
+  /// the day boundary is the natural place to hand off a summary and start
+  /// clean (see `priorDayHandoff`).
+  deskSession?: {
+    /// Local midnight of the day this thread belongs to.
+    day: number;
+    /// Our conversation handle, stable for the day.
+    conversationId: string;
+    /// The CLI session to resume. Absent until the first turn announces one,
+    /// which is why the first message is always sent cold.
+    sessionId?: string;
+  };
   /// Point the cadence measures from when the worker has never worked a
   /// shift (or was re-enabled / had its cadence edited). Mirrors
   /// `Schedule.anchorAt` — without it, editing "daily 09:00" to "every hour"
@@ -480,9 +530,19 @@ export function validateWorker(w: Partial<Worker>): string | null {
     return `A shift is capped at ${WORKER_MAX_ITEMS_PER_SHIFT} items.`;
   if (w.trust !== 'autonomous' && caps.runIn === 'cwd')
     return 'Only an autonomous worker may run in the working copy.';
+  // An allowlist is checked for shape, never for whether the servers exist:
+  // a worker must stay saveable on a machine that hasn't configured them yet
+  // (an imported one, say), and an unresolvable name is dropped at spawn.
+  if (w.mcpServers && !Array.isArray(w.mcpServers)) return 'MCP servers must be a list of names.';
+  if (w.mcpServers?.some((n) => typeof n !== 'string' || !n.trim()))
+    return 'Every MCP server needs a name.';
 
   const cadence = w.cadence;
-  if (!cadence) return 'Pick when this worker works.';
+  // Explicit null is a deliberate answer to "when does this work" — on
+  // demand — and there is nothing left to check. Undefined is the absent
+  // answer, and still an error.
+  if (cadence === undefined) return 'Pick when this worker works.';
+  if (cadence === null) return null;
   if (cadence.days && cadence.days.length === 0)
     return 'Pick at least one day, or leave every day selected.';
   if (cadence.kind === 'interval') {
@@ -561,7 +621,8 @@ export interface WorkerContract {
   /// The one-line "what this is" shown under the name on the roster.
   tagline?: string;
   jobDescription: string;
-  cadence: ScheduleTrigger;
+  /// `null` when the job is one you drive yourself — see `Worker.cadence`.
+  cadence: ScheduleTrigger | null;
   maxItemsPerShift: number;
   budgetUSDPerMonth: number;
   heartbeatModel: string;
@@ -652,6 +713,16 @@ export function parseWorkerContract(
   };
 }
 
+/// What an on-demand cadence is called on the wire — in a hire-drafter reply,
+/// in a share file, in the YAML a worker is edited as. The stored value is
+/// `null`; this is the word that survives a format with no null.
+export const ON_DEMAND = 'onDemand';
+
+/// The cadence in words, including the one that has no trigger to describe.
+export function describeCadence(cadence: ScheduleTrigger | null): string {
+  return cadence === null ? 'On demand' : describeTrigger(cadence);
+}
+
 /// Weekday-mornings is the fallback cadence: frequent enough to feel alive,
 /// bounded enough to never surprise anyone with a 2am shift.
 const DEFAULT_CADENCE: ScheduleTrigger = { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] };
@@ -659,7 +730,14 @@ const DEFAULT_CADENCE: ScheduleTrigger = { kind: 'daily', time: '09:00', days: [
 /// Coerce a loosely-typed cadence into one the scheduler can fire. Shared
 /// with the worker share format, which reads cadences written by hand or by
 /// another install rather than by the editor.
-export function coerceCadence(raw: unknown): ScheduleTrigger {
+export function coerceCadence(raw: unknown): ScheduleTrigger | null {
+  // On demand has to be said, never inferred. A missing or mangled cadence
+  // falls through to the default below, because "the drafter forgot to emit
+  // one" and "this worker is a desk" are opposite intentions and reading the
+  // first as the second would silently un-schedule a worker somebody hired to
+  // run every morning.
+  if (raw === null || raw === ON_DEMAND || (typeof raw === 'object' && (raw as { kind?: unknown }).kind === ON_DEMAND))
+    return null;
   if (!raw || typeof raw !== 'object') return DEFAULT_CADENCE;
   const c = raw as Record<string, unknown>;
   const days = Array.isArray(c.days)
