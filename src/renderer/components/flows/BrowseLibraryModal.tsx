@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FlowRegistryEntry } from '@shared/types';
 import { resolveStepModel, type Flow, type FlowStep } from '@shared/flows/schema';
+import type { FlowRiskFinding } from '@shared/flows/riskScan';
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
 import { TAG_AXES } from '@shared/flows/tagTaxonomy';
@@ -291,22 +292,28 @@ function PreviewPane({
   error?: string;
   onInstall: () => void;
   onTagClick: (tag: string) => void;
-  fetchFlow: (args: { registryId: string; id: string; version: string }) => Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
+  fetchFlow: (args: { registryId: string; id: string; version: string }) => Promise<{ ok: true; flow: Flow; risks: FlowRiskFinding[] } | { ok: false; error: string }>;
 }) {
   const [flow, setFlow] = useState<Flow | null>(null);
   const [flowError, setFlowError] = useState<string | null>(null);
   const [loadingFlow, setLoadingFlow] = useState(false);
+  // Advisory heuristic findings from the preview scan. Never gates the Install
+  // button — it sits above it so the decision is informed, not made for you.
+  const [risks, setRisks] = useState<FlowRiskFinding[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     setFlow(null);
     setFlowError(null);
+    setRisks([]);
     setLoadingFlow(true);
     fetchFlow({ registryId: entry.registryId, id: entry.id, version: entry.version }).then((res) => {
       if (cancelled) return;
       setLoadingFlow(false);
-      if (res.ok) setFlow(res.flow);
-      else setFlowError(res.error);
+      if (res.ok) {
+        setFlow(res.flow);
+        setRisks(res.risks);
+      } else setFlowError(res.error);
     });
     return () => { cancelled = true; };
   }, [entry.registryId, entry.id, entry.version, fetchFlow]);
@@ -384,6 +391,22 @@ function PreviewPane({
       </div>
 
       <div className="border-t border-card p-4 space-y-2">
+        {/* Heuristic, advisory, and deliberately above the button rather than in
+            front of it: a flow off the internet runs later with real shell and
+            file access, so what its prompts actually say is worth a look — but
+            the scan can be wrong in both directions, so the call stays yours. */}
+        {risks.length > 0 && (
+          <div className="text-xs text-amber-600 bg-amber-500/10 rounded px-2 py-1.5 space-y-1">
+            {risks.map((r, i) => (
+              <div key={`${r.stepId}-${r.category}-${i}`}>
+                ⚠ step {r.stepId}: {r.message}
+              </div>
+            ))}
+            <div className="text-ink-faint pt-0.5">
+              Heuristic check — it can miss real risk and can flag harmless flows.
+            </div>
+          </div>
+        )}
         {error && (
           <div className="text-xs text-red-600 bg-red-500/10 rounded px-2 py-1">{error}</div>
         )}

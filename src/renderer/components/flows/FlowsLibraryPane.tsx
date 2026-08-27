@@ -107,9 +107,11 @@ export function FlowsLibraryPane() {
     setSegment('schedules');
   }
 
-  // Auto-dismiss the "Saved" banner after 3 seconds.
+  // Auto-dismiss the "Saved" banner after 3 seconds — unless the save came
+  // back with risk findings, in which case it stays until dismissed. A
+  // warning about what a flow's prompts do is worth more than three seconds.
   useEffect(() => {
-    if (!justSaved) return;
+    if (!justSaved || justSaved.risks.length > 0) return;
     const t = setTimeout(dismissJustSaved, 3000);
     return () => clearTimeout(t);
   }, [justSaved?.at]);
@@ -225,7 +227,7 @@ export function FlowsLibraryPane() {
             : 'Organized threads of work — one ask runs through a repeatable chain of roles, reviews, and artifacts.'}
       </div>
 
-      {justSaved && (
+      {justSaved && justSaved.risks.length === 0 && (
         <div
           onClick={dismissJustSaved}
           className="flex items-center gap-2 mb-4 text-sm text-emerald-700 dark:text-emerald-200 bg-emerald-500/15 border border-emerald-400/40 rounded px-3 py-2 cursor-pointer"
@@ -233,6 +235,38 @@ export function FlowsLibraryPane() {
           <span>✓</span>
           <span>Saved <span className="font-semibold">{justSaved.name}</span>.</span>
           <span className="ml-auto text-[11px] text-emerald-700 dark:text-emerald-200/70">dismiss</span>
+        </div>
+      )}
+
+      {/* Saved, but worth a second look. The flow IS on disk — the scan is a
+          heuristic and never blocks a save, exactly like the registry path.
+          Amber rather than red for that reason: this is "read this again",
+          not "something failed". */}
+      {justSaved && justSaved.risks.length > 0 && (
+        <div className="mb-4 text-sm text-amber-700 dark:text-amber-200 bg-amber-500/15 border border-amber-400/40 rounded px-3 py-2">
+          <div className="flex items-center gap-2">
+            <span>⚠</span>
+            <span>
+              Saved <span className="font-semibold">{justSaved.name}</span>, but its instructions are
+              worth re-reading:
+            </span>
+            <button
+              onClick={dismissJustSaved}
+              className="ml-auto text-[11px] text-amber-700 dark:text-amber-200/70 hover:underline"
+            >
+              dismiss
+            </button>
+          </div>
+          <div className="mt-1.5 space-y-1 text-xs">
+            {justSaved.risks.map((r, i) => (
+              <div key={`${r.stepId}-${r.category}-${i}`}>
+                ⚠ step {r.stepId}: {r.message}
+              </div>
+            ))}
+          </div>
+          <div className="mt-1.5 text-[11px] text-amber-700/70 dark:text-amber-200/60">
+            Heuristic check — it can miss real risk and can flag harmless flows.
+          </div>
         </div>
       )}
 

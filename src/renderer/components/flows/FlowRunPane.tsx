@@ -2725,6 +2725,8 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 ? 'Paused before next step'
                 : reason === 'externalAction'
                   ? 'Approval required before external action'
+                  : reason === 'riskyStep'
+                  ? 'This step\'s instructions look risky'
                   : reason === 'needsInput'
                     ? 'Worker needs your input'
                     : reason === 'interrupted'
@@ -2746,6 +2748,15 @@ function PauseBanner({ run }: { run: FlowRun }) {
                 couldn't continue on its own. Earlier steps' results are kept — resume to
                 re-run <span className="font-semibold">{nextStep?.id ?? 'this step'}</span> from
                 the start and roll forward.
+              </>
+            ) : reason === 'riskyStep' ? (
+              <>
+                A heuristic scan of{' '}
+                <span className="font-semibold">{nextStep?.id ?? 'this step'}</span>'s own prompt
+                found something worth a second look — a reference to a credential file, or a
+                network call on a step that claims to only touch this machine. The scan can be
+                wrong in both directions, so nothing has been blocked: read the step, then approve
+                to run it.
               </>
             ) : reason === 'externalAction' ? (
               <>
@@ -2827,7 +2838,7 @@ function PauseBanner({ run }: { run: FlowRun }) {
             )}
             {inFlight
               ? 'Continuing…'
-              : reason === 'externalAction'
+              : reason === 'externalAction' || reason === 'riskyStep'
                 ? 'Approve & run →'
                 : reason === 'needsInput'
                   ? 'Resume step →'

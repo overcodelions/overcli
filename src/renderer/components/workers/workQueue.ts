@@ -105,7 +105,7 @@ export interface QueueRow {
   /// Why a `paused` job stopped. "Paused" on its own is the least useful word
   /// on this screen — the whole reason the row is in the Needs you band is
   /// that something specific is being asked of you.
-  pausedReason?: 'preStep' | 'externalAction' | 'needsInput' | 'failure' | 'interrupted';
+  pausedReason?: 'preStep' | 'externalAction' | 'riskyStep' | 'needsInput' | 'failure' | 'interrupted';
   /// What the row is sorted and stamped by: when it started for live work,
   /// when it stopped for finished work.
   at: number;
