@@ -26,6 +26,10 @@ import type {
   WorkerTrustLevel,
 } from '@shared/flows/worker';
 import type { PortableWorker } from '@shared/flows/workerYaml';
+import {
+  personalizationInstruction,
+  type PersonalizationQuestion,
+} from '@shared/flows/personalize';
 import type { ScheduleTrigger } from '@shared/flows/schedule';
 
 export interface WorkerDraft {
@@ -95,6 +99,9 @@ interface WorkersState {
   /// flow drafter failed. Shown under the (empty) flow picker so the gap is
   /// explained rather than left for the user to discover on Hire.
   hireFlowError: string | null;
+  /// The personalization pass on a freshly imported worker, or null when the
+  /// open draft is not a borrowed one. See src/shared/flows/personalize.ts.
+  personalize: PersonalizeState | null;
   /// Which worker the Workers pane is showing. The Workers sidebar is the
   /// roster and this is its selection — the same master/detail split the Chat
   /// and Flows tabs use, so a worker's shifts, errands and replies have a full
@@ -171,6 +178,31 @@ interface WorkersState {
   /// so it can't rewrite a different worker's job description. Ids can't do
   /// that job — an unsaved hire draft doesn't have one yet.
   draftSeq: number;
+}
+
+/// The import-time personalization panel.
+///
+/// Lives on the store, not in the panel component, for the same reason the
+/// hire form does: the scan is a CLI turn that runs for a few seconds and the
+/// editor unmounts the moment you click anything in the roster. It is tied to
+/// `seq` rather than to a worker id because the thing it personalizes is an
+/// unsaved draft — an imported worker has no id until it is hired.
+export interface PersonalizeState {
+  /// The `draftSeq` this belongs to. A scan that lands after the user opened
+  /// a different worker is dropped: the questions quote a job description
+  /// that is no longer on screen.
+  seq: number;
+  workerName: string;
+  questions: PersonalizationQuestion[];
+  /// The scan's one-line read, or null while it is still running.
+  note: string | null;
+  scanning: boolean;
+  /// Set while the answers are being routed through the reviser.
+  applying: boolean;
+  error: string | null;
+  /// What the reviser said it changed. Set once the answers land, which is
+  /// also what turns the panel from a form into a receipt.
+  appliedNote: string | null;
 }
 
 export interface HireState {
@@ -261,6 +293,18 @@ interface WorkersActions {
   startHire(): Promise<void>;
   /// Clear a hire draft stuck mid-turn so the user can start a fresh one.
   cancelHire(): void;
+  /// Scan the open draft for details that belong to whoever shared it. Safe
+  /// to call for any draft; only import calls it, because only an imported
+  /// worker was written for somebody else.
+  startPersonalizeScan(): Promise<void>;
+  /// Type an answer into one personalization row.
+  answerPersonalize(key: string, answer: string): void;
+  /// Route the answered rows through the reviser and remember them for the
+  /// next import. Resolves when the revision lands.
+  applyPersonalize(): Promise<void>;
+  /// Hire the worker as it arrived. The panel is optional by construction —
+  /// this is the button that says so.
+  dismissPersonalize(): void;
   patchRevise(patch: Partial<ReviseState>): void;
   /// Run one AI revision against the open draft. Same deal: the result lands
   /// on the store, not on a component.
@@ -587,6 +631,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   hire: IDLE_HIRE,
   revise: {},
   draftSeq: 0,
+  personalize: null,
 
   async reload() {
     const [rows, funds] = await Promise.all([
@@ -795,6 +840,10 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         hireFlowError: held?.flow ? null : (extras?.hireFlowError ?? null),
         error: null,
         draftSeq,
+        // Belongs to the draft that is being replaced. `importFromFile`
+        // starts the next scan after this call, which is what puts a panel
+        // back on the new draft.
+        personalize: null,
         revise: held
           ? {
               ...st.revise,
@@ -815,6 +864,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       hireSummary: null,
       hireFlowError: null,
       error: null,
+      personalize: null,
       // A revision still running (or one holding a result) keeps its entry so
       // it has somewhere to land; a finished, read box is forgotten.
       revise: forgetIdleRevision(st),
@@ -905,6 +955,133 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         },
       }));
     }
+  },
+
+  async startPersonalizeScan() {
+    const { draft, draftSeq } = get();
+    if (!draft) return;
+    const seq = draftSeq;
+    set({
+      personalize: {
+        seq,
+        workerName: draft.name,
+        questions: [],
+        note: null,
+        scanning: true,
+        applying: false,
+        error: null,
+        appliedNote: null,
+      },
+    });
+    // Only ever lands on the draft it was asked about — the roster is one
+    // click away and the questions quote a specific job description.
+    const stillMine = () => get().personalize?.seq === seq && get().draftSeq === seq;
+    try {
+      const res = await window.overcli.invoke('workers:personalizeScan', {
+        name: draft.name,
+        jobDescription: draft.jobDescription,
+        flowId: draft.flowIds[0],
+      });
+      if (!stillMine()) return;
+      if (!res.ok) {
+        set((st) => ({
+          personalize: st.personalize && { ...st.personalize, scanning: false, error: res.error },
+        }));
+        return;
+      }
+      set((st) => ({
+        personalize: st.personalize && {
+          ...st.personalize,
+          scanning: false,
+          questions: res.questions,
+          note: res.note || null,
+        },
+      }));
+    } catch (err) {
+      if (!stillMine()) return;
+      set((st) => ({
+        personalize: st.personalize && {
+          ...st.personalize,
+          scanning: false,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      }));
+    }
+  },
+
+  answerPersonalize(key, answer) {
+    set((st) =>
+      st.personalize
+        ? {
+            personalize: {
+              ...st.personalize,
+              error: null,
+              questions: st.personalize.questions.map((q) =>
+                // Typing over a suggestion makes it the user's answer, so the
+                // "remembered from an earlier import" caption stops applying.
+                q.key === key ? { ...q, answer, fromProfile: false } : q,
+              ),
+            },
+          }
+        : {},
+    );
+  },
+
+  async applyPersonalize() {
+    const state = get().personalize;
+    const draft = get().draft;
+    if (!state || !draft || state.applying) return;
+    const instruction = personalizationInstruction(state.questions, draft.name);
+    if (!instruction) {
+      set((st) => ({
+        personalize: st.personalize && {
+          ...st.personalize,
+          error: 'Answer at least one of these, or skip — the worker is hireable either way.',
+        },
+      }));
+      return;
+    }
+    const seq = state.seq;
+    set((st) => ({
+      personalize: st.personalize && { ...st.personalize, applying: true, error: null },
+    }));
+
+    // Remembered BEFORE the revision runs, and independently of whether it
+    // succeeds. The answers are facts about the user either way, and a CLI
+    // failure that also loses what they just typed makes them type it twice.
+    void window.overcli.invoke('workers:rememberProfile', { questions: state.questions });
+
+    // Routed through the ordinary AI-revision path rather than a private one:
+    // it is the half of the app that already knows how to change a worker's
+    // prose and its flow together, and putting the instruction in that box
+    // means the user can see, and re-run, exactly what was asked.
+    get().patchRevise({ instruction, error: null });
+    await get().startRevise();
+
+    if (get().personalize?.seq !== seq) return;
+    const key = reviseKey(get().draft, get().draftSeq);
+    const entry = key ? get().revise[key] : undefined;
+    if (entry?.error) {
+      set((st) => ({
+        personalize: st.personalize && {
+          ...st.personalize,
+          applying: false,
+          error: entry.error,
+        },
+      }));
+      return;
+    }
+    set((st) => ({
+      personalize: st.personalize && {
+        ...st.personalize,
+        applying: false,
+        appliedNote: entry?.note ?? 'Personalized.',
+      },
+    }));
+  },
+
+  dismissPersonalize() {
+    set({ personalize: null });
   },
 
   patchRevise(patch) {
@@ -1063,6 +1240,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         draftedFlow: null,
         hireSummary: null,
         hireFlowError: null,
+        personalize: null,
         revise: forgetIdleRevision(st),
       }));
       return true;
@@ -1285,6 +1463,12 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       get().openEditor(draftFromPortable(res.worker, projectPath, available), {
         hireSummary: [`Imported ${res.worker.name}.`, res.summary].filter(Boolean).join(' '),
       });
+      // A shared worker was written for whoever shared it. Start reading it
+      // for their details now rather than on a click: the answer takes a few
+      // seconds and the user is about to spend those seconds reading the form
+      // anyway. Not awaited — the editor is already usable, and the panel
+      // appears when the scan lands.
+      void get().startPersonalizeScan();
       return true;
     } finally {
       set({ busy: false });
