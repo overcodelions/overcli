@@ -66,6 +66,11 @@ export interface FlowLauncher {
     orchestrationItemTitle?: string;
     scheduleId?: UUID;
     scheduleName?: string;
+    /// Chain provenance for a run fired by an `onFlowComplete` schedule. The
+    /// scheduler is typed against THIS interface, not the runtime's wider
+    /// arg bag, so both have to carry the fields.
+    chainDepth?: number;
+    chainParentRunId?: UUID;
     workerId?: UUID;
     workerName?: string;
     allowExternalActions?: boolean;

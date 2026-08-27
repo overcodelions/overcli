@@ -12,7 +12,7 @@ vi.mock('./schedulesStore', () => ({
 import { SchedulerEngine, type ProposalParker } from './scheduler';
 import type { FlowLauncher } from './orchestrator';
 import type { FlowRun } from '../../shared/flows/schema';
-import { SCHEDULE_GRACE_MS, type Schedule } from '../../shared/flows/schedule';
+import { MAX_CHAIN_DEPTH, SCHEDULE_GRACE_MS, type Schedule } from '../../shared/flows/schedule';
 
 function local(y: number, mo: number, d: number, h = 0, min = 0): number {
   return new Date(y, mo - 1, d, h, min, 0, 0).getTime();
@@ -32,6 +32,8 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
     runIn?: string;
     baseBranch?: string;
     title?: string;
+    chainDepth?: number;
+    chainParentRunId?: string;
   }> = [];
   const parked: Array<{
     scheduleId: string;
@@ -62,6 +64,11 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
         state: { kind: 'running', currentStepId: 's1' },
         flowSnapshot: { name: args.flowId },
         scheduleId: args.scheduleId,
+        // Carried onto the stored run, not just recorded: a multi-hop test
+        // finishes THIS run and the engine reads its `chainDepth` to decide
+        // whether the next hop is allowed.
+        chainDepth: args.chainDepth,
+        chainParentRunId: args.chainParentRunId,
       } as unknown as FlowRun);
       started.push({
         runId,
@@ -71,6 +78,8 @@ function makeHarness(opts: { seed?: Schedule[]; startAt?: number; isGitRepo?: bo
         runIn: args.runIn,
         baseBranch: args.baseBranch,
         title: args.title,
+        chainDepth: args.chainDepth,
+        chainParentRunId: args.chainParentRunId,
       });
       return { ok: true, runId };
     },
@@ -729,5 +738,223 @@ describe('SchedulerEngine run naming', () => {
     h.engine.start();
     await h.advanceTo(local(2026, 3, 2, 9, 1));
     expect(h.parked[0].title).toBe('[SR-1] Morning triage');
+  });
+});
+
+describe('SchedulerEngine — onFlowComplete chaining', () => {
+  /// A schedule that watches `scrape` and launches `triage`. The two flow ids
+  /// differ deliberately: a schedule watching the flow it launches is the one
+  /// shape `validateSchedule` refuses, and the engine has its own backstop.
+  function chainSchedule(over: Partial<Schedule> = {}): Schedule {
+    return seedSchedule({
+      id: 'sched-chain',
+      name: 'Triage the scrape',
+      target: { kind: 'flow', flowId: 'triage', prompt: 'triage it', runIn: 'cwd' },
+      trigger: { kind: 'onFlowComplete', watchFlowId: 'scrape', onOutcome: 'success' },
+      ...over,
+    });
+  }
+
+  /// A terminal run of some OTHER flow, as the runtime would hand it to
+  /// `onRunUpdate`. Nothing here came from the engine — that is the point of
+  /// the feature, so the tests must not use the harness's `finishRun`.
+  function upstreamRun(over: Partial<FlowRun> = {}): FlowRun {
+    return {
+      id: 'up-1',
+      flowId: 'scrape',
+      state: { kind: 'done', success: true },
+      flowSnapshot: { name: 'Nightly scrape' },
+      artifacts: {},
+      ...over,
+    } as unknown as FlowRun;
+  }
+
+  it('fires when its watched flow finishes successfully', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+    expect(h.started).toHaveLength(0);
+
+    h.engine.onRunUpdate(upstreamRun());
+    await h.flush();
+
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0].flowId).toBe('triage');
+    expect(h.started[0].chainDepth).toBe(1);
+    expect(h.started[0].chainParentRunId).toBe('up-1');
+  });
+
+  it('does NOT fire on failure when onOutcome is success', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ state: { kind: 'done', success: false } }));
+    await h.flush();
+    h.engine.onRunUpdate(upstreamRun({ id: 'up-2', state: { kind: 'aborted' } }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(0);
+  });
+
+  it('DOES fire on failure when onOutcome is any', async () => {
+    const h = makeHarness({ seed: [chainSchedule({ trigger: { kind: 'onFlowComplete', watchFlowId: 'scrape', onOutcome: 'any' } })] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ state: { kind: 'done', success: false } }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0].flowId).toBe('triage');
+  });
+
+  it('does not chain further once the source run is at MAX_CHAIN_DEPTH', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ chainDepth: MAX_CHAIN_DEPTH }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(0);
+    // The cap must explain itself rather than looking like an idle schedule.
+    const note = h.saved.at(-1)?.history[0];
+    expect(note?.outcome).toBe('skipped');
+    expect(note?.note).toContain(`${MAX_CHAIN_DEPTH} hops`);
+  });
+
+  it('still fires at exactly one hop below the cap', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ chainDepth: MAX_CHAIN_DEPTH - 1 }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0].chainDepth).toBe(MAX_CHAIN_DEPTH);
+  });
+
+  it('ignores runs of a flow it is not watching', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ flowId: 'something-else' }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(0);
+  });
+
+  it('does not fire while disabled', async () => {
+    const h = makeHarness({ seed: [chainSchedule({ enabled: false })] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun());
+    await h.flush();
+
+    expect(h.started).toHaveLength(0);
+  });
+
+  it('arms no timer at all — it must stay out of the nearest-due arithmetic', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+    expect(h.hasTimer()).toBe(false);
+    expect(h.engine.nextFireAt('sched-chain')).toBeNull();
+
+    // And crossing a whole day launches nothing, because nothing is due.
+    await h.advanceTo(local(2026, 3, 3, 12, 0));
+    expect(h.started).toHaveLength(0);
+  });
+
+  it('still arms a timer for a time-based schedule sitting alongside one', async () => {
+    const h = makeHarness({ seed: [chainSchedule(), seedSchedule()] });
+    h.engine.start();
+    expect(h.hasTimer()).toBe(true);
+
+    await h.advanceTo(local(2026, 3, 2, 9, 0) + 1000);
+    expect(h.started).toHaveLength(1);
+    expect(h.started[0].flowId).toBe('fix-it');
+  });
+
+  it('hands the downstream run what the upstream run produced', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(
+      upstreamRun({
+        artifacts: {
+          notes: { name: 'notes', kind: 'text', body: 'first', producedByStepId: 'a', producedAt: 10 },
+          findings: { name: 'findings', kind: 'text', body: '42 new rows', producedByStepId: 'b', producedAt: 20 },
+        } as FlowRun['artifacts'],
+      }),
+    );
+    await h.flush();
+
+    const prompt = h.started[0].prompt;
+    expect(prompt).toContain('triage it');
+    // The NEWEST artifact, not the first one the object happens to enumerate.
+    expect(prompt).toContain('42 new rows');
+    expect(prompt).not.toContain('first');
+    expect(prompt).toContain('Nightly scrape');
+    // Title stays derived from the base prompt, not the pasted output.
+    expect(h.started[0].title).toBe('[SR-1] triage it');
+  });
+
+  it('leaves the prompt alone when passOutput is off', async () => {
+    const h = makeHarness({
+      seed: [
+        chainSchedule({
+          trigger: {
+            kind: 'onFlowComplete',
+            watchFlowId: 'scrape',
+            onOutcome: 'success',
+            passOutput: false,
+          },
+        }),
+      ],
+    });
+    h.engine.start();
+
+    h.engine.onRunUpdate(
+      upstreamRun({
+        artifacts: {
+          findings: { name: 'findings', kind: 'text', body: '42 new rows', producedByStepId: 'b', producedAt: 20 },
+        } as FlowRun['artifacts'],
+      }),
+    );
+    await h.flush();
+
+    expect(h.started[0].prompt).toBe('triage it');
+  });
+
+  it('refuses to chain an orchestrate target rather than leaving the cap with a hole', async () => {
+    const h = makeHarness({
+      seed: [
+        chainSchedule({
+          target: {
+            kind: 'orchestrate',
+            flowId: 'triage',
+            prompt: 'find work',
+            runIn: 'cwd',
+            maxConcurrent: 2,
+          },
+        }),
+      ],
+    });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun());
+    await h.flush();
+
+    expect(h.parked).toHaveLength(0);
+    expect(h.saved.at(-1)?.history[0]?.note).toContain('single-flow targets');
+  });
+
+  it('does not settle a run it never launched as if it owned it', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun());
+    await h.flush();
+
+    // One notification for the chained LAUNCH's own bookkeeping at most —
+    // never a "did not finish" for the upstream run, which is not its business.
+    expect(h.notifications.map((n) => n.title)).not.toContain('Triage the scrape did not finish');
   });
 });
