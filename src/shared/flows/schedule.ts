@@ -475,8 +475,10 @@ export function describeTrigger(trigger: ScheduleTrigger): string {
     return qualifier ? `${every}, ${qualifier}` : every;
   }
   if (trigger.kind === 'onFlowComplete') {
-    // `watchFlowId` is a flow id, not a name — the same rawness `describeTarget`
-    // already has. The pane substitutes the real name where it has the list.
+    // `watchFlowId` is a flow id, not a name — this module has no flow list to
+    // resolve it against, the same rawness `describeTarget` already has.
+    // `TriggerField` substitutes the real name for the hint it shows; anything
+    // rendering this string without that list gets the id.
     const what = trigger.watchFlowId || 'another flow';
     return trigger.onOutcome === 'success'
       ? `When ${what} succeeds`

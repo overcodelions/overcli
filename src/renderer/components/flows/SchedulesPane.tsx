@@ -1096,8 +1096,20 @@ function TriggerField() {
     patch({ trigger: { ...trigger, days: next } });
   };
 
+  // `describeTrigger` lives in shared/ and only has the watched flow's ID, so
+  // it renders "When weekly-changelog succeeds". Swap in the real name here,
+  // where the flow list is actually in scope — this hint and the timeline
+  // strip both read it, and an id is not what the user picked from.
+  const hint =
+    trigger.kind === 'onFlowComplete' && trigger.watchFlowId
+      ? describeTrigger(trigger).replace(
+          trigger.watchFlowId,
+          flows.find((f) => f.id === trigger.watchFlowId)?.name ?? trigger.watchFlowId,
+        )
+      : describeTrigger(trigger);
+
   return (
-    <Field label="When" hint={describeTrigger(trigger)}>
+    <Field label="When" hint={hint}>
       <div className="flex gap-1.5 mb-3">
         <Segment
           active={trigger.kind === 'daily'}
@@ -1125,23 +1137,30 @@ function TriggerField() {
 
       {trigger.kind === 'onFlowComplete' ? (
         <div className="space-y-3">
-          <select
-            value={trigger.watchFlowId}
-            onChange={(e) => patch({ trigger: { ...trigger, watchFlowId: e.target.value } })}
-            className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
-          >
-            <option value="">Pick the flow to watch…</option>
-            {flows
-              .filter(isSelectableFlow)
-              // Watching the flow this schedule itself launches is a loop with
-              // extra steps; `validateSchedule` refuses it, so don't offer it.
-              .filter((f) => f.id !== draft.target.flowId)
-              .map((f) => (
-                <option key={`${f.source}:${f.id}`} value={f.id}>
-                  {f.name}
-                </option>
-              ))}
-          </select>
+          {/* Labelled like every other control on this page. The form now has
+              TWO flow pickers — the one it watches and the one it runs — and
+              an unlabelled dropdown next to a labelled one invites picking
+              the wrong one. */}
+          <Field label="Flow to watch">
+            <select
+              value={trigger.watchFlowId}
+              onChange={(e) => patch({ trigger: { ...trigger, watchFlowId: e.target.value } })}
+              className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+            >
+              <option value="">Pick the flow to watch…</option>
+              {flows
+                .filter(isSelectableFlow)
+                // Watching the flow this schedule itself launches is a loop
+                // with extra steps; `validateSchedule` refuses it, so don't
+                // offer it.
+                .filter((f) => f.id !== draft.target.flowId)
+                .map((f) => (
+                  <option key={`${f.source}:${f.id}`} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
 
           <div className="flex gap-1.5">
             <Segment

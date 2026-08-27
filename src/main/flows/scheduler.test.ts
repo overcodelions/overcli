@@ -946,6 +946,99 @@ describe('SchedulerEngine — onFlowComplete chaining', () => {
     expect(h.saved.at(-1)?.history[0]?.note).toContain('single-flow targets');
   });
 
+  it('chains a second hop, and the depth accumulates across real runs', async () => {
+    // A: scrape -> triage.  B: triage -> report.  Finishing a scrape should
+    // walk the whole pipeline, incrementing once per hop. This is the case the
+    // per-hop arithmetic tests cannot prove on their own: it only works if the
+    // depth the engine SENT comes back on the run it later observes.
+    const a = chainSchedule();
+    const b = chainSchedule({
+      id: 'sched-chain-b',
+      name: 'Report the triage',
+      target: { kind: 'flow', flowId: 'report', prompt: 'report it', runIn: 'cwd' },
+      trigger: { kind: 'onFlowComplete', watchFlowId: 'triage', onOutcome: 'success' },
+    });
+    const h = makeHarness({ seed: [a, b] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun());
+    await h.flush();
+    expect(h.started.map((s) => s.flowId)).toEqual(['triage']);
+    expect(h.started[0].chainDepth).toBe(1);
+
+    h.finishRun(h.started[0].runId);
+    await h.flush();
+    expect(h.started.map((s) => s.flowId)).toEqual(['triage', 'report']);
+    expect(h.started[1].chainDepth).toBe(2);
+    expect(h.started[1].chainParentRunId).toBe(h.started[0].runId);
+  });
+
+  it('treats an archived run as terminal', async () => {
+    const h = makeHarness({
+      seed: [chainSchedule({ trigger: { kind: 'onFlowComplete', watchFlowId: 'scrape', onOutcome: 'any' } })],
+    });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ state: { kind: 'archived' } as never }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(1);
+  });
+
+  it('ignores a run that is still going', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ state: { kind: 'running', currentStepId: 's1' } as never }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(0);
+  });
+
+  it('refuses to chain off its own run, even if such a schedule was saved', async () => {
+    // `validateSchedule` blocks this at edit time; this is the runtime backstop
+    // for a schedule written before the check existed, or edited on disk.
+    const h = makeHarness({
+      seed: [chainSchedule({ trigger: { kind: 'onFlowComplete', watchFlowId: 'triage', onOutcome: 'success' } })],
+    });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ flowId: 'triage', scheduleId: 'sched-chain' as never }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(0);
+  });
+
+  it('declines while its own previous run is still going, under onOverlap skip', async () => {
+    const h = makeHarness({ seed: [chainSchedule()] });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun());
+    await h.flush();
+    expect(h.started).toHaveLength(1);
+
+    // Second upstream run lands while the first chained run is still running.
+    h.engine.onRunUpdate(upstreamRun({ id: 'up-2' }));
+    await h.flush();
+
+    expect(h.started).toHaveLength(1);
+    expect(h.saved.at(-1)?.history[0]?.note).toContain('still going');
+  });
+
+  it('falls back to the base prompt when the upstream run produced nothing', async () => {
+    // A run that failed before its first step finished has no artifacts, and
+    // an empty handoff block would teach the downstream model nothing.
+    const h = makeHarness({
+      seed: [chainSchedule({ trigger: { kind: 'onFlowComplete', watchFlowId: 'scrape', onOutcome: 'any' } })],
+    });
+    h.engine.start();
+
+    h.engine.onRunUpdate(upstreamRun({ state: { kind: 'aborted' }, artifacts: {} }));
+    await h.flush();
+
+    expect(h.started[0].prompt).toBe('triage it');
+  });
+
   it('does not settle a run it never launched as if it owned it', async () => {
     const h = makeHarness({ seed: [chainSchedule()] });
     h.engine.start();

@@ -1697,3 +1697,56 @@ describe('FlowRuntimeImpl — prune does not stat every retained run', () => {
     expect(runtime.getRun('run-02')).toBeNull();
   });
 });
+
+describe('FlowRuntimeImpl — chain provenance', () => {
+  /// The gap this closes: every scheduler-side chaining test drives a STUB
+  /// `FlowLauncher`, so they prove the engine *sends* `chainDepth` — not that
+  /// the runtime writes it onto the real `FlowRun`. `chainDepth` is optional,
+  /// so dropping the line from the run literal typechecks cleanly and leaves
+  /// every one of those tests green while silently disabling MAX_CHAIN_DEPTH:
+  /// each hop would read `undefined`, compute depth 1, and chain forever.
+  function runtime() {
+    return new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {} }) as never,
+    );
+  }
+
+  it('persists chainDepth and chainParentRunId onto the run', async () => {
+    const rt = runtime();
+    const result = await rt.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Triage it.',
+      allowExternalActions: true,
+      chainDepth: 3,
+      chainParentRunId: 'upstream-run' as never,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+
+    const run = rt.getRun(result.runId)!;
+    expect(run.chainDepth).toBe(3);
+    expect(run.chainParentRunId).toBe('upstream-run');
+  });
+
+  it('leaves both absent for an ordinary launch', async () => {
+    const rt = runtime();
+    const result = await rt.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Just run it.',
+      allowExternalActions: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.error);
+
+    // Absent, not 0 — `(run.chainDepth ?? 0) + 1` treats them identically, and
+    // a manual run genuinely has no chain rather than a zero-length one.
+    const run = rt.getRun(result.runId)!;
+    expect(run.chainDepth).toBeUndefined();
+    expect(run.chainParentRunId).toBeUndefined();
+  });
+});
