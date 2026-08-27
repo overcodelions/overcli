@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import type { Flow, FlowModelRef, FlowParticipant, FlowRun, FlowStep } from '@shared/flows/schema';
 import { flowProjectPath, flowStarKey, MAX_RUN_TITLE_LENGTH } from '@shared/flows/schema';
 import type { UUID } from '@shared/types';
+import type { FlowRiskFinding } from '@shared/flows/riskScan';
 import { friendlyModelLabel as friendlyModelLabelImported, isSupportedPremiumModel } from '@shared/modelCatalog';
 
 /// Pointer to the flow currently open in the editor. `'new'` is the
@@ -158,8 +159,11 @@ interface FlowsActions {
     projectPaths: string[],
   ): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
   browseRegistries(force?: boolean): Promise<void>;
-  installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string }>;
-  previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow } | { ok: false; error: string }>;
+  /// `risks` on both of these is the advisory heuristic scan of the flow's step
+  /// prompts (shared/flows/riskScan.ts). It is never a failure: an install can
+  /// succeed with findings, and the UI's job is to show them, not to refuse.
+  installFromRegistry(args: { registryId: string; id: string; version: string }): Promise<{ ok: boolean; error?: string; risks?: FlowRiskFinding[] }>;
+  previewRegistryFlow(args: { registryId: string; id: string; version: string }): Promise<{ ok: true; flow: Flow; risks: FlowRiskFinding[] } | { ok: false; error: string }>;
 }
 
 export type FlowsStore = FlowsState & FlowsActions;
@@ -702,6 +706,6 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     const res = await window.overcli.invoke('flows:installFromRegistry', args);
     if (!res.ok) return { ok: false, error: res.error };
     await get().reload([]);
-    return { ok: true };
+    return { ok: true, risks: res.risks };
   },
 }));

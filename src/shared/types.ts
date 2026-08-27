@@ -5,6 +5,7 @@
 import type { Flow, FlowArtifact, FlowRun, FlowToolDescriptor } from './flows/schema';
 import type { Candidate, Orchestration, RecentPrompt, RunIn } from './flows/orchestration';
 import type { Schedule } from './flows/schedule';
+import type { FlowRiskFinding } from './flows/riskScan';
 import type {
   Worker,
   WorkerContract,
@@ -1965,16 +1966,20 @@ export interface IPCInvokeMap {
     entries: FlowRegistryEntry[];
     errors: Array<{ registryId: string; error: string }>;
   };
+  /// `risks` is an advisory heuristic scan of the flow's step prompts (see
+  /// shared/flows/riskScan.ts). It NEVER blocks the install — a non-empty array
+  /// comes back alongside a successfully written file, and it is the caller's
+  /// job to show it.
   'flows:installFromRegistry': (args: {
     registryId: string;
     id: string;
     version: string;
-  }) => { ok: true; filePath: string } | { ok: false; error: string };
+  }) => { ok: true; filePath: string; risks: FlowRiskFinding[] } | { ok: false; error: string };
   'flows:previewRegistryFlow': (args: {
     registryId: string;
     id: string;
     version: string;
-  }) => { ok: true; flow: Flow } | { ok: false; error: string };
+  }) => { ok: true; flow: Flow; risks: FlowRiskFinding[] } | { ok: false; error: string };
 
   // ---- Orchestrator (batch fan-out over flows) --------------------------
   /// Run one producer turn: ask the user's preferred AI (with its MCP

