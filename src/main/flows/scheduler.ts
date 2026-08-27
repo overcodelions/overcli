@@ -21,9 +21,12 @@ import { randomUUID } from 'node:crypto';
 import type { MainToRendererEvent, UUID } from '../../shared/types';
 import type { FlowRun } from '../../shared/flows/schema';
 import {
+  MAX_CHAIN_DEPTH,
   SCHEDULE_HISTORY_LIMIT,
+  composeChainedPrompt,
   describeTrigger,
   evaluateSchedule,
+  latestArtifact,
   nextOccurrenceAfter,
   scheduleAnchor,
   scheduledRunTitle,
@@ -145,6 +148,11 @@ export class SchedulerEngine {
   nextFireAt(id: UUID): number | null {
     const s = this.schedules.get(id);
     if (!s || !s.enabled) return null;
+    // An event-driven schedule has no next fire time at all. Falling through
+    // would hand `Infinity` to the list UI and to every `scheduleUpdate`
+    // event, where it renders as a nonsense countdown; `null` is the shape
+    // the callers already handle for "not scheduled".
+    if (s.trigger.kind === 'onFlowComplete') return null;
     return nextOccurrenceAfter(s.trigger, scheduleAnchor(s));
   }
 
@@ -312,7 +320,7 @@ export class SchedulerEngine {
     }
   }
 
-  private async fire(s: Schedule, opts: { late?: boolean; manual?: boolean }): Promise<void> {
+  private async fire(s: Schedule, opts: FireOpts): Promise<void> {
     if (this.firing.has(s.id)) return;
     this.firing.add(s.id);
     try {
@@ -322,10 +330,7 @@ export class SchedulerEngine {
     }
   }
 
-  private async fireInner(
-    s: Schedule,
-    opts: { late?: boolean; manual?: boolean },
-  ): Promise<void> {
+  private async fireInner(s: Schedule, opts: FireOpts): Promise<void> {
     const now = this.now();
     // Replace: the in-flight run is stale by definition — the user asked for
     // the freshest answer this cadence can give, not the one already running.
@@ -360,7 +365,13 @@ export class SchedulerEngine {
     s.runCount = sequence;
     this.persistAndEmit(s);
 
-    const lateNote = opts.manual ? 'Run now.' : opts.late ? 'Catch-up run.' : undefined;
+    const lateNote = opts.manual
+      ? 'Run now.'
+      : opts.chain
+        ? `Chained from ${opts.chain.upstream.flowId} (hop ${opts.chain.depth}).`
+        : opts.late
+          ? 'Catch-up run.'
+          : undefined;
     const runIn = this.effectiveRunIn(s);
 
     if (s.target.kind === 'orchestrate') {
@@ -401,11 +412,19 @@ export class SchedulerEngine {
     const res = await this.deps.launcher.startRun({
       flowId: s.target.flowId,
       projectPath: s.projectPath,
-      userPrompt: s.target.prompt,
+      // The chained case is the whole reason this feature is worth having:
+      // the schedule's prompt is fixed at edit time, so without the upstream
+      // output folded in, the downstream flow starts blind.
+      userPrompt: opts.chain ? chainedPrompt(s, opts.chain.upstream) : s.target.prompt,
       runIn,
       baseBranch: runIn === 'worktree' ? s.target.baseBranch : undefined,
       scheduleId: s.id,
       scheduleName: s.name,
+      chainDepth: opts.chain?.depth,
+      chainParentRunId: opts.chain?.upstream.id,
+      // Titled from the BASE prompt, not the composed one — otherwise every
+      // chained run would be titled with the first line of its predecessor's
+      // output instead of what it was asked to do.
       title: scheduledRunTitle(sequence, s.target.prompt),
     });
     if (!res.ok) {
@@ -430,9 +449,90 @@ export class SchedulerEngine {
 
   // ---- RUN LIFECYCLE ----------------------------------------------------
 
-  /// Called for every flow run update. Only runs this engine launched matter;
-  /// everything else falls through immediately.
+  /// Called for every flow run update. Two independent jobs, and the order
+  /// matters: settle the run with the schedule that OWNS it first (clearing
+  /// the overlap guard), then fan the completion out to any schedule WATCHING
+  /// its flow. Doing it the other way round would let a chained firing see a
+  /// stale `activeRunId` and decline itself as busy.
   onRunUpdate(run: FlowRun): void {
+    this.settleOwnedRun(run);
+    void this.fireChainedSchedules(run);
+  }
+
+  /// Fan a terminal run out to every enabled `onFlowComplete` schedule
+  /// watching its flow.
+  ///
+  /// Deliberately NOT gated on `runToSchedule` — reacting to runs this engine
+  /// did NOT start is the entire point. A manual run, a run from another
+  /// schedule, and a Worker's run all count, because what the user wired up
+  /// was "when this flow finishes", not "when I remember to run it". The run
+  /// firehose already arrives here (`src/main/index.ts` calls this for every
+  /// update), so nothing upstream had to change.
+  private async fireChainedSchedules(run: FlowRun): Promise<void> {
+    if (!isTerminal(run)) return;
+    const succeeded = run.state.kind === 'done' && run.state.success === true;
+    // Snapshot: firing mutates the map, and `remove` can land from IPC while
+    // we await a launch.
+    for (const s of [...this.schedules.values()]) {
+      if (!this.schedules.has(s.id)) continue;
+      if (!s.enabled) continue;
+      if (s.trigger.kind !== 'onFlowComplete') continue;
+      if (s.trigger.watchFlowId !== run.flowId) continue;
+      if (s.trigger.onOutcome === 'success' && !succeeded) continue;
+      // Runtime backstop for the self-chain `validateSchedule` refuses at edit
+      // time: a schedule whose own output re-triggers it is a loop that only
+      // the depth cap would stop, five wasted runs at a time.
+      if (run.scheduleId === s.id) continue;
+
+      // Orchestrate targets are deliberately NOT chainable yet. Their child
+      // runs are minted by the orchestrator, which does not carry
+      // `chainDepth` — so a chain routed through one would reset its own hop
+      // counter and escape MAX_CHAIN_DEPTH entirely. Declining out loud beats
+      // a cap with a hole in it.
+      if (s.target.kind !== 'flow') {
+        this.record(s, {
+          at: this.now(),
+          outcome: 'skipped',
+          note: 'Chaining is only supported for single-flow targets.',
+        });
+        this.persistAndEmit(s);
+        continue;
+      }
+
+      const depth = (run.chainDepth ?? 0) + 1;
+      if (depth > MAX_CHAIN_DEPTH) {
+        this.record(s, {
+          at: this.now(),
+          outcome: 'skipped',
+          note: `Chain stopped at ${MAX_CHAIN_DEPTH} hops — the limit that keeps a mis-wired pair of schedules from firing forever.`,
+        });
+        this.persistAndEmit(s);
+        continue;
+      }
+
+      if (this.firing.has(s.id)) continue;
+      // Overlap policy still applies, but only the part that means something
+      // here. `queue`'s deferral is anchored to a missed OCCURRENCE, and an
+      // event-driven schedule has none — so `queue` and `replace` both fire
+      // (fireInner does the aborting for `replace`) and only `skip` declines.
+      if (this.isBusy(s) && s.onOverlap === 'skip') {
+        this.record(s, {
+          at: this.now(),
+          outcome: 'skipped',
+          note: 'Previous run was still going.',
+        });
+        this.persistAndEmit(s);
+        continue;
+      }
+
+      await this.fire(s, { chain: { depth, upstream: run } });
+    }
+  }
+
+  /// Settle a terminal run with the schedule that launched it: clear the
+  /// overlap guard, record the outcome, notify. Runs this engine did not start
+  /// fall through immediately.
+  private settleOwnedRun(run: FlowRun): void {
     const scheduleId = this.runToSchedule.get(run.id);
     if (!scheduleId) return;
     if (!isTerminal(run)) return;
@@ -508,6 +608,35 @@ export class SchedulerEngine {
     this.store.save(s);
     this.deps.emit({ type: 'scheduleUpdate', schedule: s, nextFireAt: this.nextFireAt(s.id) });
   }
+}
+
+/// Why one firing happened. `chain` is set only for an `onFlowComplete`
+/// firing and carries both halves the downstream run needs: how deep the chain
+/// already is, and the run whose output it inherits.
+interface FireOpts {
+  late?: boolean;
+  manual?: boolean;
+  chain?: { depth: number; upstream: FlowRun };
+}
+
+/// The prompt a chained run actually receives.
+///
+/// Falls back to the schedule's fixed prompt in the two cases where handoff
+/// would be noise rather than context: the trigger opted out, or the upstream
+/// run produced nothing (a run that failed before its first step finished has
+/// no artifacts at all, and an empty block teaches the downstream model
+/// nothing except that something went wrong).
+function chainedPrompt(s: Schedule, upstream: FlowRun): string {
+  const base = s.target.prompt;
+  if (s.trigger.kind !== 'onFlowComplete') return base;
+  if (s.trigger.passOutput === false) return base;
+  const artifact = latestArtifact(upstream.artifacts);
+  if (!artifact) return base;
+  return composeChainedPrompt(base, {
+    flowName: upstream.flowSnapshot?.name || upstream.flowId,
+    artifactName: artifact.name,
+    body: artifact.body,
+  });
 }
 
 function isTerminal(run: FlowRun): boolean {

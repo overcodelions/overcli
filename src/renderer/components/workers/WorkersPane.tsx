@@ -68,6 +68,7 @@ import {
   describeTrigger,
   untilLabel,
   type ScheduleTrigger,
+  type TimedTrigger,
 } from "@shared/flows/schedule";
 import {
   isOrchestrationAwaitingApproval,
@@ -6019,16 +6020,23 @@ function editWindow(
 }
 
 function CadenceField({
-  cadence,
+  cadence: incoming,
   onChange,
 }: {
   cadence: ScheduleTrigger | null;
   onChange: (t: ScheduleTrigger | null) => void;
 }) {
+  // A worker cadence is always time-based: `validateWorker` refuses
+  // `onFlowComplete` because a worker with no clock never wakes, and the shift
+  // calendar has nothing to project for it. Narrow once here (treating the
+  // impossible value as "on demand", the honest reading of a cadence with no
+  // occurrences) so everything below can spread the trigger freely.
+  const cadence: TimedTrigger | null =
+    incoming && incoming.kind !== "onFlowComplete" ? incoming : null;
   // Remembered so switching to On demand and back doesn't throw away the
   // times you typed. The last real trigger is also what "At a time of day"
   // restores, rather than snapping back to 09:00.
-  const lastRef = useRef<ScheduleTrigger>(cadence ?? { kind: "daily", time: "09:00" });
+  const lastRef = useRef<TimedTrigger>(cadence ?? { kind: "daily", time: "09:00" });
   if (cadence) lastRef.current = cadence;
   const last = lastRef.current;
   return (
