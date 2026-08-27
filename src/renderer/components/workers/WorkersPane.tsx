@@ -2422,6 +2422,11 @@ function WorkerShiftsPane({
                           orchestration={item.orchestration}
                         />
                       )}
+                      {/* Re-run and delete live wherever a shift is opened —
+                          the chat rule and here. This tab is the one people
+                          reach for when a shift went wrong, so leaving it out
+                          reads as the ability having been taken away. */}
+                      <ShiftActions worker={worker} item={item} />
                     </div>
                   )}
                 </div>
