@@ -123,6 +123,11 @@ export interface FlowRuntimeStartArgs {
   /// found in the sidebar can say who started it — nobody was watching when
   /// it did.
   scheduleName?: string;
+  /// Set when an `onFlowComplete` schedule chained this run off another run's
+  /// completion. `chainDepth` is the hop count the engine caps at
+  /// `MAX_CHAIN_DEPTH`; `chainParentRunId` is the run that triggered it.
+  chainDepth?: number;
+  chainParentRunId?: UUID;
   /// Set when a Worker shift launched this run. Stored on the FlowRun so the
   /// worker engine can route the terminal state and roll up cost.
   workerId?: UUID;
@@ -1090,6 +1095,8 @@ export class FlowRuntimeImpl {
       orchestrationItemTitle: args.orchestrationItemTitle,
       scheduleId: args.scheduleId,
       scheduleName: args.scheduleName,
+      chainDepth: args.chainDepth,
+      chainParentRunId: args.chainParentRunId,
       workerId: args.workerId,
       workerName: args.workerName,
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),

@@ -21,6 +21,29 @@ import type { Worker, WorkerScorecard } from '@shared/flows/worker';
 import { allocateTreasury } from '@shared/flows/treasury';
 import type { Flow } from '@shared/flows/schema';
 
+/// The share file the personalization tests all import.
+function importedNanny() {
+  return {
+    ok: true as const,
+    worker: {
+      name: 'Release Nanny',
+      jobDescription: 'Watch the release branch and post the digest to #eng-leads.',
+      cadence: { kind: 'daily', time: '08:00' },
+      caps: { maxItemsPerShift: 2, runIn: 'worktree' },
+      budgetUSDPerMonth: 12,
+      heartbeatModel: 'cheap',
+      flowIds: ['nightly-review'],
+    } as unknown as PortableWorker,
+    notes: {
+      installedFlowIds: ['nightly-review'],
+      reusedFlowIds: [],
+      missingFlowIds: [],
+      failedFlowIds: [],
+    },
+    summary: 'Added 1 flow to your library (nightly-review).',
+  };
+}
+
 function makeWorker(overrides: Partial<Worker> = {}): Worker {
   return {
     id: 'worker-1',
@@ -690,6 +713,146 @@ describe('sharing a worker', () => {
     expect(useFlowsStore.getState().flows.map((f) => f.id)).toContain('nightly-review');
     expect(s.hireSummary).toContain('Imported Release Nanny.');
     expect(s.hireSummary).toContain('nightly-review');
+  });
+
+  it('import starts the personalization scan on the arriving worker', async () => {
+    mockInvoke.mockImplementation(async (channel: string, args: any) => {
+      if (channel === 'workers:importFromFile') return importedNanny();
+      if (channel === 'flows:list') return [makeFlow({ id: 'nightly-review' })];
+      if (channel === 'workers:personalizeScan') {
+        expect(args).toMatchObject({ name: 'Release Nanny', flowId: 'nightly-review' });
+        return {
+          ok: true,
+          note: 'This worker names its owner in two places.',
+          questions: [
+            {
+              key: 'digest_channel',
+              label: 'Digest channel',
+              found: '#eng-leads',
+              question: 'Which channel?',
+              answer: '#platform',
+              fromProfile: true,
+            },
+          ],
+        };
+      }
+      return [];
+    });
+
+    await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
+    // The scan is fired and not awaited, so let its promise settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const p = useWorkersStore.getState().personalize!;
+    expect(p.scanning).toBe(false);
+    expect(p.workerName).toBe('Release Nanny');
+    // Prefilled by main from the profile — the second import asks less.
+    expect(p.questions[0]).toMatchObject({ answer: '#platform', fromProfile: true });
+  });
+
+  it('personalization routes the answers through the reviser and remembers them', async () => {
+    const seen: Array<{ channel: string; args: any }> = [];
+    mockInvoke.mockImplementation(async (channel: string, args: any) => {
+      seen.push({ channel, args });
+      if (channel === 'workers:importFromFile') return importedNanny();
+      if (channel === 'flows:list') return [makeFlow({ id: 'nightly-review' })];
+      if (channel === 'workers:personalizeScan') {
+        return {
+          ok: true,
+          note: '',
+          questions: [
+            {
+              key: 'digest_channel',
+              label: 'Digest channel',
+              found: '#eng-leads',
+              question: 'Which channel?',
+              answer: '',
+            },
+            { key: 'timezone', label: 'Timezone', found: 'PT', question: 'Which timezone?', answer: '' },
+          ],
+        };
+      }
+      if (channel === 'workers:rememberProfile') return { ok: true, profile: { facts: [] } };
+      if (channel === 'workers:reviseFromPrompt') {
+        return {
+          ok: true,
+          jobDescription: 'Watch the release branch and report to #platform.',
+          note: 'Re-pointed the digest at #platform.',
+        };
+      }
+      return [];
+    });
+
+    await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    useWorkersStore.getState().answerPersonalize('digest_channel', '#platform');
+    // Left blank on purpose: an unanswered row must not reach the reviser.
+    await useWorkersStore.getState().applyPersonalize();
+
+    const revise = seen.find((c) => c.channel === 'workers:reviseFromPrompt')!;
+    expect(revise.args.instruction).toContain('Digest channel: currently "#eng-leads" — mine is "#platform".');
+    expect(revise.args.instruction).not.toContain('Timezone');
+
+    // Remembered whatever the revision then did, so a failed turn doesn't
+    // also lose what the user typed.
+    const remember = seen.find((c) => c.channel === 'workers:rememberProfile')!;
+    expect(remember.args.questions.find((q: any) => q.key === 'digest_channel').answer).toBe('#platform');
+
+    const s = useWorkersStore.getState();
+    expect(s.draft!.jobDescription).toContain('#platform');
+    expect(s.personalize!.appliedNote).toContain('Re-pointed');
+    expect(s.personalize!.applying).toBe(false);
+  });
+
+  it('personalizing with every row blank asks for nothing and runs no turn', async () => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'workers:importFromFile') return importedNanny();
+      if (channel === 'flows:list') return [makeFlow({ id: 'nightly-review' })];
+      if (channel === 'workers:personalizeScan')
+        return {
+          ok: true,
+          note: '',
+          questions: [
+            { key: 'timezone', label: 'Timezone', found: 'PT', question: 'Which timezone?', answer: '' },
+          ],
+        };
+      return [];
+    });
+    await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    mockInvoke.mockClear();
+    await useWorkersStore.getState().applyPersonalize();
+    expect(mockInvoke).not.toHaveBeenCalled();
+    expect(useWorkersStore.getState().personalize!.error).toContain('Answer at least one');
+  });
+
+  it('hiring as sent drops the panel and changes nothing', async () => {
+    mockInvoke.mockImplementation(async (channel: string) => {
+      if (channel === 'workers:importFromFile') return importedNanny();
+      if (channel === 'flows:list') return [makeFlow({ id: 'nightly-review' })];
+      if (channel === 'workers:personalizeScan')
+        return {
+          ok: true,
+          note: '',
+          questions: [
+            { key: 'timezone', label: 'Timezone', found: 'PT', question: 'Which timezone?', answer: '' },
+          ],
+        };
+      return [];
+    });
+    await useWorkersStore.getState().importFromFile({ projectPath: '/repo', projectPaths: ['/repo'] });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const before = useWorkersStore.getState().draft!.jobDescription;
+    useWorkersStore.getState().dismissPersonalize();
+    expect(useWorkersStore.getState().personalize).toBeNull();
+    expect(useWorkersStore.getState().draft!.jobDescription).toBe(before);
   });
 
   it('a dismissed import dialog opens no editor and reports no error', async () => {

@@ -68,6 +68,7 @@ import {
   describeTrigger,
   untilLabel,
   type ScheduleTrigger,
+  type TimedTrigger,
 } from "@shared/flows/schedule";
 import {
   isOrchestrationAwaitingApproval,
@@ -1083,7 +1084,7 @@ function WorkerRow({
 
         {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
 
-        <div className="mt-5 flex items-center gap-6 overflow-x-auto border-b border-card-strong">
+        <div className="no-scrollbar mt-5 flex items-center gap-6 overflow-x-auto overflow-y-hidden border-b border-card-strong">
           {(
             [
               ["chat", "Chat"],
@@ -1195,7 +1196,7 @@ function WorkerRow({
               />
             </div>
           </div>
-          <div className="shrink-0 border-t border-card px-6 py-3">
+          <div className="shrink-0 border-t border-card px-6 pb-5 pt-3">
             <div className="w-full">
               <WorkerErrandComposer
                 worker={worker}
@@ -1208,7 +1209,10 @@ function WorkerRow({
       ) : (
         <div
           ref={scroller}
-          className="min-h-0 flex-1 overflow-y-auto px-6 pb-6"
+          className={
+            "min-h-0 flex-1 px-6 pb-6 " +
+            (tab === "settings" ? "overflow-hidden" : "overflow-y-auto")
+          }
         >
           {tab === "shifts" && (
             <WorkerShiftsPane
@@ -1431,19 +1435,18 @@ function WorkerSettings({
   };
 
   return (
-    <div className="mt-5 grid grid-cols-1 gap-8 lg:grid-cols-[minmax(0,1fr)_19rem]">
-      <div className="min-w-0 space-y-6">
+    <div className="h-full min-h-0 overflow-y-auto pt-3 lg:grid lg:grid-cols-[minmax(0,1fr)_19rem] lg:grid-rows-[auto_minmax(0,1fr)] lg:gap-x-8 lg:gap-y-3 lg:overflow-hidden">
+      <button
+        onClick={() => openEditor(draftFromWorker(worker))}
+        className="mb-4 flex w-full items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-accent-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 lg:col-start-2 lg:row-start-1 lg:mb-0"
+      >
+        Edit worker details
+      </button>
+
+      <div className="mb-8 min-w-0 space-y-6 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:mb-0 lg:min-h-0 lg:overflow-y-auto lg:pb-6 lg:pr-3">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="text-[11px] uppercase tracking-wider text-ink-faint">
-              The job it was hired for
-            </div>
-            <button
-              onClick={() => openEditor(draftFromWorker(worker))}
-              className="ml-auto rounded-md border border-accent/50 px-3 py-1 text-xs text-accent hover:bg-accent/10"
-            >
-              Edit
-            </button>
+          <div className="text-[11px] uppercase tracking-wider text-ink-faint">
+            The job it was hired for
           </div>
           {/* The contract, in the one serif on the page — it is the terms of
               employment and the thing every errand is judged against, not a
@@ -1688,7 +1691,10 @@ function WorkerSettings({
         </div>
       </div>
 
-      <div className="min-w-0 space-y-4">
+      {/* The button and cards occupy the right grid rows while only the left
+          details cell scrolls. On a single-column viewport source order keeps
+          the action first and the cards after the details. */}
+      <div className="min-w-0 space-y-4 lg:col-start-2 lg:row-start-2 lg:self-start">
         <TrustLadder worker={worker} />
         <ShareCard worker={worker} />
         <DeployCard worker={worker} />
@@ -3397,7 +3403,7 @@ function EmptyDesk({
         </div>
         <p className="mx-auto mt-1.5 max-w-sm text-xs leading-5 text-ink-muted">
           {isToday
-            ? `Messages start fresh each day. Scheduled shifts stay in Shifts; work launched from a shift or conversation appears in Tasks.`
+            ? `Ask ${worker.name} a question or request research below. Switch to Create work to hand off an errand that may run a flow.`
             : `${worker.name} didn’t exchange messages on this day.`}
         </p>
         {isToday && workSummary.shiftCount > 0 && (
@@ -5086,6 +5092,10 @@ function WorkerEditor() {
           {/* First, like the flow editor's AI row: editing-by-instruction is
               the front door, the form below is the fine adjustment. */}
           <WorkerAiRevise />
+          {/* Above everything else the import writes, because it is the one
+              thing on this screen that expires: hire the worker and the
+              questions are about a worker that is already running. */}
+          <WorkerPersonalizePanel />
           {/* Derived, never stored — every pill is a projection of the form
               below, so "what will this worker do" can't drift from the truth. */}
           <WorkerLifecycle
@@ -5645,6 +5655,138 @@ function WorkerHelpRail({
 /// `startedAt` is when the turn actually began, not when this strip mounted.
 /// The two differ whenever the user leaves and comes back mid-draft, and a
 /// counter that restarts at 0 on return is a lie about how long is left.
+/// The import-time "make this worker yours" pass.
+///
+/// Only ever appears for a worker that arrived from somebody else — the store
+/// starts the scan from `importFromFile` and from nowhere else. Everything
+/// here is optional: Skip hires the worker exactly as it was shared, which is
+/// what the whole panel degrades to if the scan fails or finds nothing.
+function WorkerPersonalizePanel() {
+  const state = useWorkersStore((s) => s.personalize);
+  const answer = useWorkersStore((s) => s.answerPersonalize);
+  const apply = useWorkersStore((s) => s.applyPersonalize);
+  const dismiss = useWorkersStore((s) => s.dismissPersonalize);
+  const rescan = useWorkersStore((s) => s.startPersonalizeScan);
+
+  if (!state) return null;
+
+  // Nothing owner-specific in a worker that is genuinely generic. Saying so
+  // and getting out of the way beats an empty form the user has to dismiss.
+  if (!state.scanning && !state.error && state.questions.length === 0 && !state.appliedNote) {
+    return null;
+  }
+
+  const answeredCount = state.questions.filter((q) => q.answer.trim()).length;
+
+  return (
+    <div className="rounded-xl border border-accent/40 bg-accent/5 p-4 space-y-3">
+      <div className="flex items-start gap-2">
+        <span className="text-sm leading-5 select-none" aria-hidden>
+          👋
+        </span>
+        <div className="min-w-0">
+          <div className="text-sm font-medium">
+            {state.appliedNote ? "Personalized" : "Make this worker yours"}
+          </div>
+          <div className="text-[11px] text-ink-faint leading-relaxed mt-0.5">
+            {state.appliedNote
+              ? "Your answers were saved, so the next worker you import starts with them filled in."
+              : `${state.workerName || "This worker"} was written for whoever shared it. These details are still about them.`}
+          </div>
+        </div>
+        {!state.appliedNote && (
+          <button
+            onClick={dismiss}
+            className="ml-auto text-[11px] text-ink-faint hover:text-ink px-2 py-1 rounded hover:bg-white/5 whitespace-nowrap"
+          >
+            Hire as sent
+          </button>
+        )}
+      </div>
+
+      {state.scanning && (
+        <WorkingStrip message="Reading the worker for details that belong to its previous owner…" />
+      )}
+
+      {state.error && (
+        <div className="flex items-center gap-2 text-[11px] text-rose-400">
+          <span className="min-w-0 break-words">{state.error}</span>
+          <button
+            onClick={() => void rescan()}
+            className="ml-auto px-2 py-0.5 rounded border border-card-strong text-ink-muted hover:text-ink whitespace-nowrap"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
+      {state.appliedNote ? (
+        <div className="rounded-lg border border-card-strong bg-card px-3 py-2 text-[11px] text-ink-muted">
+          <Markdown source={state.appliedNote} />
+          <button
+            onClick={dismiss}
+            className="mt-2 text-[11px] px-2.5 py-1 rounded-md border border-card-strong hover:bg-white/5"
+          >
+            Done
+          </button>
+        </div>
+      ) : (
+        state.questions.length > 0 && (
+          <>
+            {state.note && (
+              <div className="text-[11px] text-ink-muted leading-relaxed">{state.note}</div>
+            )}
+            <div className="space-y-2.5">
+              {state.questions.map((q) => (
+                <div key={q.key} className="space-y-1">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="text-[11px] uppercase tracking-wider text-ink-faint">
+                      {q.label}
+                    </span>
+                    {/* The useful thing to see is not the question but what
+                        the worker currently believes. */}
+                    <span className="text-[11px] text-ink-faint line-through decoration-ink-faint/60">
+                      {q.found}
+                    </span>
+                    {q.fromProfile && (
+                      <span className="text-[10px] text-accent">remembered</span>
+                    )}
+                  </div>
+                  <input
+                    value={q.answer}
+                    disabled={state.applying}
+                    onChange={(e) => answer(q.key, e.target.value)}
+                    placeholder={q.question}
+                    className="w-full bg-card border border-card-strong rounded-md px-2.5 py-1.5 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-accent disabled:opacity-60"
+                  />
+                </div>
+              ))}
+            </div>
+
+            {state.applying ? (
+              <WorkingStrip message="Re-pointing the job description and the flow at you…" />
+            ) : (
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => void apply()}
+                  disabled={answeredCount === 0}
+                  className="text-xs px-3 py-1.5 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
+                >
+                  Personalize
+                </button>
+                <span className="text-[10px] text-ink-faint leading-relaxed">
+                  Answer what you care about and leave the rest — blanks stay as
+                  they arrived. You review every change before you hire.
+                </span>
+              </div>
+            )}
+          </>
+        )
+      )}
+    </div>
+  );
+}
+
 function WorkingStrip({
   message,
   startedAt,
@@ -6008,16 +6150,23 @@ function editWindow(
 }
 
 function CadenceField({
-  cadence,
+  cadence: incoming,
   onChange,
 }: {
   cadence: ScheduleTrigger | null;
   onChange: (t: ScheduleTrigger | null) => void;
 }) {
+  // A worker cadence is always time-based: `validateWorker` refuses
+  // `onFlowComplete` because a worker with no clock never wakes, and the shift
+  // calendar has nothing to project for it. Narrow once here (treating the
+  // impossible value as "on demand", the honest reading of a cadence with no
+  // occurrences) so everything below can spread the trigger freely.
+  const cadence: TimedTrigger | null =
+    incoming && incoming.kind !== "onFlowComplete" ? incoming : null;
   // Remembered so switching to On demand and back doesn't throw away the
   // times you typed. The last real trigger is also what "At a time of day"
   // restores, rather than snapping back to 09:00.
-  const lastRef = useRef<ScheduleTrigger>(cadence ?? { kind: "daily", time: "09:00" });
+  const lastRef = useRef<TimedTrigger>(cadence ?? { kind: "daily", time: "09:00" });
   if (cadence) lastRef.current = cadence;
   const last = lastRef.current;
   return (

@@ -707,3 +707,28 @@ describe('on-demand cadence', () => {
     expect(describeCadence({ kind: 'daily', time: '09:00' })).toBe('Every day at 9am');
   });
 });
+
+describe('validateWorker — event-driven cadence', () => {
+  // A worker is staff with a shift pattern: `nextShiftAt`, the shift calendar
+  // and `projectOccurrences` all assume a time axis. An `onFlowComplete`
+  // cadence has no occurrence to project, so such a worker would simply never
+  // wake and the calendar would silently draw nothing. Refuse it at save time
+  // and point at the surface that does support chaining.
+  it('refuses onFlowComplete and names the right surface', () => {
+    expect(
+      validateWorker(
+        makeWorker({
+          cadence: { kind: 'onFlowComplete', watchFlowId: 'scrape', onOutcome: 'success' },
+        }),
+      ),
+    ).toBe('Workers run on a clock. To chain off another flow, use a Schedule.');
+  });
+
+  it('still accepts the two clock-based cadences and on-demand', () => {
+    expect(validateWorker(makeWorker({ cadence: { kind: 'daily', time: '09:00' } }))).toBeNull();
+    expect(
+      validateWorker(makeWorker({ cadence: { kind: 'interval', everyMinutes: 120 } })),
+    ).toBeNull();
+    expect(validateWorker(makeWorker({ cadence: null }))).toBeNull();
+  });
+});

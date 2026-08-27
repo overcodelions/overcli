@@ -511,6 +511,20 @@ export interface FlowRun {
   /// memory of starting is otherwise alarming.
   scheduleId?: UUID;
   scheduleName?: string;
+  /// How many `onFlowComplete` hops produced this run. Absent (or 0) for a run
+  /// a human or a time-based schedule started; 1 for the first link in a
+  /// chain, and so on. Read by `SchedulerEngine.onRunUpdate` to refuse a hop
+  /// past `MAX_CHAIN_DEPTH`, which is the only thing standing between a
+  /// mis-wired pair of schedules and an unbounded loop.
+  ///
+  /// Persisted on the run rather than recomputed, deliberately: the chain that
+  /// produced a run is a fact about its history, and the schedules that formed
+  /// it may be edited or deleted before it finishes.
+  chainDepth?: number;
+  /// The upstream run whose completion fired this one. Provenance for a run
+  /// nobody launched by hand — without it a chained run in the sidebar has no
+  /// way to say where it came from.
+  chainParentRunId?: UUID;
   /// Set when a Worker's shift launched this run. Mirrors `scheduleId` —
   /// routes the terminal state back to the worker engine and lets the UI
   /// say which worker started work nobody watched.

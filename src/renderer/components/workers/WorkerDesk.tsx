@@ -44,7 +44,7 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
             title={intent === 'chat' ? 'Switch to Create work' : 'Switch back to Ask'}
             onClick={() => onIntentChange?.(intent === 'chat' ? 'work' : 'chat')}
             className={
-              'relative h-5 w-9 shrink-0 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400/40 ' +
+              'relative h-4 w-7 shrink-0 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400/40 ' +
               (intent === 'work'
                 ? 'border-violet-400/60 bg-violet-500'
                 : 'border-card-strong bg-card-strong hover:border-ink-faint')
@@ -53,8 +53,8 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
             <span
               aria-hidden="true"
               className={
-                'absolute top-0.5 h-3.5 w-3.5 rounded-full shadow-sm transition-all ' +
-                (intent === 'work' ? 'left-[17px] bg-white' : 'left-0.5 bg-ink-muted')
+                'absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full shadow-sm transition-all ' +
+                (intent === 'work' ? 'left-[14px] bg-white' : 'left-0.5 bg-ink-muted')
               }
             />
           </button>
@@ -62,15 +62,24 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
             Create work
           </span>
         </div>
-        <span className="text-ink-faint">{intent === 'chat' ? 'Replies here; no flow starts.' : 'May use or draft a flow; trust rules still apply.'}</span>
+        <span className="text-ink-faint">
+          {intent === 'chat'
+            ? 'Replies here without starting a flow.'
+            : 'Hand off an errand; trust rules apply.'}
+        </span>
       </div>
       <Composer
         // Per-worker draft key: a half-typed errand to one worker survives a
         // trip to another's desk, the way a half-typed chat survives.
         draftKey={draftKey}
         variant="compact"
+        strongBorder
         rootPath={worker.projectPath}
-        placeholder={intent === 'chat' ? `Message ${worker.name}…` : `Describe the outcome for ${worker.name} to produce…`}
+        placeholder={
+          intent === 'chat'
+            ? `Ask ${worker.name} a question or request research…`
+            : `Describe the outcome for ${worker.name} to produce…`
+        }
         onSend={(prompt, attachments) => {
           // Composer's `commit` hands the text off but does not empty itself —
           // in chat, `store.send` clears the draft and attachments for the key.

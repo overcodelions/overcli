@@ -123,7 +123,17 @@ import { WorkerEngine } from './flows/workerEngine';
 import { workerOrigin } from '../shared/flows/worker';
 import { pickDrafterBackend, resolveProducerModel } from '../shared/flows/drafterBackend';
 import { DEFAULT_TREASURY_USD, allocateTreasury } from '../shared/flows/treasury';
-import { draftWorkerFromPrompt, reviseWorkerFromPrompt } from './flows/workerDrafter';
+import {
+  draftWorkerFromPrompt,
+  personalizeImportedWorker,
+  reviseWorkerFromPrompt,
+} from './flows/workerDrafter';
+import { prefillFromProfile, rememberAnswers } from '../shared/flows/personalize';
+import {
+  forgetProfileFact,
+  loadUserProfile,
+  saveUserProfile,
+} from './flows/userProfileStore';
 import { flushRuns } from './flows/runsStore';
 import { loadRunSummaries } from './flows/runSummaryLog';
 import { renderProvenFlowsSection } from './flows/provenFlows';
@@ -1863,6 +1873,32 @@ export function registerIpc(): void {
   ipcMain.handle('workers:resetMemory', (_e, { id }) =>
     workerEngine ? workerEngine.resetMemory(id) : ({ ok: false, error: 'Workers are not running.' } as const),
   );
+  ipcMain.handle('workers:personalizeScan', async (_e, { name, jobDescription, flowId }) => {
+    const store = Store.load();
+    const flow = flowId
+      ? loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }).find((f) => f.id === flowId)
+      : undefined;
+    const res = await personalizeImportedWorker({ name, jobDescription, flow }, drafterDeps());
+    if (!res.ok) return res;
+    // Pre-fill in main rather than shipping the whole profile to the renderer:
+    // the profile is the only personal record this app keeps, and the only
+    // thing the import form needs from it is the answers to the questions it
+    // is about to ask.
+    return {
+      ok: true,
+      questions: prefillFromProfile(res.questions, loadUserProfile()),
+      note: res.note,
+    } as const;
+  });
+  ipcMain.handle('workers:rememberProfile', (_e, { questions }) => ({
+    ok: true,
+    profile: saveUserProfile(rememberAnswers(loadUserProfile(), questions ?? [], Date.now())),
+  }));
+  ipcMain.handle('workers:profile', () => ({ ok: true, profile: loadUserProfile() }));
+  ipcMain.handle('workers:forgetProfile', (_e, { key } = {}) => ({
+    ok: true,
+    profile: forgetProfileFact(key),
+  }));
   ipcMain.handle('workers:draftFromPrompt', (_e, { jobDescription, attachments }) => {
     const store = Store.load();
     return draftWorkerFromPrompt(

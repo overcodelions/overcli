@@ -15,6 +15,7 @@ import type {
   WorkerTrustLevel,
 } from './flows/worker';
 import type { PortableWorker, WorkerImportNotes } from './flows/workerYaml';
+import type { PersonalizationQuestion, UserProfile } from './flows/personalize';
 import type { WorkerReport } from './flows/workerReport';
 import type { Treasury, TreasuryAllocation } from './flows/treasury';
 import type { FlowTemplate } from './flows/templates';
@@ -2315,6 +2316,32 @@ export interface IPCInvokeMap {
         summary: string;
       }
     | { ok: false; error: string };
+  /// Read an imported worker for the details that are about whoever shared
+  /// it — the previous owner's manager, channel, repo, working hours — and
+  /// return them as questions, pre-filled with anything this install already
+  /// learned from an earlier import. Optional and side-effect free: skipping
+  /// it hires the worker exactly as it arrived. See
+  /// src/shared/flows/personalize.ts.
+  'workers:personalizeScan': (args: {
+    name: string;
+    jobDescription: string;
+    /// The worker's primary flow, so the scan sees hardcoded owner details in
+    /// the steps and not only in the prose. Sent as an id the library can
+    /// resolve; an unresolvable id simply scans the prose.
+    flowId?: string;
+  }) =>
+    | { ok: true; questions: PersonalizationQuestion[]; note: string }
+    | { ok: false; error: string };
+  /// Fold personalization answers into the stored profile, so the next
+  /// imported worker arrives with them already filled in.
+  'workers:rememberProfile': (args: {
+    questions: PersonalizationQuestion[];
+  }) => { ok: true; profile: UserProfile };
+  /// The stored profile, for pre-filling and for showing the user what this
+  /// install remembers about them.
+  'workers:profile': () => { ok: true; profile: UserProfile };
+  /// Forget one remembered fact, or all of them when `key` is omitted.
+  'workers:forgetProfile': (args: { key?: string }) => { ok: true; profile: UserProfile };
   /// One hire-drafter turn: a free-text job description in, a reviewed-not-
   /// saved contract out — plus a drafted Flow when no existing flow fit.
   /// `flowError` is set when a flow was asked for and the flow drafter

@@ -543,6 +543,13 @@ export function validateWorker(w: Partial<Worker>): string | null {
   // answer, and still an error.
   if (cadence === undefined) return 'Pick when this worker works.';
   if (cadence === null) return null;
+  // A worker is staff with a shift pattern: `nextShiftAt`, the shift calendar
+  // and `projectOccurrences` all assume a time axis. `onFlowComplete` has no
+  // occurrence to project, so a worker carrying one would simply never wake
+  // and the calendar would silently draw nothing. Refuse it here rather than
+  // let it be saved — flow chaining belongs on a Schedule.
+  if (cadence.kind === 'onFlowComplete')
+    return 'Workers run on a clock. To chain off another flow, use a Schedule.';
   if (cadence.days && cadence.days.length === 0)
     return 'Pick at least one day, or leave every day selected.';
   if (cadence.kind === 'interval') {
