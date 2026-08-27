@@ -16,6 +16,7 @@ import {
   type ModelSpeed,
 } from '@shared/modelCatalog';
 import { EFFORT_BACKENDS } from '@shared/effort';
+import type { UserProfile } from '@shared/flows/personalize';
 import { Group, SheetActionButton } from './settingsChrome';
 import { StoragePane } from './StoragePane';
 import { ConversationsPane } from './ConversationsPane';
@@ -208,6 +209,59 @@ function Toggle({
   );
 }
 
+/// What this install learned about the user from personalizing imported
+/// workers. Read-only apart from forgetting: these are not settings anybody
+/// sets, they are answers typed into an import form and kept so the next
+/// import can pre-fill them (src/shared/flows/personalize.ts).
+///
+/// It is here because it is the only personal record the app keeps, and a
+/// pile of facts about you that can only be edited by finding a JSON file in
+/// userData is not a thing to ship. Nothing to configure means nothing to
+/// save: it writes through immediately rather than joining the sheet's dirty
+/// state.
+function RememberedFacts() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  useEffect(() => {
+    void window.overcli.invoke('workers:profile').then((res) => setProfile(res.profile));
+  }, []);
+
+  // An install that has never imported a shared worker has no such record,
+  // and a permanently empty box is a promise that something should be there.
+  if (!profile || profile.facts.length === 0) return null;
+
+  const forget = (key?: string) =>
+    void window.overcli.invoke('workers:forgetProfile', { key }).then((res) => setProfile(res.profile));
+
+  return (
+    <Group
+      title="What overcli remembers about you"
+      description="Answers you gave when personalizing a worker somebody shared with you. The next worker you import starts with these filled in."
+    >
+      {profile.facts.map((fact) => (
+        <div key={fact.key} className="flex items-baseline gap-2 text-xs">
+          <span className="text-ink-faint w-[140px] flex-shrink-0 truncate" title={fact.label}>
+            {fact.label}
+          </span>
+          <span className="text-ink min-w-0 break-words">{fact.value}</span>
+          <button
+            onClick={() => forget(fact.key)}
+            className="ml-auto text-[11px] text-ink-faint hover:text-rose-400 px-1.5 py-0.5 rounded hover:bg-white/5"
+            title={`Forget ${fact.label}`}
+          >
+            Forget
+          </button>
+        </div>
+      ))}
+      <button
+        onClick={() => forget()}
+        className="self-start text-[11px] text-ink-faint hover:text-rose-400 mt-1"
+      >
+        Forget all of it
+      </button>
+    </Group>
+  );
+}
+
 // ---------- Panes ----------
 
 function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
@@ -216,6 +270,7 @@ function GeneralPane({ local, patch }: { local: AppSettings; patch: (p: Partial<
       <Group title="Appearance" description="Choose how overcli looks. System follows your OS setting.">
         <ThemePicker value={local.theme} onChange={(v) => patch({ theme: v })} />
       </Group>
+      <RememberedFacts />
       <Group title="Chat display">
         <Toggle
           label="Show cost per turn"
