@@ -1736,6 +1736,23 @@ export function registerIpc(): void {
   // Deploying a worker as a CI job. Shares the same bundle as workers:share;
   // ciPlanFor additionally resolves the worker's flows so buildCiDeploy can
   // see what backends they need.
+  /// Which of a plan's files already exist with DIFFERENT contents, so the
+  /// preview can say "replaces" before the write rather than reporting it
+  /// afterwards. Same contents is not a replacement — re-deploying an
+  /// unchanged worker should not look destructive.
+  function existingOf(projectPath: string, files: Array<{ path: string; contents: string }>): string[] {
+    if (!projectPath) return [];
+    const out: string[] = [];
+    for (const f of files) {
+      try {
+        const abs = path.join(projectPath, f.path);
+        if (fs.existsSync(abs) && fs.readFileSync(abs, 'utf-8') !== f.contents) out.push(f.path);
+      } catch {
+        // Unreadable is not "will be replaced" — the write will report it.
+      }
+    }
+    return out;
+  }
   function ciPlanFor(id: string, target: 'github' | 'jenkins') {
     const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
     if (!worker) return { ok: false as const, error: 'No such worker.' };
@@ -1760,6 +1777,7 @@ export function registerIpc(): void {
       steps: res.plan.steps,
       notes: res.plan.notes,
       warnings: res.plan.warnings,
+      existing: existingOf(res.worker.projectPath, res.plan.files),
       projectPath: res.worker.projectPath,
     } as const;
   });
@@ -1809,7 +1827,7 @@ export function registerIpc(): void {
       plan: buildFlowCiDeploy({ flow, target, flowYaml: serializeFlow(flow), prompt }),
     };
   }
-  ipcMain.handle('flows:ciDeploy', (_e, { flowId, target, prompt }) => {
+  ipcMain.handle('flows:ciDeploy', (_e, { flowId, target, projectPath, prompt }) => {
     const res = flowCiPlanFor(flowId, target, prompt);
     if (!res.ok) return res;
     return {
@@ -1818,6 +1836,7 @@ export function registerIpc(): void {
       steps: res.plan.steps,
       notes: res.plan.notes,
       warnings: res.plan.warnings,
+      existing: existingOf(projectPath, res.plan.files),
     } as const;
   });
   ipcMain.handle('flows:ciDeployWrite', (_e, { flowId, target, projectPath, prompt }) => {

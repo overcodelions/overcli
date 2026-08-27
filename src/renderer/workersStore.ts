@@ -395,6 +395,7 @@ interface WorkersActions {
     steps: string[];
     notes: string[];
     warnings: string[];
+    existing: string[];
     projectPath: string;
   } | null>;
   /// Write those files into the worker's project. Resolves to the paths
@@ -1469,7 +1470,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       set({ error: res.error });
       return null;
     }
-    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings, projectPath: res.projectPath };
+    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings, existing: res.existing, projectPath: res.projectPath };
   },
 
   async ciDeployWrite(id, target) {

@@ -1798,7 +1798,7 @@ export interface IPCInvokeMap {
     projectPath: string;
     prompt?: string;
   }) =>
-    | { ok: true; files: CiDeployFile[]; steps: string[]; notes: string[]; warnings: string[] }
+    | { ok: true; files: CiDeployFile[]; steps: string[]; notes: string[]; warnings: string[]; existing: string[] }
     | { ok: false; error: string };
   /// The same files, written into the project. `overwritten` names the ones
   /// that already existed with different contents.
@@ -2284,7 +2284,7 @@ export interface IPCInvokeMap {
   /// The worker as a CI job: the share bundle plus a generated GitHub Actions
   /// workflow or Jenkinsfile. Preview only — nothing is written.
   'workers:ciDeploy': (args: { id: UUID; target: CiTarget }) =>
-    | { ok: true; files: CiDeployFile[]; steps: string[]; notes: string[]; warnings: string[]; projectPath: string }
+    | { ok: true; files: CiDeployFile[]; steps: string[]; notes: string[]; warnings: string[]; existing: string[]; projectPath: string }
     | { ok: false; error: string };
   /// The same files, written into the worker's project. Returns the paths
   /// written, plus which of them already existed with different content —

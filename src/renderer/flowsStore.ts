@@ -90,6 +90,7 @@ interface FlowsActions {
     steps: string[];
     notes: string[];
     warnings: string[];
+    existing: string[];
   } | null>;
   /// Write those files into the project. Resolves to what was written, and
   /// which of those already existed with different contents.
@@ -308,7 +309,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   async ciDeploy({ flowId, target, projectPath, prompt }) {
     const res = await window.overcli.invoke('flows:ciDeploy', { flowId, target, projectPath, prompt });
     if (!res.ok) return null;
-    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings };
+    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings, existing: res.existing };
   },
 
   async ciDeployWrite({ flowId, target, projectPath, prompt }) {
