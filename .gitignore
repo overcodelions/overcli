@@ -19,3 +19,6 @@ Thumbs.db
 # otherwise swallow CHANGELOG.md. Force it to be tracked.
 !CHANGELOG.md
 .mockups/
+
+# Local scratch registry for hand-testing flow installs.
+example-registry/
