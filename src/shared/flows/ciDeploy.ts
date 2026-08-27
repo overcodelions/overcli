@@ -72,6 +72,11 @@ export function ciSlug(name: string): string {
 /// caller has to trigger the job by hand.
 export function cronFromCadence(c: ScheduleTrigger | null): string | null {
   if (c === null) return null;
+  // A cadence chained off another flow's completion has no clock in it at all
+  // (see TimedTrigger in schedule.ts) — there is no next occurrence to express.
+  // CI has a real equivalent, but it is a different trigger block rather than a
+  // cron line, so the generator says so instead of inventing a schedule.
+  if (c.kind === 'onFlowComplete') return null;
   const dayField = c.days && c.days.length > 0 ? [...c.days].sort((a, b) => a - b).join(',') : '*';
   if (c.kind === 'daily') {
     const parts = c.time.split(':');
@@ -313,7 +318,14 @@ export function buildCiDeploy(args: {
   ) {
     warnings.push('Cadence was rounded to the nearest hour — cron cannot express it exactly.');
   }
-  if (cron === null) {
+  if (worker.cadence?.kind === 'onFlowComplete') {
+    warnings.push(
+      'This worker runs when another flow finishes, which cron cannot express. Chain the jobs instead: ' +
+        (target === 'github'
+          ? 'add an `on.workflow_run` trigger naming the upstream workflow.'
+          : 'make the upstream job trigger this one as a downstream build.'),
+    );
+  } else if (cron === null) {
     warnings.push('This worker is on demand, so the job has no schedule — trigger it manually.');
   }
   if (worker.trust === 'probation') {

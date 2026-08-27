@@ -15,13 +15,13 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 
 import { coerceProfile, type UserProfile } from '../../shared/flows/personalize';
 
 function filePath(): string {
-  return path.join(app.getPath('userData'), 'user-profile.json');
+  return path.join(host().dataDir(), 'user-profile.json');
 }
 
 let cache: UserProfile | null = null;

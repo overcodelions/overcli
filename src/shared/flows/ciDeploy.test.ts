@@ -288,3 +288,39 @@ describe('worker instructions are target-aware', () => {
     }
   });
 });
+
+describe('a cadence chained off another flow', () => {
+  const chained = { kind: 'onFlowComplete' as const, watchFlowId: 'scrape', onOutcome: 'success' as const };
+
+  it('has no cron, because it has no clock', () => {
+    expect(cronFromCadence(chained)).toBeNull();
+  });
+
+  it('says how to chain the jobs instead of silently dropping the trigger', () => {
+    const gh = buildCiDeploy({
+      worker: worker({ trust: 'trusted', cadence: chained }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(gh.warnings.some((w) => w.includes('workflow_run'))).toBe(true);
+
+    const jenkins = buildCiDeploy({
+      worker: worker({ trust: 'trusted', cadence: chained }),
+      flows: [flow('nightly-review')],
+      target: 'jenkins',
+      workerYaml: 'x',
+    });
+    expect(jenkins.warnings.some((w) => w.includes('downstream build'))).toBe(true);
+  });
+
+  it('does not also claim the worker is on demand', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted', cadence: chained }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.warnings.some((w) => w.includes('on demand'))).toBe(false);
+  });
+});
