@@ -102,6 +102,27 @@ const EGRESS: Array<{ re: RegExp; what: string }> = [
   { re: /\bhttps?:\/\/[^\s]{0,60}[^\n]{0,40}\bPOST\b/i, what: 'an HTTP POST' },
 ];
 
+/// Strip clauses that PROHIBIT the thing we are looking for, from the negation
+/// to the end of that sentence. A prompt saying "Do NOT shell out to curl —
+/// call the MCP tools" contains the same bytes as one telling the agent to
+/// curl, and flagging it is noise: it is a step being careful, which is the
+/// opposite of what this scan is for. Found against a real flow library, where
+/// it was the only false positive in 46 flows.
+///
+/// `resolveStepEffect` (src/main/flows/runtime.ts) does exactly this for its
+/// own detectors and for the same reason, but it stops the strip at the next
+/// `.` of any kind. That is wrong here: the things this module hunts for ARE
+/// dotted (`~/.ssh`, `.aws/credentials`), so "Never read ~/.ssh/id_rsa." would
+/// strip only as far as `~/` and then flag the rest. The clause therefore runs
+/// to a real sentence end — a period followed by whitespace, or end of line.
+///
+/// The obvious evasion — "never read ~/.ssh (unless asked)" — works. That is
+/// an accepted cost: this is a heuristic that has to survive contact with
+/// careful, well-written prompts, and a scan nobody trusts because it cries
+/// wolf gets ignored, which protects no one.
+const NEGATED_CLAUSE =
+  /\b(?:do\s+not|don'?t|never|must\s+not|avoid|refrain\s+from)\b[^\n]{0,60}?\b(?:curl|wget|nc|scp|shell\s+out|webhook|post|read|open|cat|access|touch|use|send|upload)\b(?:(?!\.\s|\.$)[^\n])*/gim;
+
 /// Scan one step. Exported separately from `scanFlowRisks` so the runtime can
 /// ask about a single step on the pre-step pause path without re-scanning the
 /// whole flow on every step transition.
@@ -110,8 +131,9 @@ export function scanStepRisks(step: ScannableStep): FlowRiskFinding[] {
   // The corpus is the step's own instructions plus its declared tools. Tool ids
   // are included because a scoped bash tool (`Bash(curl:*)`) carries the same
   // signal as the prompt naming curl, and both are author-controlled text.
-  const text = [step.systemPromptOverride ?? '', ...(step.tools ?? [])].join('\n');
-  if (!text.trim()) return findings;
+  const raw = [step.systemPromptOverride ?? '', ...(step.tools ?? [])].join('\n');
+  if (!raw.trim()) return findings;
+  const text = raw.replace(NEGATED_CLAUSE, ' ');
 
   for (const { re, what } of SENSITIVE_PATHS) {
     if (re.test(text)) {

