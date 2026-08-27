@@ -17,6 +17,7 @@ import {
   type ScheduleDraft,
 } from '../../schedulesStore';
 import {
+  MAX_CHAIN_DEPTH,
   SCHEDULE_AUTO_APPROVE_MAX,
   WEEKDAY_SET,
   describeTrigger,
@@ -1083,32 +1084,116 @@ function HelpRail({
 function TriggerField() {
   const draft = useSchedulesStore((s) => s.draft)!;
   const patch = useSchedulesStore((s) => s.patchDraft);
+  const flows = useFlowsStore((s) => s.flows);
   const trigger = draft.trigger;
   const windowed = trigger.kind === 'interval' && !!trigger.window;
+  // Only the two clock-based shapes carry a day set. `onFlowComplete` has no
+  // day to pick, so anything reading `days` has to ask first.
+  const days = 'days' in trigger ? trigger.days : undefined;
 
-  const setDays = (days: number[]) => patch({ trigger: { ...trigger, days } });
+  const setDays = (next: number[]) => {
+    if (trigger.kind === 'onFlowComplete') return;
+    patch({ trigger: { ...trigger, days: next } });
+  };
+
+  // `describeTrigger` lives in shared/ and only has the watched flow's ID, so
+  // it renders "When weekly-changelog succeeds". Swap in the real name here,
+  // where the flow list is actually in scope — this hint and the timeline
+  // strip both read it, and an id is not what the user picked from.
+  const hint =
+    trigger.kind === 'onFlowComplete' && trigger.watchFlowId
+      ? describeTrigger(trigger).replace(
+          trigger.watchFlowId,
+          flows.find((f) => f.id === trigger.watchFlowId)?.name ?? trigger.watchFlowId,
+        )
+      : describeTrigger(trigger);
 
   return (
-    <Field label="When" hint={describeTrigger(trigger)}>
+    <Field label="When" hint={hint}>
       <div className="flex gap-1.5 mb-3">
         <Segment
           active={trigger.kind === 'daily'}
           onClick={() =>
-            patch({ trigger: { kind: 'daily', time: '09:00', days: trigger.days ?? WEEKDAY_SET } })
+            patch({ trigger: { kind: 'daily', time: '09:00', days: days ?? WEEKDAY_SET } })
           }
         >
           At a time of day
         </Segment>
         <Segment
           active={trigger.kind === 'interval'}
-          onClick={() =>
-            patch({ trigger: { kind: 'interval', everyMinutes: 240, days: trigger.days } })
-          }
+          onClick={() => patch({ trigger: { kind: 'interval', everyMinutes: 240, days } })}
         >
           On an interval
         </Segment>
+        <Segment
+          active={trigger.kind === 'onFlowComplete'}
+          onClick={() =>
+            patch({ trigger: { kind: 'onFlowComplete', watchFlowId: '', onOutcome: 'success' } })
+          }
+        >
+          On flow finish
+        </Segment>
       </div>
 
+      {trigger.kind === 'onFlowComplete' ? (
+        <div className="space-y-3">
+          {/* Labelled like every other control on this page. The form now has
+              TWO flow pickers — the one it watches and the one it runs — and
+              an unlabelled dropdown next to a labelled one invites picking
+              the wrong one. */}
+          <Field label="Flow to watch">
+            <select
+              value={trigger.watchFlowId}
+              onChange={(e) => patch({ trigger: { ...trigger, watchFlowId: e.target.value } })}
+              className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
+            >
+              <option value="">Pick the flow to watch…</option>
+              {flows
+                .filter(isSelectableFlow)
+                // Watching the flow this schedule itself launches is a loop
+                // with extra steps; `validateSchedule` refuses it, so don't
+                // offer it.
+                .filter((f) => f.id !== draft.target.flowId)
+                .map((f) => (
+                  <option key={`${f.source}:${f.id}`} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+            </select>
+          </Field>
+
+          <div className="flex gap-1.5">
+            <Segment
+              active={trigger.onOutcome === 'success'}
+              onClick={() => patch({ trigger: { ...trigger, onOutcome: 'success' } })}
+            >
+              Only if it succeeds
+            </Segment>
+            <Segment
+              active={trigger.onOutcome === 'any'}
+              onClick={() => patch({ trigger: { ...trigger, onOutcome: 'any' } })}
+            >
+              However it ends
+            </Segment>
+          </div>
+
+          {/* Absent means on — see the `passOutput` note in schedule.ts. The
+              checkbox writes an explicit boolean either way. */}
+          <label className="flex items-center gap-1.5 text-xs text-ink-muted">
+            <input
+              type="checkbox"
+              checked={trigger.passOutput !== false}
+              onChange={(e) => patch({ trigger: { ...trigger, passOutput: e.target.checked } })}
+            />
+            Hand the run whatever the watched flow produced
+          </label>
+
+          <div className="text-[11px] text-ink-faint leading-snug">
+            Fires on every run of that flow, however it was started. Chains stop after{' '}
+            {MAX_CHAIN_DEPTH} hops, so a mis-wired pair can&apos;t run all night.
+          </div>
+        </div>
+      ) : (
       <div className="space-y-3">
         {trigger.kind === 'daily' ? (
           <input
@@ -1136,7 +1221,7 @@ function TriggerField() {
           </div>
         )}
 
-        <DayPicker days={trigger.days} onChange={setDays} />
+        <DayPicker days={days} onChange={setDays} />
 
         {trigger.kind === 'interval' && (
           <div>
@@ -1196,6 +1281,7 @@ function TriggerField() {
           </div>
         )}
       </div>
+      )}
     </Field>
   );
 }

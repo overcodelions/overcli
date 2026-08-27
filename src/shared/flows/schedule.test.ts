@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CHAIN_OUTPUT_MAX_CHARS,
+  MAX_CHAIN_DEPTH,
   SCHEDULE_GRACE_MS,
+  composeChainedPrompt,
   describeTrigger,
+  latestArtifact,
   evaluateSchedule,
   nextOccurrenceAfter,
   parseTimeOfDay,
@@ -513,5 +517,113 @@ describe('validateSchedule for windowed intervals', () => {
         window: { start: '09:00', end: '09:00' },
       }),
     ).toMatch(/differ/i);
+  });
+});
+
+describe('onFlowComplete trigger', () => {
+  const chained: ScheduleTrigger = {
+    kind: 'onFlowComplete',
+    watchFlowId: 'scrape',
+    onOutcome: 'success',
+  };
+
+  it('has no next occurrence', () => {
+    // Infinity is load-bearing, not decorative: SchedulerEngine.arm bails on a
+    // non-finite minimum and arms no timer at all. A far-future finite number
+    // would wake the engine forever for a schedule no clock can satisfy.
+    expect(nextOccurrenceAfter(chained, local(2026, 3, 2, 9, 0))).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('never evaluates as due, however long ago it was anchored', () => {
+    const s = makeSchedule({ trigger: chained, createdAt: local(2020, 1, 1) });
+    const decision = evaluateSchedule(s, local(2026, 3, 2, 9, 0));
+    expect(decision).toEqual({ action: 'wait', at: Number.POSITIVE_INFINITY });
+  });
+
+  it('is not resurrected by a queued pending firing', () => {
+    // `pendingSince` is checked before the due-time arithmetic in the
+    // time-based path; an event-driven trigger must short-circuit ahead of it.
+    const s = makeSchedule({
+      trigger: chained,
+      onOverlap: 'queue',
+      pendingSince: local(2026, 3, 2, 8, 0),
+    });
+    expect(evaluateSchedule(s, local(2026, 3, 2, 9, 0), { busy: false })).toEqual({
+      action: 'wait',
+      at: Number.POSITIVE_INFINITY,
+    });
+  });
+
+  it('reads back in plain English', () => {
+    expect(describeTrigger(chained)).toBe('When scrape succeeds');
+    expect(describeTrigger({ ...chained, onOutcome: 'any' })).toBe('When scrape finishes');
+  });
+
+  it('validates without falling into the time-of-day branch', () => {
+    // The regression this guards: before the dedicated branch, an
+    // onFlowComplete trigger reached `parseTimeOfDay(trigger.time)` with
+    // `time` undefined and was rejected with "Time must look like 09:30." —
+    // a nonsense error that typechecked perfectly.
+    expect(validateSchedule(makeSchedule({ trigger: chained }))).toBeNull();
+  });
+
+  it('needs a flow to watch', () => {
+    expect(validateSchedule(makeSchedule({ trigger: { ...chained, watchFlowId: '  ' } }))).toBe(
+      'Pick the flow to watch.',
+    );
+  });
+
+  it('refuses a self-chain', () => {
+    expect(
+      validateSchedule(makeSchedule({ trigger: { ...chained, watchFlowId: 'fix-it' } })),
+    ).toBe('A flow cannot be chained to itself.');
+  });
+});
+
+describe('chain handoff', () => {
+  it('caps the chain at a small, stated depth', () => {
+    expect(MAX_CHAIN_DEPTH).toBe(5);
+  });
+
+  it('folds the upstream output into the downstream prompt', () => {
+    const out = composeChainedPrompt('Triage the findings.', {
+      flowName: 'Nightly scrape',
+      artifactName: 'findings',
+      body: '42 new rows',
+    });
+    expect(out).toContain('Triage the findings.');
+    expect(out).toContain('Nightly scrape');
+    expect(out).toContain('findings');
+    expect(out).toContain('42 new rows');
+  });
+
+  it('truncates an upstream body that would blow the context window', () => {
+    const huge = 'x'.repeat(CHAIN_OUTPUT_MAX_CHARS + 500);
+    const out = composeChainedPrompt('base', {
+      flowName: 'f',
+      artifactName: 'diff',
+      body: huge,
+    });
+    expect(out).toContain('…truncated');
+    expect(out.length).toBeLessThan(huge.length);
+  });
+
+  it('leaves a body that fits completely alone', () => {
+    const out = composeChainedPrompt('base', { flowName: 'f', artifactName: 'a', body: 'small' });
+    expect(out).not.toContain('…truncated');
+  });
+
+  it('picks the newest artifact, not the first key', () => {
+    const picked = latestArtifact({
+      first: { name: 'first', body: 'older', producedAt: 10 },
+      second: { name: 'second', body: 'newer', producedAt: 20 },
+    });
+    expect(picked).toEqual({ name: 'second', body: 'newer' });
+  });
+
+  it('skips empty bodies and reports nothing when there is nothing to pass', () => {
+    expect(latestArtifact({ a: { name: 'a', body: '', producedAt: 99 } })).toBeNull();
+    expect(latestArtifact({})).toBeNull();
+    expect(latestArtifact(undefined)).toBeNull();
   });
 });

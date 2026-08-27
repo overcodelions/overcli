@@ -122,6 +122,11 @@ function serializeCadence(c: ScheduleTrigger | null): Record<string, unknown> | 
     }
     return out;
   }
+  // A worker cadence can never be `onFlowComplete` — `validateWorker` refuses
+  // it, because a worker with no clock never wakes. Degrade to the on-demand
+  // word rather than emitting a cadence the reading side would coerce into a
+  // surprise 9am shift.
+  if (c.kind === 'onFlowComplete') return ON_DEMAND;
   const out: Record<string, unknown> = { kind: 'daily', time: timeScalar(c.time) };
   if (c.days && c.days.length > 0) out.days = c.days;
   return out;
