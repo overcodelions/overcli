@@ -8,6 +8,7 @@ import type { FlowRegistry, FlowRegistryEntry, InstalledRegistryFlow } from '../
 import { SLUG_RE } from '../../shared/flows/validation';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 import { validateFlow } from '../../shared/flows/validation';
+import { scanFlowRisks } from '../../shared/flows/riskScan';
 import { getAuthHeader } from './registryAuth';
 import { readLocalEntry, scanLocalRegistry, sha256Of } from './localRegistry';
 
@@ -140,7 +141,10 @@ export async function previewRegistryFlow(args: { registryId: string; id: string
   const previewId = `preview-${registry.id}-${entry.id}`;
   const flow = parseFlowYaml({ yaml: loaded.body, id: previewId, source: 'user', filePath: '' });
   if (!flow) return { ok: false as const, error: 'YAML failed to parse.' };
-  return { ok: true as const, flow };
+  // Heuristic content scan of the step prompts. Advisory only — see the header
+  // of riskScan.ts. Preview is where it matters most: this is the surface the
+  // user actually reads before deciding to install.
+  return { ok: true as const, flow, risks: scanFlowRisks(flow) };
 }
 
 export async function installFromRegistry(args: { registryId: string; id: string; version: string }) {
@@ -157,6 +161,11 @@ export async function installFromRegistry(args: { registryId: string; id: string
   if (!flow) return { ok: false as const, error: 'YAML failed to parse.' };
   const v = validateFlow(flow);
   if (!v.ok) return { ok: false as const, error: `Validation failed: ${v.errors.map((x) => x.message).join('; ')}` };
+  // Deliberately NOT a gate. `scanFlowRisks` is a heuristic (see riskScan.ts),
+  // and a false positive that refuses a legitimate install would be worse than
+  // the warning it replaces. The findings ride along on the result so the caller
+  // can tell the user what it saw; the file is written either way.
+  const risks = scanFlowRisks(flow);
   fs.mkdirSync(userFlowsDir(), { recursive: true });
   const tmp = `${filePath}.tmp`;
   fs.writeFileSync(tmp, body, 'utf-8');
@@ -167,7 +176,7 @@ export async function installFromRegistry(args: { registryId: string; id: string
   );
   list.push(installed);
   Store.saveSettings({ ...settings, installedRegistryFlows: list });
-  return { ok: true as const, filePath };
+  return { ok: true as const, filePath, risks };
 }
 
 export function upsertRegistry(args: { registry: FlowRegistry; authHeader?: string | null }) {

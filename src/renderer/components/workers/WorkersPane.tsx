@@ -4246,6 +4246,7 @@ function StepStrip({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
 const PAUSE_ACTION: Record<string, string> = {
   preStep: "continue",
   externalAction: "approve & run",
+  riskyStep: "review & run",
   needsInput: "answer & resume",
   failure: "re-run step",
   interrupted: "resume",
@@ -4254,6 +4255,7 @@ const PAUSE_ACTION: Record<string, string> = {
 const PAUSE_HINT: Record<string, string> = {
   preStep: "Hand the prior step\u2019s output to the next step and keep going",
   externalAction: "Approve the external effect, then run this step",
+  riskyStep: "The step's own prompt tripped the risk scan — read it, then run",
   needsInput:
     "Open the run, read the Worker exchange, answer, and resume the step",
   failure:
