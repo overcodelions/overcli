@@ -334,6 +334,14 @@ export type FlowRunState =
   ///   prior step's artifact from any hijack chat, then advances.
   /// - `externalAction`: a worker-owned run is waiting for approval before
   ///   a push, message, publish, deploy, or external service mutation.
+  /// - `riskyStep`: the heuristic content scan (shared/flows/riskScan.ts)
+  ///   found something high-severity in the step's own prompt — a credential
+  ///   file reference, or network egress on a step that claims to be local.
+  ///   Unlike `externalAction` this applies to EVERY run, not just
+  ///   worker-owned ones: a flow you launch yourself has no worker boundary,
+  ///   and an install-time warning is no help once you have clicked Run.
+  ///   Resumes exactly like `externalAction` — the same one-shot,
+  ///   per-step approval.
   /// - `needsInput`: the owning Worker could not answer a flow question and
   ///   escalated it to the user.
   /// - `failure`: a step failed (or a reviewer rejected) and the on-fail
@@ -346,7 +354,7 @@ export type FlowRunState =
   | {
       kind: 'paused';
       nextStepId: string;
-      reason: 'preStep' | 'externalAction' | 'needsInput' | 'failure' | 'interrupted';
+      reason: 'preStep' | 'externalAction' | 'riskyStep' | 'needsInput' | 'failure' | 'interrupted';
     }
   | { kind: 'done'; success: boolean }
   | { kind: 'aborted' }
@@ -505,7 +513,8 @@ export interface FlowRun {
   /// Missing on historical runs is deliberately equivalent to false.
   allowExternalActions?: boolean;
   /// A one-shot grant, not a standing one: the id of the step the user just
-  /// approved by clicking Continue on an `externalAction` pause. Consulted
+  /// approved by clicking Continue on an `externalAction` / `riskyStep`
+  /// pause. Consulted
   /// by `resolvePermissionMode` and the auto-deny loop in `observeEvent` so
   /// that ONE step's approval doesn't leave the run's tool broker open, and
   /// cleared by `onStepFinished` once that step completes so it can never

@@ -504,6 +504,7 @@ function StatusWord({ row }: { row: QueueRow }) {
 const PAUSE_TEXT: Record<NonNullable<QueueRow['pausedReason']>, string> = {
   preStep: 'Stopped at a checkpoint',
   externalAction: 'Wants to act outside the repo',
+  riskyStep: 'Step instructions look risky',
   needsInput: 'Asked you a question',
   failure: 'Stopped after a failure',
   interrupted: 'Interrupted when the app closed',
