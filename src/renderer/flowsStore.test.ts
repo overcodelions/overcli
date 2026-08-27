@@ -425,7 +425,7 @@ describe('setActiveRun', () => {
 
 describe('dismissJustSaved', () => {
   it('clears the justSaved banner', () => {
-    useFlowsStore.setState({ justSaved: { name: 'My Flow', at: Date.now() } });
+    useFlowsStore.setState({ justSaved: { name: 'My Flow', at: Date.now(), risks: [] } });
     useFlowsStore.getState().dismissJustSaved();
     expect(useFlowsStore.getState().justSaved).toBeNull();
   });

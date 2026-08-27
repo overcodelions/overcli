@@ -1775,7 +1775,10 @@ export interface IPCInvokeMap {
     /// Required when target === 'project'. The flow file is written to
     /// <projectPath>/.overcli/flows/<flow.id>.yaml.
     projectPath?: string;
-  }) => { ok: true; filePath: string } | { ok: false; error: string };
+    /// `risks` is the advisory heuristic scan of the saved flow's step
+    /// prompts. Like the registry path, it never blocks: a flow with
+    /// findings is still written, and the builder shows them after the save.
+  }) => { ok: true; filePath: string; risks: FlowRiskFinding[] } | { ok: false; error: string };
   'flows:delete': (args: {
     flowId: string;
     source: Flow['source'];

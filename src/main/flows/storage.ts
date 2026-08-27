@@ -15,6 +15,7 @@ import { Store } from '../store';
 import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
 import type { Flow } from '../../shared/flows/schema';
 import { SLUG_RE, validateFlow } from '../../shared/flows/validation';
+import { scanFlowRisks, type FlowRiskFinding } from '../../shared/flows/riskScan';
 
 const USER_FLOWS_DIRNAME = 'flows';
 /// Worker-drafted flows live beside the user's, not among them: same load
@@ -104,11 +105,19 @@ export function loadAllFlows(args: { projectPaths?: string[] } = {}): Flow[] {
 
 /// Save a flow (validates first). Returns the resolved file path or an
 /// error object the renderer can surface inline.
+///
+/// `risks` is the advisory heuristic content scan (see
+/// shared/flows/riskScan.ts). It rides along on success and NEVER blocks the
+/// write — same contract as the registry install path. It matters here
+/// because the registry is only one of the doors a flow can come through:
+/// hand-authoring in the builder, pasting YAML, worker drafting
+/// (`target: 'generated'`) and share-file import all land on `saveFlow`, and
+/// until now none of them looked at what the step prompts actually said.
 export function saveFlow(args: {
   flow: Flow;
   target: Flow['source'];
   projectPath?: string;
-}): { ok: true; filePath: string } | { ok: false; error: string } {
+}): { ok: true; filePath: string; risks: FlowRiskFinding[] } | { ok: false; error: string } {
   const v = validateFlow(args.flow);
   if (!v.ok) {
     return {
@@ -130,7 +139,7 @@ export function saveFlow(args: {
     const tmp = `${filePath}.tmp`;
     fs.writeFileSync(tmp, body, 'utf-8');
     fs.renameSync(tmp, filePath);
-    return { ok: true, filePath };
+    return { ok: true, filePath, risks: scanFlowRisks(args.flow) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

@@ -60,7 +60,11 @@ interface FlowsState {
   /// Transient success state: the name of the flow that was just saved
   /// + a timestamp. The library shows a "✓ Saved {name}" banner that
   /// fades after a few seconds. Cleared by `dismissJustSaved`.
-  justSaved: { name: string; at: number } | null;
+  /// `risks` carries the advisory heuristic scan of what was just saved
+  /// (shared/flows/riskScan.ts). Non-empty turns the banner into a warning
+  /// that does NOT auto-dismiss — a caution you can blink and miss is not
+  /// worth showing. The save itself always succeeded; nothing is blocked.
+  justSaved: { name: string; at: number; risks: FlowRiskFinding[] } | null;
   registryEntries: import('@shared/types').FlowRegistryEntry[];
   registryLoaded: boolean;
   registryErrors: Array<{ registryId: string; error: string }>;
@@ -576,7 +580,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
       editor: { kind: 'idle' },
       editorDraft: null,
       editorSaveError: null,
-      justSaved: { name: draft.name, at: Date.now() },
+      justSaved: { name: draft.name, at: Date.now(), risks: result.risks },
     });
     return { ok: true };
   },
