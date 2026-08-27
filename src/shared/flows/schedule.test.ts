@@ -121,6 +121,19 @@ describe('evaluateSchedule', () => {
     expect(d).toMatchObject({ action: 'fire', dueAt: local(2026, 3, 2, 9, 0), late: true });
   });
 
+  it('fires late when the tick woke a hair after the slot it came for', () => {
+    // What the Triage worker hit: two workers due at 9:00 sharp, the timer
+    // enters its callback 3ms past 9:00, and the first worker's planning turn
+    // holds the loop for minutes. Judged against the raw tick start the second
+    // worker's slot looks older than the wakeup and gets written off as missed
+    // while closed — the exact starvation `awakeSince` exists to prevent.
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 2, 9, 3), {
+      awakeSince: local(2026, 3, 2, 9, 0) + 3,
+    });
+    expect(d).toMatchObject({ action: 'fire', dueAt: local(2026, 3, 2, 9, 0), late: true });
+  });
+
   it('still skips a slot that predates the moment we woke', () => {
     // Same lateness, but the 9am slot passed before the engine started
     // looking: this one really was missed while the app was closed.

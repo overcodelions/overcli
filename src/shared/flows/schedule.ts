@@ -383,8 +383,16 @@ export function evaluateSchedule(
   // at or after it fires late instead of being written off. Without this the
   // last entries on a long roster starve: skipped, re-anchored to now, and
   // skipped again on the next pass, forever.
+  //
+  // Compared against `awakeSince` MINUS the grace window, not `awakeSince`
+  // itself. The tick that services an occurrence is armed to wake at its due
+  // time, so it enters the callback a few milliseconds AFTER it — making
+  // `dueAt < awakeSince` true for the very slot the guard exists to protect,
+  // and writing off every worker that shares a due time with a slower one
+  // ahead of it. The same grace that decides `late` decides this.
   const missedWhileClosed =
-    late && (opts.awakeSince === undefined || dueAt < opts.awakeSince);
+    late &&
+    (opts.awakeSince === undefined || dueAt < opts.awakeSince - SCHEDULE_GRACE_MS);
 
   if (missedWhileClosed && s.catchUp === 'skip') {
     return {
