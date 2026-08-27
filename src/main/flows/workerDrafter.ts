@@ -10,14 +10,20 @@
 import type { Attachment, Backend } from '../../shared/types';
 import type { FlowModelDefaults } from '../../shared/modelCatalog';
 import type { Flow } from '../../shared/flows/schema';
-import { drafterModelHints } from '../../shared/flows/drafterBackend';
 import {
   WORKER_MAX_ITEMS_PER_SHIFT,
   describeCadence,
   parseWorkerContract,
   type WorkerContract,
 } from '../../shared/flows/worker';
+import {
+  parsePersonalization,
+  type PersonalizationQuestion,
+} from '../../shared/flows/personalize';
+import { tierDefault } from '../../shared/modelCatalog';
+import { drafterModelHints, pickDrafterBackend } from '../../shared/flows/drafterBackend';
 import { serializeFlow } from '../../shared/flows/yaml';
+import { healthyBackends } from '../health';
 import {
   draftFlowFromPrompt,
   oneShotDraftText,
@@ -406,4 +412,130 @@ export async function reviseWorkerFromPrompt(
   revised.flow.source = args.flow.source;
   revised.flow.filePath = args.flow.filePath;
   return { ok: true, jobDescription, flow: revised.flow, note };
+}
+
+// ---- Personalization ----------------------------------------------------
+
+/// Read an ARRIVING worker for the parts that are about whoever sent it.
+///
+/// This runs on import, between the file landing and the hire click, where the
+/// worker is still a draft nobody has employed. It changes nothing: it returns
+/// questions, the user answers the ones they care about, and the answers go
+/// back through `reviseWorkerFromPrompt` as one instruction (see
+/// `personalizationInstruction`). Skipping it hires the worker exactly as sent.
+///
+/// The flow rides along because a borrowed worker hides its owner in BOTH
+/// halves. "Post the digest to #eng-leads" is as likely to be a step's prompt
+/// as a line of the job description, and a pass that only reads the prose
+/// produces a worker that talks about the right channel and posts to the
+/// wrong one.
+function personalizeSystemPrompt(): string {
+  return [
+    'A user has just imported a standing WORKER that somebody else built and shared with them.',
+    'A worker is a job description (what it plans each shift) plus a FLOW (how each approved',
+    'item is carried out). Both were written by and for the PREVIOUS OWNER.',
+    '',
+    'Your only job is to find the details that are about that previous owner rather than about',
+    'the work, and ask the new owner for their version of each one. Examples of what counts:',
+    '  - people: who they report to, who reviews their work, who to notify, names in examples',
+    '  - places: Slack channels, email addresses, repositories, projects, boards, folders',
+    '  - time: working hours, timezone, when the standup is, when the week resets',
+    '  - identity: their team, their company, their role, how they sign off',
+    '',
+    'Do NOT ask about:',
+    '  - anything the new owner already controls in the app — cadence, budget, model, trust,',
+    '    which project the worker watches. Those are fields on the hire form, not text.',
+    '  - the method. How the worker researches, what it checks, what a good proposal contains',
+    '    is the VALUE of the shared worker. It is not personal and must not be surveyed.',
+    '  - details you cannot point at. Every question must quote something that literally',
+    '    appears in the text you were given.',
+    '',
+    'Write one short plain-language sentence FIRST saying what you found (or that the worker',
+    'looks generic). Then, on its own, emit EXACTLY ONE block in this shape and nothing after it:',
+    '',
+    '<personalize>',
+    '{',
+    '  "details": [',
+    '    {',
+    '      "key": "reports_to",',
+    '      "label": "Reports to",',
+    '      "found": "Dave Kim",',
+    '      "question": "Who should this worker treat as the person it reports to?"',
+    '    }',
+    '  ]',
+    '}',
+    '</personalize>',
+    '',
+    'Rules:',
+    '  - Valid JSON. An empty "details" array is a correct and useful answer for a worker that',
+    '    is genuinely generic — do not invent questions to fill it.',
+    '  - At most 6 details, most consequential first. This is a form somebody fills in before',
+    '    they have used the worker once; a long one gets skipped entirely.',
+    '  - "found" is the previous owner\'s value, quoted from the text VERBATIM.',
+    '  - "label" is a short noun phrase (under 30 characters), not a sentence.',
+    '  - "key" is snake_case and describes the ROLE the value plays, not the value. Reuse the',
+    '    obvious names — reports_to, digest_channel, work_email, timezone, main_repo, team_name',
+    '    — so the same question asked by two different workers is recognized as the same one.',
+  ].join('\n');
+}
+
+/// One personalization scan. Nothing is saved and nothing is changed — see
+/// `personalizeSystemPrompt`.
+export async function personalizeImportedWorker(
+  args: {
+    name: string;
+    jobDescription: string;
+    /// The worker's primary flow, when the library could supply it.
+    flow?: Flow;
+  },
+  deps: DraftDeps,
+): Promise<
+  { ok: true; questions: PersonalizationQuestion[]; note: string } | { ok: false; error: string }
+> {
+  const jobDescription = args.jobDescription.trim();
+  if (!jobDescription) return { ok: false, error: 'The imported worker has no job description.' };
+
+  // A scan, not a design: this reads two documents and quotes back what it
+  // finds, which the standard tier does as well as the flagship and several
+  // seconds sooner — and it runs in front of somebody who has just clicked
+  // Import and is waiting to look at the form.
+  const healthy = await healthyBackends(deps.settings.backendPaths);
+  const backend = pickDrafterBackend({
+    preferred: deps.settings.preferredBackend,
+    isHealthy: (b) => healthy.has(b),
+    isEnabled: (b) => deps.settings.disabledBackends[b] !== true,
+  });
+  const model =
+    backend && backend !== 'ollama'
+      ? tierDefault(backend, 'standard', deps.settings.flowModelDefaults)
+      : undefined;
+
+  const userMessage = [
+    `WORKER NAME: ${args.name || '(unnamed)'}`,
+    '',
+    'JOB DESCRIPTION',
+    '===============',
+    jobDescription,
+    '',
+    ...(args.flow
+      ? ['FLOW (YAML)', '===========', serializeFlow(args.flow), '']
+      : ['(This worker arrived without a flow this library can supply — read the prose only.)', '']),
+  ].join('\n');
+
+  const out = await oneShotDraftText(deps, {
+    model,
+    buildSystemPrompt: () => personalizeSystemPrompt(),
+    userMessage,
+    verb: 'personalize',
+  });
+  if (!out.ok) return out;
+
+  const questions = parsePersonalization(out.text);
+  if (!questions) {
+    const excerpt = out.text.replace(/\s+/g, ' ').trim().slice(0, 300);
+    log('warn', 'workers.personalize', `Personalization parse failed. Reply: ${excerpt}`);
+    return { ok: false, error: `${out.label} returned no parseable personalization.` };
+  }
+  const note = out.text.replace(/<personalize>[\s\S]*$/i, '').trim();
+  return { ok: true, questions, note };
 }

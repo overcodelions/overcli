@@ -21,6 +21,10 @@ export interface ComposerProps {
   /// Visual variant. `welcome` is large + centered for the start page;
   /// `compact` is the in-conversation input bar.
   variant?: 'welcome' | 'compact';
+  /// Keep the resting outline as visible as the normal composer's focused
+  /// outline. Used where the composer is the primary affordance on an
+  /// otherwise quiet surface, such as a worker desk.
+  strongBorder?: boolean;
   /// Bottom pills (project/branch/mode/model/effort). Rendered by the
   /// caller so each variant can show the appropriate set.
   footer?: React.ReactNode;
@@ -108,6 +112,7 @@ export function Composer({
   isRunning,
   onStop,
   variant = 'compact',
+  strongBorder,
   footer,
   placeholder,
   disabledPlaceholder,
@@ -460,7 +465,8 @@ export function Composer({
         // Theme-aware border so light mode actually shows a line (black
         // alpha) and dark mode stays subtle (white alpha) — same family
         // as the sidebar, which also uses the card border token now.
-        'relative flex flex-col rounded-2xl border border-card transition-colors ' +
+        'relative flex flex-col rounded-2xl border transition-colors ' +
+        (strongBorder ? 'border-card-strong ' : 'border-card ') +
         (variant === 'welcome'
           ? 'bg-card-strong shadow-xl shadow-black/30 '
           : 'bg-card focus-within:border-card-strong ') +
@@ -863,4 +869,3 @@ function rankMentionMatches(files: string[], query: string, root: string): strin
   scored.sort((a, b) => b[1] - a[1]);
   return scored.map((x) => x[0]);
 }
-
