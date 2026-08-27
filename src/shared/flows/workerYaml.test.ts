@@ -2,7 +2,7 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import type { Flow } from './schema';
-import type { Worker } from './worker';
+import { ON_DEMAND, type Worker } from './worker';
 import {
   parseWorkerYaml,
   serializeWorker,
@@ -311,5 +311,22 @@ describe('MCP allowlists across a share', () => {
     expect(parse(yaml).mcp_servers).toEqual([]);
     const parsed = parseWorkerYaml(yaml);
     expect(parsed.ok && parsed.bundle.worker.mcpServers).toEqual([]);
+  });
+});
+
+describe('serializeCadence — event-driven cadence', () => {
+  // Unreachable through the editor (`validateWorker` refuses it), but a share
+  // file is written from whatever is in memory. Emitting a `daily` shape with
+  // no `time` would be read back as a surprise 9am shift by `coerceCadence`;
+  // the on-demand word is the honest reading of a cadence with no occurrences.
+  it('degrades onFlowComplete to on-demand rather than a bogus daily', () => {
+    const doc = parse(
+      shareOf(
+        worker({
+          cadence: { kind: 'onFlowComplete', watchFlowId: 'scrape', onOutcome: 'success' },
+        }),
+      ),
+    );
+    expect(doc.cadence).toBe(ON_DEMAND);
   });
 });

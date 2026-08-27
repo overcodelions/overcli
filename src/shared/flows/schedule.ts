@@ -56,7 +56,40 @@ export type ScheduleTrigger =
       /// Weekdays this may fire on, `0` = Sunday … `6` = Saturday. Empty or
       /// absent means every day.
       days?: number[];
+    }
+  /// Fire when a run of ANOTHER flow finishes. The one trigger here with no
+  /// clock in it: it has no next occurrence, contributes nothing to the
+  /// engine's nearest-due-time arithmetic, and is driven entirely by
+  /// `SchedulerEngine.onRunUpdate` seeing a terminal run.
+  ///
+  /// This is what turns two schedules into a pipeline — "when the nightly
+  /// scrape finishes, triage what it found".
+  | {
+      kind: 'onFlowComplete';
+      /// Flow whose runs we watch. Matched against `FlowRun.flowId`, so ANY
+      /// run of that flow fires this — manual, time-scheduled, or itself
+      /// chained from a third flow.
+      watchFlowId: string;
+      /// `success` fires only on `{kind:'done', success:true}`. `any` fires on
+      /// every terminal state, including failure and abort — the shape a
+      /// cleanup or notify step wants, since it has to run either way.
+      onOutcome: 'success' | 'any';
+      /// Append what the upstream run produced to this schedule's fixed
+      /// prompt. Absent means TRUE: this trigger kind is new, so there is no
+      /// legacy behaviour to protect, and a pipeline that silently drops its
+      /// payload is the surprising default. See `composeChainedPrompt`.
+      passOutput?: boolean;
     };
+
+/// The clock-based triggers — every variant that has a next occurrence, a day
+/// set, and a place on a calendar.
+///
+/// Worth a name because several surfaces genuinely cannot accept anything
+/// else: a Worker's cadence (a worker with no clock never wakes — see
+/// `validateWorker`) and the shift-calendar projection both assume a time
+/// axis. Narrowing to this is more honest than widening those to a trigger
+/// they would silently mishandle.
+export type TimedTrigger = Exclude<ScheduleTrigger, { kind: 'onFlowComplete' }>;
 
 /// Launch one flow run with a fixed prompt. The plain case.
 export interface ScheduleFlowTarget {
@@ -210,8 +243,13 @@ export function scheduleAnchor(s: ScheduleTiming): number {
 /// oddity: on a spring-forward day a time inside the skipped hour doesn't
 /// exist, and JS normalizes it forward — 02:30 fires at 03:30. That's the
 /// least surprising of the available wrong answers.)
+/// An `onFlowComplete` trigger has no occurrence at all and returns
+/// `Infinity`. That is not a sentinel for "very far away" — it is what keeps
+/// the schedule out of `SchedulerEngine.arm`'s nearest-due-time reduction,
+/// which bails on a non-finite minimum and arms no timer.
 export function nextOccurrenceAfter(trigger: ScheduleTrigger, afterMs: number): number {
   if (trigger.kind === 'interval') return nextIntervalOccurrence(trigger, afterMs);
+  if (trigger.kind === 'onFlowComplete') return Number.POSITIVE_INFINITY;
   const parsed = parseTimeOfDay(trigger.time);
   const { hours, minutes } = parsed ?? { hours: 9, minutes: 0 };
   const days = allowedDays(trigger.days);
@@ -348,6 +386,15 @@ export function evaluateSchedule(
 ): ScheduleDecision {
   if (!s.enabled) return { action: 'wait', at: Number.POSITIVE_INFINITY };
 
+  // Event-driven, so never "due". It fires from `onRunUpdate` when a watched
+  // run goes terminal; reporting a due time here would put it into the timer
+  // arithmetic and wake the engine for a schedule no clock can satisfy. This
+  // also means the overlap and catch-up policies below never apply to it —
+  // there is no occurrence to miss and none to defer.
+  if (s.trigger.kind === 'onFlowComplete') {
+    return { action: 'wait', at: Number.POSITIVE_INFINITY };
+  }
+
   // A firing deferred by `onOverlap: 'queue'` owes the user a run the moment
   // the tree is free, regardless of where the next occurrence falls.
   if (s.pendingSince !== undefined && !opts.busy) {
@@ -426,6 +473,16 @@ export function describeTrigger(trigger: ScheduleTrigger): string {
       : '';
     const qualifier = [dayPart, windowPart].filter(Boolean).join(' ');
     return qualifier ? `${every}, ${qualifier}` : every;
+  }
+  if (trigger.kind === 'onFlowComplete') {
+    // `watchFlowId` is a flow id, not a name — this module has no flow list to
+    // resolve it against, the same rawness `describeTarget` already has.
+    // `TriggerField` substitutes the real name for the hint it shows; anything
+    // rendering this string without that list gets the id.
+    const what = trigger.watchFlowId || 'another flow';
+    return trigger.onOutcome === 'success'
+      ? `When ${what} succeeds`
+      : `When ${what} finishes`;
   }
   const time = formatTimeOfDay(trigger.time);
   const dayPart = describeDays(trigger.days);
@@ -521,6 +578,76 @@ export function scheduledRunTitle(sequence: number, prompt: string): string {
   return firstLine ? `${tag} ${firstLine}` : tag;
 }
 
+/// How many `onFlowComplete` hops a chain may take before the engine refuses
+/// to extend it. A→B→C→D→E is five runs; a sixth is declined and the reason is
+/// written into the schedule's history rather than swallowed.
+///
+/// Worth recording why a DEPTH cap: GitHub Actions suppresses workflow
+/// recursion by IDENTITY (an event authored by GITHUB_TOKEN does not start
+/// another run), and agent frameworks cap TURNS inside a single run
+/// (LangGraph's `recursion_limit`, the OpenAI Agents SDK's `max_turns`).
+/// Neither bounds a chain of separate runs. A counter carried on the run
+/// degrades after N hops instead of forbidding the first one, which is the
+/// failure mode users actually complain about in the identity-based design.
+export const MAX_CHAIN_DEPTH = 5;
+
+/// Ceiling on how much upstream output is pasted into a chained run's prompt.
+/// A `diff` artifact can be megabytes; the downstream model pays for every
+/// byte, and a truncated head beats a blown context window.
+export const CHAIN_OUTPUT_MAX_CHARS = 8_000;
+
+/// The upstream artifact a chained run should be handed: the most recently
+/// produced non-empty one.
+///
+/// Keyed on `producedAt` rather than "whatever the last step declared as its
+/// output". Two steps may legitimately share an output name (see
+/// `FlowStepAttempt.artifact` in schema.ts), and a run can stop early on a
+/// failing step — in both cases the newest artifact is the one that says where
+/// the run actually got to, and finding it needs no walk over the flow shape.
+///
+/// Structurally typed rather than importing `FlowArtifact`, to keep this
+/// module free of any dependency on the run schema.
+export function latestArtifact(
+  artifacts: Record<string, { name: string; body: string; producedAt: number }> | undefined,
+): { name: string; body: string } | null {
+  let best: { name: string; body: string; producedAt: number } | null = null;
+  for (const a of Object.values(artifacts ?? {})) {
+    if (!a || typeof a.body !== 'string' || a.body.length === 0) continue;
+    if (!best || a.producedAt > best.producedAt) best = a;
+  }
+  return best ? { name: best.name, body: best.body } : null;
+}
+
+/// Build the prompt for a chained run: the schedule's own fixed prompt, plus
+/// what the upstream run actually produced.
+///
+/// This is the difference between a trigger and a pipeline. A schedule's
+/// prompt is fixed at edit time because nobody is there to type one — so
+/// without this, the triage flow launched by "when the scrape finishes" would
+/// start with no idea what was scraped, and the user would have built a
+/// causal edge that carries no data.
+export function composeChainedPrompt(
+  basePrompt: string,
+  upstream: { flowName: string; artifactName: string; body: string },
+): string {
+  const body = upstream.body ?? '';
+  const clipped =
+    body.length > CHAIN_OUTPUT_MAX_CHARS
+      ? `${body.slice(0, CHAIN_OUTPUT_MAX_CHARS)}\n\n[…truncated at ${CHAIN_OUTPUT_MAX_CHARS} characters]`
+      : body;
+  return [
+    basePrompt,
+    '',
+    '---',
+    '',
+    `UPSTREAM CONTEXT — the flow "${upstream.flowName}" just finished and produced ` +
+      `"${upstream.artifactName}". That output follows. Treat it as the input to your ` +
+      'work rather than re-deriving it.',
+    '',
+    clipped,
+  ].join('\n');
+}
+
 /// Short label for what a firing does, used in the list row and history.
 export function describeTarget(target: ScheduleTarget): string {
   return target.kind === 'flow'
@@ -552,6 +679,22 @@ export function validateSchedule(s: Partial<Schedule>): string | null {
   }
   const trigger = s.trigger;
   if (!trigger) return 'Pick when it runs.';
+  // Must come BEFORE the time-based branches. Without it an `onFlowComplete`
+  // trigger falls through to the `parseTimeOfDay(trigger.time)` check at the
+  // bottom, where `time` is undefined, `(time ?? '')` swallows it, and the
+  // schedule is rejected with "Time must look like 09:30." — a nonsense error
+  // that typechecks perfectly.
+  if (trigger.kind === 'onFlowComplete') {
+    if (!trigger.watchFlowId?.trim()) return 'Pick the flow to watch.';
+    // Self-chaining is an infinite loop with extra steps: the run this
+    // schedule launches is itself a run of `watchFlowId`, which fires it
+    // again. MAX_CHAIN_DEPTH would contain it, but five wasted runs per hop
+    // is a bug to refuse at edit time, not to survive at runtime.
+    if (trigger.watchFlowId === target.flowId) {
+      return 'A flow cannot be chained to itself.';
+    }
+    return null;
+  }
   if (trigger.kind === 'interval') {
     if (!Number.isFinite(trigger.everyMinutes) || trigger.everyMinutes < 1) {
       return 'Interval must be at least one minute.';
