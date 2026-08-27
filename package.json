@@ -17,6 +17,9 @@
     "url": "https://github.com/overcodelions/overcli/issues"
   },
   "main": "dist/main/index.js",
+  "bin": {
+    "overcli": "dist/cli/index.js"
+  },
   "scripts": {
     "dev": "npm run build:main && concurrently -k -n vite,tsc,electron -c cyan,yellow,magenta \"npm:dev:renderer\" \"npm:dev:tsc\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
@@ -96,7 +99,7 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for — CLI logins and Ollama install/update — so you can watch them and answer any prompts."
+        "NSAppleEventsUsageDescription": "Overcli opens Terminal.app to run commands you asked for \u2014 CLI logins and Ollama install/update \u2014 so you can watch them and answer any prompts."
       }
     },
     "dmg": {

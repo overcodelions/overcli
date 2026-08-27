@@ -16,11 +16,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { app } from 'electron';
+import { host } from '../host';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 function rootDir(): string {
-  return path.join(app.getPath('userData'), 'flow-attachments');
+  return path.join(host().dataDir(), 'flow-attachments');
 }
 
 function runDir(runId: string): string {

@@ -13,7 +13,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from './host';
 import { OllamaChatMessage } from './ollama';
 import { log } from './diagnostics';
 
@@ -32,7 +32,7 @@ export interface PersistedOllamaSession {
 }
 
 function sessionsDir(): string {
-  return path.join(app.getPath('userData'), 'ollama-sessions');
+  return path.join(host().dataDir(), 'ollama-sessions');
 }
 
 function sessionFile(sessionId: string): string {

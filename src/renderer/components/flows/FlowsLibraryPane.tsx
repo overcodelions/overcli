@@ -852,6 +852,9 @@ function FlowLibraryList({
 }) {
   const starredFlows = useStore((s) => s.settings.starredFlows ?? []);
   const installedFlows = useStore((s) => s.settings.installedRegistryFlows);
+  // For the deploy card in the overview drawer: it has to name the project the
+  // pipeline files land in, and `projectPaths` above carries no display names.
+  const deployProjects = useStore((s) => s.projects);
   const registryEntries = useFlowsStore((s) => s.registryEntries);
   const registryLoaded = useFlowsStore((s) => s.registryLoaded);
   const browseRegistries = useFlowsStore((s) => s.browseRegistries);
@@ -1054,6 +1057,7 @@ function FlowLibraryList({
           usage={runCounts[selected.id]}
           onClose={() => setSelectedId(null)}
           onEdit={() => openEditor({ kind: 'editing', flowId: selected.id })}
+          projects={deployProjects.map((p) => ({ name: p.name, path: p.path }))}
           onTagClick={(tag) => setTags((prev) => {
             const n = new Set(prev);
             if (n.has(tag)) n.delete(tag); else n.add(tag);

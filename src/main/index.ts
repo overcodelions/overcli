@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme, Notification } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -101,8 +101,12 @@ import { auditOllama, updateOllama } from './ollamaSecurity';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
+import { host } from './host';
+import { installElectronHost } from './hostElectron';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
+import { buildCiDeploy, buildFlowCiDeploy } from '../shared/flows/ciDeploy';
+import { serializeFlow } from '../shared/flows/yaml';
 import {
   ensureWorkerFilesDir,
   listWorkerFiles,
@@ -253,25 +257,32 @@ function noteAgentWrites(event: MainToRendererEvent): void {
 
 /// Native OS notification. The only way a scheduled run reaches the user when
 /// the window is behind everything else or they've walked away — which is the
-/// normal case for scheduled work, not the exception. Best-effort: a Linux box
-/// with no notification daemon just gets nothing, which must not take the
-/// scheduler down with it.
+/// normal case for scheduled work, not the exception.
+///
+/// The notification itself is the host's job now (`hostElectron.ts`), so the
+/// scheduler and the worker engine can hand the same callback to a headless
+/// host that writes a log line instead. What stays here is the click, because
+/// only this file knows about `mainWindow`.
 function showDesktopNotification(args: { title: string; body: string }): void {
-  try {
-    if (!Notification.isSupported()) return;
-    const n = new Notification({ title: args.title, body: args.body });
-    n.on('click', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
-    n.show();
-  } catch (err) {
-    log('warn', 'schedules', `Notification failed: ${String(err)}`);
+  host().notify(args);
+}
+
+/// Bring the window forward when the user clicks a notification. Installed on
+/// the host at boot; a notification that does nothing when clicked is worse
+/// than no notification.
+function focusMainWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   }
 }
+
+// Installed at module scope, before anything can reach for stored state:
+// `host()` throws when nothing is installed, and half this file's imports
+// read `overcli.json` the moment they are touched. Safe this early because
+// `electronHost` only calls `app.getPath` lazily, inside `dataDir()`.
+installElectronHost(focusMainWindow);
 
 /// Deps for every AI drafting call. Carries the user's proven flows so a
 /// draft copies the shape of what already works here instead of inventing a
@@ -1711,6 +1722,112 @@ export function registerIpc(): void {
       } as const;
     }
     return { ok: true, filePath: res.filePath } as const;
+  });
+  // Deploying a worker as a CI job. Shares the same bundle as workers:share;
+  // ciPlanFor additionally resolves the worker's flows so buildCiDeploy can
+  // see what backends they need.
+  function ciPlanFor(id: string, target: 'github' | 'jenkins') {
+    const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
+    if (!worker) return { ok: false as const, error: 'No such worker.' };
+    const store = Store.load();
+    const library = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) });
+    const share = buildWorkerShare({ worker, library });
+    const flows = worker.flowIds
+      .map((fid) => library.find((f) => f.id === fid))
+      .filter((f): f is NonNullable<typeof f> => Boolean(f));
+    return {
+      ok: true as const,
+      worker,
+      plan: buildCiDeploy({ worker, flows, target, workerYaml: share.yaml, missingFlowIds: share.missingFlowIds }),
+    };
+  }
+  ipcMain.handle('workers:ciDeploy', (_e, { id, target }) => {
+    const res = ciPlanFor(id, target);
+    if (!res.ok) return res;
+    return {
+      ok: true,
+      files: res.plan.files,
+      checklist: res.plan.checklist,
+      warnings: res.plan.warnings,
+      projectPath: res.worker.projectPath,
+    } as const;
+  });
+  ipcMain.handle('workers:ciDeployWrite', (_e, { id, target }) => {
+    const res = ciPlanFor(id, target);
+    if (!res.ok) return res;
+    if (!res.worker.projectPath) {
+      return { ok: false, error: 'This worker has no project to write into.' } as const;
+    }
+    const written: string[] = [];
+    // Every generated file says "Safe to edit" in its own header, so a
+    // second Preview → Write is a real hazard: it would silently clobber
+    // whatever the user changed since the first write. Reported rather than
+    // blocked — this dialog has no "cancel", and the files ARE regenerated
+    // from the worker on every write — but the caller needs to know which
+    // ones it just replaced.
+    const overwritten: string[] = [];
+    try {
+      for (const file of res.plan.files) {
+        const abs = path.join(res.worker.projectPath, file.path);
+        if (fs.existsSync(abs)) {
+          const prior = fs.readFileSync(abs, 'utf-8');
+          if (prior !== file.contents) overwritten.push(file.path);
+        }
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, file.contents, 'utf-8');
+        written.push(file.path);
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      } as const;
+    }
+    return { ok: true, written, overwritten } as const;
+  });
+  // The flow twin of workers:ciDeploy. Simpler because a flow has no cadence,
+  // trust, journal or budget — see buildFlowCiDeploy.
+  function flowCiPlanFor(flowId: string, target: 'github' | 'jenkins', prompt?: string) {
+    const store = Store.load();
+    const flow = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }).find(
+      (f) => f.id === flowId,
+    );
+    if (!flow) return { ok: false as const, error: `Flow "${flowId}" not found.` };
+    return {
+      ok: true as const,
+      plan: buildFlowCiDeploy({ flow, target, flowYaml: serializeFlow(flow), prompt }),
+    };
+  }
+  ipcMain.handle('flows:ciDeploy', (_e, { flowId, target, prompt }) => {
+    const res = flowCiPlanFor(flowId, target, prompt);
+    if (!res.ok) return res;
+    return {
+      ok: true,
+      files: res.plan.files,
+      checklist: res.plan.checklist,
+      warnings: res.plan.warnings,
+    } as const;
+  });
+  ipcMain.handle('flows:ciDeployWrite', (_e, { flowId, target, projectPath, prompt }) => {
+    const res = flowCiPlanFor(flowId, target, prompt);
+    if (!res.ok) return res;
+    if (!projectPath) return { ok: false, error: 'No project to write into.' } as const;
+    const written: string[] = [];
+    const overwritten: string[] = [];
+    try {
+      for (const file of res.plan.files) {
+        const abs = path.join(projectPath, file.path);
+        if (fs.existsSync(abs) && fs.readFileSync(abs, 'utf-8') !== file.contents) {
+          overwritten.push(file.path);
+        }
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, file.contents, 'utf-8');
+        written.push(file.path);
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+    }
+    return { ok: true, written, overwritten } as const;
   });
   ipcMain.handle('workers:import', (_e, { yaml }) => receiveWorkerYaml(yaml));
   ipcMain.handle('workers:importFromFile', async () => {

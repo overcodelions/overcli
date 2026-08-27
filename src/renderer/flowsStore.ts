@@ -77,6 +77,27 @@ interface FlowsState {
 
 interface FlowsActions {
   reload(projectPaths: string[]): Promise<void>;
+  /// This flow as a CI job — the flow YAML plus a pipeline file — without
+  /// writing anything. Read on demand: it is a rendering of the flow, and a
+  /// copy held in state would go stale the moment the flow is edited.
+  ciDeploy(args: {
+    flowId: string;
+    target: 'github' | 'jenkins';
+    projectPath: string;
+    prompt?: string;
+  }): Promise<{
+    files: Array<{ path: string; contents: string }>;
+    checklist: string[];
+    warnings: string[];
+  } | null>;
+  /// Write those files into the project. Resolves to what was written, and
+  /// which of those already existed with different contents.
+  ciDeployWrite(args: {
+    flowId: string;
+    target: 'github' | 'jenkins';
+    projectPath: string;
+    prompt?: string;
+  }): Promise<{ written: string[]; overwritten: string[] } | null>;
   /// Patch the in-memory map for a single run (used by main event
   /// `flowRunUpdate`).
   applyRunUpdate(run: FlowRun): void;
@@ -282,6 +303,18 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   registryLoaded: false,
   registryErrors: [],
   launchProgress: {},
+
+  async ciDeploy({ flowId, target, projectPath, prompt }) {
+    const res = await window.overcli.invoke('flows:ciDeploy', { flowId, target, projectPath, prompt });
+    if (!res.ok) return null;
+    return { files: res.files, checklist: res.checklist, warnings: res.warnings };
+  },
+
+  async ciDeployWrite({ flowId, target, projectPath, prompt }) {
+    const res = await window.overcli.invoke('flows:ciDeployWrite', { flowId, target, projectPath, prompt });
+    if (!res.ok) return null;
+    return { written: res.written, overwritten: res.overwritten };
+  },
 
   async reload(projectPaths) {
     const flows = await window.overcli.invoke('flows:list', { projectPaths });

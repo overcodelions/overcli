@@ -344,6 +344,21 @@ interface WorkersActions {
   /// Write that file wherever the user points the save dialog. Resolves to
   /// the path written, or null if they dismissed it.
   shareToFile(id: string): Promise<string | null>;
+  /// This worker as a CI job — the bundle plus a pipeline file — without
+  /// writing anything. Read on demand for the same reason as `shareYaml`.
+  ciDeploy(id: string, target: 'github' | 'jenkins'): Promise<{
+    files: Array<{ path: string; contents: string }>;
+    checklist: string[];
+    warnings: string[];
+    projectPath: string;
+  } | null>;
+  /// Write those files into the worker's project. Resolves to the paths
+  /// written and which of them already existed with different content, or
+  /// null on failure.
+  ciDeployWrite(
+    id: string,
+    target: 'github' | 'jenkins',
+  ): Promise<{ written: string[]; overwritten: string[] } | null>;
   /// Take a worker file: installs the flows it carries and opens the hire
   /// editor on it. Resolves false when the user dismissed the file dialog or
   /// the file could not be read — the error is on the store either way.
@@ -1267,6 +1282,24 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       return null;
     }
     return res.filePath;
+  },
+
+  async ciDeploy(id, target) {
+    const res = await window.overcli.invoke('workers:ciDeploy', { id, target });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    return { files: res.files, checklist: res.checklist, warnings: res.warnings, projectPath: res.projectPath };
+  },
+
+  async ciDeployWrite(id, target) {
+    const res = await window.overcli.invoke('workers:ciDeployWrite', { id, target });
+    if (!res.ok) {
+      set({ error: res.error });
+      return null;
+    }
+    return { written: res.written, overwritten: res.overwritten };
   },
 
   async importFromFile({ projectPath, projectPaths }) {

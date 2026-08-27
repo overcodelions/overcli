@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 import { appendRunSummary } from './runSummaryLog';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
@@ -26,7 +26,7 @@ import type { FlowRun } from '../../shared/flows/schema';
 const MAX_ARTIFACT_BYTES = 256 * 1024;
 
 function dir(): string {
-  return path.join(app.getPath('userData'), 'flow-runs');
+  return path.join(host().dataDir(), 'flow-runs');
 }
 
 function pathFor(runId: string): string {

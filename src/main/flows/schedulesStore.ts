@@ -11,14 +11,14 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 
 import { SCHEDULE_HISTORY_LIMIT, type Schedule } from '../../shared/flows/schedule';
 
 function dir(): string {
-  return path.join(app.getPath('userData'), 'schedules');
+  return path.join(host().dataDir(), 'schedules');
 }
 
 function pathFor(id: string): string {
