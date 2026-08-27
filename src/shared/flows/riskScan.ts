@@ -119,7 +119,11 @@ export function scanStepRisks(step: ScannableStep): FlowRiskFinding[] {
         stepId: step.id,
         severity: 'high',
         category: 'sensitive-path',
-        message: `Prompt references ${what}. Read the step before installing.`,
+        // Deliberately says nothing about installing: the same finding is
+        // shown on a registry preview, on an install, and after a plain save
+        // in the builder. "Before you run this" is the one phrasing that is
+        // true on all three surfaces.
+        message: `Prompt references ${what}. Check what this step does before you run it.`,
       });
     }
   }
