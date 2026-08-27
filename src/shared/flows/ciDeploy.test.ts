@@ -183,7 +183,7 @@ describe('trust and the allow-list', () => {
       workerYaml: 'x',
     });
     expect(plan.files[1].contents).toContain('--allow-tool Read,Grep,Glob');
-    expect(plan.checklist.some((c) => c.includes('Read, Grep, Glob'))).toBe(true);
+    expect(plan.notes.some((c) => c.includes('Read, Grep, Glob'))).toBe(true);
   });
 
   it('omits the allow-list entirely under deny, where it would mean nothing', () => {
@@ -261,8 +261,8 @@ describe('worker instructions are target-aware', () => {
       target: 'jenkins',
       workerYaml: 'x',
     });
-    expect(plan.checklist.join(' ')).not.toContain('repository secret');
-    expect(plan.checklist.join(' ')).toContain('Manage Jenkins');
+    expect(plan.steps.join(' ')).not.toContain('repository secret');
+    expect(plan.steps.join(' ')).toContain('Manage Jenkins');
   });
 
   it('does not tell a GitHub user about the agent timezone', () => {
@@ -272,8 +272,9 @@ describe('worker instructions are target-aware', () => {
       target: 'github',
       workerYaml: 'x',
     });
-    expect(plan.checklist.join(' ')).toContain('UTC');
-    expect(plan.checklist.join(' ')).not.toContain('agent');
+    // The timezone is a note, not a step — there is nothing to perform.
+    expect(plan.notes.join(' ')).toContain('UTC');
+    expect(plan.notes.join(' ')).not.toContain('agent');
   });
 
   it('warns that the CLI is not published, on both targets', () => {
@@ -322,5 +323,44 @@ describe('a cadence chained off another flow', () => {
       workerYaml: 'x',
     });
     expect(plan.warnings.some((w) => w.includes('on demand'))).toBe(false);
+  });
+});
+
+describe('steps are things to do; notes are things to know', () => {
+  const plan = () =>
+    buildCiDeploy({
+      worker: worker({ trust: 'trusted', mcpServers: ['github'] }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+
+  it('every step is an instruction, in the order to perform it', () => {
+    const steps = plan().steps;
+    // Create the secrets, commit, verify, then stop the local copy. Pausing
+    // before it is proven to work in CI would leave the worker doing nothing
+    // anywhere.
+    expect(steps[0]).toMatch(/^Create /);
+    expect(steps.some((s) => s.startsWith('Commit and push'))).toBe(true);
+    expect(steps[steps.length - 1]).toMatch(/^Pause /);
+  });
+
+  it('keeps the facts out of the numbered list', () => {
+    const steps = plan().steps.join(' ');
+    expect(steps).not.toContain('UTC');
+    expect(steps).not.toContain('budget');
+    expect(steps).not.toContain('denied');
+  });
+
+  it('names the actual files to commit rather than saying "these files"', () => {
+    expect(plan().steps.some((s) => s.includes('.overcli/workers/release-nanny.worker.yaml'))).toBe(true);
+  });
+
+  it('tells you to prove it works before you switch the local worker off', () => {
+    const steps = plan().steps;
+    const verify = steps.findIndex((s) => s.includes('Run it once'));
+    const pause = steps.findIndex((s) => s.startsWith('Pause'));
+    expect(verify).toBeGreaterThanOrEqual(0);
+    expect(verify).toBeLessThan(pause);
   });
 });

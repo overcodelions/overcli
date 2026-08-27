@@ -392,7 +392,8 @@ interface WorkersActions {
   /// writing anything. Read on demand for the same reason as `shareYaml`.
   ciDeploy(id: string, target: 'github' | 'jenkins'): Promise<{
     files: Array<{ path: string; contents: string }>;
-    checklist: string[];
+    steps: string[];
+    notes: string[];
     warnings: string[];
     projectPath: string;
   } | null>;
@@ -1468,7 +1469,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       set({ error: res.error });
       return null;
     }
-    return { files: res.files, checklist: res.checklist, warnings: res.warnings, projectPath: res.projectPath };
+    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings, projectPath: res.projectPath };
   },
 
   async ciDeployWrite(id, target) {

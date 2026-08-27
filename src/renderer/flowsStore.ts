@@ -87,7 +87,8 @@ interface FlowsActions {
     prompt?: string;
   }): Promise<{
     files: Array<{ path: string; contents: string }>;
-    checklist: string[];
+    steps: string[];
+    notes: string[];
     warnings: string[];
   } | null>;
   /// Write those files into the project. Resolves to what was written, and
@@ -307,7 +308,7 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   async ciDeploy({ flowId, target, projectPath, prompt }) {
     const res = await window.overcli.invoke('flows:ciDeploy', { flowId, target, projectPath, prompt });
     if (!res.ok) return null;
-    return { files: res.files, checklist: res.checklist, warnings: res.warnings };
+    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings };
   },
 
   async ciDeployWrite({ flowId, target, projectPath, prompt }) {

@@ -1757,7 +1757,8 @@ export function registerIpc(): void {
     return {
       ok: true,
       files: res.plan.files,
-      checklist: res.plan.checklist,
+      steps: res.plan.steps,
+      notes: res.plan.notes,
       warnings: res.plan.warnings,
       projectPath: res.worker.projectPath,
     } as const;
@@ -1814,7 +1815,8 @@ export function registerIpc(): void {
     return {
       ok: true,
       files: res.plan.files,
-      checklist: res.plan.checklist,
+      steps: res.plan.steps,
+      notes: res.plan.notes,
       warnings: res.plan.warnings,
     } as const;
   });

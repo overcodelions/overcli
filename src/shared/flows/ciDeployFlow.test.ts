@@ -113,15 +113,15 @@ describe('buildFlowCiDeploy', () => {
 describe('the instructions name what each system actually calls things', () => {
   it('says "repository secret" for GitHub', () => {
     const plan = buildFlowCiDeploy({ flow: flow(), target: 'github', flowYaml: 'x' });
-    expect(plan.checklist[0]).toContain('repository secret');
-    expect(plan.checklist[0]).toContain('Settings → Secrets and variables → Actions');
+    expect(plan.steps[0]).toContain('repository secret');
+    expect(plan.steps[0]).toContain('Settings → Secrets and variables → Actions');
   });
 
   it('says "credential" for Jenkins, which has no repository secrets', () => {
     const plan = buildFlowCiDeploy({ flow: flow(), target: 'jenkins', flowYaml: 'x' });
-    expect(plan.checklist[0]).toContain('credential');
-    expect(plan.checklist[0]).toContain('Manage Jenkins');
-    expect(plan.checklist[0]).not.toContain('repository secret');
+    expect(plan.steps[0]).toContain('credential');
+    expect(plan.steps[0]).toContain('Manage Jenkins');
+    expect(plan.steps[0]).not.toContain('repository secret');
   });
 
   it('warns up front that the CLI it invokes is not published yet', () => {

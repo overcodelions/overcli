@@ -33,6 +33,7 @@ function heartbeatBackendOf(
 }
 
 import { useStore } from "../../store";
+import { WorkerDeployCard } from "./WorkerDeployCard";
 import { isEverydayProject } from "@shared/everydayProjects";
 import { useFlowsStore } from "../../flowsStore";
 import { useOrchestratorStore } from "../../orchestratorStore";
@@ -1697,7 +1698,7 @@ function WorkerSettings({
       <div className="min-w-0 space-y-4 lg:col-start-2 lg:row-start-2 lg:self-start">
         <TrustLadder worker={worker} />
         <ShareCard worker={worker} />
-        <DeployCard worker={worker} />
+        <WorkerDeployCard worker={worker} />
       </div>
     </div>
   );
@@ -1811,135 +1812,6 @@ function ShareCard({ worker }: { worker: Worker }) {
         <pre className="mt-3 max-h-64 overflow-auto rounded-lg bg-card-strong/50 p-2 text-[10px] leading-relaxed text-ink-muted">
           {share ? share.yaml : "Reading…"}
         </pre>
-      )}
-    </div>
-  );
-}
-
-/// The same worker as a pipeline job: the share bundle plus a generated
-/// GitHub Actions workflow or Jenkinsfile, whose schedule and permission
-/// policy come straight off the worker's own cadence and trust level.
-/// Preview only, like ShareCard — Write files is the one act that actually
-/// touches the project.
-function DeployCard({ worker }: { worker: Worker }) {
-  const ciDeploy = useWorkersStore((s) => s.ciDeploy);
-  const ciDeployWrite = useWorkersStore((s) => s.ciDeployWrite);
-  const [target, setTarget] = useState<"github" | "jenkins">("github");
-  const [plan, setPlan] = useState<{
-    files: Array<{ path: string; contents: string }>;
-    checklist: string[];
-    warnings: string[];
-    projectPath: string;
-  } | null>(null);
-  const [written, setWritten] = useState<{ written: string[]; overwritten: string[] } | null>(null);
-
-  function selectTarget(next: "github" | "jenkins") {
-    setTarget(next);
-    setPlan(null);
-    setWritten(null);
-  }
-
-  return (
-    <div className="rounded-xl border border-card-strong p-3">
-      <div className="flex items-center gap-2">
-        <div className="text-[11px] uppercase tracking-wider text-ink-faint">
-          Deploy to CI
-        </div>
-      </div>
-      <p className="mt-2 text-xs text-ink-muted">
-        The same job as a pipeline file — its cadence becomes the schedule,
-        its trust becomes the permission policy. Overcli writes the files;
-        you commit them.
-      </p>
-
-      <div className="mt-3 flex flex-wrap gap-1.5">
-        <button
-          onClick={() => selectTarget("github")}
-          className={
-            target === "github"
-              ? "rounded-md border border-accent/50 px-2.5 py-1 text-[11px] text-accent hover:bg-accent/10"
-              : "rounded-md border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
-          }
-        >
-          GitHub Actions
-        </button>
-        <button
-          onClick={() => selectTarget("jenkins")}
-          className={
-            target === "jenkins"
-              ? "rounded-md border border-accent/50 px-2.5 py-1 text-[11px] text-accent hover:bg-accent/10"
-              : "rounded-md border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
-          }
-        >
-          Jenkins
-        </button>
-      </div>
-
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        <button
-          onClick={() => {
-            setWritten(null);
-            void ciDeploy(worker.id, target).then(setPlan);
-          }}
-          className="rounded-md border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
-        >
-          Preview
-        </button>
-        <button
-          onClick={() => {
-            void ciDeployWrite(worker.id, target).then(setWritten);
-          }}
-          disabled={plan === null}
-          className="rounded-md border border-accent/50 px-2.5 py-1 text-[11px] text-accent hover:bg-accent/10 disabled:opacity-40"
-        >
-          Write files
-        </button>
-      </div>
-
-      {plan &&
-        plan.files.map((f) => (
-          <div key={f.path} className="mt-2">
-            <div className="text-[10px] text-ink-faint">{f.path}</div>
-            <pre className="mt-1 max-h-60 overflow-auto rounded-md bg-black/20 p-2 text-[10px] text-ink-muted whitespace-pre-wrap">
-              {f.contents}
-            </pre>
-          </div>
-        ))}
-
-      {plan && plan.warnings.length > 0 && (
-        <ul className="mt-2 space-y-0.5">
-          {plan.warnings.map((w, i) => (
-            <li key={i} className="text-[10px] text-amber-400">
-              {w}
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {plan && plan.checklist.length > 0 && (
-        <div className="mt-2">
-          <div className="text-[10px] uppercase tracking-wider text-ink-faint">
-            Before this runs
-          </div>
-          <ul className="mt-1 space-y-0.5">
-            {plan.checklist.map((c, i) => (
-              <li key={i} className="text-[10px] text-ink-faint">
-                {c}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {written && (
-        <div className="mt-2 text-[10px] text-ink-faint">
-          Wrote {written.written.join(", ")} into {plan?.projectPath}
-        </div>
-      )}
-      {written && written.overwritten.length > 0 && (
-        <div className="mt-1 text-[10px] text-amber-400">
-          Replaced your edited {written.overwritten.join(", ")} — it had changes this write did not keep.
-        </div>
       )}
     </div>
   );

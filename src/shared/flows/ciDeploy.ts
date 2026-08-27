@@ -51,7 +51,17 @@ export interface CiDeployFile {
 
 export interface CiDeployPlan {
   files: CiDeployFile[];
-  checklist: string[];
+  /// Things to DO, in the order to do them. Imperative, one action each.
+  ///
+  /// Split from `notes` because the two were one list and it read badly: an
+  /// instruction to create a secret sat next to a remark about how cron
+  /// timezones work, numbered identically, so neither looked like a thing to
+  /// act on. A step you cannot perform is not a step.
+  steps: string[];
+  /// Things to KNOW. True, worth saying, but not actions — the tool budget,
+  /// the timezone, how the state directory behaves.
+  notes: string[];
+  /// Things that will stop the job working. Shown before anything else.
   warnings: string[];
 }
 
@@ -237,27 +247,33 @@ export function buildFlowCiDeploy(args: {
     );
   }
 
-  const checklist: string[] = [secretInstruction(target, 'ANTHROPIC_API_KEY', 'the Claude backend')];
-  checklist.push(
+  const steps: string[] = [secretInstruction(target, 'ANTHROPIC_API_KEY', 'the Claude backend')];
+  steps.push(`Commit and push ${flowPath} and the pipeline file.`);
+  steps.push(
+    target === 'github'
+      ? 'Run it from the Actions tab (Run workflow) — you can change the prompt there each time.'
+      : 'Build it with parameters from Jenkins — you can change the prompt there each time.',
+  );
+
+  const notes: string[] = [
     `The job may use ${allowTools.length > 0 ? allowTools.join(', ') : 'no tools at all'}. ` +
       'Everything else is denied, because there is nobody to approve it.',
-  );
-  if (runIn === 'worktree') {
-    checklist.push('runs in a worktree, so changes land on a branch — add a step to push or open a PR if you want them kept.');
-  }
-  checklist.push(
     target === 'github'
-      ? 'Trigger it from the Actions tab (Run workflow), or add an on.schedule block for a timer.'
-      : 'Trigger it from Jenkins (Build with Parameters), or add a triggers { cron(...) } block for a timer.',
-  );
-  checklist.push('Commit and push these files.');
+      ? 'It runs on demand only. Add an on.schedule block if you want it on a timer.'
+      : 'It runs on demand only. Add a triggers { cron(...) } block if you want it on a timer.',
+  ];
+  if (runIn === 'worktree') {
+    notes.push(
+      'It runs in a worktree, so changes land on a branch — add a step to push or open a PR if you want them kept.',
+    );
+  }
 
   const pipeline =
     target === 'github'
       ? githubFlowFile({ slug, name: flow.name, flowPath, prompt, allowTools, installBackends, runIn })
       : jenkinsFlowFile({ slug, flowPath, prompt, allowTools, installBackends, runIn });
 
-  return { files: [{ path: flowPath, contents: args.flowYaml }, pipeline], checklist, warnings };
+  return { files: [{ path: flowPath, contents: args.flowYaml }, pipeline], steps, notes, warnings };
 }
 
 /// Tool names are interpolated into a shell line, exactly like MCP names.
@@ -335,9 +351,9 @@ export function buildCiDeploy(args: {
     );
   }
 
-  const checklist: string[] = [secretInstruction(target, 'ANTHROPIC_API_KEY', 'the Claude backend')];
+  const steps: string[] = [secretInstruction(target, 'ANTHROPIC_API_KEY', 'the Claude backend')];
   for (const name of mcp) {
-    checklist.push(
+    steps.push(
       secretInstruction(
         target,
         `OVERCLI_MCP_${name.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_TOKEN`,
@@ -345,25 +361,33 @@ export function buildCiDeploy(args: {
       ),
     );
   }
+  steps.push(`Commit and push ${bundlePath} and the pipeline file.`);
+  steps.push(
+    target === 'github'
+      ? 'Run it once from the Actions tab (Run workflow) to check it works before trusting the schedule.'
+      : 'Build it once by hand to check it works before trusting the schedule.',
+  );
+  steps.push(`Pause ${worker.name} here, so its shifts do not also run on this machine.`);
+
+  const notes: string[] = [];
+  if (allowTools.length > 0) {
+    notes.push(
+      `The job may use ${allowTools.join(', ')} and nothing else — everything not listed is denied, ` +
+        'because there is nobody to approve it. Add --allow-tool names if a step needs more.',
+    );
+  }
   if (cron) {
-    checklist.push(
+    notes.push(
       target === 'github'
         ? 'GitHub cron runs in UTC, and your cadence was written in local time — adjust the cron line if the hour matters.'
         : 'Jenkins cron runs in the agent’s timezone — adjust the cron line if the hour matters.',
     );
   }
-  if (allowTools.length > 0) {
-    checklist.push(
-      `The job may use ${allowTools.join(', ')} and nothing else. Add --allow-tool names if a step needs more; ` +
-        'everything not listed is denied, because there is nobody to approve it.',
-    );
-  }
   if (worker.budgetUSDPerMonth > 0) {
-    checklist.push(
+    notes.push(
       `The monthly budget ($${worker.budgetUSDPerMonth}) only accrues if the state directory survives between runs — the cached .overcli-state step does that.`,
     );
   }
-  checklist.push('Commit and push these files, then pause the local worker so shifts do not run in two places.');
 
   const pipelineFile =
     args.target === 'github'
@@ -372,7 +396,8 @@ export function buildCiDeploy(args: {
 
   return {
     files: [{ path: bundlePath, contents: args.workerYaml }, pipelineFile],
-    checklist,
+    steps,
+    notes,
     warnings,
   };
 }
