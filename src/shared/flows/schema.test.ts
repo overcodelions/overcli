@@ -8,6 +8,7 @@ import {
   FLOW_USER_PROMPT_REF,
   DEFAULT_PARTICIPANT_ID,
 } from './schema';
+import { flowRunIsOwnedBy } from './schema';
 import type { Flow, FlowParticipant, FlowRun, FlowStep } from './schema';
 
 function makeParticipant(overrides: Partial<FlowParticipant> = {}): FlowParticipant {
@@ -212,5 +213,39 @@ describe('flowProjectPath', () => {
 
   it('returns undefined when a project flow path has an unexpected shape', () => {
     expect(flowProjectPath({ source: 'project', filePath: '/repos/app/ship.yaml' })).toBeUndefined();
+  });
+});
+
+describe('flowRunIsOwnedBy', () => {
+  const WS = '/Users/bob/Library/Application Support/Overcli/workspaces/ws-1';
+  const owned = (overrides: Partial<FlowRun>) => ({ projectPath: '/repo', ...overrides }) as FlowRun;
+
+  function onPlatform<T>(value: string, body: () => T): T {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...original, value });
+    try {
+      return body();
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  }
+
+  it('prefers sourceProjectPath, so a worktree run still belongs to its workspace', () => {
+    const run = owned({ projectPath: '/tmp/worktree', sourceProjectPath: WS });
+    expect(flowRunIsOwnedBy(run, WS)).toBe(true);
+    expect(flowRunIsOwnedBy(run, '/tmp/worktree')).toBe(false);
+  });
+
+  // Why this is not `===`: the run's copy of the path predates the
+  // `productName` rename, the store's copy does not.
+  it('matches across the two spellings of the userData directory', () => {
+    const run = owned({ sourceProjectPath: WS.replace('/Overcli/', '/overcli/') });
+    expect(onPlatform('darwin', () => flowRunIsOwnedBy(run, WS))).toBe(true);
+  });
+
+  it('still separates two different workspaces', () => {
+    expect(flowRunIsOwnedBy(owned({ sourceProjectPath: WS }), WS.replace('ws-1', 'ws-2'))).toBe(
+      false,
+    );
   });
 });
