@@ -539,7 +539,9 @@ export function buildCiDeploy(args: {
   }
   if (worker.budgetUSDPerMonth > 0) {
     notes.push(
-      `The monthly budget ($${worker.budgetUSDPerMonth}) only accrues if the state directory survives between runs — the cached .overcli-state step does that.`,
+      `The monthly budget ($${worker.budgetUSDPerMonth}) and the journal only carry over if the ` +
+        'cached .overcli-state survives between runs. GitHub evicts a cache after 7 days unused, so ' +
+        'a worker that has not run in a week starts from shift 1 again.',
     );
   }
 
@@ -652,10 +654,21 @@ function githubFile(args: {
       lines.push(`          OVERCLI_MCP_${upper}_TOKEN: \${{ secrets.OVERCLI_MCP_${upper}_TOKEN }}`);
     }
   }
+  // A ROLLING key, and this is the difference between a worker that remembers
+  // and one that does not.
+  //
+  // `actions/cache` only writes at the end of a job when the key MISSED. With
+  // a fixed key, run 1 saves shift 1's state and every run after it restores
+  // that same snapshot and then skips the save — so the journal freezes at
+  // shift 1 forever and the worker re-proposes the work it already did, every
+  // night, with no way to tell. The run id makes every key a miss; the
+  // restore-keys prefix still finds the newest previous cache.
   lines.push('      - uses: actions/cache@v4');
   lines.push('        with:');
   lines.push('          path: .overcli-state');
-  lines.push(`          key: overcli-worker-${slug}`);
+  lines.push(`          key: overcli-worker-${slug}-\${{ github.run_id }}`);
+  lines.push('          restore-keys: |');
+  lines.push(`            overcli-worker-${slug}-`);
   lines.push(
     `      - run: overcli run ${bundlePath} --cwd ${runCwd} --state-dir .overcli-state${allowToolsFlag(allowTools)} --permissions ${perms} --trust ${trust} --run-in cwd --artifacts-dir out --json > run.json`,
   );

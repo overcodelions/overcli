@@ -567,3 +567,22 @@ describe('a workspace becomes checkout steps', () => {
     expect(p.files[1].contents).not.toContain('workspace/');
   });
 });
+
+describe('the state cache', () => {
+  const plan = buildCiDeploy({
+    worker: worker({ trust: 'trusted' }),
+    flows: [flow('nightly-review')],
+    target: 'github',
+    workerYaml: 'x',
+  });
+
+  it('rolls the cache key, or the journal freezes at shift 1', () => {
+    // actions/cache only SAVES when the key missed. A fixed key means run 2
+    // restores run 1's state and skips the save, so every night after the
+    // first re-proposes the same work with no way to tell.
+    const c = plan.files[1].contents;
+    expect(c).toContain('key: overcli-worker-release-nanny-${{ github.run_id }}');
+    expect(c).toContain('restore-keys: |');
+    expect(c).toContain('overcli-worker-release-nanny-');
+  });
+});
