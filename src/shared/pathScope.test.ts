@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isPathAtOrUnder, isPathUnder } from './pathScope';
+import { isPathAtOrUnder, isPathUnder, isSamePath } from './pathScope';
 
 const POSIX_ROOT = '/Users/bob/Documents/Overcli Projects/Brief';
 const WIN_ROOT = 'C:\\Users\\bob\\Documents\\Overcli Projects\\Brief';
@@ -71,5 +71,35 @@ describe('isPathAtOrUnder', () => {
   it('is false for a sibling and for empty input', () => {
     expect(isPathAtOrUnder(`${WIN_ROOT} archive`, WIN_ROOT)).toBe(false);
     expect(isPathAtOrUnder('', POSIX_ROOT)).toBe(false);
+  });
+});
+
+describe('isSamePath', () => {
+  // The case this exists for. A run persisted before the app declared a
+  // productName spells its userData directory `overcli`; the workspace record
+  // written since spells it `Overcli`. One directory, and a strict compare
+  // reported the workspace as unknown — the sidebar lane lost its name and
+  // printed the bare uuid instead.
+  const ID = '5f99d358-8e16-4acb-b5e4-6f63e763b392';
+  const STORED = `/Users/bob/Library/Application Support/Overcli/workspaces/${ID}`;
+  const ON_RUN = `/Users/bob/Library/Application Support/overcli/workspaces/${ID}`;
+
+  it('matches the two spellings of the userData directory', () => {
+    expect(isSamePath(STORED, ON_RUN)).toBe(true);
+  });
+
+  it('still separates two genuinely different workspaces', () => {
+    expect(isSamePath(STORED, STORED.replace(ID, 'b234ddc0-ad59-4ae2-ac14-4d2231cc5dd7'))).toBe(
+      false,
+    );
+  });
+
+  it('folds the separator and a trailing slash, like the checks above', () => {
+    expect(isSamePath(WIN_ROOT, `${WIN_ROOT.replace(/\\/g, '/')}/`)).toBe(true);
+  });
+
+  it('is false for empty input rather than matching another empty', () => {
+    expect(isSamePath('', '')).toBe(false);
+    expect(isSamePath(POSIX_ROOT, '')).toBe(false);
   });
 });

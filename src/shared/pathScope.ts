@@ -36,3 +36,39 @@ export function isPathAtOrUnder(target: string, root: string): boolean {
   if (!target || !root) return false;
   return normalize(target) === normalize(root) || isPathUnder(target, root);
 }
+
+/// Do these two strings name the same location? Case-FOLDED off Linux, unlike
+/// the containment checks above.
+///
+/// The exception is earned by a specific failure. Both sides of a containment
+/// check come from the same source, so their casing already agrees. An owner
+/// lookup is the opposite: it matches a path persisted with a flow run,
+/// possibly months ago, against one the store holds now — and the spelling of
+/// the userData directory has changed under those records. Runs made before
+/// `productName` was declared hold `…/Application Support/overcli/workspaces/<id>`
+/// while the workspace record holds `…/Overcli/…`. One directory on a
+/// case-insensitive volume, two strings, and `===` reports the workspace as
+/// unknown: the sidebar lane loses its name and prints the bare uuid.
+///
+/// `main/workspace.ts` already folds case for the same reason, and additionally
+/// resolves symlinks — it can, having `fs`. This is the lexical half, for the
+/// renderer and for shared code.
+export function isSamePath(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const x = normalize(a);
+  const y = normalize(b);
+  return caseSensitiveFs() ? x === y : x.toLowerCase() === y.toLowerCase();
+}
+
+/// Linux only. Detected from whichever global is present: `process` in main
+/// and in tests, `navigator` in the renderer, where contextIsolation keeps
+/// `process` out. Neither means we are somewhere unusual — assume the
+/// forgiving answer, since folding case can only merge two paths that a
+/// case-insensitive volume had already merged.
+function caseSensitiveFs(): boolean {
+  if (typeof process !== 'undefined' && process.platform) return process.platform === 'linux';
+  if (typeof navigator !== 'undefined' && navigator.platform) {
+    return /linux/i.test(navigator.platform);
+  }
+  return false;
+}

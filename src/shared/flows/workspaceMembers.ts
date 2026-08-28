@@ -12,6 +12,7 @@
 
 import type { FlowRun } from './schema';
 import type { Project, Workspace } from '../types';
+import { isSamePath } from '../pathScope';
 
 /// A workspace member as far as drift is concerned: what to call it, and the
 /// project checkout it forks from.
@@ -52,7 +53,7 @@ export function pendingWorkspaceMembers(
 ): WorkspaceMemberRef[] {
   const minted = run.workspaceWorktrees;
   if (!minted || minted.length === 0 || !run.sourceProjectPath) return [];
-  const workspace = workspaces.find((w) => w.rootPath === run.sourceProjectPath);
+  const workspace = workspaces.find((w) => isSamePath(w.rootPath, run.sourceProjectPath!));
   if (!workspace) return [];
   const projectsById = new Map(projects.map((p) => [p.id, p]));
   const current = workspace.projectIds
