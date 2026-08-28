@@ -96,10 +96,10 @@ function canonicalizeRunPaths(run: FlowRun): boolean {
       entry.path = fix(entry.path);
     }
   }
-  if (run.checkouts) {
-    for (const c of run.checkouts) {
-      c.projectPath = fix(c.projectPath);
-      c.worktreePath = fix(c.worktreePath);
+  if (run.workspaceWorktrees) {
+    for (const w of run.workspaceWorktrees) {
+      w.projectPath = fix(w.projectPath);
+      w.worktreePath = fix(w.worktreePath);
     }
   }
   if (run.dismissedWorkspaceMemberPaths) {

@@ -201,6 +201,17 @@ describe('loadAllRuns path canonicalization', () => {
           sourceProjectPath: wsRoot,
           worktreePath: path.join(stale, 'coordinators', 'run-1', 'repo'),
           dismissedWorkspaceMemberPaths: [path.join(wsRoot, 'repo')],
+          workspaceWorktrees: [
+            {
+              name: 'repo',
+              projectPath: path.join(wsRoot, 'repo'),
+              worktreePath: path.join(stale, 'coordinators', 'run-1', 'repo'),
+              branchName: 'flow/run-1',
+            },
+          ],
+          baselineCommitsByMember: {
+            repo: { path: path.join(wsRoot, 'repo'), commit: 'abc123' },
+          },
         }),
       ),
     );
@@ -213,6 +224,11 @@ describe('loadAllRuns path canonicalization', () => {
     expect(run.projectPath).toBe(path.join(userDataDir, 'coordinators', 'run-1'));
     expect(run.worktreePath).toBe(path.join(userDataDir, 'coordinators', 'run-1', 'repo'));
     expect(run.dismissedWorkspaceMemberPaths).toEqual([path.join(canonicalWs, 'repo')]);
+    expect(run.workspaceWorktrees![0]).toMatchObject({
+      projectPath: path.join(canonicalWs, 'repo'),
+      worktreePath: path.join(userDataDir, 'coordinators', 'run-1', 'repo'),
+    });
+    expect(run.baselineCommitsByMember!.repo.path).toBe(path.join(canonicalWs, 'repo'));
     // Written back, so the stale spelling is not carried forward and a second
     // load has nothing to do.
     const stored = JSON.parse(fs.readFileSync(runPath('run-1'), 'utf8')) as FlowRun;
