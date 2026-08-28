@@ -33,6 +33,25 @@ export interface CiDeployPlanView {
   existing?: string[];
 }
 
+/// Alpha, and the reason is concrete rather than a disclaimer: the pipeline
+/// files this generates invoke an `overcli` CLI that is not on npm yet, so a
+/// job built from them fails at its setup step. The flag stays until that
+/// ships. Kept small and unfilled — this is a caveat, not a decoration, and
+/// the amber warning inside the modal is what carries the detail.
+export function AlphaBadge({ className = '' }: { className?: string }) {
+  return (
+    <span
+      title="The overcli CLI these files call is not published yet, so a job built from them will not run end to end."
+      className={
+        'rounded-full border border-amber-500/40 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.08em] text-amber-400/90 ' +
+        className
+      }
+    >
+      Alpha
+    </span>
+  );
+}
+
 export interface CiDeployWriteResult {
   written: string[];
   overwritten: string[];
@@ -106,7 +125,10 @@ export function CiDeployModal({
       >
         <header className="flex items-start gap-4 px-6 py-4 border-b border-card shrink-0">
           <div className="min-w-0 flex-1">
-            <h2 className="text-[15px] font-semibold tracking-tight truncate">{title}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-[15px] font-semibold tracking-tight truncate">{title}</h2>
+              <AlphaBadge className="shrink-0" />
+            </div>
             <p className="mt-0.5 text-xs text-ink-muted">{subtitle}</p>
           </div>
           <button

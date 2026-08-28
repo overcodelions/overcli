@@ -20,6 +20,13 @@
   "bin": {
     "overcli": "dist/cli/index.js"
   },
+  "files": [
+    "dist/cli/**/*.js",
+    "dist/main/**/*.js",
+    "dist/shared/**/*.js",
+    "!dist/**/*.test.js",
+    "!dist/**/*.map"
+  ],
   "scripts": {
     "dev": "npm run build:main && concurrently -k -n vite,tsc,electron -c cyan,yellow,magenta \"npm:dev:renderer\" \"npm:dev:tsc\" \"npm:dev:electron\"",
     "dev:renderer": "vite",
@@ -35,7 +42,8 @@
     "dist:linux": "npm run build && electron-builder --linux",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm run build:main"
   },
   "build": {
     "appId": "com.overcli.app",

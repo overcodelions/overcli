@@ -12,7 +12,12 @@ import { useState } from 'react';
 
 import { type Flow } from '@shared/flows/schema';
 import { useFlowsStore } from '../../flowsStore';
-import { CiDeployModal, type CiDeployPlanView, type CiDeployWriteResult } from '../CiDeployModal';
+import {
+  AlphaBadge,
+  CiDeployModal,
+  type CiDeployPlanView,
+  type CiDeployWriteResult,
+} from '../CiDeployModal';
 
 type Target = 'github' | 'jenkins';
 
@@ -67,6 +72,7 @@ export function FlowDeployCard({
       <div className="rounded-xl border border-card-strong p-3">
         <div className="flex items-center gap-2">
           <div className="text-[11px] uppercase tracking-wider text-ink-faint">Deploy to CI</div>
+          <AlphaBadge />
           <button
             onClick={() => setOpen(true)}
             className="ml-auto text-[11px] text-accent hover:underline focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 rounded"
