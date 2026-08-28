@@ -22,7 +22,7 @@ import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 // Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
 import type { FlowModelDefaults } from './modelCatalog';
-import type { CiDeployFile, CiTarget } from './flows/ciDeploy';
+import type { CiDeployBlock, CiDeployFile, CiTarget } from './flows/ciDeploy';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -2294,7 +2294,18 @@ export interface IPCInvokeMap {
   /// The worker as a CI job: the share bundle plus a generated GitHub Actions
   /// workflow or Jenkinsfile. Preview only — nothing is written.
   'workers:ciDeploy': (args: { id: UUID; target: CiTarget }) =>
-    | { ok: true; files: CiDeployFile[]; steps: string[]; notes: string[]; warnings: string[]; existing: string[]; projectPath: string }
+    | {
+        ok: true;
+        files: CiDeployFile[];
+        steps: string[];
+        notes: string[];
+        warnings: string[];
+        /// Set when there is no correct project to write into — a workspace
+        /// worker. The write handler refuses too.
+        block: CiDeployBlock | null;
+        existing: string[];
+        projectPath: string;
+      }
     | { ok: false; error: string };
   /// The same files, written into the worker's project. Returns the paths
   /// written, plus which of them already existed with different content —

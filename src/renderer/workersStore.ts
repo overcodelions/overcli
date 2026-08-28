@@ -395,6 +395,7 @@ interface WorkersActions {
     steps: string[];
     notes: string[];
     warnings: string[];
+    block: { reason: string; remedy: string } | null;
     existing: string[];
     projectPath: string;
   } | null>;
@@ -1470,7 +1471,15 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       set({ error: res.error });
       return null;
     }
-    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings, existing: res.existing, projectPath: res.projectPath };
+    return {
+      files: res.files,
+      steps: res.steps,
+      notes: res.notes,
+      warnings: res.warnings,
+      block: res.block,
+      existing: res.existing,
+      projectPath: res.projectPath,
+    };
   },
 
   async ciDeployWrite(id, target) {

@@ -27,6 +27,9 @@ export interface CiDeployPlanView {
   steps: string[];
   notes: string[];
   warnings: string[];
+  /// Set when writing into a project has no correct answer — a workspace
+  /// worker, whose "project" is a symlink farm spanning several repos.
+  block?: { reason: string; remedy: string } | null;
   /// Paths that already exist with different contents. Known at preview time
   /// so "you are about to replace your edit" is visible BEFORE the write, not
   /// reported after it.
@@ -117,7 +120,10 @@ export function CiDeployModal({
     if (n === 1) return 'active';
     if (n === 2) return plan ? 'done' : 'active';
     if (n === 3) return written ? 'done' : plan ? 'active' : 'todo';
-    return written ? 'active' : 'todo';
+    // With nowhere to write, the follow-up instructions are what the user acts
+    // on next — waiting for a write that cannot happen would leave step 4
+    // greyed out forever.
+    return written || plan?.block ? 'active' : 'todo';
   };
 
   return (
@@ -189,14 +195,23 @@ export function CiDeployModal({
                   )}
                 </Step>
 
-                <Step n={3} title="Write them into the project" state={stepState(3)}>
-                  <p className="mb-2 text-[11px] leading-[1.5] text-ink-faint">
-                    Or copy them from the file pane — a workspace flow, or a Jenkins job set up
-                    outside a repo, has no single project to write into.
-                  </p>
+                <Step
+                  n={3}
+                  title={plan?.block ? 'Take them somewhere else' : 'Write them into the project'}
+                  state={stepState(3)}
+                >
+                  {plan?.block ? (
+                    <p className="mb-2 text-[11px] leading-[1.5] text-ink-muted">{plan.block.remedy}</p>
+                  ) : (
+                    <p className="mb-2 text-[11px] leading-[1.5] text-ink-faint">
+                      Or copy them from the file pane — a Jenkins job set up outside a repo has no
+                      project to write into.
+                    </p>
+                  )}
                   <button
                     onClick={onWrite}
-                    disabled={plan === null || busy || !canPreview}
+                    disabled={plan === null || busy || !canPreview || Boolean(plan?.block)}
+                    title={plan?.block?.reason}
                     className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-white hover:bg-accent-600 disabled:opacity-30 disabled:hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
                   >
                     Write files

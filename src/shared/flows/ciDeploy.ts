@@ -89,8 +89,25 @@ export interface CiDeployFile {
   contents: string;
 }
 
+/// Why the files cannot be written into a project, when they cannot.
+///
+/// A workspace worker is the case this exists for. Its `projectPath` is not a
+/// repository — it is the symlink farm Overcli mints under its own data
+/// directory (`workspaceRootPath`), spanning every member project. Writing a
+/// pipeline file there puts it somewhere that is never committed and is
+/// rebuilt from scratch on the next launch, so the button has to be off rather
+/// than quietly doing the wrong thing.
+export interface CiDeployBlock {
+  reason: string;
+  /// What to do instead. Copy or Save as… gets the bytes out; the rest is
+  /// manual until the CLI can check out more than one repo.
+  remedy: string;
+}
+
 export interface CiDeployPlan {
   files: CiDeployFile[];
+  /// Set when "write into the project" has no correct answer.
+  block?: CiDeployBlock;
   /// Things to DO, in the order to do them. Imperative, one action each.
   ///
   /// Split from `notes` because the two were one list and it read badly: an
@@ -354,6 +371,10 @@ export function buildCiDeploy(args: {
   target: CiTarget;
   workerYaml: string;
   missingFlowIds?: string[];
+  /// Set when this worker is scoped to an Overcli workspace rather than a
+  /// single project. Main resolves it; the generator only needs to know that
+  /// the "project" is a farm of N repos and not a checkout.
+  workspace?: { name: string; memberCount: number };
 }): CiDeployPlan {
   const { worker, target } = args;
   const slug = ciSlug(worker.name);
@@ -377,6 +398,26 @@ export function buildCiDeploy(args: {
   const bundlePath = '.overcli/workers/' + slug + '.worker.yaml';
 
   const warnings: string[] = [CI_CLI_NOT_PUBLISHED];
+  // A workspace is a scope over several repositories, not a directory anyone
+  // checks out. One `actions/checkout` cannot reproduce it, and the path this
+  // worker calls its project is a symlink farm inside Overcli's data
+  // directory — so both halves of the generated job are wrong, and the write
+  // is wrong too. Say so plainly rather than emitting a job that looks right.
+  const block: CiDeployBlock | undefined = args.workspace
+    ? {
+        reason:
+          `${worker.name} works across the ${args.workspace.name} workspace — ` +
+          `${args.workspace.memberCount} repositories — so it has no single project to write into. ` +
+          'The path it calls its project is a symlink farm inside Overcli\u2019s data directory, ' +
+          'not a checkout, and a file written there is never committed.',
+        remedy:
+          'Copy or save the pipeline file and place it in whichever repository should own the job. ' +
+          'It will need one checkout step per member repo, and `overcli run` cannot drive a ' +
+          'multi-repo workspace yet — it takes a single --cwd. Until it can, point the job at one ' +
+          'member repository.',
+      }
+    : undefined;
+  if (block) warnings.push(block.reason, block.remedy);
   if (backends.includes('ollama')) {
     warnings.push(
       'This worker uses local Ollama models, which stock runners do not have. Add --model-override ollama=claude:<model> or use a self-hosted runner with a GPU.',
@@ -477,6 +518,7 @@ export function buildCiDeploy(args: {
 
   return {
     files: [{ path: bundlePath, contents: args.workerYaml }, pipelineFile],
+    ...(block ? { block } : {}),
     steps,
     notes,
     warnings,

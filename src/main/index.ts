@@ -1753,6 +1753,28 @@ export function registerIpc(): void {
     }
     return out;
   }
+  /// The workspace a worker is scoped to, if any.
+  ///
+  /// Compared case-insensitively on macOS and Windows, and that is not
+  /// pedantry: a worker hired under one build can hold
+  /// `.../Application Support/overcli/workspaces/<id>` while the store holds
+  /// `.../Application Support/Overcli/workspaces/<id>` — same directory on a
+  /// case-insensitive volume, different string. A strict `===` reports every
+  /// such worker as an ordinary project one and generates a job that writes
+  /// into Overcli's own data directory.
+  function workspaceFor(projectPath: string) {
+    if (!projectPath) return undefined;
+    const fold = (p: string) =>
+      (process.platform === 'darwin' || process.platform === 'win32' ? p.toLowerCase() : p).replace(
+        /\/+$/,
+        '',
+      );
+    const target = fold(path.resolve(projectPath));
+    const ws = Store.load().workspaces.find((w) => w.rootPath && fold(path.resolve(w.rootPath)) === target);
+    if (!ws) return undefined;
+    return { name: ws.name, memberCount: ws.projectIds?.length ?? 0 };
+  }
+
   function ciPlanFor(id: string, target: 'github' | 'jenkins') {
     const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
     if (!worker) return { ok: false as const, error: 'No such worker.' };
@@ -1765,7 +1787,14 @@ export function registerIpc(): void {
     return {
       ok: true as const,
       worker,
-      plan: buildCiDeploy({ worker, flows, target, workerYaml: share.yaml, missingFlowIds: share.missingFlowIds }),
+      plan: buildCiDeploy({
+        worker,
+        flows,
+        target,
+        workerYaml: share.yaml,
+        missingFlowIds: share.missingFlowIds,
+        workspace: workspaceFor(worker.projectPath),
+      }),
     };
   }
   ipcMain.handle('workers:ciDeploy', (_e, { id, target }) => {
@@ -1777,6 +1806,7 @@ export function registerIpc(): void {
       steps: res.plan.steps,
       notes: res.plan.notes,
       warnings: res.plan.warnings,
+      block: res.plan.block ?? null,
       existing: existingOf(res.worker.projectPath, res.plan.files),
       projectPath: res.worker.projectPath,
     } as const;
@@ -1786,6 +1816,11 @@ export function registerIpc(): void {
     if (!res.ok) return res;
     if (!res.worker.projectPath) {
       return { ok: false, error: 'This worker has no project to write into.' } as const;
+    }
+    // Enforced here as well as in the UI: the renderer disables the button,
+    // but the handler is what actually touches the disk.
+    if (res.plan.block) {
+      return { ok: false, error: res.plan.block.reason } as const;
     }
     const written: string[] = [];
     // Every generated file says "Safe to edit" in its own header, so a

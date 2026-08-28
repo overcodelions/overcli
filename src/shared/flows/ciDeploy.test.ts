@@ -473,3 +473,45 @@ describe('installing a private CLI', () => {
     );
   });
 });
+
+describe('a worker scoped to a workspace', () => {
+  const plan = (workspace?: { name: string; memberCount: number }) =>
+    buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+      workspace,
+    });
+
+  it('refuses the project write, because there is no project', () => {
+    // A workspace root is the symlink farm under Overcli's data directory, not
+    // a checkout. Writing a pipeline file there puts it somewhere that is
+    // never committed and is rebuilt on the next launch.
+    const p = plan({ name: 'unifyr', memberCount: 16 });
+    expect(p.block).toBeDefined();
+    expect(p.block?.reason).toContain('unifyr');
+    expect(p.block?.reason).toContain('16 repositories');
+  });
+
+  it('says what to do instead rather than just refusing', () => {
+    const p = plan({ name: 'unifyr', memberCount: 16 });
+    expect(p.block?.remedy).toContain('Copy or save');
+    // And is honest that the multi-repo half is not built.
+    expect(p.block?.remedy).toContain('cannot drive a multi-repo workspace yet');
+  });
+
+  it('leads with the block, so it is read before the pipeline is', () => {
+    const p = plan({ name: 'unifyr', memberCount: 16 });
+    expect(p.warnings).toContain(p.block!.reason);
+    expect(p.warnings).toContain(p.block!.remedy);
+  });
+
+  it('leaves an ordinary project worker alone', () => {
+    expect(plan().block).toBeUndefined();
+  });
+
+  it('still generates the files — they are the thing you copy out', () => {
+    expect(plan({ name: 'unifyr', memberCount: 16 }).files).toHaveLength(2);
+  });
+});
