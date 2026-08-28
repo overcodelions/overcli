@@ -21,11 +21,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+import { useTestHost } from '../testHost';
 import type { FlowRun } from '../../shared/flows/schema';
 
 const seeded = vi.hoisted(() => ({ runs: [] as FlowRun[] }));
 
-vi.mock('electron', () => ({ app: { getPath: () => '/tmp/overcli-real-git-tests' } }));
+useTestHost('/tmp/overcli-real-git-tests');
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => seeded.runs,
   saveRun: vi.fn(),

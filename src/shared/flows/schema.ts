@@ -394,6 +394,14 @@ export interface FlowRun {
   /// `resolveRunStepModel` / `effectiveParticipantModel` are the readers.
   modelOverrides?: Record<string, string>;
   artifacts: Record<string, FlowArtifact>;
+  /// Launched with no human present, by a launcher enforcing its own
+  /// permission policy (the `overcli` CLI). Clamps `resolvePermissionMode` so
+  /// tool calls route through the approval broker instead of being
+  /// auto-allowed — see FlowRuntimeStartArgs.unattended.
+  unattended?: boolean;
+  /// Tools this unattended run may use, intersected with each step's own
+  /// `tools:`. See FlowRuntimeStartArgs.unattendedAllowedTools.
+  unattendedAllowedTools?: string[];
   state: FlowRunState;
   createdAt: number;
   /// Per-step attempts, in order. A step that ran twice via `on_fail.goto`

@@ -135,6 +135,36 @@ export interface FlowRuntimeStartArgs {
   /// Explicit Worker capability. Missing is false for launches produced by
   /// older workers/orchestrations.
   allowExternalActions?: boolean;
+  /// Nobody is watching this run, and the launcher is enforcing its own
+  /// permission policy over the event stream (see src/cli/permissions.ts).
+  ///
+  /// Without this a CLI-launched FLOW run falls through to
+  /// `bypassPermissions` in `resolvePermissionMode` — the worker clamp there
+  /// is gated on `workerId`, and a flow run has none — and
+  /// `backends/claude.ts` then drops `--permission-prompt-tool` entirely. The
+  /// result is a run that emits no permission requests at all, so a
+  /// `--permissions deny` tap has nothing to answer and silently restrains
+  /// nothing. Setting this applies the same `acceptEdits` clamp the worker
+  /// boundary uses, which keeps the approval broker wired so the policy is
+  /// actually reachable.
+  ///
+  /// The desktop app never sets it: there IS a human there, and the existing
+  /// modes are what they chose.
+  unattended?: boolean;
+  /// Tools an unattended run may use, intersected with each step's own
+  /// `tools:` list. Only meaningful with `unattended`.
+  ///
+  /// This is the half that makes the policy real. A step's declared `tools:`
+  /// becomes `--allowedTools` (see `enabledTools` below), which PRE-AUTHORISES
+  /// those tools at the CLI — they never emit a permission request, so an
+  /// event-stream policy can never see, let alone refuse, them. Without the
+  /// intersection, `--permissions deny` only governs tools the flow did not
+  /// ask for, which is precisely backwards: the dangerous flow is the one that
+  /// declares `tools: [Bash]`.
+  ///
+  /// `[]` (the `deny` policy) means nothing is pre-authorised, so every call
+  /// routes through the approval broker and the tap refuses it.
+  unattendedAllowedTools?: string[];
   /// Explicit run title, set at launch instead of derived from the prompt.
   /// Only the scheduler uses it: a scheduled prompt never changes, so the
   /// prompt-derived title would be identical for every occurrence.
@@ -1070,6 +1100,8 @@ export class FlowRuntimeImpl {
       workerId: args.workerId,
       workerName: args.workerName,
       ...(args.allowExternalActions ? { allowExternalActions: true } : {}),
+      ...(args.unattended ? { unattended: true } : {}),
+      ...(args.unattendedAllowedTools ? { unattendedAllowedTools: args.unattendedAllowedTools } : {}),
       title: args.title,
     };
     this.runs.set(runId, run);
@@ -2865,7 +2897,11 @@ export class FlowRuntimeImpl {
       // an empty allowlist rather than becoming "no restriction" — Ollama
       // reads `undefined` as its own read-only default (runner.ts), and
       // claude.ts already guards on `length > 0` before emitting the flag.
-      enabledTools: step.tools,
+      // An unattended run may only use the intersection of what the step asked
+      // for and what the caller allowed — see `unattendedAllowedTools`.
+      enabledTools: run.unattended
+        ? step.tools.filter((t) => (run.unattendedAllowedTools ?? []).includes(t))
+        : step.tools,
     });
     if (!sendResult.ok) {
       this.finishAttempt(run, step.id, { outcome: 'error', errorMessage: sendResult.error });
@@ -3915,6 +3951,14 @@ export class FlowRuntimeImpl {
     // pause — that approval is one-shot (see resumeRunInner / onStepFinished)
     // and must not still force through the broker only to auto-deny it.
     if (run.workerId && !run.allowExternalActions && run.externalActionApprovedStepId !== step.id) {
+      return 'acceptEdits';
+    }
+    // The same clamp for a run launched with nobody watching. `bypassPermissions`
+    // makes backends/claude.ts drop `--permission-prompt-tool`, so the run emits
+    // no permission requests at all — which turns the CLI's `--permissions deny`
+    // into a flag that reads as containment and enforces nothing. `acceptEdits`
+    // keeps the broker wired so the policy tap can actually answer.
+    if (run.unattended && !run.allowExternalActions) {
       return 'acceptEdits';
     }
     if (stepModel.backend !== 'ollama') return 'bypassPermissions';

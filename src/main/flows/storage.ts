@@ -9,7 +9,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 
 import { Store } from '../store';
 import { parseFlowYaml, serializeFlow } from '../../shared/flows/yaml';
@@ -26,11 +26,11 @@ const PROJECT_FLOWS_DIRNAME = path.join('.overcli', 'flows');
 const YAML_EXT = '.yaml';
 
 function userFlowsDir(): string {
-  return path.join(app.getPath('userData'), USER_FLOWS_DIRNAME);
+  return path.join(host().dataDir(), USER_FLOWS_DIRNAME);
 }
 
 function generatedFlowsDir(): string {
-  return path.join(app.getPath('userData'), GENERATED_FLOWS_DIRNAME);
+  return path.join(host().dataDir(), GENERATED_FLOWS_DIRNAME);
 }
 
 function projectFlowsDir(projectPath: string): string {

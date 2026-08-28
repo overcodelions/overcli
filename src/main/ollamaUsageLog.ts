@@ -19,7 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from './host';
 import os from 'node:os';
 import { logSilent } from './diagnostics';
 
@@ -48,7 +48,7 @@ export const MIN_BYTES_PER_ENTRY = 85;
 export function ollamaUsageLogPath(): string {
   let base: string;
   try {
-    base = app.getPath('userData');
+    base = host().dataDir();
   } catch {
     // The stats CLI harness runs without Electron. Mirror overcliStorePath()'s
     // fallback so a headless scan reads the same file the app writes.

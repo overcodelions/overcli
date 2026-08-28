@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme, Notification } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -55,6 +55,7 @@ import {
   gitAvailability,
   gitInstallCommand,
   forgetGitAvailability,
+  originRemote,
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
@@ -101,8 +102,12 @@ import { auditOllama, updateOllama } from './ollamaSecurity';
 import { clearSilentLog, listSilentLog, log, type LogLevel } from './diagnostics';
 import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater';
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
+import { host } from './host';
+import { installElectronHost } from './hostElectron';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
+import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
+import { serializeFlow } from '../shared/flows/yaml';
 import {
   ensureWorkerFilesDir,
   listWorkerFiles,
@@ -263,25 +268,32 @@ function noteAgentWrites(event: MainToRendererEvent): void {
 
 /// Native OS notification. The only way a scheduled run reaches the user when
 /// the window is behind everything else or they've walked away — which is the
-/// normal case for scheduled work, not the exception. Best-effort: a Linux box
-/// with no notification daemon just gets nothing, which must not take the
-/// scheduler down with it.
+/// normal case for scheduled work, not the exception.
+///
+/// The notification itself is the host's job now (`hostElectron.ts`), so the
+/// scheduler and the worker engine can hand the same callback to a headless
+/// host that writes a log line instead. What stays here is the click, because
+/// only this file knows about `mainWindow`.
 function showDesktopNotification(args: { title: string; body: string }): void {
-  try {
-    if (!Notification.isSupported()) return;
-    const n = new Notification({ title: args.title, body: args.body });
-    n.on('click', () => {
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        if (mainWindow.isMinimized()) mainWindow.restore();
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
-    n.show();
-  } catch (err) {
-    log('warn', 'schedules', `Notification failed: ${String(err)}`);
+  host().notify(args);
+}
+
+/// Bring the window forward when the user clicks a notification. Installed on
+/// the host at boot; a notification that does nothing when clicked is worse
+/// than no notification.
+function focusMainWindow(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   }
 }
+
+// Installed at module scope, before anything can reach for stored state:
+// `host()` throws when nothing is installed, and half this file's imports
+// read `overcli.json` the moment they are touched. Safe this early because
+// `electronHost` only calls `app.getPath` lazily, inside `dataDir()`.
+installElectronHost(focusMainWindow);
 
 /// Deps for every AI drafting call. Carries the user's proven flows so a
 /// draft copies the shape of what already works here instead of inventing a
@@ -1719,6 +1731,229 @@ export function registerIpc(): void {
         ok: false,
         error: err instanceof Error ? err.message : String(err),
       } as const;
+    }
+    return { ok: true, filePath: res.filePath } as const;
+  });
+  // Deploying a worker as a CI job. Shares the same bundle as workers:share;
+  // ciPlanFor additionally resolves the worker's flows so buildCiDeploy can
+  // see what backends they need.
+  /// Which of a plan's files already exist with DIFFERENT contents, so the
+  /// preview can say "replaces" before the write rather than reporting it
+  /// afterwards. Same contents is not a replacement — re-deploying an
+  /// unchanged worker should not look destructive.
+  function existingOf(projectPath: string, files: Array<{ path: string; contents: string }>): string[] {
+    if (!projectPath) return [];
+    const out: string[] = [];
+    for (const f of files) {
+      try {
+        const abs = path.join(projectPath, f.path);
+        if (fs.existsSync(abs) && fs.readFileSync(abs, 'utf-8') !== f.contents) out.push(f.path);
+      } catch {
+        // Unreadable is not "will be replaced" — the write will report it.
+      }
+    }
+    return out;
+  }
+  /// The workspace a worker is scoped to, resolved to something a pipeline can
+  /// check out.
+  ///
+  /// Compared case-insensitively on macOS and Windows, and that is load-bearing
+  /// rather than pedantic: a worker can hold
+  /// `.../Application Support/overcli/workspaces/<id>` while the store holds
+  /// `.../Application Support/Overcli/workspaces/<id>` — same directory on a
+  /// case-insensitive volume, different string. A strict `===` reports every
+  /// such worker as an ordinary project one.
+  ///
+  /// Members without a git remote are separated out rather than dropped: a
+  /// local-only project cannot be reproduced on a runner, and a job that
+  /// silently covered less of the workspace than it claimed would be worse
+  /// than one that says so.
+  function workspaceFor(projectPath: string): CiWorkspace | undefined {
+    if (!projectPath) return undefined;
+    const fold = (p: string) =>
+      (process.platform === 'darwin' || process.platform === 'win32' ? p.toLowerCase() : p).replace(
+        /\/+$/,
+        '',
+      );
+    const target = fold(path.resolve(projectPath));
+    const store = Store.load();
+    const ws = store.workspaces.find((w) => w.rootPath && fold(path.resolve(w.rootPath)) === target);
+    if (!ws) return undefined;
+
+    const byId = new Map(store.projects.map((p) => [p.id, p]));
+    const members: CiWorkspace['members'] = [];
+    const unreachable: string[] = [];
+    const seenDirs = new Set<string>();
+    for (const pid of ws.projectIds ?? []) {
+      const project = byId.get(pid);
+      if (!project?.path) continue;
+      const remote = originRemote(project.path);
+      if (!remote) {
+        unreachable.push(project.name);
+        continue;
+      }
+      // Directory names must be unique and path-safe: two projects called
+      // "api" in different orgs would otherwise check out over each other.
+      let dir = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'member';
+      let n = 2;
+      while (seenDirs.has(dir)) dir = `${dir}-${n++}`;
+      seenDirs.add(dir);
+      members.push({ name: project.name, dir, remote });
+    }
+    return { name: ws.name, members, unreachable };
+  }
+
+  function ciPlanFor(id: string, target: 'github' | 'jenkins') {
+    const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
+    if (!worker) return { ok: false as const, error: 'No such worker.' };
+    const store = Store.load();
+    const library = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) });
+    const share = buildWorkerShare({ worker, library });
+    const flows = worker.flowIds
+      .map((fid) => library.find((f) => f.id === fid))
+      .filter((f): f is NonNullable<typeof f> => Boolean(f));
+    return {
+      ok: true as const,
+      worker,
+      plan: buildCiDeploy({
+        worker,
+        flows,
+        target,
+        workerYaml: share.yaml,
+        missingFlowIds: share.missingFlowIds,
+        workspace: workspaceFor(worker.projectPath),
+      }),
+    };
+  }
+  ipcMain.handle('workers:ciDeploy', (_e, { id, target }) => {
+    const res = ciPlanFor(id, target);
+    if (!res.ok) return res;
+    return {
+      ok: true,
+      files: res.plan.files,
+      steps: res.plan.steps,
+      notes: res.plan.notes,
+      warnings: res.plan.warnings,
+      toolNotice: res.plan.toolNotice,
+      block: res.plan.block ?? null,
+      existing: existingOf(res.worker.projectPath, res.plan.files),
+      projectPath: res.worker.projectPath,
+    } as const;
+  });
+  ipcMain.handle('workers:ciDeployWrite', (_e, { id, target }) => {
+    const res = ciPlanFor(id, target);
+    if (!res.ok) return res;
+    if (!res.worker.projectPath) {
+      return { ok: false, error: 'This worker has no project to write into.' } as const;
+    }
+    // Enforced here as well as in the UI: the renderer disables the button,
+    // but the handler is what actually touches the disk.
+    if (res.plan.block) {
+      return { ok: false, error: res.plan.block.reason } as const;
+    }
+    const written: string[] = [];
+    // Every generated file says "Safe to edit" in its own header, so a
+    // second Preview → Write is a real hazard: it would silently clobber
+    // whatever the user changed since the first write. Reported rather than
+    // blocked — this dialog has no "cancel", and the files ARE regenerated
+    // from the worker on every write — but the caller needs to know which
+    // ones it just replaced.
+    const overwritten: string[] = [];
+    try {
+      for (const file of res.plan.files) {
+        const abs = path.join(res.worker.projectPath, file.path);
+        if (fs.existsSync(abs)) {
+          const prior = fs.readFileSync(abs, 'utf-8');
+          if (prior !== file.contents) overwritten.push(file.path);
+        }
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, file.contents, 'utf-8');
+        written.push(file.path);
+      }
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      } as const;
+    }
+    return { ok: true, written, overwritten } as const;
+  });
+  // The flow twin of workers:ciDeploy. Simpler because a flow has no cadence,
+  // trust, journal or budget — see buildFlowCiDeploy.
+  function flowCiPlanFor(
+    flowId: string,
+    target: 'github' | 'jenkins',
+    prompt?: string,
+    /// Project path OR workspace root the job should cover.
+    scope = '',
+  ) {
+    const store = Store.load();
+    const flow = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }).find(
+      (f) => f.id === flowId,
+    );
+    if (!flow) return { ok: false as const, error: `Flow "${flowId}" not found.` };
+    return {
+      ok: true as const,
+      plan: buildFlowCiDeploy({
+        flow,
+        target,
+        flowYaml: serializeFlow(flow),
+        prompt,
+        // The chosen target may be a workspace rather than a project — a flow
+        // that reads across sixteen repos is exactly the shape a runner suits.
+        workspace: workspaceFor(scope),
+      }),
+    };
+  }
+  ipcMain.handle('flows:ciDeploy', (_e, { flowId, target, projectPath, prompt }) => {
+    const res = flowCiPlanFor(flowId, target, prompt, projectPath);
+    if (!res.ok) return res;
+    return {
+      ok: true,
+      files: res.plan.files,
+      steps: res.plan.steps,
+      notes: res.plan.notes,
+      warnings: res.plan.warnings,
+      toolNotice: res.plan.toolNotice,
+      block: res.plan.block ?? null,
+      existing: existingOf(projectPath, res.plan.files),
+    } as const;
+  });
+  ipcMain.handle('flows:ciDeployWrite', (_e, { flowId, target, projectPath, prompt }) => {
+    const res = flowCiPlanFor(flowId, target, prompt, projectPath);
+    if (!res.ok) return res;
+    if (!projectPath) return { ok: false, error: 'No project to write into.' } as const;
+    // A workspace root is not a repository — enforced here as well as in the
+    // UI, because this handler is what touches the disk.
+    if (res.plan.block) return { ok: false, error: res.plan.block.reason } as const;
+    const written: string[] = [];
+    const overwritten: string[] = [];
+    try {
+      for (const file of res.plan.files) {
+        const abs = path.join(projectPath, file.path);
+        if (fs.existsSync(abs) && fs.readFileSync(abs, 'utf-8') !== file.contents) {
+          overwritten.push(file.path);
+        }
+        fs.mkdirSync(path.dirname(abs), { recursive: true });
+        fs.writeFileSync(abs, file.contents, 'utf-8');
+        written.push(file.path);
+      }
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+    }
+    return { ok: true, written, overwritten } as const;
+  });
+  ipcMain.handle('ci:saveFile', async (_e, { defaultName, contents }) => {
+    if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: `Save ${defaultName}`,
+      defaultPath: defaultName,
+    });
+    if (res.canceled || !res.filePath) return { ok: true, filePath: null } as const;
+    try {
+      fs.writeFileSync(res.filePath, contents, 'utf-8');
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
     }
     return { ok: true, filePath: res.filePath } as const;
   });

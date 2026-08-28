@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 
 import type { RecentPrompt } from '../../shared/flows/orchestration';
@@ -20,7 +20,7 @@ import type { RecentPrompt } from '../../shared/flows/orchestration';
 const MAX_RECENT = 30;
 
 function filePath(): string {
-  return path.join(app.getPath('userData'), 'orchestrator-recent-prompts.json');
+  return path.join(host().dataDir(), 'orchestrator-recent-prompts.json');
 }
 
 let cache: RecentPrompt[] | null = null;

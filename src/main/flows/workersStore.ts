@@ -2,7 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 
@@ -10,7 +10,7 @@ import type { Worker } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
 
 function dir(): string {
-  return path.join(app.getPath('userData'), 'workers');
+  return path.join(host().dataDir(), 'workers');
 }
 
 function pathFor(id: string): string {

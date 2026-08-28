@@ -6,7 +6,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from './host';
 import { log } from './diagnostics';
 import {
   Project,
@@ -48,7 +48,7 @@ interface StoreState {
 }
 
 function storePath(): string {
-  return path.join(app.getPath('userData'), 'overcli.json');
+  return path.join(host().dataDir(), 'overcli.json');
 }
 
 function emptyState(): StoreState {
