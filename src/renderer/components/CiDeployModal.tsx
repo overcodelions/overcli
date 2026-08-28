@@ -88,6 +88,8 @@ export function CiDeployModal({
   onClose: () => void;
 }) {
   const [activeFile, setActiveFile] = useState(0);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [savedTo, setSavedTo] = useState<string | null>(null);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -188,6 +190,10 @@ export function CiDeployModal({
                 </Step>
 
                 <Step n={3} title="Write them into the project" state={stepState(3)}>
+                  <p className="mb-2 text-[11px] leading-[1.5] text-ink-faint">
+                    Or copy them from the file pane — a workspace flow, or a Jenkins job set up
+                    outside a repo, has no single project to write into.
+                  </p>
                   <button
                     onClick={onWrite}
                     disabled={plan === null || busy || !canPreview}
@@ -283,10 +289,49 @@ export function CiDeployModal({
 
                 <div className="flex items-center gap-2 px-4 py-1.5 border-b border-card shrink-0">
                   <span className="font-mono text-[10px] text-ink-faint truncate">{file?.path}</span>
-                  <span className="ml-auto shrink-0 text-[10px] text-ink-faint tabular-nums">
+                  <span className="shrink-0 text-[10px] text-ink-faint tabular-nums">
                     {lines.length} lines
                   </span>
+                  {/* Writing into the project is one exit, not the only one. A
+                      workspace flow spans several repos and belongs to none of
+                      them, and a Jenkins job is often configured outside a
+                      repository entirely — those cases need the bytes, not a
+                      path. */}
+                  <div className="ml-auto flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => {
+                        if (!file) return;
+                        void navigator.clipboard.writeText(file.contents);
+                        setCopied(file.path);
+                        window.setTimeout(() => setCopied(null), 1500);
+                      }}
+                      className="rounded px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink hover:bg-card focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                    >
+                      {copied === file?.path ? 'Copied' : 'Copy'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!file) return;
+                        void window.overcli
+                          .invoke('ci:saveFile', {
+                            defaultName: file.path.split('/').pop() ?? 'overcli-ci',
+                            contents: file.contents,
+                          })
+                          .then((res) => {
+                            if (res.ok && res.filePath) setSavedTo(res.filePath);
+                          });
+                      }}
+                      className="rounded px-1.5 py-0.5 text-[10px] text-ink-faint hover:text-ink hover:bg-card focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                    >
+                      Save as…
+                    </button>
+                  </div>
                 </div>
+                {savedTo && (
+                  <div className="px-4 py-1 text-[10px] text-ink-faint truncate border-b border-card shrink-0">
+                    Saved to {savedTo}
+                  </div>
+                )}
 
                 {/* Line numbers because this is a file you are reviewing before
                     it lands, and that is the shape reviewing takes. They also

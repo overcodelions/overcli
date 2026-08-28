@@ -2281,6 +2281,16 @@ export interface IPCInvokeMap {
   /// The same document, written wherever the user points the save dialog.
   /// `filePath: null` means they dismissed it — a cancel is not an error.
   'workers:shareToFile': (args: { id: UUID }) => { ok: true; filePath: string | null } | { ok: false; error: string };
+  /// Save one generated file wherever the user points, instead of writing it
+  /// into a project.
+  ///
+  /// The escape hatch for the cases where "write it into the project" has no
+  /// answer: a workspace flow spans several repos and belongs to none of them,
+  /// and a Jenkins job is often configured outside a repository entirely.
+  /// `filePath: null` means they dismissed the dialog, which is not an error.
+  'ci:saveFile': (args: { defaultName: string; contents: string }) =>
+    | { ok: true; filePath: string | null }
+    | { ok: false; error: string };
   /// The worker as a CI job: the share bundle plus a generated GitHub Actions
   /// workflow or Jenkinsfile. Preview only — nothing is written.
   'workers:ciDeploy': (args: { id: UUID; target: CiTarget }) =>

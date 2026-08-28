@@ -1860,6 +1860,20 @@ export function registerIpc(): void {
     }
     return { ok: true, written, overwritten } as const;
   });
+  ipcMain.handle('ci:saveFile', async (_e, { defaultName, contents }) => {
+    if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
+    const res = await dialog.showSaveDialog(mainWindow, {
+      title: `Save ${defaultName}`,
+      defaultPath: defaultName,
+    });
+    if (res.canceled || !res.filePath) return { ok: true, filePath: null } as const;
+    try {
+      fs.writeFileSync(res.filePath, contents, 'utf-8');
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) } as const;
+    }
+    return { ok: true, filePath: res.filePath } as const;
+  });
   ipcMain.handle('workers:import', (_e, { yaml }) => receiveWorkerYaml(yaml));
   ipcMain.handle('workers:importFromFile', async () => {
     if (!mainWindow) return { ok: false, error: 'No window to open a dialog from.' } as const;
