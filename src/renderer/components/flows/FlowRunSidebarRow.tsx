@@ -19,6 +19,7 @@ import {
   flowRunTitle as runTitle,
   isWorkerRun,
 } from '@shared/flows/schema';
+import { isSamePath } from '@shared/pathScope';
 import { deleteFlowRunWithDirtyGuard } from './deleteRun';
 import { FlowMonogram } from './FlowMonogram';
 import { SidebarMarker } from '../SidebarMarker';
@@ -291,9 +292,13 @@ export function resolveOwner(
   projects: { id: string; name: string; path: string }[],
   workspaces: { id: string; name: string; rootPath: string }[],
 ): { kind: 'project' | 'workspace' | 'unknown'; name: string; id: string | null } {
-  const ws = workspaces.find((w) => w.rootPath === projectPath);
+  // `isSamePath`, not `===`: a run persisted before the app declared its
+  // productName holds `…/Application Support/overcli/workspaces/<id>` where
+  // the store now holds `…/Overcli/…`. A strict compare called every one of
+  // those workspaces unknown, and the lane printed the bare uuid.
+  const ws = workspaces.find((w) => isSamePath(w.rootPath, projectPath));
   if (ws) return { kind: 'workspace', name: ws.name, id: ws.id };
-  const p = projects.find((p) => p.path === projectPath);
+  const p = projects.find((p) => isSamePath(p.path, projectPath));
   if (p) return { kind: 'project', name: p.name, id: p.id };
   // Last resort: basename of the path so the row isn't blank.
   const tail = projectPath.split('/').filter(Boolean).pop() ?? projectPath;

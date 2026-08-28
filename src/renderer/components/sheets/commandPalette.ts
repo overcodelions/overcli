@@ -18,6 +18,7 @@ import type { Flow, FlowRun } from '@shared/flows/schema';
 import { describeCadence } from '@shared/flows/worker';
 import type { Worker } from '@shared/flows/worker';
 import { flowRunActivityAt, flowRunOwnerPath, flowRunTitle, isSelectableFlow } from '@shared/flows/schema';
+import { isSamePath } from '@shared/pathScope';
 import { conversationPromptAt } from '../../conversationLookup';
 
 export type PaletteKind =
@@ -187,9 +188,9 @@ export function buildPaletteItems(input: PaletteBuildInput): PaletteItem[] {
   }
 
   const ownerNameFor = (path: string): string => {
-    const ws = input.workspaces.find((w) => w.rootPath === path);
+    const ws = input.workspaces.find((w) => isSamePath(w.rootPath, path));
     if (ws) return `workspace · ${ws.name}`;
-    const project = input.projects.find((p) => p.path === path);
+    const project = input.projects.find((p) => isSamePath(p.path, path));
     if (project) return project.name;
     return path.split('/').filter(Boolean).pop() ?? path;
   };
