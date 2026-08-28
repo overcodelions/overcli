@@ -9,6 +9,7 @@
 // a real (hidden) Conversation so the existing runner/reviewer/stream UI just
 // works.
 
+import { isSamePath } from '../pathScope';
 import type { Backend, ModelUsage, PermissionMode, PersonaKey, UUID } from '../types';
 
 /// Built-in role presets surface as a friendly picker in the builder UI and
@@ -617,6 +618,25 @@ function shortenPromptTitle(line: string): string {
 /// otherwise worktree runs vanish from their workspace's Flows list.
 export function flowRunOwnerPath(run: FlowRun): string {
   return run.sourceProjectPath ?? run.projectPath;
+}
+
+/// Does `path` name the project/workspace that owns `run`? The one way to
+/// ask — every sidebar section, count and search filter goes through here.
+///
+/// `isSamePath`, never `===`. A run's owner path was written when the run
+/// was created, possibly months ago, while `path` comes from the store as it
+/// stands now, and the two spellings have drifted: runs made before the app
+/// declared its `productName` hold `…/Application Support/overcli/workspaces/<id>`
+/// where the workspace record now holds `…/Overcli/…`. One directory on a
+/// case-insensitive volume, two strings.
+///
+/// Strict compares here failed silently and asymmetrically, which is what
+/// made the bug so odd to look at: `resolveOwner` already case-folded, so a
+/// run's row in "Working on" printed "workspace · unifyr" correctly — while
+/// the unifyr group itself, filtering with `===`, showed no Flows section at
+/// all. The run named a workspace that appeared not to contain it.
+export function flowRunIsOwnedBy(run: FlowRun, path: string): boolean {
+  return isSamePath(flowRunOwnerPath(run), path);
 }
 
 /// True when a Worker's shift or errand launched this run rather than the

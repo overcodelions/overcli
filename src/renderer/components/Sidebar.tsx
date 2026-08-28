@@ -1,11 +1,10 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { noBackendReady, useStore } from '../store';
 import { useRunningMap, useRunnerCompletedAt, useRunnerIsRunning } from '../runnersStore';
 import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from '@shared/types';
-import { flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
+import { flowRunIsOwnedBy, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
 import { isEverydayProject } from '@shared/everydayProjects';
-import { isSamePath } from '@shared/pathScope';
 import { backendColor } from '../theme';
 import { selectActiveEntries } from '../activeSection';
 import { conversationActivityAt } from '../conversationLookup';
@@ -202,18 +201,24 @@ export function Sidebar() {
   const query = search.trim().toLowerCase();
   const projectsById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
 
-  // Owner paths (project repo path / workspace root) that have at least
-  // one flow run matching the search. Lets a project/workspace surface in
-  // results purely because one of its flow runs matches, even when its
-  // name and conversations don't.
-  const flowMatchPaths = useMemo(() => {
-    const set = new Set<string>();
-    if (!query) return set;
-    for (const run of Object.values(flowRuns)) {
-      if (flowRunMatchesQuery(run, query)) set.add(flowRunOwnerPath(run));
-    }
-    return set;
-  }, [flowRuns, query]);
+  // The flow runs matching the search, so a project/workspace can surface in
+  // results purely because one of its runs matches, even when its own name
+  // and conversations don't.
+  //
+  // A list scanned with `flowRunIsOwnedBy`, not a Set of owner paths: a Set
+  // lookup is a strict string compare by definition, and a run's stored owner
+  // path can be spelled differently from the one the store holds now. Keyed
+  // by path, those runs matched the query but hung off a key no group asked
+  // for, so their workspace stayed hidden while the search was open.
+  const flowMatches = useMemo(
+    () =>
+      query ? Object.values(flowRuns).filter((run) => flowRunMatchesQuery(run, query)) : [],
+    [flowRuns, query],
+  );
+  const hasFlowMatch = useCallback(
+    (path: string) => flowMatches.some((run) => flowRunIsOwnedBy(run, path)),
+    [flowMatches],
+  );
   // Collapse-all acts on whatever the sidebar is currently SHOWING. On the
   // Workers tab that is the roster, not the project tree — the button used to
   // fold groups nobody could see, so it read as broken.
@@ -270,9 +275,9 @@ export function Sidebar() {
         (p) =>
           p.name.toLowerCase().includes(query) ||
           p.conversations.length > 0 ||
-          flowMatchPaths.has(p.path),
+          hasFlowMatch(p.path),
       );
-  }, [projects, query, flowMatchPaths]);
+  }, [projects, query, hasFlowMatch]);
 
   const visibleWorkspaces = useMemo(() => {
     if (!query) return workspaces;
@@ -293,10 +298,10 @@ export function Sidebar() {
           w.name.toLowerCase().includes(query) ||
           memberMatch ||
           w.conversations.length > 0 ||
-          flowMatchPaths.has(w.rootPath)
+          hasFlowMatch(w.rootPath)
         );
       });
-  }, [projectsById, query, workspaces, flowMatchPaths]);
+  }, [projectsById, query, workspaces, hasFlowMatch]);
   const activeEntries = useMemo(
     () =>
       selectActiveEntries(
@@ -833,7 +838,7 @@ function hasProjectActivity(
   if (colosseums.some((c) => c.projectId === project.id)) return true;
   // A flow run is real activity even when the project has no visible
   // conversation of its own — keep such projects in the main list.
-  if (Object.values(flowRuns).some((r) => isSamePath(flowRunOwnerPath(r), project.path)))
+  if (Object.values(flowRuns).some((r) => flowRunIsOwnedBy(r, project.path)))
     return true;
   // A freshly picked project has no conversation yet — the welcome composer
   // creates one only on first send. Keep it out of the roll-up for a short
@@ -1022,7 +1027,7 @@ function ProjectGroup({
     () =>
       Object.values(flowRuns).filter(
         (r) =>
-          isSamePath(flowRunOwnerPath(r), project.path) &&
+          flowRunIsOwnedBy(r, project.path) &&
           r.state.kind !== 'running' &&
           r.state.kind !== 'paused' &&
           !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
@@ -1484,7 +1489,7 @@ function WorkspaceGroup({
     () =>
       Object.values(flowRuns).filter(
         (r) =>
-          flowRunOwnerPath(r) === workspace.rootPath &&
+          flowRunIsOwnedBy(r, workspace.rootPath) &&
           r.state.kind !== 'running' &&
           r.state.kind !== 'paused' &&
           !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),

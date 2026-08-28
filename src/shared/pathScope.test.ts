@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { isPathAtOrUnder, isPathUnder, isSamePath } from './pathScope';
+import {
+  canonicalizeUnderRoot,
+  isPathAtOrUnder,
+  isPathUnder,
+  isSamePath,
+} from './pathScope';
 
 const POSIX_ROOT = '/Users/bob/Documents/Overcli Projects/Brief';
 const WIN_ROOT = 'C:\\Users\\bob\\Documents\\Overcli Projects\\Brief';
@@ -74,18 +79,38 @@ describe('isPathAtOrUnder', () => {
   });
 });
 
+// The case-folding in `isSamePath` is off on Linux by design, and
+// `caseSensitiveFs()` reads `process.platform` at call time. Tests about the
+// fold therefore have to say which filesystem they mean: asserting the macOS
+// answer unpinned passed locally and went red the moment CI ran it on Ubuntu,
+// where the two spellings genuinely are two directories.
+function onPlatform<T>(value: string, body: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...original, value });
+  try {
+    return body();
+  } finally {
+    Object.defineProperty(process, 'platform', original);
+  }
+}
+
+const ID = '5f99d358-8e16-4acb-b5e4-6f63e763b392';
+const USERDATA = '/Users/bob/Library/Application Support/Overcli';
+const STORED = `${USERDATA}/workspaces/${ID}`;
+const ON_RUN = `/Users/bob/Library/Application Support/overcli/workspaces/${ID}`;
+
 describe('isSamePath', () => {
   // The case this exists for. A run persisted before the app declared a
   // productName spells its userData directory `overcli`; the workspace record
   // written since spells it `Overcli`. One directory, and a strict compare
   // reported the workspace as unknown — the sidebar lane lost its name and
   // printed the bare uuid instead.
-  const ID = '5f99d358-8e16-4acb-b5e4-6f63e763b392';
-  const STORED = `/Users/bob/Library/Application Support/Overcli/workspaces/${ID}`;
-  const ON_RUN = `/Users/bob/Library/Application Support/overcli/workspaces/${ID}`;
-
   it('matches the two spellings of the userData directory', () => {
-    expect(isSamePath(STORED, ON_RUN)).toBe(true);
+    expect(onPlatform('darwin', () => isSamePath(STORED, ON_RUN))).toBe(true);
+  });
+
+  it('keeps the two spellings apart on a case-sensitive filesystem', () => {
+    expect(onPlatform('linux', () => isSamePath(STORED, ON_RUN))).toBe(false);
   });
 
   it('still separates two genuinely different workspaces', () => {
@@ -101,5 +126,40 @@ describe('isSamePath', () => {
   it('is false for empty input rather than matching another empty', () => {
     expect(isSamePath('', '')).toBe(false);
     expect(isSamePath(POSIX_ROOT, '')).toBe(false);
+  });
+});
+
+describe('canonicalizeUnderRoot', () => {
+  it('rewrites a stale userData spelling to the current one', () => {
+    expect(onPlatform('darwin', () => canonicalizeUnderRoot(ON_RUN, USERDATA))).toBe(STORED);
+  });
+
+  it('leaves an already-canonical path exactly as it found it', () => {
+    expect(onPlatform('darwin', () => canonicalizeUnderRoot(STORED, USERDATA))).toBe(STORED);
+  });
+
+  it('tolerates a trailing separator on the root', () => {
+    expect(onPlatform('darwin', () => canonicalizeUnderRoot(ON_RUN, `${USERDATA}/`))).toBe(
+      STORED,
+    );
+  });
+
+  it('leaves a path outside the root alone', () => {
+    expect(onPlatform('darwin', () => canonicalizeUnderRoot(POSIX_ROOT, USERDATA))).toBe(
+      POSIX_ROOT,
+    );
+  });
+
+  // `…/Overcli-backup` starts with the root as a STRING but is a different
+  // directory. Rewriting it would silently repoint records at the live one.
+  it('does not match the root mid-segment', () => {
+    const sibling = `${USERDATA.toLowerCase()}-backup/workspaces/${ID}`;
+    expect(onPlatform('darwin', () => canonicalizeUnderRoot(sibling, USERDATA))).toBe(sibling);
+  });
+
+  // Two real directories on Linux — rewriting one to the other would point a
+  // run at a workspace root that does not exist.
+  it('is a no-op on a case-sensitive filesystem', () => {
+    expect(onPlatform('linux', () => canonicalizeUnderRoot(ON_RUN, USERDATA))).toBe(ON_RUN);
   });
 });

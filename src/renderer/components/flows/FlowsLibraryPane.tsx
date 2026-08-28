@@ -3,7 +3,7 @@
 // edit / delete; Run is wired in Phase 4 when the runtime can execute
 // the steps.
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useStore } from '../../store';
@@ -38,6 +38,7 @@ import { FlowRunPane } from './FlowRunPane';
 import { NewFlowPicker } from './NewFlowPicker';
 import { BrowseLibraryModal } from './BrowseLibraryModal';
 import { FlowMonogram } from './FlowMonogram';
+import { resolveOwner } from './FlowRunSidebarRow';
 import { FlowRunLauncher } from './FlowLaunch';
 import { FlowsAboutContent, FlowsAboutModal } from './FlowsAbout';
 import { SchedulesPane } from './SchedulesPane';
@@ -480,14 +481,16 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
     }
   }
 
-  // Resolve project / workspace display names for the run rows. Cheap
-  // map by path; falls back to the path basename if no match.
-  const nameForPath = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of projects) m.set(p.path, p.name);
-    for (const w of workspaces) m.set(w.rootPath, w.name);
-    return m;
-  }, [projects, workspaces]);
+  // Project / workspace display name for a run row. Shares `resolveOwner`
+  // with the sidebar rather than keeping a Map keyed by path: Map lookups are
+  // strict string compares, so a run whose stored owner path is spelled
+  // differently from the store's missed every key and printed a bare
+  // directory basename where the sidebar, one pane over, printed the
+  // workspace's name.
+  const ownerLabel = useCallback(
+    (run: FlowRun) => resolveOwner(flowRunOwnerPath(run), projects, workspaces).name,
+    [projects, workspaces],
+  );
 
   if (running.length === 0 && paused.length === 0 && recent.length === 0) {
     if (!standalone) return null;
@@ -506,7 +509,7 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
           <SectionHeading title="Running" count={running.length} accent />
           <div className="space-y-1.5 mb-4">
             {running.map((run) => (
-              <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
+              <RunRow key={run.id} run={run} projectLabel={ownerLabel(run)} />
             ))}
           </div>
         </>
@@ -516,7 +519,7 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
           <SectionHeading title="Needs you" count={needsYou.length} waiting />
           <div className="space-y-1.5 mb-4">
             {needsYou.map((run) => (
-              <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
+              <RunRow key={run.id} run={run} projectLabel={ownerLabel(run)} />
             ))}
           </div>
         </>
@@ -546,7 +549,7 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
           {showStalled && (
             <div className="space-y-1.5 mb-4">
               {stalled.map((run) => (
-                <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
+                <RunRow key={run.id} run={run} projectLabel={ownerLabel(run)} />
               ))}
             </div>
           )}
@@ -567,7 +570,7 @@ function RunsOverview({ standalone }: { standalone?: boolean } = {}) {
           {showRecent && (
             <div className="space-y-1.5 mb-4">
               {recent.slice(0, 15).map((run) => (
-                <RunRow key={run.id} run={run} projectLabel={nameForPath.get(flowRunOwnerPath(run))} />
+                <RunRow key={run.id} run={run} projectLabel={ownerLabel(run)} />
               ))}
             </div>
           )}

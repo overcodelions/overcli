@@ -168,3 +168,102 @@ describe('loadAllRuns', () => {
     expect(JSON.parse(fs.readFileSync(runPath('paused'), 'utf8')).state).toEqual(pausedState);
   });
 });
+
+describe('loadAllRuns path canonicalization', () => {
+  // `caseSensitiveFs()` reads `process.platform`, and the rewrite is a
+  // deliberate no-op on Linux where the two spellings are two directories.
+  // Pin it, or this asserts macOS behaviour and goes red on Ubuntu CI.
+  function onPlatform<T>(value: string, body: () => T): T {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...original, value });
+    try {
+      return body();
+    } finally {
+      Object.defineProperty(process, 'platform', original);
+    }
+  }
+
+  /// The same directory as `userDataDir`, spelled the way a run written
+  /// before the app declared its `productName` spelled it.
+  function staleDataDir(): string {
+    return path.join(path.dirname(userDataDir), path.basename(userDataDir).toUpperCase());
+  }
+
+  it('rewrites every stale userData path on a run, and persists the fix', async () => {
+    const stale = staleDataDir();
+    const wsRoot = path.join(stale, 'workspaces', 'ws-1');
+    fs.mkdirSync(runDir(), { recursive: true });
+    fs.writeFileSync(
+      runPath('run-1'),
+      JSON.stringify(
+        makeRun({
+          projectPath: path.join(stale, 'coordinators', 'run-1'),
+          sourceProjectPath: wsRoot,
+          worktreePath: path.join(stale, 'coordinators', 'run-1', 'repo'),
+          dismissedWorkspaceMemberPaths: [path.join(wsRoot, 'repo')],
+          workspaceWorktrees: [
+            {
+              name: 'repo',
+              projectPath: path.join(wsRoot, 'repo'),
+              worktreePath: path.join(stale, 'coordinators', 'run-1', 'repo'),
+              branchName: 'flow/run-1',
+            },
+          ],
+          baselineCommitsByMember: {
+            repo: { path: path.join(wsRoot, 'repo'), commit: 'abc123' },
+          },
+        }),
+      ),
+    );
+
+    const [run] = onPlatform('darwin', () => loadAllRuns());
+    await flushRuns();
+
+    const canonicalWs = path.join(userDataDir, 'workspaces', 'ws-1');
+    expect(run.sourceProjectPath).toBe(canonicalWs);
+    expect(run.projectPath).toBe(path.join(userDataDir, 'coordinators', 'run-1'));
+    expect(run.worktreePath).toBe(path.join(userDataDir, 'coordinators', 'run-1', 'repo'));
+    expect(run.dismissedWorkspaceMemberPaths).toEqual([path.join(canonicalWs, 'repo')]);
+    expect(run.workspaceWorktrees![0]).toMatchObject({
+      projectPath: path.join(canonicalWs, 'repo'),
+      worktreePath: path.join(userDataDir, 'coordinators', 'run-1', 'repo'),
+    });
+    expect(run.baselineCommitsByMember!.repo.path).toBe(path.join(canonicalWs, 'repo'));
+    // Written back, so the stale spelling is not carried forward and a second
+    // load has nothing to do.
+    const stored = JSON.parse(fs.readFileSync(runPath('run-1'), 'utf8')) as FlowRun;
+    expect(stored.sourceProjectPath).toBe(canonicalWs);
+  });
+
+  it('leaves a run whose paths are already canonical alone, without rewriting it', async () => {
+    const canonical = path.join(userDataDir, 'workspaces', 'ws-1');
+    fs.mkdirSync(runDir(), { recursive: true });
+    fs.writeFileSync(
+      runPath('run-1'),
+      JSON.stringify(makeRun({ projectPath: canonical })),
+    );
+    // Pinned well into the past so the "unchanged" assertion can't pass
+    // merely because a rewrite landed inside the same filesystem tick.
+    const before = new Date('2020-01-01T00:00:00Z');
+    fs.utimesSync(runPath('run-1'), before, before);
+
+    const [run] = onPlatform('darwin', () => loadAllRuns());
+    await flushRuns();
+
+    expect(run.projectPath).toBe(canonical);
+    expect(fs.statSync(runPath('run-1')).mtimeMs).toBe(before.getTime());
+  });
+
+  it('does not touch a project path that lives outside userData', async () => {
+    fs.mkdirSync(runDir(), { recursive: true });
+    fs.writeFileSync(
+      runPath('run-1'),
+      JSON.stringify(makeRun({ projectPath: '/Users/bob/git/overcli' })),
+    );
+
+    const [run] = onPlatform('darwin', () => loadAllRuns());
+    await flushRuns();
+
+    expect(run.projectPath).toBe('/Users/bob/git/overcli');
+  });
+});

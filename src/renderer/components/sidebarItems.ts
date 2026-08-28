@@ -8,9 +8,14 @@
 // in two renderers.
 
 import type { Colosseum, Conversation, Project, UUID, Workspace } from '@shared/types';
-import { flowRunActivityAt, flowRunOwnerPath, isWorkerRun, type FlowRun } from '@shared/flows/schema';
+import {
+  flowRunActivityAt,
+  flowRunIsOwnedBy,
+  flowRunOwnerPath,
+  isWorkerRun,
+  type FlowRun,
+} from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
-import { isSamePath } from '@shared/pathScope';
 
 import type { ActiveCandidate } from '../activeSection';
 import {
@@ -401,7 +406,7 @@ export function projectActivityAt(
 ): number {
   if (project.conversations.some((c) => runners[c.id]?.isRunning)) return now;
   const projectRuns = Object.values(flowRuns).filter(
-    (r) => isSamePath(flowRunOwnerPath(r), project.path),
+    (r) => flowRunIsOwnedBy(r, project.path),
   );
   // A live (running or paused) flow pins the project to the top, just like a
   // running conversation does.
@@ -433,7 +438,7 @@ export function workspaceActivityAt(
   const convs = workspace.conversations ?? [];
   if (convs.some((c) => runners[c.id]?.isRunning)) return now;
   const runs = Object.values(flowRuns).filter(
-    (r) => isSamePath(flowRunOwnerPath(r), workspace.rootPath),
+    (r) => flowRunIsOwnedBy(r, workspace.rootPath),
   );
   if (runs.some((r) => r.state.kind === 'running' || r.state.kind === 'paused')) return now;
   const newestConversation = convs.reduce(
