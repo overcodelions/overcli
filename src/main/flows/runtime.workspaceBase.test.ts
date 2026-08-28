@@ -8,9 +8,9 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => ({
-  app: { getPath: () => '/tmp/overcli-runtime-workspace-base-tests' },
-}));
+import { useTestHost } from '../testHost';
+
+useTestHost('/tmp/overcli-runtime-workspace-base-tests');
 
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => [],

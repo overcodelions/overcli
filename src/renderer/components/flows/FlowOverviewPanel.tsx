@@ -8,6 +8,7 @@ import { type Flow } from '@shared/flows/schema';
 import { flowSpineSummary } from './flowSpine';
 import { FlowPipelineDiagram } from './FlowPipelineDiagram';
 import { FlowRunLauncher } from './FlowLaunch';
+import { FlowDeployCard, type DeployScope } from './FlowDeployCard';
 
 export function FlowOverviewPanel({
   flow,
@@ -15,12 +16,17 @@ export function FlowOverviewPanel({
   onClose,
   onEdit,
   onTagClick,
+  projects = [],
 }: {
   flow: Flow;
   usage?: { count: number; lastAt: number };
   onClose: () => void;
   onEdit: () => void;
   onTagClick?: (tag: string) => void;
+  /// Where a deploy could run — projects and workspaces both. Empty (the
+  /// default) hides the deploy card rather than offering a button with nowhere
+  /// to put its output.
+  projects?: DeployScope[];
 }) {
   const [running, setRunning] = useState(false);
 
@@ -101,6 +107,7 @@ export function FlowOverviewPanel({
       <div className="text-[11px] text-ink-faint">
         {usage ? `Run ${usage.count} time${usage.count === 1 ? '' : 's'}` : 'Never run'}
       </div>
+      {projects.length > 0 && <FlowDeployCard flow={flow} projects={projects} />}
     </aside>
   );
 }

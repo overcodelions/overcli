@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 
 import type { WorkerJournalEntry } from '../../shared/flows/worker';
@@ -20,7 +20,7 @@ const COMPACT_BYTES = 1024 * 1024;
 
 function filePath(): string {
   try {
-    return path.join(app.getPath('userData'), 'worker-journal.jsonl');
+    return path.join(host().dataDir(), 'worker-journal.jsonl');
   } catch {
     return path.join(process.cwd(), '.overcli-test-worker-journal.jsonl');
   }

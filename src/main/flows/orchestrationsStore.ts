@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
 
@@ -26,7 +26,7 @@ const MAX_RETAINED_ORCHESTRATIONS = 600;
 let lastPruneAt = 0;
 
 function dir(): string {
-  return path.join(app.getPath('userData'), 'orchestrations');
+  return path.join(host().dataDir(), 'orchestrations');
 }
 
 function pathFor(id: string): string {

@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { app } from 'electron';
+import { host } from './host';
 import {
   Backend,
   BackendQuota,
@@ -967,7 +967,7 @@ function overcliStorePath(): string | null {
   try {
     // During tests / CLI runs app may be unavailable; fall back to the
     // default macOS userData location so the stats CLI harness still works.
-    return path.join(app.getPath('userData'), 'overcli.json');
+    return path.join(host().dataDir(), 'overcli.json');
   } catch {
     const home = os.homedir();
     if (process.platform === 'darwin') {

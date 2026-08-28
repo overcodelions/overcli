@@ -19,11 +19,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useTestHost } from './testHost';
+
 let userDataDir: string;
 
-vi.mock('electron', () => ({
-  app: { getPath: () => userDataDir },
-}));
+useTestHost(() => userDataDir);
 
 /// The store module holds its debounce timer in module scope, so every
 /// `loadStore()` produces a fresh, independently-armed instance. Tests that

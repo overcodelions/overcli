@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-import { app } from 'electron';
+import { host } from './host';
 import { QuotaWindow } from '../shared/types';
 import { logSilent } from './diagnostics';
 import { backendNeedsShell, buildBackendEnv, resolveBackendPath } from './backendPaths';
@@ -86,7 +86,7 @@ export function parseClaudeUsage(text: string, capturedAt: number): ClaudeUsageS
 
 function cachePath(): string | null {
   try {
-    return path.join(app.getPath('userData'), 'claude-usage.json');
+    return path.join(host().dataDir(), 'claude-usage.json');
   } catch {
     // No Electron app — a test or the stats CLI harness.
     return null;

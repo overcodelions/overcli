@@ -7,8 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useTestHost } from './testHost';
+
 let userDataDir: string;
-vi.mock('electron', () => ({ app: { getPath: () => userDataDir } }));
+useTestHost(() => userDataDir);
 
 import {
   MAX_ENTRIES,
