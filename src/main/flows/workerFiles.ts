@@ -21,7 +21,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 import { WORKER_ARCHIVE_DIR } from '../../shared/flows/workerCompaction';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
@@ -60,7 +60,7 @@ export interface WorkerFileEntry {
 
 function workersRoot(): string {
   try {
-    return path.join(app.getPath('userData'), 'worker-files');
+    return path.join(host().dataDir(), 'worker-files');
   } catch {
     return path.join(process.cwd(), '.overcli-test-worker-files');
   }

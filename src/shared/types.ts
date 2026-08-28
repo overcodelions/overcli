@@ -22,6 +22,7 @@ import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 // Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
 import type { FlowModelDefaults } from './modelCatalog';
+import type { CiDeployBlock, CiDeployFile, CiTarget } from './flows/ciDeploy';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -1789,6 +1790,35 @@ export interface IPCInvokeMap {
     yaml: string;
     id?: string;
   }) => { ok: true; flow: Flow } | { ok: false; errors: Array<{ path: string; message: string }> };
+  /// A flow as a CI job: the flow YAML plus a generated GitHub Actions
+  /// workflow or Jenkinsfile. Preview only — nothing is written.
+  'flows:ciDeploy': (args: {
+    flowId: string;
+    target: CiTarget;
+    projectPath: string;
+    prompt?: string;
+  }) =>
+    | {
+        ok: true;
+        files: CiDeployFile[];
+        steps: string[];
+        notes: string[];
+        warnings: string[];
+        toolNotice: string;
+        block: CiDeployBlock | null;
+        existing: string[];
+      }
+    | { ok: false; error: string };
+  /// The same files, written into the project. `overwritten` names the ones
+  /// that already existed with different contents.
+  'flows:ciDeployWrite': (args: {
+    flowId: string;
+    target: CiTarget;
+    projectPath: string;
+    prompt?: string;
+  }) =>
+    | { ok: true; written: string[]; overwritten: string[] }
+    | { ok: false; error: string };
   'flows:toolCatalog': (args: { backend: Backend }) => FlowToolDescriptor[];
   /// Bundled-with-the-app curated templates shown in the "+ New flow"
   /// picker. Not part of the user/project library — these are immutable
@@ -2260,6 +2290,41 @@ export interface IPCInvokeMap {
   /// The same document, written wherever the user points the save dialog.
   /// `filePath: null` means they dismissed it — a cancel is not an error.
   'workers:shareToFile': (args: { id: UUID }) => { ok: true; filePath: string | null } | { ok: false; error: string };
+  /// Save one generated file wherever the user points, instead of writing it
+  /// into a project.
+  ///
+  /// The escape hatch for the cases where "write it into the project" has no
+  /// answer: a workspace flow spans several repos and belongs to none of them,
+  /// and a Jenkins job is often configured outside a repository entirely.
+  /// `filePath: null` means they dismissed the dialog, which is not an error.
+  'ci:saveFile': (args: { defaultName: string; contents: string }) =>
+    | { ok: true; filePath: string | null }
+    | { ok: false; error: string };
+  /// The worker as a CI job: the share bundle plus a generated GitHub Actions
+  /// workflow or Jenkinsfile. Preview only — nothing is written.
+  'workers:ciDeploy': (args: { id: UUID; target: CiTarget }) =>
+    | {
+        ok: true;
+        files: CiDeployFile[];
+        steps: string[];
+        notes: string[];
+        warnings: string[];
+        /// Standing context about the feature, identical on every plan.
+        toolNotice: string;
+        /// Set when there is no correct project to write into — a workspace
+        /// worker. The write handler refuses too.
+        block: CiDeployBlock | null;
+        existing: string[];
+        projectPath: string;
+      }
+    | { ok: false; error: string };
+  /// The same files, written into the worker's project. Returns the paths
+  /// written, plus which of them already existed with different content —
+  /// every generated file invites hand-editing, so a second write can
+  /// silently clobber one.
+  'workers:ciDeployWrite': (args: { id: UUID; target: CiTarget }) =>
+    | { ok: true; written: string[]; overwritten: string[] }
+    | { ok: false; error: string };
   /// Read a share file: installs any flows the library is missing (never
   /// overwriting one it already has) and returns the worker to open in the
   /// hire editor. Hiring is still the user's click — this only prepares it.

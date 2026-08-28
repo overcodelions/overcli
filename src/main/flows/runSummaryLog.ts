@@ -14,7 +14,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 import { log } from '../diagnostics';
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -40,7 +40,7 @@ const COMPACT_RATIO = 2;
 
 function filePath(): string {
   try {
-    return path.join(app.getPath('userData'), 'flow-run-summaries.jsonl');
+    return path.join(host().dataDir(), 'flow-run-summaries.jsonl');
   } catch {
     // Tests / CLI runs without Electron's `app`. Returning a path the
     // process can't write to is fine — the append wraps in try/catch.

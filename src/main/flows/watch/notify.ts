@@ -1,20 +1,14 @@
-// Native desktop notification for watch events. A native OS notification is
-// the right surface here: the whole point of watching is that the user is
-// AFK, so an in-app toast they're not looking at is useless — but a system
-// notification reaches them on the desktop. Best-effort: if the platform
-// can't show one, we log and move on rather than failing the tick.
+// Telling the user a watch tick found something. The whole point of watching
+// is that they are AFK, so this has to leave the app — a desktop notification
+// under Electron, a stderr line under `overcli serve`. Which one is the host's
+// business, not this file's; see src/main/host.ts.
+//
+// Best-effort by construction: the host's `notify` swallows its own failures,
+// because a Linux box with no notification daemon must not take the watch
+// loop down with it.
 
-import { Notification } from 'electron';
-import { log } from '../../diagnostics';
+import { host } from '../../host';
 
 export function notifyWatch(title: string, body: string): void {
-  try {
-    if (!Notification.isSupported()) {
-      log('info', 'flows.watch.notify', `(unsupported) ${title}: ${body}`);
-      return;
-    }
-    new Notification({ title, body, silent: false }).show();
-  } catch (err) {
-    log('warn', 'flows.watch.notify', 'failed to show watch notification', err);
-  }
+  host().notify({ title, body });
 }

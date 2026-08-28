@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from '../host';
 
 import { Store } from '../store';
 import { isLocalRegistry } from '../../shared/types';
@@ -15,13 +15,13 @@ import { readLocalEntry, scanLocalRegistry, sha256Of } from './localRegistry';
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
 function cacheDir(): string {
-  return path.join(app.getPath('userData'), 'flows-registry-cache');
+  return path.join(host().dataDir(), 'flows-registry-cache');
 }
 function cacheFile(registryId: string): string {
   return path.join(cacheDir(), `${registryId}.json`);
 }
 function userFlowsDir(): string {
-  return path.join(app.getPath('userData'), 'flows');
+  return path.join(host().dataDir(), 'flows');
 }
 
 interface RawIndex {

@@ -7,7 +7,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from './host';
 import { workspaceSymlinkNames } from '../shared/workspaceNames';
 
 interface ProjectRef {
@@ -53,7 +53,7 @@ const ID_RE = /^[A-Za-z0-9_-]+$/;
 
 export function workspaceRootPath(workspaceId: string): string {
   if (!ID_RE.test(workspaceId)) throw new Error('Invalid workspace id');
-  return path.join(app.getPath('userData'), 'workspaces', workspaceId);
+  return path.join(host().dataDir(), 'workspaces', workspaceId);
 }
 
 export function ensureWorkspaceSymlinkRoot(
@@ -134,7 +134,7 @@ export function removeWorkspaceSymlinkRoot(
 
 export function coordinatorRootPath(coordinatorId: string): string {
   if (!ID_RE.test(coordinatorId)) throw new Error('Invalid coordinator id');
-  return path.join(app.getPath('userData'), 'coordinators', coordinatorId);
+  return path.join(host().dataDir(), 'coordinators', coordinatorId);
 }
 
 /// Files an agent wrote at a synthetic root — the loose output a run left
@@ -226,7 +226,7 @@ export function isSyntheticRootPath(candidate: string): boolean {
   if (!candidate) return false;
   let userData: string;
   try {
-    userData = app.getPath('userData');
+    userData = host().dataDir();
   } catch {
     return false;
   }

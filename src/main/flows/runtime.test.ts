@@ -6,6 +6,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { useTestHost } from '../testHost';
 import type { FlowRun } from '../../shared/flows/schema';
 
 // Only the one integration-style suite below (`FlowRuntimeImpl — diff
@@ -26,7 +28,7 @@ const syncGitCalls = vi.hoisted(() => ({ n: 0 }));
 // resolves its root through `app.getPath('userData')`. No suite in this file
 // evicted anything before the prune suite below, which is why this mock
 // wasn't needed until now. Pattern from `runtime.localCheckout.test.ts`.
-vi.mock('electron', () => ({ app: { getPath: () => '/tmp/overcli-flow-runtime-tests' } }));
+useTestHost('/tmp/overcli-flow-runtime-tests');
 
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => seeded.runs,

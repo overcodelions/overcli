@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { log } from './diagnostics';
+import { runningUnderElectron } from './host';
 import {
   Backend,
   PermissionMode,
@@ -1514,17 +1515,24 @@ export class RunnerManager {
       existing.cwd === args.cwd;
     if (paramsMatch && this.claudeMcpByConv.has(convId)) return;
     const helperScript = path.join(__dirname, 'claudePermissionHelper.js');
-    // Claude spawns this helper itself (via the mcp-config `command`). We
-    // hand it our own binary + ELECTRON_RUN_AS_NODE=1 so it runs the helper
-    // script headlessly as Node. This REQUIRES the `runAsNode` electron fuse
-    // to stay enabled in package.json (build.electronFuses): with the fuse
-    // off, packaged binaries ignore ELECTRON_RUN_AS_NODE and boot a full
-    // Overcli GUI instance on every turn instead. Do not disable that fuse.
+    // Claude spawns this helper itself (via the mcp-config `command`). We hand
+    // it our own binary so the helper runs as Node.
+    //
+    // Under Electron `process.execPath` is the Overcli binary, so it needs
+    // ELECTRON_RUN_AS_NODE=1 to boot as plain Node rather than as a second GUI
+    // instance. That REQUIRES the `runAsNode` electron fuse to stay enabled in
+    // package.json (build.electronFuses): with the fuse off, packaged binaries
+    // ignore the variable and launch a full Overcli window on every turn. Do
+    // not disable that fuse.
+    //
+    // Headless (`overcli run`) `process.execPath` is already node, and setting
+    // the variable there is at best inert and at worst confusing to anything
+    // downstream that reads it as "we are inside Electron".
     const { configPath } = await this.claudeBroker.registerSession(
       convId,
       helperScript,
       process.execPath,
-      { ELECTRON_RUN_AS_NODE: '1' },
+      runningUnderElectron() ? { ELECTRON_RUN_AS_NODE: '1' } : {},
     );
     this.claudeMcpByConv.set(convId, configPath);
   }

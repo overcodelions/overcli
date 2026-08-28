@@ -1697,6 +1697,19 @@ function WorkerSettings({
       <div className="min-w-0 space-y-4 lg:col-start-2 lg:row-start-2 lg:self-start">
         <TrustLadder worker={worker} />
         <ShareCard worker={worker} />
+        {/* Deploy to CI is hidden for workers while it settles — see
+            ./WorkerDeployCard.tsx, which is intact and still type-checked, and
+            src/shared/flows/ciDeploy.ts, which still generates and tests the
+            worker job. Restore by importing WorkerDeployCard and rendering it
+            here.
+
+            Flows deploy cleanly because a flow is stateless: check out, run,
+            upload, exit. A worker's value is its journal, and a journal is a
+            hard thing to keep on a disposable runner — GitHub evicts an unused
+            cache after 7 days, so a weekly worker starts from shift 1 every
+            time however carefully the key is written. That is a real design
+            question, not a bug to fix, and it should be answered before this
+            is offered rather than after. */}
       </div>
     </div>
   );

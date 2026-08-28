@@ -2292,3 +2292,22 @@ export function rescueMainTree(args: {
   }
   return { ok: true, message: `Moved dirty files into worktree ${args.worktreePath}` };
 }
+
+/// The `origin` remote URL for a repository, or null when there isn't one.
+///
+/// Used to turn an Overcli workspace into checkout steps: the app reaches its
+/// members through absolute local paths, which mean nothing on a CI runner, so
+/// the remote is the only part of a member project that travels.
+export function originRemote(cwd: string): string | null {
+  try {
+    const out = spawnSync('git', ['-C', cwd, 'remote', 'get-url', 'origin'], {
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+    if (out.status !== 0) return null;
+    const url = out.stdout.trim();
+    return url || null;
+  } catch {
+    return null;
+  }
+}

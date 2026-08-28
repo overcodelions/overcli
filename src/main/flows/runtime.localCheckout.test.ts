@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useTestHost } from '../testHost';
+
 import type { FlowRun } from '../../shared/flows/schema';
 import type { AppSettings } from '../../shared/types';
 
@@ -14,7 +16,7 @@ const mocks = vi.hoisted(() => ({
   saveRun: vi.fn(),
 }));
 
-vi.mock('electron', () => ({ app: { getPath: () => '/tmp/overcli-flow-local-tests' } }));
+useTestHost('/tmp/overcli-flow-local-tests');
 
 vi.mock('./runsStore', () => ({
   loadAllRuns: () => mocks.restoredRuns,

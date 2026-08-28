@@ -3,6 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useTestHost } from '../testHost';
+
 import { deleteFlow, saveFlow, validateFlowYaml } from './storage';
 import { parseFlowYaml } from '../../shared/flows/yaml';
 
@@ -14,9 +16,7 @@ const { mockGetPath, mockSaveSettings } = vi.hoisted(() => ({
   mockSaveSettings: vi.fn(),
 }));
 
-vi.mock('electron', () => ({
-  app: { getPath: mockGetPath },
-}));
+useTestHost(mockGetPath);
 
 vi.mock('../store', () => ({
   Store: {

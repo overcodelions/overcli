@@ -110,3 +110,54 @@ jobs:
           draft: true
           generate_release_notes: true
           files: artifacts/*
+
+  npm:
+    name: Publish CLI to npm
+    # Independent of the desktop build: the CLI is `dist/cli` + `dist/main` +
+    # `dist/shared` and needs no electron packaging. Keeping it off `needs:`
+    # means a signing failure on one OS does not also hold back the CLI.
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # publish to GitHub Packages
+      id-token: write        # provenance, same OIDC trust as the release job
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 20
+          cache: npm
+          # GitHub Packages while the CLI is private. Going public later means
+          # this line, publishConfig in package.json, and the auth lines in the
+          # generated pipelines — CI_CLI_REGISTRY in src/shared/flows/ciDeploy.ts.
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@overcodelions'
+
+      - run: npm ci
+
+      # `prepublishOnly` also builds, but doing it here means a broken build
+      # fails on its own step rather than inside publish.
+      - name: Compile the CLI
+        run: npm run build:main
+
+      - name: Check the tarball is only the CLI
+        run: |
+          npm pack --dry-run 2>&1 | tee /tmp/pack.txt
+          if grep -qE 'npm notice.*(src/|\.test\.js)' /tmp/pack.txt; then
+            echo "::error::Tarball contains source or tests — check the `files` allowlist in package.json"
+            exit 1
+          fi
+
+      - name: Publish
+        # Always the `alpha` dist-tag, never `latest`, so `npm i -g overcli`
+        # cannot pick up a CLI whose deploy surface is still flagged Alpha in
+        # the app. The generated pipelines install `overcli@alpha` to match —
+        # see CI_CLI_TAG in src/shared/flows/ciDeploy.ts. Flip both together
+        # when it graduates.
+        # `--access restricted` while it is private; publishConfig says the
+        # same thing, and both move together when it goes public. No NPM_TOKEN
+        # secret needed — GITHUB_TOKEN can write packages in this org.
+        run: npm publish --tag alpha --access restricted
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -23,7 +23,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
+import { host } from './host';
 import { Backend, DailyBackendBucket, DailyBucket } from '../shared/types';
 import { logSilent } from './diagnostics';
 
@@ -110,7 +110,7 @@ export function trimHistory(history: DailyHistory, maxDays = MAX_DAYS): DailyHis
 
 function historyPath(): string | null {
   try {
-    return path.join(app.getPath('userData'), 'stats-daily.json');
+    return path.join(host().dataDir(), 'stats-daily.json');
   } catch {
     // No Electron app around — a test or the stats CLI harness. Read-only.
     return null;

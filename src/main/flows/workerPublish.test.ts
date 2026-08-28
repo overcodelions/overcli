@@ -3,14 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useTestHost } from '../testHost';
+
 let userDataDir = '';
 const { mockGetPath } = vi.hoisted(() => ({
   mockGetPath: vi.fn(() => userDataDir),
 }));
 
-vi.mock('electron', () => ({
-  app: { getPath: mockGetPath },
-}));
+useTestHost(mockGetPath);
 
 import { publishDeliverableToProject, PUBLISH_RETRY_WINDOW_MS } from './workerPublish';
 import { workerFilesDir } from './workerFiles';
