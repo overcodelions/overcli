@@ -5,6 +5,7 @@ import { Colosseum, Conversation, Project, SidebarLayout, Workspace, UUID } from
 import { flowRunOwnerPath, type FlowRun } from '@shared/flows/schema';
 import { pathBasename } from '@shared/workspaceNames';
 import { isEverydayProject } from '@shared/everydayProjects';
+import { isSamePath } from '@shared/pathScope';
 import { backendColor } from '../theme';
 import { selectActiveEntries } from '../activeSection';
 import { conversationActivityAt } from '../conversationLookup';
@@ -832,7 +833,8 @@ function hasProjectActivity(
   if (colosseums.some((c) => c.projectId === project.id)) return true;
   // A flow run is real activity even when the project has no visible
   // conversation of its own — keep such projects in the main list.
-  if (Object.values(flowRuns).some((r) => flowRunOwnerPath(r) === project.path)) return true;
+  if (Object.values(flowRuns).some((r) => isSamePath(flowRunOwnerPath(r), project.path)))
+    return true;
   // A freshly picked project has no conversation yet — the welcome composer
   // creates one only on first send. Keep it out of the roll-up for a short
   // grace window so it does not vanish the moment it is added.
@@ -1020,7 +1022,7 @@ function ProjectGroup({
     () =>
       Object.values(flowRuns).filter(
         (r) =>
-          flowRunOwnerPath(r) === project.path &&
+          isSamePath(flowRunOwnerPath(r), project.path) &&
           r.state.kind !== 'running' &&
           r.state.kind !== 'paused' &&
           !Object.values(r.conversationIds).some((cid) => runners[cid]?.isRunning),
