@@ -27,6 +27,7 @@ import {
   pendingWorkspaceMembers,
   undismissedWorkspaceMembers,
 } from '../../../shared/flows/workspaceMembers';
+import { isSamePath } from '@shared/pathScope';
 import { useRunner, useRunnerIsRunning } from '../../runnersStore';
 import { ChatView } from '../ChatView';
 import { RunningIndicator } from '../RunningIndicator';
@@ -1900,7 +1901,7 @@ function HijackComposer({
         baselineCommit: run.baselineCommitsByMember?.[w.name]?.commit ?? null,
       }));
     }
-    const ws = workspaces.find((w) => w.rootPath === run.projectPath);
+    const ws = workspaces.find((w) => isSamePath(w.rootPath, run.projectPath));
     if (!ws) return null;
     const projs = ws.projectIds
       .map((pid) => projects.find((p) => p.id === pid))

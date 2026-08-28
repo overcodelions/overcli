@@ -47,7 +47,7 @@ import { flowStarKey, type Flow } from '@shared/flows/schema';
 import { defaultFileViewMode, FileViewMode } from './filePreview';
 import { isEverydayProject, pickDocumentToShow } from '@shared/everydayProjects';
 import { documentToReveal } from './turnDocuments';
-import { isPathUnder } from '@shared/pathScope';
+import { isPathUnder, isSamePath } from '@shared/pathScope';
 import { workspaceSymlinkNames, pathBasename } from '@shared/workspaceNames';
 import { appendContextNotice } from '@shared/contextNotices';
 import {
@@ -1690,7 +1690,7 @@ export const useStore = create<StoreState>((set, get) => ({
     // `cwd = conv.worktreePath` (see refreshGitStatus / the runner turn
     // args) lands every turn in that tree. `adoptedWorktree` is what
     // keeps `removeAgent` from deleting it later.
-    const project = get().projects.find((p) => p.path === args.projectPath);
+    const project = get().projects.find((p) => isSamePath(p.path, args.projectPath));
     if (!project) return null;
     const conv: Conversation = {
       id: uuid(),
