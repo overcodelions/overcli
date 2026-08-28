@@ -37,12 +37,26 @@ export function homeProjectFor(flow: Flow, projects: Array<{ path: string }>): s
   return projects.length === 1 ? projects[0].path : null;
 }
 
+/// One place a flow's CI job can cover: a project, or a whole workspace.
+///
+/// A workspace is the more interesting target and the reason this is not just
+/// a project list. A flow is stateless, so "read across every repo in unifyr
+/// and report" is exactly the shape a runner suits — the job checks the
+/// members out side by side and the run's cwd is the directory holding them.
+export interface DeployScope {
+  name: string;
+  path: string;
+  kind: 'project' | 'workspace';
+  /// Member count, for a workspace. Shown so the choice is legible.
+  members?: number;
+}
+
 export function FlowDeployCard({
   flow,
   projects,
 }: {
   flow: Flow;
-  projects: Array<{ name: string; path: string }>;
+  projects: DeployScope[];
 }) {
   const ciDeploy = useFlowsStore((s) => s.ciDeploy);
   const ciDeployWrite = useFlowsStore((s) => s.ciDeployWrite);
@@ -132,7 +146,7 @@ export function FlowDeployCard({
 
               {projects.length > 1 && (
                 <label className="block">
-                  <div className="text-[10px] uppercase tracking-wider text-ink-faint">Project</div>
+                  <div className="text-[10px] uppercase tracking-wider text-ink-faint">Runs across</div>
                   <select
                     value={projectPath}
                     onChange={(e) => {
@@ -141,10 +155,12 @@ export function FlowDeployCard({
                     }}
                     className="mt-1 w-full rounded-md border border-card bg-surface px-2 py-1 text-xs text-ink focus:outline-none focus:border-card-strong"
                   >
-                    <option value="">Choose where the files go…</option>
+                    <option value="">Choose where the job runs…</option>
                     {projects.map((p) => (
                       <option key={p.path} value={p.path}>
-                        {p.name}
+                        {p.kind === 'workspace'
+                          ? `${p.name} (workspace, ${p.members ?? 0} repos)`
+                          : p.name}
                       </option>
                     ))}
                   </select>

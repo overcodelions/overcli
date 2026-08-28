@@ -353,7 +353,9 @@ describe('worker instructions are target-aware', () => {
     expect(plan.notes.join(' ')).not.toContain('agent');
   });
 
-  it('warns that the CLI is not published, on both targets', () => {
+  it('keeps the standing "not published" notice out of the warnings', () => {
+    // It is true of every plan and never changes. Stacked with warnings about
+    // the flow in front of you, the constant one trains you to skim past both.
     for (const target of ['github', 'jenkins'] as const) {
       const plan = buildCiDeploy({
         worker: worker({ trust: 'trusted' }),
@@ -361,7 +363,8 @@ describe('worker instructions are target-aware', () => {
         target,
         workerYaml: 'x',
       });
-      expect(plan.warnings.some((w) => w.includes('Publish the CLI first'))).toBe(true);
+      expect(plan.toolNotice).toContain('Publish the CLI first');
+      expect(plan.warnings.some((w) => w.includes('Publish the CLI first'))).toBe(false);
     }
   });
 });

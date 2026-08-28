@@ -395,6 +395,7 @@ interface WorkersActions {
     steps: string[];
     notes: string[];
     warnings: string[];
+    toolNotice: string;
     block: { reason: string; remedy: string } | null;
     existing: string[];
     projectPath: string;
@@ -1476,6 +1477,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       steps: res.steps,
       notes: res.notes,
       warnings: res.warnings,
+      toolNotice: res.toolNotice,
       block: res.block,
       existing: res.existing,
       projectPath: res.projectPath,

@@ -1798,7 +1798,16 @@ export interface IPCInvokeMap {
     projectPath: string;
     prompt?: string;
   }) =>
-    | { ok: true; files: CiDeployFile[]; steps: string[]; notes: string[]; warnings: string[]; existing: string[] }
+    | {
+        ok: true;
+        files: CiDeployFile[];
+        steps: string[];
+        notes: string[];
+        warnings: string[];
+        toolNotice: string;
+        block: CiDeployBlock | null;
+        existing: string[];
+      }
     | { ok: false; error: string };
   /// The same files, written into the project. `overwritten` names the ones
   /// that already existed with different contents.
@@ -2300,6 +2309,8 @@ export interface IPCInvokeMap {
         steps: string[];
         notes: string[];
         warnings: string[];
+        /// Standing context about the feature, identical on every plan.
+        toolNotice: string;
         /// Set when there is no correct project to write into — a workspace
         /// worker. The write handler refuses too.
         block: CiDeployBlock | null;

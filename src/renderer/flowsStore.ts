@@ -90,6 +90,8 @@ interface FlowsActions {
     steps: string[];
     notes: string[];
     warnings: string[];
+    toolNotice: string;
+    block: { reason: string; remedy: string } | null;
     existing: string[];
   } | null>;
   /// Write those files into the project. Resolves to what was written, and
@@ -309,7 +311,15 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
   async ciDeploy({ flowId, target, projectPath, prompt }) {
     const res = await window.overcli.invoke('flows:ciDeploy', { flowId, target, projectPath, prompt });
     if (!res.ok) return null;
-    return { files: res.files, steps: res.steps, notes: res.notes, warnings: res.warnings, existing: res.existing };
+    return {
+      files: res.files,
+      steps: res.steps,
+      notes: res.notes,
+      warnings: res.warnings,
+      toolNotice: res.toolNotice,
+      block: res.block,
+      existing: res.existing,
+    };
   },
 
   async ciDeployWrite({ flowId, target, projectPath, prompt }) {

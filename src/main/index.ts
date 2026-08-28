@@ -1834,6 +1834,7 @@ export function registerIpc(): void {
       steps: res.plan.steps,
       notes: res.plan.notes,
       warnings: res.plan.warnings,
+      toolNotice: res.plan.toolNotice,
       block: res.plan.block ?? null,
       existing: existingOf(res.worker.projectPath, res.plan.files),
       projectPath: res.worker.projectPath,
@@ -1879,7 +1880,13 @@ export function registerIpc(): void {
   });
   // The flow twin of workers:ciDeploy. Simpler because a flow has no cadence,
   // trust, journal or budget — see buildFlowCiDeploy.
-  function flowCiPlanFor(flowId: string, target: 'github' | 'jenkins', prompt?: string) {
+  function flowCiPlanFor(
+    flowId: string,
+    target: 'github' | 'jenkins',
+    prompt?: string,
+    /// Project path OR workspace root the job should cover.
+    scope = '',
+  ) {
     const store = Store.load();
     const flow = loadAllFlows({ projectPaths: store.projects.map((p) => p.path) }).find(
       (f) => f.id === flowId,
@@ -1887,11 +1894,19 @@ export function registerIpc(): void {
     if (!flow) return { ok: false as const, error: `Flow "${flowId}" not found.` };
     return {
       ok: true as const,
-      plan: buildFlowCiDeploy({ flow, target, flowYaml: serializeFlow(flow), prompt }),
+      plan: buildFlowCiDeploy({
+        flow,
+        target,
+        flowYaml: serializeFlow(flow),
+        prompt,
+        // The chosen target may be a workspace rather than a project — a flow
+        // that reads across sixteen repos is exactly the shape a runner suits.
+        workspace: workspaceFor(scope),
+      }),
     };
   }
   ipcMain.handle('flows:ciDeploy', (_e, { flowId, target, projectPath, prompt }) => {
-    const res = flowCiPlanFor(flowId, target, prompt);
+    const res = flowCiPlanFor(flowId, target, prompt, projectPath);
     if (!res.ok) return res;
     return {
       ok: true,
@@ -1899,13 +1914,18 @@ export function registerIpc(): void {
       steps: res.plan.steps,
       notes: res.plan.notes,
       warnings: res.plan.warnings,
+      toolNotice: res.plan.toolNotice,
+      block: res.plan.block ?? null,
       existing: existingOf(projectPath, res.plan.files),
     } as const;
   });
   ipcMain.handle('flows:ciDeployWrite', (_e, { flowId, target, projectPath, prompt }) => {
-    const res = flowCiPlanFor(flowId, target, prompt);
+    const res = flowCiPlanFor(flowId, target, prompt, projectPath);
     if (!res.ok) return res;
     if (!projectPath) return { ok: false, error: 'No project to write into.' } as const;
+    // A workspace root is not a repository — enforced here as well as in the
+    // UI, because this handler is what touches the disk.
+    if (res.plan.block) return { ok: false, error: res.plan.block.reason } as const;
     const written: string[] = [];
     const overwritten: string[] = [];
     try {

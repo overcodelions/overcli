@@ -156,7 +156,45 @@ describe('the instructions name what each system actually calls things', () => {
   it('warns up front that the CLI it invokes is not published yet', () => {
     for (const target of ['github', 'jenkins'] as const) {
       const plan = buildFlowCiDeploy({ flow: flow(), target, flowYaml: 'x' });
-      expect(plan.warnings.some((w) => w.includes('Publish the CLI first'))).toBe(true);
+      expect(plan.toolNotice).toContain('Publish the CLI first');
+      expect(plan.warnings.some((w) => w.includes('Publish the CLI first'))).toBe(false);
     }
   });
 })
+
+describe('a flow deployed across a workspace', () => {
+  const ws = {
+    name: 'unifyr',
+    members: [
+      { name: 'api', dir: 'api', remote: 'https://github.com/unifyr/api.git' },
+      { name: 'web', dir: 'web', remote: 'git@github.com:unifyr/web.git' },
+    ],
+    unreachable: [] as string[],
+  };
+  const plan = (target: 'github' | 'jenkins') =>
+    buildFlowCiDeploy({ flow: flow(), target, flowYaml: 'x', workspace: ws });
+
+  it('checks every member out and runs across them', () => {
+    const gh = plan('github').files[1].contents;
+    expect(gh).toContain('repository: unifyr/api');
+    expect(gh).toContain('path: workspace/web');
+    expect(gh).toContain('--cwd workspace');
+  });
+
+  it('assembles the workspace on Jenkins, which has no checkout action', () => {
+    const j = plan('jenkins').files[1].contents;
+    expect(j).toContain("stage('Assemble workspace')");
+    expect(j).toContain('git clone --depth 1 https://github.com/unifyr/api.git workspace/api');
+  });
+
+  it('blocks the project write — a workspace is a scope, not a repository', () => {
+    expect(plan('github').block?.reason).toContain('unifyr');
+    expect(plan('github').block?.remedy).toContain('2 member repositories');
+  });
+
+  it('leaves a single-project flow running where it always did', () => {
+    const p = buildFlowCiDeploy({ flow: flow(), target: 'github', flowYaml: 'x' });
+    expect(p.files[1].contents).toContain('--cwd .');
+    expect(p.block).toBeUndefined();
+  });
+});

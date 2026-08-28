@@ -27,6 +27,9 @@ export interface CiDeployPlanView {
   steps: string[];
   notes: string[];
   warnings: string[];
+  /// Standing context about the feature, not about this plan. Shown once,
+  /// quietly, next to the Alpha flag it restates — see CiDeployPlan.
+  toolNotice?: string;
   /// Set when writing into a project has no correct answer — a workspace
   /// worker, whose "project" is a symlink farm spanning several repos.
   block?: { reason: string; remedy: string } | null;
@@ -132,7 +135,7 @@ export function CiDeployModal({
       onClick={onClose}
     >
       <div
-        className="bg-surface-elevated rounded-xl shadow-2xl border border-card-strong w-[min(1560px,95vw)] h-[min(920px,90vh)] overflow-hidden flex flex-col"
+        className="bg-surface-elevated rounded-xl shadow-2xl border border-card-strong w-[min(1560px,95vw)] h-[92vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
@@ -145,6 +148,9 @@ export function CiDeployModal({
               <AlphaBadge className="shrink-0" />
             </div>
             <p className="mt-0.5 text-xs text-ink-muted">{subtitle}</p>
+            {plan?.toolNotice && (
+              <p className="mt-1.5 text-[11px] leading-[1.5] text-sky-300/70">{plan.toolNotice}</p>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -163,7 +169,7 @@ export function CiDeployModal({
               {plan && plan.warnings.length > 0 && (
                 <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.07] p-3">
                   <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-amber-400/90">
-                    Before you rely on this
+                    About this {plan.warnings.length === 1 ? 'one' : 'flow'}
                   </div>
                   <ul className="mt-1.5 space-y-1.5">
                     {plan.warnings.map((w, i) => (

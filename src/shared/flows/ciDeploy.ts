@@ -137,8 +137,16 @@ export interface CiDeployPlan {
   /// Things to KNOW. True, worth saying, but not actions — the tool budget,
   /// the timezone, how the state directory behaves.
   notes: string[];
-  /// Things that will stop the job working. Shown before anything else.
+  /// Things that will stop the job working — about THIS flow or worker.
   warnings: string[];
+  /// Standing context about the feature itself, identical on every plan.
+  ///
+  /// Split from `warnings` because merging them was hiding the ones that
+  /// mattered: "the CLI is not published yet" is true of every deploy and
+  /// never changes, while "this flow declares no tools" is about the thing in
+  /// front of you. Stacked in one amber block, the constant one trains you to
+  /// skim past both.
+  toolNotice: string;
 }
 
 /// A filename-safe slug for the worker, matching `workerShareFilename`'s
@@ -300,10 +308,18 @@ export function buildFlowCiDeploy(args: {
   /// nobody to approve it — see the CLI's --permissions.
   allowTools?: string[];
   runIn?: 'cwd' | 'worktree';
+  /// Run this flow across a workspace rather than one project. The job checks
+  /// every member out side by side and runs in the directory holding them —
+  /// see CiWorkspace. A flow needs this MORE than a worker does: it is the
+  /// stateless half, so "read across sixteen repos and report" is exactly the
+  /// shape that suits a runner.
+  workspace?: CiWorkspace;
 }): CiDeployPlan {
-  const { flow, target } = args;
+  const { flow, target, workspace } = args;
   const slug = ciSlug(flow.id || flow.name);
   const flowPath = `.overcli/flows/${slug}.yaml`;
+  const workspaceDir = 'workspace';
+  const runCwd = workspace ? workspaceDir : '.';
   const prompt = (args.prompt ?? flow.defaultPrompt ?? '').trim();
   const declared = declaredTools([flow]);
   const { safe: allowTools, rejected: rejectedTools } = partitionToolNames(
@@ -316,7 +332,26 @@ export function buildFlowCiDeploy(args: {
   const installBackends = [...backends].filter((b) => b !== 'ollama').sort();
   if (installBackends.length === 0) installBackends.push('claude');
 
-  const warnings: string[] = [CI_CLI_NOT_PUBLISHED];
+  const warnings: string[] = [];
+  const block: CiDeployBlock | undefined = workspace
+    ? {
+        reason:
+          `This deploys ${flow.name} across the ${workspace.name} workspace, which is a scope over ` +
+          'several repositories rather than one — so there is no single project to write the files into.',
+        remedy:
+          `The job below checks out all ${workspace.members.length} member repositories side by side ` +
+          `and runs in \`${workspaceDir}/\`, so the flow sees the whole workspace. Copy or save it ` +
+          'into whichever repository should own the job.',
+      }
+    : undefined;
+  if (block) warnings.push(block.reason, block.remedy);
+  if (workspace && workspace.unreachable.length > 0) {
+    warnings.push(
+      `No git remote for ${workspace.unreachable.join(', ')}, so the job cannot check ` +
+        `${workspace.unreachable.length === 1 ? 'it' : 'them'} out. The run would cover less of the ` +
+        'workspace than it appears to. Give the project a remote, or drop it from the workspace.',
+    );
+  }
   if (backends.has('ollama')) {
     warnings.push(
       'This flow uses local Ollama models, which stock runners do not have. Add --model-override ollama=claude:<model> or use a self-hosted runner with a GPU.',
@@ -369,10 +404,17 @@ export function buildFlowCiDeploy(args: {
 
   const pipeline =
     target === 'github'
-      ? githubFlowFile({ slug, name: flow.name, flowPath, prompt, allowTools, installBackends, runIn })
-      : jenkinsFlowFile({ slug, flowPath, prompt, allowTools, installBackends, runIn });
+      ? githubFlowFile({ slug, name: flow.name, flowPath, prompt, allowTools, installBackends, runIn, workspace, workspaceDir, runCwd })
+      : jenkinsFlowFile({ slug, flowPath, prompt, allowTools, installBackends, runIn, workspace, workspaceDir, runCwd });
 
-  return { files: [{ path: flowPath, contents: args.flowYaml }, pipeline], steps, notes, warnings };
+  return {
+    files: [{ path: flowPath, contents: args.flowYaml }, pipeline],
+    ...(block ? { block } : {}),
+    steps,
+    notes,
+    warnings,
+    toolNotice: CI_CLI_NOT_PUBLISHED,
+  };
 }
 
 /// Tool names are interpolated into a shell line, exactly like MCP names.
@@ -420,7 +462,7 @@ export function buildCiDeploy(args: {
   const workspaceDir = 'workspace';
   const runCwd = args.workspace ? workspaceDir : '.';
 
-  const warnings: string[] = [CI_CLI_NOT_PUBLISHED];
+  const warnings: string[] = [];
   // A workspace is a scope over several repositories, not a directory anyone
   // checks out. One `actions/checkout` cannot reproduce it, and the path this
   // worker calls its project is a symlink farm inside Overcli's data
@@ -556,6 +598,7 @@ export function buildCiDeploy(args: {
     steps,
     notes,
     warnings,
+    toolNotice: CI_CLI_NOT_PUBLISHED,
   };
 }
 
@@ -777,8 +820,11 @@ function githubFlowFile(args: {
   allowTools: string[];
   installBackends: Backend[];
   runIn: 'cwd' | 'worktree';
+  workspace?: CiWorkspace;
+  workspaceDir: string;
+  runCwd: string;
 }): CiDeployFile {
-  const { slug, name, flowPath, prompt, allowTools, installBackends, runIn } = args;
+  const { slug, name, flowPath, prompt, allowTools, installBackends, runIn, workspace, workspaceDir, runCwd } = args;
   const lines: string[] = [];
   lines.push('# Generated by Overcli. Safe to edit.');
   lines.push(`name: overcli-flow-${slug}`);
@@ -797,6 +843,14 @@ function githubFlowFile(args: {
   lines.push('        with:');
   // A shallow checkout trips the unreviewed-work guard (#210).
   lines.push('          fetch-depth: 0');
+  for (const m of workspace?.members ?? []) {
+    lines.push('      - uses: actions/checkout@v4');
+    lines.push('        with:');
+    lines.push(`          repository: ${remoteToSlug(m.remote)}`);
+    lines.push(`          path: ${workspaceDir}/${m.dir}`);
+    lines.push('          fetch-depth: 0');
+    lines.push('          token: ${{ secrets.WORKSPACE_CHECKOUT_TOKEN || github.token }}');
+  }
   lines.push('      - uses: actions/setup-node@v4');
   lines.push('        with:');
   lines.push("          node-version: '20'");
@@ -808,7 +862,7 @@ function githubFlowFile(args: {
   // secret of its own on Actions. Jenkins is not so lucky — see below.
   lines.push('          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
   lines.push(
-    `      - run: overcli run ${flowPath} --input "\${{ inputs.prompt }}"${allowToolsFlag(allowTools)} --permissions allow-list --run-in ${runIn} --artifacts-dir out --json > run.json`,
+    `      - run: overcli run ${flowPath} --cwd ${runCwd} --input "\${{ inputs.prompt }}"${allowToolsFlag(allowTools)} --permissions allow-list --run-in ${runIn} --artifacts-dir out --json > run.json`,
   );
   lines.push('        env:');
   lines.push('          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}');
@@ -829,8 +883,11 @@ function jenkinsFlowFile(args: {
   allowTools: string[];
   installBackends: Backend[];
   runIn: 'cwd' | 'worktree';
+  workspace?: CiWorkspace;
+  workspaceDir: string;
+  runCwd: string;
 }): CiDeployFile {
-  const { slug, flowPath, prompt, allowTools, installBackends, runIn } = args;
+  const { slug, flowPath, prompt, allowTools, installBackends, runIn, workspace, workspaceDir, runCwd } = args;
   const packages = cliInstallPackages(installBackends);
   const lines: string[] = [];
   lines.push('// Generated by Overcli. Safe to edit.');
@@ -845,11 +902,20 @@ function jenkinsFlowFile(args: {
   lines.push(...jenkinsInstallSteps(packages));
   lines.push('      }');
   lines.push('    }');
+  if (workspace && workspace.members.length > 0) {
+    lines.push("    stage('Assemble workspace') {");
+    lines.push('      steps {');
+    for (const m of workspace.members) {
+      lines.push(`        sh 'rm -rf ${workspaceDir}/${m.dir} && git clone --depth 1 ${m.remote} ${workspaceDir}/${m.dir}'`);
+    }
+    lines.push('      }');
+    lines.push('    }');
+  }
   lines.push("    stage('Run') {");
   lines.push('      steps {');
   lines.push("        withCredentials([string(credentialsId: 'ANTHROPIC_API_KEY', variable: 'ANTHROPIC_API_KEY')]) {");
   lines.push(
-    `          sh 'overcli run ${flowPath} --input "$PROMPT"${allowToolsFlag(allowTools)} --permissions allow-list --run-in ${runIn} --artifacts-dir out --json > run.json'`,
+    `          sh 'overcli run ${flowPath} --cwd ${runCwd} --input "$PROMPT"${allowToolsFlag(allowTools)} --permissions allow-list --run-in ${runIn} --artifacts-dir out --json > run.json'`,
   );
   lines.push('        }');
   lines.push('      }');
