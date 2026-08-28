@@ -35,15 +35,22 @@ export interface CiDeployPlanView {
 
 /// Alpha, and the reason is concrete rather than a disclaimer: the pipeline
 /// files this generates invoke an `overcli` CLI that is not on npm yet, so a
-/// job built from them fails at its setup step. The flag stays until that
-/// ships. Kept small and unfilled — this is a caveat, not a decoration, and
-/// the amber warning inside the modal is what carries the detail.
+/// job built from them fails at its setup step.
+///
+/// Blue, not amber, and that is the whole point of the colour. Amber already
+/// means "this will bite you" here — it is the warning block three lines
+/// below, and the `replaces` badge on a file about to be overwritten. A
+/// maturity flag is not that: it is standing information about the feature,
+/// true whether or not anything is wrong right now. Two meanings sharing one
+/// colour is how a warning stops being read. Red would be worse again — it
+/// reads as broken, and this works, it is just early. Green would say the
+/// opposite of what is true.
 export function AlphaBadge({ className = '' }: { className?: string }) {
   return (
     <span
       title="The overcli CLI these files call is not published yet, so a job built from them will not run end to end."
       className={
-        'rounded-full border border-amber-500/40 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.08em] text-amber-400/90 ' +
+        'rounded-full border border-sky-400/40 bg-sky-400/15 px-1.5 py-px text-[9px] font-medium uppercase tracking-[0.08em] text-sky-300 ' +
         className
       }
     >

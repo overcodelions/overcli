@@ -81,7 +81,7 @@ describe('buildFlowCiDeploy', () => {
     expect(plan.warnings.some((w) => w.includes('no default prompt'))).toBe(true);
   });
 
-  it('warns when a step asks for a tool the job will deny', () => {
+  it('takes the allow-list from the steps, so a Bash step gets Bash', () => {
     const plan = buildFlowCiDeploy({
       flow: flow({
         steps: [
@@ -90,9 +90,38 @@ describe('buildFlowCiDeploy', () => {
       }),
       target: 'github',
       flowYaml: 'x',
-      allowTools: ['Read'],
     });
-    expect(plan.warnings.some((w) => w.includes('Bash') && w.includes('denied'))).toBe(true);
+    // The old generator emitted a Read/Grep/Glob default and then warned that
+    // the flow wanted Bash — a mismatch it created itself.
+    expect(plan.files[1].contents).toContain('--allow-tool Bash');
+    expect(plan.warnings.some((w) => w.includes('denied'))).toBe(false);
+  });
+
+  it('unions the tools across every step', () => {
+    const plan = buildFlowCiDeploy({
+      flow: flow({
+        steps: [
+          { id: 's1', participantId: 'primary', role: 'planner', inputs: [], tools: ['Read'], output: 'a.md' },
+          { id: 's2', participantId: 'primary', role: 'implementer', inputs: [], tools: ['Edit', 'Read'], output: 'b.md' },
+        ],
+      }),
+      target: 'github',
+      flowYaml: 'x',
+    });
+    expect(plan.files[1].contents).toContain('--allow-tool Edit,Read');
+  });
+
+  it('says which steps it could not narrow rather than widening them', () => {
+    const plan = buildFlowCiDeploy({
+      flow: flow({
+        steps: [
+          { id: 'open', participantId: 'primary', role: 'implementer', inputs: [], tools: [], output: 'o.md' },
+        ],
+      }),
+      target: 'github',
+      flowYaml: 'x',
+    });
+    expect(plan.warnings.some((w) => w.includes('declare no tools') && w.includes('open'))).toBe(true);
   });
 
   it('installs the backend package for a Jenkins agent', () => {

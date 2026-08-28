@@ -134,15 +134,33 @@ export function ciPermissions(worker: Worker): 'deny' | 'allow-list' {
   return worker.trust === 'probation' ? 'deny' : 'allow-list';
 }
 
-/// Tools an `allow-list` job starts with.
+/// Tools an `allow-list` job starts with, read off the work itself.
 ///
-/// `--permissions allow-list` with no `--allow-tool` denies everything, which
-/// is `deny` wearing a different hat — a generated job that looked configured
-/// and could not read a file. These three are the read-only set the runtime
-/// itself classifies as local (`resolveStepEffect`), so seeding them makes the
-/// job able to work without widening anything that could push, message, or
-/// mutate. Anything beyond this is the user's call, and the checklist says so.
-export const CI_DEFAULT_ALLOW_TOOLS = ['Read', 'Grep', 'Glob'];
+/// The flow already says what it needs: every step carries a `tools:` list,
+/// and the runtime treats that as the grant. So the job's allow-list is the
+/// union of those, not a default this file invents. An invented default is
+/// wrong in both directions — too narrow and the flow's own steps get denied
+/// (which is what happened: the generator emitted Read/Grep/Glob and then
+/// warned that the flow wanted Bash), too wide and the job is permitted things
+/// nothing asked for.
+///
+/// A step that declares NO tools cannot be narrowed — an empty list means
+/// "whatever the CLI offers", which is why `resolveStepEffect` treats it as an
+/// external effect. Those are reported rather than silently widened.
+export function declaredTools(flows: Flow[]): { tools: string[]; unconstrained: string[] } {
+  const tools = new Set<string>();
+  const unconstrained: string[] = [];
+  for (const flow of flows) {
+    for (const step of flow.steps) {
+      if (!step.tools || step.tools.length === 0) {
+        unconstrained.push(`${flow.id}/${step.id}`);
+        continue;
+      }
+      for (const t of step.tools) tools.add(t);
+    }
+  }
+  return { tools: [...tools].sort(), unconstrained };
+}
 
 /// MCP server names that are safe to interpolate into a generated pipeline.
 ///
@@ -211,8 +229,9 @@ export function buildFlowCiDeploy(args: {
   const slug = ciSlug(flow.id || flow.name);
   const flowPath = `.overcli/flows/${slug}.yaml`;
   const prompt = (args.prompt ?? flow.defaultPrompt ?? '').trim();
+  const declared = declaredTools([flow]);
   const { safe: allowTools, rejected: rejectedTools } = partitionToolNames(
-    args.allowTools ?? CI_DEFAULT_ALLOW_TOOLS,
+    args.allowTools ?? declared.tools,
   );
   const runIn = args.runIn ?? 'cwd';
 
@@ -235,15 +254,10 @@ export function buildFlowCiDeploy(args: {
   if (rejectedTools.length > 0) {
     warnings.push(`Dropped tool name(s) that are not plain identifiers: ${rejectedTools.join(', ')}.`);
   }
-  // The tools the flow's steps actually ask for, minus what the job allows.
-  // Under the CLI's policy the intersection is what runs, so a step asking for
-  // Bash on a Read-only allow-list silently does less than the flow says.
-  const declared = new Set(flow.steps.flatMap((s) => s.tools ?? []));
-  const unmet = [...declared].filter((t) => !allowTools.includes(t));
-  if (unmet.length > 0) {
+  if (declared.unconstrained.length > 0) {
     warnings.push(
-      `Steps ask for ${unmet.join(', ')}, which the job does not allow. Those calls will be denied. ` +
-        'Add them to the allowed tools if the flow needs them.',
+      `These steps declare no tools, so the job cannot narrow what they may do: ${declared.unconstrained.join(', ')}. ` +
+        'Give them an explicit tools: list in the flow, and the job will allow exactly that.',
     );
   }
 
@@ -256,8 +270,10 @@ export function buildFlowCiDeploy(args: {
   );
 
   const notes: string[] = [
-    `The job may use ${allowTools.length > 0 ? allowTools.join(', ') : 'no tools at all'}. ` +
-      'Everything else is denied, because there is nobody to approve it.',
+    allowTools.length > 0
+      ? `The job allows exactly what this flow's steps declare: ${allowTools.join(', ')}. ` +
+        'Change the flow\u2019s tools: list and re-deploy rather than editing the job.'
+      : 'No step declares any tools, so the job allows none. Everything is denied, because there is nobody to approve it.',
     target === 'github'
       ? 'It runs on demand only. Add an on.schedule block if you want it on a timer.'
       : 'It runs on demand only. Add a triggers { cron(...) } block if you want it on a timer.',
@@ -300,7 +316,9 @@ export function buildCiDeploy(args: {
   // the CLI defaults to probation — which parks every proposal and exits 2.
   // The desk knows the real level, so the generated job carries it explicitly.
   const trust = worker.trust;
-  const allowTools = perms === 'allow-list' ? CI_DEFAULT_ALLOW_TOOLS : [];
+  const declared = declaredTools(args.flows);
+  const { safe: allowTools, rejected: rejectedTools } =
+    perms === 'allow-list' ? partitionToolNames(declared.tools) : { safe: [], rejected: [] };
   const backends = ciBackends(worker, args.flows);
   // A worker whose every backend is Ollama would otherwise leave the runner
   // with nothing installed at all; the Ollama warning below already points
@@ -316,6 +334,15 @@ export function buildCiDeploy(args: {
     warnings.push(
       'This worker uses local Ollama models, which stock runners do not have. Add --model-override ollama=claude:<model> or use a self-hosted runner with a GPU.',
     );
+  }
+  if (perms === 'allow-list' && declared.unconstrained.length > 0) {
+    warnings.push(
+      `These steps declare no tools, so the job cannot narrow what they may do: ${declared.unconstrained.join(', ')}. ` +
+        'Give them an explicit tools: list in the flow, and the job will allow exactly that.',
+    );
+  }
+  if (rejectedTools.length > 0) {
+    warnings.push(`Dropped tool name(s) that are not plain identifiers: ${rejectedTools.join(', ')}.`);
   }
   if (rejectedMcp.length > 0) {
     warnings.push(
@@ -372,8 +399,8 @@ export function buildCiDeploy(args: {
   const notes: string[] = [];
   if (allowTools.length > 0) {
     notes.push(
-      `The job may use ${allowTools.join(', ')} and nothing else — everything not listed is denied, ` +
-        'because there is nobody to approve it. Add --allow-tool names if a step needs more.',
+      `The job allows exactly what this worker's flows declare: ${allowTools.join(', ')}. ` +
+        'Change the flow\u2019s tools: list and re-deploy rather than editing the job.',
     );
   }
   if (cron) {

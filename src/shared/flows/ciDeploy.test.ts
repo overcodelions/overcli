@@ -11,7 +11,10 @@ function flow(id: string, backend: Flow['participants'][number]['backend'] = 'cl
     input: 'user_prompt',
     participants: [{ id: 'primary', name: 'Sonnet', backend, model: 'claude-sonnet-4-6', kind: 'primary' }],
     steps: [
-      { id: 'step_1', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: [], output: 'plan.md' },
+      // A real flow names its tools; the generator reads the allow-list off
+      // this, so a fixture with an empty list would be testing the
+      // "cannot narrow" path rather than the ordinary one.
+      { id: 'step_1', participantId: 'primary', role: 'planner', inputs: ['user_prompt'], tools: ['Read'], output: 'plan.md' },
     ],
     source: 'user',
     filePath: `/tmp/${id}.yaml`,
@@ -175,15 +178,32 @@ describe('trust and the allow-list', () => {
     expect(plan.warnings.some((w) => w.includes('probation'))).toBe(true);
   });
 
-  it('seeds a read-only allow-list, because allow-list with no tools is just deny', () => {
+  it('allows exactly what the worker\u2019s flows declare, not an invented default', () => {
     const plan = buildCiDeploy({
       worker: worker({ trust: 'trusted' }),
       flows: [flow('nightly-review')],
       target: 'jenkins',
       workerYaml: 'x',
     });
-    expect(plan.files[1].contents).toContain('--allow-tool Read,Grep,Glob');
-    expect(plan.notes.some((c) => c.includes('Read, Grep, Glob'))).toBe(true);
+    // The flow factory declares Read on its one step. Nothing else should
+    // appear — a default the flow never asked for is a permission nobody
+    // granted.
+    expect(plan.files[1].contents).toContain('--allow-tool Read');
+    expect(plan.files[1].contents).not.toContain('Glob');
+    expect(plan.notes.some((c) => c.includes('exactly what'))).toBe(true);
+  });
+
+  it('cannot narrow a step that declares no tools, and says which', () => {
+    const bare = flow('nightly-review');
+    bare.steps[0].tools = [];
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [bare],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.warnings.some((w) => w.includes('declare no tools'))).toBe(true);
+    expect(plan.warnings.some((w) => w.includes('nightly-review/step_1'))).toBe(true);
   });
 
   it('omits the allow-list entirely under deny, where it would mean nothing', () => {
