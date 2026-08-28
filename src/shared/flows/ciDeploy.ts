@@ -97,6 +97,25 @@ export interface CiDeployFile {
 /// pipeline file there puts it somewhere that is never committed and is
 /// rebuilt from scratch on the next launch, so the button has to be off rather
 /// than quietly doing the wrong thing.
+/// A workspace, resolved to something a pipeline can actually check out.
+///
+/// The app reaches a workspace through a symlink farm because its member
+/// repositories live at scattered absolute paths on the user's disk. CI has no
+/// such problem: the job checks the members out itself, side by side, and the
+/// run's cwd is the directory holding them. No symlinks, no `--workspace`
+/// flag, no workspace id — the runtime only resolves a workspace for
+/// `runIn: 'worktree'` (runtime.ts:870), and a CI run works in `cwd`.
+export interface CiWorkspace {
+  name: string;
+  /// Members with a resolvable git remote. One checkout step each, into
+  /// `members/<dir>`.
+  members: Array<{ name: string; dir: string; remote: string }>;
+  /// Members that had no remote to clone — a local-only project cannot be
+  /// reproduced on a runner, so the job would silently be missing part of the
+  /// workspace it claims to cover.
+  unreachable: string[];
+}
+
 export interface CiDeployBlock {
   reason: string;
   /// What to do instead. Copy or Save as… gets the bytes out; the rest is
@@ -372,9 +391,9 @@ export function buildCiDeploy(args: {
   workerYaml: string;
   missingFlowIds?: string[];
   /// Set when this worker is scoped to an Overcli workspace rather than a
-  /// single project. Main resolves it; the generator only needs to know that
-  /// the "project" is a farm of N repos and not a checkout.
-  workspace?: { name: string; memberCount: number };
+  /// single project. Main resolves the members and their remotes; the
+  /// generator turns them into checkout steps.
+  workspace?: CiWorkspace;
 }): CiDeployPlan {
   const { worker, target } = args;
   const slug = ciSlug(worker.name);
@@ -396,6 +415,10 @@ export function buildCiDeploy(args: {
   if (installBackends.length === 0) installBackends.push('claude');
   const { safe: mcp, rejected: rejectedMcp } = partitionMcpNames(worker.mcpServers ?? []);
   const bundlePath = '.overcli/workers/' + slug + '.worker.yaml';
+  // Where the job assembles the workspace. Relative to the job's own working
+  // directory, so it never collides with a member repo's contents.
+  const workspaceDir = 'workspace';
+  const runCwd = args.workspace ? workspaceDir : '.';
 
   const warnings: string[] = [CI_CLI_NOT_PUBLISHED];
   // A workspace is a scope over several repositories, not a directory anyone
@@ -403,21 +426,30 @@ export function buildCiDeploy(args: {
   // worker calls its project is a symlink farm inside Overcli's data
   // directory — so both halves of the generated job are wrong, and the write
   // is wrong too. Say so plainly rather than emitting a job that looks right.
+  // A workspace worker has no project of its own to write into — its
+  // `projectPath` is the symlink farm under Overcli's data directory, which is
+  // never committed and is rebuilt on the next launch. The JOB is fine; only
+  // the destination is missing, and the user picks that.
   const block: CiDeployBlock | undefined = args.workspace
     ? {
         reason:
-          `${worker.name} works across the ${args.workspace.name} workspace — ` +
-          `${args.workspace.memberCount} repositories — so it has no single project to write into. ` +
-          'The path it calls its project is a symlink farm inside Overcli\u2019s data directory, ' +
-          'not a checkout, and a file written there is never committed.',
+          `${worker.name} works across the ${args.workspace.name} workspace, so it has no project ` +
+          'of its own to write into — the path it calls its project is a symlink farm inside ' +
+          'Overcli\u2019s data directory, which is never committed.',
         remedy:
-          'Copy or save the pipeline file and place it in whichever repository should own the job. ' +
-          'It will need one checkout step per member repo, and `overcli run` cannot drive a ' +
-          'multi-repo workspace yet — it takes a single --cwd. Until it can, point the job at one ' +
-          'member repository.',
+          `The job below checks out all ${args.workspace.members.length} member repositories side by ` +
+          `side and runs in \`${workspaceDir}/\`, so it covers the whole workspace. Copy or save it ` +
+          'into whichever repository should own the job.',
       }
     : undefined;
   if (block) warnings.push(block.reason, block.remedy);
+  if (args.workspace && args.workspace.unreachable.length > 0) {
+    warnings.push(
+      `No git remote for ${args.workspace.unreachable.join(', ')}, so the job cannot check ` +
+        `${args.workspace.unreachable.length === 1 ? 'it' : 'them'} out. The run would cover less of ` +
+        'the workspace than it appears to. Give the project a remote, or drop it from the workspace.',
+    );
+  }
   if (backends.includes('ollama')) {
     warnings.push(
       'This worker uses local Ollama models, which stock runners do not have. Add --model-override ollama=claude:<model> or use a self-hosted runner with a GPU.',
@@ -513,8 +545,8 @@ export function buildCiDeploy(args: {
 
   const pipelineFile =
     args.target === 'github'
-      ? githubFile({ slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath })
-      : jenkinsFile({ slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath });
+      ? githubFile({ slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath, workspace: args.workspace, workspaceDir, runCwd })
+      : jenkinsFile({ slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath, workspace: args.workspace, workspaceDir, runCwd });
 
   return {
     files: [{ path: bundlePath, contents: args.workerYaml }, pipelineFile],
@@ -543,6 +575,15 @@ function jenkinsInstallSteps(packages: string[]): string[] {
   ];
 }
 
+/// `actions/checkout` wants `owner/repo`, not a URL. Falls back to the URL
+/// unchanged when it is not a recognisable GitHub remote — the user is going
+/// to read this file before committing it, and a visible wrong value is more
+/// use than a silently dropped step.
+function remoteToSlug(remote: string): string {
+  const m = remote.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i);
+  return m ? m[1] : remote;
+}
+
 function allowToolsFlag(allowTools: string[]): string {
   return allowTools.length > 0 ? ` --allow-tool ${allowTools.join(',')}` : '';
 }
@@ -556,8 +597,11 @@ function githubFile(args: {
   installBackends: Backend[];
   mcp: string[];
   bundlePath: string;
+  workspace?: CiWorkspace;
+  workspaceDir: string;
+  runCwd: string;
 }): CiDeployFile {
-  const { slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath } = args;
+  const { slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath, workspace, workspaceDir, runCwd } = args;
   const lines: string[] = [];
   lines.push('# Generated by Overcli. Safe to edit.');
   lines.push(`name: overcli-${slug}`);
@@ -575,6 +619,21 @@ function githubFile(args: {
   lines.push('      - uses: actions/checkout@v4');
   lines.push('        with:');
   lines.push('          fetch-depth: 0');
+  // A workspace is ASSEMBLED, not checked out: one step per member, side by
+  // side under `workspaceDir`, and the run's cwd is that directory. The app
+  // needs a symlink farm because its members live at scattered absolute paths
+  // on one disk; a runner has no such problem, so nothing here needs the
+  // workspace id or a --workspace flag.
+  for (const m of workspace?.members ?? []) {
+    lines.push('      - uses: actions/checkout@v4');
+    lines.push('        with:');
+    lines.push(`          repository: ${remoteToSlug(m.remote)}`);
+    lines.push(`          path: ${workspaceDir}/${m.dir}`);
+    lines.push('          fetch-depth: 0');
+    // The job's own GITHUB_TOKEN only reaches THIS repository. A private
+    // member needs a token that can read it too.
+    lines.push('          token: ${{ secrets.WORKSPACE_CHECKOUT_TOKEN || github.token }}');
+  }
   lines.push('      - uses: actions/setup-node@v4');
   lines.push('        with:');
   lines.push("          node-version: '20'");
@@ -598,7 +657,7 @@ function githubFile(args: {
   lines.push('          path: .overcli-state');
   lines.push(`          key: overcli-worker-${slug}`);
   lines.push(
-    `      - run: overcli run ${bundlePath} --state-dir .overcli-state${allowToolsFlag(allowTools)} --permissions ${perms} --trust ${trust} --run-in cwd --artifacts-dir out --json > run.json`,
+    `      - run: overcli run ${bundlePath} --cwd ${runCwd} --state-dir .overcli-state${allowToolsFlag(allowTools)} --permissions ${perms} --trust ${trust} --run-in cwd --artifacts-dir out --json > run.json`,
   );
   lines.push('        env:');
   lines.push('          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}');
@@ -629,8 +688,11 @@ function jenkinsFile(args: {
   installBackends: Backend[];
   mcp: string[];
   bundlePath: string;
+  workspace?: CiWorkspace;
+  workspaceDir: string;
+  runCwd: string;
 }): CiDeployFile {
-  const { slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath } = args;
+  const { slug, cron, perms, trust, allowTools, installBackends, mcp, bundlePath, workspace, workspaceDir, runCwd } = args;
   const packages = cliInstallPackages(installBackends);
   const lines: string[] = [];
   lines.push('// Generated by Overcli. Safe to edit.');
@@ -650,6 +712,15 @@ function jenkinsFile(args: {
   }
   lines.push('      }');
   lines.push('    }');
+  if (workspace && workspace.members.length > 0) {
+    lines.push("    stage('Assemble workspace') {");
+    lines.push('      steps {');
+    for (const m of workspace.members) {
+      lines.push(`        sh 'rm -rf ${workspaceDir}/${m.dir} && git clone --depth 1 ${m.remote} ${workspaceDir}/${m.dir}'`);
+    }
+    lines.push('      }');
+    lines.push('    }');
+  }
   lines.push("    stage('Shift') {");
   lines.push('      steps {');
   const credentials = [
@@ -661,7 +732,7 @@ function jenkinsFile(args: {
   ];
   lines.push(`        withCredentials([${credentials.join(', ')}]) {`);
   lines.push(
-    `          sh 'overcli run ${bundlePath} --state-dir "$OVERCLI_STATE"${allowToolsFlag(allowTools)} --permissions ${perms} --trust ${trust} --run-in cwd --artifacts-dir out --json > run.json'`,
+    `          sh 'overcli run ${bundlePath} --cwd ${runCwd} --state-dir "$OVERCLI_STATE"${allowToolsFlag(allowTools)} --permissions ${perms} --trust ${trust} --run-in cwd --artifacts-dir out --json > run.json'`,
   );
   lines.push('        }');
   lines.push('      }');

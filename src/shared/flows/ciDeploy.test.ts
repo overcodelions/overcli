@@ -475,7 +475,7 @@ describe('installing a private CLI', () => {
 });
 
 describe('a worker scoped to a workspace', () => {
-  const plan = (workspace?: { name: string; memberCount: number }) =>
+  const plan = (workspace?: import('./ciDeploy').CiWorkspace) =>
     buildCiDeploy({
       worker: worker({ trust: 'trusted' }),
       flows: [flow('nightly-review')],
@@ -488,21 +488,21 @@ describe('a worker scoped to a workspace', () => {
     // A workspace root is the symlink farm under Overcli's data directory, not
     // a checkout. Writing a pipeline file there puts it somewhere that is
     // never committed and is rebuilt on the next launch.
-    const p = plan({ name: 'unifyr', memberCount: 16 });
+    const p = plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
     expect(p.block).toBeDefined();
     expect(p.block?.reason).toContain('unifyr');
-    expect(p.block?.reason).toContain('16 repositories');
+    expect(p.block?.reason).toContain('symlink farm');
   });
 
   it('says what to do instead rather than just refusing', () => {
-    const p = plan({ name: 'unifyr', memberCount: 16 });
+    const p = plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
     expect(p.block?.remedy).toContain('Copy or save');
     // And is honest that the multi-repo half is not built.
-    expect(p.block?.remedy).toContain('cannot drive a multi-repo workspace yet');
+    expect(p.block?.remedy).toContain('2 member repositories side by side');
   });
 
   it('leads with the block, so it is read before the pipeline is', () => {
-    const p = plan({ name: 'unifyr', memberCount: 16 });
+    const p = plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
     expect(p.warnings).toContain(p.block!.reason);
     expect(p.warnings).toContain(p.block!.remedy);
   });
@@ -512,6 +512,58 @@ describe('a worker scoped to a workspace', () => {
   });
 
   it('still generates the files — they are the thing you copy out', () => {
-    expect(plan({ name: 'unifyr', memberCount: 16 }).files).toHaveLength(2);
+    expect(plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] }).files).toHaveLength(2);
+  });
+});
+
+describe('a workspace becomes checkout steps', () => {
+  const ws = {
+    name: 'unifyr',
+    members: [
+      { name: 'api', dir: 'api', remote: 'https://github.com/unifyr/api.git' },
+      { name: 'web', dir: 'web', remote: 'git@github.com:unifyr/web.git' },
+    ],
+    unreachable: [] as string[],
+  };
+  const plan = (target: 'github' | 'jenkins') =>
+    buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target,
+      workerYaml: 'x',
+      workspace: ws,
+    });
+
+  it('checks out every member side by side and runs in that directory', () => {
+    const gh = plan('github').files[1].contents;
+    expect(gh).toContain('path: workspace/api');
+    expect(gh).toContain('path: workspace/web');
+    expect(gh).toContain('--cwd workspace');
+  });
+
+  it('converts a remote URL to the owner/repo actions/checkout wants', () => {
+    const gh = plan('github').files[1].contents;
+    expect(gh).toContain('repository: unifyr/api');
+    // ssh remotes too — the same repo reached a different way
+    expect(gh).toContain('repository: unifyr/web');
+    expect(gh).not.toContain('git@github.com');
+  });
+
+  it('clones each member on Jenkins, which has no checkout action', () => {
+    const j = plan('jenkins').files[1].contents;
+    expect(j).toContain("stage('Assemble workspace')");
+    expect(j).toContain('git clone --depth 1 https://github.com/unifyr/api.git workspace/api');
+    expect(j).toContain('--cwd workspace');
+  });
+
+  it('leaves a single-project job running where it always did', () => {
+    const p = buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(p.files[1].contents).toContain('--cwd .');
+    expect(p.files[1].contents).not.toContain('workspace/');
   });
 });

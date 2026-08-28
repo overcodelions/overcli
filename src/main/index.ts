@@ -55,6 +55,7 @@ import {
   gitAvailability,
   gitInstallCommand,
   forgetGitAvailability,
+  originRemote,
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
@@ -105,7 +106,7 @@ import { host } from './host';
 import { installElectronHost } from './hostElectron';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
-import { buildCiDeploy, buildFlowCiDeploy } from '../shared/flows/ciDeploy';
+import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
 import { serializeFlow } from '../shared/flows/yaml';
 import {
   ensureWorkerFilesDir,
@@ -1753,16 +1754,21 @@ export function registerIpc(): void {
     }
     return out;
   }
-  /// The workspace a worker is scoped to, if any.
+  /// The workspace a worker is scoped to, resolved to something a pipeline can
+  /// check out.
   ///
-  /// Compared case-insensitively on macOS and Windows, and that is not
-  /// pedantry: a worker hired under one build can hold
+  /// Compared case-insensitively on macOS and Windows, and that is load-bearing
+  /// rather than pedantic: a worker can hold
   /// `.../Application Support/overcli/workspaces/<id>` while the store holds
   /// `.../Application Support/Overcli/workspaces/<id>` — same directory on a
   /// case-insensitive volume, different string. A strict `===` reports every
-  /// such worker as an ordinary project one and generates a job that writes
-  /// into Overcli's own data directory.
-  function workspaceFor(projectPath: string) {
+  /// such worker as an ordinary project one.
+  ///
+  /// Members without a git remote are separated out rather than dropped: a
+  /// local-only project cannot be reproduced on a runner, and a job that
+  /// silently covered less of the workspace than it claimed would be worse
+  /// than one that says so.
+  function workspaceFor(projectPath: string): CiWorkspace | undefined {
     if (!projectPath) return undefined;
     const fold = (p: string) =>
       (process.platform === 'darwin' || process.platform === 'win32' ? p.toLowerCase() : p).replace(
@@ -1770,9 +1776,31 @@ export function registerIpc(): void {
         '',
       );
     const target = fold(path.resolve(projectPath));
-    const ws = Store.load().workspaces.find((w) => w.rootPath && fold(path.resolve(w.rootPath)) === target);
+    const store = Store.load();
+    const ws = store.workspaces.find((w) => w.rootPath && fold(path.resolve(w.rootPath)) === target);
     if (!ws) return undefined;
-    return { name: ws.name, memberCount: ws.projectIds?.length ?? 0 };
+
+    const byId = new Map(store.projects.map((p) => [p.id, p]));
+    const members: CiWorkspace['members'] = [];
+    const unreachable: string[] = [];
+    const seenDirs = new Set<string>();
+    for (const pid of ws.projectIds ?? []) {
+      const project = byId.get(pid);
+      if (!project?.path) continue;
+      const remote = originRemote(project.path);
+      if (!remote) {
+        unreachable.push(project.name);
+        continue;
+      }
+      // Directory names must be unique and path-safe: two projects called
+      // "api" in different orgs would otherwise check out over each other.
+      let dir = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'member';
+      let n = 2;
+      while (seenDirs.has(dir)) dir = `${dir}-${n++}`;
+      seenDirs.add(dir);
+      members.push({ name: project.name, dir, remote });
+    }
+    return { name: ws.name, members, unreachable };
   }
 
   function ciPlanFor(id: string, target: 'github' | 'jenkins') {
