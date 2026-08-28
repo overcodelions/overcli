@@ -15,7 +15,7 @@ import { useRunningMap } from '../../runnersStore';
 import type { FlowRun } from '@shared/flows/schema';
 import {
   flowRunActivityAt,
-  flowRunOwnerPath,
+  flowRunIsOwnedBy,
   flowRunTitle as runTitle,
   isWorkerRun,
 } from '@shared/flows/schema';
@@ -139,7 +139,7 @@ export function flowRunsForPath(
     .filter(
       (run) =>
         !isWorkerRun(run) &&
-        flowRunOwnerPath(run) === path &&
+        flowRunIsOwnedBy(run, path) &&
         flowRunMatchesQuery(run, query),
     )
     .sort((a, b) => b.createdAt - a.createdAt);

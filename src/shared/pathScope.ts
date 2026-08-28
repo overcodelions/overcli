@@ -72,3 +72,31 @@ function caseSensitiveFs(): boolean {
   }
   return false;
 }
+
+/// Rewrite `p` to the canonical spelling of `root` when the two differ only
+/// in how the root itself is spelled.
+///
+/// Overcli's userData directory changed name — runs written before the app
+/// declared its `productName` hold `…/Application Support/overcli/…` where it
+/// is now `…/Overcli/…`. On a case-insensitive volume that is one directory
+/// with two names, so the files are all still there and nothing looks broken;
+/// what breaks is every `===` between a path read off an old record and one
+/// built from `dataDir()` today. `isSamePath` papers over that at each
+/// comparison. This closes it at the source, so records stop carrying the old
+/// spelling forward.
+///
+/// Returns `p` untouched unless it sits at or under `root` under the same
+/// case rules as `isSamePath` — which means this is a no-op on Linux, where
+/// the two spellings really are two directories.
+export function canonicalizeUnderRoot(p: string, root: string): string {
+  if (!p || !root) return p;
+  // A trailing separator on `root` would shift every offset below by one and
+  // turn the whole function into a silent no-op.
+  const base = root.replace(/[\\/]+$/, '');
+  if (!base) return p;
+  if (isPathAtOrUnder(p, base)) return p; // already canonical
+  if (!isSamePath(p.slice(0, base.length), base)) return p;
+  const rest = p.slice(base.length);
+  if (rest && rest[0] !== '/' && rest[0] !== '\\') return p; // matched mid-segment
+  return base + rest;
+}

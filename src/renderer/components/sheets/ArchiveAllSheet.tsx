@@ -4,7 +4,7 @@ import { useFlowsStore } from '../../flowsStore';
 import { useAllRunners } from '../../runnersStore';
 import { Conversation, UUID } from '@shared/types';
 import type { FlowRun } from '@shared/flows/schema';
-import { flowRunOwnerPath } from '@shared/flows/schema';
+import { flowRunIsOwnedBy } from '@shared/flows/schema';
 import { SheetActionButton } from './SettingsSheet';
 import { isAgentConversation } from '../Sidebar';
 import { describeWorkAtRisk } from '../flows/deleteRun';
@@ -62,7 +62,7 @@ export function ArchiveAllSheet(props: Props) {
     const flowSkipped: Array<{ run: FlowRun; reason: string }> = [];
     if (!ownerPath) return { flowTargets, flowSkipped };
     for (const run of Object.values(flowRuns)) {
-      if (flowRunOwnerPath(run) !== ownerPath) continue;
+      if (!flowRunIsOwnedBy(run, ownerPath)) continue;
       if (run.state.kind === 'running') {
         flowSkipped.push({ run, reason: 'running' });
         continue;
