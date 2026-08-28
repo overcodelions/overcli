@@ -112,6 +112,33 @@ describe('buildCiDeploy', () => {
     expect(jenkinsfile).toContain('archiveArtifacts');
   });
 
+  it('installs from the alpha dist-tag, not latest', () => {
+    for (const target of ['github', 'jenkins'] as const) {
+      const plan = buildCiDeploy({
+        worker: worker({ trust: 'trusted' }),
+        flows: [flow('nightly-review')],
+        target,
+        workerYaml: 'x',
+      });
+      expect(plan.files[1].contents).toContain('overcli@alpha');
+      expect(plan.files[1].contents).not.toMatch(/npm i -g overcli\s/);
+    }
+  });
+
+  it('names no action that does not exist', () => {
+    // The GitHub path used to call overcodelions/setup-overcli@v1, which was
+    // never published — the generated workflow referenced a step that could
+    // not resolve. Both targets install the same way now.
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).not.toContain('setup-overcli');
+    expect(plan.files[1].contents).toContain('actions/setup-node@v4');
+  });
+
   it('installs the backend CLI package in the Jenkins Setup stage', () => {
     const plan = buildCiDeploy({
       worker: worker(),
@@ -130,8 +157,10 @@ describe('buildCiDeploy', () => {
       target: 'github',
       workerYaml: 'name: Release Nanny\n',
     });
-    const workflow = plan.files[1].contents;
-    expect(workflow).toContain('backends: claude');
+    // Every backend is Ollama, which stock runners do not have, so the
+    // install list would otherwise be empty and the job would have no agent
+    // CLI at all.
+    expect(plan.files[1].contents).toContain('@anthropic-ai/claude-code');
   });
 
   it('never emits auto-approve, and a probationary worker gets deny', () => {
@@ -214,6 +243,33 @@ describe('trust and the allow-list', () => {
       workerYaml: 'x',
     });
     expect(plan.files[1].contents).not.toContain('--allow-tool');
+  });
+
+  it('installs from the alpha dist-tag, not latest', () => {
+    for (const target of ['github', 'jenkins'] as const) {
+      const plan = buildCiDeploy({
+        worker: worker({ trust: 'trusted' }),
+        flows: [flow('nightly-review')],
+        target,
+        workerYaml: 'x',
+      });
+      expect(plan.files[1].contents).toContain('overcli@alpha');
+      expect(plan.files[1].contents).not.toMatch(/npm i -g overcli\s/);
+    }
+  });
+
+  it('names no action that does not exist', () => {
+    // The GitHub path used to call overcodelions/setup-overcli@v1, which was
+    // never published — the generated workflow referenced a step that could
+    // not resolve. Both targets install the same way now.
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.files[1].contents).not.toContain('setup-overcli');
+    expect(plan.files[1].contents).toContain('actions/setup-node@v4');
   });
 
   it('installs the backend CLI package in the Jenkins Setup stage', () => {
@@ -305,7 +361,7 @@ describe('worker instructions are target-aware', () => {
         target,
         workerYaml: 'x',
       });
-      expect(plan.warnings.some((w) => w.includes('not published yet'))).toBe(true);
+      expect(plan.warnings.some((w) => w.includes('Publish the CLI first'))).toBe(true);
     }
   });
 });

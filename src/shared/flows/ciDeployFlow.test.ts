@@ -126,7 +126,7 @@ describe('buildFlowCiDeploy', () => {
 
   it('installs the backend package for a Jenkins agent', () => {
     const plan = buildFlowCiDeploy({ flow: flow(), target: 'jenkins', flowYaml: 'x' });
-    expect(plan.files[1].contents).toContain('npm i -g overcli @anthropic-ai/claude-code');
+    expect(plan.files[1].contents).toContain('npm i -g overcli@alpha @anthropic-ai/claude-code');
   });
 
   it('warns about Ollama, which stock runners do not have', () => {
@@ -156,7 +156,7 @@ describe('the instructions name what each system actually calls things', () => {
   it('warns up front that the CLI it invokes is not published yet', () => {
     for (const target of ['github', 'jenkins'] as const) {
       const plan = buildFlowCiDeploy({ flow: flow(), target, flowYaml: 'x' });
-      expect(plan.warnings.some((w) => w.includes('not published yet'))).toBe(true);
+      expect(plan.warnings.some((w) => w.includes('Publish the CLI first'))).toBe(true);
     }
   });
 })
