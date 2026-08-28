@@ -132,7 +132,7 @@ function readSource(file: string): { ok: true; body: string; id: string } | { ok
   }
 }
 
-function isWorkerFile(body: string): boolean {
+export function isWorkerFile(body: string): boolean {
   // Cheap and deliberately not a YAML parse: the parsers below produce far
   // better errors than a pre-parse would, and this only has to route.
   return /^\s*kind:\s*['"]?worker['"]?\s*$/m.test(body);
@@ -414,7 +414,7 @@ function toDecisionSummary(d: PermissionDecision) {
   return { tool: d.toolName, approved: d.approved, reason: d.reason };
 }
 
-function summariseRun(args: {
+export function summariseRun(args: {
   run: FlowRun | null;
   flow: Flow;
   summaryBase: RunSummary;
@@ -521,7 +521,7 @@ interface SettledItem {
 /// answer already sitting in the run.
 ///
 /// So the run is consulted directly when there is one, and it wins.
-function itemSettled(engines: HeadlessEngines, item: { status: string; runId?: string }): boolean {
+export function itemSettled(engines: HeadlessEngines, item: { status: string; runId?: string }): boolean {
   if (TERMINAL_ITEM.has(item.status)) return true;
   // `proposed` is a shift that parked for approval; `paused` is a run that
   // did. Both mean "waiting for a human", which headless is terminal.
