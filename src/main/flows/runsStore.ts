@@ -15,6 +15,7 @@ import { host } from '../host';
 import { log } from '../diagnostics';
 import { appendRunSummary } from './runSummaryLog';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
+import { canonicalizeUnderRoot } from '../../shared/pathScope';
 
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -61,6 +62,50 @@ function compact(run: FlowRun): FlowRun {
     }
   }
   return { ...run, artifacts };
+}
+
+/// Rewrite every userData-relative path on a run to the current spelling of
+/// the data directory, and say whether anything changed.
+///
+/// Runs written before the app declared its `productName` hold
+/// `…/Application Support/overcli/…`; `dataDir()` now returns `…/Overcli/…`.
+/// Same directory on a case-insensitive volume, so the run's worktree,
+/// coordinator root and workspace root are all still exactly where the record
+/// says — but every strict compare against a path built from `dataDir()` today
+/// reports a miss. That is what hid workspace runs from their own group in the
+/// sidebar. The comparisons are case-folded now; this stops the stale spelling
+/// being carried forward, so a run fixed once at load stays fixed.
+///
+/// Deliberately every path field, not just the owner path: they were all
+/// written by the same session, so they all drifted together, and leaving the
+/// rest would just move the next silent miss somewhere harder to find.
+function canonicalizeRunPaths(run: FlowRun): boolean {
+  const root = host().dataDir();
+  let changed = false;
+  const fix = (p: string): string => {
+    const next = canonicalizeUnderRoot(p, root);
+    if (next !== p) changed = true;
+    return next;
+  };
+
+  run.projectPath = fix(run.projectPath);
+  if (run.worktreePath) run.worktreePath = fix(run.worktreePath);
+  if (run.sourceProjectPath) run.sourceProjectPath = fix(run.sourceProjectPath);
+  if (run.baselineCommitsByMember) {
+    for (const entry of Object.values(run.baselineCommitsByMember)) {
+      entry.path = fix(entry.path);
+    }
+  }
+  if (run.checkouts) {
+    for (const c of run.checkouts) {
+      c.projectPath = fix(c.projectPath);
+      c.worktreePath = fix(c.worktreePath);
+    }
+  }
+  if (run.dismissedWorkspaceMemberPaths) {
+    run.dismissedWorkspaceMemberPaths = run.dismissedWorkspaceMemberPaths.map(fix);
+  }
+  return changed;
 }
 
 // Per-run async write chain. Checkpoints fire on every state transition —
@@ -175,6 +220,9 @@ export function loadAllRuns(): FlowRun[] {
       const body = fs.readFileSync(file, 'utf-8');
       const parsed = JSON.parse(body) as FlowRun;
       if (!parsed?.id || !parsed?.flowSnapshot) continue; // skip corrupt entries
+      // One `saveRun` at the end covers both repairs below, so a run that
+      // needs each doesn't queue two writes of the same state.
+      let repaired = canonicalizeRunPaths(parsed);
       if (parsed.state.kind === 'running') {
         const interruptedStepId = parsed.state.currentStepId;
         // Close out the dangling attempt for the step that was in flight —
@@ -194,8 +242,9 @@ export function loadAllRuns(): FlowRun[] {
           nextStepId: interruptedStepId,
           reason: 'interrupted',
         };
-        saveRun(parsed); // write the corrected state back so this is idempotent
+        repaired = true;
       }
+      if (repaired) saveRun(parsed); // write the corrections back, so this is idempotent
       out.push(parsed);
     } catch (err) {
       log('warn', 'flows.parseRun', `failed to parse persisted run ${name}`, err);
