@@ -109,6 +109,9 @@ export function CiDeployModal({
     if (plan && activeFile >= plan.files.length) setActiveFile(0);
   }, [plan, activeFile]);
 
+  // Follow-up instructions are for after the write. A workspace deploy never
+  // writes, so for that the follow-up is immediate.
+  const revealFollowUp = Boolean(written) || Boolean(plan?.block);
   const file = plan?.files[activeFile];
   const lines = useMemo(() => (file ? file.contents.replace(/\n$/, '').split('\n') : []), [file]);
   const existing = useMemo(() => new Set(plan?.existing ?? []), [plan]);
@@ -236,8 +239,16 @@ export function CiDeployModal({
                   )}
                 </Step>
 
+                {/* Held back until the files exist, and this is the whole
+                    reason the column reads calmly now. These instructions plus
+                    the notes below were two thirds of the text in a 380px
+                    rail, and none of them can be acted on before there is
+                    something to commit — so they were asking to be read at the
+                    one moment they could not be used. A workspace deploy is
+                    the exception: there is no write, so they ARE the next
+                    thing to do. */}
                 <Step n={4} title="Then, outside Overcli" state={stepState(4)} last>
-                  {plan ? (
+                  {revealFollowUp && plan ? (
                     <ol className="space-y-2">
                       {plan.steps.map((s, i) => (
                         <li
@@ -250,7 +261,11 @@ export function CiDeployModal({
                       ))}
                     </ol>
                   ) : (
-                    <p className="text-[11px] text-ink-faint">Preview to see what is left to do.</p>
+                    <p className="text-[11px] leading-[1.5] text-ink-faint">
+                      {plan
+                        ? `${plan.steps.length} things to do once the files are written — secrets, commit, a first run.`
+                        : 'Nothing yet.'}
+                    </p>
                   )}
                 </Step>
               </ol>
@@ -258,7 +273,7 @@ export function CiDeployModal({
               {/* Not steps: true, worth saying, nothing to perform. Kept
                   visually distinct from the numbered list for exactly that
                   reason — numbering a fact makes it look like a task. */}
-              {plan && plan.notes.length > 0 && (
+              {revealFollowUp && plan && plan.notes.length > 0 && (
                 <div className="pt-1">
                   <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-faint">
                     Worth knowing

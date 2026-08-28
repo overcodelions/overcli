@@ -166,8 +166,7 @@ export function FlowDeployCard({
                   </select>
                   {!projectPath && (
                     <div className="mt-1 text-[10px] text-amber-400">
-                      A pipeline written into the wrong repository would run this flow against the
-                      wrong code.
+                      Pick one — the wrong repo runs this against the wrong code.
                     </div>
                   )}
                 </label>
@@ -186,8 +185,7 @@ export function FlowDeployCard({
                   className="mt-1 w-full rounded-md border border-card bg-surface px-2 py-1 text-xs text-ink placeholder:text-ink-faint focus:outline-none focus:border-card-strong"
                 />
                 <div className="mt-1 text-[10px] text-ink-faint">
-                  Becomes the job's default. On GitHub you can override it per run from the Actions
-                  tab.
+                  The job's default; overridable per run.
                 </div>
               </label>
             </div>
