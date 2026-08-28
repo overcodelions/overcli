@@ -14,6 +14,27 @@ import type { Backend } from '../types';
 
 export type CiTarget = 'github' | 'jenkins';
 
+export const CI_CLI_TAG = 'alpha';
+
+/// Where the CLI is published, and therefore what a job has to do to install
+/// it.
+///
+/// It is private on GitHub Packages while the deploy surface is Alpha, and
+/// private is not free here: a scoped package on a private registry means every
+/// runner needs registry auth before `npm i -g` will work. Actions gets that
+/// almost for nothing — `GITHUB_TOKEN` is already in the job — but a Jenkins
+/// agent needs an `.npmrc` written from a credential, which is a real extra
+/// step and an extra secret to rotate.
+///
+/// Going public later is one flag on the publish side (`access: public`) and
+/// deleting the auth lines here. The package NAME does not change either way,
+/// which is why it is scoped now: nobody who installed it has to migrate.
+export const CI_CLI_PACKAGE = '@overcodelions/overcli';
+export const CI_CLI_SCOPE = '@overcodelions';
+export const CI_CLI_REGISTRY = 'https://npm.pkg.github.com';
+/// Credential id a Jenkins agent reads the registry token from.
+export const CI_JENKINS_NPM_CREDENTIAL = 'GITHUB_PACKAGES_TOKEN';
+
 /// The prerequisite neither generated file can satisfy for itself.
 ///
 /// Both pipelines start by installing the `overcli` CLI — the GitHub one via
@@ -28,9 +49,10 @@ export type CiTarget = 'github' | 'jenkins';
 /// deploying deserves to know that before they commit a file, not after a red
 /// build. Delete this and the two `installLine` branches once the CLI ships.
 export const CI_CLI_NOT_PUBLISHED =
-  'This job installs overcli@alpha from npm. Publish the CLI first — `npm publish --tag alpha` — ' +
-  'or the setup step fails before it reaches anything Overcli generated. Everything below that ' +
-  'line is correct and worth committing now.';
+  `This job installs ${CI_CLI_PACKAGE}@${CI_CLI_TAG} from GitHub Packages, which is private. ` +
+  'Publish the CLI first — tag a release, or `npm publish --tag alpha` — or the setup step fails ' +
+  'before it reaches anything Overcli generated. Everything below that line is correct and worth ' +
+  'committing now.';
 
 /// The npm dist-tag the generated jobs install from.
 ///
@@ -38,7 +60,7 @@ export const CI_CLI_NOT_PUBLISHED =
 /// cannot drift. A bare `npm i -g overcli` should not pick this up: the deploy
 /// surface is flagged Alpha for real reasons, and an install line that quietly
 /// tracked `latest` would hand a CI runner whatever shipped that morning.
-export const CI_CLI_TAG = 'alpha';
+
 
 /// The npm package each backend's CLI ships as. Both targets install the same
 /// way now — the GitHub path used to call a `setup-overcli` action that was
@@ -46,7 +68,7 @@ export const CI_CLI_TAG = 'alpha';
 /// not resolve. One install line, one thing to keep true.
 export function cliInstallPackages(installBackends: Backend[]): string[] {
   return [
-    `overcli@${CI_CLI_TAG}`,
+    `${CI_CLI_PACKAGE}@${CI_CLI_TAG}`,
     ...installBackends.map((b) => BACKEND_PACKAGES[b]).filter((p): p is string => Boolean(p)),
   ];
 }
@@ -280,6 +302,13 @@ export function buildFlowCiDeploy(args: {
   }
 
   const steps: string[] = [secretInstruction(target, 'ANTHROPIC_API_KEY', 'the Claude backend')];
+  if (target === 'jenkins') {
+    steps.push(
+      `Add a "Secret text" credential with the ID ${CI_JENKINS_NPM_CREDENTIAL}, holding a GitHub token ` +
+        `with read:packages — the CLI is private, so the agent cannot install it otherwise. ` +
+        'Manage Jenkins → Credentials.',
+    );
+  }
   steps.push(`Commit and push ${flowPath} and the pipeline file.`);
   steps.push(
     target === 'github'
@@ -406,6 +435,13 @@ export function buildCiDeploy(args: {
       ),
     );
   }
+  if (target === 'jenkins') {
+    steps.push(
+      `Add a "Secret text" credential with the ID ${CI_JENKINS_NPM_CREDENTIAL}, holding a GitHub token ` +
+        `with read:packages — the CLI is private, so the agent cannot install it otherwise. ` +
+        'Manage Jenkins → Credentials.',
+    );
+  }
   steps.push(`Commit and push ${bundlePath} and the pipeline file.`);
   steps.push(
     target === 'github'
@@ -447,6 +483,24 @@ export function buildCiDeploy(args: {
   };
 }
 
+/// Installing a private scoped package on a Jenkins agent.
+///
+/// Actions gets this free — `setup-node` writes the `.npmrc` and the job's own
+/// `GITHUB_TOKEN` can read org packages. A Jenkins agent has neither, so the
+/// token becomes a credential it has to hold and the `.npmrc` has to be
+/// written by hand. Scoped to `@overcodelions` only, so the agent's other npm
+/// traffic still goes to the public registry.
+///
+/// This whole function disappears when the CLI goes public.
+function jenkinsInstallSteps(packages: string[]): string[] {
+  return [
+    `        withCredentials([string(credentialsId: '${CI_JENKINS_NPM_CREDENTIAL}', variable: 'NPM_TOKEN')]) {`,
+    `          sh 'printf "${CI_CLI_SCOPE}:registry=${CI_CLI_REGISTRY}\\n//npm.pkg.github.com/:_authToken=$NPM_TOKEN\\n" > $HOME/.npmrc'`,
+    `          sh 'npm i -g ${packages.join(' ')}'`,
+    '        }',
+  ];
+}
+
 function allowToolsFlag(allowTools: string[]): string {
   return allowTools.length > 0 ? ` --allow-tool ${allowTools.join(',')}` : '';
 }
@@ -482,7 +536,13 @@ function githubFile(args: {
   lines.push('      - uses: actions/setup-node@v4');
   lines.push('        with:');
   lines.push("          node-version: '20'");
+  lines.push(`          registry-url: '${CI_CLI_REGISTRY}'`);
+  lines.push(`          scope: '${CI_CLI_SCOPE}'`);
   lines.push(`      - run: npm i -g ${cliInstallPackages(installBackends).join(' ')}`);
+  lines.push('        env:');
+  // GITHUB_TOKEN can read packages in the same org, so a private CLI needs no
+  // secret of its own on Actions. Jenkins is not so lucky — see below.
+  lines.push('          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
   if (mcp.length > 0) {
     lines.push(`      - run: overcli setup --mcp ${mcp.join(' ')}`);
     lines.push('        env:');
@@ -542,7 +602,7 @@ function jenkinsFile(args: {
   lines.push('  stages {');
   lines.push("    stage('Setup') {");
   lines.push('      steps {');
-  lines.push(`        sh 'npm i -g ${packages.join(' ')}'`);
+  lines.push(...jenkinsInstallSteps(packages));
   if (mcp.length > 0) {
     lines.push(`        sh 'overcli setup --mcp ${mcp.join(' ')}'`);
   }
@@ -614,7 +674,13 @@ function githubFlowFile(args: {
   lines.push('      - uses: actions/setup-node@v4');
   lines.push('        with:');
   lines.push("          node-version: '20'");
+  lines.push(`          registry-url: '${CI_CLI_REGISTRY}'`);
+  lines.push(`          scope: '${CI_CLI_SCOPE}'`);
   lines.push(`      - run: npm i -g ${cliInstallPackages(installBackends).join(' ')}`);
+  lines.push('        env:');
+  // GITHUB_TOKEN can read packages in the same org, so a private CLI needs no
+  // secret of its own on Actions. Jenkins is not so lucky — see below.
+  lines.push('          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
   lines.push(
     `      - run: overcli run ${flowPath} --input "\${{ inputs.prompt }}"${allowToolsFlag(allowTools)} --permissions allow-list --run-in ${runIn} --artifacts-dir out --json > run.json`,
   );
@@ -650,7 +716,7 @@ function jenkinsFlowFile(args: {
   lines.push('  stages {');
   lines.push("    stage('Setup') {");
   lines.push('      steps {');
-  lines.push(`        sh 'npm i -g ${packages.join(' ')}'`);
+  lines.push(...jenkinsInstallSteps(packages));
   lines.push('      }');
   lines.push('    }');
   lines.push("    stage('Run') {");

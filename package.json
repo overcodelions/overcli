@@ -1,6 +1,10 @@
 {
-  "name": "overcli",
+  "name": "@overcodelions/overcli",
   "version": "0.16.1",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
   "description": "A desktop GUI that sits over your coding-agent CLIs (claude, codex, gemini, ollama, copilot).",
   "license": "Apache-2.0",
   "author": "Lionel Farr <lionel@codelionsllc.com>",

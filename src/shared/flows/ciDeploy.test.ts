@@ -120,7 +120,7 @@ describe('buildCiDeploy', () => {
         target,
         workerYaml: 'x',
       });
-      expect(plan.files[1].contents).toContain('overcli@alpha');
+      expect(plan.files[1].contents).toContain('@overcodelions/overcli@alpha');
       expect(plan.files[1].contents).not.toMatch(/npm i -g overcli\s/);
     }
   });
@@ -253,7 +253,7 @@ describe('trust and the allow-list', () => {
         target,
         workerYaml: 'x',
       });
-      expect(plan.files[1].contents).toContain('overcli@alpha');
+      expect(plan.files[1].contents).toContain('@overcodelions/overcli@alpha');
       expect(plan.files[1].contents).not.toMatch(/npm i -g overcli\s/);
     }
   });
@@ -438,5 +438,38 @@ describe('steps are things to do; notes are things to know', () => {
     const pause = steps.findIndex((s) => s.startsWith('Pause'));
     expect(verify).toBeGreaterThanOrEqual(0);
     expect(verify).toBeLessThan(pause);
+  });
+});
+
+describe('installing a private CLI', () => {
+  const plan = (target: 'github' | 'jenkins') =>
+    buildCiDeploy({
+      worker: worker({ trust: 'trusted' }),
+      flows: [flow('nightly-review')],
+      target,
+      workerYaml: 'x',
+    });
+
+  it('points npm at GitHub Packages for the scope, on both targets', () => {
+    for (const t of ['github', 'jenkins'] as const) {
+      expect(plan(t).files[1].contents).toContain('npm.pkg.github.com');
+      expect(plan(t).files[1].contents).toContain('@overcodelions/overcli@alpha');
+    }
+  });
+
+  it('uses the token Actions already has, so no new secret is needed there', () => {
+    const gh = plan('github');
+    expect(gh.files[1].contents).toContain('NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}');
+    // …and therefore says nothing about a registry credential.
+    expect(gh.steps.some((s) => s.includes('GITHUB_PACKAGES_TOKEN'))).toBe(false);
+  });
+
+  it('tells a Jenkins user about the extra credential, because the agent has none', () => {
+    const j = plan('jenkins');
+    expect(j.files[1].contents).toContain("credentialsId: 'GITHUB_PACKAGES_TOKEN'");
+    expect(j.files[1].contents).toContain('.npmrc');
+    expect(j.steps.some((s) => s.includes('GITHUB_PACKAGES_TOKEN') && s.includes('read:packages'))).toBe(
+      true,
+    );
   });
 });

@@ -126,7 +126,7 @@ describe('buildFlowCiDeploy', () => {
 
   it('installs the backend package for a Jenkins agent', () => {
     const plan = buildFlowCiDeploy({ flow: flow(), target: 'jenkins', flowYaml: 'x' });
-    expect(plan.files[1].contents).toContain('npm i -g overcli@alpha @anthropic-ai/claude-code');
+    expect(plan.files[1].contents).toContain('npm i -g @overcodelions/overcli@alpha @anthropic-ai/claude-code');
   });
 
   it('warns about Ollama, which stock runners do not have', () => {
