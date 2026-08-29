@@ -140,9 +140,9 @@ describe('buildWorkQueue', () => {
     expect(q.finished[0].title).toContain('Shift 3');
   });
 
-  it('rolls a day of chat answers from one worker into a single row', () => {
+  it('rolls a day of answers from one worker into a single row', () => {
     const answer = (id: string, at: number, workerId = 'w1') =>
-      batch(id, [], { workerId, task: 'errand', intent: 'chat', completedAt: at });
+      batch(id, [], { workerId, task: 'errand', completedAt: at });
     const q = buildWorkQueue(
       {
         a1: answer('a1', NOON - HOUR),
@@ -151,8 +151,6 @@ describe('buildWorkQueue', () => {
         // A different worker's answer is a different line — the group's one
         // sentence has to be true of everyone inside it.
         a4: answer('a4', NOON - HOUR, 'w2'),
-        // A work errand that launched nothing is still a job that was tried.
-        e1: batch('e1', [], { task: 'errand', intent: 'work', completedAt: NOON - HOUR }),
       },
       {},
       WORKERS,
@@ -167,15 +165,37 @@ describe('buildWorkQueue', () => {
     // member sat.
     expect(group!.at).toBe(NOON - HOUR);
     expect(q.finished[0].key).toBe(group!.key);
-    // The other worker's lone answer, and the work errand, stay as they were.
-    expect(q.finished.filter((r) => !r.answers)).toHaveLength(2);
+    // The other worker's lone answer stays as it was.
+    expect(q.finished.filter((r) => !r.answers)).toHaveLength(1);
     // Three answers are three things that finished, however they are drawn.
-    expect(q.finishedToday).toBe(5);
+    expect(q.finishedToday).toBe(4);
   });
 
-  it('leaves a single chat answer alone — a group of one says less', () => {
+  it('counts an errand that launched nothing as an answer, whatever you meant by it', () => {
+    // The old rule read the Ask/Create-work toggle, so a question you happened
+    // to send as work sat on the page as its own row forever while the
+    // identical question sent as a question folded away. The outcome is the
+    // honest signal: nothing launched, so the worker answered you.
     const q = buildWorkQueue(
-      { a1: batch('a1', [], { task: 'errand', intent: 'chat', completedAt: NOON - HOUR }) },
+      {
+        a1: batch('a1', [], { task: 'errand', completedAt: NOON - HOUR }),
+        a2: batch('a2', [], { task: 'errand', completedAt: NOON - 2 * HOUR }),
+        // Launched something, so it is work and keeps its own row.
+        e1: batch('e1', [{ status: 'done' }], { task: 'errand', completedAt: NOON - HOUR }),
+      },
+      {},
+      WORKERS,
+      {},
+      NOON,
+    );
+
+    expect(q.finished.find((r) => r.answers)?.answers).toHaveLength(2);
+    expect(q.finished.filter((r) => !r.answers)).toHaveLength(1);
+  });
+
+  it('leaves a single answer alone — a group of one says less', () => {
+    const q = buildWorkQueue(
+      { a1: batch('a1', [], { task: 'errand', completedAt: NOON - HOUR }) },
       {},
       WORKERS,
       {},
@@ -183,7 +203,6 @@ describe('buildWorkQueue', () => {
     );
     expect(q.finished).toHaveLength(1);
     expect(q.finished[0].answers).toBeUndefined();
-    expect(q.finished[0].intent).toBe('chat');
   });
 
   it('puts a worker still planning at the top of the running band', () => {

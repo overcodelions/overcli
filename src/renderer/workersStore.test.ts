@@ -321,7 +321,6 @@ describe('workersStore mirror', () => {
       errandError: { 'worker-1': 'nope' },
       errandResult: {
         'worker-1': {
-          intent: 'work',
           orchestrationId: 'orch-1',
           count: 0,
           queued: 0,
@@ -348,12 +347,14 @@ describe('workersStore mirror', () => {
       text: '',
       tools: [],
       task: 'shift',
+      warm: false,
     });
     s.applyShiftProgress('worker-1', 'investigating…', ['Read']);
     expect(useWorkersStore.getState().shiftProgress['worker-1']).toEqual({
       text: 'investigating…',
       tools: ['Read'],
       task: 'shift',
+      warm: false,
     });
     s.setShiftActive('worker-1', false);
     expect(useWorkersStore.getState().shiftProgress['worker-1']).toBeUndefined();
@@ -369,6 +370,16 @@ describe('workersStore mirror', () => {
     s.applyShiftProgress('worker-1', 'checking…', []);
     expect(useWorkersStore.getState().shiftProgress['worker-1']?.task).toBe('errand');
   });
+
+  it('carries whether the live turn resumed, so the desk can stop guessing', () => {
+    // "Picking up where you left off…" used to be printed off a stored
+    // session for today, which is true on turns that open cold.
+    const s = useWorkersStore.getState();
+    s.setShiftActive('worker-1', true, 'errand', true);
+    expect(useWorkersStore.getState().shiftProgress['worker-1']?.warm).toBe(true);
+    s.applyShiftProgress('worker-1', 'checking…', []);
+    expect(useWorkersStore.getState().shiftProgress['worker-1']?.warm).toBe(true);
+  });
 });
 
 describe('workersStore reset', () => {
@@ -377,12 +388,11 @@ describe('workersStore reset', () => {
       journals: { 'worker-1': [{ id: 'j1' } as never] },
       errandBusy: { 'worker-1': false },
       errandSending: {
-        'worker-1': [{ id: 'send-1', text: 'old errand', intent: 'work', at: 1 }],
+        'worker-1': [{ id: 'send-1', text: 'old errand', at: 1 }],
       },
       errandError: { 'worker-1': 'old error' },
       errandResult: {
         'worker-1': {
-          intent: 'work',
           orchestrationId: 'orch-1',
           count: 0,
           queued: 0,
@@ -425,7 +435,6 @@ describe('workersStore errands', () => {
       errandError: { 'worker-1': 'Monthly budget spent.' },
       errandResult: {
         'worker-1': {
-          intent: 'work',
           orchestrationId: 'orch-1',
           count: 0,
           queued: 0,
@@ -453,10 +462,10 @@ describe('workersStore errands', () => {
         reply: 'Planned.',
       },
     });
-    const task = useWorkersStore.getState().runErrand('worker-1', 'Investigate this.', 'chat');
+    const task = useWorkersStore.getState().runErrand('worker-1', 'Investigate this.');
     expect(useWorkersStore.getState().errandBusy['worker-1']).toBe(true);
     expect(useWorkersStore.getState().errandSending['worker-1'][0]).toMatchObject({
-      intent: 'chat',
+      text: 'Investigate this.',
     });
     await expect(task).resolves.toBe(true);
     expect(useWorkersStore.getState().errandBusy['worker-1']).toBe(false);
@@ -467,7 +476,6 @@ describe('workersStore errands', () => {
     expect(mockInvoke).toHaveBeenCalledWith('workers:runErrand', {
       id: 'worker-1',
       instruction: 'Investigate this.',
-      intent: 'chat',
     });
 
     useWorkersStore.getState().clearErrand('worker-1');
@@ -477,7 +485,7 @@ describe('workersStore errands', () => {
       ok: false,
       error: 'Monthly budget spent.',
     });
-    await expect(useWorkersStore.getState().runErrand('worker-1', 'Try again.', 'work')).resolves.toBe(false);
+    await expect(useWorkersStore.getState().runErrand('worker-1', 'Try again.')).resolves.toBe(false);
     expect(useWorkersStore.getState().errandError['worker-1']).toBe('Monthly budget spent.');
     useWorkersStore.getState().clearErrand('worker-1');
     expect(useWorkersStore.getState().errandError['worker-1']).toBeUndefined();
@@ -999,7 +1007,64 @@ describe('revising in the background', () => {
     useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
     expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
     expect(selectRevise(useWorkersStore.getState()).note).toMatch(/Cadence doubled/);
-    expect(selectRevise(useWorkersStore.getState()).pending).toBeNull();
+    // Applied, but still only on a DRAFT — so it stays held until it is saved.
+    expect(selectRevise(useWorkersStore.getState()).pending?.applied).toBe(true);
+  });
+
+  it('keeps an applied-but-unsaved revision when the editor is left again', async () => {
+    // The reported loss: the revision lands, you go and look at something
+    // else without pressing Save, and the draft it lived on is dropped.
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      jobDescription: 'Twice daily now.',
+      note: 'Cadence doubled.',
+    });
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    await useWorkersStore.getState().startRevise();
+    expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
+
+    useWorkersStore.getState().closeEditor();
+    // Still on the books, so the roster can say a revision is ready.
+    expect(useWorkersStore.getState().revise['worker-1']?.pending?.workerId).toBe('worker-1');
+
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    expect(useWorkersStore.getState().draft?.jobDescription).toBe('Twice daily now.');
+    expect(selectRevise(useWorkersStore.getState()).note).toMatch(/never saved/);
+  });
+
+  it('lets go of a held revision once the worker is saved', async () => {
+    mockInvoke.mockResolvedValueOnce({
+      ok: true,
+      jobDescription: 'Twice daily now.',
+      note: 'Cadence doubled.',
+    });
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    await useWorkersStore.getState().startRevise();
+
+    mockInvoke.mockResolvedValueOnce({ ok: true });
+    await useWorkersStore.getState().save([]);
+    expect(useWorkersStore.getState().revise['worker-1']).toBeUndefined();
+  });
+
+  it('retries a revision whose turn is wedged rather than sitting on it', async () => {
+    mockInvoke.mockReturnValueOnce(new Promise(() => {}));
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'worker-1' });
+    useWorkersStore.getState().patchRevise({ instruction: 'Work twice a day.' });
+    void useWorkersStore.getState().startRevise();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+    // A second Apply while it is genuinely still running changes nothing…
+    void useWorkersStore.getState().startRevise();
+    expect(mockInvoke).toHaveBeenCalledTimes(1);
+
+    // …but one that has been "working" for eleven minutes is stuck, and
+    // pressing Apply again has to actually do something.
+    useWorkersStore.getState().patchRevise({ startedAt: Date.now() - 11 * 60_000 });
+    mockInvoke.mockReturnValueOnce(new Promise(() => {}));
+    void useWorkersStore.getState().startRevise();
+    expect(mockInvoke).toHaveBeenCalledTimes(2);
   });
 
   it('lands on the same worker even after its editor was closed and reopened', async () => {

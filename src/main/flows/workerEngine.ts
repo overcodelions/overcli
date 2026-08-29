@@ -34,7 +34,7 @@ import {
   EFFICIENT_TOOL_DIRECTIVE,
 } from '../../shared/responseDirectives';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
-import type { Orchestration } from '../../shared/flows/orchestration';
+import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
 import {
   evaluateSchedule,
   nextOccurrenceAfter,
@@ -66,7 +66,6 @@ import {
   type WorkerErrandResult,
   type WorkerHandoff,
   type WorkerJournalEntry,
-  type WorkerMessageIntent,
   type WorkerScorecard,
   type WorkerTrustLevel,
 } from '../../shared/flows/worker';
@@ -242,6 +241,10 @@ export interface WorkerEngineDeps {
   /// Entries carry either the recorded output (`body`) or a path to a file
   /// the run wrote itself (`sourcePath`), which is copied instead of read.
   deliverablesFor?: (runId: UUID) => Array<{ name: string; body?: string; sourcePath?: string }>;
+  /// Which flow run a conversation belongs to, so a chat turn taken on a
+  /// finished run can re-file whatever it wrote. Absent in hosts (the CLI)
+  /// where nobody can chat with a run after it ends.
+  runIdForConversation?: (conversationId: UUID) => UUID | null;
   /// Save a version of an everyday project after this worker has filed
   /// something into it. Optional and fire-and-forget: the delivery has
   /// already happened, and a checkpoint that fails must not take the journal
@@ -621,7 +624,17 @@ export class WorkerEngine {
       // The desk thread is a conversation in progress, not a contract term.
       // Editing the budget mid-morning must not make the worker forget what
       // you were just talking about.
-      deskSession: existing?.deskSession,
+      //
+      // The JOB DESCRIPTION is the exception, because it is the one edit that
+      // IS a contract term. A resumed turn deliberately re-sends none of it —
+      // that is what makes the desk a conversation — so a thread held open
+      // across the edit would keep answering as the old persona until
+      // midnight, and the edit would look like it did nothing. Drop the
+      // session and let the next message establish the worker afresh.
+      deskSession:
+        existing && input.jobDescription !== existing.jobDescription
+          ? undefined
+          : existing?.deskSession,
       // An explicit budget edit wins over a parked distribution: otherwise
       // settleDistributions puts the OLD number back on the 1st and the
       // user's change disappears with no event.
@@ -631,6 +644,7 @@ export class WorkerEngine {
           : existing?.distribution,
     };
     if (candidate.distribution === undefined) delete candidate.distribution;
+    if (candidate.deskSession === undefined) delete candidate.deskSession;
     if (input.caps.fileIntoProject && !existing?.caps.fileIntoProject) {
       candidate.fileIntoProjectSince = now;
     }
@@ -1049,7 +1063,6 @@ export class WorkerEngine {
   async runErrand(
     id: UUID,
     instruction: string,
-    intent: WorkerMessageIntent = 'work',
     attachments?: Attachment[],
   ): Promise<{ ok: true; result: WorkerErrandResult } | { ok: false; error: string }> {
     const w = this.workers.get(id);
@@ -1063,7 +1076,6 @@ export class WorkerEngine {
     const res = await this.fire(w, {
       manual: true,
       errand,
-      intent,
       attachments,
     });
     this.arm();
@@ -1078,6 +1090,13 @@ export class WorkerEngine {
   /// journal; ignores everything else (including its own workerUpdate
   /// emissions, so there is no recursion).
   observeEvent(event: MainToRendererEvent): void {
+    // A turn ending on a run this worker owns — including a chat turn taken
+    // after the flow finished, which is the only way files land in a run root
+    // with no orchestration update behind them.
+    if (event.type === 'running' && !event.isRunning) {
+      this.refileRunDeliverables(event.conversationId);
+      return;
+    }
     if (event.type !== 'orchestrationUpdate') return;
     if (event.orchestration.origin?.kind !== 'worker') return;
     this.syncOrchestration(event.orchestration);
@@ -1214,7 +1233,6 @@ export class WorkerEngine {
     opts: {
       manual?: boolean;
       errand?: string;
-      intent?: WorkerMessageIntent;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string };
     },
@@ -1237,7 +1255,6 @@ export class WorkerEngine {
     opts: {
       manual?: boolean;
       errand?: string;
-      intent?: WorkerMessageIntent;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string };
     },
@@ -1294,7 +1311,7 @@ export class WorkerEngine {
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
-    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.intent ?? 'work', opts.attachments, opts.from);
+    if (opts.errand) return await this.fireErrand(w, opts.errand, opts.attachments, opts.from);
 
     // Stamp BEFORE awaiting the planning turn — it can run for minutes, long
     // enough for another tick to read a stale lastShiftAt and double-fire.
@@ -1414,31 +1431,33 @@ export class WorkerEngine {
   private async fireErrand(
     w: Worker,
     errand: string,
-    intent: WorkerMessageIntent,
     attachments?: Attachment[],
     from?: { workerId: UUID; workerName: string },
   ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
     const at = this.now();
     const rejected = this.journal.rejectedTitles(w.id);
     const runIn = this.effectiveRunIn(w);
-    const autoCap = workerAutoApproveCap(w);
     // Calculate before awaiting the planner: tests and fast callers can share
     // a frozen clock, and journal append is intentionally idempotent.
     const entryId = this.errandEntryId(w.id, at);
     const priorTurns = this.priorErrandTurns(w.id, at);
     const priorDayHandoff = this.priorDayHandoff(w.id, at);
 
-    // The desk thread this message belongs to, when it is desk chat from the
-    // manager. A colleague's message is deliberately excluded: it is a
+    // The desk thread this message belongs to. Every message YOU type joins
+    // it, asked or produced: a follow-up to a piece of work is the same
+    // conversation as the work, and answering it from a cold process meant
+    // the worker read a truncated replay of its own last answer instead of
+    // remembering it. A colleague's message is deliberately excluded: it is a
     // different speaker, and folding it into the manager's conversation would
     // let one worker read the other half of that conversation.
-    const desk = intent === 'chat' && !from ? this.deskThread(w, at) : null;
+    const desk = from ? null : this.deskThread(w, at);
 
     this.deps.emit({
       type: 'workerShiftProgress',
       workerId: w.id,
       active: true,
       task: 'errand',
+      warm: !!desk?.sessionId,
     });
     /// One desk/errand turn. `resumeSessionId` set means the worker is
     /// already sitting in this conversation and holds everything a cold turn
@@ -1446,7 +1465,7 @@ export class WorkerEngine {
     const fire = (resumeSessionId?: string) => {
       const warm = !!resumeSessionId;
       return this.deps.parker.parkProposal({
-        origin: workerOrigin(w, 'errand', errand, from, intent),
+        origin: workerOrigin(w, 'errand', errand, from),
         projectPath: w.projectPath,
         // The pace directives lead every turn, warm or cold: they are two
         // lines, and a resumed session drifting back to essays because we
@@ -1454,10 +1473,8 @@ export class WorkerEngine {
         prompt: paced(
           w,
           warm
-            ? errand
-            : intent === 'chat'
-              ? this.buildChatPrompt(w, errand, priorDayHandoff, from)
-              : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
+            ? this.buildWarmPrompt(w, errand)
+            : this.buildErrandPrompt(w, errand, rejected, priorDayHandoff, from),
         ),
         // Replay is the fallback for a thread we cannot resume. A warm turn
         // remembers the exchanges for itself, and re-sending them would read
@@ -1468,10 +1485,17 @@ export class WorkerEngine {
         runIn,
         maxConcurrent: Math.min(w.caps.maxItemsPerShift, 4),
         title: `[Errand] ${errandLabel(errand)}`,
-        ...(intent === 'work' && autoCap > 0 ? { autoApprove: { maxItems: autoCap } } : {}),
+        // Never auto-approved, at any trust level. A shift is something you
+        // scheduled, so letting it launch unattended is a standing decision
+        // you already made; a sentence you typed at the desk is not. With the
+        // Ask/Create-work toggle gone every message can produce candidates,
+        // and the thing that used to keep a casual question from launching an
+        // unattended run on an autonomous worker was that toggle — so the
+        // guarantee moves here, where it does not depend on you classifying
+        // your own sentence first.
         model: w.heartbeatModel,
         backend: w.heartbeatBackend,
-        maxItems: intent === 'chat' ? 0 : w.caps.maxItemsPerShift,
+        maxItems: w.caps.maxItemsPerShift,
         excludeTitles: rejected,
         mcpAllowlist: w.mcpServers,
         ...(desk ? { conversationId: desk.conversationId } : {}),
@@ -1527,13 +1551,20 @@ export class WorkerEngine {
     // A delegated errand never gets a roster block, so it should never emit a
     // handoff; guarding on `from` as well means a turn that invented one
     // anyway cannot bounce the parcel onward.
+    // Gated on the turn having produced something. A referral spends a
+    // COLLEAGUE's budget, which is the one desk outcome you cannot wave away
+    // by dismissing a card, so it stays tied to a turn that actually decided
+    // there was work here — not to a turn that answered a question in prose
+    // and mentioned a colleague's name on the way past.
     const handoffs =
-      intent === 'chat' || from ? '' : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
+      from || res.count === 0
+        ? ''
+        : this.dispatchHandoffs(fresh, rawReply, res.count, at, res.orchestrationId);
     // Path 3: the worker judged the errand too big for a prose answer and
     // found nothing on its contract that fits, so it asked for machinery. Only
     // honored when it proposed nothing — a turn that did both is confused, and
     // the candidates it did produce are the safer half to act on.
-    const request = intent === 'work' && res.count === 0 ? parseFlowRequest(rawReply) : null;
+    const request = res.count === 0 ? parseFlowRequest(rawReply) : null;
     if (request && this.deps.generatedFlow) {
       const built = await this.deps.generatedFlow({
         worker: w,
@@ -1559,7 +1590,6 @@ export class WorkerEngine {
         return {
           ok: true,
           errand: {
-            intent,
             orchestrationId: built.orchestrationId,
             count: 1,
             queued: 1,
@@ -1614,7 +1644,6 @@ export class WorkerEngine {
     return {
       ok: true,
       errand: {
-        intent,
         orchestrationId: res.orchestrationId,
         count: res.count,
         queued: res.queued,
@@ -2013,27 +2042,27 @@ export class WorkerEngine {
   /// rather than by a cycle detector because absence cannot be argued with —
   /// there is no instruction here for a confused turn to misread, and no
   /// depth counter to get the arithmetic wrong on.
-  private buildChatPrompt(w: Worker, errand: string, priorDayHandoff: string, from?: { workerName: string }): string {
+  /// The prompt for a turn that RESUMES the desk conversation. The worker is
+  /// still sitting there holding its job description, its journal and
+  /// everything it has already said today, so none of that is re-sent — that
+  /// is the whole point of resuming. What does travel is the output contract,
+  /// because a resumed model drifting off <subject>/<candidates> silently
+  /// loses the propose and flow-request paths and there is no way to tell
+  /// from the reply that it happened.
+  ///
+  /// The rejected list is deliberately absent. It steers the cold prompt, but
+  /// `excludeTitles` is the hard filter and it rides on every turn regardless,
+  /// so re-listing thirty titles into a warm session buys nothing.
+  private buildWarmPrompt(w: Worker, errand: string): string {
     return [
-      from
-        ? `You are "${w.name}", answering a colleague's one-off message.`
-        : `You are "${w.name}", answering your manager's one-off message.`,
-      '',
-      'YOUR JOB DESCRIPTION',
-      w.jobDescription,
-      '',
-      'YOUR JOURNAL (newest first):',
-      this.journal.digest(w.id) || '(no journal yet)',
-      ...this.filesBlock(w),
-      ...this.contextBlock(),
-      ...(priorDayHandoff
-        ? ['', 'PREVIOUS CONVERSATION HANDOFF (background only — today is a new conversation)', priorDayHandoff]
-        : []),
-      '',
-      'THE MESSAGE',
       errand,
       '',
-      'Answer conversationally from the job, journal, files, project, and tools. Emit <candidates>[]</candidates>. Never request, draft, launch, or hand off work.',
+      'Same three paths as before: answer it now if you can settle it from what you',
+      'already have — an answered question is a finished errand, not a failure;',
+      `otherwise propose at most ${w.caps.maxItemsPerShift} candidates against your existing`,
+      'flows; or, if it needs real investigation and none of your flows fit, emit an',
+      'empty candidates list and a <flow_request> block for a read-only flow. Start',
+      'your reply with <subject>What this errand is, as a title</subject>.',
     ].join('\n');
   }
 
@@ -2134,6 +2163,95 @@ export class WorkerEngine {
 
   // ---- JOURNAL PROJECTION ----------------------------------------------
 
+  /// Copy a finished item's deliverables into the worker's cabinet, and — for
+  /// a worker with the cap — a second copy into its everyday project folder.
+  ///
+  /// Both writes are write-once by filename, which is what makes this safe to
+  /// call on every re-fold, at startup, and again after the run root gains
+  /// files (see `refileRunDeliverables`).
+  private fileRunDeliverables(w: Worker, o: Orchestration, item: OrchestrationItem, title: string): boolean {
+    if (o.origin?.kind !== 'worker') return false;
+    if (!item.runId || !this.deps.deliverablesFor) return false;
+    const artifacts = this.deps.deliverablesFor(item.runId);
+    if (artifacts.length === 0) return false;
+    const at = item.finishedAt ?? this.now();
+    const filed = fileWorkerDeliverable({
+      workerId: w.id,
+      task: o.origin.task === 'errand' ? 'errand' : 'shift',
+      label: o.title,
+      title,
+      at,
+      artifacts,
+    });
+    // And, for a worker hired to file into an everyday project, a
+    // second copy where its owner actually looks: the folder. The
+    // cabinet stays the archive; this is the delivery address.
+    // `publishDeliverableToProject` refuses anything that is not a
+    // marked everyday folder and keeps its own ledger, so this is
+    // safe on the same re-fold the cabinet copy survives.
+    // Only file runs that finished AFTER the cap was switched on.
+    // Otherwise flipping the toggle dumps up to MAX_RETAINED_RUNS
+    // past deliverables into the folder at once on the next fold.
+    if (!w.caps.fileIntoProject || at < (w.fileIntoProjectSince ?? 0)) return filed.written;
+    const published = publishDeliverableToProject({
+      workerId: w.id,
+      projectPath: w.projectPath,
+      runId: item.runId,
+      artifacts,
+    });
+    // Documents arriving is one of the boundaries everyday projects
+    // checkpoint on, and a worker's drop is no different from a
+    // drag from Finder — without this it would be the one change to
+    // the folder that "Undo or restore" could not put back. A revision
+    // overwrites what is already there, so it needs the version saved for
+    // exactly the same reason, and its own verb to be worth reading.
+    const changes = [
+      published.written.length > 0 ? `added ${published.written.join(', ')}` : null,
+      published.revised?.length ? `updated ${published.revised.join(', ')}` : null,
+    ].filter((part): part is string => part !== null);
+    if (changes.length > 0) {
+      this.deps.checkpoint?.({
+        projectPath: w.projectPath,
+        message: `${w.name} ${changes.join(' and ')}`,
+      });
+    }
+    if (published.skippedNames?.length) {
+      log(
+        'warn',
+        'worker-publish',
+        `${w.name}: not filed into the project (too large): ${published.skippedNames.join(', ')}`,
+      );
+    }
+    return filed.written || published.written.length > 0 || (published.revised?.length ?? 0) > 0;
+  }
+
+  /// A finished run keeps producing. The run pane's composer lets the user go
+  /// on talking to the last participant after the flow is DONE ("now turn that
+  /// into a PDF"), and those turns write real files into the same run root —
+  /// but they reach the runner directly, so no orchestration update ever
+  /// fires and the fold that files deliverables never runs again. The work
+  /// then died with the run root, and the worker's Files tab showed only what
+  /// existed at the moment the last step ended.
+  ///
+  /// So: when any turn ends on a conversation belonging to a run this worker
+  /// launched and already finished, file again. Write-once semantics make the
+  /// common case (nothing new was written) a no-op.
+  private refileRunDeliverables(conversationId: UUID): void {
+    const runId = this.deps.runIdForConversation?.(conversationId);
+    if (!runId) return;
+    for (const o of this.deps.parker.list()) {
+      if (o.origin?.kind !== 'worker') continue;
+      const item = o.items.find((i) => i.runId === runId);
+      if (!item || item.status !== 'done') continue;
+      const w = this.workers.get(o.origin.workerId);
+      // The emit is what tells the renderer to re-read this worker's cabinet;
+      // its per-item listing is cached on facts that don't change when a
+      // finished job quietly gains a file.
+      if (w && this.fileRunDeliverables(w, o, item, item.candidate.title)) this.emitWorker(w);
+      return;
+    }
+  }
+
   /// Fold one worker batch's state into the journal. Deterministic entry ids
   /// + idempotent append = safe to call on every update and at startup.
   private syncOrchestration(o: Orchestration): void {
@@ -2198,54 +2316,7 @@ export class WorkerEngine {
         // Copy the answer somewhere it will outlive the run. Idempotent by
         // filename, which matters because this fold re-runs on every update
         // and at startup.
-        if (item.runId && this.deps.deliverablesFor) {
-          const artifacts = this.deps.deliverablesFor(item.runId);
-          if (artifacts.length > 0) {
-            fileWorkerDeliverable({
-              workerId: w.id,
-              task: o.origin.task === 'errand' ? 'errand' : 'shift',
-              label: o.title,
-              title: c.title,
-              at: item.finishedAt ?? now,
-              artifacts,
-            });
-            // And, for a worker hired to file into an everyday project, a
-            // second copy where its owner actually looks: the folder. The
-            // cabinet stays the archive; this is the delivery address.
-            // `publishDeliverableToProject` refuses anything that is not a
-            // marked everyday folder and keeps its own ledger, so this is
-            // safe on the same re-fold the cabinet copy survives.
-            // Only file runs that finished AFTER the cap was switched on.
-            // Otherwise flipping the toggle dumps up to MAX_RETAINED_RUNS
-            // past deliverables into the folder at once on the next fold.
-            const finishedAtMs = item.finishedAt ?? now;
-            if (w.caps.fileIntoProject && finishedAtMs >= (w.fileIntoProjectSince ?? 0)) {
-              const published = publishDeliverableToProject({
-                workerId: w.id,
-                projectPath: w.projectPath,
-                runId: item.runId,
-                artifacts,
-              });
-              // Documents arriving is one of the boundaries everyday projects
-              // checkpoint on, and a worker's drop is no different from a
-              // drag from Finder — without this it would be the one change to
-              // the folder that "Undo or restore" could not put back.
-              if (published.written.length > 0) {
-                this.deps.checkpoint?.({
-                  projectPath: w.projectPath,
-                  message: `${w.name} added ${published.written.join(', ')}`,
-                });
-              }
-              if (published.skippedNames?.length) {
-                log(
-                  'warn',
-                  'worker-publish',
-                  `${w.name}: not filed into the project (too large): ${published.skippedNames.join(', ')}`,
-                );
-              }
-            }
-          }
-        }
+        this.fileRunDeliverables(w, o, item, c.title);
       }
       if (item.status === 'failed') {
         changed =

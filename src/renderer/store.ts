@@ -3963,7 +3963,7 @@ export const useStore = create<StoreState>((set, get) => ({
       }
     } else if (event.type === 'workerShiftProgress') {
       void import('./workersStore').then(({ useWorkersStore }) => {
-        useWorkersStore.getState().setShiftActive(event.workerId, event.active, event.task);
+        useWorkersStore.getState().setShiftActive(event.workerId, event.active, event.task, event.warm);
       });
     } else if (event.type === 'scheduleUpdate') {
       void import('./schedulesStore').then(({ useSchedulesStore }) => {
@@ -3974,6 +3974,12 @@ export const useStore = create<StoreState>((set, get) => ({
         useSchedulesStore.getState().removeLocal(event.id);
       });
     } else if (event.type === 'workerUpdate') {
+      // Anything that moves a worker forward can also have filed something
+      // into its cabinet, and the per-item deliverables cache never expires
+      // on its own. Drop this worker's entries so open rows re-read.
+      void import('./deliverablesCache').then(({ invalidateDeliverables }) =>
+        invalidateDeliverables(event.worker.id),
+      );
       void import('./workersStore').then(({ useWorkersStore }) => {
         useWorkersStore.getState().applyUpdate(event.worker, event.nextShiftAt, event.scorecard);
       });
