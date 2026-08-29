@@ -20,7 +20,6 @@ import type {
   WorkerContract,
   WorkerErrandResult,
   WorkerJournalEntry,
-  WorkerMessageIntent,
   WorkerPace,
   WorkerScorecard,
   WorkerTrustLevel,
@@ -68,7 +67,7 @@ interface WorkersState {
   /// Live shift state per worker: present while a planning turn is running,
   /// carrying its streamed text and tool invocations. Cleared when the shift
   /// settles — driven entirely by main's events, never inferred here.
-  shiftProgress: Record<string, { text: string; tools: string[]; task: 'shift' | 'errand' }>;
+  shiftProgress: Record<string, { text: string; tools: string[]; task: 'shift' | 'errand'; warm?: boolean }>;
   /// Per-worker errand state. Desk composers are independent of the global
   /// editor busy flag and retain a no-launch result until dismissed.
   errandBusy: Record<string, boolean>;
@@ -81,7 +80,7 @@ interface WorkersState {
   /// doing, so two sent in a row are both in flight from your side and both
   /// have to be on screen. One overwriting the other looked like the first
   /// message vanished.
-  errandSending: Record<string, Array<{ id: string; text: string; intent: WorkerMessageIntent; at: number }>>;
+  errandSending: Record<string, Array<{ id: string; text: string; at: number }>>;
   /// Each worker's own directory, learned when its Files tab loads. The file
   /// editor is scoped to it so opening one worker's file cannot walk up into
   /// the others — they are all siblings under userData.
@@ -233,16 +232,23 @@ export interface ReviseState {
   /// Which worker the running revision is about, so the tab can say whose it
   /// is while the editor is closed. Null for a hire draft not yet saved.
   targetWorkerId: string | null;
-  /// A finished revision with nowhere to go yet: it landed while the editor
-  /// was closed, or on somebody else. Held rather than dropped — the turn
-  /// took minutes, and "you clicked away, so it was thrown out" is the exact
-  /// failure this whole background-drafting change exists to prevent. It is
-  /// applied the next time that worker's editor opens.
+  /// A finished revision that is not saved yet. Held rather than dropped —
+  /// the turn took minutes, and "you clicked away, so it was thrown out" is
+  /// the exact failure this whole background-drafting change exists to
+  /// prevent. It is applied the next time that worker's editor opens.
+  ///
+  /// Held even once it HAS been applied to an open editor, because until Save
+  /// the revision lives only on the draft, and "← Workers" and Cancel throw
+  /// the draft away without asking. Cleared by saving, or by dismissing the
+  /// note — the two ways of saying you are done with it.
   pending: {
     workerId: string;
     jobDescription?: string;
     flow?: Flow;
     note: string;
+    /// Already applied to an editor once, so reopening shouldn't claim it
+    /// landed while you were away.
+    applied?: boolean;
   } | null;
 }
 
@@ -269,7 +275,7 @@ export const IDLE_REVISE: ReviseState = {
 interface WorkersActions {
   reload(): Promise<void>;
   applyUpdate(worker: Worker, nextShiftAt: number | null, scorecard: WorkerScorecard): void;
-  setShiftActive(id: string, active: boolean, task?: 'shift' | 'errand'): void;
+  setShiftActive(id: string, active: boolean, task?: 'shift' | 'errand', warm?: boolean): void;
   applyShiftProgress(id: string, text: string, tools: string[]): void;
   removeLocal(id: string): void;
   openEditor(
@@ -343,12 +349,7 @@ interface WorkersActions {
   /// the current order — what a drop indicator drawn between two rows means.
   dropWorker(id: string, insertBefore: number): Promise<void>;
   setFilesRoot(id: string, root: string): void;
-  runErrand(
-    id: string,
-    instruction: string,
-    intent: import('@shared/flows/worker').WorkerMessageIntent,
-    attachments?: Attachment[],
-  ): Promise<boolean>;
+  runErrand(id: string, instruction: string, attachments?: Attachment[]): Promise<boolean>;
   clearErrand(id: string): void;
   loadJournal(id: string): Promise<void>;
   /// Leave a note against one of this worker's turns. It becomes a journal
@@ -586,11 +587,15 @@ function reviseKey(draft: WorkerDraft | null, draftSeq: number): string | null {
 
 /// Drop the open editor's revision entry when it has nothing left to do — a
 /// finished, read box shouldn't outlive the editor it belongs to. One still
-/// running, or holding a result, is kept.
-function forgetIdleRevision(st: WorkersState): Record<string, ReviseState> {
+/// running, or holding an unsaved result, is kept.
+///
+/// `saved` is the one thing that clears a held result: the revision is on the
+/// worker now, so there is nothing left to put back.
+function forgetIdleRevision(st: WorkersState, saved = false): Record<string, ReviseState> {
   const key = reviseKey(st.draft, st.draftSeq);
   const entry = key ? st.revise[key] : undefined;
-  if (!key || !entry || entry.startedAt || entry.pending) return st.revise;
+  if (!key || !entry || entry.startedAt) return st.revise;
+  if (entry.pending && !saved) return st.revise;
   const next = { ...st.revise };
   delete next[key];
   return next;
@@ -712,7 +717,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     }));
   },
 
-  setShiftActive(id, active, task = 'shift') {
+  setShiftActive(id, active, task = 'shift', warm = false) {
     set((s) => {
       const shiftProgress = { ...s.shiftProgress };
       // Keep any text already streamed for this worker, but let the newly
@@ -723,6 +728,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           text: prior?.text ?? '',
           tools: prior?.tools ?? [],
           task,
+          warm,
         };
       } else delete shiftProgress[id];
       return { shiftProgress };
@@ -733,8 +739,9 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     set((s) => ({
       shiftProgress: {
         ...s.shiftProgress,
-        // `task` is set by setShiftActive, which always precedes streamed text.
-        [id]: { task: s.shiftProgress[id]?.task ?? 'shift', text, tools },
+        // `task`/`warm` are set by setShiftActive, which always precedes
+        // streamed text.
+        [id]: { task: s.shiftProgress[id]?.task ?? 'shift', warm: s.shiftProgress[id]?.warm, text, tools },
       },
     }));
   },
@@ -868,7 +875,12 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
               ...st.revise,
               [key]: {
                 ...IDLE_REVISE,
-                note: `${held.note}\n\n(That revision finished while this editor was closed, and has been applied to the draft now.)`,
+                note: held.applied
+                  ? `${held.note}\n\n(Put back on the draft — it was never saved.)`
+                  : `${held.note}\n\n(That revision finished while this editor was closed, and has been applied to the draft now.)`,
+                // Still not saved: keep holding it, so leaving again parks it
+                // rather than losing it a second time.
+                pending: { ...held, applied: true },
               },
             }
           : st.revise,
@@ -1121,7 +1133,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     const key = reviseKey(draft, draftSeq);
     if (!draft || !key) return;
     const entry = get().revise[key] ?? IDLE_REVISE;
-    if (entry.startedAt) return;
+    // One turn at a time, unless the last one has been stuck long enough that
+    // it is more likely wedged than working — the same escape the hire form
+    // has. Without it a turn that never settles left the box saying
+    // "Revising…" forever and silently swallowing every Apply after it.
+    if (entry.startedAt && Date.now() - entry.startedAt <= 10 * 60_000) return;
     const instruction = entry.instruction.trim();
     if (!instruction) return;
     // A ride-along flow (hire-drafted or already revised) is unsaved — main
@@ -1167,7 +1183,27 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           flow: res.flow,
         });
         set((st) => ({
-          revise: { ...st.revise, [key]: { ...IDLE_REVISE, note: res.note } },
+          revise: {
+            ...st.revise,
+            [key]: {
+              ...IDLE_REVISE,
+              note: res.note,
+              // Landing on the open editor is not the end of it: the revision
+              // is on a DRAFT, and "← Workers" or Cancel drops the draft with
+              // no warning. Hold it as well, exactly as if it had finished
+              // while the editor was closed, so leaving parks minutes of work
+              // instead of destroying it. Save clears it.
+              pending: editedWorkerId
+                ? {
+                    workerId: editedWorkerId,
+                    jobDescription: res.jobDescription,
+                    flow: res.flow,
+                    note: res.note,
+                    applied: true,
+                  }
+                : null,
+            },
+          },
         }));
         return;
       }
@@ -1254,13 +1290,15 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
         return false;
       }
       // The `workerUpdate` push has already landed the record; just close.
+      // A revision held against this worker is on disk now, so it stops being
+      // something that needs putting back.
       set((st) => ({
         draft: null,
         draftedFlow: null,
         hireSummary: null,
         hireFlowError: null,
         personalize: null,
-        revise: forgetIdleRevision(st),
+        revise: forgetIdleRevision(st, true),
       }));
       return true;
     } finally {
@@ -1317,21 +1355,20 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     }
   },
 
-  async runErrand(id, instruction, intent, attachments) {
+  async runErrand(id, instruction, attachments) {
     const sendId = `${id}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     set((s) => ({
       errandBusy: { ...s.errandBusy, [id]: true },
       errandError: { ...s.errandError, [id]: '' },
       errandSending: {
         ...s.errandSending,
-        [id]: [...(s.errandSending[id] ?? []), { id: sendId, text: instruction, intent, at: Date.now() }],
+        [id]: [...(s.errandSending[id] ?? []), { id: sendId, text: instruction, at: Date.now() }],
       },
     }));
     try {
       const res = await window.overcli.invoke('workers:runErrand', {
         id,
         instruction,
-        intent,
         attachments,
       });
       if (!res.ok) {

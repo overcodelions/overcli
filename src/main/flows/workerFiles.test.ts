@@ -95,12 +95,46 @@ describe('fileWorkerDeliverable', () => {
     expect(names).toContain('2026-08-16-1431-errand-other/raw_test_output.md');
   });
 
-  it('never overwrites — the journal fold re-files on every update', () => {
+  // Idempotence is what the journal fold needs — it re-files on every
+  // orchestration update and at startup — and identical content gives it.
+  it('re-files identical content as a no-op', () => {
     fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'first' }] });
-    const second = fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'second' }] });
+    const second = fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'first' }] });
     expect(second.written).toBe(false);
     const file = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage.md');
     expect(fs.readFileSync(file, 'utf-8')).toBe('first');
+  });
+
+  // The other half: a run whose output was revised after it finished — asking
+  // the flow for a change once the last step is done — must not leave the
+  // cabinet holding the version before the change.
+  it('replaces a deliverable whose content changed', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'first' }] });
+    const second = fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'second' }] });
+    expect(second.written).toBe(true);
+    const file = path.join(workerFilesDir(WORKER), '2026-08-16-1431-errand-coverage.md');
+    expect(fs.readFileSync(file, 'utf-8')).toBe('second');
+    // Still one file: a revision replaces the deliverable, it does not file a
+    // second copy beside it.
+    expect(listWorkerFiles(WORKER).map((f) => f.name)).toEqual(['2026-08-16-1431-errand-coverage.md']);
+  });
+
+  // A one-artifact job that later grows a second one changes shape, from
+  // `<stem>.md` to `<stem>/`. Both are named after the same stem, and leaving
+  // the file behind listed the same job twice.
+  it('replaces the single file with the folder when a job gains an artifact', () => {
+    fileWorkerDeliverable({ ...job, artifacts: [{ name: 'report.md', body: 'first' }] });
+    fileWorkerDeliverable({
+      ...job,
+      artifacts: [
+        { name: 'report.md', body: 'first' },
+        { name: 'report.pdf', body: 'pdf-bytes' },
+      ],
+    });
+    expect(listWorkerFiles(WORKER).map((f) => f.name).sort()).toEqual([
+      '2026-08-16-1431-errand-coverage/report.md',
+      '2026-08-16-1431-errand-coverage/report.pdf',
+    ]);
   });
 
   it('keeps two jobs that finish in the same minute apart', () => {

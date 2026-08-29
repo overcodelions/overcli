@@ -20,7 +20,7 @@
 
 import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestration';
 import type { FlowRun } from '@shared/flows/schema';
-import type { Worker, WorkerMessageIntent } from '@shared/flows/worker';
+import type { Worker } from '@shared/flows/worker';
 
 import { isRenderableOutput } from '@shared/flows/worker';
 
@@ -86,8 +86,6 @@ export interface QueueRow {
   task: 'shift' | 'errand';
   /// How an errand was sent. `chat` is a question answered in prose — it
   /// launched nothing and was never going to. Absent on shifts, and on
-  /// errands from before intent was recorded (read those as `work`).
-  intent?: WorkerMessageIntent;
   /// The chat answers a consolidated row stands for, newest first. Present
   /// only on a row built by `consolidateAnswers`; a lone answer stays an
   /// ordinary row rather than a group of one.
@@ -179,7 +177,6 @@ export function buildWorkQueue(
         workerName: origin.workerName,
         orchestrationId: batch.id,
         task,
-        ...(task === 'errand' ? { intent: origin.intent ?? 'work' } : {}),
         status: 'quiet',
         title: toWorkerActivity(batch).title,
         steps: [],
@@ -209,7 +206,6 @@ export function buildWorkQueue(
         candidateId: item.candidate.id,
         batchLabel: batch.title,
         task,
-        ...(task === 'errand' ? { intent: origin.intent ?? 'work' } : {}),
         status,
         title: item.candidate.title,
         steps: run ? stepTrack(run) : [],
@@ -290,7 +286,6 @@ export function consolidateAnswers(rows: QueueRow[]): QueueRow[] {
       workerId: row.workerId,
       workerName: row.workerName,
       task: 'errand',
-      intent: 'chat',
       status: 'quiet',
       title: `${group.length} answers`,
       steps: [],
@@ -306,8 +301,14 @@ export function consolidateAnswers(rows: QueueRow[]): QueueRow[] {
   return out;
 }
 
+/// An errand that launched nothing IS an answer — the worker read the ask and
+/// settled it in prose. Read off the outcome rather than off the Ask/Create-work
+/// toggle that used to label the message before it was sent: that toggle said
+/// what you MEANT, and a question you sent as work still came back as an
+/// answer. Rows that are already a consolidated group carry `answers` and are
+/// never folded a second time.
 function isChatAnswer(row: QueueRow): boolean {
-  return row.status === 'quiet' && row.task === 'errand' && row.intent === 'chat';
+  return row.status === 'quiet' && row.task === 'errand' && !row.answers;
 }
 
 /// THE RUN IS THE TRUTH. An item's status is a mirror the orchestrator keeps

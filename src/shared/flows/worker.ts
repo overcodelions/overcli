@@ -11,6 +11,12 @@ import type { ScheduleTrigger } from './schedule';
 import { SCHEDULE_AUTO_APPROVE_MAX, describeTrigger, parseTimeOfDay } from './schedule';
 
 export type WorkerTrustLevel = 'probation' | 'trusted' | 'autonomous';
+/// HISTORICAL ONLY. The desk used to make you classify each message as a
+/// question ("Ask") or a request for work ("Create work") before you sent it,
+/// which meant choosing before the conversation that decides the answer. The
+/// worker's own triage already picks between answering and proposing, so the
+/// toggle is gone and every desk message runs one contract. Batches written
+/// while it existed still carry the field, and the desk still reads it back.
 export type WorkerMessageIntent = 'chat' | 'work';
 
 /// How fast a worker answers something you are waiting for.
@@ -472,7 +478,6 @@ export interface WorkerScorecard {
 /// What one errand turn produced. Returned to the renderer so a desk can show
 /// the outcome inline, including the case where the worker launched nothing.
 export interface WorkerErrandResult {
-  intent: WorkerMessageIntent;
   orchestrationId: string;
   /// Candidates recorded after the orchestrator's exclusion and item caps.
   count: number;
@@ -971,7 +976,6 @@ export function workerOrigin(
   task: 'shift' | 'errand',
   errand?: string,
   from?: { workerId: UUID; workerName: string },
-  intent?: WorkerMessageIntent,
 ): {
   kind: 'worker';
   workerId: UUID;
@@ -980,7 +984,6 @@ export function workerOrigin(
   errand?: string;
   allowExternalActions?: boolean;
   from?: { workerId: UUID; workerName: string };
-  intent?: WorkerMessageIntent;
 } {
   return {
     kind: 'worker',
@@ -988,7 +991,6 @@ export function workerOrigin(
     workerName: w.name,
     task,
     ...(errand !== undefined ? { errand } : {}),
-    ...(task === 'errand' && intent !== undefined ? { intent } : {}),
     ...(w.caps.allowExternalActions ? { allowExternalActions: true } : {}),
     ...(from ? { from } : {}),
   };

@@ -2149,7 +2149,6 @@ export interface IPCInvokeMap {
   'workers:runErrand': (args: {
     id: UUID;
     instruction: string;
-    intent: import('./flows/worker').WorkerMessageIntent;
     attachments?: Attachment[];
   }) => { ok: true; result: WorkerErrandResult } | { ok: false; error: string };
   /// Everything in the worker's own directory, newest first. Deliverables the
@@ -2968,6 +2967,11 @@ export type MainToRendererEvent =
       /// while they watch their own errand plan is simply wrong — main knows
       /// which it is, so it says so rather than making the UI guess.
       task?: 'shift' | 'errand';
+      /// Whether this turn resumed the desk conversation rather than opening
+      /// cold. Same reasoning as `task`: main knows, so it says so. The UI
+      /// tells you "picking up where you left off" only when that is true,
+      /// and a stored session for today is not enough to know it.
+      warm?: boolean;
     }
   /// Auto-updater lifecycle (see src/main/updater.ts). Not tied to a
   /// conversation — consumed by the global UpdateToast.

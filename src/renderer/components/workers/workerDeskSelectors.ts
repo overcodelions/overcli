@@ -319,6 +319,36 @@ export interface WorkerFile {
   modifiedAt: number;
 }
 
+/// Turn a file a worker NAMED in its prose into a path that can be opened.
+///
+/// A worker writes `design-accounting-principles-reconciliation.md`, because
+/// that is what it called the thing it just saved — its files live in its own
+/// directory, outside the project, and it refers to them the way a person
+/// refers to their own desk. Handing that bare name to the editor asks for a
+/// file relative to the project root, which is not where it is, so the click
+/// did nothing at all. Resolve it against the worker's actual file list
+/// instead, which already carries the absolute path for every one.
+///
+/// Returns null when nothing matches, so the caller can fall back to treating
+/// the mention as an ordinary project path — a worker citing `src/main.ts` is
+/// pointing at the repo, and that reference still has to work.
+export function resolveWorkerFilePath(mention: string, files: WorkerFile[]): string | null {
+  const raw = mention.trim();
+  if (!raw) return null;
+  // Already absolute: the worker gave a real path, nothing to resolve.
+  if (raw.startsWith('/')) return raw;
+  // A `:NN` line suffix belongs to the reference, not the filename. Split it
+  // off to match, then put it back so the caller can still jump to the line.
+  const m = /^(.+?):(\d+(?:[-:]\d+)?)$/.exec(raw);
+  const name = m ? m[1] : raw;
+  const suffix = m ? `:${m[2]}` : '';
+  const hit =
+    files.find((f) => f.name === name) ??
+    // `notes/baseline.md` — named with enough folder to be unambiguous.
+    files.find((f) => f.path.endsWith(`/${name}`));
+  return hit ? hit.path + suffix : null;
+}
+
 /// One job's worth of output — the folder a run was filed into, or a single
 /// loose file for a run that produced only one.
 export interface WorkerFileJob {

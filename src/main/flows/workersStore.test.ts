@@ -73,6 +73,36 @@ describe('workersStore', () => {
     expect(loadAllWorkers()).toEqual([{ ...withoutFlowIds, flowIds: [] }]);
   });
 
+  it('repairs a project path left over from the old userData spelling', () => {
+    fs.mkdirSync(workersDir(), { recursive: true });
+    // Hired before the app declared its `productName`, so the record holds
+    // `…/overcli/workspaces/ws-1` where a worker saved today holds `…/Overcli/…`.
+    // One directory on this volume, two spellings — and every `===` between
+    // them is false, which is enough to empty a worker's colleague list.
+    const stale = path.join(
+      path.dirname(userDataDir),
+      path.basename(userDataDir).toUpperCase(),
+      'workspaces',
+      'ws-1',
+    );
+    fs.writeFileSync(
+      path.join(workersDir(), 'legacy.json'),
+      JSON.stringify(makeWorker({ projectPath: stale })),
+    );
+
+    const [loaded] = loadAllWorkers();
+    // Only meaningful where the two spellings really are one directory; on a
+    // case-sensitive volume they are two, and the path is left alone.
+    const caseInsensitive = fs.existsSync(
+      path.join(path.dirname(userDataDir), path.basename(userDataDir).toUpperCase()),
+    );
+    if (caseInsensitive) {
+      expect(loaded.projectPath).toBe(path.join(userDataDir, 'workspaces', 'ws-1'));
+    } else {
+      expect(loaded.projectPath).toBe(stale);
+    }
+  });
+
   it('deletes a persisted worker by ID', () => {
     saveWorker(makeWorker());
 
