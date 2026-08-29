@@ -103,7 +103,7 @@ export function publishDeliverableToProject(args: {
 
   const ledger = readLedger(args.workerId);
   const entry = ledger[args.runId];
-  // A pre-0.16.2 ledger meant "this run is fully published" the instant any
+  // A pre-0.17.0 ledger meant "this run is fully published" the instant any
   // entry existed at all — `readLedger` marks those `legacyComplete`. Honour
   // that as-is rather than partially trusting the array as `doneNames`: the
   // old array held LANDED (uniquified) filenames like `Summary 2.md`, which
@@ -308,7 +308,7 @@ interface LedgerEntry {
   /// Epoch ms of the FIRST failed attempt, per original artifact name, for
   /// artifacts still inside the retry window. Pruned once the name settles.
   failedSince?: Record<string, number>;
-  /// Set only by `readLedger` when migrating a pre-0.16.2 entry (a bare
+  /// Set only by `readLedger` when migrating a pre-0.17.0 entry (a bare
   /// filename array). Those meant "this run is fully published" unconditionally
   /// — see the `readLedger` migration for why that can't be expressed by
   /// backfilling `doneNames` instead.
@@ -327,7 +327,7 @@ function readLedger(workerId: string): Ledger {
     if (!parsed || typeof parsed !== 'object') return {};
     const out: Ledger = {};
     for (const [runId, value] of Object.entries(parsed as Record<string, unknown>)) {
-      // Pre-0.16.2 ledgers stored a bare array of landed filenames and meant
+      // Pre-0.17.0 ledgers stored a bare array of landed filenames and meant
       // "this run is fully published". Honour that rather than reinterpreting
       // the array as `doneNames`: those filenames are already-uniquified
       // (`Summary 2.md`), so they'd never match an original artifact name and
