@@ -477,6 +477,13 @@ export function registerIpc(): void {
       }
       return out;
     },
+    // The composer in the run pane keeps talking to a run's last participant
+    // after the flow is done, and those turns write into the same run root.
+    // This is how the engine recognises one of its own runs behind a bare
+    // conversation id so it can file what the turn produced.
+    runIdForConversation: (conversationId) =>
+      flowRuntime?.listRuns().find((run) => Object.values(run.conversationIds).includes(conversationId))
+        ?.id ?? null,
     // Everyday projects checkpoint on boundaries, and a worker filing a
     // document into one is a boundary. Fire-and-forget: the file is already
     // there, and a failed commit is a missing version, not a lost document.
@@ -1627,9 +1634,9 @@ export function registerIpc(): void {
   ipcMain.handle('workers:workShiftNow', (_e, { id }) =>
     workerEngine ? workerEngine.workShiftNow(id) : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
-  ipcMain.handle('workers:runErrand', (_e, { id, instruction, intent, attachments }) =>
+  ipcMain.handle('workers:runErrand', (_e, { id, instruction, attachments }) =>
     workerEngine
-      ? workerEngine.runErrand(id, instruction, intent, attachments)
+      ? workerEngine.runErrand(id, instruction, attachments)
       : ({ ok: false, error: 'Worker engine not initialized.' } as const),
   );
   ipcMain.handle('workers:reorder', (_e, { ids }) =>

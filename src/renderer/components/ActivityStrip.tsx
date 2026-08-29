@@ -15,7 +15,11 @@ const VERBS = [
   'Digging in',
 ];
 
-export function ActivityStrip({ label }: { label: string }) {
+/// `tint` colors the dots for a strip that belongs to somebody in
+/// particular — a worker's desk turn, where the accent would say "the app is
+/// working" when the point is that THIS worker is. Omitted everywhere else,
+/// which keeps chat on the accent it has always used.
+export function ActivityStrip({ label, tint }: { label: string; tint?: string }) {
   // If the runner gave us a specific activity label (e.g. "Running
   // tools…") show that verbatim. Otherwise rotate through the pool —
   // the rotation is visual only, it doesn't reflect actual state.
@@ -26,9 +30,9 @@ export function ActivityStrip({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 text-xs text-ink-muted py-1">
       <div className="flex gap-1">
-        <Dot delay="0ms" />
-        <Dot delay="180ms" />
-        <Dot delay="360ms" />
+        <Dot delay="0ms" tint={tint} />
+        <Dot delay="180ms" tint={tint} />
+        <Dot delay="360ms" tint={tint} />
       </div>
       <span className="transition-opacity duration-300">{display}</span>
     </div>
@@ -47,11 +51,15 @@ function useRotatingVerb(enabled: boolean): string {
   return VERBS[idx];
 }
 
-function Dot({ delay }: { delay: string }) {
+function Dot({ delay, tint }: { delay: string; tint?: string }) {
   return (
     <span
-      className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"
-      style={{ animationDelay: delay, animationDuration: '1s' }}
+      className={`w-1.5 h-1.5 rounded-full animate-pulse${tint ? '' : ' bg-accent'}`}
+      style={{
+        animationDelay: delay,
+        animationDuration: '1s',
+        ...(tint ? { backgroundColor: tint } : {}),
+      }}
     />
   );
 }

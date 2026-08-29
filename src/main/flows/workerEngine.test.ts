@@ -33,10 +33,13 @@ const { archiveMock, deleteDeliverableMock, fileDeliverableMock } = vi.hoisted((
   deleteDeliverableMock: vi.fn(() => ({ removed: 0 })),
   // The cabinet copy has its own tests; stubbing it keeps the engine's tests
   // off the disk now that a finished item can carry artifacts.
-  fileDeliverableMock: vi.fn(() => ({ written: true, name: 'filed' })),
+  fileDeliverableMock: vi.fn<typeof import('./workerFiles').fileWorkerDeliverable>(() => ({
+    written: true,
+    name: 'filed',
+  })),
 }));
 const { publishMock } = vi.hoisted(() => ({
-  publishMock: vi.fn(() => ({ written: [] as string[] })),
+  publishMock: vi.fn<typeof import('./workerPublish').publishDeliverableToProject>(() => ({ written: [] })),
 }));
 vi.mock('./workerPublish', () => ({
   publishDeliverableToProject: publishMock,
@@ -75,6 +78,7 @@ function makeHarness(
     journalClear?: (workerId: string) => number;
     supervisorTurn?: WorkerEngineDeps['supervisorTurn'];
     deliverablesFor?: WorkerEngineDeps['deliverablesFor'];
+    runIdForConversation?: WorkerEngineDeps['runIdForConversation'];
   } = {},
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
@@ -190,6 +194,7 @@ function makeHarness(
     deleteActivity: opts.deleteActivity,
     supervisorTurn: opts.supervisorTurn,
     deliverablesFor: opts.deliverablesFor,
+    runIdForConversation: opts.runIdForConversation,
     checkpoint: (args) => checkpoints.push(args),
   });
 
@@ -332,7 +337,7 @@ describe('WorkerEngine on-demand workers', () => {
   it('still answers an errand, which pausing would have refused', async () => {
     const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
     h.engine.start();
-    const res = await h.engine.runErrand('worker-1', 'Break the search epic down with me.', 'chat');
+    const res = await h.engine.runErrand('worker-1', 'Break the search epic down with me.');
     expect(res.ok).toBe(true);
     expect(parkedWorkerIds(h.parked)).toEqual(['worker-1']);
   });
@@ -348,12 +353,12 @@ describe('WorkerEngine on-demand workers', () => {
   it('is funded, where a paused worker is not', async () => {
     const paused = makeHarness({ seed: [seedWorker({ enabled: false })], pool: 20 });
     paused.engine.start();
-    const refused = await paused.engine.runErrand('worker-1', 'Help me plan.', 'chat');
+    const refused = await paused.engine.runErrand('worker-1', 'Help me plan.');
     expect(refused).toEqual({ ok: false, error: 'Paused — it holds no funds and works no shifts.' });
 
     const desk = makeHarness({ seed: [seedWorker({ cadence: null })], pool: 20 });
     desk.engine.start();
-    const answered = await desk.engine.runErrand('worker-1', 'Help me plan.', 'chat');
+    const answered = await desk.engine.runErrand('worker-1', 'Help me plan.');
     expect(answered.ok).toBe(true);
   });
 
@@ -809,64 +814,34 @@ describe('errand triage', () => {
 });
 
 describe('WorkerEngine errands', () => {
-  it('answers Ask mode without auto-approval, handoffs, or generated flows', async () => {
-    const generated = vi.fn(async () => ({
-      ok: true as const,
-      orchestrationId: 'generated',
-      flowId: 'flow',
-    }));
-    const h = makeHarness({ seed: [seedWorker()], generatedFlow: generated });
-    h.engine.start();
-    h.setParkResult({
-      ok: true,
-      orchestrationId: 'orch-1',
-      count: 0,
-      queued: 0,
-      excluded: 0,
-    });
-    h.orchestrations.set(
-      'orch-1',
-      workerBatch({
-        origin: {
-          kind: 'worker',
-          workerId: 'worker-1',
-          workerName: 'Scout',
-          task: 'errand',
-          errand: 'What changed?',
-          intent: 'chat',
-        },
-        producer: {
-          prompt: 'p',
-          reply: 'Nothing material. <candidates>[{"id":"rogue"}]</candidates><flow_request>build it</flow_request>',
-        },
-        items: [],
-      }),
-    );
+  it('never auto-approves a desk errand, at any trust level', async () => {
+    // The Ask/Create-work toggle used to be the only thing standing between a
+    // casual question and an unattended launch on an autonomous worker. The
+    // toggle is gone, so the guarantee lives here instead: a shift is
+    // something you scheduled and may launch on its own; a sentence you typed
+    // is not, whoever you typed it to.
+    for (const trust of ['probation', 'trusted', 'autonomous'] as const) {
+      const h = makeHarness({ seed: [seedWorker({ trust })] });
+      h.engine.start();
+      await h.engine.runErrand('worker-1', 'What changed?');
+      expect(h.parked[0].autoApprove).toBeUndefined();
+      // The ceiling is still the worker's own — it may PROPOSE its full cap,
+      // it just cannot launch any of it without you.
+      expect(h.parked[0].maxItems).toBe(3);
+    }
 
-    const res = await h.engine.runErrand('worker-1', 'What changed?', 'chat');
-    expect(h.parked[0]).toMatchObject({
-      maxItems: 0,
-      origin: { intent: 'chat' },
-    });
-    expect(h.parked[0].autoApprove).toBeUndefined();
-    expect(h.parked[0].prompt).toContain(
-      'Answer conversationally from the job, journal, files, project, and tools. Emit <candidates>[]</candidates>. Never request, draft, launch, or hand off work.',
-    );
-    expect(generated).not.toHaveBeenCalled();
-    expect(res).toMatchObject({
-      ok: true,
-      result: {
-        intent: 'chat',
-        launchedNothing: true,
-        reply: 'Nothing material.',
-      },
-    });
+    // A shift keeps its cap, so removing the toggle did not quietly ground
+    // the autonomous workers.
+    const shift = makeHarness({ seed: [seedWorker({ trust: 'autonomous' })] });
+    shift.engine.start();
+    await shift.engine.workShiftNow('worker-1');
+    expect(shift.parked[0].autoApprove).toEqual({ maxItems: 3 });
   });
 
   it('leads a swift worker\'s errand with the Swift directives, and a full one\'s with the job', async () => {
     const swift = makeHarness({ seed: [seedWorker()] });
     swift.engine.start();
-    await swift.engine.runErrand('worker-1', 'What changed?', 'chat');
+    await swift.engine.runErrand('worker-1', 'What changed?');
     // Default, for a worker hired before `pace` existed and for every new one.
     expect(swift.parked[0].prompt.startsWith(CONCISE_RESPONSE_DIRECTIVE)).toBe(true);
     expect(swift.parked[0].prompt).toContain(EFFICIENT_TOOL_DIRECTIVE);
@@ -876,7 +851,7 @@ describe('WorkerEngine errands', () => {
 
     const full = makeHarness({ seed: [seedWorker({ pace: 'full' })] });
     full.engine.start();
-    await full.engine.runErrand('worker-1', 'What changed?', 'chat');
+    await full.engine.runErrand('worker-1', 'What changed?');
     expect(full.parked[0].prompt).not.toContain(CONCISE_RESPONSE_DIRECTIVE);
   });
 
@@ -885,7 +860,7 @@ describe('WorkerEngine errands', () => {
     h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
     h.engine.start();
 
-    await h.engine.runErrand('worker-1', 'How did the release go?', 'chat');
+    await h.engine.runErrand('worker-1', 'How did the release go?');
     // First message of the day: cold. Nothing to resume, so it carries the
     // whole worker — job description, journal, the lot.
     expect(h.parked[0].resumeSessionId).toBeUndefined();
@@ -893,16 +868,18 @@ describe('WorkerEngine errands', () => {
     const conversationId = h.parked[0].conversationId;
     expect(conversationId).toBeTruthy();
 
-    await h.engine.runErrand('worker-1', 'And the one before it?', 'chat');
+    await h.engine.runErrand('worker-1', 'And the one before it?');
     // Second message: the worker is still sitting there. Resume the session
     // and say the new thing — re-sending the contract would be paying twice
     // for context it never lost.
-    expect(h.parked[1]).toMatchObject({
-      conversationId,
-      resumeSessionId: 'sess-a',
-      prompt: `${CONCISE_RESPONSE_DIRECTIVE}\n\n${EFFICIENT_TOOL_DIRECTIVE}\n\nAnd the one before it?`,
-    });
+    expect(h.parked[1]).toMatchObject({ conversationId, resumeSessionId: 'sess-a' });
+    expect(h.parked[1].prompt).toContain('And the one before it?');
+    // The persona is not re-sent — that is the point of resuming. Only the
+    // output contract rides along, because a resumed model drifting off
+    // <subject>/<candidates> loses the propose and flow-request paths
+    // silently.
     expect(h.parked[1].prompt).not.toContain('Find the most valuable maintenance work');
+    expect(h.parked[1].prompt).toContain('Same three paths as before');
     // And no replay: the replayed thread exists only for a thread we cannot
     // resume, and re-sending it reads as the manager repeating themselves.
     expect(h.parked[1].priorTurns).toBeUndefined();
@@ -912,10 +889,10 @@ describe('WorkerEngine errands', () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
     h.engine.start();
-    await h.engine.runErrand('worker-1', 'How did the release go?', 'chat');
+    await h.engine.runErrand('worker-1', 'How did the release go?');
 
     h.setNow(local(2026, 3, 3, 8, 0));
-    await h.engine.runErrand('worker-1', 'And today?', 'chat');
+    await h.engine.runErrand('worker-1', 'And today?');
     // Yesterday's thread is not resumed — a desk conversation that ran for a
     // week would carry Monday's tangent into Friday. The handoff block is how
     // yesterday gets across.
@@ -928,13 +905,13 @@ describe('WorkerEngine errands', () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
     h.engine.start();
-    await h.engine.runErrand('worker-1', 'How did the release go?', 'chat');
+    await h.engine.runErrand('worker-1', 'How did the release go?');
 
     // The session is gone (history wiped), so the CLI answered cold — from a
     // prompt that was only the bare message, because we expected it to
     // remember the rest.
     h.setParkResult({ ok: true, orchestrationId: 'orch-2', count: 0, queued: 0, excluded: 0, sessionId: 'sess-b' });
-    await h.engine.runErrand('worker-1', 'And the one before it?', 'chat');
+    await h.engine.runErrand('worker-1', 'And the one before it?');
 
     expect(h.parked).toHaveLength(3);
     expect(h.parked[1].resumeSessionId).toBe('sess-a');
@@ -944,11 +921,101 @@ describe('WorkerEngine errands', () => {
     expect(h.parked[2].prompt).toContain('Find the most valuable maintenance work');
   });
 
+  it('re-establishes the worker when you rewrite its job description mid-thread', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'How would you build this?');
+
+    const before = h.engine.get('worker-1')!;
+    const saved = await h.engine.save({ ...before, jobDescription: 'You are a designer. Talk it through first.' });
+    expect(saved.ok).toBe(true);
+
+    await h.engine.runErrand('worker-1', 'And now?');
+    // Cold again. A resumed turn re-sends none of the persona, so a thread
+    // held open across the edit would answer as the OLD worker until
+    // midnight and the edit would look like it did nothing.
+    expect(h.parked[1].resumeSessionId).toBeUndefined();
+    expect(h.parked[1].prompt).toContain('Talk it through first.');
+  });
+
+  it('keeps the thread across an edit that is not the job description', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'How would you build this?');
+
+    const before = h.engine.get('worker-1')!;
+    await h.engine.save({ ...before, budgetUSDPerMonth: 99 });
+
+    await h.engine.runErrand('worker-1', 'And now?');
+    // Raising the budget mid-morning is not a change of persona, and must not
+    // make the worker forget what you were just talking about.
+    expect(h.parked[1].resumeSessionId).toBe('sess-a');
+  });
+
+  it('keeps work errands in the same desk conversation as the chat around them', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+
+    await h.engine.runErrand('worker-1', 'How would you build this?');
+    // First message of the day is cold either way — there is nothing to
+    // resume, so it carries the whole worker.
+    expect(h.parked[0].resumeSessionId).toBeUndefined();
+    const conversationId = h.parked[0].conversationId;
+    expect(conversationId).toBeTruthy();
+
+    await h.engine.runErrand('worker-1', 'Where does the data get persisted?');
+    // The follow-up is the same conversation. Before this it opened a cold
+    // process and read a 2000-char truncation of the answer above as though
+    // the manager had said it, which is why every reply restated the design
+    // instead of continuing it.
+    expect(h.parked[1].conversationId).toBe(conversationId);
+    expect(h.parked[1].resumeSessionId).toBe('sess-a');
+    expect(h.parked[1].priorTurns).toBeUndefined();
+    expect(h.parked[1].prompt).not.toContain('Find the most valuable maintenance work');
+  });
+
+  it('restates the output contract on a warm turn, but not the worker', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+    await h.engine.runErrand('worker-1', 'How would you build this?');
+    await h.engine.runErrand('worker-1', 'Where does the data get persisted?');
+
+    // The job description and journal are not re-sent — the worker still has
+    // them. The output contract is, because a resumed model drifting off
+    // <subject>/<candidates> silently loses the propose and flow-request
+    // paths, and there is no way to tell from the reply that it happened.
+    expect(h.parked[1].prompt).toContain('Where does the data get persisted?');
+    expect(h.parked[1].prompt).toContain('<subject>');
+    expect(h.parked[1].prompt).toContain('Same three paths as before');
+    expect(h.parked[1].prompt).not.toContain('YOUR JOB DESCRIPTION');
+  });
+
+  it('says whether the turn actually resumed, rather than letting the desk guess', async () => {
+    const h = makeHarness({ seed: [seedWorker()] });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0, sessionId: 'sess-a' });
+    h.engine.start();
+
+    await h.engine.runErrand('worker-1', 'How would you build this?');
+    await h.engine.runErrand('worker-1', 'And where does it persist?');
+
+    const starts = h.emitted.filter(
+      (e: any) => e.type === 'workerShiftProgress' && e.active && e.task === 'errand',
+    );
+    // Cold, then warm. The desk prints "picking up where you left off" off
+    // this and nothing else — a stored session for today is not the same
+    // claim, and it used to say it on turns that opened cold.
+    expect(starts.map((e: any) => e.warm)).toEqual([false, true]);
+  });
+
   it('carries the worker\'s MCP allowlist into every shift and errand', async () => {
     const h = makeHarness({ seed: [seedWorker({ mcpServers: ['atlassian'] })] });
     h.engine.start();
     await h.engine.workShiftNow('worker-1');
-    await h.engine.runErrand('worker-1', 'What changed?', 'chat');
+    await h.engine.runErrand('worker-1', 'What changed?');
     expect(h.parked[0].mcpAllowlist).toEqual(['atlassian']);
     expect(h.parked[1].mcpAllowlist).toEqual(['atlassian']);
 
@@ -1027,7 +1094,7 @@ describe('WorkerEngine errands', () => {
     h.engine.start();
     const savedBefore = h.saved.length;
     await h.engine.runErrand('worker-1', 'Investigate the failed spec.');
-    expect(h.parked[0].autoApprove).toEqual({ maxItems: 2 });
+    expect(h.parked[0].autoApprove).toBeUndefined();
     expect(h.parked[0].excludeTitles).toEqual(['do not repeat this']);
     expect(h.parked[0].prompt).toContain('Do not repeat this');
     expect(h.saved).toHaveLength(savedBefore);
@@ -1315,6 +1382,25 @@ describe('WorkerEngine delivery to the project folder', () => {
     expect(h.checkpoints).toEqual([{ projectPath: '/documents/Course', message: 'Scout added Summary.md' }]);
   });
 
+  it('saves a version when a revision overwrote what was already delivered', () => {
+    publishMock.mockReturnValue({ written: [], revised: ['Summary.md'] });
+    const h = makeHarness({
+      seed: [
+        seedWorker({
+          projectPath: '/documents/Course',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', fileIntoProject: true },
+        }),
+      ],
+      deliverablesFor: () => [{ name: 'Summary.md', body: 'final' }],
+    });
+    h.engine.start();
+    h.engine.observeEvent({ type: 'orchestrationUpdate', orchestration: doneBatch() });
+
+    expect(h.checkpoints).toEqual([
+      { projectPath: '/documents/Course', message: 'Scout updated Summary.md' },
+    ]);
+  });
+
   it('saves no version when the deliverable did not land in the folder', () => {
     publishMock.mockReturnValue({ written: [] });
     const h = makeHarness({
@@ -1335,6 +1421,68 @@ describe('WorkerEngine delivery to the project folder', () => {
       orchestration: doneBatch(),
     });
     expect(h.checkpoints).toEqual([]);
+  });
+
+  // A run stays alive after its last step: the run pane's composer keeps
+  // talking to the participant, and "now turn that into a PDF" writes real
+  // files into the run root with no orchestration update behind them.
+  it('files again when a chat turn ends on a run that already finished', () => {
+    fileDeliverableMock.mockClear();
+    const h = makeHarness({
+      seed: [seedWorker()],
+      deliverablesFor: () => [
+        { name: 'Summary.md', body: 'hello' },
+        { name: 'Summary.pdf', sourcePath: '/run/Summary.pdf' },
+      ],
+      runIdForConversation: (conversationId) => (conversationId === ('conv-1' as any) ? ('run-1' as any) : null),
+    });
+    h.engine.start();
+    h.orchestrations.set('orch-1', doneBatch());
+    fileDeliverableMock.mockClear();
+
+    h.engine.observeEvent({ type: 'running', conversationId: 'conv-1' as any, isRunning: false });
+
+    expect(fileDeliverableMock).toHaveBeenCalledTimes(1);
+    expect(fileDeliverableMock.mock.calls[0][0]).toMatchObject({
+      workerId: 'worker-1',
+      artifacts: [
+        { name: 'Summary.md', body: 'hello' },
+        { name: 'Summary.pdf', sourcePath: '/run/Summary.pdf' },
+      ],
+    });
+  });
+
+  it('ignores a turn that ends on a conversation belonging to no worker run', () => {
+    fileDeliverableMock.mockClear();
+    const h = makeHarness({
+      seed: [seedWorker()],
+      deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
+      runIdForConversation: () => null,
+    });
+    h.engine.start();
+    h.orchestrations.set('orch-1', doneBatch());
+    fileDeliverableMock.mockClear();
+
+    h.engine.observeEvent({ type: 'running', conversationId: 'conv-9' as any, isRunning: false });
+    expect(fileDeliverableMock).not.toHaveBeenCalled();
+  });
+
+  // Mid-flow the step's own turn ends the same way. Filing then would copy a
+  // half-finished run root into the cabinet under the finished job's name.
+  it('does not file when the run it belongs to is still going', () => {
+    fileDeliverableMock.mockClear();
+    const h = makeHarness({
+      seed: [seedWorker()],
+      deliverablesFor: () => [{ name: 'Summary.md', body: 'hello' }],
+      runIdForConversation: () => 'run-1' as any,
+    });
+    h.engine.start();
+    const running = doneBatch();
+    running.items[0].status = 'running';
+    h.orchestrations.set('orch-1', running);
+
+    h.engine.observeEvent({ type: 'running', conversationId: 'conv-1' as any, isRunning: false });
+    expect(fileDeliverableMock).not.toHaveBeenCalled();
   });
 
   it('leaves a worker without the cap filing only to its cabinet', () => {
@@ -1772,7 +1920,7 @@ describe('WorkerEngine daily errand conversations', () => {
       );
     }
 
-    await h.engine.runErrand('worker-1', 'fix it then', 'chat');
+    await h.engine.runErrand('worker-1', 'fix it then');
     const turns = h.parked[0].priorTurns;
     expect(turns).toEqual([
       { prompt: 'which spec is flaky', reply: 'WOW-4921 is.' },
@@ -1806,7 +1954,7 @@ describe('WorkerEngine daily errand conversations', () => {
       }),
     );
 
-    await h.engine.runErrand('worker-1', 'what should I check today', 'chat');
+    await h.engine.runErrand('worker-1', 'what should I check today');
 
     expect(h.parked[0].priorTurns).toBeUndefined();
     expect(h.parked[0].prompt).toContain('PREVIOUS CONVERSATION HANDOFF');
@@ -2087,6 +2235,46 @@ describe('WorkerEngine delegation', () => {
 
   /// The whole of the depth limit: a worker that cannot see its colleagues
   /// cannot pass the parcel on to them.
+  it('does not let an answered question refer work to a colleague', async () => {
+    // A referral spends a COLLEAGUE's budget, so it is the one desk outcome
+    // you cannot wave away by dismissing a card. Tied to a turn that actually
+    // proposed something rather than to one that answered in prose and
+    // mentioned a name on the way past.
+    const h = delegationHarness({
+      roster: [
+        seedWorker({
+          id: 'triage',
+          name: 'Triage',
+          trust: 'autonomous',
+          caps: { maxItemsPerShift: 3, runIn: 'worktree', canDelegate: true },
+        }),
+      ],
+    });
+    h.setParkResult({ ok: true, orchestrationId: 'orch-1', count: 0, queued: 0, excluded: 0 });
+    h.orchestrations.set(
+      'orch-1',
+      workerBatch({
+        origin: {
+          kind: 'worker',
+          workerId: CHIEF,
+          workerName: 'Chief of Staff',
+          task: 'errand',
+          errand: 'What changed?',
+        },
+        producer: {
+          prompt: 'p',
+          reply: 'Nothing material. <handoff to="Triage">Look at RED-6814.</handoff>',
+        },
+        items: [],
+      }),
+    );
+    h.engine.start();
+    await h.engine.runErrand(CHIEF, 'What changed?');
+    await h.flush();
+
+    expect(h.parked.filter((p) => p.origin?.kind === 'worker' && p.origin.from)).toHaveLength(0);
+  });
+
   it('shows a delegated errand no roster, so referrals cannot chain', async () => {
     const h = delegationHarness({
       roster: [
@@ -2106,6 +2294,11 @@ describe('WorkerEngine delegation', () => {
     const errand = h.parked.find((p) => p.origin?.kind === 'worker' && p.origin.task === 'errand');
     expect(errand!.prompt).not.toContain('YOUR COLLEAGUES');
     expect(errand!.prompt).toContain('A COLLEAGUE — "Chief of Staff"');
+    // And it stays out of the manager's desk thread. That conversation is one
+    // speaker's; resuming it for a colleague's referral would let this worker
+    // read the other half of it.
+    expect(errand!.conversationId).toBeUndefined();
+    expect(errand!.resumeSessionId).toBeUndefined();
   });
 
   it('reports a handoff aimed at nobody instead of dropping it', async () => {

@@ -10,6 +10,7 @@ import {
   deskTimeline,
   adjacentDeskDay,
   anyDeskLive,
+  resolveWorkerFilePath,
   deskDayLabel,
   deskDays,
   initialDeskDay,
@@ -711,5 +712,39 @@ describe('what a worker renders when you open it', () => {
 
   it('has nothing to open for a worker that only ever writes prose', () => {
     expect(workerAutoRenderTarget([], undefined)).toBeNull();
+  });
+});
+
+describe('resolveWorkerFilePath', () => {
+  const files = [
+    { name: 'design.md', path: '/wf/worker-1/design.md', bytes: 1, modifiedAt: 1 },
+    { name: 'baseline.md', path: '/wf/worker-1/notes/baseline.md', bytes: 1, modifiedAt: 1 },
+  ];
+
+  it('resolves a bare filename against the worker own directory', () => {
+    // What a worker actually writes: it saved the thing, and it calls it by
+    // the name it gave it. Opened as a project-relative path it is nowhere,
+    // which is why clicking it did nothing at all.
+    expect(resolveWorkerFilePath('design.md', files)).toBe('/wf/worker-1/design.md');
+  });
+
+  it('resolves a name carrying enough folder to be unambiguous', () => {
+    expect(resolveWorkerFilePath('notes/baseline.md', files)).toBe('/wf/worker-1/notes/baseline.md');
+  });
+
+  it('keeps a line suffix so the reference still points at the line', () => {
+    expect(resolveWorkerFilePath('design.md:42', files)).toBe('/wf/worker-1/design.md:42');
+    expect(resolveWorkerFilePath('design.md:10-20', files)).toBe('/wf/worker-1/design.md:10-20');
+  });
+
+  it('leaves an absolute path alone', () => {
+    expect(resolveWorkerFilePath('/etc/hosts', files)).toBe('/etc/hosts');
+  });
+
+  it('declines a path that is not one of its files, so the repo still resolves', () => {
+    // A worker citing `src/main.ts` means the project, and that reference has
+    // to keep working — the caller falls back to opening it as given.
+    expect(resolveWorkerFilePath('src/main.ts', files)).toBeNull();
+    expect(resolveWorkerFilePath('', files)).toBeNull();
   });
 });
