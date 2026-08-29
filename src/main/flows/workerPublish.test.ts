@@ -231,9 +231,9 @@ describe('publishDeliverableToProject', () => {
     expect(at(PUBLISH_RETRY_WINDOW_MS + HOUR).skipped).toBe('already-published');
   });
 
-  it('treats a pre-0.16.2 ledger entry as fully published, not as a partial doneNames list', () => {
+  it('treats a pre-0.17.0 ledger entry as fully published, not as a partial doneNames list', () => {
     writeEverydayMarker(projectDir);
-    // Pre-0.16.2 shape: a bare array of the filenames that landed. Any entry
+    // Pre-0.17.0 shape: a bare array of the filenames that landed. Any entry
     // at all used to mean "this run is done" — seed that directly, bypassing
     // `publish()`, the way an existing install's `.published.json` would.
     const ledgerFile = path.join(workerFilesDir(WORKER), '.published.json');
@@ -246,7 +246,7 @@ describe('publishDeliverableToProject', () => {
     expect(fs.readdirSync(projectDir).filter((f) => f.endsWith('.md'))).toEqual([]);
   });
 
-  it('re-publishes a pre-0.16.2 ledger entry that is a bare EMPTY array', () => {
+  it('re-publishes a pre-0.17.0 ledger entry that is a bare EMPTY array', () => {
     writeEverydayMarker(projectDir);
     // An empty legacy array carried no filenames, so it proves nothing was
     // ever filed — honouring it as "complete" would preserve the shift-10

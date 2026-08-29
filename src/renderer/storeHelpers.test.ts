@@ -2,7 +2,7 @@
 // editor-tab persistence projection.
 
 import { describe, expect, it } from 'vitest';
-import type { AppSettings, Conversation } from '@shared/types';
+import type { AppSettings, Conversation, StreamEvent } from '@shared/types';
 import {
   backendSettingsChanged,
   hydrateFileTabs,
