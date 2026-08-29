@@ -12,6 +12,18 @@ const keyOf = (r: Req) => `${r.id}|${r.task}|${r.label}|${r.title}|${r.at}`;
 /// evict oldest-first past the cap rather than growing for the whole session.
 const MAX_CACHE_ENTRIES = 500;
 
+/// Drop everything cached for one worker.
+///
+/// The key holds the item's `finishedAt`, which never changes — so a cabinet
+/// that gains files AFTER the item finished (a chat turn taken on the run
+/// once the flow was done, which files again) would otherwise keep serving
+/// the listing from before those files landed for the rest of the session.
+export function invalidateDeliverables(workerId: string): void {
+  for (const key of [...cache.keys()]) {
+    if (key.startsWith(`${workerId}|`)) cache.delete(key);
+  }
+}
+
 /// One IPC per animation frame instead of one per rendered row. A page of 25
 /// plan rows previously made 25 round trips to main on every render.
 export function fetchDeliverables(req: Req): Promise<WorkerFile[]> {

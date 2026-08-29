@@ -80,6 +80,8 @@ import { AttachmentChip } from "../AttachmentChip";
 import { Markdown } from "../Markdown";
 import { CopyActions } from "../CopyActions";
 import { UserBubble } from "../UserBubble";
+import { WorkerFilesProvider, useOpenWorkerPath } from "./workerFilesContext";
+import { ActivityStrip } from "../ActivityStrip";
 import { FlowMonogram } from "../flows/FlowMonogram";
 import { FlowRunPane } from "../flows/FlowRunPane";
 import { deleteFlowRunWithDirtyGuard } from "../flows/deleteRun";
@@ -842,7 +844,6 @@ function WorkerRow({
   const [tab, setTab] = useState<
     "chat" | "shifts" | "tasks" | "files" | "journal" | "stats" | "settings"
   >("chat");
-  const [intent, setIntent] = useState<"chat" | "work">("chat");
   // The desk is cleared nightly: it shows one day, and the rest is one step
   // back. Opening on today rather than on "the last day something happened"
   // is deliberate — a desk whose date changes depending on when the worker
@@ -1035,223 +1036,224 @@ function WorkerRow({
   }, [tab, worker.id]);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 px-6 pt-6">
-        {/* Identity. Name, standing, rhythm — and one action. */}
-        <div className="flex items-start gap-4">
-          <WorkerAvatar worker={worker} size="lg" live={!!shift} />
-          <div className="min-w-0 flex-1">
-            <div className="text-2xl font-semibold tracking-tight text-ink">
-              {worker.name}
-            </div>
-            {/* The same line the roster shows, so opening a worker confirms
+    // The worker's own files, published to the whole desk. Its prose names
+    // them the way a person names things on their own desk — a bare filename —
+    // and only here do we know where they actually are.
+    <WorkerFilesProvider value={files}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="shrink-0 px-6 pt-6">
+          {/* Identity. Name, standing, rhythm — and one action. */}
+          <div className="flex items-start gap-4">
+            <WorkerAvatar worker={worker} size="lg" live={!!shift} />
+            <div className="min-w-0 flex-1">
+              <div className="text-2xl font-semibold tracking-tight text-ink">
+                {worker.name}
+              </div>
+              {/* The same line the roster shows, so opening a worker confirms
                 the row you clicked rather than making you re-read the job
                 description to check you are in the right place. */}
-            {headerTagline && (
-              <div className="mt-0.5 truncate text-[13px] text-ink-muted">
-                {headerTagline}
+              {headerTagline && (
+                <div className="mt-0.5 truncate text-[13px] text-ink-muted">
+                  {headerTagline}
+                </div>
+              )}
+              <div className="mt-1 text-xs text-ink-muted">
+                <span
+                  className={TRUST_LABEL[worker.trust].cls
+                    .split(" ")
+                    .slice(0, 2)
+                    .join(" ")}
+                >
+                  {TRUST_LABEL[worker.trust].text}
+                </span>
+                {projectLabel ? ` · ${projectLabel}` : ""}
+                {!worker.enabled
+                  ? " · paused"
+                  : nextShiftAt != null
+                    ? ` · next shift ${untilLabel(nextShiftAt)}`
+                    : ""}
               </div>
-            )}
-            <div className="mt-1 text-xs text-ink-muted">
-              <span
-                className={TRUST_LABEL[worker.trust].cls
-                  .split(" ")
-                  .slice(0, 2)
-                  .join(" ")}
-              >
-                {TRUST_LABEL[worker.trust].text}
-              </span>
-              {projectLabel ? ` · ${projectLabel}` : ""}
-              {!worker.enabled
-                ? " · paused"
-                : nextShiftAt != null
-                  ? ` · next shift ${untilLabel(nextShiftAt)}`
-                  : ""}
             </div>
-          </div>
-          <button
-            disabled={starting || !!shift || !!shiftBlock}
-            onClick={() => void workShiftNow(worker.id)}
-            title={
-              shiftBlock?.reason ??
-              "Work one shift now, out of band. Does not change the schedule."
-            }
-            className="review-btn shrink-0 disabled:opacity-40"
-          >
-            {shift ? "Shift running…" : "Run shift now"}
-          </button>
-        </div>
-
-        {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
-
-        <div className="no-scrollbar mt-5 flex items-center gap-6 overflow-x-auto overflow-y-hidden border-b border-card-strong">
-          {(
-            [
-              ["chat", "Chat"],
-              ["shifts", "Shifts"],
-              ["tasks", "Tasks"],
-              ["files", "Files"],
-              ["journal", "Journal"],
-              ["stats", "Stats"],
-              ["settings", "Settings"],
-            ] as const
-          ).map(([key, label]) => (
             <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={
-                "-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[13px] transition-colors " +
-                "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
-                (tab === key
-                  ? "border-accent text-ink"
-                  : "border-transparent text-ink-faint hover:text-ink-muted")
+              disabled={starting || !!shift || !!shiftBlock}
+              onClick={() => void workShiftNow(worker.id)}
+              title={
+                shiftBlock?.reason ??
+                "Work one shift now, out of band. Does not change the schedule."
               }
+              className="review-btn shrink-0 disabled:opacity-40"
             >
-              {label}
-              {key === "shifts" && awaiting.length > 0 && (
-                <span className="rounded-full bg-violet-500/20 px-1.5 text-[10px] text-violet-500">
-                  {awaiting.length}
-                </span>
-              )}
-              {key === "tasks" && activeTaskCount > 0 && (
-                <span className="rounded-full bg-sky-400/15 px-1.5 text-[10px] text-sky-400">
-                  {activeTaskCount}
-                </span>
-              )}
-              {/* A shift in flight is the one thing here that changes while you
-                are not looking at it, so the tab says so. */}
-              {key === "shifts" && shift?.task === "shift" && (
-                <span className="relative flex h-1.5 w-1.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
-                  <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
-                </span>
-              )}
+              {shift ? "Shift running…" : "Run shift now"}
             </button>
-          ))}
-        </div>
-      </div>
+          </div>
 
-      {tab === "chat" ? (
-        <>
-          <DeskDayBar
-            day={day}
-            days={days}
-            onSet={setDay}
-            context={
-              <>
-                <button
-                  onClick={() => setTab("files")}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-card-strong bg-card/20 px-2.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card/50 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
-                >
-                  Files{" "}
-                  <span className="text-ink-faint">{files?.length ?? 0}</span>
-                </button>
-                <button
-                  onClick={() => setTab("journal")}
-                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-card-strong bg-card/20 px-2.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card/50 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
-                >
-                  Journal{" "}
-                  <span className="text-ink-faint">{journal.length}</span>
-                </button>
-                {shift?.task === "shift" && (
-                  <button
-                    onClick={() => setTab("shifts")}
-                    className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-400 transition-colors hover:bg-sky-400/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/50"
-                  >
-                    <span
-                      className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400"
-                      aria-hidden="true"
-                    />
-                    Shift {worker.shiftCount ?? 1} planning
-                    <span className="text-sky-300/70">View shift →</span>
-                  </button>
+          {shiftBlock && <ShiftBlockNotice block={shiftBlock} />}
+
+          <div className="no-scrollbar mt-5 flex items-center gap-6 overflow-x-auto overflow-y-hidden border-b border-card-strong">
+            {(
+              [
+                ["chat", "Chat"],
+                ["shifts", "Shifts"],
+                ["tasks", "Tasks"],
+                ["files", "Files"],
+                ["journal", "Journal"],
+                ["stats", "Stats"],
+                ["settings", "Settings"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={
+                  "-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-0.5 pb-2 text-[13px] transition-colors " +
+                  "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+                  (tab === key
+                    ? "border-accent text-ink"
+                    : "border-transparent text-ink-faint hover:text-ink-muted")
+                }
+              >
+                {label}
+                {key === "shifts" && awaiting.length > 0 && (
+                  <span className="rounded-full bg-violet-500/20 px-1.5 text-[10px] text-violet-500">
+                    {awaiting.length}
+                  </span>
                 )}
-              </>
-            }
-          />
-          {/* Outside the scroller on purpose: it is the one thing here that
+                {key === "tasks" && activeTaskCount > 0 && (
+                  <span className="rounded-full bg-sky-400/15 px-1.5 text-[10px] text-sky-400">
+                    {activeTaskCount}
+                  </span>
+                )}
+                {/* A shift in flight is the one thing here that changes while you
+                are not looking at it, so the tab says so. */}
+                {key === "shifts" && shift?.task === "shift" && (
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
+                    <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {tab === "chat" ? (
+          <>
+            <DeskDayBar
+              day={day}
+              days={days}
+              onSet={setDay}
+              context={
+                <>
+                  <button
+                    onClick={() => setTab("files")}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-card-strong bg-card/20 px-2.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card/50 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                  >
+                    Files{" "}
+                    <span className="text-ink-faint">{files?.length ?? 0}</span>
+                  </button>
+                  <button
+                    onClick={() => setTab("journal")}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md border border-card-strong bg-card/20 px-2.5 text-[11px] font-medium text-ink-muted transition-colors hover:bg-card/50 hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+                  >
+                    Journal{" "}
+                    <span className="text-ink-faint">{journal.length}</span>
+                  </button>
+                  {shift?.task === "shift" && (
+                    <button
+                      onClick={() => setTab("shifts")}
+                      className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md border border-sky-400/30 bg-sky-400/10 px-2.5 text-[11px] font-medium text-sky-400 transition-colors hover:bg-sky-400/15 focus:outline-none focus-visible:ring-1 focus-visible:ring-sky-400/50"
+                    >
+                      <span
+                        className="h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400"
+                        aria-hidden="true"
+                      />
+                      Shift {worker.shiftCount ?? 1} planning
+                      <span className="text-sky-300/70">View shift →</span>
+                    </button>
+                  )}
+                </>
+              }
+            />
+            {/* Outside the scroller on purpose: it is the one thing here that
               must not scroll away, and it is about the desk rather than on
               it. */}
-          <div className="w-full">
-            <CarriedOver items={conversation} day={day} onSet={setDay} />
-          </div>
+            <div className="w-full">
+              <CarriedOver items={conversation} day={day} onSet={setDay} />
+            </div>
+            <div
+              ref={scroller}
+              onScroll={(e) => {
+                const el = e.currentTarget;
+                pinned.current = pinnedToBottom(el);
+              }}
+              className="min-h-0 flex-1 overflow-y-auto px-6 py-4"
+            >
+              <div className="min-h-full w-full">
+                <WorkerTimeline
+                  worker={worker}
+                  items={dayItems}
+                  day={day}
+                  days={days}
+                  onSet={setDay}
+                  onViewWork={() => setTab("shifts")}
+                  workSummary={workSummary}
+                  focusId={focusId}
+                />
+              </div>
+            </div>
+            <div className="shrink-0 border-t border-card px-6 pb-5 pt-3">
+              <div className="w-full">
+                <WorkerErrandComposer worker={worker} />
+              </div>
+            </div>
+          </>
+        ) : (
           <div
             ref={scroller}
-            onScroll={(e) => {
-              const el = e.currentTarget;
-              pinned.current = pinnedToBottom(el);
-            }}
-            className="min-h-0 flex-1 overflow-y-auto px-6 py-4"
+            className={
+              "min-h-0 flex-1 px-6 pb-6 " +
+              (tab === "settings" ? "overflow-hidden" : "overflow-y-auto")
+            }
           >
-            <div className="min-h-full w-full">
-              <WorkerTimeline
+            {tab === "shifts" && (
+              <WorkerShiftsPane
                 worker={worker}
-                items={dayItems}
-                day={day}
-                days={days}
-                onSet={setDay}
-                onViewWork={() => setTab("shifts")}
-                workSummary={workSummary}
+                nextShiftAt={nextShiftAt}
                 focusId={focusId}
+                onFocusConsumed={() => setFocusId(null)}
               />
-            </div>
-          </div>
-          <div className="shrink-0 border-t border-card px-6 pb-5 pt-3">
-            <div className="w-full">
-              <WorkerErrandComposer
+            )}
+            {tab === "tasks" && (
+              <WorkerTasksPane
                 worker={worker}
-                intent={intent}
-                onIntentChange={setIntent}
+                orchestrations={mine}
+                onViewShifts={() => setTab("shifts")}
               />
-            </div>
+            )}
+            {tab === "files" && (
+              <WorkerFiles
+                workerId={worker.id}
+                workerName={worker.name}
+                files={files}
+                setFiles={setFiles}
+              />
+            )}
+            {tab === "journal" && <JournalList workerId={worker.id} />}
+            {tab === "stats" && (
+              <WorkerStats worker={worker} scorecard={scorecard} />
+            )}
+            {tab === "settings" && (
+              <WorkerSettings
+                worker={worker}
+                projectLabel={projectLabel}
+                files={files ?? []}
+                setFiles={setFiles}
+              />
+            )}
           </div>
-        </>
-      ) : (
-        <div
-          ref={scroller}
-          className={
-            "min-h-0 flex-1 px-6 pb-6 " +
-            (tab === "settings" ? "overflow-hidden" : "overflow-y-auto")
-          }
-        >
-          {tab === "shifts" && (
-            <WorkerShiftsPane
-              worker={worker}
-              nextShiftAt={nextShiftAt}
-              focusId={focusId}
-              onFocusConsumed={() => setFocusId(null)}
-            />
-          )}
-          {tab === "tasks" && (
-            <WorkerTasksPane
-              worker={worker}
-              orchestrations={mine}
-              onViewShifts={() => setTab("shifts")}
-            />
-          )}
-          {tab === "files" && (
-            <WorkerFiles
-              workerId={worker.id}
-              workerName={worker.name}
-              files={files}
-              setFiles={setFiles}
-            />
-          )}
-          {tab === "journal" && <JournalList workerId={worker.id} />}
-          {tab === "stats" && (
-            <WorkerStats worker={worker} scorecard={scorecard} />
-          )}
-          {tab === "settings" && (
-            <WorkerSettings
-              worker={worker}
-              projectLabel={projectLabel}
-              files={files ?? []}
-              setFiles={setFiles}
-            />
-          )}
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </WorkerFilesProvider>
   );
 }
 
@@ -2265,6 +2267,7 @@ function WorkerShiftsPane({
   focusId: string | null;
   onFocusConsumed: () => void;
 }) {
+  const openWorkerPath = useOpenWorkerPath();
   const shift = useWorkersStore((s) => s.shiftProgress[worker.id]);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
@@ -2353,7 +2356,7 @@ function WorkerShiftsPane({
           </div>
           {shift.text ? (
             <div className="text-xs leading-relaxed text-ink-muted">
-              <Markdown source={shift.text} />
+              <Markdown source={shift.text} onOpenPath={openWorkerPath} />
             </div>
           ) : (
             <div className="text-xs text-ink-faint">
@@ -2895,8 +2898,12 @@ function WorkerTimeline({
       {items.map((item) => {
         const awaiting = isOrchestrationAwaitingApproval(item.orchestration);
         const id = item.orchestration.id;
-        const produced =
-          item.intent === "work" && item.orchestration.items.length > 0;
+        // What the turn DID, not what you declared it was before sending.
+        // The old rule keyed off the Ask/Create-work toggle, so a turn you had
+        // labelled work but which answered in prose still opened its (empty)
+        // plan, and a turn that genuinely launched something stayed shut if
+        // you had happened to send it as a question.
+        const produced = item.orchestration.items.length > 0;
         const open = overrides[id] ?? (id === focusId || produced);
         const toggle = () => setOverrides((cur) => ({ ...cur, [id]: !open }));
         const anchor = id === focusId ? focused : undefined;
@@ -2921,31 +2928,29 @@ function WorkerTimeline({
               at={item.at}
               reply={item.reply}
               footer={
-                item.intent === "work" ? (
+                launched > 0 || item.proposed > 0 ? (
                   <div className="mt-2 flex items-center gap-2 text-[11px] text-ink-faint">
                     <span className="rounded bg-violet-500/20 px-1 py-0.5 text-[9px] text-violet-500">
                       Work
                     </span>
-                    {(launched > 0 || item.proposed > 0) && (
-                      <button
-                        onClick={toggle}
-                        className="hover:text-ink focus:outline-none"
-                      >
-                        {[
-                          launched > 0 && `launched ${launched}`,
-                          item.proposed > 0 &&
-                            `${item.proposed} waiting for your review`,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}{" "}
-                        {open ? "▾" : "▸"}
-                      </button>
-                    )}
+                    <button
+                      onClick={toggle}
+                      className="hover:text-ink focus:outline-none"
+                    >
+                      {[
+                        launched > 0 && `launched ${launched}`,
+                        item.proposed > 0 &&
+                          `${item.proposed} waiting for your review`,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ")}{" "}
+                      {open ? "▾" : "▸"}
+                    </button>
                   </div>
                 ) : null
               }
             />
-            {item.intent === "work" && open && (
+            {produced && open && (
               <div className="rounded-xl border border-card-strong px-3 pb-2">
                 <ReadInFull worker={worker} item={item} />
                 <ShiftPlan
@@ -2975,9 +2980,7 @@ function WorkerTimeline({
               ? `Queued behind Shift ${worker.shiftCount ?? 1}`
               : index > 0
                 ? `Queued · ${index} ahead`
-                : pending.intent === "work"
-                  ? "Preparing work"
-                  : "Reading Files and Journal";
+                : "Reading Files and Journal";
           return (
             <div key={pending.id} className="flex flex-col gap-2">
               <UserBubble text={pending.text} />
@@ -3035,8 +3038,14 @@ function LiveTurn({
 }: {
   worker: Worker;
   tint: string;
-  live: { text: string; tools: string[]; task: "shift" | "errand" };
+  live: {
+    text: string;
+    tools: string[];
+    task: "shift" | "errand";
+    warm?: boolean;
+  };
 }) {
+  const openWorkerPath = useOpenWorkerPath();
   // The engine stamps `shiftCount` before the planning turn starts, so the
   // number is already this shift's — not the last one's.
   const label =
@@ -3059,27 +3068,32 @@ function LiveTurn({
 
       {/* Who is talking, above the turn rather than inside it — the same
           order chat uses, and the reason the tool calls below can be their
-          own rows instead of a word crammed into a bubble header. */}
+          own rows instead of a word crammed into a bubble header.
+
+          The waiting state is chat's own activity strip rather than a
+          sentence of this pane's invention, tinted and named so it reads as
+          THIS worker thinking rather than the app being busy. The strip's
+          existing rule does the rest: a cold turn passes the one specific
+          thing it is actually doing and the strip shows it verbatim, while a
+          warm turn — which has nothing to read itself in on — gets the
+          rotating verbs, because a static line under a resumed worker was
+          just a label for "wait". */}
       <div className="flex items-center gap-2 text-[10px] font-medium">
-        <span className="relative flex h-1.5 w-1.5">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-60" />
-          <span className="relative h-1.5 w-1.5 rounded-full bg-sky-400" />
-        </span>
         <span style={{ color: tint }}>{worker.name}</span>
         <span className="text-ink-faint">
           {live.task === "shift" ? "planning its shift" : "on your errand"}
         </span>
       </div>
-
-      {/* Before the first tool and the first token there is genuinely nothing
-          to show, and the honest thing to say is what it is doing: reading
-          itself in. One faint line, not a bubble — a bubble here is an empty
-          message. */}
       {tools.length === 0 && !live.text && (
-        <div className="pl-3.5 text-[11px] text-ink-faint">
-          {live.task === "errand" && inTodaysDeskThread(worker)
-            ? "Picking up where you left off…"
-            : "Reading its job description and journal…"}
+        <div className="-my-1 pl-0.5">
+          <ActivityStrip
+            tint={tint}
+            label={
+              live.task === "errand" && live.warm
+                ? ""
+                : "Reading its job description and journal…"
+            }
+          />
         </div>
       )}
 
@@ -3136,7 +3150,7 @@ function LiveTurn({
             style={{ background: tint + "cc" }}
           />
           <div className="px-4 py-2.5 pl-[14px]">
-            <Markdown source={live.text} />
+            <Markdown source={live.text} onOpenPath={openWorkerPath} />
           </div>
         </div>
       )}
@@ -3150,14 +3164,6 @@ function LiveTurn({
 /// the turn now starting resumes it rather than establishing the worker from
 /// scratch. Read off the record the engine persisted after the LAST turn —
 /// at the moment a turn starts that is exactly the thread it will resume.
-function inTodaysDeskThread(worker: Worker): boolean {
-  const held = worker.deskSession;
-  if (!held?.sessionId) return false;
-  const midnight = new Date();
-  midnight.setHours(0, 0, 0, 0);
-  return held.day === midnight.getTime();
-}
-
 const LIVE_TOOL_TRAIL = 6;
 
 /// `mcp__claude_ai_Superhuman_Mail__list_threads` is thirty characters of
@@ -3528,6 +3534,7 @@ function WorkerReply({
   reply: string;
   footer?: React.ReactNode;
 }) {
+  const openWorkerPath = useOpenWorkerPath();
   // What a worker says is the same kind of thing an assistant bubble says —
   // an itinerary you want to paste into a mail, a summary you want to keep —
   // so it carries the same copy pair, over the same rendered prose.
@@ -3554,7 +3561,7 @@ function WorkerReply({
         </div>
         <div ref={renderedRef}>
           {reply ? (
-            <Markdown source={reply} />
+            <Markdown source={reply} onOpenPath={openWorkerPath} />
           ) : (
             <div className="text-xs text-ink-faint">No reply recorded.</div>
           )}
@@ -3780,6 +3787,7 @@ function ShiftPlan({
   /// appears, and there it stays.
   showProse?: boolean;
 }) {
+  const openWorkerPath = useOpenWorkerPath();
   // The reply's <candidates> block is machine payload — the items below
   // render it better than raw JSON would.
   const prose = stripWorkerSubject(orchestration.producer?.reply ?? "")
@@ -3793,7 +3801,7 @@ function ShiftPlan({
       {showProse &&
         (prose ? (
           <div className="rounded-md bg-card-strong/30 px-3 py-2 text-xs leading-relaxed text-ink-muted">
-            <Markdown source={prose} />
+            <Markdown source={prose} onOpenPath={openWorkerPath} />
           </div>
         ) : (
           <div className="text-[11px] text-ink-faint">
@@ -3934,7 +3942,12 @@ function PlanItemRow({
       : null;
   const finishedAt = item.finishedAt;
   useEffect(() => {
-    if (compactArtifacts || !workerId || item.status !== "done" || !finishedAt) {
+    if (
+      compactArtifacts ||
+      !workerId ||
+      item.status !== "done" ||
+      !finishedAt
+    ) {
       // Nothing to ask: settle on "filed nothing" rather than leaving the row
       // in the pending state forever.
       setFiles([]);
@@ -5160,7 +5173,9 @@ function WorkerEditor() {
                     times you are sitting in front of the desk waiting. */}
                 <select
                   value={draft.pace ?? "swift"}
-                  onChange={(e) => patch({ pace: e.target.value as WorkerPace })}
+                  onChange={(e) =>
+                    patch({ pace: e.target.value as WorkerPace })
+                  }
                   className="w-full bg-card border border-card-strong rounded px-2 py-1.5 text-sm text-ink"
                 >
                   <option value="swift">
@@ -5416,7 +5431,7 @@ function WorkerEditor() {
                     not after: the first untick is what silently switches
                     strict mode on, so a warning that waits for it has already
                     missed the decision it exists to inform. */}
-                {(
+                {
                   <div className="mt-2 text-[11px] leading-relaxed text-amber-600 dark:text-amber-400">
                     Picking any of these also switches off the services
                     connected through your Claude account — Gmail, Calendar,
@@ -5424,7 +5439,7 @@ function WorkerEditor() {
                     listed here. If this worker reads mail, your calendar or
                     Jira through one of those, leave it on everything.
                   </div>
-                )}
+                }
                 {draft.mcpServers !== undefined && (
                   <button
                     type="button"
@@ -5555,7 +5570,12 @@ function WorkerPersonalizePanel() {
 
   // Nothing owner-specific in a worker that is genuinely generic. Saying so
   // and getting out of the way beats an empty form the user has to dismiss.
-  if (!state.scanning && !state.error && state.questions.length === 0 && !state.appliedNote) {
+  if (
+    !state.scanning &&
+    !state.error &&
+    state.questions.length === 0 &&
+    !state.appliedNote
+  ) {
     return null;
   }
 
@@ -5617,7 +5637,9 @@ function WorkerPersonalizePanel() {
         state.questions.length > 0 && (
           <>
             {state.note && (
-              <div className="text-[11px] text-ink-muted leading-relaxed">{state.note}</div>
+              <div className="text-[11px] text-ink-muted leading-relaxed">
+                {state.note}
+              </div>
             )}
             <div className="space-y-2.5">
               {state.questions.map((q) => (
@@ -5632,7 +5654,9 @@ function WorkerPersonalizePanel() {
                       {q.found}
                     </span>
                     {q.fromProfile && (
-                      <span className="text-[10px] text-accent">remembered</span>
+                      <span className="text-[10px] text-accent">
+                        remembered
+                      </span>
                     )}
                   </div>
                   <input
@@ -5999,7 +6023,10 @@ function WorkerAiRevise() {
             {"\n"}Nothing is saved until you hit Save.
           </div>
           <button
-            onClick={() => patchRevise({ note: null })}
+            // Dismissing is "I have read this and I am done with it", which
+            // is also the one way besides saving to release the held copy —
+            // otherwise the roster would keep offering it back forever.
+            onClick={() => patchRevise({ note: null, pending: null })}
             aria-label="Dismiss"
             className="opacity-60 hover:opacity-100 leading-none"
           >
@@ -6049,7 +6076,9 @@ function CadenceField({
   // Remembered so switching to On demand and back doesn't throw away the
   // times you typed. The last real trigger is also what "At a time of day"
   // restores, rather than snapping back to 09:00.
-  const lastRef = useRef<TimedTrigger>(cadence ?? { kind: "daily", time: "09:00" });
+  const lastRef = useRef<TimedTrigger>(
+    cadence ?? { kind: "daily", time: "09:00" },
+  );
   if (cadence) lastRef.current = cadence;
   const last = lastRef.current;
   return (

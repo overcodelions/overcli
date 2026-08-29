@@ -5,6 +5,7 @@ import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
 import { isSafeIdSegment } from '../../shared/flows/safeId';
+import { canonicalizeUnderRoot } from '../../shared/pathScope';
 
 import type { Worker } from '../../shared/flows/worker';
 import type { Treasury } from '../../shared/flows/treasury';
@@ -77,7 +78,18 @@ export function loadAllWorkers(): Worker[] {
       // `cadence: null` is a real, readable worker — one that works on
       // demand. Only an ABSENT cadence is a malformed record.
       if (!w || typeof w.id !== 'string' || w.cadence === undefined || !w.caps) continue;
-      out.push({ ...w, flowIds: Array.isArray(w.flowIds) ? w.flowIds : [] });
+      out.push({
+        ...w,
+        flowIds: Array.isArray(w.flowIds) ? w.flowIds : [],
+        // Same drift the run store repairs (see `canonicalizeUnderRoot`):
+        // workers hired before the app declared its `productName` hold
+        // `…/Application Support/overcli/…` where a worker saved today holds
+        // `…/Overcli/…`. One directory, two spellings, and every `===`
+        // between them is false — which silently empties a worker's colleague
+        // list the moment one of the two gets re-saved, with nothing on
+        // screen to say why.
+        projectPath: canonicalizeUnderRoot(w.projectPath, host().dataDir()),
+      });
     } catch (err) {
       log('warn', 'workers', `Skipping unreadable ${name}: ${String(err)}`);
     }

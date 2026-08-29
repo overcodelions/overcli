@@ -246,8 +246,36 @@ export function fileWorkerDeliverable(args: {
     }
     if (fileOnce(path.join(folder, base), artifact, base).written) wroteAny = true;
   }
+  // A job that was filed as ONE file and has since grown a second artifact
+  // crosses from the file shape to the folder shape. Both are named after the
+  // same stem, so without this the old `stem.md` sits beside the new `stem/`
+  // holding a stale copy of one thing now inside it — the same job listed
+  // twice, and the wrong one newer.
+  supersedeSingleFile(root, stem);
   dirCache.clear();
   return { written: wroteAny, name: stem };
+}
+
+/// Remove `<stem>.<ext>` now that `<stem>/` holds this job. Only ever called
+/// once the folder's writes have gone through, so nothing is dropped on the
+/// way to a folder that failed to appear.
+function supersedeSingleFile(root: string, stem: string): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const dot = entry.name.lastIndexOf('.');
+    if (dot <= 0 || entry.name.slice(0, dot) !== stem) continue;
+    try {
+      fs.rmSync(path.join(root, entry.name));
+    } catch (err) {
+      log('warn', 'worker-files', `could not remove the superseded ${entry.name}`, err);
+    }
+  }
 }
 
 /// The folder (or file stem) this job was ALREADY filed under, if any.
@@ -296,12 +324,18 @@ function existingJobStem(
   return null;
 }
 
-/// Never overwrites. The journal fold that calls this re-runs on every
-/// orchestration update and at startup, so it has to be idempotent for the
-/// same reason the journal's append is.
+/// Writes when the content is new OR has changed, and never otherwise.
+///
+/// What the journal fold needs from this is idempotence — it re-runs on every
+/// orchestration update and at startup — and comparing content gives that
+/// just as well as refusing to overwrite did. Refusing was too strong: a
+/// job's output is not settled the moment its last step ends. The run pane's
+/// composer goes on talking to the run afterwards ("make that shorter", "add
+/// the appendix"), and a cabinet that turned the second version away would
+/// keep a draft and file it as the deliverable.
 function writeOnce(full: string, body: string, name: string): { written: boolean; name: string } {
   try {
-    if (fs.existsSync(full)) return { written: false, name };
+    if (fs.existsSync(full) && fs.readFileSync(full, 'utf-8') === body) return { written: false, name };
     fs.writeFileSync(full, body, 'utf-8');
     return { written: true, name };
   } catch (err) {
@@ -310,8 +344,16 @@ function writeOnce(full: string, body: string, name: string): { written: boolean
   }
 }
 
+function statOrNull(full: string): fs.Stats | null {
+  try {
+    return fs.statSync(full);
+  } catch {
+    return null;
+  }
+}
+
 /// One artifact, filed however it exists: recorded text gets written, a file
-/// on disk gets copied byte for byte. Same never-overwrite rule as
+/// on disk gets copied byte for byte. Same write-when-changed rule as
 /// `writeOnce` — and a `sourcePath` that has already been cleaned up (the
 /// coordinator root is deleted with its run) is not an error, just nothing
 /// left to copy.
@@ -321,8 +363,17 @@ function fileOnce(
   name: string,
 ): { written: boolean; name: string } {
   if (artifact.sourcePath) {
+    const src = statOrNull(artifact.sourcePath);
+    // The run root dies with its run. A source that is gone leaves the copy
+    // already in the cabinet as the whole point of having made it.
+    if (!src) return { written: false, name };
+    const dst = statOrNull(full);
+    // A copy is stamped when it was MADE, which is always after the mtime of
+    // what it was made from — so "the source is newer" is false immediately
+    // after a copy and true only once the run has written to it again. Size
+    // catches a same-millisecond rewrite of equal-length content.
+    if (dst && dst.size === src.size && src.mtimeMs <= dst.mtimeMs) return { written: false, name };
     try {
-      if (fs.existsSync(full)) return { written: false, name };
       fs.copyFileSync(artifact.sourcePath, full);
       return { written: true, name };
     } catch (err) {

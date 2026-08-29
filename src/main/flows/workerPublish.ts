@@ -68,6 +68,10 @@ export interface PublishResult {
   /// Filenames as they landed in the project, which is not necessarily what
   /// was asked for — a second `Summary.md` becomes `Summary 2.md`.
   written: string[];
+  /// Filenames overwritten in place because the run revised them after it
+  /// had already delivered. Distinct from `written` so the version saved
+  /// afterwards can say "updated" rather than "added".
+  revised?: string[];
   /// Documents that were too large to file. The cabinet still has them.
   skippedNames?: string[];
   /// Why nothing was written, when nothing was. Only for the log.
@@ -115,15 +119,33 @@ export function publishDeliverableToProject(args: {
   // destination name (`Summary 2.md`) depends on what else is in the folder.
   const doneNames = new Set(entry?.doneNames ?? []);
   const failedSince: Record<string, number> = { ...(entry?.failedSince ?? {}) };
+  const landed: Record<string, string> = { ...(entry?.landed ?? {}) };
   const documents = args.artifacts.filter((a) => isPublishable(a.name));
   const remaining = documents.filter((d) => {
     const base = safeBase(d.name);
     return base && !doneNames.has(base);
   });
 
+  // A finished run is not a finished document. The run pane's composer keeps
+  // talking to it after the last step ("make that shorter"), and the delivered
+  // copy has to follow — a folder holding the draft while the cabinet holds
+  // the final is worse than never having delivered.
+  const revised = republishRevisions({
+    projectPath: args.projectPath,
+    documents: documents.filter((d) => doneNames.has(safeBase(d.name))),
+    landed,
+  });
+
   // Everything this run was ever going to publish already landed (or was
-  // permanently skipped as too-large) on an earlier fold.
-  if (entry && remaining.length === 0) return { written: [], skipped: 'already-published' };
+  // permanently skipped as too-large) on an earlier fold, and none of it has
+  // changed since.
+  if (entry && remaining.length === 0 && revised.length === 0) {
+    return { written: [], skipped: 'already-published' };
+  }
+  if (entry && remaining.length === 0) {
+    writeLedger(args.workerId, { ...ledger, [args.runId]: { ...entry, landed } });
+    return { written: [], revised };
+  }
 
   if (documents.length === 0) {
     // Recorded anyway: a run that produced no documents will not start
@@ -149,6 +171,7 @@ export function publishDeliverableToProject(args: {
         const dest = uniqueFilePath(args.projectPath, base);
         fs.copyFileSync(artifact.sourcePath, dest);
         written.push(path.basename(dest));
+        landed[base] = path.basename(dest);
         doneNames.add(base);
         continue;
       }
@@ -162,6 +185,7 @@ export function publishDeliverableToProject(args: {
       const dest = uniqueFilePath(args.projectPath, base);
       fs.writeFileSync(dest, body, 'utf-8');
       written.push(path.basename(dest));
+      landed[base] = path.basename(dest);
       doneNames.add(base);
     } catch (err) {
       // One unreadable artifact must not cost the user the rest of the
@@ -194,10 +218,70 @@ export function publishDeliverableToProject(args: {
     [args.runId]: {
       written: [...(entry?.written ?? []), ...written],
       doneNames: [...doneNames],
+      ...(Object.keys(landed).length > 0 ? { landed } : {}),
       ...(Object.keys(failedSince).length > 0 ? { failedSince } : {}),
     },
   });
-  return skippedNames.length > 0 ? { written, skippedNames } : { written };
+  return {
+    written,
+    ...(revised.length > 0 ? { revised } : {}),
+    ...(skippedNames.length > 0 ? { skippedNames } : {}),
+  };
+}
+
+/// Overwrite already-delivered documents whose content has since changed, and
+/// report the ones that were.
+///
+/// Only ever writes over a file THIS worker put there, identified by the
+/// ledger's `landed` mapping. Three things are deliberately left alone:
+///
+///   - an artifact with no `landed` entry (a ledger written before the
+///     mapping existed) — the destination would be a guess, and a wrong guess
+///     overwrites somebody else's document;
+///   - a delivered file that is no longer there, because the user deleting or
+///     moving it is a decision, and re-delivering would undo it;
+///   - a revision past `PUBLISH_MAX_BYTES`, on the same reasoning as the
+///     first delivery — the cabinet keeps it.
+///
+/// A user edit to the delivered file is not protected: the run writing to it
+/// again is the newer instruction. The version saved after this lands is what
+/// makes that recoverable.
+function republishRevisions(args: {
+  projectPath: string;
+  documents: ReadonlyArray<PublishArtifact>;
+  landed: Record<string, string>;
+}): string[] {
+  const revised: string[] = [];
+  for (const artifact of args.documents) {
+    const base = safeBase(artifact.name);
+    const name = base ? args.landed[base] : undefined;
+    if (!name) continue;
+    const dest = path.join(args.projectPath, name);
+    try {
+      const current = fs.statSync(dest);
+      if (!current.isFile()) continue;
+      if (artifact.sourcePath) {
+        const src = fs.statSync(artifact.sourcePath);
+        // A copy is stamped when it was made, always after the mtime of what
+        // it was made from — so this is false right after delivery and true
+        // only once the run has written to its source again.
+        if (src.size === current.size && src.mtimeMs <= current.mtimeMs) continue;
+        if (src.size > PUBLISH_MAX_BYTES) continue;
+        fs.copyFileSync(artifact.sourcePath, dest);
+      } else {
+        const body = artifact.body ?? '';
+        if (fs.readFileSync(dest, 'utf-8') === body) continue;
+        if (Buffer.byteLength(body, 'utf-8') > PUBLISH_MAX_BYTES) continue;
+        fs.writeFileSync(dest, body, 'utf-8');
+      }
+      revised.push(name);
+    } catch (err) {
+      // Gone, unreadable, or raced with the user. The first delivery already
+      // succeeded, so there is nothing to retry and nothing lost.
+      log('debug', 'worker-publish', `could not update ${name}`, err);
+    }
+  }
+  return revised;
 }
 
 /// Same shape as `copyIntoProject`: a basename, never a path, and never a
@@ -215,6 +299,12 @@ interface LedgerEntry {
   /// settled: either filed successfully or skipped for being too large. A
   /// name absent here is retried on the next fold.
   doneNames: string[];
+  /// Where each artifact actually landed, keyed by its original name. This is
+  /// what makes a revision deliverable: asking the flow for a change after it
+  /// finished rewrites the file we put there, and only that file. Without the
+  /// mapping the destination is a guess — `Summary.md` when we delivered
+  /// `Summary 2.md` is somebody else's document.
+  landed?: Record<string, string>;
   /// Epoch ms of the FIRST failed attempt, per original artifact name, for
   /// artifacts still inside the retry window. Pruned once the name settles.
   failedSince?: Record<string, number>;

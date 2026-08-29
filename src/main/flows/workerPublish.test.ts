@@ -63,6 +63,84 @@ describe('publishDeliverableToProject', () => {
     );
   });
 
+  // A run keeps going after its last step — the run pane's composer asks it
+  // for a change and it rewrites what it already delivered.
+  describe('a revision after the run already delivered', () => {
+    it('overwrites the delivered file in place rather than leaving the draft', () => {
+      writeEverydayMarker(projectDir);
+      publish([{ name: 'Summary.md', body: 'draft' }]);
+      const res = publish([{ name: 'Summary.md', body: 'final' }]);
+      expect(res.revised).toEqual(['Summary.md']);
+      expect(res.written).toEqual([]);
+      expect(fs.readFileSync(path.join(projectDir, 'Summary.md'), 'utf-8')).toBe('final');
+      // One document, not a second copy beside the first.
+      expect(fs.readdirSync(projectDir).filter((n) => n.endsWith('.md'))).toEqual(['Summary.md']);
+    });
+
+    // The delivered name is not always the artifact name, and overwriting
+    // `Summary.md` when we delivered `Summary 2.md` rewrites a document that
+    // was never ours.
+    it('overwrites the name it actually landed under, not the name it asked for', () => {
+      writeEverydayMarker(projectDir);
+      fs.writeFileSync(path.join(projectDir, 'Summary.md'), 'someone else’s', 'utf-8');
+      const first = publish([{ name: 'Summary.md', body: 'draft' }]);
+      expect(first.written).toEqual(['Summary 2.md']);
+
+      const res = publish([{ name: 'Summary.md', body: 'final' }]);
+      expect(res.revised).toEqual(['Summary 2.md']);
+      expect(fs.readFileSync(path.join(projectDir, 'Summary 2.md'), 'utf-8')).toBe('final');
+      expect(fs.readFileSync(path.join(projectDir, 'Summary.md'), 'utf-8')).toBe('someone else’s');
+    });
+
+    it('re-publishes unchanged content as a no-op, so the fold stays idempotent', () => {
+      writeEverydayMarker(projectDir);
+      publish([{ name: 'Summary.md', body: 'draft' }]);
+      const res = publish([{ name: 'Summary.md', body: 'draft' }]);
+      expect(res).toEqual({ written: [], skipped: 'already-published' });
+    });
+
+    it('follows a file the run rewrote on disk', () => {
+      writeEverydayMarker(projectDir);
+      const source = path.join(userDataDir, 'chart.pdf');
+      fs.writeFileSync(source, 'v1');
+      publish([{ name: 'chart.pdf', sourcePath: source }]);
+
+      fs.writeFileSync(source, 'v2-longer');
+      const res = publish([{ name: 'chart.pdf', sourcePath: source }]);
+      expect(res.revised).toEqual(['chart.pdf']);
+      expect(fs.readFileSync(path.join(projectDir, 'chart.pdf'), 'utf-8')).toBe('v2-longer');
+    });
+
+    // Deleting the delivered document is a decision. Putting it back because
+    // the run touched its own copy afterwards would undo it.
+    it('does not resurrect a delivered file the user removed', () => {
+      writeEverydayMarker(projectDir);
+      publish([{ name: 'Summary.md', body: 'draft' }]);
+      fs.rmSync(path.join(projectDir, 'Summary.md'));
+
+      const res = publish([{ name: 'Summary.md', body: 'final' }]);
+      expect(res).toEqual({ written: [], skipped: 'already-published' });
+      expect(fs.existsSync(path.join(projectDir, 'Summary.md'))).toBe(false);
+    });
+
+    // Ledgers written before the mapping existed cannot say which file is
+    // ours, and a guess overwrites somebody else's document.
+    it('leaves a pre-mapping ledger entry alone', () => {
+      writeEverydayMarker(projectDir);
+      fs.mkdirSync(workerFilesDir(WORKER), { recursive: true });
+      fs.writeFileSync(
+        path.join(workerFilesDir(WORKER), '.published.json'),
+        JSON.stringify({ 'run-1': { written: ['Summary.md'], doneNames: ['Summary.md'] } }),
+        'utf-8',
+      );
+      fs.writeFileSync(path.join(projectDir, 'Summary.md'), 'draft', 'utf-8');
+
+      const res = publish([{ name: 'Summary.md', body: 'final' }]);
+      expect(res).toEqual({ written: [], skipped: 'already-published' });
+      expect(fs.readFileSync(path.join(projectDir, 'Summary.md'), 'utf-8')).toBe('draft');
+    });
+  });
+
   it('leaves everything that is not a document in the cabinet', () => {
     writeEverydayMarker(projectDir);
     const res = publish([

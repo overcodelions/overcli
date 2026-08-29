@@ -156,8 +156,9 @@ export interface Orchestration {
         /// which is display text. Absent on batches written before errands
         /// existed — read those as `shift`, which is what they were.
         task?: 'shift' | 'errand';
-        /// How an errand was sent. Missing intent on legacy errands means
-        /// `'work'`, preserving their original flow-capable behavior.
+        /// How an errand was sent, back when the desk had an Ask/Create-work
+        /// toggle. Never written any more — see `WorkerMessageIntent`. Absent
+        /// reads as `'work'`, which is what every errand is now.
         intent?: WorkerMessageIntent;
         /// The raw instruction the user typed, for `task: 'errand'`. Kept
         /// because `producer.prompt` is the assembled planning prompt — job

@@ -5,7 +5,6 @@
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
 import type { Worker } from '@shared/flows/worker';
-import type { WorkerMessageIntent } from '@shared/flows/worker';
 import { Composer } from '../Composer';
 
 /// The shared one-off task channel. An errand is deliberately directed to a
@@ -17,7 +16,7 @@ import { Composer } from '../Composer';
 /// @-mention file lookup (rooted at the worker's project), the same ArrowUp
 /// prompt history, the same drag-and-drop and paste handling. A worker is a
 /// person you talk to; talking to it should not feel like filling in a form.
-export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }: { worker: Worker; intent?: WorkerMessageIntent; onIntentChange?: (intent: WorkerMessageIntent) => void }) {
+export function WorkerErrandComposer({ worker }: { worker: Worker }) {
   const error = useWorkersStore((s) => s.errandError[worker.id]);
   const runErrand = useWorkersStore((s) => s.runErrand);
   const clearErrand = useWorkersStore((s) => s.clearErrand);
@@ -31,43 +30,15 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
   // one moment you couldn't.
   return (
     <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-3 text-[11px]">
-        <div className="flex items-center gap-1.5">
-          <span className={intent === 'chat' ? 'font-medium text-ink' : 'text-ink-faint'}>
-            Ask
-          </span>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={intent === 'work'}
-            aria-label="Create work mode"
-            title={intent === 'chat' ? 'Switch to Create work' : 'Switch back to Ask'}
-            onClick={() => onIntentChange?.(intent === 'chat' ? 'work' : 'chat')}
-            className={
-              'relative h-4 w-7 shrink-0 rounded-full border transition-colors focus:outline-none focus:ring-2 focus:ring-violet-400/40 ' +
-              (intent === 'work'
-                ? 'border-violet-400/60 bg-violet-500'
-                : 'border-card-strong bg-card-strong hover:border-ink-faint')
-            }
-          >
-            <span
-              aria-hidden="true"
-              className={
-                'absolute top-1/2 h-3 w-3 -translate-y-1/2 rounded-full shadow-sm transition-all ' +
-                (intent === 'work' ? 'left-[14px] bg-white' : 'left-0.5 bg-ink-muted')
-              }
-            />
-          </button>
-          <span className={intent === 'work' ? 'font-medium text-violet-500' : 'text-ink-faint'}>
-            Create work
-          </span>
-        </div>
-        <span className="text-ink-faint">
-          {intent === 'chat'
-            ? 'Replies here without starting a flow.'
-            : 'Hand off an errand; trust rules apply.'}
-        </span>
-      </div>
+      {/* No mode switch. The desk used to ask you to declare "Ask" or
+          "Create work" before sending, which is a classification you cannot
+          reliably make until you have had the conversation that settles it —
+          so a question got answered as a work request, or a work request came
+          back as prose. The worker's own triage already chooses between
+          answering, proposing against its flows, and asking for a flow; it
+          reads the message, which is strictly more than the toggle knew.
+          Anything it proposes parks for your approval, so the cost of it
+          guessing "work" when you meant "question" is a card you dismiss. */}
       <Composer
         // Per-worker draft key: a half-typed errand to one worker survives a
         // trip to another's desk, the way a half-typed chat survives.
@@ -75,11 +46,7 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
         variant="compact"
         strongBorder
         rootPath={worker.projectPath}
-        placeholder={
-          intent === 'chat'
-            ? `Ask ${worker.name} a question or request research…`
-            : `Describe the outcome for ${worker.name} to produce…`
-        }
+        placeholder={`Message ${worker.name}…`}
         onSend={(prompt, attachments) => {
           // Composer's `commit` hands the text off but does not empty itself —
           // in chat, `store.send` clears the draft and attachments for the key.
@@ -87,11 +54,7 @@ export function WorkerErrandComposer({ worker, intent = 'chat', onIntentChange }
           // sits in the box looking unsent.
           setDraft(draftKey, '');
           for (const attachment of attachments) removeAttachment(draftKey, attachment.id);
-          void runErrand(worker.id, prompt, intent, attachments);
-          // The toggle is sticky: it stays where you put it. Snapping back to
-          // Ask after every send meant a run of work requests had to be
-          // re-armed each time, and the switch flicking under your own hand
-          // read as the app undoing your choice.
+          void runErrand(worker.id, prompt, attachments);
         }}
       />
       {error && (
