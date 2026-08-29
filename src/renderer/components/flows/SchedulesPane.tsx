@@ -21,11 +21,13 @@ import {
   SCHEDULE_AUTO_APPROVE_MAX,
   WEEKDAY_SET,
   describeTrigger,
+  nextOccurrenceAfter,
   untilLabel,
   validateSchedule,
   type Schedule,
   type ScheduleRunRecord,
 } from '@shared/flows/schedule';
+import { cronError } from '@shared/flows/cron';
 import { BaseBranchSelect } from '../sheets/BaseBranchSelect';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { isSelectableFlow } from '@shared/flows/schema';
@@ -1074,10 +1076,12 @@ function HelpRail({
   );
 }
 
-/// Cadence picker. Presets rather than a cron box: the two shapes below cover
-/// what people actually ask a coding agent for, and neither has to be taught.
+/// Cadence picker. Presets first, cron last: the two preset shapes cover what
+/// people actually ask a coding agent for and neither has to be taught, so
+/// they lead. Cron sits at the end of the row for the asks they can't say —
+/// specific dates, months, several minutes past the hour.
 ///
-/// Both shapes take a day set. The interval also takes an active window, so
+/// Both preset shapes take a day set. The interval also takes an active window, so
 /// "every hour, weekdays, 8am–5pm" is expressible — a repeating check that
 /// shouldn't run overnight or at the weekend is the normal case, not an
 /// exotic one, and without the window you'd get 24 runs a day to get 9.
@@ -1092,7 +1096,10 @@ function TriggerField() {
   const days = 'days' in trigger ? trigger.days : undefined;
 
   const setDays = (next: number[]) => {
-    if (trigger.kind === 'onFlowComplete') return;
+    // Only the two preset shapes have a day set to write. Cron keeps its days
+    // in its own field and never renders the picker; `onFlowComplete` has no
+    // day at all.
+    if (trigger.kind === 'onFlowComplete' || trigger.kind === 'cron') return;
     patch({ trigger: { ...trigger, days: next } });
   };
 
@@ -1124,6 +1131,12 @@ function TriggerField() {
           onClick={() => patch({ trigger: { kind: 'interval', everyMinutes: 240, days } })}
         >
           On an interval
+        </Segment>
+        <Segment
+          active={trigger.kind === 'cron'}
+          onClick={() => patch({ trigger: { kind: 'cron', expr: '0 9 * * 1-5' } })}
+        >
+          Cron
         </Segment>
         <Segment
           active={trigger.kind === 'onFlowComplete'}
@@ -1193,6 +1206,12 @@ function TriggerField() {
             {MAX_CHAIN_DEPTH} hops, so a mis-wired pair can&apos;t run all night.
           </div>
         </div>
+      ) : (
+      trigger.kind === 'cron' ? (
+        <CronField
+          expr={trigger.expr}
+          onChange={(expr) => patch({ trigger: { kind: 'cron', expr } })}
+        />
       ) : (
       <div className="space-y-3">
         {trigger.kind === 'daily' ? (
@@ -1281,8 +1300,66 @@ function TriggerField() {
           </div>
         )}
       </div>
+      )
       )}
     </Field>
+  );
+}
+
+/// The cron box. Deliberately plain — one field, the parser's own error, and
+/// the next few firings.
+///
+/// The preview is the point. A cron expression is exactly the kind of thing
+/// that parses cleanly and means something other than what was intended, and
+/// the only honest check is showing the dates it actually produces before the
+/// schedule is armed.
+function CronField({ expr, onChange }: { expr: string; onChange: (expr: string) => void }) {
+  const error = cronError(expr);
+  const preview = useMemo(() => {
+    if (error) return [];
+    const out: number[] = [];
+    let at = Date.now();
+    for (let i = 0; i < 3; i++) {
+      at = nextOccurrenceAfter({ kind: 'cron', expr }, at);
+      if (!Number.isFinite(at)) break;
+      out.push(at);
+    }
+    return out;
+  }, [expr, error]);
+
+  return (
+    <div className="space-y-2">
+      <input
+        value={expr}
+        onChange={(e) => onChange(e.target.value)}
+        spellCheck={false}
+        placeholder="0 9 * * 1-5"
+        className="w-full bg-card border border-card-strong rounded px-2 py-1.5 font-mono text-sm text-ink"
+      />
+      <div className="text-[11px] leading-snug text-ink-faint">
+        Five fields: minute hour day-of-month month day-of-week. Local time, not UTC.
+      </div>
+      {error ? (
+        <div className="text-[11px] leading-snug text-red-400">{error}</div>
+      ) : (
+        preview.length > 0 && (
+          <div className="text-[11px] leading-snug text-ink-muted">
+            Next:{' '}
+            {preview
+              .map((at) =>
+                new Date(at).toLocaleString(undefined, {
+                  weekday: 'short',
+                  month: 'short',
+                  day: 'numeric',
+                  hour: 'numeric',
+                  minute: '2-digit',
+                }),
+              )
+              .join(' · ')}
+          </div>
+        )
+      )}
+    </div>
   );
 }
 

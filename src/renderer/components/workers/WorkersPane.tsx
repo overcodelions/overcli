@@ -62,6 +62,7 @@ import {
   type WorkerPace,
   type WorkerTrustLevel,
 } from "@shared/flows/worker";
+import { cronError } from "@shared/flows/cron";
 import { describeFundingBlock, fundingFor } from "@shared/flows/treasury";
 import { isSelectableFlow, type FlowRun } from "@shared/flows/schema";
 import {
@@ -6059,6 +6060,13 @@ function editWindow(
     : { start: filled, end: value };
 }
 
+/// The day set a remembered cadence carries, if it has one. Switching away
+/// from cron and back to a preset keeps the days you had before the detour;
+/// cron itself has no separate day set to carry.
+function daysOf(t: TimedTrigger): number[] | undefined {
+  return t.kind === "cron" ? undefined : t.days;
+}
+
 function CadenceField({
   cadence: incoming,
   onChange,
@@ -6092,7 +6100,7 @@ function CadenceField({
               onChange(
                 last.kind === "daily"
                   ? last
-                  : { kind: "daily", time: "09:00", days: last.days },
+                  : { kind: "daily", time: "09:00", days: daysOf(last) },
               )
             }
           >
@@ -6105,11 +6113,22 @@ function CadenceField({
               onChange(
                 last.kind === "interval"
                   ? last
-                  : { kind: "interval", everyMinutes: 120, days: last.days },
+                  : { kind: "interval", everyMinutes: 120, days: daysOf(last) },
               )
             }
           >
             Every N minutes
+          </Segment>
+          <Segment
+            active={cadence?.kind === "cron"}
+            onClick={() =>
+              cadence?.kind !== "cron" &&
+              onChange(
+                last.kind === "cron" ? last : { kind: "cron", expr: "0 9 * * 1-5" },
+              )
+            }
+          >
+            Cron
           </Segment>
           <Segment active={cadence === null} onClick={() => onChange(null)}>
             On demand
@@ -6129,6 +6148,25 @@ function CadenceField({
           <span className="text-ink">Work a shift now</span> when you want it to
           do a full shift on your say-so.
         </div>
+      ) : cadence.kind === "cron" ? (
+        <Field label="Cron" hint="five fields, local time">
+          <input
+            value={cadence.expr}
+            onChange={(e) => onChange({ kind: "cron", expr: e.target.value })}
+            spellCheck={false}
+            placeholder="0 9 * * 1-5"
+            className="w-64 bg-card border border-card-strong rounded px-2 py-1.5 font-mono text-sm text-ink"
+          />
+          <div className="mt-1.5 text-[11px] leading-snug text-ink-faint">
+            minute hour day-of-month month day-of-week. A shift can be no more
+            often than every {WORKER_MIN_INTERVAL_MINUTES} minutes.
+          </div>
+          {cronError(cadence.expr) && (
+            <div className="mt-1 text-[11px] leading-snug text-red-400">
+              {cronError(cadence.expr)}
+            </div>
+          )}
+        </Field>
       ) : cadence.kind === "daily" ? (
         <Field label="Time" hint="24h local">
           <input
@@ -6189,7 +6227,10 @@ function CadenceField({
         </div>
       )}
 
-      {cadence !== null && (
+      {/* Cron says which days in its own fifth field; a second day set would
+          have to be reconciled with it, and the loser of that reconciliation
+          is a schedule firing on a day neither control shows. */}
+      {cadence !== null && cadence.kind !== "cron" && (
         <Field label="Days" hint="none selected = every day">
           <DayPicker
             days={cadence.days}

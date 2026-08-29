@@ -9,6 +9,7 @@
 import type { Backend, UUID } from '../types';
 import type { ScheduleTrigger } from './schedule';
 import { SCHEDULE_AUTO_APPROVE_MAX, describeTrigger, parseTimeOfDay } from './schedule';
+import { cronError, cronIntervalMinutes, parseCron } from './cron';
 
 export type WorkerTrustLevel = 'probation' | 'trusted' | 'autonomous';
 /// HISTORICAL ONLY. The desk used to make you classify each message as a
@@ -555,6 +556,18 @@ export function validateWorker(w: Partial<Worker>): string | null {
   // let it be saved — flow chaining belongs on a Schedule.
   if (cadence.kind === 'onFlowComplete')
     return 'Workers run on a clock. To chain off another flow, use a Schedule.';
+  // Cron carries its own day and hour fields, so none of the day-set or
+  // time-of-day checks below apply to it — the expression is the whole
+  // answer. What still applies is the shift floor: a worker is staff, and one
+  // waking every minute is a runaway, not a rota.
+  if (cadence.kind === 'cron') {
+    const err = cronError(cadence.expr);
+    if (err) return err;
+    const parsed = parseCron(cadence.expr);
+    if (parsed.ok && cronIntervalMinutes(parsed.fields) < WORKER_MIN_INTERVAL_MINUTES)
+      return `A worker shift can be no more often than every ${WORKER_MIN_INTERVAL_MINUTES} minutes.`;
+    return null;
+  }
   if (cadence.days && cadence.days.length === 0)
     return 'Pick at least one day, or leave every day selected.';
   if (cadence.kind === 'interval') {
@@ -774,6 +787,14 @@ export function coerceCadence(raw: unknown): ScheduleTrigger | null {
       days: days && days.length > 0 ? days : undefined,
       window,
     };
+  }
+  if (c.kind === 'cron') {
+    // An expression that doesn't parse is not silently corrected into a
+    // neighbouring one — the read side has no way to know which field was
+    // meant. Fall back to the default cadence, which the editor shows and the
+    // user can fix, rather than firing on a guess.
+    const expr = typeof c.expr === 'string' ? c.expr.trim() : '';
+    return cronError(expr) === null ? { kind: 'cron', expr } : DEFAULT_CADENCE;
   }
   if (c.kind === 'daily') {
     const time = typeof c.time === 'string' && parseTimeOfDay(c.time) ? c.time : '09:00';
