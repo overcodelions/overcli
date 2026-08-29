@@ -732,3 +732,36 @@ describe('validateWorker — event-driven cadence', () => {
     expect(validateWorker(makeWorker({ cadence: null }))).toBeNull();
   });
 });
+
+describe('cron cadence', () => {
+  it('is a valid shift pattern when it parses', () => {
+    expect(validateWorker(makeWorker({ cadence: { kind: 'cron', expr: '0 9 1,15 * *' } }))).toBeNull();
+  });
+
+  it('is refused with the parser reason when it does not', () => {
+    expect(validateWorker(makeWorker({ cadence: { kind: 'cron', expr: '0 99 * * *' } }))).toContain(
+      'hour',
+    );
+  });
+
+  it('still respects the shift floor — a worker is not a per-minute poller', () => {
+    expect(validateWorker(makeWorker({ cadence: { kind: 'cron', expr: '* * * * *' } }))).toContain(
+      'no more often',
+    );
+  });
+
+  it('round-trips through coercion', () => {
+    expect(coerceCadence({ kind: 'cron', expr: '0 9 * * 1-5' })).toEqual({
+      kind: 'cron',
+      expr: '0 9 * * 1-5',
+    });
+  });
+
+  it('falls back to the default rather than firing on a guessed expression', () => {
+    expect(coerceCadence({ kind: 'cron', expr: 'every monday please' })).toEqual({
+      kind: 'daily',
+      time: '09:00',
+      days: [1, 2, 3, 4, 5],
+    });
+  });
+});
