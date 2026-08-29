@@ -627,3 +627,54 @@ describe('chain handoff', () => {
     expect(latestArtifact(undefined)).toBeNull();
   });
 });
+
+describe('cron triggers', () => {
+  it('finds the next occurrence in local time', () => {
+    // Friday 2026-03-06, 10:00 → the following Monday.
+    expect(nextOccurrenceAfter({ kind: 'cron', expr: '0 9 * * 1-5' }, local(2026, 3, 6, 10))).toBe(
+      local(2026, 3, 9, 9),
+    );
+  });
+
+  it('says the days a preset cannot', () => {
+    expect(nextOccurrenceAfter({ kind: 'cron', expr: '0 7 1,15 * *' }, local(2026, 3, 2))).toBe(
+      local(2026, 3, 15, 7),
+    );
+  });
+
+  it('has no occurrence when the expression is broken, rather than a guessed one', () => {
+    // A hand-edited file can carry one; the editor refuses to save it.
+    expect(nextOccurrenceAfter({ kind: 'cron', expr: 'nonsense' }, local(2026, 3, 2))).toBe(
+      Number.POSITIVE_INFINITY,
+    );
+  });
+
+  it('fires when due, through the same evaluation as every other trigger', () => {
+    const s = makeSchedule({
+      trigger: { kind: 'cron', expr: '0 9 * * *' },
+      lastFiredAt: local(2026, 3, 2, 9),
+    });
+    const decision = evaluateSchedule(s, local(2026, 3, 3, 9) + 1_000);
+    expect(decision.action).toBe('fire');
+  });
+
+  it('reads back as English for the shapes that have any', () => {
+    expect(describeTrigger({ kind: 'cron', expr: '0 9 * * 1-5' })).toBe('Weekdays at 9am');
+    expect(describeTrigger({ kind: 'cron', expr: '30 14 * * *' })).toBe('Every day at 2:30pm');
+    expect(describeTrigger({ kind: 'cron', expr: '*/15 * * * *' })).toBe('Every 15 minutes');
+  });
+
+  it('reads back as the expression itself when English would be longer', () => {
+    expect(describeTrigger({ kind: 'cron', expr: '0 7 1,15 * *' })).toBe('Cron: 0 7 1,15 * *');
+  });
+
+  it('is saveable when it parses, and refused with the parser reason when it does not', () => {
+    expect(validateSchedule(makeSchedule({ trigger: { kind: 'cron', expr: '0 9 * * 1-5' } }))).toBeNull();
+    expect(validateSchedule(makeSchedule({ trigger: { kind: 'cron', expr: '0 9 * *' } }))).toContain(
+      'five fields',
+    );
+    expect(validateSchedule(makeSchedule({ trigger: { kind: 'cron', expr: '0 0 31 2 *' } }))).toContain(
+      'no next occurrence',
+    );
+  });
+});

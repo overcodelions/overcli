@@ -22,13 +22,16 @@
 
 import type { UUID } from '../types';
 import type { RunIn } from './orchestration';
+import { cronError, nextCronOccurrence, parseCron } from './cron';
 
 /// How often a schedule fires.
 ///
-/// Deliberately NOT cron. Cron's expressiveness is mostly wasted here (nobody
-/// schedules a coding agent for "the 3rd Tuesday at 4:07") and it costs a
-/// parser plus a syntax the user has to be taught. These two shapes cover
-/// what people actually ask for, and both render back to plain English.
+/// The two preset shapes below are the front door, and stay that way: they
+/// cover what people actually ask a coding agent for, both render back to
+/// plain English, and neither has to be taught. `cron` is the escape hatch
+/// underneath them — "the 1st and the 15th", "every Monday in Q1", ":05 and
+/// :35 past" have no preset, and "you can't say that" is a worse answer than
+/// a syntax the user may already know. Presets first, cron when they run out.
 export type ScheduleTrigger =
   /// Fire every `everyMinutes` minutes, measured from the last fire (or from
   /// when the schedule was armed, if it has never fired) — but only inside the
@@ -56,6 +59,19 @@ export type ScheduleTrigger =
       /// Weekdays this may fire on, `0` = Sunday … `6` = Saturday. Empty or
       /// absent means every day.
       days?: number[];
+    }
+  /// Fire on a five-field cron expression, evaluated in LOCAL time like every
+  /// other trigger here.
+  ///
+  /// No day set and no window: cron already has both, and a second way to say
+  /// "weekdays" that has to be reconciled with the first is how a schedule
+  /// ends up firing on a day neither of them names. The expression is the
+  /// whole answer. See ./cron for what the parser accepts.
+  | {
+      kind: 'cron';
+      /// Stored exactly as typed, so the field the user reads back is the
+      /// field they wrote. Parsed on every use — see `parseCron`.
+      expr: string;
     }
   /// Fire when a run of ANOTHER flow finishes. The one trigger here with no
   /// clock in it: it has no next occurrence, contributes nothing to the
@@ -250,6 +266,15 @@ export function scheduleAnchor(s: ScheduleTiming): number {
 export function nextOccurrenceAfter(trigger: ScheduleTrigger, afterMs: number): number {
   if (trigger.kind === 'interval') return nextIntervalOccurrence(trigger, afterMs);
   if (trigger.kind === 'onFlowComplete') return Number.POSITIVE_INFINITY;
+  if (trigger.kind === 'cron') {
+    const parsed = parseCron(trigger.expr);
+    // An unparseable expression has no occurrences rather than a guessed
+    // one. `validateSchedule` refuses to save one, so this is the
+    // hand-edited-file case: better a schedule that visibly never fires than
+    // one that fires at an hour nobody wrote.
+    if (!parsed.ok) return Number.POSITIVE_INFINITY;
+    return nextCronOccurrence(parsed.fields, afterMs);
+  }
   const parsed = parseTimeOfDay(trigger.time);
   const { hours, minutes } = parsed ?? { hours: 9, minutes: 0 };
   const days = allowedDays(trigger.days);
@@ -474,6 +499,7 @@ export function describeTrigger(trigger: ScheduleTrigger): string {
     const qualifier = [dayPart, windowPart].filter(Boolean).join(' ');
     return qualifier ? `${every}, ${qualifier}` : every;
   }
+  if (trigger.kind === 'cron') return describeCron(trigger.expr);
   if (trigger.kind === 'onFlowComplete') {
     // `watchFlowId` is a flow id, not a name — this module has no flow list to
     // resolve it against, the same rawness `describeTarget` already has.
@@ -487,6 +513,53 @@ export function describeTrigger(trigger: ScheduleTrigger): string {
   const time = formatTimeOfDay(trigger.time);
   const dayPart = describeDays(trigger.days);
   return dayPart ? `${capitalize(dayPart)} at ${time}` : `Every day at ${time}`;
+}
+
+/// Plain English for the cron shapes that have any, and the expression
+/// itself for the rest.
+///
+/// Only the forms that map cleanly onto a sentence are translated — a partial
+/// humanizer that hedges ("every 15 minutes, past the hour, on some days")
+/// is less trustworthy than the expression the user typed, and this string
+/// goes in the row where they check whether it says what they meant.
+export function describeCron(expr: string): string {
+  const shown = (expr ?? '').trim();
+  const parsed = parseCron(shown);
+  if (!parsed.ok) return shown ? `Cron: ${shown}` : 'Cron (not set)';
+  const f = parsed.fields;
+  const everyMonth = f.months.size === 12;
+  const everyDom = !f.domRestricted;
+  // Anything picking specific dates or months is left as the expression:
+  // "the 1st and 15th of Jan, Apr, Jul and Oct" is not a shorter sentence
+  // than what it was written as.
+  if (!everyMonth || (!everyDom && f.dowRestricted)) return `Cron: ${shown}`;
+  const dayPart = everyDom && f.dowRestricted ? describeDays([...f.daysOfWeek]) : '';
+  if (!everyDom) return `Cron: ${shown}`;
+
+  if (f.hours.size === 1 && f.minutes.size === 1) {
+    const [h] = [...f.hours];
+    const [m] = [...f.minutes];
+    const time = formatTimeOfDay(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+    return dayPart ? `${capitalize(dayPart)} at ${time}` : `Every day at ${time}`;
+  }
+  // `*/n` on the minute field, with every hour: the one repeating shape worth
+  // a sentence, because it is what people reach for cron to say most often.
+  const step = uniformStep(f.minutes, 60);
+  if (f.hours.size === 24 && step !== null && f.minutes.has(0)) {
+    const every = step === 1 ? 'Every minute' : `Every ${step} minutes`;
+    return dayPart ? `${every}, ${dayPart}` : every;
+  }
+  return `Cron: ${shown}`;
+}
+
+/// The step of a set that is exactly `0, n, 2n, …` within `limit`; null when
+/// the values are not an even ladder from zero.
+function uniformStep(values: Set<number>, limit: number): number | null {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (sorted.length < 2 || sorted[0] !== 0) return null;
+  const step = sorted[1];
+  if (sorted.length !== Math.ceil(limit / step)) return null;
+  return sorted.every((v, i) => v === i * step) ? step : null;
 }
 
 /// `'weekdays'` / `'Mon, Wed, Fri'` / `''` for "every day". Lower case so it
@@ -694,6 +767,11 @@ export function validateSchedule(s: Partial<Schedule>): string | null {
       return 'A flow cannot be chained to itself.';
     }
     return null;
+  }
+  if (trigger.kind === 'cron') {
+    // The parser's own message names the offending field, which is more use
+    // than a generic "invalid expression" for a syntax typed by hand.
+    return cronError(trigger.expr);
   }
   if (trigger.kind === 'interval') {
     if (!Number.isFinite(trigger.everyMinutes) || trigger.everyMinutes < 1) {

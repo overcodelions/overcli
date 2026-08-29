@@ -39,10 +39,16 @@ jobs:
       - id: version
         shell: bash
         run: |
-          BASE_VERSION=$(node -p "require('./package.json').version.split('-')[0]")
+          # Semver sorts a prerelease BELOW its own release: 0.16.1-nightly.x
+          # < 0.16.1. Stamping package.json's current version therefore builds
+          # a nightly that the matching stable release overtakes the moment it
+          # ships, and an installed nightly quietly walks back to stable on the
+          # next check. Bump the patch first so nightly always sorts above the
+          # newest tagged release: 0.16.2-nightly.x > 0.16.1.
+          NEXT_VERSION=$(node -p "const v=require('./package.json').version.split('-')[0].split('.').map(Number); v[2]+=1; v.join('.')")
           DATE=$(date -u +%Y%m%d)
           SHA=$(git rev-parse --short "${GITHUB_SHA}")
-          echo "nightly-version=${BASE_VERSION}-nightly.${DATE}.${SHA}" >> "$GITHUB_OUTPUT"
+          echo "nightly-version=${NEXT_VERSION}-nightly.${DATE}.${SHA}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.os }}
@@ -66,13 +72,20 @@ jobs:
 
       - run: npm ci
 
-      - name: Stamp nightly version
+      - name: Stamp nightly version and publish channel
         shell: bash
         run: |
+          # `channel` has to be set on the publish config, not inferred.
+          # electron-builder only derives a channel from the version's
+          # prerelease tag for the `generic` provider; for github it computes
+          # the name and then drops it, so the update-info files fall back to
+          # `latest`. Without this the nightly release ships latest*.yml —
+          # claiming to be the stable feed — and no nightly*.yml at all.
           node -e "
             const fs = require('fs');
             const p = require('./package.json');
             p.version = '${{ needs.check.outputs.nightly-version }}';
+            p.build.publish = p.build.publish.map((e) => ({ ...e, channel: 'nightly' }));
             fs.writeFileSync('package.json', JSON.stringify(p, null, 2) + '\n');
             console.log('version =', p.version);
           "
@@ -100,11 +113,10 @@ jobs:
           elif [ "$RUNNER_OS" = "macOS" ]; then
             echo "No Apple credentials in repo secrets — building unsigned."
           fi
-          # The version is stamped x.y.z-nightly.<date>.<sha> above, so
-          # electron-builder's detectUpdateChannel (on by default) infers the
-          # `nightly` channel from the prerelease tag and emits nightly*.yml
-          # feed files — separate from the stable `latest` channel. No flag
-          # needed; `channel` is not a valid root config property.
+          # The publish config is stamped with `channel: nightly` above, so
+          # electron-builder emits nightly*.yml feed files and bakes the same
+          # channel into the app's app-update.yml — separate from the stable
+          # `latest` channel.
           #
           # Skip notarization for nightly (-c.mac.notarize=false overrides the
           # package.json default). Notarization is a ~15-min Apple round-trip

@@ -9,6 +9,13 @@ let getWindowRef: () => BrowserWindow | null = () => null;
 // no-op when an unrelated settings save comes through with the same channel.
 let appliedChannel: 'stable' | 'nightly' | null = null;
 
+// Nightly builds stamp their version as x.y.z-nightly.<date>.<sha>; every
+// tagged release is plain x.y.z. That prerelease tag is the only reliable
+// marker of which channel the running binary came from.
+function isNightlyBuild(): boolean {
+  return /-nightly\./.test(app.getVersion());
+}
+
 // Map the user's channel setting onto electron-updater's channel + prerelease
 // flags. 'stable' follows the `latest` feed (tagged releases); 'nightly'
 // follows the rolling `nightly` prerelease feed. The setting is the single
@@ -23,7 +30,18 @@ function applyChannel(): void {
     autoUpdater.channel = 'latest';
     autoUpdater.allowPrerelease = false;
   }
-  log('info', 'updater', `channel = ${autoUpdater.channel}`);
+  // Must come *after* the channel assignment: electron-updater's `channel`
+  // setter flips allowDowngrade to true as a documented side effect. Left
+  // alone, any older build the feed happens to resolve installs itself
+  // silently — which is how a machine on nightly walked itself back to
+  // stable. Going backwards is only ever intentional in one direction: a
+  // nightly build whose owner has asked for the stable channel.
+  autoUpdater.allowDowngrade = channel === 'stable' && isNightlyBuild();
+  log(
+    'info',
+    'updater',
+    `channel = ${autoUpdater.channel} (downgrade ${autoUpdater.allowDowngrade ? 'allowed' : 'disallowed'})`,
+  );
 }
 
 function check(): void {

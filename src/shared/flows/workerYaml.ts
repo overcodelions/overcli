@@ -122,6 +122,7 @@ function serializeCadence(c: ScheduleTrigger | null): Record<string, unknown> | 
     }
     return out;
   }
+  if (c.kind === 'cron') return { kind: 'cron', expr: c.expr };
   // A worker cadence can never be `onFlowComplete` — `validateWorker` refuses
   // it, because a worker with no clock never wakes. Degrade to the on-demand
   // word rather than emitting a cadence the reading side would coerce into a
