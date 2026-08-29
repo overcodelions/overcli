@@ -669,7 +669,7 @@ function modelForBackend(
 function setConversationBackendModel(
   conversation: Conversation,
   backend: Exclude<Backend, 'ollama'>,
-  model: string | undefined,
+  model: string,
 ): Conversation {
   const next = { ...conversation, currentModel: model };
   if (backend === 'claude') next.claudeModel = model;
@@ -686,7 +686,7 @@ function restoreWarpPreset(
 ): Conversation {
   if (conversation.responseMode !== 'warp') return conversation;
   const restore = conversation.responseModeRestore;
-  let next = { ...conversation, responseModeRestore: undefined };
+  let next: Conversation = { ...conversation, responseModeRestore: undefined };
   for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
     const model = restore?.models[backend];
     if (model !== undefined) {
