@@ -40,6 +40,26 @@ const WRITING_TOOLS = new Set([
   'str_replace_editor',
 ]);
 
+/// Tools that take a file the session already made and send it somewhere.
+/// They don't create the file, so they aren't writing tools — but their
+/// `file_path` is provenance just as strong: this session handed that exact
+/// file to a remote service, so its contents have demonstrably already left
+/// the machine. Refusing to show the user the thing we just published on
+/// their behalf protects nothing.
+///
+/// This is what makes a `/design` canvas openable. The skill builds it by
+/// running `seed-canvas.mjs` through Bash — never through Write — so the
+/// writing-tool rule above never sees it, and the file lands in the session
+/// scratchpad rather than under a registered root. The Artifact call that
+/// publishes it is the only event that names the path.
+const PUBLISHING_TOOLS = new Set(['Artifact']);
+
+/// Tools whose `file_path` earns that path a place in the readable set,
+/// whether it was written locally or published outward.
+function recordsProvenance(name: string | undefined): boolean {
+  return isWritingTool(name) || (!!name && PUBLISHING_TOOLS.has(name));
+}
+
 /// Enough for a long map/reduce shift; small enough that the set stays cheap
 /// to scan and can't become a memory leak on a machine left running for days.
 const MAX_TRACKED_PATHS = 5_000;
@@ -91,7 +111,7 @@ export function recordWritesFromEvents(events: readonly StreamEvent[]): void {
   for (const event of events) {
     if (event.kind.type === 'assistant') {
       for (const use of event.kind.info.toolUses ?? []) {
-        if (isWritingTool(use.name) && use.filePath) {
+        if (recordsProvenance(use.name) && use.filePath) {
           pendingWrites.set(use.id, use.filePath);
           if (pendingWrites.size > MAX_TRACKED_PATHS) {
             const oldest = pendingWrites.keys().next();

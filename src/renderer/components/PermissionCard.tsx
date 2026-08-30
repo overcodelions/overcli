@@ -14,6 +14,11 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
   // payload the UI already renders as a form right above this card, so
   // the raw JSON here is pure noise. Suppress it for that tool.
   const showToolInput = info.toolName !== 'AskUserQuestion';
+  // Artifact and DesignSync both send something outward, and both carry
+  // inputs that read terribly raw: an Artifact call inlines the whole
+  // document, and a DesignSync plan is a path list. Summarize the part that
+  // decides the answer and keep the JSON underneath.
+  const outbound = outboundSummary(info.toolName, info.toolInput);
   return (
     <div className="rounded-lg border border-blue-500/30 bg-blue-500/8 px-3 py-2 text-xs">
       <div className="flex items-center gap-2 text-blue-400 font-medium">
@@ -26,6 +31,21 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
         )}
       </div>
       {info.description && <div className="mt-1 text-ink-muted">{info.description}</div>}
+      {outbound && (
+        <div className="mt-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5">
+          <div className="text-[11px] font-medium text-amber-700 dark:text-amber-200">
+            {outbound.headline}
+          </div>
+          <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 text-[11px]">
+            {outbound.rows.map((r) => (
+              <div key={r.label} className="contents">
+                <dt className="text-ink-faint">{r.label}</dt>
+                <dd className="font-mono break-all select-text">{r.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
       {info.toolInput && showToolInput && (
         <pre className="mt-1 text-[11px] font-mono bg-black/30 rounded px-2 py-1 overflow-x-auto select-text">
           {info.toolInput}
@@ -71,6 +91,75 @@ export function PermissionCard({ info, conversationId }: { info: PermissionReque
       )}
     </div>
   );
+}
+
+interface OutboundSummary {
+  headline: string;
+  rows: { label: string; value: string }[];
+}
+
+/// Plain-language summary for the tools that leave the machine. Returns null
+/// for everything else, which is most tools — the generic card is fine when
+/// the effect is local and reversible.
+function outboundSummary(toolName: string, toolInput?: string): OutboundSummary | null {
+  if (toolName !== 'Artifact' && toolName !== 'DesignSync') return null;
+  let input: any;
+  try {
+    input = JSON.parse(toolInput ?? '');
+  } catch {
+    // A malformed or partial input is exactly when the user should be
+    // reading the raw JSON below rather than a summary we invented.
+    return null;
+  }
+  if (toolName === 'Artifact') {
+    const caps = input?.capabilities ? Object.keys(input.capabilities) : [];
+    return {
+      headline: 'Publishes this file to claude.ai as a shareable artifact.',
+      rows: [
+        ...(input?.title ? [{ label: 'Title', value: String(input.title) }] : []),
+        ...(input?.file_path ? [{ label: 'File', value: String(input.file_path) }] : []),
+        ...(caps.length ? [{ label: 'Grants', value: caps.join(', ') }] : []),
+      ],
+    };
+  }
+  const method = String(input?.method ?? '');
+  // Only the plan boundary and the writes that ride on it actually send
+  // content; list_projects and friends are reads and don't warrant a banner.
+  if (method === 'finalize_plan') {
+    const writes: string[] = Array.isArray(input?.writes) ? input.writes : [];
+    const deletes: string[] = Array.isArray(input?.deletes) ? input.deletes : [];
+    return {
+      headline: 'Locks the paths this session may write to and delete from your Claude Design project.',
+      rows: [
+        { label: 'Writes', value: pathList(writes) },
+        { label: 'Deletes', value: deletes.length ? pathList(deletes) : 'none' },
+        { label: 'Reads from', value: String(input?.localDir ?? 'the working directory') },
+      ],
+    };
+  }
+  if (method === 'write_files' || method === 'delete_files') {
+    const n = Array.isArray(input?.files)
+      ? input.files.length
+      : Array.isArray(input?.paths)
+      ? input.paths.length
+      : 0;
+    return {
+      headline:
+        method === 'write_files'
+          ? `Uploads ${n} file${n === 1 ? '' : 's'} to your Claude Design project.`
+          : `Deletes ${n} path${n === 1 ? '' : 's'} from your Claude Design project.`,
+      rows: [],
+    };
+  }
+  return null;
+}
+
+/// Show enough of a path list to recognize the shape of the change without
+/// letting a 256-entry plan push the buttons off screen.
+function pathList(paths: string[]): string {
+  if (!paths.length) return 'none';
+  const shown = paths.slice(0, 6).join(', ');
+  return paths.length > 6 ? `${shown} +${paths.length - 6} more` : shown;
 }
 
 function LockIcon() {

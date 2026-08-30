@@ -81,6 +81,7 @@ import { GeminiAcpClient } from './geminiAcp';
 import { ClaudePermissionBroker, ApprovalRequest } from './claudePermissionBroker';
 import { ClaudeSdkClient } from './claude-sdk-client';
 import { claudeSdkExecutablePath } from './claudeSdkExecutable';
+import { claudeArtifactEnv } from '../shared/claudeArtifacts';
 import type { CanUseTool } from '@anthropic-ai/claude-agent-sdk';
 import {
   appendClaudeAllowRule,
@@ -651,6 +652,10 @@ interface ActiveProcess {
   /// conversation, so a turbo step following a non-turbo one would silently
   /// inherit the wrong launch args without this in the change check.
   launchTurbo: boolean;
+  /// Whether this process was launched with the artifact gate open. The
+  /// var is read once at spawn, so a mid-conversation toggle has to force a
+  /// respawn or the setting silently applies only to new conversations.
+  launchArtifacts: boolean;
   launchPermissionMode: PermissionMode;
   launchAllowedTools: string;
   launchMcpFingerprint?: string;
@@ -1607,6 +1612,7 @@ export class RunnerManager {
           existing.launchAllowedTools !== (args.enabledTools ?? []).join(' ') ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
+          existing.launchArtifacts !== this.artifactsFor(args.backend) ||
           existing.launchEffort !== args.effortLevel ||
           existing.cwd !== args.cwd ||
           existing.claudeTransport !== 'sdk');
@@ -1678,6 +1684,7 @@ export class RunnerManager {
       sessionId: args.sessionId,
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
+      launchArtifacts: this.artifactsFor(args.backend),
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
@@ -1716,6 +1723,10 @@ export class RunnerManager {
       resumeSessionId: args.sessionId,
       effortLevel: args.effortLevel,
       canUseTool: this.buildClaudeSdkCanUseTool(convId),
+      // The SDK spawns the same binary the cli transport does, so the
+      // artifact gate has to be opened on both paths or `/design` works in
+      // one transport and not the other.
+      env: { ...process.env, ...claudeArtifactEnv(this.artifactsFor('claude')) },
       // We don't ship the SDK's bundled binary; point it at the user's
       // installed `claude` (the same one the cli transport spawns).
       pathToClaudeCodeExecutable: claudeSdkExecutablePath(
@@ -2253,6 +2264,7 @@ export class RunnerManager {
           existing.launchMcpFingerprint !== requestedMcpFingerprint ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
+          existing.launchArtifacts !== this.artifactsFor(args.backend) ||
           existing.launchEffort !== configuredEffort ||
           existing.cwd !== args.cwd);
       // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
@@ -3529,7 +3541,7 @@ export class RunnerManager {
 
   private spawnFor(args: SendArgs): ActiveProcess {
     const binary = this.resolveBinary(args.backend);
-    const env = this.buildEnv(binary);
+    const env = this.buildEnv(binary, args.backend);
     const codexPerms = args.backend === 'codex' ? codexTransportPermissions(args.permissionMode) : null;
     const codexMode: 'exec' | 'app-server' | undefined =
       args.backend === 'codex' ? this.pickCodexMode(binary, env) : undefined;
@@ -3567,6 +3579,7 @@ export class RunnerManager {
       sessionId: args.sessionId,
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
+      launchArtifacts: this.artifactsFor(args.backend),
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchMcpFingerprint: claudeMcpLaunchFingerprint(args, selectedMcpConfig),
@@ -4170,6 +4183,7 @@ export class RunnerManager {
       sessionId: args.sessionId,
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
+      launchArtifacts: this.artifactsFor(args.backend),
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
@@ -4539,8 +4553,19 @@ export class RunnerManager {
     }
   }
 
-  private buildEnv(binary: string): NodeJS.ProcessEnv {
-    return buildBackendEnv(process.env, binary);
+  /// Whether this spawn opens the artifact gate. Backend-scoped so toggling
+  /// the setting doesn't respawn codex/gemini processes that never read it.
+  private artifactsFor(backend: Backend): boolean {
+    return backend === 'claude' && (this.settingsProvider().claudeArtifacts ?? false);
+  }
+
+  /// Environment for a spawned backend. `backend` is optional because the
+  /// codex/gemini call sites only want PATH resolution; naming it opts the
+  /// spawn into Claude-specific env (today: the artifact gate).
+  private buildEnv(binary: string, backend?: Backend): NodeJS.ProcessEnv {
+    const base = buildBackendEnv(process.env, binary);
+    if (backend !== 'claude') return base;
+    return { ...base, ...claudeArtifactEnv(this.artifactsFor(backend)) };
   }
 
   private emitLocalUser(

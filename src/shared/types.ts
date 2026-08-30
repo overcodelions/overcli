@@ -996,6 +996,12 @@ export interface AppSettings {
   /// viewer — use it to diagnose MCP issues (e.g. the permission broker not
   /// registering in a crowded MCP config). Off by default; it's noisy.
   claudeMcpDebug?: boolean;
+  /// Sets CLAUDE_CODE_ARTIFACT on every Claude spawn, which unlocks the
+  /// Artifact tool and the `/design` canvas skill in the headless sessions
+  /// overcli drives. Off by default: it turns on a tool that publishes to
+  /// claude.ai, and it leans on an undocumented env var (see
+  /// shared/claudeArtifacts.ts) that can move in any CLI release.
+  claudeArtifacts?: boolean;
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
@@ -3000,6 +3006,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showDebug: false,
   claudeTransport: 'cli',
   claudeMcpDebug: false,
+  claudeArtifacts: false,
   starredFlows: [],
   defaultFlowRunIn: 'cwd',
   flowRegistries: [

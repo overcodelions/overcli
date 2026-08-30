@@ -695,7 +695,7 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 // filterRendered when showToolActivity is off — otherwise the inline
 // SubagentCard, which is the user's only entry point into the drawer,
 // vanishes from the transcript mid-flight.
-export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent']);
+export const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent', 'Artifact']);
 
 // Tools handled elsewhere in the transcript and therefore skipped by
 // the transient flash slot: PERSISTENT_TOOLS and INTERACTIVE_TOOLS both

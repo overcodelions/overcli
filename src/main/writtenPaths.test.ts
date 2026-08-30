@@ -221,3 +221,36 @@ describe('recordWritesFromEvents', () => {
     }
   });
 });
+
+describe('publishing tools earn read access by provenance', () => {
+  // A /design canvas is assembled by the skill's seeding script through Bash
+  // and lands in the session scratchpad, so neither the writing-tool rule nor
+  // the registered-root rule covers it. The Artifact call that publishes it is
+  // the only event that names the path.
+  it('records the file an Artifact call published', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'artifact-')));
+    const target = join(dir, 'canvas.html');
+    writeFileSync(target, '<html></html>');
+    recordWritesFromEvents([assistantEvent([{ name: 'Artifact', filePath: target }])]);
+    expect(isAgentWrittenPath(target)).toBe(false); // not until it succeeds
+    recordWritesFromEvents([toolResultEvent([{ id: 't0' }])]);
+    expect(isAgentWrittenPath(target)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('does not record a publish that failed', () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'artifact-')));
+    const target = join(dir, 'canvas.html');
+    writeFileSync(target, '<html></html>');
+    recordWritesFromEvents([assistantEvent([{ name: 'Artifact', filePath: target }])]);
+    recordWritesFromEvents([toolResultEvent([{ id: 't0', isError: true }])]);
+    expect(isAgentWrittenPath(target)).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // Publishing is not writing: the distinction keeps `isWritingTool` honest
+  // for anything that branches on "did this tool create a file".
+  it('still reports Artifact as a non-writing tool', () => {
+    expect(isWritingTool('Artifact')).toBe(false);
+  });
+});

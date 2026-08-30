@@ -2103,7 +2103,8 @@ function fileInfo(hint: string, rootPath?: string) {
   try {
     const stat = fs.statSync(resolved);
     if (!stat.isFile()) return { ok: false, error: 'Path is not a regular file.' };
-    const artifactPreview = isArtifactPreviewExtension(resolved);
+    const artifactPreview =
+      isArtifactPreviewExtension(resolved) || isDesignCanvasFile(resolved, stat.size);
     const largeText = !artifactPreview && stat.size > MAX_TEXT_FILE_BYTES && stat.size <= MAX_OPEN_FILE_BYTES;
     const tooLarge = stat.size > MAX_OPEN_FILE_BYTES;
     const unsupportedBinary =
@@ -2304,6 +2305,32 @@ function isKnownBinaryExtension(filePath: string): boolean {
 function isArtifactPreviewExtension(filePath: string): boolean {
   const ext = path.extname(filePath).slice(1).toLowerCase();
   return !!mimeForPreviewExtension(ext) || !!officeFamilyForExtension(ext);
+}
+
+/// A design canvas published by Claude Code's `/design` skill: one HTML file
+/// holding both the canvas editor and the design content (the `.dc.html`
+/// artboards live in a JSON script block inside it). The editor alone is
+/// ~2.4 MB, so every canvas trips the large-text cap and would render as a
+/// truncated wall of minified source instead of as the design it is.
+///
+/// Sniffed rather than assumed from the extension, because the thing we want
+/// to exempt is this specific generated shape, not every large .html on disk.
+/// Both markers sit in the head, inside the first kilobyte.
+function isDesignCanvasFile(filePath: string, sizeBytes: number): boolean {
+  if (path.extname(filePath).toLowerCase() !== '.html') return false;
+  if (sizeBytes === 0) return false;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const sample = Buffer.alloc(Math.min(sizeBytes, 4096));
+    const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0);
+    const head = sample.subarray(0, bytesRead).toString('utf8');
+    return head.includes('appifact-capabilities') || head.includes('design canvas published from Claude Code');
+  } catch {
+    return false;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
 }
 
 function isLikelyBinaryFile(filePath: string, sizeBytes: number): boolean {

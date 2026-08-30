@@ -41,6 +41,10 @@ export interface ClaudeSdkStartOptions {
   /// pending-permission resolver and emits the same permissionRequest
   /// stream event the CLI broker produces.
   canUseTool: CanUseTool;
+  /// Full environment for the spawned binary. The SDK defaults this to
+  /// `process.env`, so a caller that sets it must spread process.env itself
+  /// or the child loses PATH along with everything else.
+  env?: Record<string, string | undefined>;
 }
 
 export interface ClaudeSdkTurnInput {
@@ -102,6 +106,7 @@ export class ClaudeSdkClient extends EventEmitter {
       includePartialMessages: true,
       ...(o.effortLevel ? { effort: o.effortLevel as Options['effort'] } : {}),
       ...(o.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
+      ...(o.env ? { env: o.env } : {}),
     };
     this.q = query({ prompt: this.iterableInput(), options });
     void this.consume();
