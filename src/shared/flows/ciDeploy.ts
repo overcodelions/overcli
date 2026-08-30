@@ -8,6 +8,7 @@
 // only produces the files a project would commit, it does not run them.
 
 import { type Flow, resolveStepModel } from './schema';
+import { cronError } from './cron';
 import type { ScheduleTrigger } from './schedule';
 import type { Worker } from './worker';
 import type { Backend } from '../types';
@@ -174,7 +175,7 @@ export function cronFromCadence(c: ScheduleTrigger | null): string | null {
   // The one cadence that needs no translation: it was already written in the
   // syntax the CI scheduler reads. Passed through verbatim rather than
   // re-derived, so what deploys is exactly what the user typed.
-  if (c.kind === 'cron') return c.expr.trim();
+  if (c.kind === 'cron') return cronError(c.expr) ? null : c.expr.trim();
   const dayField = c.days && c.days.length > 0 ? [...c.days].sort((a, b) => a - b).join(',') : '*';
   if (c.kind === 'daily') {
     const parts = c.time.split(':');

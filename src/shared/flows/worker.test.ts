@@ -750,6 +750,13 @@ describe('cron cadence', () => {
     );
   });
 
+  it('uses a fixed clock to reject adjacent cron occurrences', () => {
+    const worker = makeWorker({ cadence: { kind: 'cron', expr: '0,1 * * * *' } });
+    for (const now of [new Date(2026, 2, 2, 0, 30).getTime(), new Date(2026, 2, 2, 0, 59).getTime()]) {
+      expect(validateWorker(worker, now)).toContain('no more often');
+    }
+  });
+
   it('round-trips through coercion', () => {
     expect(coerceCadence({ kind: 'cron', expr: '0 9 * * 1-5' })).toEqual({
       kind: 'cron',

@@ -83,6 +83,7 @@ function makeHarness(
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
   const parked: Array<Parameters<WorkerParker['parkProposal']>[0]> = [];
+  const deleted: string[] = [];
   const notifications: Array<{ title: string; body: string }> = [];
   const emitted: any[] = [];
   const saved: Worker[] = [];
@@ -103,6 +104,10 @@ function makeHarness(
   let pending: { at: number; fn: () => void } | null = null;
 
   const parker: WorkerParker = {
+    delete: ({ id }) => {
+      deleted.push(id);
+      orchestrations.delete(id);
+    },
     async parkProposal(args) {
       parked.push(args);
       if (parkGate) await parkGate;
@@ -217,6 +222,7 @@ function makeHarness(
   return {
     engine,
     parked,
+    deleted,
     notifications,
     emitted,
     saved,
@@ -919,6 +925,7 @@ describe('WorkerEngine errands', () => {
     expect(h.parked[2].resumeSessionId).toBeUndefined();
     expect(h.parked[2].conversationId).toBe(h.parked[0].conversationId);
     expect(h.parked[2].prompt).toContain('Find the most valuable maintenance work');
+    expect(h.deleted).toEqual(['orch-2']);
   });
 
   it('re-establishes the worker when you rewrite its job description mid-thread', async () => {

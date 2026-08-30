@@ -101,6 +101,10 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     emit,
     () => Store.load().projects,
     () => Store.load().settings,
+    {
+      unattended: options.policy !== 'auto-approve',
+      unattendedAllowedTools: options.policy === 'allow-list' ? options.allowTools : [],
+    },
   );
 
   const isGitRepo = (projectPath: string) =>

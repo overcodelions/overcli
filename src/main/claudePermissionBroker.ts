@@ -69,6 +69,7 @@ export class ClaudePermissionBroker {
     helperScript: string,
     helperCommand: string,
     helperExtraEnv: Record<string, string>,
+    extraMcpServers: Record<string, unknown> = {},
   ): Promise<{ configPath: string; token: string }> {
     const port = await this.start();
     this.unregisterSession(conversationId);
@@ -79,6 +80,7 @@ export class ClaudePermissionBroker {
     );
     const config = {
       mcpServers: {
+        ...extraMcpServers,
         overcli: {
           command: helperCommand,
           args: [helperScript],

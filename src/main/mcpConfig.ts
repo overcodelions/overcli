@@ -35,6 +35,8 @@ export type McpServerConfig = Record<string, McpValue>;
 
 export type McpCli = Extract<Backend, 'claude' | 'codex' | 'gemini'>;
 
+const claudeMcpFileCache = new Map<string, { mtimeMs: number; servers: Record<string, McpServerConfig> }>();
+
 export function isMcpCli(cli: Backend): cli is McpCli {
   return cli === 'claude' || cli === 'codex' || cli === 'gemini';
 }
@@ -476,13 +478,21 @@ export function readClaudeMcpServers(
 ): Record<string, McpServerConfig> {
   const out: Record<string, McpServerConfig> = {};
   for (const file of [paths.claude, projectPath ? path.join(projectPath, '.mcp.json') : null]) {
-    if (!file || !fs.existsSync(file)) continue;
+    if (!file) continue;
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
-        mcpServers?: Record<string, McpServerConfig>;
-      };
-      Object.assign(out, parsed?.mcpServers ?? {});
+      const absolute = path.resolve(file);
+      const mtimeMs = fs.statSync(absolute).mtimeMs;
+      let cached = claudeMcpFileCache.get(absolute);
+      if (!cached || cached.mtimeMs !== mtimeMs) {
+        const parsed = JSON.parse(fs.readFileSync(absolute, 'utf-8')) as {
+          mcpServers?: Record<string, McpServerConfig>;
+        };
+        cached = { mtimeMs, servers: parsed?.mcpServers ?? {} };
+        claudeMcpFileCache.set(absolute, cached);
+      }
+      Object.assign(out, cached.servers);
     } catch {
+      if (file) claudeMcpFileCache.delete(path.resolve(file));
       // A hand-broken config is the CLI's problem to report, not ours to
       // crash on — an unreadable file simply contributes no servers.
     }
