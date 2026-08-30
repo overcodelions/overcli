@@ -511,3 +511,92 @@ describe('which lane a flow run lands in', () => {
     expect(ids).toEqual(['path:/elsewhere/one/api', 'path:/elsewhere/two/api']);
   });
 });
+
+// Reported from the running app: a worker's run showed in the sidebar while
+// it was running and was gone the moment it finished, so a night of
+// unattended work left no trace anywhere but the Workers tab. Working on is
+// still the user's own workbench and drops it — but the stream is a record of
+// what happened, and finishing is not un-happening.
+describe('a worker run that has finished', () => {
+  const streamIds = (
+    runs: FlowRun[],
+    runners: Record<string, { isRunning: boolean }> = {},
+    selection: Partial<typeof NO_SELECTION> = {},
+  ) =>
+    collectStreamItems(
+      [project('a', [])],
+      [],
+      Object.fromEntries(runs.map((r) => [r.id, r])) as Record<UUID, FlowRun>,
+      runners as never,
+      { ...NO_SELECTION, ...selection },
+      NOW,
+      { 'worker-1': { name: 'Chief of Staff' } },
+    ).map((e) => (e.item.kind === 'flow' ? e.item.run.id : e.item.conv.id));
+
+  const finished = (id: string, workerId = 'worker-1') =>
+    run(id, {
+      workerId,
+      state: { kind: 'done', summary: '' },
+      createdAt: NOW - 30 * MIN,
+    } as never);
+
+  it('stays in the stream, under its worker', () => {
+    const r = finished('worker-run');
+    const entries = collectStreamItems(
+      [],
+      [],
+      { [r.id]: r } as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+      { 'worker-1': { name: 'Chief of Staff' } },
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0].owner).toMatchObject({ id: 'worker:worker-1', kind: 'worker' });
+    expect(entries[0].item).toMatchObject({ ownerName: 'Chief of Staff', isLive: false });
+  });
+
+  it('appears exactly once while it is still running', () => {
+    // Live worker runs are collected twice over — once for the pin, once on
+    // the timeline — and a duplicate key would break React's row identity.
+    const r = run('worker-run', { workerId: 'worker-1' } as never);
+    expect(streamIds([r])).toEqual(['worker-run']);
+  });
+
+  it('is not pinned awake once it stops', () => {
+    const live = run('live', { workerId: 'worker-1' } as never);
+    const done = finished('done');
+    const entries = collectStreamItems(
+      [],
+      [],
+      { live, done } as unknown as Record<UUID, FlowRun>,
+      {},
+      NO_SELECTION,
+      NOW,
+      {},
+    );
+    expect(entries.find((e) => e.key === 'f:live')?.pinned).toBe(true);
+    expect(entries.find((e) => e.key === 'f:done')?.pinned).toBe(false);
+  });
+
+  it('lists more finished runs than the Working-on cap allows', () => {
+    // The cap is about who gets a pinned slot in Working on, not about who is
+    // allowed to have happened.
+    const runs = [1, 2, 3, 4, 5].map((n) => finished(`worker-${n}`, `w${n}`));
+    expect(streamIds(runs)).toHaveLength(5);
+  });
+
+  it('still leaves Working on alone', () => {
+    expect(order([project('a', [])], [finished('worker-run')], {}, {})).not.toContain(
+      'worker-run',
+    );
+  });
+
+  it('stays out of the stream once archived', () => {
+    const archived = run('worker-run', {
+      workerId: 'worker-1',
+      state: { kind: 'archived' },
+    } as never);
+    expect(streamIds([archived])).toEqual([]);
+  });
+});

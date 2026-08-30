@@ -267,6 +267,9 @@ export class OrchestratorImpl {
           'No CLI is signed in to investigate with. Set up Claude, Codex, Gemini, or Copilot in Settings first.',
       };
     }
+    const enabledTools = this.launchPolicy.unattended
+      ? (this.launchPolicy.unattendedAllowedTools ?? [])
+      : undefined;
     // Never trust a pinned model against a backend it may not belong to: the
     // pin and the backend are resolved from different places and can drift
     // apart (a worker hired under one default provider, run under another).
@@ -278,11 +281,12 @@ export class OrchestratorImpl {
 
     // Producer turns can be slow (tool round-trips against a remote source),
     // so give them a longer leash than the default one-shot timeout. They
-    // also MUST call tools (MCP servers, search, read) unattended, so the
-    // turn runs with permissions bypassed — the system prompt constrains it
-    // to investigate-and-report, never to edit. We stream progress (running
-    // text + tools invoked) so the UI can show the investigation live rather
-    // than a blank spinner; throttled so a chatty turn can't flood IPC.
+    // also MUST call tools (MCP servers, search, read). Interactive turns keep
+    // their permissive behavior; unattended restricted turns pass the caller's
+    // exact allowlist and fail closed if the selected transport cannot enforce
+    // it. We stream progress (running text + tools invoked) so the UI can show
+    // the investigation live rather than a blank spinner; throttled so a
+    // chatty turn can't flood IPC.
     let lastEmit = 0;
     let lastToolCount = -1;
     const result = await this.runner.oneShot({
@@ -302,7 +306,8 @@ export class OrchestratorImpl {
       // a genuinely stalled one — or a runaway — gets cut.
       timeoutMs: 30 * 60_000,
       idleTimeoutMs: 5 * 60_000,
-      permissionMode: 'bypassPermissions',
+      permissionMode: this.launchPolicy.unattended ? 'acceptEdits' : 'bypassPermissions',
+      enabledTools,
       onProgress: (snap) => {
         const now = Date.now();
         // Always emit when a new tool fires (the high-signal moment);
@@ -421,6 +426,8 @@ export class OrchestratorImpl {
     autoApprove?: { maxItems: number };
     /// Producer model override (a worker's heartbeat model).
     model?: string;
+    /// Backend the producer model belongs to (a worker's heartbeat backend).
+    backend?: Backend;
     /// Hard cap on recorded items per firing (a worker's items-per-shift
     /// cap). Distinct from `autoApprove.maxItems`, which bounds only the
     /// auto-launched prefix — this bounds the whole batch.
@@ -468,6 +475,7 @@ export class OrchestratorImpl {
       message: args.prompt,
       projectPath,
       model: args.model,
+      backend: args.backend,
       priorPrompt: args.priorPrompt,
       priorReply: args.priorReply,
       priorTurns: args.priorTurns,

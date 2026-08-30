@@ -4912,7 +4912,7 @@ function WorkerEditor() {
 
   // Trust isn't editable here (hires start on probation; promotion is a
   // roster action), but validation needs it to judge the cwd rule.
-  const problem = validateWorker({
+  const problem = useMemo(() => validateWorker({
     ...draft,
     trust: existing?.trust ?? "probation",
     flowIds:
@@ -4923,7 +4923,7 @@ function WorkerEditor() {
           : [],
     createdAt: 0,
     id: draft.id ?? "draft",
-  });
+  }), [draft.name, draft.jobDescription, draft.projectPath, draft.flowIds, draft.heartbeatModel, draft.budgetUSDPerMonth, draft.caps, draft.mcpServers, draft.cadence, existing?.trust, draftedFlow?.id]);
 
   const targets = [
     ...workspaces.map((w) => ({

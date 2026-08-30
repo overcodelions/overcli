@@ -391,7 +391,11 @@ interface WorkersActions {
   shareToFile(id: string): Promise<string | null>;
   /// This worker as a CI job — the bundle plus a pipeline file — without
   /// writing anything. Read on demand for the same reason as `shareYaml`.
-  ciDeploy(id: string, target: 'github' | 'jenkins'): Promise<{
+  ciDeploy(
+    id: string,
+    target: 'github' | 'jenkins',
+    permissionPolicy?: import('@shared/flows/ciDeploy').WorkerCiPermissionPolicy,
+  ): Promise<{
     files: Array<{ path: string; contents: string }>;
     steps: string[];
     notes: string[];
@@ -407,6 +411,7 @@ interface WorkersActions {
   ciDeployWrite(
     id: string,
     target: 'github' | 'jenkins',
+    permissionPolicy?: import('@shared/flows/ciDeploy').WorkerCiPermissionPolicy,
   ): Promise<{ written: string[]; overwritten: string[] } | null>;
   /// Take a worker file: installs the flows it carries and opens the hire
   /// editor on it. Resolves false when the user dismissed the file dialog or
@@ -1503,8 +1508,8 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     return res.filePath;
   },
 
-  async ciDeploy(id, target) {
-    const res = await window.overcli.invoke('workers:ciDeploy', { id, target });
+  async ciDeploy(id, target, permissionPolicy) {
+    const res = await window.overcli.invoke('workers:ciDeploy', { id, target, permissionPolicy });
     if (!res.ok) {
       set({ error: res.error });
       return null;
@@ -1521,8 +1526,8 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
     };
   },
 
-  async ciDeployWrite(id, target) {
-    const res = await window.overcli.invoke('workers:ciDeployWrite', { id, target });
+  async ciDeployWrite(id, target, permissionPolicy) {
+    const res = await window.overcli.invoke('workers:ciDeployWrite', { id, target, permissionPolicy });
     if (!res.ok) {
       set({ error: res.error });
       return null;
