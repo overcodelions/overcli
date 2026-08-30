@@ -1280,10 +1280,21 @@ export class RunnerManager {
     /// not replay the conversation as text (and the turn need not re-do the
     /// exploration that produced the last answer).
     resumeSessionId?: string;
+    /// Restrict this turn to a named subset of tools. Claude and Ollama can
+    /// enforce this; one-shot calls reject an explicit list for the other
+    /// transports rather than silently granting their unrestricted defaults.
+    /// `[]` means no tools at all.
+    enabledTools?: string[];
     /// Handle the caller can later pass to `cancelOneShot` to stop this turn
     /// and reclaim its subprocess.
     cancelKey?: string;
   }): Promise<OneShotResult> {
+    if (args.enabledTools !== undefined && !['claude', 'ollama'].includes(args.backend)) {
+      return {
+        ok: false,
+        error: `Tool allowlists are not enforceable for ${args.backend} one-shot turns. Use Claude or Ollama.`,
+      };
+    }
     const conversationId = args.conversationId ?? randomUUID();
     const timeoutMs = args.timeoutMs ?? 120_000;
     const idleTimeoutMs = args.idleTimeoutMs;
@@ -1353,7 +1364,7 @@ export class RunnerManager {
         reviewMode: null,
         reviewModel: null,
         reviewPersona: null,
-        enabledTools: args.backend === 'ollama' ? [] : undefined,
+        enabledTools: args.enabledTools ?? (args.backend === 'ollama' ? [] : undefined),
       });
       if (!sent.ok) finish({ ok: false, error: sent.error });
     });

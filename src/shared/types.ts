@@ -22,7 +22,7 @@ import type { FlowTemplate } from './flows/templates';
 import type { ChangelogRelease } from './changelog';
 // Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
 import type { FlowModelDefaults } from './modelCatalog';
-import type { CiDeployBlock, CiDeployFile, CiTarget } from './flows/ciDeploy';
+import type { CiDeployBlock, CiDeployFile, CiTarget, WorkerCiPermissionPolicy } from './flows/ciDeploy';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -2301,7 +2301,7 @@ export interface IPCInvokeMap {
     | { ok: false; error: string };
   /// The worker as a CI job: the share bundle plus a generated GitHub Actions
   /// workflow or Jenkinsfile. Preview only — nothing is written.
-  'workers:ciDeploy': (args: { id: UUID; target: CiTarget }) =>
+  'workers:ciDeploy': (args: { id: UUID; target: CiTarget; permissionPolicy?: WorkerCiPermissionPolicy }) =>
     | {
         ok: true;
         files: CiDeployFile[];
@@ -2321,7 +2321,7 @@ export interface IPCInvokeMap {
   /// written, plus which of them already existed with different content —
   /// every generated file invites hand-editing, so a second write can
   /// silently clobber one.
-  'workers:ciDeployWrite': (args: { id: UUID; target: CiTarget }) =>
+  'workers:ciDeployWrite': (args: { id: UUID; target: CiTarget; permissionPolicy?: WorkerCiPermissionPolicy }) =>
     | { ok: true; written: string[]; overwritten: string[] }
     | { ok: false; error: string };
   /// Read a share file: installs any flows the library is missing (never

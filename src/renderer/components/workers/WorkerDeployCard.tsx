@@ -9,6 +9,7 @@
 import { useState } from 'react';
 
 import type { Worker } from '@shared/flows/worker';
+import type { WorkerCiPermissionPolicy } from '@shared/flows/ciDeploy';
 import { useWorkersStore } from '../../workersStore';
 import {
   AlphaBadge,
@@ -25,6 +26,7 @@ export function WorkerDeployCard({ worker }: { worker: Worker }) {
 
   const [open, setOpen] = useState(false);
   const [target, setTarget] = useState<Target>('github');
+  const [permissionPolicy, setPermissionPolicy] = useState<WorkerCiPermissionPolicy>('allow-list');
   const [plan, setPlan] = useState<CiDeployPlanView | null>(null);
   const [written, setWritten] = useState<CiDeployWriteResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,18 +65,19 @@ export function WorkerDeployCard({ worker }: { worker: Worker }) {
           onPreview={() => {
             setBusy(true);
             setWritten(null);
-            void ciDeploy(worker.id, target)
+            void ciDeploy(worker.id, target, permissionPolicy)
               .then((res) => setPlan(res))
               .finally(() => setBusy(false));
           }}
           onWrite={() => {
             setBusy(true);
-            void ciDeployWrite(worker.id, target)
+            void ciDeployWrite(worker.id, target, permissionPolicy)
               .then(setWritten)
               .finally(() => setBusy(false));
           }}
           configSlot={
-            <div className="flex flex-wrap gap-1.5">
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-1.5">
               <button
                 onClick={() => {
                   setTarget('github');
@@ -95,6 +98,37 @@ export function WorkerDeployCard({ worker }: { worker: Worker }) {
               >
                 Jenkins
               </button>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase tracking-wider text-ink-faint">Tool permissions</div>
+                <div className="mt-1 flex flex-wrap gap-1.5">
+                  <button
+                    onClick={() => {
+                      setPermissionPolicy('allow-list');
+                      setPlan(null);
+                      setWritten(null);
+                    }}
+                    className={permissionPolicy === 'allow-list' ? selected : unselected}
+                  >
+                    Restricted allowlist
+                  </button>
+                  <button
+                    onClick={() => {
+                      setPermissionPolicy('auto-approve');
+                      setPlan(null);
+                      setWritten(null);
+                    }}
+                    className={permissionPolicy === 'auto-approve' ? selected : unselected}
+                  >
+                    Auto-approve all tools
+                  </button>
+                </div>
+                <div className={`mt-1 text-[10px] ${permissionPolicy === 'auto-approve' ? 'text-amber-400' : 'text-ink-faint'}`}>
+                  {permissionPolicy === 'auto-approve'
+                    ? 'Keeps the selected heartbeat backend, but every tool request runs without review. Use narrow CI credentials.'
+                    : 'Recommended. Allows only tools declared by this worker’s flows; unsupported heartbeat CLIs will fail closed.'}
+                </div>
+              </div>
             </div>
           }
         />

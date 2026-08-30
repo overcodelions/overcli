@@ -24,7 +24,11 @@ import type { FlowRun } from '../../shared/flows/schema';
 /// `producerReply` stands in for the producer turn's output — supply it when
 /// the test exercises propose/park, which are the only paths that reach the
 /// runner.
-function makeHarness(opts: { producerReply?: string; launchPolicy?: { unattended?: boolean; unattendedAllowedTools?: string[] } } = {}) {
+function makeHarness(opts: {
+  producerReply?: string;
+  launchPolicy?: { unattended?: boolean; unattendedAllowedTools?: string[] };
+  preferredBackend?: 'claude' | 'codex' | 'gemini' | 'copilot' | 'ollama';
+} = {}) {
   const runs = new Map<string, FlowRun>();
   let counter = 0;
   const started: Array<{
@@ -96,7 +100,11 @@ function makeHarness(opts: { producerReply?: string; launchPolicy?: { unattended
     launcher,
     (e) => emitted.push(e),
     () => [{ id: 'p', name: 'proj', path: '/proj' } as any],
-    () => ({ backendPaths: {}, disabledBackends: {}, preferredBackend: 'claude' }) as any,
+    () => ({
+      backendPaths: {},
+      disabledBackends: {},
+      preferredBackend: opts.preferredBackend ?? 'claude',
+    }) as any,
     opts.launchPolicy,
   );
   // The runtime calls the observer on every run update; wire the fake to it.
@@ -124,6 +132,31 @@ function makeHarness(opts: { producerReply?: string; launchPolicy?: { unattended
 
   return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush };
 }
+
+describe('producer permissions', () => {
+  const args = { projectPath: '/proj', prompt: 'plan', flowId: 'f', runIn: 'cwd' as const, maxConcurrent: 1 };
+
+  it('uses the launch policy for producer calls', async () => {
+    const interactive = makeHarness();
+    await interactive.engine.parkProposal(args);
+    expect(interactive.oneShotCalls[0]).toMatchObject({ permissionMode: 'bypassPermissions', enabledTools: undefined });
+
+    const deny = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: [] } });
+    await deny.engine.parkProposal(args);
+    expect(deny.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: [] });
+
+    const listed = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: ['Read'] } });
+    await listed.engine.parkProposal(args);
+    expect(listed.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: ['Read'] });
+  });
+
+  it('forwards the worker heartbeat backend without silently changing providers', async () => {
+    const h = makeHarness({ preferredBackend: 'codex' });
+    const result = await h.engine.parkProposal({ ...args, backend: 'codex', model: 'gpt-5.6-luna' });
+    expect(result.ok).toBe(true);
+    expect(h.oneShotCalls[0]).toMatchObject({ backend: 'codex', model: 'gpt-5.6-luna' });
+  });
+});
 
 function items(n: number) {
   return Array.from({ length: n }, (_, i) => ({

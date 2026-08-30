@@ -72,6 +72,7 @@ describe('cronFromCadence', () => {
 
   it('passes valid cron through and rejects invalid multiline cron', () => {
     expect(cronFromCadence({ kind: 'cron', expr: '5 9 * * 1-5' })).toBe('5 9 * * 1-5');
+    expect(cronFromCadence({ kind: 'cron', expr: '@daily' })).toBe('0 0 * * *');
     expect(cronFromCadence({ kind: 'cron', expr: '5 9 *\n* 1-5' })).toBeNull();
   });
 });
@@ -85,6 +86,11 @@ describe('ciPermissions', () => {
     expect(
       ciPermissions(worker({ trust: 'autonomous', caps: { maxItemsPerShift: 3, runIn: 'cwd', allowExternalActions: true } })),
     ).toBe('allow-list');
+  });
+
+  it('honors explicit auto-approve without lifting probation', () => {
+    expect(ciPermissions(worker({ trust: 'trusted' }), 'auto-approve')).toBe('auto-approve');
+    expect(ciPermissions(worker({ trust: 'probation' }), 'auto-approve')).toBe('deny');
   });
 });
 
@@ -103,6 +109,12 @@ describe('buildCiDeploy', () => {
     const workflow = plan.files[1].contents;
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('cron: "0 9 * * 1,2,3,4,5"');
+  });
+
+  it('normalizes macro cron for GitHub Actions', () => {
+    const plan = buildCiDeploy({ worker: worker({ cadence: { kind: 'cron', expr: '@daily' } }), flows: [flow('nightly-review')], target: 'github', workerYaml: 'x' });
+    expect(plan.files[1].contents).toContain('cron: "0 0 * * *"');
+    expect(plan.files[1].contents).not.toContain('@daily');
   });
 
   it('produces a Jenkinsfile', () => {
@@ -183,7 +195,7 @@ describe('buildCiDeploy', () => {
     expect(plan.files[1].contents).toContain('@anthropic-ai/claude-code');
   });
 
-  it('never emits auto-approve, and a probationary worker gets deny', () => {
+  it('defaults to restricted permissions, and a probationary worker gets deny', () => {
     const plan = buildCiDeploy({
       worker: worker({ trust: 'probation' }),
       flows: [flow('nightly-review')],
@@ -193,6 +205,33 @@ describe('buildCiDeploy', () => {
     const workflow = plan.files[1].contents;
     expect(workflow).toContain('--permissions deny');
     expect(workflow).not.toContain('auto-approve');
+  });
+
+  it('emits auto-approve only when explicitly requested', () => {
+    for (const target of ['github', 'jenkins'] as const) {
+      const plan = buildCiDeploy({
+        worker: worker({ trust: 'autonomous', heartbeatBackend: 'codex' }),
+        flows: [flow('nightly-review', 'codex')],
+        target,
+        workerYaml: 'x',
+        permissionPolicy: 'auto-approve',
+      });
+      expect(plan.files[1].contents).toContain('--permissions auto-approve');
+      expect(plan.files[1].contents).not.toContain('--allow-tool');
+      expect(plan.warnings.some((w) => w.includes('every requested tool'))).toBe(true);
+      expect(plan.notes.some((n) => n.includes('codex heartbeat backend'))).toBe(true);
+    }
+  });
+
+  it('warns when a restricted heartbeat backend cannot enforce the generated allowlist', () => {
+    const plan = buildCiDeploy({
+      worker: worker({ trust: 'trusted', heartbeatBackend: 'codex' }),
+      flows: [flow('nightly-review', 'codex')],
+      target: 'github',
+      workerYaml: 'x',
+    });
+    expect(plan.warnings.some((w) => w.includes('cannot enforce an exact tool allowlist'))).toBe(true);
+    expect(plan.warnings.some((w) => w.includes('Auto-approve all tools'))).toBe(true);
   });
 
   it('warns when a flow runs on Ollama', () => {
