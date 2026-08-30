@@ -2837,7 +2837,11 @@ export class FlowRuntimeImpl {
     // the model prompt or its attachment. This makes "fix it, then re-run
     // Verify" review the files that are actually on disk without forcing the
     // user to re-run the implementation step first.
-    if (step.inputs.some((ref) => ref !== FLOW_USER_PROMPT_REF && run.artifacts[ref]?.kind === 'diff')) {
+    // Read off `run` here rather than inside the callback: `run` is a `let`
+    // reassigned just below, so TS drops its non-null narrowing across the
+    // closure boundary.
+    const artifactsBeforeRefresh = run.artifacts;
+    if (step.inputs.some((ref) => ref !== FLOW_USER_PROMPT_REF && artifactsBeforeRefresh[ref]?.kind === 'diff')) {
       await this.refreshDiffInputsFromWorktree(run, step);
       const refreshedRun = this.runs.get(runId);
       if (refreshedRun?.state.kind !== 'running' || refreshedRun.state.currentStepId !== stepId) return;

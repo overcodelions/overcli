@@ -1810,7 +1810,11 @@ export function registerIpc(): void {
     return { name: ws.name, members, unreachable };
   }
 
-  function ciPlanFor(id: string, target: 'github' | 'jenkins') {
+  function ciPlanFor(
+    id: string,
+    target: 'github' | 'jenkins',
+    permissionPolicy?: import('../shared/flows/ciDeploy').WorkerCiPermissionPolicy,
+  ) {
     const worker = workerEngine?.list().find((row) => row.worker.id === id)?.worker;
     if (!worker) return { ok: false as const, error: 'No such worker.' };
     const store = Store.load();
@@ -1826,14 +1830,15 @@ export function registerIpc(): void {
         worker,
         flows,
         target,
+        permissionPolicy,
         workerYaml: share.yaml,
         missingFlowIds: share.missingFlowIds,
         workspace: workspaceFor(worker.projectPath),
       }),
     };
   }
-  ipcMain.handle('workers:ciDeploy', (_e, { id, target }) => {
-    const res = ciPlanFor(id, target);
+  ipcMain.handle('workers:ciDeploy', (_e, { id, target, permissionPolicy }) => {
+    const res = ciPlanFor(id, target, permissionPolicy);
     if (!res.ok) return res;
     return {
       ok: true,
@@ -1847,8 +1852,8 @@ export function registerIpc(): void {
       projectPath: res.worker.projectPath,
     } as const;
   });
-  ipcMain.handle('workers:ciDeployWrite', (_e, { id, target }) => {
-    const res = ciPlanFor(id, target);
+  ipcMain.handle('workers:ciDeployWrite', (_e, { id, target, permissionPolicy }) => {
+    const res = ciPlanFor(id, target, permissionPolicy);
     if (!res.ok) return res;
     if (!res.worker.projectPath) {
       return { ok: false, error: 'This worker has no project to write into.' } as const;

@@ -14,6 +14,7 @@ import type { Worker } from './worker';
 import type { Backend } from '../types';
 
 export type CiTarget = 'github' | 'jenkins';
+export type WorkerCiPermissionPolicy = 'allow-list' | 'auto-approve';
 
 export const CI_CLI_TAG = 'alpha';
 
@@ -214,11 +215,13 @@ function hourRange(startH: number, endH: number): string {
   return startH <= endH ? `${startH}-${endH}` : `${startH}-23,0-${endH}`;
 }
 
-/// The permission policy a generated job runs with. Never `auto-approve` —
-/// an unattended CI runner is not a place to skip approval, whatever the
-/// worker's trust level.
-export function ciPermissions(worker: Worker): 'deny' | 'allow-list' {
-  return worker.trust === 'probation' ? 'deny' : 'allow-list';
+/// The permission policy a generated job runs with. Restricted is the default;
+/// auto-approve is an explicit deployment choice and never lifts probation.
+export function ciPermissions(
+  worker: Worker,
+  requested: WorkerCiPermissionPolicy = 'allow-list',
+): 'deny' | WorkerCiPermissionPolicy {
+  return worker.trust === 'probation' ? 'deny' : requested;
 }
 
 /// Tools an `allow-list` job starts with, read off the work itself.
@@ -434,6 +437,7 @@ export function buildCiDeploy(args: {
   flows: Flow[];
   target: CiTarget;
   workerYaml: string;
+  permissionPolicy?: WorkerCiPermissionPolicy;
   missingFlowIds?: string[];
   /// Set when this worker is scoped to an Overcli workspace rather than a
   /// single project. Main resolves the members and their remotes; the
@@ -443,7 +447,7 @@ export function buildCiDeploy(args: {
   const { worker, target } = args;
   const slug = ciSlug(worker.name);
   const cron = cronFromCadence(worker.cadence);
-  const perms = ciPermissions(worker);
+  const perms = ciPermissions(worker, args.permissionPolicy);
   // A worker bundle deliberately does not carry its trust (workerYaml.ts), so
   // the CLI defaults to probation — which parks every proposal and exits 2.
   // The desk knows the real level, so the generated job carries it explicitly.
@@ -504,6 +508,18 @@ export function buildCiDeploy(args: {
     warnings.push(
       `These steps declare no tools, so the job cannot narrow what they may do: ${declared.unconstrained.join(', ')}. ` +
         'Give them an explicit tools: list in the flow, and the job will allow exactly that.',
+    );
+  }
+  const heartbeatBackend = worker.heartbeatBackend ?? 'claude';
+  if (perms === 'allow-list' && !['claude', 'ollama'].includes(heartbeatBackend)) {
+    warnings.push(
+      `The ${heartbeatBackend} heartbeat cannot enforce an exact tool allowlist in headless CI. ` +
+        'Choose Auto-approve all tools for this deployment, or change the worker heartbeat to Claude.',
+    );
+  }
+  if (perms === 'auto-approve') {
+    warnings.push(
+      'Auto-approve lets every requested tool run without review. Use an isolated runner and narrowly scoped repository and service credentials.',
     );
   }
   if (rejectedTools.length > 0) {
@@ -575,6 +591,9 @@ export function buildCiDeploy(args: {
         'Change the flow\u2019s tools: list and re-deploy rather than editing the job.',
     );
   }
+  if (perms === 'auto-approve') {
+    notes.push(`The job keeps the worker's ${heartbeatBackend} heartbeat backend and auto-approves its tool requests.`);
+  }
   if (cron) {
     notes.push(
       target === 'github'
@@ -639,7 +658,7 @@ function allowToolsFlag(allowTools: string[]): string {
 function githubFile(args: {
   slug: string;
   cron: string | null;
-  perms: 'deny' | 'allow-list';
+  perms: 'deny' | WorkerCiPermissionPolicy;
   trust: Worker['trust'];
   allowTools: string[];
   installBackends: Backend[];
@@ -741,7 +760,7 @@ const BACKEND_PACKAGES: Partial<Record<Backend, string>> = {
 function jenkinsFile(args: {
   slug: string;
   cron: string | null;
-  perms: 'deny' | 'allow-list';
+  perms: 'deny' | WorkerCiPermissionPolicy;
   trust: Worker['trust'];
   allowTools: string[];
   installBackends: Backend[];

@@ -73,6 +73,20 @@ describe('prepareClaudeBroker', () => {
   });
 });
 
+describe('oneShot unattended tool allowlists', () => {
+  it.each(['codex', 'gemini', 'copilot'] as const)(
+    'rejects %s rather than silently launching with an unenforceable deny or allow list',
+    async (backend) => {
+      const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
+      for (const enabledTools of [[], ['Read']]) {
+        await expect(
+          manager.oneShot({ backend, model: '', prompt: 'test', cwd: '/repo', enabledTools }),
+        ).resolves.toMatchObject({ ok: false, error: expect.stringContaining('not enforceable') });
+      }
+    },
+  );
+});
+
 describe('resumeSessionAfterParamChange', () => {
   // Regression: changing a flow participant's model in the hijack chat
   // killed the live Claude process and respawned it without --resume,

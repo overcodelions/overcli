@@ -31,7 +31,7 @@ const flow: Flow = {
 function harness(stepId: string): { rt: FlowRuntimeImpl; run: FlowRun; sends: unknown[] } {
   const sends: unknown[] = [];
   const runner = { send: (args: unknown) => { sends.push(args); return { ok: true as const }; }, stop: () => {}, prewarm: () => {}, dropIfPrewarmed: () => {} };
-  const rt = new FlowRuntimeImpl(runner as never, () => {}, () => [], () => ({ backends: {} }) as AppSettings);
+  const rt = new FlowRuntimeImpl(runner as never, () => {}, () => [], () => ({}) as AppSettings);
   const run = {
     id: RUN_ID, flowId: flow.id, flowSnapshot: flow, projectPath: '/tmp', userPrompt: 'test', conversationIds: {}, artifacts: { diff: { name: 'diff', kind: 'diff', body: 'old', producedByStepId: 'produce', producedAt: 0 } },
     state: { kind: 'running', currentStepId: stepId }, createdAt: 0, attempts: [], baselineCommit: 'base',

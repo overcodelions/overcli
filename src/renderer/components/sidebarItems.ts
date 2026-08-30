@@ -236,10 +236,14 @@ export function collectActiveCandidates(
 
 /// A worker's runs are shown at its desk, not in the project's flow list — a
 /// worker on an hourly clock would bury the runs you started yourself. The
-/// exception is the sidebar's own sections, and only while the run is
-/// happening: they answer "what is going on right now", and an unattended run
-/// spending money is exactly that. Capped, newest first, so a roster firing at
-/// once cannot evict the chat you are reading; the Workers tab has them all.
+/// exception is Working on, and only while the run is happening: that section
+/// answers "what is going on right now", and an unattended run spending money
+/// is exactly that. Capped, newest first, so a roster firing at once cannot
+/// evict the chat you are reading; the Workers tab has them all.
+///
+/// The Stream is not bound by this cap — it lists finished worker runs too,
+/// where they simply sit at the time they happened (see collectStreamItems) —
+/// and calls this only to decide which of them are pinned awake.
 function liveWorkerRuns(
   flowRuns: Record<UUID, FlowRun>,
   runners: Record<UUID, { isRunning: boolean } | undefined>,
@@ -342,22 +346,41 @@ export function collectStreamItems(
     for (const conv of workspace.conversations ?? []) pushConversation(conv, owner);
   }
 
-  for (const run of liveWorkerRuns(flowRuns, runners, selection)) {
-    const name = workers[run.workerId!]?.name ?? 'a worker';
-    out.push({
-      key: `f:${run.id}`,
-      item: { kind: 'flow', run, ownerName: name, ownerKind: 'worker', isLive: true },
-      owner: { id: `worker:${run.workerId}`, name, kind: 'worker' },
-      at: streamAt(run),
-      touchedAt: flowRunPromptedAt(run),
-      momentum: flowMomentum(run, now),
-      pinned: true,
-    });
-  }
+  // Only liveness is capped here, not membership: the cap exists so a waking
+  // roster can't take over the pinned, never-sleeping rows, and a run that is
+  // merely on the timeline takes nothing from anyone.
+  const pinnedWorkerRuns = new Set(
+    liveWorkerRuns(flowRuns, runners, selection).map((run) => run.id),
+  );
 
   for (const run of Object.values(flowRuns)) {
     if (run.state.kind === 'archived') continue;
-    if (isWorkerRun(run)) continue;
+    // A worker's run is hidden from the project's Flows list — an hourly
+    // worker would bury the runs you started yourself — but the stream is a
+    // record of what happened, and a run finishing is not it un-happening.
+    // While it ran it was here; dropping it the moment it succeeded meant the
+    // only trace of a night's unattended work was gone by morning. It keeps
+    // its worker as owner, so those rows still group into their own lane
+    // instead of pretending the project started them.
+    if (isWorkerRun(run)) {
+      const name = workers[run.workerId!]?.name ?? 'a worker';
+      out.push({
+        key: `f:${run.id}`,
+        item: {
+          kind: 'flow',
+          run,
+          ownerName: name,
+          ownerKind: 'worker',
+          isLive: flowRunIsLive(run, runners),
+        },
+        owner: { id: `worker:${run.workerId}`, name, kind: 'worker' },
+        at: streamAt(run),
+        touchedAt: Math.max(flowRunPromptedAt(run), selection.lastOpenedAtByRun[run.id] ?? 0),
+        momentum: flowMomentum(run, now),
+        pinned: pinnedWorkerRuns.has(run.id) || run.id === selection.openedRunId,
+      });
+      continue;
+    }
     const path = flowRunOwnerPath(run);
     const resolved = resolveFlowOwner(path, projects, workspaces);
     const isLive = flowRunIsLive(run, runners);
