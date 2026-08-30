@@ -46,6 +46,12 @@ const MACROS: Record<string, string> = {
   '@hourly': '0 * * * *',
 };
 
+export function normalizeCronExpression(input: string): string {
+  const raw = (input ?? '').trim().toLowerCase();
+  const expanded = Object.hasOwn(MACROS, raw) ? MACROS[raw] : raw;
+  return expanded.split(/\s+/).map((part) => (part === '?' ? '*' : part)).join(' ');
+}
+
 const MONTH_NAMES = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 const DAY_NAMES = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -70,10 +76,9 @@ const FIELDS: FieldSpec[] = [
 export function parseCron(input: string): CronParse {
   const inputValue = input ?? '';
   if (/[^\S ]/.test(inputValue)) return { ok: false, error: 'Cron expressions may only use spaces as whitespace.' };
-  const raw = inputValue.trim().toLowerCase();
+  const raw = normalizeCronExpression(inputValue);
   if (!raw) return { ok: false, error: 'Enter a cron expression, like 0 9 * * 1-5.' };
-  const expanded = Object.hasOwn(MACROS, raw) ? MACROS[raw] : raw;
-  if (expanded.startsWith('@')) {
+  if (raw.startsWith('@')) {
     return {
       ok: false,
       error: `${raw} isn't a shorthand this understands. Use @hourly, @daily, @weekly, @monthly or @yearly — or write the five fields out.`,
@@ -84,7 +89,7 @@ export function parseCron(input: string): CronParse {
   // because the day-field restriction flags below read the raw token — a `?`
   // counted as restricted turns the dom/dow AND into an OR and fires the
   // schedule every day.
-  const parts = expanded.split(/\s+/).map((p) => (p === '?' ? '*' : p));
+  const parts = raw.split(/\s+/);
   if (parts.length === 6) {
     // Quartz (and Spring) put seconds first. Firing a schedule an hour early
     // because a field shifted is the worst possible way to find that out.

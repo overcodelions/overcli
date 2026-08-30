@@ -68,12 +68,12 @@ export interface RunSummary {
 }
 
 export function preflightFailure(
-  summaryBase: Omit<RunSummary, 'flowId' | 'status' | 'exitCode' | 'error'>,
-  flowId: string,
-  status: 'preflight-failed' | 'start-failed',
+  summaryBase: Omit<RunSummary, 'flowId' | 'workerId' | 'status' | 'exitCode' | 'error'>,
+  identity: { flowId: string } | { workerId: string },
+  status: 'preflight-failed' | 'start-failed' | 'shift-failed',
   error: string,
 ): RunSummary {
-  return { ...summaryBase, flowId, status, exitCode: EXIT.PREFLIGHT, error };
+  return { ...summaryBase, ...identity, status, exitCode: EXIT.PREFLIGHT, error };
 }
 
 export interface Reporter {
@@ -263,14 +263,14 @@ async function runFlow(ctx: RunContext): Promise<RunSummary> {
   // The runtime resolves flows by id out of the library, so the file has to be
   // IN the library before startRun — see loadAllFlows in runtime.startRun.
   const saved = saveFlow({ flow, target: 'user' });
-  if (!saved.ok) return preflightFailure(summaryBase, flow.id, 'preflight-failed', `Could not stage the flow: ${saved.error}`);
+  if (!saved.ok) return preflightFailure(summaryBase, { flowId: flow.id }, 'preflight-failed', `Could not stage the flow: ${saved.error}`);
   for (const risk of saved.risks) {
     if (risk.severity === 'high') warnings.push(`risk: ${risk.message}`);
   }
 
   const settings = Store.load().settings;
   const pre = await preflightRun({ flow, projectPath, settings });
-  if (!pre.ok) return preflightFailure(summaryBase, flow.id, 'preflight-failed', pre.problems.map((p) => `${p.path}: ${p.message}`).join('; '));
+  if (!pre.ok) return preflightFailure(summaryBase, { flowId: flow.id }, 'preflight-failed', pre.problems.map((p) => `${p.path}: ${p.message}`).join('; '));
 
   reporter.progress(`starting ${flow.name} (${flow.steps.length} steps) in ${projectPath}`);
   const started = await engines.flowRuntime.startRun({
@@ -285,7 +285,7 @@ async function runFlow(ctx: RunContext): Promise<RunSummary> {
     unattendedAllowedTools: opts.permissions === 'allow-list' ? opts.allowTools : [],
   });
   if (!started.ok) {
-    return preflightFailure(summaryBase, flow.id, 'start-failed', started.error);
+    return preflightFailure(summaryBase, { flowId: flow.id }, 'start-failed', started.error);
   }
 
   const run = await waitForRun(engines, started.runId, opts.timeoutSeconds);
@@ -371,7 +371,7 @@ async function runWorker(ctx: RunContext): Promise<RunSummary> {
   reporter.progress(`working a shift for ${worker.name} in ${projectPath}`);
   const shift = await engines.workerEngine.workShiftNow(id);
   if (!shift.ok) {
-    return { ...summaryBase, workerId: id, status: 'shift-failed', error: shift.error };
+    return preflightFailure(summaryBase, { workerId: id }, 'shift-failed', shift.error);
   }
 
   const batch = await waitForWorkerBatch(engines, id, opts.timeoutSeconds);

@@ -23,7 +23,7 @@ All notable changes to Overcli are documented here. The format is based on [Keep
 
 ### Fixed
 - **Codex tool timing survives app restarts.** History replay now understands current `custom_tool_call` rollout records and preserves distinct tool calls that start within the same second.
-- **Claude SDK Turbo now applies low effort.**
+- **Claude SDK Turbo now applies low effort.** Turbo now selects low effort on Claude SDK turns as well as CLI turns, keeping the fast path consistent across transports.
 - **Leaving Warp restores the previous model and effort.** Full always reselects the configured backend default, so returning from Warp—or reselecting Full on an older conversation—no longer leaves the fast-tier model selected.
 - **User-facing conversation and timing views no longer expose internal prompt scaffolding.** Injected batching guidance and attachment filesystem paths remain available to the model and raw Debug stream but are replaced by the user-authored text and friendly attachment labels in chat and timing rows.
 - **Approval prompts survive a mid-session parameter change.** Changing a model or permission mode respawned the CLI and dropped the permission broker with it, so every tool call needing approval failed for the rest of the session. The broker is now kept registered across the relaunch.
