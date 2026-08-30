@@ -68,9 +68,11 @@ const FIELDS: FieldSpec[] = [
 ];
 
 export function parseCron(input: string): CronParse {
-  const raw = (input ?? '').trim().toLowerCase();
+  const inputValue = input ?? '';
+  if (/[^\S ]/.test(inputValue)) return { ok: false, error: 'Cron expressions may only use spaces as whitespace.' };
+  const raw = inputValue.trim().toLowerCase();
   if (!raw) return { ok: false, error: 'Enter a cron expression, like 0 9 * * 1-5.' };
-  const expanded = MACROS[raw] ?? raw;
+  const expanded = Object.hasOwn(MACROS, raw) ? MACROS[raw] : raw;
   if (expanded.startsWith('@')) {
     return {
       ok: false,
@@ -244,9 +246,15 @@ export function cronError(expr: string, now: number = Date.now()): string | null
 /// worker off a cadence too fast to be a shift; `Infinity` for an expression
 /// with fewer than two occurrences ahead.
 export function cronIntervalMinutes(fields: CronFields, now: number = Date.now()): number {
-  const first = nextCronOccurrence(fields, now);
-  if (!Number.isFinite(first)) return Number.POSITIVE_INFINITY;
-  const second = nextCronOccurrence(fields, first);
-  if (!Number.isFinite(second)) return Number.POSITIVE_INFINITY;
-  return (second - first) / 60_000;
+  let previous = nextCronOccurrence(fields, now - 1);
+  if (!Number.isFinite(previous)) return Number.POSITIVE_INFINITY;
+  const end = previous + 24 * 60 * 60_000;
+  let minimum = Number.POSITIVE_INFINITY;
+  while (previous < end) {
+    const next = nextCronOccurrence(fields, previous);
+    if (!Number.isFinite(next)) break;
+    minimum = Math.min(minimum, (next - previous) / 60_000);
+    previous = next;
+  }
+  return minimum;
 }

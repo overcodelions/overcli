@@ -136,12 +136,13 @@ describe('claudeBackend.buildArgs', () => {
     expect(a).toContain('mcp__overcli__approve');
   });
 
-  it('skips MCP wiring under bypassPermissions even when path present', () => {
+  it('keeps MCP servers but skips the permission prompt tool under bypassPermissions', () => {
     const a = claudeBackend.buildArgs(
       { ...baseArgs, permissionMode: 'bypassPermissions' },
       withMcpCtx,
     );
-    expect(a).not.toContain('--mcp-config');
+    expect(a).toContain('--mcp-config');
+    expect(a).toContain('/tmp/mcp.json');
     expect(a).not.toContain('--permission-prompt-tool');
   });
 
@@ -185,9 +186,9 @@ describe('claudeBackend.buildArgs', () => {
     expect(a[i + 1]).toBe('Read Grep');
   });
 
-  it('omits --allowedTools when allowedTools is empty', () => {
+  it('emits an explicit empty --allowedTools allowlist', () => {
     const a = claudeBackend.buildArgs({ ...baseArgs, allowedTools: [] }, noMcpCtx);
-    expect(a).not.toContain('--allowedTools');
+    expect(a.slice(a.indexOf('--allowedTools'), a.indexOf('--allowedTools') + 2)).toEqual(['--allowedTools', '']);
   });
 });
 

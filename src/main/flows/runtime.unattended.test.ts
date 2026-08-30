@@ -21,7 +21,7 @@ vi.mock('./runsStore', () => ({
   deleteRun: vi.fn(),
 }));
 
-import { FlowRuntimeImpl } from './runtime';
+import { enabledToolsFor, FlowRuntimeImpl } from './runtime';
 import type { Flow, FlowRun, FlowStep } from '../../shared/flows/schema';
 import { DEFAULT_SETTINGS } from '../../shared/types';
 
@@ -96,22 +96,16 @@ describe('resolvePermissionMode', () => {
 // never refuse them. Verified empirically before this existed: `overcli run
 // --permissions deny` on a flow declaring `tools: [Bash]` created the file.
 describe('unattendedAllowedTools', () => {
-  function enabledToolsFor(run: Partial<FlowRun>, s: FlowStep = step({ tools: ['Read', 'Bash'] })) {
-    return run.unattended
-      ? s.tools.filter((t) => (run.unattendedAllowedTools ?? []).includes(t))
-      : s.tools;
-  }
-
   it('leaves an ordinary app run untouched', () => {
-    expect(enabledToolsFor({})).toEqual(['Read', 'Bash']);
+    expect(enabledToolsFor({}, step({ tools: ['Read', 'Bash'] }))).toEqual(['Read', 'Bash']);
   });
 
   it('pre-authorises nothing under deny, so every call reaches the tap', () => {
-    expect(enabledToolsFor({ unattended: true, unattendedAllowedTools: [] })).toEqual([]);
+    expect(enabledToolsFor({ unattended: true, unattendedAllowedTools: [] }, step({ tools: ['Read', 'Bash'] }))).toEqual([]);
   });
 
   it('keeps only the intersection under allow-list', () => {
-    expect(enabledToolsFor({ unattended: true, unattendedAllowedTools: ['Read'] })).toEqual(['Read']);
+    expect(enabledToolsFor({ unattended: true, unattendedAllowedTools: ['Read'] }, step({ tools: ['Read', 'Bash'] }))).toEqual(['Read']);
   });
 
   it('cannot widen a step beyond what it declared', () => {

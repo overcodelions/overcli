@@ -47,6 +47,19 @@ describe('parseCron', () => {
     expect(next('@hourly', local(2026, 3, 2, 5, 30))).toBe(local(2026, 3, 2, 6, 0));
   });
 
+  it('rejects prototype keys and non-space whitespace without throwing', () => {
+    expect(parseCron('constructor').ok).toBe(false);
+    expect(parseCron('__proto__').ok).toBe(false);
+    expect(parseCron('0\t9 * * *').ok).toBe(false);
+    expect(parseCron('0 9 *\n* *').ok).toBe(false);
+  });
+
+  it('finds a one-minute minimum gap at a fixed time', () => {
+    const parsed = parseCron('0,1 * * * *');
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(cronIntervalMinutes(parsed.fields, local(2026, 3, 2, 0, 30))).toBe(1);
+  });
+
   it('treats ? as *, the way a pasted Quartz expression means it', () => {
     expect(next('0 9 ? * 1', local(2026, 3, 2, 10))).toBe(local(2026, 3, 9, 9));
   });

@@ -466,12 +466,21 @@ describe('resuming an externalAction pause', () => {
       expect(res.ok).toBe(true);
       await flush();
 
-      // The step the user just approved must run under a real permission
-      // mode, not `acceptEdits` — clicking Continue must not still route
-      // every call of THIS step through a broker that then auto-denies it.
+      // The step remains brokered; its first request consumes the approval.
       expect(h.sends).toHaveLength(1);
-      expect(h.sends[0]!.permissionMode).not.toBe('acceptEdits');
+      expect(h.sends[0]!.permissionMode).toBe('acceptEdits');
       expect(r.externalActionApprovedStepId).toBe('render-report');
+
+      const approvals: boolean[] = [];
+      h.runner.respondPermission = (_convId: string, _reqId: string, approved: boolean) => approvals.push(approved);
+      for (const requestId of ['req-1', 'req-2']) {
+        (h.rt as never as { observeEvent: (e: MainToRendererEvent) => void }).observeEvent({
+          type: 'stream', conversationId: 'conv-1' as UUID,
+          events: [{ timestamp: Date.now(), kind: { type: 'permissionRequest', info: { requestId, toolName: 'Bash', description: '', toolInput: '' } } } as never],
+        });
+      }
+      expect(approvals).toEqual([true, false]);
+      expect(r.externalActionApprovedStepId).toBeUndefined();
 
       // The grant is one-shot: consumed the moment the approved step
       // finishes, so it can't leak into whatever step runs after it.

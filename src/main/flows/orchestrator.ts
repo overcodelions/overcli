@@ -74,6 +74,8 @@ export interface FlowLauncher {
     workerId?: UUID;
     workerName?: string;
     allowExternalActions?: boolean;
+    unattended?: boolean;
+    unattendedAllowedTools?: string[];
     title?: string;
   }): Promise<{ ok: true; runId: UUID } | { ok: false; error: string }>;
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string };
@@ -179,6 +181,7 @@ export class OrchestratorImpl {
     private emit: (event: MainToRendererEvent) => void,
     private getProjects: () => Project[],
     private getSettings: () => AppSettings,
+    private launchPolicy: { unattended?: boolean; unattendedAllowedTools?: string[] } = {},
   ) {
     // Restore persisted batches as a read-only ledger. loadAll already
     // demoted any `running` item to `failed` (its child subprocess died on
@@ -676,6 +679,7 @@ export class OrchestratorImpl {
                 allowExternalActions: o.origin.allowExternalActions,
               }
             : {}),
+          ...this.launchPolicy,
         });
       } catch (err) {
         // startRun should return {ok:false}, but guard against an unexpected

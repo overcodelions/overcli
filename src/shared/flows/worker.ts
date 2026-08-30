@@ -518,7 +518,7 @@ function validTimeOfDay(time: string): boolean {
   return parseTimeOfDay(time) !== null;
 }
 
-export function validateWorker(w: Partial<Worker>): string | null {
+export function validateWorker(w: Partial<Worker>, now: number = Date.now()): string | null {
   if (!w.name?.trim()) return 'Give the worker a name.';
   if ((w.jobDescription ?? '').trim().length < WORKER_MIN_JOB_DESCRIPTION)
     return 'A job description needs at least 20 characters — the worker plans its own shifts from it.';
@@ -561,10 +561,10 @@ export function validateWorker(w: Partial<Worker>): string | null {
   // answer. What still applies is the shift floor: a worker is staff, and one
   // waking every minute is a runaway, not a rota.
   if (cadence.kind === 'cron') {
-    const err = cronError(cadence.expr);
+    const err = cronError(cadence.expr, now);
     if (err) return err;
     const parsed = parseCron(cadence.expr);
-    if (parsed.ok && cronIntervalMinutes(parsed.fields) < WORKER_MIN_INTERVAL_MINUTES)
+    if (parsed.ok && cronIntervalMinutes(parsed.fields, now) < WORKER_MIN_INTERVAL_MINUTES)
       return `A worker shift can be no more often than every ${WORKER_MIN_INTERVAL_MINUTES} minutes.`;
     return null;
   }
