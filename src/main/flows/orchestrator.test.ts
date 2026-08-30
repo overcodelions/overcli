@@ -125,6 +125,24 @@ function makeHarness(opts: { producerReply?: string; launchPolicy?: { unattended
   return { engine, launcher, started, runs, finish, transition, emitted, oneShotCalls, flush };
 }
 
+describe('producer permissions', () => {
+  const args = { projectPath: '/proj', prompt: 'plan', flowId: 'f', runIn: 'cwd' as const, maxConcurrent: 1 };
+
+  it('uses the launch policy for producer calls', async () => {
+    const interactive = makeHarness();
+    await interactive.engine.parkProposal(args);
+    expect(interactive.oneShotCalls[0]).toMatchObject({ permissionMode: 'bypassPermissions', enabledTools: undefined });
+
+    const deny = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: [] } });
+    await deny.engine.parkProposal(args);
+    expect(deny.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: [] });
+
+    const listed = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: ['Read'] } });
+    await listed.engine.parkProposal(args);
+    expect(listed.oneShotCalls[0]).toMatchObject({ permissionMode: 'acceptEdits', enabledTools: ['Read'] });
+  });
+});
+
 function items(n: number) {
   return Array.from({ length: n }, (_, i) => ({
     candidate: { id: `c${i}`, title: `Ask ${i}`, prompt: `do ${i}` },

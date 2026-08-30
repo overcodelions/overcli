@@ -72,6 +72,7 @@ describe('cronFromCadence', () => {
 
   it('passes valid cron through and rejects invalid multiline cron', () => {
     expect(cronFromCadence({ kind: 'cron', expr: '5 9 * * 1-5' })).toBe('5 9 * * 1-5');
+    expect(cronFromCadence({ kind: 'cron', expr: '@daily' })).toBe('0 0 * * *');
     expect(cronFromCadence({ kind: 'cron', expr: '5 9 *\n* 1-5' })).toBeNull();
   });
 });
@@ -103,6 +104,12 @@ describe('buildCiDeploy', () => {
     const workflow = plan.files[1].contents;
     expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain('cron: "0 9 * * 1,2,3,4,5"');
+  });
+
+  it('normalizes macro cron for GitHub Actions', () => {
+    const plan = buildCiDeploy({ worker: worker({ cadence: { kind: 'cron', expr: '@daily' } }), flows: [flow('nightly-review')], target: 'github', workerYaml: 'x' });
+    expect(plan.files[1].contents).toContain('cron: "0 0 * * *"');
+    expect(plan.files[1].contents).not.toContain('@daily');
   });
 
   it('produces a Jenkinsfile', () => {

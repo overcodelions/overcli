@@ -302,7 +302,8 @@ export class OrchestratorImpl {
       // a genuinely stalled one — or a runaway — gets cut.
       timeoutMs: 30 * 60_000,
       idleTimeoutMs: 5 * 60_000,
-      permissionMode: 'bypassPermissions',
+      permissionMode: this.launchPolicy.unattended ? 'acceptEdits' : 'bypassPermissions',
+      enabledTools: this.launchPolicy.unattended ? (this.launchPolicy.unattendedAllowedTools ?? []) : undefined,
       onProgress: (snap) => {
         const now = Date.now();
         // Always emit when a new tool fires (the high-signal moment);

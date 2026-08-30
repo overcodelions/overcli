@@ -647,7 +647,7 @@ export class FlowRuntimeImpl {
       if (run.workerId && !run.allowExternalActions) {
         for (const ev of event.events) {
           if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
-            const allow = run.externalActionApprovedStepId === currentStepId;
+            const allow = !!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId;
             if (allow) delete run.externalActionApprovedStepId;
             log(
               'info',
@@ -817,7 +817,9 @@ export class FlowRuntimeImpl {
       const completionKey = `${runId}:${currentStepId}`;
       if (this.completingSteps.has(completionKey)) return;
       this.completingSteps.add(completionKey);
-      void this.onStepFinished(runId, currentStepId);
+      void this.onStepFinished(runId, currentStepId).catch((err) => {
+        log('error', 'flows.runtime', `Failed to finish run ${runId} step ${currentStepId}: ${(err as Error).message}`);
+      });
     }
   }
 
@@ -1342,6 +1344,7 @@ export class FlowRuntimeImpl {
     // the run / parks on a pause_before), exactly as if the step had
     // passed. Only meaningful for a failure pause — ignored otherwise.
     if (args.override && pausedReason === 'failure') {
+      run.state = { kind: 'running', currentStepId: nextStepId };
       this.advanceAfterStep(args.runId, nextStepId);
       return { ok: true };
     }
@@ -2755,7 +2758,7 @@ export class FlowRuntimeImpl {
   }
 
   private async executeStep(runId: UUID, stepId: string): Promise<void> {
-    const run = this.runs.get(runId);
+    let run = this.runs.get(runId);
     if (!run) return;
     const step = run.flowSnapshot.steps.find(s => s.id === stepId);
     if (!step) {
@@ -2836,6 +2839,9 @@ export class FlowRuntimeImpl {
     // user to re-run the implementation step first.
     if (step.inputs.some((ref) => ref !== FLOW_USER_PROMPT_REF && run.artifacts[ref]?.kind === 'diff')) {
       await this.refreshDiffInputsFromWorktree(run, step);
+      const refreshedRun = this.runs.get(runId);
+      if (refreshedRun?.state.kind !== 'running' || refreshedRun.state.currentStepId !== stepId) return;
+      run = refreshedRun;
     }
 
     const prompt = this.buildStepPrompt(run, step);
@@ -2911,7 +2917,7 @@ export class FlowRuntimeImpl {
       // `step.tools` is never undefined (schema.ts) and a bare `[]` must stay
       // an empty allowlist rather than becoming "no restriction" — Ollama
       // reads `undefined` as its own read-only default (runner.ts), and
-      // claude.ts already guards on `length > 0` before emitting the flag.
+      // claude.ts emits --allowedTools '' for [], so an empty declared set pre-authorises nothing and every call routes to the broker.
       // An unattended run may only use the intersection of what the step asked
       // for and what the caller allowed — see `unattendedAllowedTools`.
       enabledTools: enabledToolsFor(run, step),
@@ -3022,7 +3028,7 @@ export class FlowRuntimeImpl {
 
   private async onStepFinished(runId: UUID, stepId: string): Promise<void> {
     try {
-    const run = this.runs.get(runId);
+    let run = this.runs.get(runId);
     if (!run) return;
     const step = run.flowSnapshot.steps.find(s => s.id === stepId);
     if (!step) return;
@@ -3145,6 +3151,9 @@ export class FlowRuntimeImpl {
     let displayBody = artifactBody;
     if (kind === 'diff') {
       const realDiff = await computeRunDiffForRun(run);
+      const refreshedRun = this.runs.get(runId);
+      if (refreshedRun?.state.kind !== 'running' || refreshedRun.state.currentStepId !== stepId) return;
+      run = refreshedRun;
       if (realDiff !== null) body = realDiff;
       // Already measured above on the synthesize-from-tree path; measuring
       // again would advance the snapshot past this step's own change.
@@ -3281,6 +3290,7 @@ export class FlowRuntimeImpl {
   private advanceAfterStep(runId: UUID, finishedStepId: string): void {
     const run = this.runs.get(runId);
     if (!run) return;
+    if (run.state.kind !== 'running' || run.state.currentStepId !== finishedStepId) return;
     const idx = run.flowSnapshot.steps.findIndex(s => s.id === finishedStepId);
     const next = run.flowSnapshot.steps[idx + 1];
     if (!next) {

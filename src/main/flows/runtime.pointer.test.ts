@@ -531,6 +531,37 @@ describe('resuming an externalAction pause', () => {
 
     expect(denied).toBe(true);
   });
+
+  it('denies a paused worker without an explicit approval', () => {
+    const h = harness();
+    const r: FlowRun = {
+      id: RUN_ID, flowId: 'report-flow', flowSnapshot: flow(), projectPath: '/tmp/does-not-matter', userPrompt: 'render the report',
+      conversationIds: { primary: 'conv-1' as UUID }, artifacts: {},
+      state: { kind: 'paused', nextStepId: 'render-report', reason: 'externalAction' }, createdAt: Date.now(), attempts: [], workerId: 'worker-1' as UUID,
+    };
+    (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    (h.rt as never as { convIdToRun: Map<UUID, UUID> }).convIdToRun.set('conv-1' as UUID, RUN_ID);
+    let approved: boolean | undefined;
+    h.runner.respondPermission = (_convId: string, _reqId: string, value: boolean) => { approved = value; };
+    (h.rt as never as { observeEvent: (e: MainToRendererEvent) => void }).observeEvent({
+      type: 'stream', conversationId: 'conv-1' as UUID,
+      events: [{ timestamp: Date.now(), kind: { type: 'permissionRequest', info: { requestId: 'req-paused', toolName: 'Bash', description: '', toolInput: '' } } } as never],
+    });
+    expect(approved).toBe(false);
+  });
+
+  it('advances when overriding a failure pause', async () => {
+    const h = harness();
+    const r: FlowRun = {
+      id: RUN_ID, flowId: 'report-flow', flowSnapshot: flow(), projectPath: '/tmp/does-not-matter', userPrompt: 'render the report',
+      conversationIds: {}, artifacts: {}, state: { kind: 'paused', nextStepId: 'render-report', reason: 'failure' }, createdAt: Date.now(), attempts: [],
+    };
+    (h.rt as never as { runs: Map<UUID, FlowRun> }).runs.set(RUN_ID, r);
+    expect(h.rt.resumeRun({ runId: RUN_ID, override: true }).ok).toBe(true);
+    await flush();
+    expect(r.state).toMatchObject({ kind: 'running', currentStepId: 'design-polish' });
+    expect(h.sends).toHaveLength(1);
+  });
 });
 
 describe('missingOutputReaskPrompt with a rejected pointer', () => {

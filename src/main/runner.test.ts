@@ -1,5 +1,10 @@
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./mcpConfig', () => ({
+  buildClaudeMcpConfigArg: (names: string[]) => JSON.stringify({ mcpServers: Object.fromEntries(names.map((name) => [name, { command: name }])) }),
+}));
 import {
   codexPermissionMapping,
   codexTransportPermissions,
@@ -29,8 +34,44 @@ import {
   resolveMcpScope,
   claudeMcpLaunchFingerprint,
   sanitizeSpawnArgs,
+  RunnerManager,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
+
+describe('prepareClaudeBroker', () => {
+  it('passes the selected allowlist through the broker and preserves its permission server on collision', async () => {
+    const manager = new RunnerManager(() => {}, () => ({ backends: {} }) as never);
+    let extraMcpServers: Record<string, unknown> | undefined;
+    const privateManager = manager as unknown as {
+      claudeBroker: {
+        registerSession: (...args: unknown[]) => Promise<{ configPath: string }>;
+        shutdown: () => void;
+      };
+    };
+    const realBroker = privateManager.claudeBroker;
+    privateManager.claudeBroker = {
+      async registerSession(_conversationId: unknown, _helperScript: unknown, _helperCommand: unknown, _helperEnv: unknown, extra: unknown) {
+        extraMcpServers = extra as Record<string, unknown>;
+        return realBroker.registerSession(_conversationId, _helperScript, _helperCommand, _helperEnv, extra);
+      },
+      shutdown: () => realBroker.shutdown(),
+    };
+
+    try {
+      await (manager as unknown as { prepareClaudeBroker: (args: unknown) => Promise<void> }).prepareClaudeBroker({
+        conversationId: 'broker-test', prompt: 'test', backend: 'claude', cwd: '/repo', model: 'claude-opus-5', permissionMode: 'acceptEdits',
+        mcpAllowlist: ['github', 'overcli'],
+      });
+
+      expect(extraMcpServers).toMatchObject({ github: expect.anything(), overcli: expect.anything() });
+      const configPath = (manager as unknown as { claudeMcpByConv: Map<string, string> }).claudeMcpByConv.get('broker-test');
+      const config = JSON.parse(readFileSync(configPath!, 'utf8')) as { mcpServers: Record<string, { command: string }> };
+      expect(config.mcpServers.overcli.command).toBe(process.execPath);
+    } finally {
+      realBroker.shutdown();
+    }
+  });
+});
 
 describe('resumeSessionAfterParamChange', () => {
   // Regression: changing a flow participant's model in the hijack chat
