@@ -851,6 +851,16 @@ describe('worker effect boundary', () => {
     ).toBe('local');
     expect(resolveStepEffect(step('Do the work.', { tools: ['Bash'] }))).toBe('external');
   });
+
+  it('accepts only exact read-only Git Bash scopes', () => {
+    for (const command of ['diff', 'log', 'show', 'status', 'ls-files', 'rev-parse']) {
+      expect(resolveStepEffect(step('Read.', { tools: [`Bash(git ${command})`] }))).toBe('local');
+      expect(resolveStepEffect(step('Read.', { tools: [`Bash(git ${command}:*)`] }))).toBe('local');
+    }
+    for (const command of ['status || npx', 'log; curl', 'status && cat', 'branch -D', 'branch -m']) {
+      expect(resolveStepEffect(step('Read.', { tools: [`Bash(git ${command})`] }))).toBe('external');
+    }
+  });
 });
 
 describe('extractWorkerQuestion', () => {

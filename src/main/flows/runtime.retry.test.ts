@@ -283,7 +283,7 @@ describe('on_fail.goto retry feedback', () => {
       await flush();
 
       expect(result).toEqual({ ok: true });
-      expect(h.sends).toHaveLength(1);
+      await vi.waitFor(() => expect(h.sends).toHaveLength(1));
       expect(h.sends[0]!.prompt).toContain('+export const value = 2;');
       expect(h.sends[0]!.prompt).not.toContain('STALE DIFF FROM BEFORE THE HIJACK FIX');
       expect(r.artifacts.diff.body).toContain('+export const value = 2;');

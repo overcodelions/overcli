@@ -15,7 +15,7 @@ import { useTestHost } from '../main/testHost';
 useTestHost('/tmp/overcli-exitcode-tests');
 
 import type { Flow, FlowRun } from '../shared/flows/schema';
-import { EXIT, isWorkerFile, summariseRun } from './run';
+import { EXIT, isWorkerFile, preflightFailure, summariseRun } from './run';
 
 const flow: Flow = {
   id: 'f',
@@ -67,6 +67,10 @@ function code(state: FlowRun['state'] | null, over: Partial<FlowRun> = {}) {
 }
 
 describe('exit codes', () => {
+  it('uses preflight code for staging and start failures', () => {
+    expect(preflightFailure(base, 'f', 'preflight-failed', 'stage').exitCode).toBe(EXIT.PREFLIGHT);
+    expect(preflightFailure(base, 'f', 'start-failed', 'start').exitCode).toBe(EXIT.PREFLIGHT);
+  });
   it('is 0 only when the run finished AND succeeded', () => {
     const s = code({ kind: 'done', success: true });
     expect(s.exitCode).toBe(EXIT.OK);

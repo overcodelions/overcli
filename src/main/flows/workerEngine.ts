@@ -137,6 +137,7 @@ const WORKER_AUTO_RENDER_MAX = 200;
 /// the producer turn and records the batch; `get`/`list` let the engine fold
 /// batch state into the journal.
 export interface WorkerParker {
+  delete(args: { id: UUID }): void;
   parkProposal(args: {
     origin?: Orchestration['origin'];
     projectPath: string;
@@ -1511,6 +1512,7 @@ export class WorkerEngine {
       // we expected it to remember the rest. Redo the turn properly rather
       // than hand back an answer produced with no idea who it is.
       if (desk?.sessionId && res.ok && res.sessionId && res.sessionId !== desk.sessionId) {
+        this.deps.parker.delete({ id: res.orchestrationId });
         res = await fire(undefined);
       }
       if (desk) this.rememberDeskSession(w, desk, res);
