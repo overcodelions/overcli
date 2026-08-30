@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -419,6 +419,21 @@ describe('per-turn MCP allowlists', () => {
     expect(JSON.parse(arg!)).toEqual({
       mcpServers: { linear: { command: 'npx', args: ['-y', '@linear/mcp'] } },
     });
+  });
+
+  it('caches unchanged files and refreshes after an mtime change', () => {
+    fs.mkdirSync(path.dirname(paths.claude), { recursive: true });
+    fs.writeFileSync(paths.claude, JSON.stringify({ mcpServers: { one: { command: 'one' } } }));
+    const spy = vi.spyOn(fs, 'readFileSync');
+    expect(Object.keys(readClaudeMcpServers(undefined, paths))).toEqual(['one']);
+    expect(Object.keys(readClaudeMcpServers(undefined, paths))).toEqual(['one']);
+    const reads = spy.mock.calls.filter(([file]) => file === path.resolve(paths.claude)).length;
+    fs.writeFileSync(paths.claude, JSON.stringify({ mcpServers: { two: { command: 'two' } } }));
+    const touched = new Date(Date.now() + 1_000);
+    fs.utimesSync(paths.claude, touched, touched);
+    expect(Object.keys(readClaudeMcpServers(undefined, paths))).toEqual(['two']);
+    expect(spy.mock.calls.filter(([file]) => file === path.resolve(paths.claude)).length).toBe(reads + 1);
+    spy.mockRestore();
   });
 
   it('returns null when the allowlist resolves to nothing', () => {

@@ -27,6 +27,8 @@ import {
   spawnFailureMessage,
   staleRunningReason,
   resolveMcpScope,
+  claudeMcpLaunchFingerprint,
+  sanitizeSpawnArgs,
 } from './runner';
 import type { StreamEvent } from '../shared/types';
 
@@ -862,26 +864,24 @@ describe('safeAttachmentBase', () => {
 });
 
 describe('resolveMcpScope', () => {
-  const build = (names: string[]) => (names.length ? JSON.stringify({ mcpServers: { [names[0]]: {} } }) : null);
 
   it('inherits the whole config when nothing asked for scoping', () => {
-    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo' }, build)).toEqual({
+    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo' })).toEqual({
       skipGlobalMcp: undefined,
     });
   });
 
-  it('narrows to the named servers', () => {
-    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['jira'] }, build)).toEqual({
-      skipGlobalMcp: undefined,
-      mcpAllowlistConfig: JSON.stringify({ mcpServers: { jira: {} } }),
+  it('makes every Claude allowlist strict without inline JSON', () => {
+    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['jira'] })).toEqual({
+      skipGlobalMcp: true,
     });
   });
 
   it('loads none for an explicitly empty list, on any backend', () => {
-    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: [] }, build)).toEqual({
+    expect(resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: [] })).toEqual({
       skipGlobalMcp: true,
     });
-    expect(resolveMcpScope({ backend: 'codex', cwd: '/repo', mcpAllowlist: [] }, build)).toEqual({
+    expect(resolveMcpScope({ backend: 'codex', cwd: '/repo', mcpAllowlist: [] })).toEqual({
       skipGlobalMcp: true,
     });
   });
@@ -890,15 +890,54 @@ describe('resolveMcpScope', () => {
     // The failure this guards: a worker that named one server, which the user
     // has since removed, silently going back to inheriting all seven.
     expect(
-      resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['gone'] }, () => null),
+      resolveMcpScope({ backend: 'claude', cwd: '/repo', mcpAllowlist: ['gone'] }),
     ).toEqual({ skipGlobalMcp: true });
   });
 
   it('lets a backend it cannot narrow keep everything', () => {
     // Stripping tools the job needs breaks the worker; paying for tools it
     // doesn't costs what it already cost yesterday.
-    expect(resolveMcpScope({ backend: 'codex', cwd: '/repo', mcpAllowlist: ['jira'] }, build)).toEqual({
+    expect(resolveMcpScope({ backend: 'codex', cwd: '/repo', mcpAllowlist: ['jira'] })).toEqual({
       skipGlobalMcp: undefined,
     });
+  });
+});
+
+describe('claudeMcpLaunchFingerprint', () => {
+  it('distinguishes inherited servers from strict empty or unresolved allowlists', () => {
+    const inherited = claudeMcpLaunchFingerprint({ backend: 'claude' }, '');
+    const empty = claudeMcpLaunchFingerprint({ backend: 'claude', mcpAllowlist: [] }, '');
+    const unresolved = claudeMcpLaunchFingerprint({ backend: 'claude', mcpAllowlist: ['gone'] }, '');
+
+    expect(empty).not.toBe(inherited);
+    expect(unresolved).not.toBe(inherited);
+    expect(empty).toBe(unresolved);
+  });
+
+  it('distinguishes direct strict mode and resolved server changes', () => {
+    const inherited = claudeMcpLaunchFingerprint({ backend: 'claude' }, '');
+    const strict = claudeMcpLaunchFingerprint({ backend: 'claude', skipGlobalMcp: true }, '');
+    const jira = claudeMcpLaunchFingerprint(
+      { backend: 'claude', mcpAllowlist: ['jira'] },
+      '{"mcpServers":{"jira":{}}}',
+    );
+    const slack = claudeMcpLaunchFingerprint(
+      { backend: 'claude', mcpAllowlist: ['slack'] },
+      '{"mcpServers":{"slack":{}}}',
+    );
+
+    expect(strict).not.toBe(inherited);
+    expect(jira).not.toBe(slack);
+  });
+});
+
+describe('sanitizeSpawnArgs', () => {
+  it('redacts every variadic MCP config value and its credentials', () => {
+    const safe = sanitizeSpawnArgs([
+      '--mcp-config', '/tmp/broker.json', '{"Authorization":"Bearer secret"}', '--strict-mcp-config',
+    ]);
+    expect(safe).toEqual(['--mcp-config', '<mcp config redacted>', '<mcp config redacted>', '--strict-mcp-config']);
+    expect(safe.join(' ')).not.toContain('Authorization');
+    expect(safe.join(' ')).not.toContain('secret');
   });
 });

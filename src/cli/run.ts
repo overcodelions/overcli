@@ -67,6 +67,15 @@ export interface RunSummary {
   error?: string;
 }
 
+export function preflightFailure(
+  summaryBase: Omit<RunSummary, 'flowId' | 'status' | 'exitCode' | 'error'>,
+  flowId: string,
+  status: 'preflight-failed' | 'start-failed',
+  error: string,
+): RunSummary {
+  return { ...summaryBase, flowId, status, exitCode: EXIT.PREFLIGHT, error };
+}
+
 export interface Reporter {
   /// Human-readable progress, or a JSON line under `--json`. Always stderr,
   /// so `--json`'s stdout stays exactly one parseable object.
@@ -254,22 +263,14 @@ async function runFlow(ctx: RunContext): Promise<RunSummary> {
   // The runtime resolves flows by id out of the library, so the file has to be
   // IN the library before startRun — see loadAllFlows in runtime.startRun.
   const saved = saveFlow({ flow, target: 'user' });
-  if (!saved.ok) return { ...summaryBase, flowId: flow.id, error: `Could not stage the flow: ${saved.error}` };
+  if (!saved.ok) return preflightFailure(summaryBase, flow.id, 'preflight-failed', `Could not stage the flow: ${saved.error}`);
   for (const risk of saved.risks) {
     if (risk.severity === 'high') warnings.push(`risk: ${risk.message}`);
   }
 
   const settings = Store.load().settings;
   const pre = await preflightRun({ flow, projectPath, settings });
-  if (!pre.ok) {
-    return {
-      ...summaryBase,
-      flowId: flow.id,
-      status: 'preflight-failed',
-      exitCode: EXIT.PREFLIGHT,
-      error: pre.problems.map((p) => `${p.path}: ${p.message}`).join('; '),
-    };
-  }
+  if (!pre.ok) return preflightFailure(summaryBase, flow.id, 'preflight-failed', pre.problems.map((p) => `${p.path}: ${p.message}`).join('; '));
 
   reporter.progress(`starting ${flow.name} (${flow.steps.length} steps) in ${projectPath}`);
   const started = await engines.flowRuntime.startRun({
@@ -284,7 +285,7 @@ async function runFlow(ctx: RunContext): Promise<RunSummary> {
     unattendedAllowedTools: opts.permissions === 'allow-list' ? opts.allowTools : [],
   });
   if (!started.ok) {
-    return { ...summaryBase, flowId: flow.id, status: 'start-failed', error: started.error };
+    return preflightFailure(summaryBase, flow.id, 'start-failed', started.error);
   }
 
   const run = await waitForRun(engines, started.runId, opts.timeoutSeconds);

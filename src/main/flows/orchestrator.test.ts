@@ -24,7 +24,7 @@ import type { FlowRun } from '../../shared/flows/schema';
 /// `producerReply` stands in for the producer turn's output — supply it when
 /// the test exercises propose/park, which are the only paths that reach the
 /// runner.
-function makeHarness(opts: { producerReply?: string } = {}) {
+function makeHarness(opts: { producerReply?: string; launchPolicy?: { unattended?: boolean; unattendedAllowedTools?: string[] } } = {}) {
   const runs = new Map<string, FlowRun>();
   let counter = 0;
   const started: Array<{
@@ -36,6 +36,8 @@ function makeHarness(opts: { producerReply?: string } = {}) {
     workerId?: string;
     workerName?: string;
     allowExternalActions?: boolean;
+    unattended?: boolean;
+    unattendedAllowedTools?: string[];
   }> = [];
 
   const emitted: any[] = [];
@@ -65,6 +67,8 @@ function makeHarness(opts: { producerReply?: string } = {}) {
         workerId: args.workerId,
         workerName: args.workerName,
         allowExternalActions: args.allowExternalActions,
+        unattended: args.unattended,
+        unattendedAllowedTools: args.unattendedAllowedTools,
       });
       return { ok: true, runId };
     },
@@ -93,6 +97,7 @@ function makeHarness(opts: { producerReply?: string } = {}) {
     (e) => emitted.push(e),
     () => [{ id: 'p', name: 'proj', path: '/proj' } as any],
     () => ({ backendPaths: {}, disabledBackends: {}, preferredBackend: 'claude' }) as any,
+    opts.launchPolicy,
   );
   // The runtime calls the observer on every run update; wire the fake to it.
   observer = (run) => engine.onRunUpdate(run);
@@ -128,6 +133,14 @@ function items(n: number) {
 }
 
 describe('OrchestratorImpl dispatch', () => {
+  it('passes deny and allow-list policy to worker child runs', async () => {
+    const deny = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: [] } });
+    await deny.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    expect(deny.started[0]).toMatchObject({ unattended: true, unattendedAllowedTools: [] });
+    const listed = makeHarness({ launchPolicy: { unattended: true, unattendedAllowedTools: ['Read'] } });
+    await listed.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    expect(listed.started[0]).toMatchObject({ unattended: true, unattendedAllowedTools: ['Read'] });
+  });
   it('never launches more than maxConcurrent at once, and pumps as runs finish', async () => {
     const h = makeHarness();
     const res = await h.engine.startBatch({

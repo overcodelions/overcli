@@ -171,6 +171,12 @@ export interface FlowRuntimeStartArgs {
   title?: string;
 }
 
+export function enabledToolsFor(run: Pick<FlowRun, 'unattended' | 'unattendedAllowedTools'>, step: Pick<FlowStep, 'tools'>): string[] {
+  return run.unattended
+    ? step.tools.filter((tool) => (run.unattendedAllowedTools ?? []).includes(tool))
+    : step.tools;
+}
+
 export interface FlowRuntimeResumeArgs {
   runId: UUID;
   editedArtifacts?: Record<string, string>;
@@ -311,6 +317,9 @@ export class FlowRuntimeImpl {
   /// transcripts from previous steps. Keyed by run id (not conv id)
   /// because participants' convs are shared across steps.
   private stepBuffers = new Map<UUID, StepStreamBuffer>();
+  /// Completion can await an asynchronous cumulative diff. Keep duplicate
+  /// terminal events from finalizing the same step twice while it is pending.
+  private completingSteps = new Set<string>();
   /// Latest non-partial assistant text per participant, captured from
   /// stream events regardless of run state. Keyed `${runId}:${participantId}`.
   /// Used by `resumeRun` to re-extract a prior step's artifact when the
@@ -635,17 +644,18 @@ export class FlowRuntimeImpl {
       // pause (see resumeRunInner) — that is a real human clicking Continue,
       // and auto-denying it anyway would silently discard their approval.
       const currentStepId = run.state.kind === 'running' ? run.state.currentStepId : undefined;
-      const stepIsApproved =
-        !!run.externalActionApprovedStepId && run.externalActionApprovedStepId === currentStepId;
-      if (run.workerId && !run.allowExternalActions && !stepIsApproved) {
+      if (run.workerId && !run.allowExternalActions) {
         for (const ev of event.events) {
           if (ev.kind.type === 'permissionRequest' && !ev.kind.info.decided) {
+            const allow = run.externalActionApprovedStepId === currentStepId;
+            if (allow) delete run.externalActionApprovedStepId;
             log(
               'info',
               'flows.permission',
-              `auto-denied "${ev.kind.info.toolName}" for worker run ${runId} (no grant for external actions)`,
+              `auto-${allow ? 'approved' : 'denied'} "${ev.kind.info.toolName}" for worker run ${runId} (no grant for external actions)`,
             );
-            this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, false);
+            this.runner.respondPermission(event.conversationId, ev.kind.info.requestId, allow);
+            if (allow) this.checkpoint(run);
           }
         }
       }
@@ -804,7 +814,10 @@ export class FlowRuntimeImpl {
       // would be discarded and the run would hang on it forever.
       const currentConvId = run.conversationIds[stepParticipantKey(currentStep)];
       if (currentConvId !== event.conversationId) return;
-      this.onStepFinished(runId, currentStepId);
+      const completionKey = `${runId}:${currentStepId}`;
+      if (this.completingSteps.has(completionKey)) return;
+      this.completingSteps.add(completionKey);
+      void this.onStepFinished(runId, currentStepId);
     }
   }
 
@@ -2821,7 +2834,9 @@ export class FlowRuntimeImpl {
     // the model prompt or its attachment. This makes "fix it, then re-run
     // Verify" review the files that are actually on disk without forcing the
     // user to re-run the implementation step first.
-    this.refreshDiffInputsFromWorktree(run, step);
+    if (step.inputs.some((ref) => ref !== FLOW_USER_PROMPT_REF && run.artifacts[ref]?.kind === 'diff')) {
+      await this.refreshDiffInputsFromWorktree(run, step);
+    }
 
     const prompt = this.buildStepPrompt(run, step);
     const attempt: FlowStepAttempt & { stepId: string } = {
@@ -2899,9 +2914,7 @@ export class FlowRuntimeImpl {
       // claude.ts already guards on `length > 0` before emitting the flag.
       // An unattended run may only use the intersection of what the step asked
       // for and what the caller allowed — see `unattendedAllowedTools`.
-      enabledTools: run.unattended
-        ? step.tools.filter((t) => (run.unattendedAllowedTools ?? []).includes(t))
-        : step.tools,
+      enabledTools: enabledToolsFor(run, step),
     });
     if (!sendResult.ok) {
       this.finishAttempt(run, step.id, { outcome: 'error', errorMessage: sendResult.error });
@@ -2926,12 +2939,12 @@ export class FlowRuntimeImpl {
   /// cumulative worktree diff. Other artifact types remain historical
   /// outputs: only a diff has an authoritative representation on disk that
   /// can be safely regenerated after out-of-band edits such as hijack chat.
-  private refreshDiffInputsFromWorktree(run: FlowRun, step: FlowStep): void {
+  private async refreshDiffInputsFromWorktree(run: FlowRun, step: FlowStep): Promise<void> {
     const refs = step.inputs.filter((ref) => ref !== FLOW_USER_PROMPT_REF);
     const diffRefs = refs.filter((ref) => run.artifacts[ref]?.kind === 'diff');
     if (diffRefs.length === 0) return;
 
-    const liveDiff = computeRunDiffForRun(run);
+    const liveDiff = await computeRunDiffForRun(run);
     if (liveDiff === null) return;
 
     const producedAt = Date.now();
@@ -3007,7 +3020,8 @@ export class FlowRuntimeImpl {
     });
   }
 
-  private onStepFinished(runId: UUID, stepId: string): void {
+  private async onStepFinished(runId: UUID, stepId: string): Promise<void> {
+    try {
     const run = this.runs.get(runId);
     if (!run) return;
     const step = run.flowSnapshot.steps.find(s => s.id === stepId);
@@ -3130,7 +3144,7 @@ export class FlowRuntimeImpl {
     let body = artifactBody;
     let displayBody = artifactBody;
     if (kind === 'diff') {
-      const realDiff = computeRunDiffForRun(run);
+      const realDiff = await computeRunDiffForRun(run);
       if (realDiff !== null) body = realDiff;
       // Already measured above on the synthesize-from-tree path; measuring
       // again would advance the snapshot past this step's own change.
@@ -3189,6 +3203,9 @@ export class FlowRuntimeImpl {
     }
 
     this.advanceAfterStep(runId, step.id);
+    } finally {
+      this.completingSteps.delete(`${runId}:${stepId}`);
+    }
   }
 
   private async resolveWorkerQuestion(
@@ -3946,11 +3963,9 @@ export class FlowRuntimeImpl {
     // under a mode that auto-approves every call. `acceptEdits` keeps the
     // approval broker wired (backends/claude.ts skips it only for
     // bypassPermissions), so anything outside the step's declared allowlist
-    // routes through mcp__overcli__approve instead of just firing. Skipped
-    // when THIS step is the one the user just approved via the externalAction
-    // pause — that approval is one-shot (see resumeRunInner / onStepFinished)
-    // and must not still force through the broker only to auto-deny it.
-    if (run.workerId && !run.allowExternalActions && run.externalActionApprovedStepId !== step.id) {
+    // routes through mcp__overcli__approve instead of just firing. The
+    // approval marker is consumed by observeEvent for the first request.
+    if (run.workerId && !run.allowExternalActions) {
       return 'acceptEdits';
     }
     // The same clamp for a run launched with nobody watching. `bypassPermissions`
@@ -4241,7 +4256,7 @@ export function resolveStepEffect(
   ]);
   // Scoped read-only git is local: `Bash(git diff:*)` cannot mutate anything,
   // and forcing a pause on it made two shipped templates stall at step 1.
-  const READONLY_BASH = /^bash\(\s*git\s+(?:diff|log|show|status|ls-files|rev-parse|branch)\b[^)]*\)$/;
+  const READONLY_BASH = /^bash\(\s*git\s+(?:diff|log|show|status|ls-files|rev-parse)(?::\*)?\s*\)$/;
   const isLocalTool = (t: string): boolean => {
     const name = t.toLowerCase().trim();
     return LOCAL_TOOLS.has(name.split('__')[0]) || READONLY_BASH.test(name);
@@ -4864,12 +4879,15 @@ export function stepAllowsFileRef(
 /// with a `# <projectName>` header so the user can tell which repo each
 /// chunk belongs to. Returns null when there's no baseline at all (e.g.
 /// a non-git cwd) — callers should fall back to the model's `<output>`.
-function computeRunDiffForRun(run: FlowRun): string | null {
+async function computeRunDiffForRun(run: FlowRun): Promise<string | null> {
   if (run.baselineCommitsByMember) {
+    const measured = await Promise.all(Object.entries(run.baselineCommitsByMember).map(async ([name, info]) => {
+      const d = await computeRunDiff(info.path, info.commit);
+      return [name, d] as const;
+    }));
     const blocks: string[] = [];
     let measuredMember = false;
-    for (const [name, info] of Object.entries(run.baselineCommitsByMember)) {
-      const d = computeRunDiff(info.path, info.commit);
+    for (const [name, d] of measured) {
       if (d === null) continue;
       measuredMember = true;
       if (!d) continue;
@@ -5017,10 +5035,10 @@ export function treeChanged(incrementalDiff: string | null): boolean {
 /// command fails — callers should fall back to the model's `<output>`
 /// text. Returns an empty string when the working tree matches the
 /// baseline exactly.
-function computeRunDiff(cwd: string, baselineCommit: string): string | null {
+async function computeRunDiff(cwd: string, baselineCommit: string): Promise<string | null> {
   // Tracked changes: working tree vs baseline. Catches edits, deletes,
   // and any new files that have already been `git add`-ed or committed.
-  const tracked = runGit(['diff', '--no-color', '--no-ext-diff', baselineCommit], cwd);
+  const tracked = await runGitAsync(['diff', '--no-color', '--no-ext-diff', baselineCommit], cwd);
   if (tracked.exitCode !== 0) return null;
 
   // Untracked files: things the model created via Write/Edit without
@@ -5028,7 +5046,7 @@ function computeRunDiff(cwd: string, baselineCommit: string): string | null {
   // diff blocks for each one using `git diff --no-index /dev/null …`
   // and concatenate. `--exclude-standard` respects .gitignore so build
   // artifacts and node_modules don't show up.
-  const untrackedList = runGit(['ls-files', '--others', '--exclude-standard'], cwd);
+  const untrackedList = await runGitAsync(['ls-files', '--others', '--exclude-standard'], cwd);
   const untrackedPaths =
     untrackedList.exitCode === 0
       ? untrackedList.stdout.split('\n').map((s) => s.trim()).filter(Boolean)

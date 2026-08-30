@@ -56,10 +56,10 @@ export const claudeBackend: BackendSpec = {
     // tool call and only routes to us when it wants confirmation; safe
     // calls just don't invoke the prompt tool.
     const mcpConfigs: string[] = [];
-    if (args.permissionMode !== 'bypassPermissions') {
-      const mcpConfigPath = ctx.mcpConfigPathFor(args.conversationId);
-      if (mcpConfigPath) {
-        mcpConfigs.push(mcpConfigPath);
+    const mcpConfigPath = ctx.mcpConfigPathFor(args.conversationId);
+    if (mcpConfigPath) {
+      mcpConfigs.push(mcpConfigPath);
+      if (args.permissionMode !== 'bypassPermissions') {
         a.push('--permission-prompt-tool', 'mcp__overcli__approve');
       }
     }
@@ -88,7 +88,7 @@ export const claudeBackend: BackendSpec = {
     for (const dir of normalizeAllowedDirs(args.cwd, args.allowedDirs)) {
       a.push('--add-dir', dir);
     }
-    if (args.allowedTools && args.allowedTools.length > 0) {
+    if (args.allowedTools !== undefined) {
       a.push('--allowedTools', args.allowedTools.join(' '));
     }
     return a;

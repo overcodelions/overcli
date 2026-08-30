@@ -491,17 +491,46 @@ export { spawnFailureMessage };
 /// only costs what this feature was already costing yesterday.
 export function resolveMcpScope(
   args: { backend: Backend; cwd: string; mcpAllowlist?: string[]; skipGlobalMcp?: boolean },
-  buildConfig: (names: string[], cwd: string) => string | null = (names, cwd) =>
-    buildClaudeMcpConfigArg(names, cwd),
-): { skipGlobalMcp?: boolean; mcpAllowlistConfig?: string } {
+): { skipGlobalMcp?: boolean } {
   if (!args.mcpAllowlist) return { skipGlobalMcp: args.skipGlobalMcp };
   if (args.mcpAllowlist.length === 0) return { skipGlobalMcp: true };
-  if (args.backend !== 'claude') return { skipGlobalMcp: args.skipGlobalMcp };
-  const config = buildConfig(args.mcpAllowlist, args.cwd);
-  // Named servers, none of which resolve: the user asked for a specific set
-  // and this machine has none of it. Load nothing — falling back to the whole
-  // config would hand the worker the seven it just said it didn't want.
-  return config ? { skipGlobalMcp: args.skipGlobalMcp, mcpAllowlistConfig: config } : { skipGlobalMcp: true };
+  return args.backend === 'claude' ? { skipGlobalMcp: true } : { skipGlobalMcp: args.skipGlobalMcp };
+}
+
+function selectedClaudeMcpConfig(args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'cwd'>): string {
+  return args.backend === 'claude' && args.mcpAllowlist
+    ? buildClaudeMcpConfigArg(args.mcpAllowlist, args.cwd) ?? ''
+    : '';
+}
+
+export function claudeMcpLaunchFingerprint(
+  args: Pick<SendArgs, 'backend' | 'mcpAllowlist' | 'skipGlobalMcp' | 'turbo'>,
+  selectedConfig: string,
+): string {
+  if (args.backend !== 'claude') return '';
+  // An empty selected config has two opposite meanings: undefined allowlist
+  // inherits the user's global servers, while [] (or unresolved names) pairs
+  // an empty config with --strict-mcp-config and loads none. Keep that mode in
+  // the launch identity so a warm unrestricted process cannot be reused for a
+  // later fail-closed turn. skipGlobalMcp is included for callers that request
+  // strict mode directly; turbo is already compared separately but belongs to
+  // the effective MCP scope too.
+  const strict = !!(args.turbo || args.skipGlobalMcp || args.mcpAllowlist !== undefined);
+  return JSON.stringify({ strict, selectedConfig });
+}
+
+export function sanitizeSpawnArgs(spawnArgs: string[], prompt?: string): string[] {
+  let inMcpConfig = false;
+  return spawnArgs.map((arg) => {
+    if (arg === '--mcp-config') {
+      inMcpConfig = true;
+      return arg;
+    }
+    if (inMcpConfig && !arg.startsWith('--')) return '<mcp config redacted>';
+    if (inMcpConfig) inMcpConfig = false;
+    if (prompt && arg === prompt) return '<prompt redacted>';
+    return arg.length > 120 ? `${arg.slice(0, 120)}…` : arg;
+  });
 }
 
 /// True when CLI stderr indicates the cached --resume id no longer exists
@@ -624,6 +653,7 @@ interface ActiveProcess {
   launchTurbo: boolean;
   launchPermissionMode: PermissionMode;
   launchAllowedTools: string;
+  launchMcpFingerprint?: string;
   /// Effort this process was spawned with. Claude bakes `--effort` into its
   /// argv and codex into `-c model_reasoning_effort`, so neither can be
   /// changed on a live subprocess — without this stamp a mid-conversation
@@ -1506,11 +1536,14 @@ export class RunnerManager {
     if (args.backend !== 'claude') return;
     const convId = args.conversationId;
     const existing = this.procs.get(convId);
+    const selected = selectedClaudeMcpConfig(args);
+    const fingerprint = claudeMcpLaunchFingerprint(args, selected);
     const paramsMatch =
       !!existing &&
       existing.backend === 'claude' &&
       existing.launchPermissionMode === args.permissionMode &&
       existing.launchAllowedTools === (args.enabledTools ?? []).join(' ') &&
+      existing.launchMcpFingerprint === fingerprint &&
       existing.launchModel === args.model &&
       existing.cwd === args.cwd;
     if (paramsMatch && this.claudeMcpByConv.has(convId)) return;
@@ -1528,11 +1561,13 @@ export class RunnerManager {
     // Headless (`overcli run`) `process.execPath` is already node, and setting
     // the variable there is at best inert and at worst confusing to anything
     // downstream that reads it as "we are inside Electron".
+    const extraMcpServers = selected ? JSON.parse(selected).mcpServers : {};
     const { configPath } = await this.claudeBroker.registerSession(
       convId,
       helperScript,
       process.execPath,
       runningUnderElectron() ? { ELECTRON_RUN_AS_NODE: '1' } : {},
+      extraMcpServers,
     );
     this.claudeMcpByConv.set(convId, configPath);
   }
@@ -2198,10 +2233,13 @@ export class RunnerManager {
       // caller might substitute, so `paramsChanged` and the launch stamp
       // always compare against what the user actually chose.
       const configuredEffort = args.effortLevel ?? '';
+      const requestedMcpConfig = selectedClaudeMcpConfig(args);
+      const requestedMcpFingerprint = claudeMcpLaunchFingerprint(args, requestedMcpConfig);
       const paramsChanged =
         !!existing &&
         (existing.launchPermissionMode !== args.permissionMode ||
           existing.launchAllowedTools !== (args.enabledTools ?? []).join(' ') ||
+          existing.launchMcpFingerprint !== requestedMcpFingerprint ||
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
           existing.launchEffort !== configuredEffort ||
@@ -3498,13 +3536,7 @@ export class RunnerManager {
     // Copilot rides the prompt in argv (claude/codex/gemini use stdin), so the
     // raw text would otherwise land in session.log on disk. Redact it, and cap
     // any other long arg, so this line stays a diagnostic and not a transcript.
-    const safeArgs = spawnArgs.map((a) =>
-      args.prompt && a === args.prompt
-        ? '<prompt redacted>'
-        : a.length > 120
-          ? `${a.slice(0, 120)}…`
-          : a,
-    );
+    const safeArgs = sanitizeSpawnArgs(spawnArgs, args.prompt);
     log(
       args.model ? 'info' : 'warn',
       'runner.spawn',
@@ -3517,6 +3549,7 @@ export class RunnerManager {
       shell,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
+    const selectedMcpConfig = selectedClaudeMcpConfig(args);
     const active: ActiveProcess = {
       proc,
       backend: args.backend,
@@ -3525,6 +3558,7 @@ export class RunnerManager {
       launchTurbo: args.turbo ?? false,
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
+      launchMcpFingerprint: claudeMcpLaunchFingerprint(args, selectedMcpConfig),
       launchEffort: args.effortLevel,
       stdoutBuffer: '',
       stderrBuffer: '',

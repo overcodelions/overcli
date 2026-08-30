@@ -69,6 +69,11 @@ describe('cronFromCadence', () => {
       cronFromCadence({ kind: 'interval', everyMinutes: 120, window: { start: '22:00', end: '02:00' } }),
     ).toBe('0 22-23,0-2/2 * * *');
   });
+
+  it('passes valid cron through and rejects invalid multiline cron', () => {
+    expect(cronFromCadence({ kind: 'cron', expr: '5 9 * * 1-5' })).toBe('5 9 * * 1-5');
+    expect(cronFromCadence({ kind: 'cron', expr: '5 9 *\n* 1-5' })).toBeNull();
+  });
 });
 
 describe('ciPermissions', () => {
@@ -110,6 +115,21 @@ describe('buildCiDeploy', () => {
     const jenkinsfile = plan.files[1].contents;
     expect(jenkinsfile).toContain('disableConcurrentBuilds()');
     expect(jenkinsfile).toContain('archiveArtifacts');
+  });
+
+  it('renders a custom valid cron in both CI trigger syntaxes', () => {
+    for (const [target, expected] of [
+      ['github', '    - cron: "5 9 * * 1-5"'],
+      ['jenkins', "  triggers { cron('5 9 * * 1-5') }"],
+    ] as const) {
+      const plan = buildCiDeploy({ worker: worker({ cadence: { kind: 'cron', expr: '5 9 * * 1-5' } }), flows: [flow('nightly-review')], target, workerYaml: 'x' });
+      expect(plan.files[1].contents).toContain(expected);
+    }
+  });
+
+  it('omits invalid stored cron from generated CI triggers', () => {
+    const plan = buildCiDeploy({ worker: worker({ cadence: { kind: 'cron', expr: '5 9 *\n* 1-5' } }), flows: [flow('nightly-review')], target: 'github', workerYaml: 'x' });
+    expect(plan.files[1].contents).not.toContain('cron:');
   });
 
   it('installs from the alpha dist-tag, not latest', () => {
