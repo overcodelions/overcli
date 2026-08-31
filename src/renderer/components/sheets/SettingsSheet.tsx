@@ -724,6 +724,12 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
           value={local.claudeMcpDebug ?? false}
           onChange={(v) => patch({ claudeMcpDebug: v })}
         />
+        <Toggle
+          label="Claude artifacts and /design (experimental)"
+          help="Sets CLAUDE_CODE_ARTIFACT on Claude launches, which unlocks the Artifact tool and the /design canvas skill — both are otherwise switched off in the headless sessions overcli drives, and /design just answers with its usage line. Needs a claude.ai login (not an API key); some accounts are gated regardless. The Artifact tool publishes to claude.ai, so leave permission prompts on for it."
+          value={local.claudeArtifacts ?? false}
+          onChange={(v) => patch({ claudeArtifacts: v })}
+        />
       </Group>
     </div>
   );

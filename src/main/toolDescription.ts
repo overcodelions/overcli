@@ -44,6 +44,23 @@ export function summarizeToolUse(name: string, inputJSON: string, filePath?: str
     const pat = typeof parsed?.pattern === 'string' ? parsed.pattern : '';
     return `• Grep ${truncate(pat, 80)}`.trim();
   }
+  // Artifact publishes a local HTML file to claude.ai. The URL is the point
+  // of the call, so the digest names what is going out rather than the 2 MB
+  // of inlined editor that a raw input dump would lead with.
+  if (name === 'Artifact') {
+    const title = typeof parsed?.title === 'string' ? parsed.title : '';
+    const target = filePath ?? parsed?.file_path ?? '';
+    return `• Artifact publish ${title ? `"${truncate(title, 60)}" ` : ''}${target}`.trim();
+  }
+  if (name === 'DesignSync') {
+    const method = typeof parsed?.method === 'string' ? parsed.method : '(unknown method)';
+    const writes = Array.isArray(parsed?.writes) ? parsed.writes.length : 0;
+    const deletes = Array.isArray(parsed?.deletes) ? parsed.deletes.length : 0;
+    if (method === 'finalize_plan') {
+      return `• DesignSync finalize_plan (${writes} writes, ${deletes} deletes, from ${parsed?.localDir ?? 'cwd'})`;
+    }
+    return `• DesignSync ${method}`;
+  }
   if (name === 'TodoWrite') {
     const count = Array.isArray(parsed?.todos) ? parsed.todos.length : 0;
     return `• TodoWrite (${count})`;
