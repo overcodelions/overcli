@@ -32,6 +32,9 @@ import { modelSpeed } from '../shared/modelCatalog';
 import { loadAllRuns } from './flows/runsStore';
 import { loadRunSummaries, RunSummary } from './flows/runSummaryLog';
 import { readOllamaUsage } from './ollamaUsageLog';
+import { Store } from './store';
+import { classifyProject, groupProjects, CoordinatorRun, GroupingContext } from './statsGrouping';
+import { flowRunOwnerPath } from '../shared/flows/schema';
 
 interface BackendAgg {
   backend: Backend;
@@ -90,6 +93,11 @@ export function computeStats(): StatsReport {
     finalizeBackend(ollamaAgg),
   ].filter((b) => b.turns > 0 || b.inputTokens > 0 || b.outputTokens > 0 || b.sessions > 0);
 
+  // Read once — computeFlowImpact() and buildGroupingContext() both need
+  // every flow run, and loadAllRuns() parses every run file on disk.
+  const flowRuns = safeLoadFlowRuns();
+  const runSummaries = safeLoadRunSummaries();
+  const groupCtx = buildGroupingContext(flowRuns, runSummaries);
   const projectRows: ProjectStats[] = Array.from(byProject.values())
     .map((p) => ({
       id: p.slug,
@@ -104,6 +112,7 @@ export function computeStats(): StatsReport {
       linesDeleted: p.linesDeleted,
       models: Array.from(p.models).sort(),
       lastActivity: p.lastActivity ?? undefined,
+      ...classifyProject(p.displayPath, groupCtx),
     }))
     .sort((a, b) => b.outputTokens - a.outputTokens);
 
@@ -182,10 +191,11 @@ export function computeStats(): StatsReport {
     totalLinesDeleted,
     byBackend,
     byProject: projectRows,
+    projectGroups: groupProjects(projectRows),
     byModel: modelRows,
     byTier,
     quotas: buildQuotas(byBackend),
-    flowImpact: computeFlowImpact(),
+    flowImpact: computeFlowImpact(flowRuns, runSummaries),
     daily: filledDaily,
   };
 }
@@ -835,9 +845,10 @@ function scanOllamaUsageLog(
   }
 }
 
-function computeFlowImpact(): import('../shared/types').FlowImpactStats {
-  const liveRuns = safeLoadFlowRuns();
-  const summaries = safeLoadRunSummaries();
+function computeFlowImpact(
+  liveRuns: import('../shared/flows/schema').FlowRun[],
+  summaries: RunSummary[],
+): import('../shared/types').FlowImpactStats {
   const seenIds = new Set<string>();
   const byFlow = new Map<string, import('../shared/types').FlowImpactRow>();
   let totalRuns = 0;
@@ -952,6 +963,41 @@ function safeLoadFlowRuns(): import('../shared/flows/schema').FlowRun[] {
     logSilent('stats.loadAllRuns', e);
     return [];
   }
+}
+
+/// Names for the rollup: the user's own project + workspace names, plus
+/// what launched each coordinator root.
+///
+/// Coordinator ids ARE run ids, so both sources key off the same value.
+/// Summaries go in first and live runs overwrite them: the summary log
+/// survives the runs-store LRU (that is the whole point of it, so an
+/// evicted run still resolves), but a live run carries the fuller record.
+function buildGroupingContext(
+  flowRuns: import('../shared/flows/schema').FlowRun[],
+  summaries: RunSummary[],
+): GroupingContext {
+  let projects: Array<{ name: string; path: string }> = [];
+  let workspaces: Array<{ id: string; name: string }> = [];
+  try {
+    const s = Store.load();
+    projects = s.projects.map((p) => ({ name: p.name, path: p.path }));
+    workspaces = s.workspaces.map((w) => ({ id: w.id, name: w.name }));
+  } catch (e) {
+    logSilent('stats.groupingStore', e);
+  }
+  const coordinators = new Map<string, CoordinatorRun>();
+  for (const s of summaries) {
+    if (!s.id) continue;
+    coordinators.set(s.id.toLowerCase(), { flowName: s.flowName, ownerPath: s.ownerPath });
+  }
+  for (const run of flowRuns) {
+    if (!run.id) continue;
+    coordinators.set(run.id.toLowerCase(), {
+      flowName: run.flowSnapshot?.name || run.flowId,
+      ownerPath: flowRunOwnerPath(run),
+    });
+  }
+  return { homeDir: os.homedir(), projects, workspaces, coordinators };
 }
 
 function safeLoadRunSummaries(): RunSummary[] {
