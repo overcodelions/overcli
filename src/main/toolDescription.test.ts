@@ -56,3 +56,37 @@ describe('summarizeToolUse — extra coverage', () => {
     expect(out).toContain('{"x":1}');
   });
 });
+
+describe('outward-facing tools', () => {
+  it('names what an Artifact call publishes instead of dumping the document', () => {
+    const out = summarizeToolUse(
+      'Artifact',
+      JSON.stringify({ file_path: '/p/poster.html', title: 'Cupping Saturdays', capabilities: { self: {} } }),
+    );
+    expect(out).toContain('Artifact publish');
+    expect(out).toContain('Cupping Saturdays');
+    expect(out).toContain('/p/poster.html');
+  });
+
+  it('counts a DesignSync plan rather than listing every path', () => {
+    const out = summarizeToolUse(
+      'DesignSync',
+      JSON.stringify({
+        method: 'finalize_plan',
+        writes: ['a.html', 'b.html', 'c.html'],
+        deletes: ['d.html'],
+        localDir: '/repo/ui',
+      }),
+    );
+    expect(out).toContain('finalize_plan');
+    expect(out).toContain('3 writes');
+    expect(out).toContain('1 deletes');
+    expect(out).toContain('/repo/ui');
+  });
+
+  it('falls back to the bare method for DesignSync reads', () => {
+    expect(summarizeToolUse('DesignSync', JSON.stringify({ method: 'list_projects' }))).toBe(
+      '• DesignSync list_projects',
+    );
+  });
+});

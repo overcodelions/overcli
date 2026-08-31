@@ -145,3 +145,30 @@ describe('the policy a served document carries', () => {
     expect(csp).toContain("script-src 'unsafe-inline'");
   });
 });
+
+describe('the document policy and web fonts', () => {
+  it('allows the two Google font hosts and nothing else remote for display', async () => {
+    const published = publishPreviewDocument('<html><body>hi</body></html>', 'document');
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    const csp = (await fetchPreview(published.url)).headers.get('content-security-policy') ?? '';
+    expect(csp).toContain('style-src \'unsafe-inline\' https://fonts.googleapis.com');
+    expect(csp).toContain('font-src data: https://fonts.gstatic.com');
+    // Images and media stay data:/blob: only — the font hosts are the one
+    // remote display channel this policy grants.
+    expect(csp).toContain('img-src data: blob:;');
+    expect(csp).toContain('media-src data: blob:;');
+    expect(csp).toContain('connect-src \'none\'');
+  });
+
+  // CSP keeps the first occurrence of a directive and drops the rest, so a
+  // duplicate would silently revert the widening above.
+  it('states each directive exactly once', async () => {
+    const published = publishPreviewDocument('<html></html>', 'document');
+    expect(published.ok).toBe(true);
+    if (!published.ok) return;
+    const csp = (await fetchPreview(published.url)).headers.get('content-security-policy') ?? '';
+    const names = csp.split(';').map((d) => d.trim().split(/\s+/)[0]).filter(Boolean);
+    expect(new Set(names).size).toBe(names.length);
+  });
+});
