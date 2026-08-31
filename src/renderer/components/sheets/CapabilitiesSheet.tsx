@@ -5,9 +5,11 @@
 // populated on cold-open, and folds in live `lastInit.slashCommands`
 // from the current conversation when present.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import type {
+  AwsAuthOverview,
+  AwsSsoTarget,
   Backend,
   CapabilityEntry,
   CapabilityKind,
@@ -1074,6 +1076,8 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
             <div className="mb-2.5 text-[11px] text-ink-muted leading-snug">{item.authNote}</div>
           )}
 
+          {item.id === 'aws' && <AwsSsoLoginPanel />}
+
           {needsSecrets &&
             item.secrets.map((field) => (
               <div key={field.key} className="mb-2.5">
@@ -1139,6 +1143,151 @@ function McpCatalogCard({ item }: { item: McpCatalogItem }) {
             </button>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/// The AWS proxy signs with whatever credentials the machine already has, so
+/// an expired SSO token is the usual reason it stops working. This turns the
+/// entry's own "run `aws sso login` first" advice into a button.
+///
+/// Shown only inside the AWS card's open panel — every other card is
+/// untouched.
+function AwsSsoLoginPanel() {
+  const listTargets = useStore((s) => s.listAwsSsoTargets);
+  const ssoLogin = useStore((s) => s.awsSsoLogin);
+
+  const [overview, setOverview] = useState<AwsAuthOverview | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [rows, setRows] = useState<
+    Record<string, { busy?: boolean; msg?: string; error?: string; command?: string }>
+  >({});
+
+  useEffect(() => {
+    let live = true;
+    void listTargets()
+      .then((o) => {
+        if (live) setOverview(o);
+      })
+      .catch((err: unknown) => {
+        if (live) setLoadError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      live = false;
+    };
+  }, [listTargets]);
+
+  const doLogin = async (t: AwsSsoTarget, mode: 'app' | 'terminal') => {
+    setRows((r) => ({ ...r, [t.name]: { busy: true } }));
+    const res = await ssoLogin(t.name, t.kind, mode);
+    setRows((r) => ({
+      ...r,
+      [t.name]: res.ok
+        ? { msg: mode === 'terminal' ? 'Running in Terminal…' : 'Signed in ✓' }
+        : { error: res.error, ...(res.command ? { command: res.command } : {}) },
+    }));
+  };
+
+  const label = (
+    <div className="text-[10.5px] uppercase tracking-wider text-ink-faint font-semibold">
+      AWS sign-in
+    </div>
+  );
+
+  if (loadError) {
+    return (
+      <div className="mb-3">
+        {label}
+        <div className="mt-1 text-[11px] text-red-300 font-mono break-words">{loadError}</div>
+      </div>
+    );
+  }
+  if (!overview) {
+    return (
+      <div className="mb-3">
+        {label}
+        <div className="mt-1 text-[11px] text-ink-faint">Reading ~/.aws/config…</div>
+      </div>
+    );
+  }
+
+  const staticNote =
+    overview.staticProfiles.length > 0 ? (
+      <div className="mt-1.5 text-[10px] text-ink-faint leading-snug">
+        {overview.staticProfiles.length}{' '}
+        {overview.staticProfiles.length === 1 ? 'profile uses' : 'profiles use'} static keys — no SSO
+        sign-in needed.
+      </div>
+    ) : null;
+
+  return (
+    <div className="mb-3 pb-3 border-b border-card-strong/60">
+      {label}
+
+      {!overview.cliPath ? (
+        <div className="mt-1 text-[11px] text-ink-muted leading-snug">
+          AWS CLI not found. Install aws-cli v2, then reopen this panel.
+        </div>
+      ) : overview.ssoTargets.length === 0 ? (
+        <>
+          <div className="mt-1 text-[11px] text-ink-muted leading-snug">
+            No SSO profiles in {overview.configPath}. Run <code>aws configure sso</code> to add one.
+          </div>
+          {staticNote}
+        </>
+      ) : (
+        <>
+          <div className="mt-1.5 flex flex-col gap-1.5">
+            {overview.ssoTargets.map((t) => {
+              const state = rows[t.name] ?? {};
+              // A `sso_session` name and a profile name can collide, so the
+              // subline says which kind of thing this row logs into.
+              const sub = [
+                t.kind === 'sso-session' ? 'SSO session' : t.ssoSession,
+                t.region ?? t.ssoRegion,
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              return (
+                <div key={`${t.kind}:${t.name}`} className="flex items-start gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11.5px] text-ink truncate font-mono">{t.name}</div>
+                    {sub && <div className="text-[10px] text-ink-faint truncate">{sub}</div>}
+                    {state.msg && (
+                      <div className="mt-0.5 text-[10.5px] text-ink-muted font-mono break-words">
+                        {state.msg}
+                      </div>
+                    )}
+                    {state.error && (
+                      <div className="mt-1 rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[10.5px] text-red-300 font-mono break-words">
+                        {state.error}
+                        {state.command && <div className="mt-1 text-ink-faint">{state.command}</div>}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    disabled={state.busy}
+                    onClick={() => void doLogin(t, 'app')}
+                    title={`Run aws sso login for ${t.name} and approve it in your browser`}
+                    className="shrink-0 text-[10.5px] px-2 py-1 rounded border border-accent/40 bg-accent/10 text-accent hover:bg-accent/15 disabled:opacity-50"
+                  >
+                    {state.busy ? 'Opening browser…' : 'Log in'}
+                  </button>
+                  <button
+                    disabled={state.busy}
+                    onClick={() => void doLogin(t, 'terminal')}
+                    title="Run the same command in a Terminal window instead"
+                    className="shrink-0 text-[10.5px] px-2 py-1 rounded border border-card-strong text-ink-faint hover:text-ink hover:bg-card-strong disabled:opacity-50"
+                  >
+                    Terminal
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {staticNote}
+        </>
       )}
     </div>
   );

@@ -775,6 +775,45 @@ export interface McpCatalogItem {
   legacyNote?: string;
 }
 
+/// One thing `aws sso login` can be pointed at. Named profiles come first:
+/// logging in with `--profile X` mints the token for whatever SSO session X
+/// references, so a session that some profile already names never needs a
+/// row of its own. Orphan sessions — configured but referenced by no profile
+/// — get `kind: 'sso-session'` and are logged in with `--sso-session`.
+export interface AwsSsoTarget {
+  /// Passed verbatim to `--profile` / `--sso-session`. Always matches
+  /// `AWS_NAME_RE`; anything else is dropped before it reaches this type.
+  name: string;
+  kind: 'profile' | 'sso-session';
+  /// For `kind: 'profile'`, the `sso_session` it points at (absent on a
+  /// legacy profile that inlines `sso_start_url` instead).
+  ssoSession?: string;
+  startUrl?: string;
+  ssoRegion?: string;
+  region?: string;
+}
+
+/// What the AWS card's Manage panel needs to draw itself. Deliberately
+/// carries no credential material: `staticProfiles` holds *section names*
+/// read from `~/.aws/credentials` and nothing else, so the panel can say
+/// "these use static keys, no SSO login needed" without any secret value
+/// crossing the IPC boundary.
+export interface AwsAuthOverview {
+  /// null when no `aws` binary was found — the panel says so rather than
+  /// offering buttons that would fail.
+  cliPath: string | null;
+  configPath: string;
+  ssoTargets: AwsSsoTarget[];
+  staticProfiles: string[];
+}
+
+/// `command` is the exact shell line we tried to run, kept separate from the
+/// prose so the UI can offer it as a copyable block — same convention as
+/// `TerminalLaunchResult` in main/terminal.ts.
+export type AwsSsoLoginResult =
+  | { ok: true; output: string }
+  | { ok: false; error: string; output?: string; command?: string };
+
 export interface OllamaModelInfo {
   name: string;
   sizeBytes: number;
@@ -1295,6 +1334,20 @@ export interface IPCInvokeMap {
     cli: Backend;
     name: string;
   }) => { ok: true; output: string } | { ok: false; error: string; output?: string };
+  /// SSO profiles/sessions from `~/.aws/config`, for the AWS catalog
+  /// entry's Manage panel. Reads config files only — never spawns `aws`
+  /// beyond a best-effort `--version`, and never returns a credential.
+  'aws:listSsoTargets': () => AwsAuthOverview;
+  /// Run `aws sso login` for one profile or SSO session. `mode: 'app'`
+  /// (the default) spawns it here and opens the verification URL in the
+  /// browser; `mode: 'terminal'` hands the same command to Terminal.app
+  /// for the cases the in-app path can't cover (a CLI too old for
+  /// `--no-browser`, a device-code flow, anything prompting on stdin).
+  'aws:ssoLogin': (args: {
+    target: string;
+    kind: 'profile' | 'sso-session';
+    mode?: 'app' | 'terminal';
+  }) => AwsSsoLoginResult;
   'fs:pickDirectory': () => string[] | null;
   'fs:fileInfo': (args: { path: string; rootPath?: string }) => FileInfoResult;
   'fs:readFile': (args: {
