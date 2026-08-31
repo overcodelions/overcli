@@ -28,6 +28,8 @@ import type {
   UUID,
 } from '../../shared/types';
 import type { FlowRun } from '../../shared/flows/schema';
+import { flowRunOwnerPath } from '../../shared/flows/schema';
+import { runGitAsync } from '../git';
 import type {
   Candidate,
   Orchestration,
@@ -769,6 +771,10 @@ export class OrchestratorImpl {
       if (kind === 'aborted' && !item.note) item.note = 'Run aborted.';
       this.runToBatch.delete(run.id);
       this.persistAndEmit(o);
+      // Fire-and-forget: the item is already terminal and persisted above, so
+      // a slow or failing git call can't hold up the batch or lose the
+      // result. It lands as a second persist+emit when it resolves.
+      void this.captureLandingCommit(o.id, item.candidate.id, run);
       // A slot freed up (if it was running) — fill it.
       void this.pump(orchId);
     }
@@ -848,6 +854,7 @@ export class OrchestratorImpl {
       item.runId = undefined;
       item.note = undefined;
       item.branchName = undefined;
+      item.headSha = undefined;
       item.startedAt = undefined;
       item.finishedAt = undefined;
     }
@@ -895,6 +902,51 @@ export class OrchestratorImpl {
       o.completedAt = Date.now();
       this.persistAndEmit(o);
     }
+  }
+
+  /// Record the commit an item's work ended up on, so the ledger can still
+  /// reach it after the run is gone (see `OrchestrationItem.headSha`).
+  ///
+  /// Two sources, in order, because the two failure modes are opposite:
+  ///   1. `HEAD` in the run's own cwd. For a worktree run that IS the
+  ///      worktree, and it stays right even if the flow renamed or deleted
+  ///      the branch out from under us. For a `runIn: 'cwd'` run it's the
+  ///      project's HEAD, which is exactly where that run committed.
+  ///   2. The branch, resolved in the OWNER checkout. Covers the case (1)
+  ///      can't: a flow that removed its own worktree mid-run — which worker
+  ///      shifts do routinely — leaving the directory gone but the ref live.
+  /// Both failing means there is nothing to point at, and we leave `headSha`
+  /// unset rather than storing a guess.
+  private async captureLandingCommit(
+    orchId: UUID,
+    candidateId: string,
+    run: FlowRun,
+  ): Promise<void> {
+    const revParse = async (rev: string, cwd: string): Promise<string | null> => {
+      try {
+        const res = await runGitAsync(['rev-parse', '--verify', rev], cwd);
+        const sha = res.stdout.trim();
+        return res.exitCode === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+      } catch {
+        return null;
+      }
+    };
+
+    const sha =
+      (await revParse('HEAD', run.projectPath)) ??
+      (run.branchName ? await revParse(run.branchName, flowRunOwnerPath(run)) : null);
+    if (!sha) return;
+
+    // Re-resolve rather than closing over the item: an await ago the batch
+    // could have been deleted, or the item retried (which clears runId and
+    // starts a fresh attempt). Writing through a stale reference would
+    // resurrect a pointer the retry deliberately cleared.
+    const o = this.batches.get(orchId);
+    if (!o) return;
+    const item = o.items.find((i) => i.candidate.id === candidateId);
+    if (!item || item.runId !== run.id || item.headSha === sha) return;
+    item.headSha = sha;
+    this.persistAndEmit(o);
   }
 
   private persistAndEmit(o: Orchestration): void {
