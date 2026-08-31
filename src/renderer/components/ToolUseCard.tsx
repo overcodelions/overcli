@@ -66,6 +66,9 @@ export function ToolUseCard({
   if (use.name === 'Workflow') {
     return <WorkflowCard use={use} args={args} result={result} conversationId={conversationId} />;
   }
+  if (use.name === 'Artifact') {
+    return <ArtifactCard use={use} args={args} result={result} onOpen={(p) => openFile(p)} />;
+  }
   if (use.name === 'Task' || use.name === 'Agent') {
     return <SubagentCard use={use} args={args} result={result} conversationId={conversationId} />;
   }
@@ -401,9 +404,32 @@ function toolActivityLine(use: { name: string; inputJSON: string }): { name: str
     case 'Task':
     case 'Agent':
       return { name: 'Agent', detail: trimDetail(input.subagent_type || input.description || '') };
+    case 'Artifact':
+      return { name: 'Artifact', detail: trimDetail(input.title || input.file_path || '') };
+    case 'DesignSync':
+      return { name: 'DesignSync', detail: trimDetail(designSyncDetail(input)) };
     default:
       return { name: use.name, detail: trimDetail(use.inputJSON.replace(/^\{|\}$/g, '')) };
   }
+}
+
+/// DesignSync packs eleven operations behind one tool name, so the method is
+/// the only part of the input that says what is about to happen. `finalize_plan`
+/// carries the consent boundary — the exact write/delete sets — and its path
+/// list is the thing worth counting rather than truncating.
+function designSyncDetail(input: any): string {
+  const method = typeof input?.method === 'string' ? input.method : '';
+  if (!method) return '';
+  const writes = Array.isArray(input.writes) ? input.writes.length : 0;
+  const deletes = Array.isArray(input.deletes) ? input.deletes.length : 0;
+  if (method === 'finalize_plan') return `finalize_plan — ${writes} writes, ${deletes} deletes`;
+  const files = Array.isArray(input.files) ? input.files.length : 0;
+  if (method === 'write_files') return `write_files — ${files} files`;
+  const paths = Array.isArray(input.paths) ? input.paths.length : 0;
+  if (method === 'delete_files') return `delete_files — ${paths} paths`;
+  if (method === 'create_project' && input.name) return `create_project — ${input.name}`;
+  if (method === 'get_file' && input.path) return `get_file — ${input.path}`;
+  return method;
 }
 
 function trimDetail(s: string): string {
@@ -818,6 +844,121 @@ function ExitPlanModeCard({
       </div>
     </div>
   );
+}
+
+/// A published artifact — most often a `/design` canvas. Two destinations
+/// matter here and the card offers both: the page that just went to
+/// claude.ai, and the local file it was built from.
+///
+/// The local one is the reason this card exists. A canvas is assembled by the
+/// skill's seeding script through Bash and lands in the session scratchpad, so
+/// nothing in the transcript otherwise names its path — the user is left with
+/// a URL and no way back to the file on their own disk. `file_path` is on the
+/// tool input, and main records it as readable-by-provenance when the publish
+/// succeeds (see writtenPaths.ts), so opening it in the preview pane works.
+///
+/// Weight: every other card in this file is a *step* — a read, a command, an
+/// edit — so they all sit on `bg-card`, a fill slightly darker than the
+/// transcript. This card is the turn's *output*, so it borrows the app's
+/// established elevation idiom instead (`bg-surface-elevated` +
+/// `border-card-strong`, the same combination modals, popovers and the
+/// document tiles use). That reads as raised in both themes by construction:
+/// the elevated token is lighter than the surface in dark (#2a2a33 over
+/// #1c1c21) and pure white over off-white in light. An earlier pass tinted the
+/// card purple, which in dark theme made it *darker* than the message bubbles
+/// around it — a recessed well, the opposite of a deliverable. The purple now
+/// survives only as the eyebrow, on `--c-backend-claude`, which is defined per
+/// theme and so stays legible on both fills where a raw `purple-300` would
+/// wash out on white.
+function ArtifactCard({
+  use,
+  args,
+  result,
+  onOpen,
+}: {
+  use: ToolUseBlock;
+  args: Record<string, any>;
+  result?: ToolResultBlock;
+  onOpen: (p: string) => void;
+}) {
+  const path = use.filePath ?? args.file_path ?? '';
+  const headline = artifactHeadline(args.title, path);
+  // The published URL comes back in the result body rather than the input.
+  // Absent while the call is still in flight, and after a failure.
+  const url = result && !result.isError ? firstArtifactUrl(result.content) : null;
+  return (
+    <div className="rounded-lg border border-card-strong bg-surface-elevated shadow-sm px-3 py-2.5 text-xs">
+      <div className="flex items-center gap-2">
+        <span className="text-[10px] uppercase tracking-wider text-backend-claude font-medium">
+          Artifact
+        </span>
+        <StatusBadge result={result} />
+      </div>
+      {headline && <div className="mt-1 text-sm font-medium text-ink truncate">{headline}</div>}
+      <div className="mt-2 flex items-center gap-2 flex-wrap">
+        {path && (
+          <button
+            onClick={() => onOpen(path)}
+            className="px-2.5 py-1 rounded text-xs bg-accent text-white hover:bg-accent-600"
+          >
+            Open in Overcli
+          </button>
+        )}
+        {url && (
+          <a
+            href={url}
+            target="_blank"
+            rel="noreferrer"
+            className="px-2.5 py-1 rounded text-xs bg-accent/10 text-accent hover:bg-accent/20 border border-accent/40"
+          >
+            Open on claude.ai
+          </a>
+        )}
+      </div>
+      {path && (
+        <code className="mt-1.5 block text-[10px] text-ink-faint truncate" title={path}>
+          {path}
+        </code>
+      )}
+    </div>
+  );
+}
+
+/// Name the artifact for the card's headline.
+///
+/// `args.title` is the obvious source but it is usually ABSENT: the Artifact
+/// tool only needs `title` when the HTML carries no `<title>` of its own, and
+/// a design canvas always does. Headlining on it alone left the card with no
+/// headline at all in the common case — a label, two buttons and a dim path.
+///
+/// The filename is a good second source because it is deliberately
+/// content-bearing: the `/design` skill's seeding script rejects generic
+/// filenames, telling the model "the file name is what the artifact is called
+/// — name it from the content, like the title". So `overcli-usage-report.html`
+/// humanizes back to something close to the title it was derived from.
+export function artifactHeadline(title: unknown, path: string): string {
+  if (typeof title === 'string' && title.trim()) return title.trim();
+  // Windows separators too — a path can arrive from either platform's agent.
+  const base = path.split(/[\\/]/).filter(Boolean).pop() ?? '';
+  // Strip the whole trailing extension run, not just the last segment, so
+  // `.dc.html` (the canvas artboard suffix) doesn't leave a stray "dc" in the
+  // headline. Capped at 6 chars a segment so a dotted version in the stem
+  // survives.
+  const stem = base.replace(/(?:\.[A-Za-z0-9]{1,6})+$/, '');
+  const words = stem.replace(/[-_.\s]+/g, ' ').trim();
+  if (!words) return '';
+  // Sentence case, matching the app's copy register — the filename is written
+  // lowercase-kebab, and title-casing every word would read like a headline
+  // template rather than the name of the thing.
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/// Pull the published page's URL out of an Artifact result. Anchored to the
+/// artifact path so a URL that merely appears in surrounding prose isn't
+/// mistaken for the destination.
+export function firstArtifactUrl(content: string): string | null {
+  const m = content.match(/https:\/\/claude\.ai\/[A-Za-z0-9/_-]*artifact[A-Za-z0-9/_-]*/);
+  return m ? m[0] : null;
 }
 
 function FileWriteCard({ use, args, result, onOpen }: { use: ToolUseBlock; args: Record<string, any>; result?: ToolResultBlock; onOpen: (p: string) => void }) {

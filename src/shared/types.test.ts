@@ -24,6 +24,7 @@ describe('DEFAULT_SETTINGS', () => {
       showDebug: false,
       claudeTransport: 'cli',
       claudeMcpDebug: false,
+      claudeArtifacts: false,
       starredFlows: [],
       defaultFlowRunIn: 'cwd',
       flowRegistries: [

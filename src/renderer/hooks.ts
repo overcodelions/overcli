@@ -1,9 +1,10 @@
 import { useMemo } from 'react';
 import { useStore } from './store';
-import { Backend, Conversation, UUID } from '@shared/types';
+import { Backend, Conversation, SystemInitInfo, UUID } from '@shared/types';
 import { SlashCommandEntry } from './components/Composer';
 import { findConversation, findContainerPath } from './conversationLookup';
 import { useRunnerEvents } from './runnersStore';
+import { backendFromModel } from './theme';
 
 /// Memoized lookup of a conversation anywhere in the store. Recomputes
 /// only when the underlying projects/workspaces arrays change — cheap
@@ -15,19 +16,25 @@ export function useConversation(id: UUID | null | undefined): Conversation | nul
 
 /// Union of slash commands exposed to the given backend: the filesystem
 /// scan (skills/agents/commands that back named `/foo` handlers), plus
-/// any live built-ins reported by the *specific conversation's* init
-/// block (e.g. `/help`, `/clear`). The live list is sourced from this
-/// conversation's runner events — not the global `lastInit` — because
-/// that global reflects whichever backend most recently fired init and
-/// would leak Claude-only commands into a Codex conversation (or vice
-/// versa). `WelcomePane` passes no conversationId and only gets the
-/// filesystem scan, which is already backend-filtered.
+/// the live built-ins reported by an init block (e.g. `/help`, `/design`).
+///
+/// Preference order for the live half: this conversation's own init event,
+/// then the global `lastInit`. The conversation's own is authoritative, but
+/// it only exists after a first turn has run — so before that, and on the
+/// WelcomePane (which has no conversation at all), every command the CLI
+/// bundles rather than keeps on disk was invisible in the menu while still
+/// working when typed blind. The global is a last-writer-wins record across
+/// backends, which is why it was avoided here originally; gating it on the
+/// backend that produced it keeps Claude-only commands out of a Codex
+/// conversation, and falls back to the filesystem scan alone when the last
+/// init came from some other backend.
 export function useSlashCommands(
   backend: Backend | undefined,
   conversationId?: UUID | null,
 ): SlashCommandEntry[] {
   const capabilities = useStore((s) => s.capabilities);
   const events = useRunnerEvents(conversationId);
+  const lastInit = useStore((s) => s.lastInit);
   return useMemo(() => {
     const byName = new Map<string, SlashCommandEntry>();
     for (const e of capabilities?.entries ?? []) {
@@ -39,7 +46,7 @@ export function useSlashCommands(
         source: e.source === 'builtin' ? undefined : e.source,
       });
     }
-    const liveNames = latestInitSlashCommands(events);
+    const liveNames = pickLiveSlashNames(latestInitSlashCommands(events), lastInit, backend);
     for (const raw of liveNames) {
       const name = raw.startsWith('/') ? raw.slice(1) : raw;
       if (!name) continue;
@@ -47,7 +54,23 @@ export function useSlashCommands(
       byName.set(name, { name });
     }
     return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [capabilities, events, backend]);
+  }, [capabilities, events, backend, lastInit]);
+}
+
+/// Which init block's command list to trust: the conversation's own when it
+/// has one, otherwise the global last-seen init — but only when that init came
+/// from the same backend, so a Codex session's commands never surface in a
+/// Claude composer. Exported for tests; the backend guard is the whole reason
+/// this is more than `a.length ? a : b`.
+export function pickLiveSlashNames(
+  ownNames: string[],
+  lastInit: SystemInitInfo | undefined,
+  backend: Backend | undefined,
+): string[] {
+  if (ownNames.length) return ownNames;
+  if (!lastInit) return [];
+  if (backend && backendFromModel(lastInit.model) !== backend) return [];
+  return lastInit.slashCommands ?? [];
 }
 
 function latestInitSlashCommands(events: readonly unknown[] | null | undefined): string[] {

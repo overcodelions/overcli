@@ -6,6 +6,7 @@ import { useStore } from '../store';
 import { openPathWithHighlight, useOpenFile } from '../openFile';
 import { ToolUseCard } from './ToolUseCard';
 import { parseOutputHandoff } from './flows/outputPointer';
+import { isDesignUnavailableNotice } from '@shared/claudeArtifacts';
 
 /// Tool names that must stay visible when tool activity is hidden,
 /// because they block the conversation on user input.
@@ -17,7 +18,7 @@ const INTERACTIVE_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode']);
 /// SubagentCard, which is the user's only handle to open the drawer and
 /// see what the subagent is doing. Keep in sync with PERSISTENT_TOOLS
 /// in ChatView.tsx.
-const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent']);
+const PERSISTENT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'TodoWrite', 'Task', 'Agent', 'Artifact']);
 
 export function AssistantBubble({
   info,
@@ -150,6 +151,7 @@ export function AssistantBubble({
             ) : (
               <Markdown source={displayText} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
             )}
+            <DesignGatedNotice text={displayText} />
           </div>
           <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
             <button
@@ -239,6 +241,40 @@ function askUserQuestionKey(inputJSON: string): string {
 /// raw JSON (or, before, nothing — which left only terse mid-process
 /// narration). The structured fields are still parsed by the runtime; here we
 /// only surface the summary. A partial block mid-stream is dropped so nothing
+/// `/design` answers with a bare usage line when its canvas skill is gated
+/// off, which reads as overcli having mangled the command rather than as the
+/// CLI declining. Name the real cause, and offer the switch that fixes it.
+///
+/// Only shown while the setting is off: once it's on, the same usage line
+/// means the account itself is gated and flipping a toggle won't help.
+function DesignGatedNotice({ text }: { text: string }) {
+  const enabled = useStore((s) => s.settings.claudeArtifacts ?? false);
+  const settings = useStore((s) => s.settings);
+  const saveSettings = useStore((s) => s.saveSettings);
+  const [busy, setBusy] = useState(false);
+  if (enabled || !isDesignUnavailableNotice(text)) return null;
+  return (
+    <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px]">
+      <div className="text-amber-700 dark:text-amber-200">
+        <span className="font-medium">/design is switched off for this session.</span> The canvas
+        skill only registers when Claude is launched with artifacts enabled, which overcli leaves
+        off by default.
+      </div>
+      <button
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          void saveSettings({ ...settings, claudeArtifacts: true }).finally(() => setBusy(false));
+        }}
+        className="mt-1.5 px-2 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 border border-amber-500/40 disabled:opacity-50"
+      >
+        Enable artifacts
+      </button>
+      <span className="ml-2 text-ink-faint">Takes effect on the next turn.</span>
+    </div>
+  );
+}
+
 /// flashes in. No-op for any text without the tag, so it's safe on all bubbles.
 function stripWatchReport(text: string): string {
   const replaceWithNote = (_m: string, inner: string): string => {
