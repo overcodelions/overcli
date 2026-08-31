@@ -139,6 +139,7 @@
     },
     "linux": {
       "icon": "build/icon.png",
+      "executableName": "overcli",
       "category": "Development",
       "target": [
         {
@@ -156,6 +157,9 @@
           ]
         }
       ]
+    },
+    "deb": {
+      "packageName": "overcli"
     }
   },
   "devDependencies": {
