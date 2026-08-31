@@ -7,6 +7,12 @@ vi.mock('./orchestrationsStore', () => ({
   loadAllOrchestrations: vi.fn(() => []),
   deleteOrchestration: vi.fn(),
 }));
+// `captureLandingCommit` shells out to record the commit an item landed on.
+// The fake runs here have no repo behind them, so resolve every rev to a
+// fixed sha; the one test that cares overrides this per-call.
+vi.mock('../git', () => ({
+  runGitAsync: vi.fn(async () => ({ stdout: `${'a'.repeat(40)}\n`, stderr: '', exitCode: 0 })),
+}));
 // Health probing executes backend binaries — stub it so propose()'s backend
 // pick is deterministic (not exercised here, but keeps imports cheap).
 vi.mock('../health', () => ({
@@ -14,6 +20,7 @@ vi.mock('../health', () => ({
   healthyBackends: async () => new Set(['claude', 'codex', 'gemini', 'copilot', 'ollama']),
 }));
 
+import { runGitAsync } from '../git';
 import { OrchestratorImpl, type FlowLauncher } from './orchestrator';
 import type { FlowRun } from '../../shared/flows/schema';
 
@@ -59,6 +66,7 @@ function makeHarness(opts: {
         userPrompt: args.userPrompt,
         state: { kind: 'running', currentStepId: 's1' },
         branchName: `agent/${runId}`,
+        projectPath: `/wt/${runId}`,
         parentOrchestrationId: args.parentOrchestrationId,
       } as unknown as FlowRun;
       runs.set(runId, run);
@@ -223,6 +231,67 @@ describe('OrchestratorImpl dispatch', () => {
     o = h.engine.list()[0];
     expect(o.items[1].status).toBe('failed');
     expect(o.completedAt).toBeGreaterThan(0);
+  });
+
+  /// `branchName` is a display string that routinely stops resolving — a
+  /// worker shift commits, re-points the work onto a dated branch, then
+  /// deletes the scratch branch and its worktree. `headSha` is the pointer
+  /// that survives that, and it is the only way back to the code once
+  /// `pruneOldRuns` has taken the run itself.
+  it('records the commit an item landed on, from the run cwd', async () => {
+    const sha = 'b'.repeat(40);
+    vi.mocked(runGitAsync).mockResolvedValueOnce({
+      stdout: `${sha}\n`,
+      stderr: '',
+      exitCode: 0,
+    } as never);
+
+    const h = makeHarness();
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    await h.finish('run-1');
+    await h.flush();
+
+    expect(vi.mocked(runGitAsync)).toHaveBeenCalledWith(
+      ['rev-parse', '--verify', 'HEAD'],
+      '/wt/run-1',
+    );
+    expect(h.engine.list()[0].items[0].headSha).toBe(sha);
+  });
+
+  /// The worktree is gone by the time the run reports terminal — the ordinary
+  /// case for a flow that cleans up after itself. The branch is still live in
+  /// the owner checkout, so the capture has to fall through to it rather than
+  /// give up on the first non-zero exit.
+  it('falls back to the branch when the run cwd is gone', async () => {
+    const sha = 'c'.repeat(40);
+    vi.mocked(runGitAsync)
+      .mockResolvedValueOnce({ stdout: '', stderr: 'not a git repository', exitCode: 128 } as never)
+      .mockResolvedValueOnce({ stdout: `${sha}\n`, stderr: '', exitCode: 0 } as never);
+
+    const h = makeHarness();
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    await h.finish('run-1');
+    await h.flush();
+
+    expect(vi.mocked(runGitAsync)).toHaveBeenLastCalledWith(
+      ['rev-parse', '--verify', 'agent/run-1'],
+      '/wt/run-1',
+    );
+    expect(h.engine.list()[0].items[0].headSha).toBe(sha);
+  });
+
+  /// A retry is a fresh attempt: leaving the prior attempt's commit on the
+  /// item would leave the ledger pointing at work the retry replaced.
+  it('clears the recorded commit when an item is retried', async () => {
+    const h = makeHarness();
+    await h.engine.startBatch({ title: 'b', projectPath: '/proj', maxConcurrent: 1, items: items(1) });
+    await h.finish('run-1', 'aborted');
+    await h.flush();
+    const o = h.engine.list()[0];
+    expect(o.items[0].headSha).toBeTruthy();
+
+    h.engine.retry({ id: o.id });
+    expect(h.engine.list()[0].items[0].headSha).toBeUndefined();
   });
 
   it('abort cancels queued items and aborts running ones', async () => {
