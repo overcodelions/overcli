@@ -132,6 +132,17 @@ export type ActiveSheet =
   /// rather than the turn itself: a sheet holding a copy of an orchestration
   /// would keep rendering it after the desk deleted it.
   | { type: 'shiftReader'; workerId: UUID; orchestrationId: string }
+  /// The code a finished orchestration item left behind, addressed by commit
+  /// because the run and its worktree are usually gone by the time anyone
+  /// looks. Carries plain values, not ids: there is no live record left to
+  /// re-resolve them from.
+  | {
+      type: 'shiftWork';
+      projectPath: string;
+      headSha: string;
+      title: string;
+      baseBranch?: string;
+    }
   | { type: 'shortcutsHelp' }
   | { type: 'whatsNew' };
 

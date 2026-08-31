@@ -58,6 +58,7 @@ import {
   resolveStepModel,
   resolveRunStepModel,
   effectiveParticipantModel,
+  isWorkerRun,
 } from '../../shared/flows/schema';
 import { ROLE_PROMPTS, resolveSystemPrompt } from '../../shared/flows/roles';
 import { extractWorkerQuestion } from '../../shared/flows/workerQuestion';
@@ -417,6 +418,23 @@ export class FlowRuntimeImpl {
   /// watching runs are NEVER evicted regardless of count (they're load-
   /// bearing). Sized to be generous for a normal session — bump if it's not.
   private static readonly MAX_RETAINED_RUNS = 50;
+
+  /// Same cap, for runs a Worker launched — held separately, and far higher.
+  ///
+  /// A worker is a standing schedule: one that runs every 8 hours produces
+  /// ~90 runs a month on its own, and several workers share the one cap. At
+  /// 50 they scroll a user's ordinary flow runs out of memory within days,
+  /// and — the reason this exists — a finished shift stops being openable
+  /// almost as soon as you'd want to go back to it. Eviction deletes the run
+  /// from disk and orphans its (hidden) step conversations, so an evicted
+  /// shift can't be read or resumed by anything, ever; only the
+  /// orchestration item's `headSha` still points at the code.
+  ///
+  /// The cost is real and paid in memory and disk: a run JSON runs from tens
+  /// of KB to a couple of MB, so a full worker bucket is on the order of
+  /// 50MB. Deliberate — a shift you can still talk to next week is worth
+  /// more than the space. Bump it down if a heavy-worker profile hurts.
+  private static readonly MAX_RETAINED_WORKER_RUNS = 200;
 
   // ---- Watch engine (post-completion "stewardship tail") -----------------
   /// The single sweep timer that drives ALL watching runs. Lazily started
@@ -1157,10 +1175,30 @@ export class FlowRuntimeImpl {
   /// Accepted trade: if every retained run is dirty, `evictable` is empty and
   /// `this.runs` grows past the cap with nothing surfaced to the user.
   /// Unbounded memory beats silent loss of work nobody has looked at.
+  ///
+  /// Two independent buckets, not one pool: worker runs are produced on a
+  /// cadence nobody is watching and would otherwise evict the runs a person
+  /// actually launched, while themselves aging out faster than anyone gets
+  /// back to them. See `MAX_RETAINED_WORKER_RUNS`.
   private pruneOldRuns(): void {
     const all = Array.from(this.runs.values());
-    if (all.length < FlowRuntimeImpl.MAX_RETAINED_RUNS) return;
-    const overflow = all.length - FlowRuntimeImpl.MAX_RETAINED_RUNS + 1;
+    this.pruneBucket(
+      all.filter((r) => !isWorkerRun(r)),
+      FlowRuntimeImpl.MAX_RETAINED_RUNS,
+    );
+    this.pruneBucket(
+      all.filter((r) => isWorkerRun(r)),
+      FlowRuntimeImpl.MAX_RETAINED_WORKER_RUNS,
+    );
+  }
+
+  /// Evict the oldest finished runs in one bucket back under `cap`. Split out
+  /// of `pruneOldRuns` only so the two buckets can share it — the policy
+  /// (what's evictable, in what order, what a victim takes with it) is
+  /// documented on `pruneOldRuns` and unchanged.
+  private pruneBucket(all: FlowRun[], cap: number): void {
+    if (all.length < cap) return;
+    const overflow = all.length - cap + 1;
     // Order by age FIRST, then check worktrees lazily oldest-first, stopping
     // the moment we have enough victims. Same result as filtering the whole
     // set and slicing — the eviction order is unchanged — but it doesn't pay
