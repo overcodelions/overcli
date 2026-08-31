@@ -2645,6 +2645,9 @@ export interface StatsReport {
   totalLinesDeleted: number;
   byBackend: BackendStats[];
   byProject: ProjectStats[];
+  /// `byProject` rolled up: worktrees folded into their repo, coordinator
+  /// roots folded into the flow that made them.
+  projectGroups: ProjectGroupStats[];
   byModel: Array<{
     model: string;
     turns: number;
@@ -2743,6 +2746,23 @@ export interface BackendStats {
   linesDeleted: number;
 }
 
+export type ProjectGroupKind = 'repo' | 'worktree' | 'workspace' | 'flow' | 'other';
+
+export interface ProjectGroupStats {
+  id: string;
+  name: string;
+  kind: ProjectGroupKind;
+  sessions: number;
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  cacheCreation: number;
+  linesAdded: number;
+  linesDeleted: number;
+  children: ProjectStats[];
+}
+
 export interface ProjectStats {
   id: string;
   name: string;
@@ -2754,6 +2774,15 @@ export interface ProjectStats {
   cacheCreation: number;
   linesAdded: number;
   linesDeleted: number;
+  /// Rollup bucket this row belongs to. Rows sharing a groupId are one
+  /// line in the stats table — a repo and all of its worktrees, or every
+  /// run of one flow.
+  groupId: string;
+  groupName: string;
+  groupKind: ProjectGroupKind;
+  /// Label for this row inside its group (worktree name, run id). Empty
+  /// when the group has only this row.
+  leafName: string;
 }
 
 /// Main → renderer push events. The runner emits stream events here as they
