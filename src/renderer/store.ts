@@ -14,6 +14,8 @@ import { create } from 'zustand';
 import {
   AppSettings,
   Attachment,
+  AwsAuthOverview,
+  AwsSsoLoginResult,
   BackendHealth,
   CapabilitiesReport,
   Colosseum,
@@ -513,6 +515,12 @@ interface StoreState {
     | { ok: true; output: string }
     | { ok: false; error: string; output?: string }
   >;
+  listAwsSsoTargets(): Promise<AwsAuthOverview>;
+  awsSsoLogin(
+    target: string,
+    kind: 'profile' | 'sso-session',
+    mode?: 'app' | 'terminal',
+  ): Promise<AwsSsoLoginResult>;
   addMcpServer(
     name: string,
     config: Record<string, unknown>,
@@ -3444,6 +3452,16 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async loginMcpServer(cli, name) {
     return window.overcli.invoke('mcp:login', { cli, name });
+  },
+
+  // Not cached in the store: the panel is short-lived and `~/.aws/config`
+  // can change under us between openings.
+  async listAwsSsoTargets() {
+    return window.overcli.invoke('aws:listSsoTargets');
+  },
+
+  async awsSsoLogin(target, kind, mode) {
+    return window.overcli.invoke('aws:ssoLogin', { target, kind, ...(mode ? { mode } : {}) });
   },
 
   /// Save a version at a boundary — a kept rewrite, documents arriving, a
