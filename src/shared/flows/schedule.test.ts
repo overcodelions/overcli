@@ -148,6 +148,86 @@ describe('evaluateSchedule', () => {
     expect(d.action).toBe('skip');
   });
 
+  it('fires a slot the host slept through, rather than writing it off', () => {
+    // Vantage, 2026-08-31: a weekly Monday 1am shift, overcli open since the
+    // night before, the Mac in maintenance sleep from 00:59:52 to 01:13:18.
+    // The old rule compared the slot against the tick that noticed it and
+    // journalled "missed while overcli was closed" about an app that had been
+    // running for three hours. It is a thirteen-minute nap; run the shift.
+    const s = makeSchedule({
+      catchUp: 'skip',
+      trigger: { kind: 'daily', time: '01:00', days: [1] },
+      anchorAt: local(2026, 8, 30, 22, 13),
+    });
+    const due = local(2026, 8, 31, 1, 0);
+    const d = evaluateSchedule(s, local(2026, 8, 31, 1, 13), {
+      openSince: local(2026, 8, 30, 22, 13),
+      hostResumedAt: local(2026, 8, 31, 1, 13),
+    });
+    expect(d).toMatchObject({ action: 'fire', dueAt: due, late: true });
+  });
+
+  it('still calls it closed when overcli started after the slot passed', () => {
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 2, 9, 20), {
+      openSince: local(2026, 3, 2, 9, 5),
+    });
+    expect(d.action).toBe('skip');
+    if (d.action === 'skip') expect(d.reason).toMatch(/closed/i);
+  });
+
+  it('counts a slot the engine started milliseconds after as one it was there for', () => {
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 2, 9, 20), {
+      openSince: local(2026, 3, 2, 9, 0) + 3,
+    });
+    expect(d).toMatchObject({ action: 'fire', late: true });
+  });
+
+  it('stops catching up once a later occurrence has come due', () => {
+    // Open the whole time, but asleep from Monday morning to Wednesday
+    // afternoon. Tuesday's and Wednesday's 9am slots have been and gone, so
+    // Monday's is not the current one any more and firing it would mean two
+    // runs for one slot. Skipped — but described as the sleep it was.
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 4, 14, 0), {
+      openSince: local(2026, 3, 1, 12, 0),
+      hostResumedAt: local(2026, 3, 4, 13, 59),
+    });
+    expect(d.action).toBe('skip');
+    if (d.action === 'skip') expect(d.reason).toMatch(/asleep/i);
+  });
+
+  it('names the next occurrence, not sleep, when the host never slept', () => {
+    const s = makeSchedule({ catchUp: 'skip' });
+    const d = evaluateSchedule(s, local(2026, 3, 4, 14, 0), {
+      openSince: local(2026, 3, 1, 12, 0),
+    });
+    expect(d.action).toBe('skip');
+    if (d.action === 'skip') expect(d.reason).toMatch(/next occurrence/i);
+  });
+
+  it('forgives only minutes on a fast cadence and days on a slow one', () => {
+    // The catch-up window is the trigger itself, so it scales without a
+    // constant to tune. Same twenty-minute delay, opposite verdicts.
+    const openSince = local(2026, 3, 1, 12, 0);
+    const quarterly = makeSchedule({
+      catchUp: 'skip',
+      trigger: { kind: 'interval', everyMinutes: 15 },
+      anchorAt: local(2026, 3, 2, 8, 45),
+    });
+    expect(evaluateSchedule(quarterly, local(2026, 3, 2, 9, 20), { openSince }).action).toBe('skip');
+
+    const weekly = makeSchedule({
+      catchUp: 'skip',
+      trigger: { kind: 'daily', time: '09:00', days: [1] },
+    });
+    expect(evaluateSchedule(weekly, local(2026, 3, 2, 9, 20), { openSince })).toMatchObject({
+      action: 'fire',
+      late: true,
+    });
+  });
+
   it('coalesces every missed occurrence into a single catch-up firing', () => {
     const s = makeSchedule({ catchUp: 'once' });
     const d = evaluateSchedule(s, local(2026, 3, 4, 14, 0));

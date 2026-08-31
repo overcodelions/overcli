@@ -39,6 +39,7 @@ vi.mock('electron', () => ({
   shell: { openExternal: vi.fn(), openPath: vi.fn(), showItemInFolder: vi.fn() },
   Menu: { buildFromTemplate: vi.fn(), setApplicationMenu: vi.fn() },
   nativeTheme: {},
+  powerMonitor: { on: vi.fn() },
   Notification: class {
     static isSupported() {
       return false;

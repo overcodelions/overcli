@@ -407,7 +407,17 @@ export type ScheduleDecision =
 export function evaluateSchedule(
   s: ScheduleTiming,
   now: number,
-  opts: { busy?: boolean; awakeSince?: number } = {},
+  opts: {
+    busy?: boolean;
+    /// Tick start — the moment the caller knows it was awake and looking.
+    awakeSince?: number;
+    /// When overcli itself started watching the clock. Distinct from
+    /// `awakeSince`, and the difference is the whole point: see below.
+    openSince?: number;
+    /// When the host last woke from sleep, if it has. Only ever changes the
+    /// wording of a skip — never whether one happens.
+    hostResumedAt?: number;
+  } = {},
 ): ScheduleDecision {
   if (!s.enabled) return { action: 'wait', at: Number.POSITIVE_INFINITY };
 
@@ -446,15 +456,19 @@ export function evaluateSchedule(
     return { action: 'fire', dueAt, late };
   }
 
-  // `late` alone does not mean the occurrence was missed — only that nobody
-  // looked at it in time. An engine that walks its roster serially spends
-  // minutes inside one entry's turn, and everything behind it comes due while
-  // it is running. Those occurrences were not missed while overcli was
-  // closed; overcli was right here, busy. `awakeSince` is the moment the
-  // caller knows it was awake and looking (its tick start), so anything due
-  // at or after it fires late instead of being written off. Without this the
-  // last entries on a long roster starve: skipped, re-anchored to now, and
-  // skipped again on the next pass, forever.
+  if (!late) return { action: 'fire', dueAt, late: false };
+
+  // Past here the occurrence is properly late, and the question is whether
+  // that means it was MISSED. Three different things make an occurrence late
+  // and only one of them is worth writing off, so answer them in order.
+
+  // One: we were looking, and it came due anyway. An engine that walks its
+  // roster serially spends minutes inside one entry's turn, and everything
+  // behind it comes due while it is running. Those occurrences were not
+  // missed — overcli was right here, busy. `awakeSince` is the tick start, so
+  // anything due at or after it fires late instead of being written off.
+  // Without this the last entries on a long roster starve: skipped,
+  // re-anchored to now, and skipped again on the next pass, forever.
   //
   // Compared against `awakeSince` MINUS the grace window, not `awakeSince`
   // itself. The tick that services an occurrence is armed to wake at its due
@@ -462,18 +476,53 @@ export function evaluateSchedule(
   // `dueAt < awakeSince` true for the very slot the guard exists to protect,
   // and writing off every worker that shares a due time with a slower one
   // ahead of it. The same grace that decides `late` decides this.
-  const missedWhileClosed =
-    late &&
-    (opts.awakeSince === undefined || dueAt < opts.awakeSince - SCHEDULE_GRACE_MS);
+  if (opts.awakeSince !== undefined && dueAt >= opts.awakeSince - SCHEDULE_GRACE_MS) {
+    return { action: 'fire', dueAt, late };
+  }
 
-  if (missedWhileClosed && s.catchUp === 'skip') {
+  if (s.catchUp !== 'skip') return { action: 'fire', dueAt, late };
+
+  const nextAt = nextOccurrenceAfter(s.trigger, now);
+
+  // Two: was overcli even open when it came due? If it was not, nobody could
+  // have fired this, and by the time anyone looks the moment has gone.
+  //
+  // `openSince` is when the engine started watching the clock, which is the
+  // literal meaning of "was overcli open?". The tick start only ever
+  // approximated it, and got it wrong for every occurrence the app was
+  // present for but did not reach in time — a host that slept through the
+  // slot most of all, which is how a shift lost to a thirteen-minute nap came
+  // to be journalled as missed while overcli was closed. Same grace window,
+  // for the same reason as above: an engine that starts milliseconds after an
+  // occurrence was still there for it.
+  const wasOpen = opts.openSince !== undefined && dueAt >= opts.openSince - SCHEDULE_GRACE_MS;
+  if (!wasOpen) {
+    return { action: 'skip', dueAt, nextAt, reason: 'Missed while overcli was closed.' };
+  }
+
+  // Three: open, but late. Run it — unless this occurrence is no longer the
+  // current one. A shift lost to a short nap is still that slot's shift and
+  // should happen; one lost to a laptop shut all week is not, because another
+  // occurrence has come due behind it and firing now would mean two runs for
+  // what the user reads as one slot.
+  //
+  // The trigger decides that, so there is no catch-up window to tune and it
+  // scales with the cadence on its own: an every-15-minutes schedule forgives
+  // minutes, a Monday-morning one forgives days.
+  if (nextOccurrenceAfter(s.trigger, dueAt) <= now) {
     return {
       action: 'skip',
       dueAt,
-      nextAt: nextOccurrenceAfter(s.trigger, now),
-      reason: 'Missed while overcli was closed.',
+      nextAt,
+      // Say which it actually was. "Closed" used to be the only story this
+      // branch could tell, and it told it about sleeping hosts too.
+      reason:
+        opts.hostResumedAt !== undefined && opts.hostResumedAt > dueAt
+          ? 'Missed while the computer was asleep.'
+          : 'Missed — the next occurrence came due first.',
     };
   }
+
   return { action: 'fire', dueAt, late };
 }
 
