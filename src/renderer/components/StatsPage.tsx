@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import {
   Backend,
   BackendQuota,
   DailyBucket,
   FlowImpactRow,
   ModelTier,
+  ProjectGroupStats,
   QuotaWindow,
   StatsReport,
   TierStats,
@@ -179,26 +180,96 @@ export function StatsPage() {
         </Panel>
         </div>
 
-        <Panel title="By project" aside={<span className="text-ink-faint">top 40 by output</span>}>
-          <DataTable head={['Project', 'Sessions', 'Turns', 'Input', 'Output', 'Lines']} align="lrrrrr">
-            {report.byProject.slice(0, 40).map((p) => (
-              <tr key={p.id} className="border-t border-card hover:bg-card-strong/60 transition-colors">
-                <Td>
-                  <span className="truncate max-w-[340px] inline-block align-middle">{p.name}</span>
-                </Td>
-                <Td right>{p.sessions}</Td>
-                <Td right>{p.turns.toLocaleString()}</Td>
-                <Td right>{fmtCompact(p.inputTokens)}</Td>
-                <Td right>{fmtCompact(p.outputTokens)}</Td>
-                <Td right>
-                  <LinesCell added={p.linesAdded} deleted={p.linesDeleted} />
-                </Td>
-              </tr>
-            ))}
-          </DataTable>
-        </Panel>
+        <ProjectPanel groups={report.projectGroups ?? []} />
       </div>
     </div>
+  );
+}
+
+const KIND_LABEL: Record<string, string> = {
+  repo: 'repo',
+  worktree: 'worktrees',
+  workspace: 'workspace',
+  flow: 'flow',
+  other: 'other',
+};
+
+function ProjectPanel({ groups }: { groups: ProjectGroupStats[] }) {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const top = groups.slice(0, 25);
+  const max = Math.max(1, ...top.map((g) => g.outputTokens));
+  function toggle(id: string) {
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+  return (
+    <Panel
+      title="By project"
+      aside={<span className="text-ink-faint">worktrees and flow runs rolled into their project · top 25 by output</span>}
+    >
+      <DataTable head={['Project', 'Share', 'Sessions', 'Turns', 'Input', 'Output', 'Lines']} align="llrrrrr">
+        {top.map((g) => {
+          const expandable = g.children.length > 1;
+          const isOpen = open.has(g.id);
+          return (
+            <Fragment key={g.id}>
+              <tr
+                className={`border-t border-card hover:bg-card-strong/60 transition-colors ${expandable ? 'cursor-pointer' : ''}`}
+                onClick={expandable ? () => toggle(g.id) : undefined}
+              >
+                <Td>
+                  <span className="inline-block w-3 text-ink-faint">{expandable ? (isOpen ? '▾' : '▸') : ''}</span>
+                  <span className="truncate max-w-[300px] inline-block align-middle">{g.name}</span>
+                  <span className="ml-2 text-[10px] uppercase tracking-wider text-ink-faint">
+                    {KIND_LABEL[g.kind] ?? g.kind}
+                    {expandable ? ` · ${g.children.length}` : ''}
+                  </span>
+                </Td>
+                <Td>
+                  <div className="h-1.5 w-24 rounded bg-card-strong overflow-hidden">
+                    <div
+                      className="h-full bg-accent"
+                      style={{ width: `${Math.round((g.outputTokens / max) * 100)}%` }}
+                    />
+                  </div>
+                </Td>
+                <Td right>{g.sessions.toLocaleString()}</Td>
+                <Td right>{g.turns.toLocaleString()}</Td>
+                <Td right>{fmtCompact(g.inputTokens)}</Td>
+                <Td right>{fmtCompact(g.outputTokens)}</Td>
+                <Td right>
+                  <LinesCell added={g.linesAdded} deleted={g.linesDeleted} />
+                </Td>
+              </tr>
+              {expandable && isOpen
+                ? g.children.map((c) => (
+                    <tr key={c.id} className="border-t border-card/50 bg-card-strong/20">
+                      <Td faint>
+                        <span className="inline-block w-6" />
+                        <span className="truncate max-w-[280px] inline-block align-middle">
+                          {c.leafName || c.name}
+                        </span>
+                      </Td>
+                      <Td>{''}</Td>
+                      <Td right faint>{c.sessions.toLocaleString()}</Td>
+                      <Td right faint>{c.turns.toLocaleString()}</Td>
+                      <Td right faint>{fmtCompact(c.inputTokens)}</Td>
+                      <Td right faint>{fmtCompact(c.outputTokens)}</Td>
+                      <Td right faint>
+                        <LinesCell added={c.linesAdded} deleted={c.linesDeleted} />
+                      </Td>
+                    </tr>
+                  ))
+                : null}
+            </Fragment>
+          );
+        })}
+      </DataTable>
+    </Panel>
   );
 }
 

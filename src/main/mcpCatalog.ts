@@ -289,7 +289,7 @@ const CATALOG: CatalogEntry[] = [
     legacyNote:
       'This is the retired AWS API MCP server — AWS has stopped developing it. Reinstall to switch to the managed AWS MCP endpoint.',
     authNote:
-      'No keys to paste — the proxy uses your machine\'s AWS credentials via the standard SDK chain (env vars, `~/.aws/credentials`/`config`, SSO, or an IAM role). Run `aws configure` or `aws sso login` first.',
+      'No keys to paste — the proxy uses your machine\'s AWS credentials via the standard SDK chain (env vars, `~/.aws/credentials`/`config`, SSO, or an IAM role). Static keys come from `aws configure`; SSO profiles can be signed in below.',
     secrets: [
       {
         key: 'AWS_REGION',
