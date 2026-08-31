@@ -638,6 +638,64 @@ function AgentsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
   );
 }
 
+/// The outbound-webhook control. Its own component because the "Send test"
+/// button needs local state for the result, and `AdvancedPane` is otherwise
+/// a pure render of `local`.
+///
+/// The test posts the URL currently TYPED, not the saved one — testing a
+/// value you have to Save first is a button that lies on its first use.
+function WebhookField({
+  local,
+  patch,
+}: {
+  local: AppSettings;
+  patch: (p: Partial<AppSettings>) => void;
+}) {
+  const url = local.notificationWebhookUrl ?? '';
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; error?: string } | null>(null);
+
+  return (
+    <Row
+      label="Webhook URL"
+      help="Optional. overcli POSTs {text, title, body} as JSON here whenever it would otherwise only raise a desktop notification — scheduled-run failures, worker pauses waiting on your approval, watch hits. The text key alone renders in a Slack incoming webhook with no extra setup; title/body keep it usable for any generic receiver. Leave blank to turn it off."
+    >
+      <div className="flex gap-2">
+        <input
+          type="text"
+          placeholder="https://hooks.slack.com/services/..."
+          value={url}
+          onChange={(e) => {
+            setResult(null);
+            patch({ notificationWebhookUrl: e.target.value });
+          }}
+          className="field flex-1 px-2 py-1 text-xs font-mono"
+        />
+        <button
+          disabled={testing || !url.trim()}
+          onClick={() => {
+            setTesting(true);
+            setResult(null);
+            void window.overcli
+              .invoke('notify:testWebhook', url)
+              .then(setResult)
+              .catch((err: unknown) => setResult({ ok: false, error: String(err) }))
+              .finally(() => setTesting(false));
+          }}
+          className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          {testing ? 'Sending…' : 'Send test'}
+        </button>
+      </div>
+      {result && (
+        <div className={'text-[10px] ' + (result.ok ? 'text-ink-muted' : 'text-red-300')}>
+          {result.ok ? 'Sent — check the receiver.' : `Failed: ${result.error}`}
+        </div>
+      )}
+    </Row>
+  );
+}
+
 function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
   return (
     <div>
@@ -665,6 +723,12 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
             <option value="0">Never</option>
           </select>
         </Row>
+      </Group>
+      <Group
+        title="Notifications"
+        description="Where overcli tells you a scheduled run failed or a worker is waiting on you."
+      >
+        <WebhookField local={local} patch={patch} />
       </Group>
       <Group title="Updates" description="Which build channel this app auto-updates from.">
         <Row label="Channel" help="Stable tracks tagged releases. Nightly tracks the rolling nightly prerelease — newer, less tested, and not notarized, so macOS Gatekeeper warns on a fresh nightly download. Switching takes effect immediately.">

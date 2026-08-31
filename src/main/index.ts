@@ -104,6 +104,7 @@ import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
 import { installElectronHost } from './hostElectron';
+import { configuredWebhookUrl, sendWebhookNotification, validateWebhookUrl } from './webhookNotify';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
@@ -274,6 +275,14 @@ function noteAgentWrites(event: MainToRendererEvent): void {
 /// scheduler and the worker engine can hand the same callback to a headless
 /// host that writes a log line instead. What stays here is the click, because
 /// only this file knows about `mainWindow`.
+///
+/// The outbound webhook is deliberately NOT added here, even though this
+/// function is the choke point for every `deps.notify(...)` site. It sits on
+/// the host instead (`hostElectron.ts` / `hostNode.ts` / `cli/engines.ts`),
+/// because this file is Electron-only: the watch loop bypasses this function
+/// entirely and `overcli serve` never loads this file at all. Adding a second
+/// wrap here would double-post every desktop notification. See the header of
+/// `webhookNotify.ts`.
 function showDesktopNotification(args: { title: string; body: string }): void {
   host().notify(args);
 }
@@ -594,6 +603,15 @@ export function registerIpc(): void {
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
   ipcMain.handle('store:saveFileTabs', (_e, tabs) => Store.saveFileTabs(tabs));
+  ipcMain.handle('notify:testWebhook', async (_e, url) => {
+    const raw = url ?? configuredWebhookUrl() ?? '';
+    const checked = validateWebhookUrl(raw);
+    if (!checked.ok) return { ok: false, error: checked.error };
+    return await sendWebhookNotification(checked.url, {
+      title: 'overcli test notification',
+      body: 'If you can read this, overcli can reach you when you are away from the desktop.',
+    });
+  });
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
   ipcMain.handle('app:whatsNew', () => getWhatsNew());
   ipcMain.handle('app:markWhatsNewSeen', () => markWhatsNewSeen());

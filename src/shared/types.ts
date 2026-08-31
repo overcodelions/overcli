@@ -954,6 +954,17 @@ export interface AppSettings {
   /// users can flip it mid-conversation without touching Settings.
   defaultShowToolActivity: boolean;
   autoDowngrade: boolean;
+  /// Where to POST a copy of every notification, so scheduled runs and
+  /// unattended workers can reach you when you are not at the desktop.
+  /// Empty or unset means off — the OS notification is then the only
+  /// channel, which is the behaviour that predates this field.
+  ///
+  /// Deliberately a plain setting rather than a `HostSecrets` entry: an
+  /// incoming-webhook URL is a capability URL for one channel, not an
+  /// account credential, and putting it in the keychain would make it
+  /// unreadable to the headless host, which has no keychain at all.
+  /// See `src/main/webhookNotify.ts`.
+  notificationWebhookUrl?: string;
   /// Theme preference. 'system' follows the OS's dark-mode setting via
   /// the `prefers-color-scheme` media query.
   theme: ThemePreference;
@@ -1106,6 +1117,12 @@ export interface IPCInvokeMap {
   'store:saveSelection': (id: UUID | null) => void;
   'store:saveView': (view: PersistedView) => void;
   'store:saveFileTabs': (tabs: PersistedFileTabs) => void;
+  /// Send a canned notification to a webhook URL and report whether it
+  /// landed. Takes the URL as an argument rather than reading the saved
+  /// setting so Settings can test what is currently TYPED, before Save —
+  /// otherwise the button could only ever test the previous value. Omit it
+  /// to test the saved one.
+  'notify:testWebhook': (url?: string) => { ok: boolean; error?: string };
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
   /// Release notes the user hasn't seen yet, parsed from the bundled
