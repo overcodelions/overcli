@@ -280,6 +280,15 @@ export class WorkerEngine {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private ticking = false;
+  /// When this engine started watching the clock. A shift that came due
+  /// before it genuinely had nobody to fire it; one that came due after it
+  /// did not, however late we are in noticing — the host slept, or the
+  /// worker ahead on the roster ran long. `evaluateSchedule` needs the
+  /// difference to tell the truth about a missed shift.
+  private openSince = 0;
+  /// The last time the host woke from sleep, from `onHostResume`. Only used
+  /// to word a skip honestly.
+  private hostResumedAt: number | undefined;
   /// Workers with a shift's planning turn in flight. One shift at a time per
   /// worker — a producer turn can take minutes, and a second one against the
   /// same journal would propose the same things twice.
@@ -341,6 +350,7 @@ export class WorkerEngine {
   /// Load persisted workers, reconcile batches that settled while the app was
   /// closed into the journal, and arm the timer. Called once at wiring time.
   start(): void {
+    this.openSince = this.now();
     for (const w of this.store.loadAll()) this.workers.set(w.id, w);
     // An install that predates the treasury gets a pool equal to what it was
     // already committed to — the sum of its caps. Written back immediately so
@@ -362,6 +372,19 @@ export class WorkerEngine {
     this.disposed = true;
     if (this.timer) this.timers.clear(this.timer);
     this.timer = null;
+  }
+
+  /// The host woke from sleep. Two things need to happen and neither is
+  /// automatic: record it, so a shift the sleep swallowed is journalled as
+  /// slept-through rather than as overcli being closed, and look at the clock
+  /// NOW. A timer armed for 01:00 does not fire during system sleep and does
+  /// not fire on wake either — it fires whenever the runtime next gets round
+  /// to it, which is how a shift stays unnoticed for minutes after the lid
+  /// opens. Ticking here bounds that to the wake itself.
+  onHostResume(): void {
+    if (this.disposed) return;
+    this.hostResumedAt = this.now();
+    void this.tick();
   }
 
   // ---- READS ------------------------------------------------------------
@@ -1138,6 +1161,8 @@ export class WorkerEngine {
       if (!timing) continue; // on demand — nothing to wake up for
       const decision = evaluateSchedule(timing, now, {
         busy: this.firing.has(w.id),
+        openSince: this.openSince,
+        hostResumedAt: this.hostResumedAt,
       });
       if (decision.action === 'fire') {
         soonest = now;
@@ -1182,6 +1207,8 @@ export class WorkerEngine {
         const decision = evaluateSchedule(timing, now, {
           busy: false,
           awakeSince,
+          openSince: this.openSince,
+          hostResumedAt: this.hostResumedAt,
         });
         if (decision.action === 'wait') continue;
         if (decision.action === 'skip') {
