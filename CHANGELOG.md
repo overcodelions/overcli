@@ -2,6 +2,11 @@
 
 All notable changes to Overcli are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A shift the computer slept through is no longer written off as one overcli was closed for.** A weekly worker due at 1am did not run, and its journal said it had been missed while overcli was closed — while the app had in fact been open for three hours and went on to work two more shifts that same night. The Mac had entered maintenance sleep at 00:59:52 and woke at 01:13:18, and the scheduler had only one signal to reason with: the moment the tick that noticed the occurrence began. Anything older than that became "closed", which is a claim about the app made from a measurement of the tick, and it is wrong for every occurrence overcli was present for but did not reach in time — a sleeping host most of all. The decision now takes when the engine started watching the clock, which is the literal meaning of the question, so a slot that predates the app being open is still skipped and honestly named, and one that does not is *run*. It is only abandoned once a later occurrence has come due behind it, because replaying it then would mean two runs for what reads as one slot; the trigger itself decides that, so there is no catch-up window to tune and the tolerance scales with the cadence — an every-15-minutes schedule forgives minutes, a Monday-morning one forgives days. A skip now says which it was: closed, slept through, or overtaken. Scheduled flows were reasoning from even less — they passed no wake signal at all — and are fixed by the same change. And because a sleeping Mac runs no timers, an alarm armed for 1am neither fires during sleep nor on waking, but whenever the runtime next gets round to it: both engines are now told the moment the host resumes, which is what bounds the delay to the wake rather than to luck.
+
 ## [0.17.0] - 2026-08-30
 
 ### Added

@@ -106,6 +106,11 @@ export class SchedulerEngine {
   /// in which the schedule looks idle to anything that asks. A double-click on
   /// Run now, or a tick landing mid-launch, would each start a second run.
   private firing = new Set<UUID>();
+  /// When this engine started watching the clock, and when the host last woke
+  /// from sleep. Both only reach `evaluateSchedule`, which uses them to tell
+  /// a schedule nobody was there for from one that was merely serviced late.
+  private openSince = 0;
+  private hostResumedAt: number | undefined;
 
   private readonly now: () => number;
   private readonly timers: NonNullable<SchedulerDeps['timers']>;
@@ -123,6 +128,7 @@ export class SchedulerEngine {
 
   /// Load persisted schedules and arm the timer. Called once at wiring time.
   start(): void {
+    this.openSince = this.now();
     for (const s of this.store.loadAll()) this.schedules.set(s.id, s);
     this.arm();
   }
@@ -131,6 +137,15 @@ export class SchedulerEngine {
     this.disposed = true;
     if (this.timer) this.timers.clear(this.timer);
     this.timer = null;
+  }
+
+  /// The host woke from sleep. Same two jobs as the worker engine's: record
+  /// it so a slept-through occurrence is described as one, and tick straight
+  /// away rather than waiting for a timer that slept through its own alarm.
+  onHostResume(): void {
+    if (this.disposed) return;
+    this.hostResumedAt = this.now();
+    void this.tick();
   }
 
   // ---- READS ------------------------------------------------------------
@@ -257,7 +272,11 @@ export class SchedulerEngine {
     const now = this.now();
     let soonest = Number.POSITIVE_INFINITY;
     for (const s of this.schedules.values()) {
-      const decision = evaluateSchedule(s, now, { busy: this.isBusy(s) });
+      const decision = evaluateSchedule(s, now, {
+        busy: this.isBusy(s),
+        openSince: this.openSince,
+        hostResumedAt: this.hostResumedAt,
+      });
       if (decision.action === 'fire') {
         soonest = now;
         break;
@@ -285,7 +304,11 @@ export class SchedulerEngine {
         // into the history for a run that hasn't even started.
         if (this.firing.has(s.id)) continue;
         const busy = this.isBusy(s);
-        const decision = evaluateSchedule(s, now, { busy });
+        const decision = evaluateSchedule(s, now, {
+          busy,
+          openSince: this.openSince,
+          hostResumedAt: this.hostResumedAt,
+        });
         if (decision.action === 'wait') continue;
         if (decision.action === 'skip') {
           this.record(s, { at: now, outcome: 'skipped', note: decision.reason });

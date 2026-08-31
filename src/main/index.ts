@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -552,6 +552,17 @@ export function registerIpc(): void {
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
   workerEngine.start();
+  // A sleeping Mac runs no timers. Both engines arm a `setTimeout` for the
+  // next due moment, and a host that sleeps across it wakes with the alarm
+  // already in the past and no promise about when the runtime will service
+  // it. Telling them the moment the host is back turns "some minutes after
+  // the lid opens, and we'll call it missed while overcli was closed" into
+  // "now, and we know why it was late". Registered once, after both engines
+  // exist, because a resume concerns both.
+  powerMonitor.on('resume', () => {
+    scheduler?.onHostResume();
+    workerEngine?.onHostResume();
+  });
   // Symbol lookup resolves its backend per call rather than capturing one:
   // the user can change the preferred backend in Settings mid-session, and
   // a lookup is short-lived enough that there's nothing to migrate.
