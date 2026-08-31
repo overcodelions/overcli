@@ -82,7 +82,27 @@ export interface OrchestrationItem {
   runId?: UUID;
   /// Mirror of the child run's worktree branch, copied on completion so the
   /// ledger can show/link it without holding the whole run.
+  ///
+  /// Display only — do NOT navigate by it. A flow that lands its work by
+  /// branching off the scratch branch and then deleting it (what a worker
+  /// shift does: commit, `git branch prometheus/<date>-<slug>`, remove the
+  /// worktree) leaves this pointing at a ref that no longer resolves. Use
+  /// `headSha` for that.
   branchName?: string;
+  /// Tip commit of the item's work at the moment its run went terminal.
+  ///
+  /// The durable half of `branchName`. A commit id survives everything a
+  /// branch name doesn't — the branch being renamed, deleted, or merged
+  /// away — so `git branch --contains <headSha>` can still find wherever
+  /// the work ended up long after the run itself was evicted. This is the
+  /// ONLY link back to a finished item's code once `pruneOldRuns` has taken
+  /// the run, which is why it is captured here on the item rather than left
+  /// to be read off the run.
+  ///
+  /// Absent when the capture failed (a non-git cwd, or a branch AND worktree
+  /// both already gone by the time the run reported terminal) and on every
+  /// item that finished before this field existed.
+  headSha?: string;
   /// Short status note (e.g. an error message when `failed`).
   note?: string;
   /// Set when a restart settled this item rather than a person or a run: a

@@ -3927,6 +3927,7 @@ function PlanItemRow({
   );
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const openFile = useStore((s) => s.openFile);
+  const openSheet = useStore((s) => s.openSheet);
   // Optimistic, same as PauseBanner: the resume lands in the main process and
   // comes back as a state change, so without this the row looks dead for a
   // round trip. Cleared by the effect when the run actually moves.
@@ -3998,6 +3999,20 @@ function PlanItemRow({
   // a return trip across the app.
   const openRun = () => {
     if (item.runId) setActiveRun(item.runId);
+  };
+
+  /// The fallback door, for when the run is gone. Reads the batch's project
+  /// and base off the orchestration rather than the run — which is precisely
+  /// the record that no longer exists by the time this is the live path.
+  const openWork = () => {
+    if (!item.headSha) return;
+    openSheet({
+      type: 'shiftWork',
+      projectPath: orchestration.projectPath,
+      headSha: item.headSha,
+      title: item.candidate.title,
+      baseBranch: item.baseBranch ?? orchestration.baseBranch,
+    });
   };
 
   const inFlight = resuming || continuing;
@@ -4076,13 +4091,25 @@ function PlanItemRow({
             )}
             {PLAN_STATUS[item.status]?.text ?? item.status}
           </span>
-          {/* A door only while there is a room: a rejected item keeps its
-            runId for the record, but the run behind it is deleted, and a
-            click that opens nothing reads as broken. */}
+          {/* A door only while there is a room — but a finished item has two
+            rooms, and they don't expire together. The run is the better one
+            (it can be read and talked to), and it goes first; when eviction
+            has taken it, the commit the item landed is still there, so fall
+            through to that rather than back to dead text. Only an item with
+            neither — rejected, or finished before `headSha` was recorded —
+            is inert, because a click that opens nothing reads as broken. */}
           {run ? (
             <button
               onClick={openRun}
               title="Open the run"
+              className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink hover:underline focus:outline-none"
+            >
+              {item.candidate.title}
+            </button>
+          ) : item.headSha ? (
+            <button
+              onClick={openWork}
+              title="The run has aged out — open the work it committed"
               className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink hover:underline focus:outline-none"
             >
               {item.candidate.title}

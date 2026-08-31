@@ -27,6 +27,7 @@ import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
 import { ArchiveAllSheet } from './sheets/ArchiveAllSheet';
 import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSheet';
 import { ShiftReaderSheet } from './workers/ShiftReaderSheet';
+import { ShiftWorkSheet } from './sheets/ShiftWorkSheet';
 
 /// The diff sheets need much more horizontal room than everything else
 /// (sidebar + full-width diff body), so we widen the container frame
@@ -47,6 +48,9 @@ const WIDE_SHEETS = new Set<string>([
   // A planning turn is a document. The whole point of opening it here is the
   // room the desk could not give it.
   'shiftReader',
+  // A diff surface like the rest of them — same two-pane layout, same need
+  // for room.
+  'shiftWork',
   // Version diffs need the same room the other diff surfaces get.
   'versions',
 ]);
@@ -138,6 +142,14 @@ export function SheetHost() {
           <ShiftReaderSheet
             workerId={sheet.workerId}
             orchestrationId={sheet.orchestrationId}
+          />
+        )}
+        {sheet.type === 'shiftWork' && (
+          <ShiftWorkSheet
+            projectPath={sheet.projectPath}
+            headSha={sheet.headSha}
+            title={sheet.title}
+            baseBranch={sheet.baseBranch}
           />
         )}
         {sheet.type === 'archiveConversation' && (
