@@ -1788,10 +1788,16 @@ export interface IPCInvokeMap {
     dirPath: string;
     description: string;
   }) => { ok: true; path: string; backend: string } | { ok: false; error: string };
+  /// Each file carries EITHER a `sourcePath` (the usual case — the main
+  /// process copies disk to disk) or `dataBase64` (a `File` with no path
+  /// behind it, such as a pasted image). `rejections` reports the files that
+  /// were skipped while others landed.
   'fs:copyIntoProject': (args: {
     projectPath: string;
-    files: Array<{ name: string; dataBase64: string }>;
-  }) => { ok: true; written: number } | { ok: false; error: string };
+    files: Array<{ name: string; dataBase64?: string; sourcePath?: string }>;
+  }) =>
+    | { ok: true; written: number; rejections: string[] }
+    | { ok: false; error: string };
   /// The folder is scaffolded and the history started in one call. A failed
   /// history is NOT a failed creation — the folder exists and is usable — so
   /// it comes back as `historyOn: false` plus the reason, and the caller

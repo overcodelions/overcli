@@ -95,6 +95,7 @@ export function WorkersSidebar({
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const openWorkerActivity = useWorkersStore((s) => s.openWorkerActivity);
   const view = useWorkersStore((s) => s.view);
+  const showToday = useWorkersStore((s) => s.showToday);
   const showQueue = useWorkersStore((s) => s.showQueue);
   const showCalendar = useWorkersStore((s) => s.showCalendar);
   const showFunds = useWorkersStore((s) => s.showFunds);
@@ -104,6 +105,9 @@ export function WorkersSidebar({
   const openHire = useWorkersStore((s) => s.openHire);
   const importFromFile = useWorkersStore((s) => s.importFromFile);
   const runs = useFlowsStore((s) => s.runs);
+  // Same reason as the pane: a run answering a post-completion turn is live
+  // work, and only the participant's runner knows it.
+  const runners = useRunningMap();
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const projects = useStore((s) => s.projects);
@@ -201,9 +205,9 @@ export function WorkersSidebar({
   // sidebar has room for one bit of it.
   const queueRunning = useMemo(
     () =>
-      buildWorkQueue(orchestrations, runs, workers, shiftProgress, Date.now(), runsLoaded).running
-        .length,
-    [orchestrations, runs, workers, shiftProgress, runsLoaded],
+      buildWorkQueue(orchestrations, runs, workers, shiftProgress, Date.now(), runsLoaded, runners)
+        .running.length,
+    [orchestrations, runs, workers, shiftProgress, runsLoaded, runners],
   );
 
   return (
@@ -238,14 +242,40 @@ export function WorkersSidebar({
         </>
       )}
 
-      {/* First of the roster-wide screens because it is the tab's landing
-          page — the one that answers NOW, where the calendar answers next and
-          the report answers last. The dot is the only live thing in this
-          column: it says the crew is working without saying how much, which
-          is the pane's job. */}
+      {/* The tab's landing page: one day, every worker, in the order it
+          happened. The dot is the only live thing in this column — it says
+          the crew is working without saying how much, which is the pane's
+          job — and it lives HERE rather than on the queue below because this
+          is the screen it would send you to. */}
+      <button
+        onClick={showToday}
+        title="Where the crew is right now, and what it has done today"
+        className={
+          "sidebar-row mb-1 mt-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+          "hover:bg-card-strong hover:text-ink hover:border-card " +
+          "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+          (view === "today"
+            ? "sidebar-row-selected text-ink"
+            : "text-ink-muted")
+        }
+      >
+        <TodayIcon />
+        <span className="truncate text-[13px] leading-tight">Today</span>
+        {queueRunning > 0 && (
+          <span
+            aria-hidden
+            title={`${queueRunning} job(s) running`}
+            className="ml-auto h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+          />
+        )}
+      </button>
+
+      {/* Under Today, because it answers the same question with the day taken
+          off: any job the crew has ever run, found by searching rather than
+          by scrolling to the hour it happened. */}
       <button
         onClick={showQueue}
-        title="Everything the crew has in the air, and what it just finished"
+        title="Every job the crew has run — filter it, find it, act on it"
         className={
           "sidebar-row mb-1 mt-1 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
           "hover:bg-card-strong hover:text-ink hover:border-card " +
@@ -257,13 +287,6 @@ export function WorkersSidebar({
       >
         <QueueIcon />
         <span className="truncate text-[13px] leading-tight">Work queue</span>
-        {queueRunning > 0 && (
-          <span
-            aria-hidden
-            title={`${queueRunning} job(s) running`}
-            className="ml-auto h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-accent"
-          />
-        )}
       </button>
 
       {/* Above the roster, not in it: the calendar is about every worker at
@@ -552,6 +575,26 @@ function PotIcon() {
       <path d="M2.4 4.3h9.2l-1 6.4a1.4 1.4 0 0 1-1.4 1.2H4.8a1.4 1.4 0 0 1-1.4-1.2z" />
       <path d="M1.6 4.3h10.8" />
       <path d="M4 8.4h6" opacity="0.55" />
+    </svg>
+  );
+}
+
+/// A clock face with one hand, at the same 14-unit weight as its neighbours.
+/// Deliberately not a calendar page — the calendar icon two rows down means
+/// "which days", and this screen means "this day, by the hour".
+function TodayIcon() {
+  return (
+    <svg
+      viewBox="0 0 14 14"
+      aria-hidden
+      className="h-3.5 w-3.5 shrink-0 text-ink-faint"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.2"
+      strokeLinecap="round"
+    >
+      <circle cx="7" cy="7" r="5.2" />
+      <path d="M7 4.1V7l2 1.5" />
     </svg>
   );
 }

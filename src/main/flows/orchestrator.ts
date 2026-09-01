@@ -571,6 +571,81 @@ export class OrchestratorImpl {
     };
   }
 
+  /// Park a batch the CALLER already decided on — no producer turn, no
+  /// candidates to parse, no model spend. The one item is built from the
+  /// caller's own words.
+  ///
+  /// This exists because a planning turn is a judgment call, and there are
+  /// asks that carry no judgment left to make: a worker's desk `/run`, where
+  /// the manager has named the flow, named the work, and is standing there.
+  /// Routing those through `propose` bought nothing and cost a full research
+  /// turn — the producer, holding every tool the flow holds, would answer the
+  /// ask itself and emit no candidates, so the flow never ran.
+  ///
+  /// Everything downstream is deliberately identical to `parkProposal`: same
+  /// record, same statuses, same approval gate, same ledger row. Only the
+  /// candidate's provenance differs.
+  async parkDirect(args: {
+    origin?: Orchestration['origin'];
+    projectPath: string;
+    /// The work itself, verbatim — this becomes the flow's first-step prompt.
+    prompt: string;
+    /// Batch title AND the candidate's headline.
+    title: string;
+    flowId: string;
+    runIn: RunIn;
+    baseBranch?: string;
+    maxConcurrent: number;
+    /// Launch immediately instead of parking. Off by default: the guarantee
+    /// that nothing typed at a desk dispatches unattended lives with the
+    /// caller, and the caller is the worker engine.
+    autoLaunch?: boolean;
+    note?: string;
+  }): Promise<
+    { ok: true; orchestrationId: UUID; count: number; queued: number } | { ok: false; error: string }
+  > {
+    const projectPath = args.projectPath?.trim();
+    if (!projectPath) return { ok: false, error: 'That worker has no project.' };
+    const prompt = args.prompt?.trim();
+    if (!prompt) return { ok: false, error: 'Say what you want run.' };
+
+    const runIn: RunIn = args.runIn === 'cwd' ? 'cwd' : 'worktree';
+    const baseBranch = runIn === 'cwd' ? undefined : args.baseBranch?.trim() || undefined;
+    const candidate: Candidate = {
+      id: randomUUID(),
+      title: args.title.trim() || prompt.split('\n')[0].slice(0, 80),
+      prompt,
+      note: args.note,
+    };
+    const orchestration: Orchestration = {
+      id: randomUUID(),
+      title: args.title.trim() || 'Direct run',
+      projectPath,
+      runIn,
+      baseBranch,
+      maxConcurrent:
+        runIn === 'cwd' ? 1 : Math.max(1, Math.min(8, Math.floor(args.maxConcurrent) || 1)),
+      // No `reply`: there was no turn to reply. The prompt is recorded so the
+      // ledger can still show what was asked for and by whom.
+      producer: { prompt, reply: '' },
+      origin: args.origin,
+      createdAt: Date.now(),
+      items: [
+        {
+          candidate,
+          flowId: args.flowId,
+          baseBranch: runIn === 'cwd' ? undefined : baseBranch,
+          status: args.autoLaunch ? 'queued' : 'proposed',
+        },
+      ],
+    };
+    this.batches.set(orchestration.id, orchestration);
+    this.persistAndEmit(orchestration);
+    const queued = orchestration.items.filter((i) => i.status === 'queued').length;
+    if (queued > 0) await this.pump(orchestration.id);
+    return { ok: true, orchestrationId: orchestration.id, count: 1, queued };
+  }
+
   /// Release a parked batch. Items named in `approve` are queued (with an
   /// optional flow remap); every other `proposed` item is cancelled, because
   /// the user reviewed the list and left them out on purpose. Omit `approve`

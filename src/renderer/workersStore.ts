@@ -122,7 +122,7 @@ interface WorkersState {
   /// what it came to (report); nothing answered NOW, so the tab opened on
   /// whichever worker happened to be hired first — an accident of sort order
   /// standing in for a front page.
-  view: 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
+  view: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
   /// Bumped every time a worker is picked from the roster, including a pick
   /// of the one already on screen. The pane keys the worker's screen on it, so
   /// clicking a name lands on that worker's desk rather than on whichever tab
@@ -334,6 +334,7 @@ interface WorkersActions {
   /// left open: the editor renders over the desk, so a half-written edit from
   /// earlier would swallow the worker just asked for.
   openWorkerDesk(id: string): void;
+  showToday(): void;
   showQueue(): void;
   showCalendar(): void;
   showFunds(): void;
@@ -650,7 +651,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   selectedWorkerId: null,
   treasury: null,
   allocation: null,
-  view: 'queue',
+  view: 'today',
   selectSeq: 0,
   deskFocus: null,
   previewEmpty: false,
@@ -805,6 +806,11 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
 
   openWorkerDesk(id) {
     get().selectWorker(id);
+  },
+
+  showToday() {
+    leavePane(get);
+    set({ view: 'today' });
   },
 
   showQueue() {

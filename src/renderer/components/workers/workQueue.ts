@@ -22,16 +22,12 @@ import type { Orchestration, OrchestrationItem } from '@shared/flows/orchestrati
 import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 
-import { isRenderableOutput } from '@shared/flows/worker';
+import { describeCadence, isRenderableOutput } from '@shared/flows/worker';
 
+import { runIsLive } from '../flows/FlowRunSidebarRow';
 import { startOfDay, toWorkerActivity } from './workerDeskSelectors';
 
 import type { WorkerFile } from './workerDeskSelectors';
-
-/// How many finished rows the tail keeps. The band is a glance backwards, not
-/// the Report — ten is roughly a morning's work for a small roster, and the
-/// Report is one click away in the same sidebar for anything longer.
-export const FINISHED_LIMIT = 10;
 
 /// Where a row sits. The three bands are three different asks of the reader:
 /// watch it, act on it, or notice it happened.
@@ -58,6 +54,13 @@ export type QueueStatus =
   | 'proposed'
   | 'paused'
   | 'done'
+  /// The flow is over, but the worker is mid-turn ANSWERING YOU — you typed
+  /// at the finished run and it is still writing back. The run's own state
+  /// says `done` and always will (a hijack turn rides the participant's
+  /// conversation, not the orchestrator), so a queue that reads only the run
+  /// files live work under Finished and the front page contradicts the
+  /// sidebar, which has always shown these as alive.
+  | 'responding'
   | 'failed'
   | 'quiet';
 
@@ -94,9 +97,20 @@ export interface QueueRow {
   /// The job, in the worker's own words. A `quiet` row is titled by its
   /// batch instead, since there is no job to name.
   title: string;
-  /// The flow the job runs. Absent while a shift is still planning, and on a
-  /// quiet shift, which never picked one.
+  /// The flow the job runs, as the RUN recorded it. This is the honest
+  /// answer — it is the snapshot of what actually executed — but it dies with
+  /// the run, and runs are evicted. Pair it with `flowId` below.
   flowName?: string;
+  /// The flow's id, off the item rather than off the run.
+  ///
+  /// It outlives eviction, which `flowName` does not: after a restart the
+  /// renderer holds only the last few runs, so every older row lost its flow
+  /// and the queue's Flow column came back a full column of em-dashes. The id
+  /// lets a view fall back to the library's current name for that flow —
+  /// second-best, because the flow may have been renamed since, but a
+  /// slightly stale name beats a dash. Absent on a quiet shift, which never
+  /// picked one.
+  flowId?: string;
   runId?: string;
   /// Empty unless the job has a run to draw a track for.
   steps: QueueStep[];
@@ -115,11 +129,96 @@ export interface QueueRow {
 export interface WorkQueue {
   running: QueueRow[];
   needsYou: QueueRow[];
-  /// Capped at `FINISHED_LIMIT`, newest first.
+  /// Everything the crew has finished that the renderer still holds, newest
+  /// first. Uncapped: both readers of this list slice it themselves — Today
+  /// to the day, the queue to whatever the filters say — and a cap here
+  /// would silently shorten both.
   finished: QueueRow[];
-  /// Everything finished since midnight, INCLUDING what the cap dropped —
-  /// the count has to be the day's real total or the heading misreports it.
-  finishedToday: number;
+}
+
+/// Whether each conversation is streaming — `useRunningMap()`. A run's
+/// participant conversations are the only place a post-completion turn shows
+/// up, so without this the queue cannot see one.
+export type RunnerMap = Record<string, { isRunning: boolean } | undefined>;
+
+/// How far ahead the queue is willing to look.
+///
+/// The page is about now, and "coming up" is only worth a band while it is
+/// still part of now — something you will still be sitting here for. Four
+/// hours is a morning or an afternoon: past it the answer stops being "wait
+/// for it" and starts being "come back tomorrow", which is the shift
+/// calendar's question and not this page's. It also keeps the band honest by
+/// keeping it OFF: with a roster of daily 09:00 workers it shows for a few
+/// hours a day and is absent the rest, so its presence means something.
+export const SOON_HORIZON_MS = 4 * 60 * 60 * 1000;
+
+/// Inside this, a shift is something you are about to watch happen; outside
+/// it, something merely on the books. The difference is drawn as weight —
+/// see `UpcomingRow.imminent`.
+export const IMMINENT_MS = 60 * 60 * 1000;
+
+/// A shift that hasn't happened yet. Deliberately NOT a `QueueRow`: every
+/// other row on this page is a job a worker actually proposed, and a
+/// projection that borrowed the same type would sooner or later be counted
+/// as one — in `finishedToday`, in the running count, in the crew sentence.
+/// It has no run, no items and no outcome, and the separate type is what
+/// keeps it from pretending otherwise.
+export interface UpcomingRow {
+  workerId: string;
+  workerName: string;
+  /// When the engine says the shift starts. Never re-derived here — see the
+  /// note at the top of `upcoming.ts`; a second answer drifts from the one
+  /// the scheduler will act on.
+  at: number;
+  /// The rule in words: "Every weekday at 09:00". A countdown says how long;
+  /// the cadence says why, and it is the difference between "in 40m" and "in
+  /// 40m, and then again every day at this time".
+  cadence: string;
+  /// Full weight, versus dimmed and smaller. Read off the CLOCK and not off
+  /// the row's position: three shifts that all land in the same ten minutes
+  /// are equally imminent, and fading the third for being third would be the
+  /// list telling you something about itself rather than about the work.
+  imminent: boolean;
+  /// Already due and not yet started — the app was asleep, or the shift is
+  /// queued behind something. Kept rather than filtered out for the same
+  /// reason `upcomingAgenda` keeps it: a stuck shift that vanishes reads as
+  /// no shift at all.
+  overdue: boolean;
+}
+
+/// The shifts about to start, soonest first.
+///
+/// Workers only. Schedules fire unattended work too and share the calendar
+/// with the crew, but this page's opening rule is that every row traces back
+/// to something a WORKER did — a schedule has no desk to click through to and
+/// no name in the roster, and the calendar is where the two species are drawn
+/// together.
+export function upcomingShifts(
+  workers: Record<string, Worker>,
+  nextShiftAt: Record<string, number | null>,
+  /// Workers already mid-turn. Their shift is not coming up, it is HERE —
+  /// and it is already drawn as a `planning` row in the running band.
+  planning: PlanningProgress = {},
+  now: number = Date.now(),
+  horizon: number = SOON_HORIZON_MS,
+): UpcomingRow[] {
+  const rows: UpcomingRow[] = [];
+  for (const [workerId, at] of Object.entries(nextShiftAt)) {
+    const worker = workers[workerId];
+    // A benched worker's cadence is still on file and its next occurrence is
+    // still computed; it just isn't going to happen.
+    if (at == null || !worker?.enabled || planning[workerId]) continue;
+    if (at - now > horizon) continue;
+    rows.push({
+      workerId,
+      workerName: worker.name,
+      at,
+      cadence: describeCadence(worker.cadence),
+      imminent: at - now <= IMMINENT_MS,
+      overdue: at <= now,
+    });
+  }
+  return rows.sort((a, b) => a.at - b.at || a.workerId.localeCompare(b.workerId));
 }
 
 /// A planning turn in flight, keyed by worker id — `workersStore.shiftProgress`.
@@ -136,6 +235,7 @@ export function buildWorkQueue(
   planning: PlanningProgress = {},
   now: number = Date.now(),
   runsLoaded = true,
+  runners: RunnerMap = {},
 ): WorkQueue {
   const running: QueueRow[] = [];
   const needsYou: QueueRow[] = [];
@@ -187,7 +287,7 @@ export function buildWorkQueue(
 
     for (const item of batch.items) {
       const run = item.runId ? runs[item.runId] : undefined;
-      const status = reconcile(item, run, runsLoaded);
+      const status = reconcile(item, run, runsLoaded, run ? runIsLive(run, runners) : false);
       const band = status && bandFor(status);
       if (!status || !band) continue;
       // A benched worker is OFF DUTY, and nothing off duty gets to hold the
@@ -197,7 +297,7 @@ export function buildWorkQueue(
       // decision you have implicitly made. The one exception is work that is
       // genuinely still moving: benching someone mid-run does not stop the
       // run, and hiding a live job would be the worse lie.
-      if (!worker.enabled && status !== 'running') continue;
+      if (!worker.enabled && !isLive(status)) continue;
       const row: QueueRow = {
         key: `${batch.id}:${item.candidate.id}`,
         workerId: origin.workerId,
@@ -211,6 +311,7 @@ export function buildWorkQueue(
         steps: run ? stepTrack(run) : [],
         at: stampFor(item, run, batch),
         ...(run?.flowSnapshot?.name ? { flowName: run.flowSnapshot.name } : {}),
+        ...(item.flowId ? { flowId: item.flowId } : {}),
         ...(run?.state.kind === 'paused' ? { pausedReason: run.state.reason } : {}),
         // Deliberately only when the run is actually in hand: the row's id is
         // what the pane navigates on, and pointing it at a run nobody has is
@@ -227,17 +328,12 @@ export function buildWorkQueue(
   needsYou.sort(newestFirst);
   finished.sort(newestFirst);
 
-  const midnight = startOfDay(now);
   return {
     running,
     needsYou,
-    // Consolidated BEFORE the cap, not in the view: a morning of questions
-    // would otherwise spend the whole tail, and the jobs the tail exists to
-    // show would fall off the bottom of the page.
-    finished: consolidateAnswers(finished).slice(0, FINISHED_LIMIT),
-    // Counted from the un-consolidated list. Three answers are three things
-    // the crew finished, whatever the tail chooses to draw them as.
-    finishedToday: finished.filter((r) => r.at >= midnight).length,
+    // Consolidated here rather than in either view, so both agree that a
+    // morning of chat answers is one row and not five.
+    finished: consolidateAnswers(finished),
   };
 }
 
@@ -322,6 +418,10 @@ function reconcile(
   item: OrchestrationItem,
   run: FlowRun | undefined,
   runsLoaded: boolean,
+  /// True when one of the run's participant conversations is streaming right
+  /// now. Only consulted once the run's own state has stopped: a `running`
+  /// run is running whether or not the turn happens to be mid-stream.
+  live: boolean,
 ): QueueStatus | null {
   if (item.status === 'cancelled') return null;
   // Nothing has launched, so there is nothing to check them against.
@@ -329,7 +429,12 @@ function reconcile(
   if (run) {
     const kind = run.state.kind;
     if (kind === 'running') return 'running';
+    // A paused run you are talking your way through is still a decision
+    // waiting on you — the band is right and the turn does not change it.
     if (kind === 'paused') return 'paused';
+    // Past here the flow itself has stopped, so a streaming participant can
+    // only be a turn the user started against the finished run.
+    if (live) return 'responding';
     if (kind === 'aborted') return 'failed';
     if (kind === 'done') return run.state.success ? 'done' : 'failed';
     // `watching` and `archived` are both post-completion tails: the work is
@@ -347,7 +452,7 @@ function reconcile(
 /// it is not work in flight, not waiting on anyone, and not something the
 /// crew finished. Showing it would pad the tail with non-events.
 function bandFor(status: QueueStatus): QueueBand | null {
-  if (status === 'running' || status === 'queued' || status === 'planning') return 'running';
+  if (isLive(status) || status === 'queued' || status === 'planning') return 'running';
   // Both of these are stopped until a person does something: `proposed`
   // needs the batch approved, `paused` needs the run continued.
   if (status === 'proposed' || status === 'paused') return 'needsYou';
@@ -355,6 +460,13 @@ function bandFor(status: QueueStatus): QueueBand | null {
     return 'finished';
   }
   return null;
+}
+
+/// Work that is moving right now, whichever half of the run is moving it.
+/// Both bench-hiding and the running band ask this same question, and they
+/// have to answer it the same way or a job appears in one and not the other.
+export function isLive(status: QueueStatus): boolean {
+  return status === 'running' || status === 'responding';
 }
 
 /// When the row happened. For work the item never settled, the run's last
@@ -391,24 +503,11 @@ export function stepTrack(run: FlowRun): QueueStep[] {
   });
 }
 
-/// The one sentence over the bands. Written as a sentence and not as tiles
-/// because these three numbers only mean anything against each other: two
-/// running and nothing waiting is a good morning; nothing running and six
-/// waiting is a morning you have to spend.
-export function describeQueue(queue: WorkQueue): string {
-  const jobs = queue.running.length;
-  const blocked = queue.needsYou.length;
-  const done = queue.finishedToday;
-  if (jobs === 0 && blocked === 0 && done === 0) return '';
-  const parts: string[] = [];
-  parts.push(jobs === 0 ? 'Nothing running' : `${jobs} job${jobs === 1 ? '' : 's'} running`);
-  if (blocked > 0) parts.push(`${blocked} waiting on you`);
-  parts.push(
-    done === 0
-      ? 'nothing finished yet today'
-      : `${done} finished today`,
-  );
-  return `${parts.slice(0, -1).join(', ')}, and ${parts[parts.length - 1]}.`;
+/// What ran, in this order: what the run said it was, then what the library
+/// calls that flow today, then nothing — a shift that looked and found
+/// nothing to do never picked a flow, and a dash is the true answer there.
+export function flowOf(row: QueueRow, names: Record<string, string>): string | null {
+  return row.flowName ?? (row.flowId ? names[row.flowId] ?? null : null);
 }
 
 /// Which of a job's filed files is THE answer.
