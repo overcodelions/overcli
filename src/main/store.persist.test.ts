@@ -290,3 +290,102 @@ describe('file tabs', () => {
     expect(loadState().fileTabs).toBeUndefined();
   });
 });
+
+describe('model lifting on load', () => {
+  let loadState: Awaited<ReturnType<typeof loadStore>>['loadState'];
+
+  beforeEach(async () => {
+    ({ loadState } = await loadStore());
+  });
+
+  /// Seed overcli.json the way a build from before the catalog moved would
+  /// have written it, then read it back through the real load path.
+  function loadWithConversation(conv: Record<string, unknown>) {
+    fs.writeFileSync(
+      storeFile(),
+      JSON.stringify({
+        projects: [{ ...project('p1', []), conversations: [{ id: 'c1', name: 'one', ...conv }] }],
+      }),
+    );
+    return loadState();
+  }
+
+  function conversation(state: ReturnType<typeof loadState>) {
+    return state.projects[0].conversations[0] as unknown as Record<string, unknown>;
+  }
+
+  it('lifts a conversation pinned to a superseded model', () => {
+    const state = loadWithConversation({
+      primaryBackend: 'claude',
+      currentModel: 'claude-fable-5',
+      claudeModel: 'claude-fable-5',
+    });
+    // Flows lift through parseFlowYaml; without this the next send failed the
+    // catalog check and the user had to repick the model by hand.
+    expect(conversation(state).currentModel).toBe('claude-fable-5-1');
+    expect(conversation(state).claudeModel).toBe('claude-fable-5-1');
+  });
+
+  it('lifts each per-backend pin against its own backend', () => {
+    const state = loadWithConversation({
+      primaryBackend: 'claude',
+      currentModel: 'claude-opus-5',
+      codexModel: 'gpt-5.2',
+      geminiModel: 'gemini-2.5-pro',
+    });
+    expect(conversation(state).codexModel).toBe('gpt-5.4');
+    expect(conversation(state).geminiModel).toBe('gemini-3.1-pro');
+  });
+
+  it('drops a retired model with no successor so the send falls back to the default', () => {
+    // The whole `gpt-*-codex` line is gone, so there is nothing to lift to.
+    const state = loadWithConversation({ primaryBackend: 'codex', codexModel: 'gpt-5.3-codex' });
+    expect(conversation(state).codexModel).toBeUndefined();
+  });
+
+  it('leaves ollama tags alone — they are local pulls, not catalog ids', () => {
+    const state = loadWithConversation({
+      primaryBackend: 'ollama',
+      currentModel: 'qwen2.5-coder:32b',
+      ollamaModel: 'qwen2.5-coder:32b',
+      reviewOllamaModel: 'qwen2.5-coder:32b',
+    });
+    expect(conversation(state).currentModel).toBe('qwen2.5-coder:32b');
+    expect(conversation(state).ollamaModel).toBe('qwen2.5-coder:32b');
+    expect(conversation(state).reviewOllamaModel).toBe('qwen2.5-coder:32b');
+  });
+
+  it('leaves a legacy conversation with no primaryBackend alone', () => {
+    // Without a backend we can't tell a stale catalog id from a local tag,
+    // and rewriting the latter would point the conversation at nothing.
+    const state = loadWithConversation({ currentModel: 'some-local-tag' });
+    expect(conversation(state).currentModel).toBe('some-local-tag');
+  });
+
+  it('lifts the reviewer pin against the reviewer backend, not the primary', () => {
+    const state = loadWithConversation({
+      primaryBackend: 'claude',
+      currentModel: 'claude-opus-5',
+      reviewBackend: 'codex',
+      reviewModel: 'gpt-5.2',
+    });
+    expect(conversation(state).reviewModel).toBe('gpt-5.4');
+  });
+
+  it('lifts settings pins instead of clearing them', () => {
+    fs.writeFileSync(
+      storeFile(),
+      JSON.stringify({
+        settings: {
+          backendDefaultModels: { claude: 'claude-fable-5' },
+          flowModelDefaults: { claude: { frontier: 'claude-fable-5' } },
+        },
+      }),
+    );
+    const state = loadState();
+    // Dropping the pin would silently fall back to auto; lifting keeps the
+    // user's explicit choice pointed at the model that replaced it.
+    expect(state.settings.backendDefaultModels?.claude).toBe('claude-fable-5-1');
+    expect(state.settings.flowModelDefaults?.claude?.frontier).toBe('claude-fable-5-1');
+  });
+});

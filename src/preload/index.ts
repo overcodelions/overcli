@@ -2,7 +2,7 @@
 // renderer loads. Exposes a typed `window.overcli` API via contextBridge so
 // the renderer never directly touches Node or Electron internals.
 
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, IpcRendererEvent } from 'electron';
 import type { IPCInvokeMap, MainToRendererEvent } from '../shared/types';
 
 type InvokeChannel = keyof IPCInvokeMap;
@@ -15,6 +15,17 @@ const api = {
     return ipcRenderer.invoke(channel, ...(args as unknown[])) as Promise<
       ReturnType<IPCInvokeMap[K]>
     >;
+  },
+  /// The path behind a dropped/picked `File`. Electron removed `File.path`
+  /// in v32, and this is its supported replacement — without it a copy into
+  /// a project folder has to read the whole file into the renderer just to
+  /// hand the bytes straight back to the main process.
+  filePath(file: File): string | null {
+    try {
+      return webUtils.getPathForFile(file) || null;
+    } catch {
+      return null;
+    }
   },
   onMainEvent(handler: (event: MainToRendererEvent) => void): () => void {
     const listener = (_e: IpcRendererEvent, payload: MainToRendererEvent) => handler(payload);

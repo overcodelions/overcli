@@ -1016,3 +1016,27 @@ export function workerOrigin(
     ...(from ? { from } : {}),
   };
 }
+
+/// The desk prefix that means "skip the thinking, run the flow on this".
+export const DIRECT_RUN_PREFIX = '/run';
+
+/// Split a desk message into a direct-run instruction, or `null` when it is
+/// an ordinary errand.
+///
+/// A worker's planning turn is a judgment call — answer this, or propose it as
+/// work — and a manager who has already made that call needs a way to say so.
+/// Prompt wording could not carry it: a worker whose job description describes
+/// the work reads "answer it" as covering the ask and does the research in the
+/// planning turn, skipping the flow that was the point. This prefix is the
+/// unambiguous form, which is why it is a literal and not a heuristic.
+export function parseDirectRun(message: string): string | null {
+  const trimmed = message.trim();
+  const head = trimmed.slice(0, DIRECT_RUN_PREFIX.length).toLowerCase();
+  if (head !== DIRECT_RUN_PREFIX) return null;
+  const rest = trimmed.slice(DIRECT_RUN_PREFIX.length);
+  // A bare "/run" is not a direct run, and neither is "/runner": the prefix
+  // must be a whole word or the manager typed something else entirely.
+  if (rest && !/^\s/.test(rest)) return null;
+  const work = rest.trim();
+  return work ? work : null;
+}

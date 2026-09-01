@@ -48,6 +48,10 @@ describe('liftMissingModel', () => {
     expect(liftMissingModel('claude', 'claude-opus-4-7')).toBe('claude-opus-4-8');
   });
 
+  it('lifts a superseded fable 5 to fable 5.1', () => {
+    expect(liftMissingModel('claude', 'claude-fable-5')).toBe('claude-fable-5-1');
+  });
+
   it('lifts a dotted retired id too (relies on version parsing, not exact spelling)', () => {
     expect(liftMissingModel('claude', 'claude-opus-4.7')).toBe('claude-opus-4-8');
   });
@@ -90,7 +94,11 @@ describe('friendlyModelLabel — claude', () => {
     expect(friendlyModelLabel('claude', 'claude-opus-4-7')).toBe('Claude Opus 4.7');
   });
 
-  it('formats fable-5', () => {
+  it('formats fable-5.1', () => {
+    expect(friendlyModelLabel('claude', 'claude-fable-5-1')).toBe('Claude Fable 5.1');
+  });
+
+  it('formats fable-5 (superseded, still label-able)', () => {
     expect(friendlyModelLabel('claude', 'claude-fable-5')).toBe('Claude Fable 5');
   });
 
@@ -214,6 +222,7 @@ describe('friendlyModelLabel — ollama', () => {
 
 describe('modelSpeed', () => {
   it.each([
+    ['claude-fable-5-1', 'frontier'],
     ['claude-fable-5', 'frontier'],
     ['claude-opus-5', 'thinking'],
     ['claude-opus-4-8', 'thinking'],
@@ -291,7 +300,7 @@ describe('latestAtTier', () => {
   it('resolves each backend to its current model per tier', () => {
     expect(latestAtTier('claude', 'thinking')).toBe('claude-opus-5');
     expect(latestAtTier('claude', 'fast')).toBe('claude-sonnet-5');
-    expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5');
+    expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-1');
     expect(latestAtTier('codex', 'thinking')).toBe('gpt-5.6-sol');
     expect(latestAtTier('codex', 'fast')).toBe('gpt-5.6-luna');
     expect(latestAtTier('gemini', 'standard')).toBe('gemini-3.7-flash');
@@ -369,7 +378,7 @@ describe('snapToTierDefault', () => {
 
   it('leaves a current id alone', () => {
     expect(snapToTierDefault('claude', 'claude-opus-5')).toBe('claude-opus-5');
-    expect(snapToTierDefault('claude', 'claude-fable-5')).toBe('claude-fable-5');
+    expect(snapToTierDefault('claude', 'claude-fable-5-1')).toBe('claude-fable-5-1');
   });
 
   it('respects the tier the drafter chose rather than upgrading everything', () => {

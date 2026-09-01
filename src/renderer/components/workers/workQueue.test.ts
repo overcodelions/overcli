@@ -7,11 +7,12 @@ import type { Worker } from '@shared/flows/worker';
 import {
   baseName,
   buildWorkQueue,
-  describeQueue,
   groupByDay,
   pickDeliverable,
+  flowOf,
   stepTrack,
-  FINISHED_LIMIT,
+  upcomingShifts,
+  SOON_HORIZON_MS,
   type QueueRow,
 } from './workQueue';
 
@@ -22,6 +23,13 @@ function file(name: string): WorkerFile {
 }
 
 const NOON = new Date('2026-08-24T12:00:00').getTime();
+const MIDNIGHT = new Date('2026-08-24T00:00:00').getTime();
+
+/// The count the queue used to expose as `finishedToday`. Kept as a helper
+/// rather than as a field: both readers slice the tail themselves now, and
+/// one of them slices it to a month.
+const doneToday = (q: { finished: QueueRow[] }) =>
+  q.finished.filter((r) => r.at >= MIDNIGHT).length;
 const HOUR = 3_600_000;
 
 function worker(id: string, name = 'Spec Hygiene'): Worker {
@@ -168,7 +176,7 @@ describe('buildWorkQueue', () => {
     // The other worker's lone answer stays as it was.
     expect(q.finished.filter((r) => !r.answers)).toHaveLength(1);
     // Three answers are three things that finished, however they are drawn.
-    expect(q.finishedToday).toBe(4);
+    expect(q.finished.reduce((n, r) => n + (r.answers?.length ?? 1), 0)).toBe(4);
   });
 
   it('counts an errand that launched nothing as an answer, whatever you meant by it', () => {
@@ -238,15 +246,13 @@ describe('buildWorkQueue', () => {
     expect(buildWorkQueue({ b1: scheduled }, {}, WORKERS, {}, NOON).running).toEqual([]);
   });
 
-  it('caps the finished tail but counts the whole day', () => {
-    const items = Array.from({ length: FINISHED_LIMIT + 4 }, (_, i) => ({
-      status: 'done',
-      at: NOON - i * 60_000,
-    }));
+  // The tail used to be capped at ten for a band that had to fit on a page.
+  // Both readers slice it themselves now, so a cap here would silently
+  // shorten a whole-day view and a thirty-day search alike.
+  it('hands over the whole tail, newest first', () => {
+    const items = Array.from({ length: 14 }, (_, i) => ({ status: 'done', at: NOON - i * 60_000 }));
     const q = buildWorkQueue({ b1: batch('b1', items) }, {}, WORKERS, {}, NOON);
-    expect(q.finished).toHaveLength(FINISHED_LIMIT);
-    expect(q.finishedToday).toBe(FINISHED_LIMIT + 4);
-    // Newest first, so the cap drops the oldest rather than the freshest.
+    expect(q.finished).toHaveLength(14);
     expect(q.finished[0].at).toBe(NOON);
   });
 
@@ -262,7 +268,7 @@ describe('buildWorkQueue', () => {
       NOON,
     );
     expect(q.finished).toHaveLength(2);
-    expect(q.finishedToday).toBe(1);
+    expect(doneToday(q)).toBe(1);
   });
 
   it('carries the run\'s flow, step track and pause reason onto the row', () => {
@@ -319,7 +325,7 @@ describe('the run is the truth', () => {
       NOON,
     );
     expect(q.finished[0].at).toBe(ended);
-    expect(q.finishedToday).toBe(1);
+    expect(doneToday(q)).toBe(1);
   });
 
   it('files a job whose run has vanished under finished, not under Needs you', () => {
@@ -363,6 +369,78 @@ describe('the run is the truth', () => {
   });
 });
 
+// Reported from a screenshot: a job the user had typed at again sat in
+// Finished under "Done" while the Chat sidebar showed the very same job under
+// Working on with a live pip. Both were reading their own source of truth —
+// the run's state (`done`, and it stays done) and the participant's runner
+// (streaming) — and only one of them was right about what the crew was doing.
+describe('a finished run you are still talking to', () => {
+  const CHATTING = run('r1', {
+    state: { kind: 'done', success: true },
+    conversationIds: { p: 'c1' },
+  });
+
+  it('counts as running while the turn is in flight', () => {
+    const q = buildWorkQueue(
+      { b1: batch('b1', [{ status: 'done', runId: 'r1', at: NOON - HOUR }]) },
+      { r1: CHATTING },
+      WORKERS,
+      {},
+      NOON,
+      true,
+      { c1: { isRunning: true } },
+    );
+    expect(q.running.map((r) => r.status)).toEqual(['responding']);
+    expect(q.finished).toEqual([]);
+  });
+
+  it('drops back to done the moment the turn ends', () => {
+    const q = buildWorkQueue(
+      { b1: batch('b1', [{ status: 'done', runId: 'r1', at: NOON - HOUR }]) },
+      { r1: CHATTING },
+      WORKERS,
+      {},
+      NOON,
+      true,
+      { c1: { isRunning: false } },
+    );
+    expect(q.running).toEqual([]);
+    expect(q.finished.map((r) => r.status)).toEqual(['done']);
+  });
+
+  it('leaves a paused run in Needs you — the answer is still owed', () => {
+    const q = buildWorkQueue(
+      { b1: batch('b1', [{ status: 'paused', runId: 'r1' }]) },
+      {
+        r1: run('r1', {
+          state: { kind: 'paused', nextStepId: 'review', reason: 'needsInput' },
+          conversationIds: { p: 'c1' },
+        }),
+      },
+      WORKERS,
+      {},
+      NOON,
+      true,
+      { c1: { isRunning: true } },
+    );
+    expect(q.needsYou.map((r) => r.status)).toEqual(['paused']);
+    expect(q.running).toEqual([]);
+  });
+
+  it('holds a live answer on screen even from a benched worker', () => {
+    const q = buildWorkQueue(
+      { b1: batch('b1', [{ status: 'done', runId: 'r1', at: NOON - HOUR }]) },
+      { r1: CHATTING },
+      { w1: { ...worker('w1'), enabled: false } as Worker },
+      {},
+      NOON,
+      true,
+      { c1: { isRunning: true } },
+    );
+    expect(q.running.map((r) => r.status)).toEqual(['responding']);
+  });
+});
+
 describe('the bench', () => {
   const BENCHED = { w1: { ...worker('w1'), enabled: false } as Worker };
 
@@ -395,6 +473,96 @@ describe('the bench', () => {
   });
 });
 
+describe('upcomingShifts', () => {
+  const MIN = 60_000;
+
+  it('lists what is coming inside the horizon, soonest first', () => {
+    const rows = upcomingShifts(
+      WORKERS,
+      { w1: NOON + 3 * HOUR, w2: NOON + 30 * MIN },
+      {},
+      NOON,
+    );
+    expect(rows.map((r) => r.workerId)).toEqual(['w2', 'w1']);
+    expect(rows.map((r) => r.imminent)).toEqual([true, false]);
+  });
+
+  it('says nothing about tomorrow — that is the calendar', () => {
+    expect(upcomingShifts(WORKERS, { w1: NOON + 21 * HOUR }, {}, NOON)).toEqual([]);
+    // The boundary belongs to the band: a shift exactly on the horizon is
+    // still something you could sit and wait for.
+    expect(upcomingShifts(WORKERS, { w1: NOON + SOON_HORIZON_MS }, {}, NOON)).toHaveLength(1);
+  });
+
+  it('keeps a shift that is already due', () => {
+    const [row] = upcomingShifts(WORKERS, { w1: NOON - 10 * MIN }, {}, NOON);
+    expect(row).toMatchObject({ overdue: true, imminent: true });
+  });
+
+  it('drops a worker that is already working the shift', () => {
+    const rows = upcomingShifts(
+      WORKERS,
+      { w1: NOON + 5 * MIN, w2: NOON + 10 * MIN },
+      { w1: { tools: [], task: 'shift' } },
+      NOON,
+    );
+    expect(rows.map((r) => r.workerId)).toEqual(['w2']);
+  });
+
+  it('drops a benched worker — its cadence is on file, not on', () => {
+    const rows = upcomingShifts(
+      { w1: { ...worker('w1'), enabled: false } as Worker },
+      { w1: NOON + 5 * MIN },
+      {},
+      NOON,
+    );
+    expect(rows).toEqual([]);
+  });
+
+  it('carries the cadence, because a countdown alone says nothing about why', () => {
+    const [row] = upcomingShifts(WORKERS, { w1: NOON + 5 * MIN }, {}, NOON);
+    expect(row.cadence).toBe("Every day at 9am");
+  });
+
+  // The projection must never reach the work rows: it has no run, no outcome
+  // and nothing to open, and one leak would show up as a phantom in the
+  // running count or in the day's finished total.
+  it('leaves the work queue own rows alone', () => {
+    const q = buildWorkQueue({}, {}, WORKERS, {}, NOON);
+    expect(q.running).toEqual([]);
+    expect(q.finished).toEqual([]);
+  });
+});
+
+// Reported after a restart: every row's Flow column came back an em-dash.
+// Runs are evicted on reload and the flow name only ever lived on the run's
+// snapshot; the item's own flowId survives, so the library can answer.
+describe('flowOf', () => {
+  const base = { key: 'k', workerId: 'w1', workerName: 'W', task: 'shift', status: 'done', title: 't', steps: [], at: 1 } as QueueRow;
+
+  it('carries the item flow id onto the row, run or no run', () => {
+    const q = buildWorkQueue({ b1: batch('b1', [{ status: 'done', at: NOON }]) }, {}, WORKERS, {}, NOON);
+    expect(q.finished[0].flowId).toBe('flow');
+  });
+
+  it('prefers what actually ran over what the library calls it now', () => {
+    const row = { ...base, flowName: 'Solve a ticket end-to-end', flowId: 'f1' };
+    expect(flowOf(row, { f1: 'Solve a ticket (v2)' })).toBe('Solve a ticket end-to-end');
+  });
+
+  it('falls back to the library once the run is gone', () => {
+    expect(flowOf({ ...base, flowId: 'f1' }, { f1: 'Add tests to recent changes' })).toBe(
+      'Add tests to recent changes',
+    );
+  });
+
+  it('has nothing to say for a shift that never picked a flow', () => {
+    expect(flowOf(base, { f1: 'Anything' })).toBeNull();
+    // Or for a flow that has since been deleted from the library.
+    expect(flowOf({ ...base, flowId: 'gone' }, {})).toBeNull();
+  });
+});
+
 describe('stepTrack', () => {
   it('marks the running step and everything behind it', () => {
     expect(stepTrack(run('r1')).map((s) => `${s.id}:${s.state}`)).toEqual([
@@ -421,34 +589,6 @@ describe('stepTrack', () => {
       attempts: [{ stepId: 'plan', startedAt: 1, conversationId: 'c', outcome: 'question' }],
     });
     expect(stepTrack(r)[0].state).toBe('ahead');
-  });
-});
-
-describe('describeQueue', () => {
-  it('says the three numbers as one sentence', () => {
-    const q = buildWorkQueue(
-      {
-        b1: batch('b1', [
-          { status: 'running', runId: 'r1' },
-          { status: 'proposed' },
-          { status: 'done', at: NOON - HOUR },
-        ]),
-      },
-      { r1: run('r1') },
-      WORKERS,
-      {},
-      NOON,
-    );
-    expect(describeQueue(q)).toBe('1 job running, 1 waiting on you, and 1 finished today.');
-  });
-
-  it('drops the middle clause when nothing is blocked', () => {
-    const q = buildWorkQueue({ b1: batch('b1', [{ status: 'running', runId: 'r1' }]) }, { r1: run('r1') }, WORKERS, {}, NOON);
-    expect(describeQueue(q)).toBe('1 job running, and nothing finished yet today.');
-  });
-
-  it('says nothing at all when there is nothing to say', () => {
-    expect(describeQueue(buildWorkQueue({}, {}, WORKERS, {}, NOON))).toBe('');
   });
 });
 

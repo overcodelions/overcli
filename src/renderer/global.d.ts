@@ -12,6 +12,9 @@ declare global {
         ...args: Parameters<IPCInvokeMap[K]>
       ): Promise<ReturnType<IPCInvokeMap[K]>>;
       onMainEvent(handler: (event: MainToRendererEvent) => void): () => void;
+      /// Optional: absent under jsdom and in a plain browser, so every caller
+      /// needs a fallback for a `File` with no path behind it.
+      filePath?(file: File): string | null;
     };
   }
 }

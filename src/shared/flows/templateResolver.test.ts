@@ -17,8 +17,8 @@ function loadTemplate(id: string) {
 }
 
 describe('resolveTemplateForUser — build-feature template', () => {
-  // The design step is a planner — it uses claude-fable-5, classified
-  // 'frontier', so it resolves to fable-5 (the only frontier claude model).
+  // The design step is a planner — it uses claude-fable-5-1, classified
+  // 'frontier', so it resolves to fable-5.1 (the only frontier claude model).
   // The sonnet models are classified 'fast' (so their tokens group under
   // the run token bar's "fast" tier). That makes both the build step (fast
   // worker) and the verify step (sonnet placeholder, also 'fast') resolve
@@ -33,7 +33,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     const byStep = new Map(resolved.steps.map((s) => [s.id, s.participantId]));
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
 
-    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('claude-fable-5');
+    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('claude-fable-5-1');
     expect(byParticipant.get(byStep.get('build')!)?.model).toBe('claude-sonnet-5');
     expect(byParticipant.get(byStep.get('verify')!)?.model).toBe('claude-sonnet-5');
     for (const p of resolved.participants) {
@@ -101,7 +101,7 @@ describe('resolveTemplateForUser — friendly names updated', () => {
     // claude-only build-feature resolves to fable (frontier, design) +
     // sonnet-5 (fast) for the remaining steps; sonnet-4.6 and haiku are no
     // longer auto-picked because sonnet-5 precedes them among 'fast' models.
-    expect(names).toContain('Claude Fable 5');
+    expect(names).toContain('Claude Fable 5.1');
     expect(names).toContain('Claude Sonnet 5');
   });
 });
@@ -115,7 +115,7 @@ describe('resolveTemplateForUser — user pins', () => {
       modelDefaults: { claude: { fast: 'claude-haiku-4-5' } },
     });
     const fastModels = resolved.participants
-      .filter((p) => p.backend === 'claude' && p.model !== 'claude-fable-5')
+      .filter((p) => p.backend === 'claude' && p.model !== 'claude-fable-5-1')
       .map((p) => p.model);
     expect(fastModels.length).toBeGreaterThan(0);
     expect(new Set(fastModels)).toEqual(new Set(['claude-haiku-4-5']));

@@ -98,25 +98,41 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
 
   const addFiles = async (fileList: FileList) => {
     setBusy(true);
-    const { attachments, rejections } = await intakeProjectFiles(fileList);
-    if (attachments.length === 0) {
+    const { files, rejections } = await intakeProjectFiles(fileList);
+    if (files.length === 0) {
       setBusy(false);
       setError(rejections.at(-1) ?? 'Nothing to add.');
       return;
     }
     const res = await window.overcli.invoke('fs:copyIntoProject', {
       projectPath: dir,
-      files: attachments.map((a) => ({ name: a.label ?? 'file', dataBase64: a.dataBase64 })),
+      files: files.map((f) => ({
+        name: f.name,
+        sourcePath: f.sourcePath,
+        dataBase64: f.dataBase64,
+      })),
     });
     setBusy(false);
+    if (!res.ok) {
+      setError(res.error);
+      void refresh();
+      return;
+    }
     // Keep a partial rejection visible: some files landing is not a reason to
-    // stop telling the user about the ones that did not.
-    setError(res.ok ? (rejections.at(-1) ?? null) : res.error);
-    if (res.ok) {
-      void checkpointProject(
-        rootPath,
-        `Added ${res.written} document${res.written === 1 ? '' : 's'}`,
-      );
+    // stop telling the user about the ones that did not. Main can reject on
+    // its own account too — it re-checks the size of a path it copies.
+    const skipped = [...rejections, ...res.rejections];
+    setError(skipped.at(-1) ?? null);
+    const saved = await checkpointProject(
+      rootPath,
+      `Added ${res.written} document${res.written === 1 ? '' : 's'}`,
+    );
+    // A file too big to version still landed on disk, and saying nothing
+    // leaves the user believing "Undo or restore" covers it. It does not:
+    // git can never reclaim a big blob it has taken in, so the checkpoint is
+    // declined on purpose.
+    if (saved.skipped === 'too-large' && skipped.length === 0) {
+      setError('Added — too large to include in version history.');
     }
     void refresh();
   };
