@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { EVERYDAY_PROJECTS_DIRNAME } from '../shared/everydayProjects';
+import { MAX_PROJECT_FILE_BYTES, tooLargeReason } from '../shared/fileLimits';
 
 export function everydayProjectsRoot(): string {
   const docs = path.join(os.homedir(), 'Documents');
@@ -126,9 +127,13 @@ export function createEverydayProject(
   }
 }
 
-/// Drop-target write behind the files bubble. The renderer reads dropped
-/// files with `FileReader` (Electron no longer exposes `File.path`), so what
-/// arrives here is name + bytes rather than a source path to copy from.
+/// Drop-target write behind the files bubble.
+///
+/// Two shapes arrive, because two things can be true of a dropped file. When
+/// the renderer got a real path out of `webUtils.getPathForFile` it sends
+/// `sourcePath` and we copy disk to disk — a 50 MB deck never becomes a
+/// base64 string in anybody's heap. When there is no path behind the `File`
+/// — a pasted image — it sends `dataBase64` as before.
 ///
 /// Files land directly in the project folder. There is deliberately no
 /// `inbox/` — separating "what I gave it" from "what it made" is the job the
@@ -136,10 +141,15 @@ export function createEverydayProject(
 /// one more thing to teach someone who came here to review a document.
 ///
 /// Each name is reduced to its basename, so nothing can climb out of
-/// `projectPath` no matter what the renderer sends.
+/// `projectPath` no matter what the renderer sends. The size cap is checked
+/// again here rather than trusted from the renderer, because on the path
+/// branch the bytes were never measured on the way through.
 export function copyIntoProject(
-  args: { projectPath: string; files: Array<{ name: string; dataBase64: string }> },
-): { ok: true; written: number } | { ok: false; error: string } {
+  args: {
+    projectPath: string;
+    files: Array<{ name: string; dataBase64?: string; sourcePath?: string }>;
+  },
+): { ok: true; written: number; rejections: string[] } | { ok: false; error: string } {
   const dest = args.projectPath;
   if (!Array.isArray(args.files) || args.files.length === 0) {
     return { ok: false, error: 'Nothing to add.' };
@@ -147,14 +157,41 @@ export function copyIntoProject(
   try {
     fs.mkdirSync(dest, { recursive: true });
     let written = 0;
+    const rejections: string[] = [];
     for (const file of args.files) {
       const base = path.basename(String(file?.name ?? '')).replace(/^\.+/, '').trim();
       if (!base) continue;
-      fs.writeFileSync(uniqueFilePath(dest, base), Buffer.from(file.dataBase64, 'base64'));
+      if (typeof file?.sourcePath === 'string' && file.sourcePath) {
+        let size: number;
+        try {
+          const stat = fs.statSync(file.sourcePath);
+          if (!stat.isFile()) continue;
+          size = stat.size;
+        } catch {
+          rejections.push(`Couldn't read ${base}.`);
+          continue;
+        }
+        if (size > MAX_PROJECT_FILE_BYTES) {
+          rejections.push(tooLargeReason(base, size, MAX_PROJECT_FILE_BYTES));
+          continue;
+        }
+        fs.copyFileSync(file.sourcePath, uniqueFilePath(dest, base));
+        written += 1;
+        continue;
+      }
+      if (typeof file?.dataBase64 !== 'string') continue;
+      const bytes = Buffer.from(file.dataBase64, 'base64');
+      if (bytes.byteLength > MAX_PROJECT_FILE_BYTES) {
+        rejections.push(tooLargeReason(base, bytes.byteLength, MAX_PROJECT_FILE_BYTES));
+        continue;
+      }
+      fs.writeFileSync(uniqueFilePath(dest, base), bytes);
       written += 1;
     }
-    if (written === 0) return { ok: false, error: 'Nothing to add.' };
-    return { ok: true, written };
+    if (written === 0) {
+      return { ok: false, error: rejections[rejections.length - 1] ?? 'Nothing to add.' };
+    }
+    return { ok: true, written, rejections };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

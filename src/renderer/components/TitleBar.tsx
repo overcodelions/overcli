@@ -40,7 +40,7 @@ export function TitleBar() {
   const setLibrarySegment = useFlowsStore((s) => s.setLibrarySegment);
   const flowRuns = useFlowsStore((s) => s.runs);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
-  const showWorkersQueue = useWorkersStore((s) => s.showQueue);
+  const showWorkersToday = useWorkersStore((s) => s.showToday);
   const closeWorkerEditor = useWorkersStore((s) => s.closeEditor);
   const schedules = useSchedulesStore((s) => s.schedules);
   const nextFireAt = useSchedulesStore((s) => s.nextFireAt);
@@ -157,7 +157,7 @@ export function TitleBar() {
     selectWorker(null);
     closeWorkerEditor();
     closeFlowEditor();
-    showWorkersQueue();
+    showWorkersToday();
     setDetailMode('workers');
   }
   const platform = typeof navigator === 'undefined' ? '' : navigator.platform;

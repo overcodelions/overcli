@@ -6,9 +6,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ATTACHMENT_ACCEPT,
-  MAX_ATTACHMENT_BYTES,
+  MAX_LLM_ATTACHMENT_BYTES,
+  MAX_PROJECT_FILE_BYTES,
   guessMimeFromName,
   intakeAttachments,
+  intakeProjectFiles,
   isAcceptedAttachment,
 } from './attachmentIntake';
 
@@ -67,9 +69,9 @@ describe('isAcceptedAttachment', () => {
 });
 
 describe('intakeAttachments — size rejection', () => {
-  it('rejects a file over MAX_ATTACHMENT_BYTES with a sized reason', async () => {
+  it('rejects a file over the LLM attachment cap with a sized reason', async () => {
     const big = new File(['x'], 'huge.txt', { type: 'text/plain' });
-    Object.defineProperty(big, 'size', { value: MAX_ATTACHMENT_BYTES + 1 });
+    Object.defineProperty(big, 'size', { value: MAX_LLM_ATTACHMENT_BYTES + 1 });
 
     const { attachments, rejections } = await intakeAttachments([big]);
 
@@ -81,12 +83,61 @@ describe('intakeAttachments — size rejection', () => {
 
   it('still attaches a file at or under the limit', async () => {
     const ok = new File(['x'], 'ok.txt', { type: 'text/plain' });
-    Object.defineProperty(ok, 'size', { value: MAX_ATTACHMENT_BYTES });
+    Object.defineProperty(ok, 'size', { value: MAX_LLM_ATTACHMENT_BYTES });
 
     const { attachments, rejections } = await intakeAttachments([ok]);
 
     expect(rejections).toHaveLength(0);
     expect(attachments).toHaveLength(1);
     expect(attachments[0].label).toBe('ok.txt');
+  });
+});
+
+describe('intakeProjectFiles — a copy, not an attachment', () => {
+  function sized(name: string, size: number): File {
+    const f = new File(['x'], name, { type: '' });
+    Object.defineProperty(f, 'size', { value: size });
+    return f;
+  }
+
+  it('accepts a file the LLM cap would have refused', async () => {
+    const { files, rejections } = await intakeProjectFiles([
+      sized('deck.pptx', MAX_LLM_ATTACHMENT_BYTES + 1),
+    ]);
+
+    expect(rejections).toHaveLength(0);
+    expect(files).toHaveLength(1);
+    expect(files[0].name).toBe('deck.pptx');
+  });
+
+  it('rejects past its own, larger cap and says the right number', async () => {
+    const { files, rejections } = await intakeProjectFiles([
+      sized('enormous.mov', MAX_PROJECT_FILE_BYTES + 1),
+    ]);
+
+    expect(files).toHaveLength(0);
+    expect(rejections[0]).toContain('enormous.mov');
+    expect(rejections[0]).toContain('max is 50 MB');
+  });
+
+  it('prefers the real path over reading the bytes, when the bridge has one', async () => {
+    (window as unknown as { overcli: unknown }).overcli = {
+      filePath: () => '/Users/someone/Desktop/deck.pptx',
+    };
+    try {
+      const { files } = await intakeProjectFiles([sized('deck.pptx', 40 * 1024 * 1024)]);
+
+      expect(files[0].sourcePath).toBe('/Users/someone/Desktop/deck.pptx');
+      expect(files[0].dataBase64).toBeUndefined();
+    } finally {
+      delete (window as unknown as { overcli?: unknown }).overcli;
+    }
+  });
+
+  it('falls back to bytes when there is no path behind the file', async () => {
+    const { files } = await intakeProjectFiles([new File(['hello'], 'pasted.png')]);
+
+    expect(files[0].sourcePath).toBeUndefined();
+    expect(files[0].dataBase64).toBe(Buffer.from('hello').toString('base64'));
   });
 });

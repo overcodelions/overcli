@@ -7,9 +7,13 @@
 // the moment either changed.
 
 import type { Attachment } from '@shared/types';
+import {
+  MAX_LLM_ATTACHMENT_BYTES,
+  MAX_PROJECT_FILE_BYTES,
+  tooLargeReason,
+} from '@shared/fileLimits';
 
-/// 25 MB; matches the Claude API document/image cap.
-export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+export { MAX_LLM_ATTACHMENT_BYTES, MAX_PROJECT_FILE_BYTES };
 
 /// Non-image MIME prefixes / extensions we accept and forward to the
 /// backend by writing to disk + inlining the path. Anything else gets
@@ -139,10 +143,8 @@ export async function intakeAttachments(
       );
       continue;
     }
-    if (f.size > MAX_ATTACHMENT_BYTES) {
-      rejections.push(
-        `${f.name || 'file'} is ${Math.round(f.size / 1024 / 1024)} MB; max is 25 MB.`,
-      );
+    if (f.size > MAX_LLM_ATTACHMENT_BYTES) {
+      rejections.push(tooLargeReason(f.name, f.size, MAX_LLM_ATTACHMENT_BYTES));
       continue;
     }
     let dataBase64: string;
@@ -165,15 +167,35 @@ export async function intakeAttachments(
 
 /// Dropping a file INTO a project folder is a copy, not an LLM attachment:
 /// `.pages`, `.numbers`, `.key` and anything else a Mac user owns belongs in
-/// their own folder. Size is the only limit.
+/// their own folder. Size is the only limit, and it is a laxer one.
+///
+/// Where the platform hands us the real path — every drag-and-drop, and file
+/// picks on desktop — we pass the path through and let the main process copy
+/// file to file. Reading a 50 MB deck into a base64 string here costs ~67 MB
+/// of string plus another copy to clone it across IPC, for a file we only
+/// ever wanted to move from one place on disk to another.
+export interface ProjectFileIntake {
+  name: string;
+  size: number;
+  /// The real path on disk, when we have it. Preferred over `dataBase64`.
+  sourcePath?: string;
+  /// The fallback for a `File` with no backing path — a pasted image, say.
+  dataBase64?: string;
+}
+
 export async function intakeProjectFiles(
   files: FileList | File[],
-): Promise<{ attachments: Attachment[]; rejections: string[] }> {
-  const attachments: Attachment[] = [];
+): Promise<{ files: ProjectFileIntake[]; rejections: string[] }> {
+  const intake: ProjectFileIntake[] = [];
   const rejections: string[] = [];
   for (const f of Array.from(files)) {
-    if (f.size > MAX_ATTACHMENT_BYTES) {
-      rejections.push(`${f.name || 'file'} is ${Math.round(f.size / 1024 / 1024)} MB; max is 25 MB.`);
+    if (f.size > MAX_PROJECT_FILE_BYTES) {
+      rejections.push(tooLargeReason(f.name, f.size, MAX_PROJECT_FILE_BYTES));
+      continue;
+    }
+    const sourcePath = pathForFile(f);
+    if (sourcePath) {
+      intake.push({ name: f.name || 'file', size: f.size, sourcePath });
       continue;
     }
     let dataBase64: string;
@@ -183,13 +205,18 @@ export async function intakeProjectFiles(
       rejections.push(`Couldn't read ${f.name || 'file'}.`);
       continue;
     }
-    attachments.push({
-      id: attachmentId(),
-      mimeType: f.type || guessMimeFromName(f.name) || 'application/octet-stream',
-      dataBase64,
-      label: f.name,
-      size: f.size,
-    });
+    intake.push({ name: f.name || 'file', size: f.size, dataBase64 });
   }
-  return { attachments, rejections };
+  return { files: intake, rejections };
+}
+
+/// Electron stopped exposing `File.path` in v32; `webUtils.getPathForFile` is
+/// the supported replacement and the preload re-exports it. Absent in tests
+/// and in a plain browser, where the base64 fallback takes over.
+function pathForFile(f: File): string | null {
+  try {
+    return window.overcli?.filePath?.(f) || null;
+  } catch {
+    return null;
+  }
 }

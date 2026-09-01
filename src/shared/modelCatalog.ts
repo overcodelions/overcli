@@ -11,7 +11,7 @@ import type { Backend } from './types';
 /// fallback and the template resolver's per-tier substitution both take
 /// the first matching id. We keep `claude-opus-5` first so it's the
 /// default Claude model (the newest Opus-tier thinking model).
-/// `claude-fable-5` is the most premium/advanced model (roughly 2x the
+/// `claude-fable-5-1` is the most premium/advanced model (roughly 2x the
 /// cost of Opus), listed right after the default for anyone who
 /// explicitly wants it. Order also picks the per-tier default: the
 /// template resolver substitutes the *first* id at a given speed tier, so
@@ -22,7 +22,7 @@ import type { Backend } from './types';
 /// auto-lifted to the next-highest version in the same family on load —
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
-  claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-fable-5', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+  claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
   codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   // Gemini's Flash line iterates far faster than its Pro line — 3.7 Flash
   // shipped while 3.1 Pro is still the newest Pro id. Pro leads the list so
@@ -143,7 +143,7 @@ export function liftMissingModel(backend: Exclude<Backend, 'ollama'>, model: str
 ///   - 'fast': low latency, low cost; good for workers and quick tasks
 ///   - 'standard': mid tier; balanced cost vs. quality
 ///   - 'thinking': premium reasoning models, slower + more expensive
-///   - 'frontier': the most advanced + most expensive tier (Fable 5,
+///   - 'frontier': the most advanced + most expensive tier (Fable 5.1,
 ///     ~2x Opus). Kept distinct from 'thinking' so the template resolver
 ///     only assigns it to steps that explicitly ask for it (e.g.
 ///     planning) instead of substituting it for any thinking step.
@@ -151,6 +151,10 @@ export type ModelSpeed = 'fast' | 'standard' | 'thinking' | 'frontier';
 
 const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Claude
+  'claude-fable-5-1': 'frontier',
+  // Superseded by 5.1 but kept here so a flow or conversation still pinned
+  // to it renders its tier marker correctly until `liftMissingModel` moves
+  // it forward.
   'claude-fable-5': 'frontier',
   'claude-opus-5': 'thinking',
   'claude-opus-4-8': 'thinking',

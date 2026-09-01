@@ -692,12 +692,12 @@ describe('drafted models snap to their tier default', () => {
 
     const result = await draftFlowFromPrompt(
       { description: 'Make a flow' },
-      depsWithDefaults({ claude: { fast: 'claude-haiku-4-5', thinking: 'claude-fable-5' } }),
+      depsWithDefaults({ claude: { fast: 'claude-haiku-4-5', thinking: 'claude-fable-5-1' } }),
     );
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-fable-5' });
+    expect(result.flow.steps[0].model).toEqual({ backend: 'claude', model: 'claude-fable-5-1' });
     expect(result.flow.steps[1].model).toEqual({ backend: 'claude', model: 'claude-haiku-4-5' });
   });
 
@@ -818,7 +818,7 @@ describe('models from the wrong family are retargeted, not rejected', () => {
     await draftFlowFromPrompt({ description: 'Make a flow' }, claudeDeps());
 
     const sys = mockQuery.mock.calls[0][0].options.systemPrompt as string;
-    expect(sys).toContain('claude-opus-5, claude-opus-4-8, claude-fable-5');
+    expect(sys).toContain('claude-opus-5, claude-opus-4-8, claude-fable-5-1');
     expect(sys).toContain('`gpt-*` ids run ONLY on backend `codex`');
     expect(sys).toContain('there is no "gpt-5"');
   });
