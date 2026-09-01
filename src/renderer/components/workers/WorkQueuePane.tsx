@@ -1,59 +1,59 @@
-// The Workers tab's front page: what the crew is doing right now.
+// The work queue: every job the crew has run, found rather than scrolled to.
 //
-// Three bands, and they are three different asks of the reader — watch this,
-// act on this, notice this happened. That is why the queue is banded rather
-// than sorted: status is not a column you order by, it is what the row IS,
-// and a single time-ordered table buries the two rows with a decision waiting
-// on them under eight that need nothing from anybody.
+// See `queueTable.ts` for why this page stopped being the landing page and
+// what question it answers instead. This file is the drawing of it, and it
+// obeys three rules the old bands did not:
 //
-// The step track is the one place this screen spends any boldness. "review"
-// as a word tells you where a job is; the track tells you where it is AND how
-// much is left, which is the only question you actually have while watching
-// something run. Everything around it stays flat: no cards, no rules between
-// rows, no second accent colour.
-//
-// Colour is WHO, borrowed wholesale from the roster — the rule down the left
-// of a row is the same hue as that worker's avatar, its calendar blocks and
-// its band in the Report. Status is never colour alone: it is the band you
-// are in, plus the word. Only a failure earns red, because it is the only one
-// of these that is wrong.
-//
-// Every row is a link first. Approving a batch is a real decision with real
-// context around it, and that context lives on the worker's desk — a second
-// Launch button here would be the same act with less to read before you
-// commit to it. A row takes you to where the decision is properly made.
-//
-// The exception is a paused run, and it earns it: the band it sits in exists
-// to say something is waiting on you, and a band that can only point at the
-// decision makes you travel to press the button it already described. So a
-// paused row carries the same two choices the desk offers — the resume worded
-// for why it stopped, and reject — from the same copy, so the two screens
-// cannot come to mean different things. Reject still confirms in place: it
-// takes out a real run and a real worktree.
+//   - A ZERO COSTS A PILL. The three bands became four filters. An empty
+//     band used to cost a header, a border, a count badge and forty pixels
+//     of padding to say "none"; a pill says the same thing in its own width
+//     and doubles as the way to go looking.
+//   - COLUMNS, NOT CARDS. Eleven rows fit in 360px instead of 620, and time,
+//     worker, job, flow and result each read straight down the page. This is
+//     a surface for scanning, and a scan wants a grid.
+//   - THE PAGE ADMITS WHAT IT HID. Four filters can silently drop ninety
+//     rows, and a filtered list looks exactly like a crew that did nothing.
+//     One line under the table says which it is.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useFlowsStore } from '../../flowsStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
+import { useRunningMap } from '../../runnersStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
-import { deleteFlowRunWithDirtyGuard } from '../flows/deleteRun';
-import { PAUSE_ACTION, PAUSE_HINT, PAUSE_TEXT, REJECT_CONFIRM, REJECT_HINT } from './pauseCopy';
+import { PausedActions } from './PausedActions';
 import { WorkerAvatar, useWorkerColors } from './WorkerAvatar';
 import { clockTime } from './workerCalendar';
-import { relativeTime, startOfDay } from './workerDeskSelectors';
+import { relativeTime } from './workerDeskSelectors';
 import { workerColorFor } from './workerPalette';
-
-import type { WorkerFile } from './workerDeskSelectors';
+import { useDeliverables } from './useDeliverables';
+import {
+  NO_FILTERS,
+  RANGES,
+  describeLive,
+  describeReach,
+  describeState,
+  moreBeyond,
+  partitionLive,
+  stateCounts,
+  stateOf,
+  tableRows,
+  workersInView,
+  type QueueFilters,
+  type QueueRange,
+  type RowState,
+} from './queueTable';
 import {
   baseName,
   buildWorkQueue,
-  describeQueue,
   groupByDay,
-  pickDeliverable,
+  flowOf,
+  isLive,
   type QueueRow,
-  type QueueStep,
 } from './workQueue';
+
+import type { WorkerFile } from './workerDeskSelectors';
 
 export function WorkQueuePane() {
   const workers = useWorkersStore((s) => s.workers);
@@ -64,513 +64,499 @@ export function WorkQueuePane() {
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
   const runs = useFlowsStore((s) => s.runs);
   const runsLoaded = useFlowsStore((s) => s.runsLoaded);
+  const library = useFlowsStore((s) => s.flows);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const runners = useRunningMap();
   const openFile = useStore((s) => s.openFile);
 
-  // Every stamp on this page is an age, and an age that never re-renders is
-  // the thing that makes a live screen feel dead. A minute is as fine as any
-  // of them needs to be.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(t);
   }, []);
 
+  const [filters, setFilters] = useState<QueueFilters>(NO_FILTERS);
+  const set = <K extends keyof QueueFilters>(key: K, value: QueueFilters[K]) =>
+    setFilters((f) => ({ ...f, [key]: value }));
+
   const queue = useMemo(
-    () => buildWorkQueue(orchestrations, runs, workers, shiftProgress, now, runsLoaded),
-    [orchestrations, runs, workers, shiftProgress, now, runsLoaded],
+    () => buildWorkQueue(orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners),
+    [orchestrations, runs, workers, shiftProgress, now, runsLoaded, runners],
   );
 
-  // A row is one of two journeys. A job with a run goes to the run — but via
-  // `selectWorker`, which is what puts the roster's selection on the right
-  // name; the Workers tab only draws a run when it belongs to the worker on
-  // screen, and it clears the active run on the way in, so the order here is
-  // load-bearing.
-  //
-  // The `runs[...]` check is not defensive padding. Runs get deleted and
-  // pruned while the item that launched them lives on, and `setActiveRun`
-  // with an id nobody holds sets a variable that renders nothing — the click
-  // appeared to do nothing at all. Without a run there is still the turn that
-  // produced the job, so the desk is where the row goes instead.
+  const rows = useMemo(() => tableRows(queue, filters, now), [queue, filters, now]);
+  const counts = useMemo(() => stateCounts(queue, filters, now), [queue, filters, now]);
+  const roster = useMemo(() => workersInView(queue, filters, now), [queue, filters, now]);
+  const unfiltered = useMemo(
+    () => tableRows(queue, { ...filters, state: null, query: '', workerId: null }, now).length,
+    [queue, filters, now],
+  );
+  const { live, history } = useMemo(() => partitionLive(rows), [rows]);
+  const days = useMemo(() => groupByDay(history, now), [history, now]);
+  const beyond = useMemo(() => moreBeyond(queue, filters, now), [queue, filters, now]);
+  const filed = useDeliverables(rows, now);
+  // The run's own snapshot first, the library second — see `QueueRow.flowId`.
+  const flowNames = useMemo(
+    () => Object.fromEntries(library.map((f) => [f.id, f.name])),
+    [library],
+  );
+
   const open = (row: QueueRow) => {
     selectWorker(row.workerId);
     if (row.runId && runs[row.runId]) setActiveRun(row.runId);
-    else if (row.orchestrationId) {
-      openWorkerActivity(row.workerId, row.orchestrationId, row.at);
-    }
+    else if (row.orchestrationId) openWorkerActivity(row.workerId, row.orchestrationId, row.at);
   };
 
-  // What each finished job actually PRODUCED. A tail that says "Done" ten
-  // times tells you the crew was busy and nothing about what you got — and
-  // the report, the spec, the page is the entire reason the job was run.
-  //
-  // Addressed through `workers:deliverables`, which takes the same four facts
-  // the filing used. Main owns that naming rule and the renderer does not
-  // reproduce it: the two would drift the first time either changed, and the
-  // failure would be a silently missing link rather than anything that breaks.
-  const [filed, setFiled] = useState<Record<string, WorkerFile | null>>({});
-  useEffect(() => {
-    // Only `done` rows: a failure, an orphan and a quiet shift all filed
-    // nothing, so asking about them is a directory read per row per render
-    // for a guaranteed empty answer.
-    const wanted = queue.finished.filter(
-      (row) =>
-        row.status === 'done' &&
-        row.batchLabel &&
-        // A null is cached like any other answer, EXCEPT for a job that just
-        // landed: the journal fold files the output moments after the item
-        // settles, so "nothing filed" inside that window is a race rather
-        // than a fact, and caching it would hide the report until a remount.
-        (!(row.key in filed) || (filed[row.key] === null && now - row.at < 120_000)),
-    );
-    if (wanted.length === 0) return;
-    let live = true;
-    void Promise.all(
-      wanted.map(async (row) => {
-        const files = await window.overcli.invoke('workers:deliverables', {
-          id: row.workerId,
-          task: row.task,
-          label: row.batchLabel!,
-          title: row.title,
-          at: row.at,
-        });
-        return [row.key, pickDeliverable(files)] as const;
-      }),
-    ).then((pairs) => {
-      if (live) setFiled((prev) => ({ ...prev, ...Object.fromEntries(pairs) }));
-    });
-    return () => {
-      live = false;
-    };
-  }, [queue.finished, filed, now]);
-
-  const nothing =
-    queue.running.length === 0 && queue.needsYou.length === 0 && queue.finished.length === 0;
+  const empty = Object.keys(workers).length === 0;
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-4">
-      {nothing ? (
-        <EmptyQueue nextShiftAt={nextShiftAt} workers={workers} />
-      ) : (
-        <>
+      <div>
+        <h2 className="text-[13px] font-semibold text-ink">Work queue</h2>
+        <p className="mt-[3px] text-[12px] text-ink-faint">
+          Every job the crew has run — filter it, find it, act on it.
+        </p>
+      </div>
+
+      {/* Content before chrome. */}
+      <p className="mt-[18px] text-[19px] leading-[1.45] text-ink-muted">
+        {describeState(counts, filters.range)}
+      </p>
+
+      <div className="mt-4 flex items-center gap-2.5">
+        <SearchBox value={filters.query} onChange={(v) => set('query', v)} />
+        <RangePicker value={filters.range} onChange={(v) => set('range', v)} />
+        <WorkerPicker
+          value={filters.workerId}
+          options={roster}
+          onChange={(v) => set('workerId', v)}
+        />
+      </div>
+
+      {/* Only states you could actually switch TO. A pill reading zero is the
+          empty band all over again, in a smaller font: it costs a slot in the
+          row to tell you about work that does not exist. The one exception is
+          the pill already pressed — it has to stay so you can unpress it. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden">
+        {PILLS.filter(({ id }) => counts[id] > 0 || filters.state === id).map(({ id, label }) => (
+          <StatePill key={id} id={id} label={label} count={counts[id]} filters={filters} onPick={set} />
+        ))}
+        {(filters.state || filters.query || filters.workerId) && (
+          <button
+            onClick={() => setFilters((f) => ({ ...NO_FILTERS, range: f.range }))}
+            className="ml-1 text-[11.5px] text-ink-faint hover:text-ink focus:outline-none"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      <section className="mt-3 overflow-hidden rounded-[10px] border border-card">
+        {live.length > 0 && (
           <div>
-            <h2 className="text-sm font-semibold text-ink">Work queue</h2>
-            <p className="mt-0.5 text-xs text-ink-muted">What is moving, what needs a decision, and what landed today.</p>
+            <div
+              className="flex items-center gap-2.5 border-b px-3 py-1.5"
+              style={{
+                borderColor: 'var(--c-card-border)',
+                background: 'color-mix(in srgb, var(--c-running-pulse) 7%, transparent)',
+              }}
+            >
+              <span
+                aria-hidden
+                className="h-[6px] w-[6px] animate-pulse rounded-full"
+                style={{ background: 'var(--c-running-pulse)' }}
+              />
+              <span
+                className="text-[11.5px] font-semibold tracking-[0.02em]"
+                style={{ color: 'color-mix(in srgb, var(--c-running-pulse) 78%, var(--c-ink))' }}
+              >
+                {describeLive(live)}
+              </span>
+            </div>
+            {live.map((row) => (
+              <TableRow
+                key={row.key}
+                row={row}
+                onOpen={open}
+                filed={filed[row.key]}
+                onOpenFile={openFile}
+                flowNames={flowNames}
+                emphasis
+                now={now}
+              />
+            ))}
           </div>
+        )}
 
-          <section className="mt-5 flex flex-wrap items-center justify-between gap-5 rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
-            <div>
-              <div className="text-[10px] font-medium uppercase tracking-[0.16em] text-ink-faint">Crew status</div>
-              <p className="mt-2 text-[20px] leading-[1.45] text-ink-muted">{describeQueue(queue)}</p>
+        {rows.length === 0 ? (
+          <p className="px-3 py-8 text-center text-[12.5px] text-ink-faint">
+            {empty
+              ? 'No workers hired yet.'
+              : unfiltered === 0
+                ? 'The crew has run nothing in this stretch.'
+                : 'Nothing matches. Widen the range, or clear the filters.'}
+          </p>
+        ) : (
+          days.map((day) => (
+            <div key={day.at}>
+              <div className="flex items-center gap-2.5 border-b border-card/60 bg-card/40 px-3 py-1.5">
+                <span className="text-[11.5px] font-semibold tracking-[0.02em] text-ink-muted">
+                  {day.label}
+                </span>
+                <span className="text-[11px] tabular-nums text-ink-faint">
+                  {day.rows.length} job{day.rows.length === 1 ? '' : 's'}
+                </span>
+              </div>
+              {day.rows.map((row) => (
+                <TableRow
+                  key={row.key}
+                  row={row}
+                  onOpen={open}
+                  filed={filed[row.key]}
+                  onOpenFile={openFile}
+                  flowNames={flowNames}
+                  now={now}
+                />
+              ))}
             </div>
-            <div className="grid min-w-[360px] grid-cols-3 divide-x divide-card-strong">
-              <QueueMetric label="Running" value={queue.running.length} />
-              <QueueMetric label="Needs you" value={queue.needsYou.length} attention={queue.needsYou.length > 0} />
-              <QueueMetric label="Finished today" value={queue.finishedToday} />
-            </div>
-          </section>
+          ))
+        )}
+      </section>
 
-          <Band
-            title="Running now"
-            count={queue.running.length}
-            rows={queue.running}
-            now={now}
-            onOpen={open}
-          />
-          <Band
-            title="Needs you"
-            count={queue.needsYou.length}
-            rows={queue.needsYou}
-            now={now}
-            onOpen={open}
-          />
-          <Band
-            title="Finished"
-            count={queue.finishedToday}
-            countLabel="today"
-            rows={queue.finished}
-            now={now}
-            onOpen={open}
-            byDay
-            filed={filed}
-            onOpenFile={(path) => openFile(path, undefined, 'preview')}
-          />
-        </>
+      {beyond && (
+        <button
+          onClick={() => set('range', beyond.range)}
+          className="mt-2 flex w-full items-center gap-2.5 rounded-[10px] border border-dashed border-card px-3 py-2.5 text-left hover:border-card-strong hover:bg-card/40 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+        >
+          <span className="text-[11.5px] text-ink-muted">
+            {beyond.count} more job{beyond.count === 1 ? '' : 's'} further back
+          </span>
+          <span className="ml-auto text-[11.5px] text-ink-faint">Show {beyond.label} →</span>
+        </button>
+      )}
+
+      <div className="mt-2.5 flex items-center gap-2 text-[11.5px] text-ink-faint">
+        <span>{describeReach(rows.length, filters, unfiltered)}</span>
+        {nextUp(workers, nextShiftAt, now) && (
+          <>
+            <span className="text-ink-faint/50">·</span>
+            <span>{nextUp(workers, nextShiftAt, now)}</span>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/// The soonest shift, as one clause. The Today page draws this properly; here
+/// it is a footnote, because a find surface that opens with a countdown is
+/// answering a question you did not come here with.
+function nextUp(
+  workers: Record<string, { id: string; name: string; enabled: boolean }>,
+  nextShiftAt: Record<string, number | null>,
+  now: number,
+): string | null {
+  const next = Object.entries(nextShiftAt)
+    .filter(([id, at]) => at != null && workers[id]?.enabled && (at as number) > now)
+    .sort((a, b) => (a[1] as number) - (b[1] as number))[0];
+  if (!next) return null;
+  return `${workers[next[0]].name} is on next at ${clockTime(next[1] as number)}.`;
+}
+
+function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const ref = useRef<HTMLInputElement>(null);
+  return (
+    <div className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-card bg-card px-2.5 py-1.5 focus-within:border-card-strong">
+      <svg
+        viewBox="0 0 24 24"
+        aria-hidden
+        className="h-3.5 w-3.5 shrink-0 text-ink-faint"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      >
+        <circle cx="11" cy="11" r="7" />
+        <path d="M20 20l-3.5-3.5" />
+      </svg>
+      <input
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && value) {
+            e.stopPropagation();
+            onChange('');
+          }
+        }}
+        placeholder="Search jobs, workers, flows…"
+        className="min-w-0 flex-1 bg-transparent text-[12px] text-ink placeholder:text-ink-faint/85 focus:outline-none"
+      />
+      {value && (
+        <button
+          onClick={() => {
+            onChange('');
+            ref.current?.focus();
+          }}
+          aria-label="Clear search"
+          className="shrink-0 text-[11.5px] text-ink-faint hover:text-ink focus:outline-none"
+        >
+          ✕
+        </button>
       )}
     </div>
   );
 }
 
-/// A band with nothing in it is drawn anyway, with the reason it is empty.
-/// The three bands are the shape of the screen, and a shape that changes
-/// every time a job lands makes you re-find everything; an empty "Needs you"
-/// is also the single best piece of news this page can give you.
-function Band({
-  title,
-  count,
-  countLabel,
-  rows,
-  now,
-  onOpen,
-  byDay,
-  filed,
-  onOpenFile,
+/// One control, four stops. A segmented row rather than a dropdown because
+/// the reach is the thing you change most and it is worth one click, not two.
+function RangePicker({ value, onChange }: { value: QueueRange; onChange: (v: QueueRange) => void }) {
+  return (
+    <div className="flex shrink-0 items-center overflow-hidden rounded-lg border border-card">
+      {RANGES.map((range, i) => (
+        <button
+          key={range.id}
+          onClick={() => onChange(range.id)}
+          className={
+            'px-2.5 py-1.5 text-[11.5px] focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
+            (i > 0 ? 'border-l border-card ' : '') +
+            (value === range.id
+              ? 'bg-card-strong text-ink'
+              : 'text-ink-faint hover:text-ink-muted')
+          }
+        >
+          {range.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function WorkerPicker({
+  value,
+  options,
+  onChange,
 }: {
-  title: string;
-  count: number;
-  countLabel?: string;
-  rows: QueueRow[];
-  now: number;
-  onOpen: (row: QueueRow) => void;
-  byDay?: boolean;
-  filed?: Record<string, WorkerFile | null>;
-  onOpenFile?: (path: string) => void;
+  value: string | null;
+  options: Array<{ id: string; name: string; count: number }>;
+  onChange: (v: string | null) => void;
 }) {
-  const days = useMemo(() => (byDay ? groupByDay(rows, now) : null), [byDay, rows, now]);
-
-  const renderRow = (row: QueueRow) => (
-    <QueueRowView
-      key={row.key}
-      row={row}
-      now={now}
-      onOpen={onOpen}
-      clock={byDay}
-      filed={filed?.[row.key] ?? null}
-      onOpenFile={onOpenFile}
-    />
-  );
-
+  const chosen = options.find((o) => o.id === value);
   return (
-    <section className="mt-5 overflow-hidden rounded-xl border border-card-strong bg-card/20 shadow-sm">
-      <h3 className="flex items-baseline gap-2 border-b border-card-strong bg-card/50 px-4 py-3 text-sm font-semibold text-ink">
-        {title}
-        <span className="rounded-full bg-card-strong px-2 py-0.5 text-[10px] font-medium tabular-nums text-ink-muted">{count}</span>
-        {countLabel && <span className="text-[11px] font-normal text-ink-faint">{countLabel}</span>}
-      </h3>
-      {rows.length === 0 ? (
-        <p className="px-4 py-4 text-[12px] text-ink-faint">{EMPTY_BAND[title]}</p>
-      ) : days ? (
-        <div className="py-1.5">
-          {days.map((day, i) => (
-            <div key={day.at} className={i > 0 ? 'mt-4' : undefined}>
-              <DayRule label={day.label} />
-              {day.rows.map(renderRow)}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="py-1.5">{rows.map(renderRow)}</div>
-      )}
-    </section>
-  );
-}
-
-/// The only rule this screen draws between rows, and it earns the exception
-/// by answering something no row can: whether the gap above it is ten minutes
-/// or a night. Quiet on purpose — a label and a hairline, not a header.
-function DayRule({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-2 py-1.5 pl-3">
-      <span className="text-[11px] text-ink-faint">{label}</span>
-      <span aria-hidden className="h-px flex-1 bg-card-strong" />
+    <div className="relative shrink-0">
+      <select
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="appearance-none rounded-lg border border-card bg-transparent py-1.5 pl-2.5 pr-7 text-[11.5px] text-ink-faint hover:text-ink-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+      >
+        <option value="">All workers</option>
+        {options.map((o) => (
+          <option key={o.id} value={o.id}>
+            {o.name} ({o.count})
+          </option>
+        ))}
+      </select>
+      <span
+        aria-hidden
+        className={
+          'pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] ' +
+          (chosen ? 'text-ink' : 'text-ink-faint')
+        }
+      >
+        ▾
+      </span>
     </div>
   );
 }
 
-const EMPTY_BAND: Record<string, string> = {
-  'Running now': 'Nobody is working — the crew is between shifts.',
-  'Needs you': 'Nothing is waiting on a decision.',
-  Finished: 'Nothing has finished yet today.',
+/// The three bands, as switches.
+///
+/// A pill at zero is not dimmed into uselessness — it stays legible and stays
+/// clickable, because "show me the failures" answered with an empty table is
+/// a real answer and one the old empty band gave far more expensively.
+const PILLS: Array<{ id: RowState; label: string }> = [
+  { id: 'running', label: 'running' },
+  { id: 'needsYou', label: 'need you' },
+  { id: 'done', label: 'done' },
+  { id: 'failed', label: 'failed' },
+];
+
+const PILL_TONE: Record<RowState, string> = {
+  running: 'var(--c-running-pulse)',
+  needsYou: '#fbbf24',
+  done: 'var(--c-ink-muted)',
+  failed: 'var(--c-diff-remove-ink)',
 };
 
-function QueueRowView({
+const PILL_GLYPH: Record<RowState, string> = {
+  running: '▶',
+  needsYou: '⏸',
+  done: '✓',
+  failed: '✕',
+};
+
+function StatePill({
+  id,
+  label,
+  count,
+  filters,
+  onPick,
+}: {
+  id: RowState;
+  label: string;
+  count: number;
+  filters: QueueFilters;
+  onPick: <K extends keyof QueueFilters>(key: K, value: QueueFilters[K]) => void;
+}) {
+  const on = filters.state === id;
+  return (
+    <button
+      onClick={() => onPick('state', on ? null : id)}
+      aria-pressed={on}
+      className={
+        'flex items-center gap-[7px] rounded-full border py-1 pl-2.5 pr-3 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 ' +
+        (on ? 'border-card-strong bg-card-strong' : 'border-card hover:border-card-strong')
+      }
+    >
+      <span
+        aria-hidden
+        className="text-[10px]"
+        style={{ color: count > 0 || on ? PILL_TONE[id] : 'var(--c-ink-faint)', opacity: 0.85 }}
+      >
+        {PILL_GLYPH[id]}
+      </span>
+      <span
+        className="text-[12px] font-semibold tabular-nums"
+        style={{ color: count > 0 || on ? PILL_TONE[id] : 'var(--c-ink-faint)' }}
+      >
+        {count}
+      </span>
+      <span className={'text-[12px] ' + (on ? 'text-ink-muted' : 'text-ink-faint')}>{label}</span>
+    </button>
+  );
+}
+
+/// One job.
+///
+/// Deliberately the ORIGINAL page's row, not the table row that briefly
+/// replaced it. The five problems this page was rebuilt to fix were problems
+/// with the PAGE — two bands framing a zero, a readout said twice, no shape
+/// to the day, no reach past today. Only one of them was about the row, and
+/// "the filed deliverable sits five hundred pixels from its title" did not
+/// justify turning every row into a 28px spreadsheet line at 10px in the
+/// faintest ink on the ramp. Filters, ranges and day groups are what make
+/// this a find surface; small type never was.
+///
+/// What it keeps from the table: time as a left gutter rather than a
+/// right-hand stamp, so the column of times reads straight down and matches
+/// Today's spine — the two pages are siblings and should feel it.
+function TableRow({
   row,
-  now,
   onOpen,
-  clock,
   filed,
   onOpenFile,
+  flowNames,
+  emphasis = false,
+  now,
 }: {
   row: QueueRow;
-  now: number;
   onOpen: (row: QueueRow) => void;
-  clock?: boolean;
   filed?: WorkerFile | null;
-  onOpenFile?: (path: string) => void;
+  onOpenFile: (path: string, a?: undefined, mode?: 'preview') => void;
+  flowNames: Record<string, string>;
+  /// A hoisted row. Work that is happening has to look like it is happening —
+  /// the same eleven-point grey as a job that finished at dawn is the page
+  /// failing at the only question it is asked while the crew is busy.
+  emphasis?: boolean;
+  now: number;
 }) {
   const colors = useWorkerColors();
   const tint = workerColorFor(colors, row.workerId);
   const worker = useWorkersStore((s) => s.workers[row.workerId]);
-  const live = row.status === 'running' || row.status === 'planning';
-  // A consolidated row stands for several answers and opens none of them:
-  // clicking it unfolds what it rolled up, and each line inside goes to the
-  // conversation it names.
-  const answers = row.answers;
-  const [unfolded, setUnfolded] = useState(false);
+  const state = stateOf(row.status);
+  const live = isLive(row.status);
+  const flow = flowOf(row, flowNames);
+  const quiet = row.status === 'quiet' || row.status === 'orphaned';
 
-  // The wrapper holds the hover state the trailing arrow reads, so the arrow
-  // is a sibling of the link rather than a child of it.
   return (
-    <>
-    <div className="group mx-1 flex items-start gap-2 rounded-lg pr-1 transition-colors hover:bg-card/70">
-      <button
-        onClick={answers ? () => setUnfolded((v) => !v) : () => onOpen(row)}
-        aria-expanded={answers ? unfolded : undefined}
+    <div
+      className="group flex items-start gap-3 border-b border-card/60 px-3 py-2.5 last:border-b-0 hover:bg-card/60"
+      style={
+        emphasis
+          ? {
+              background: `color-mix(in srgb, ${
+                state === 'needsYou' ? '#fbbf24' : 'var(--c-running-pulse)'
+              } 5%, transparent)`,
+            }
+          : undefined
+      }
+    >
+      <span
         className={
-          'flex min-w-0 flex-1 items-start gap-3 rounded-md py-2 pl-3 pr-2 text-left ' +
-          'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
+          'w-[52px] shrink-0 pt-[3px] text-right tabular-nums ' +
+          (emphasis ? 'text-[11.5px] text-ink-muted' : 'text-[11px] text-ink-faint')
         }
+        title={new Date(row.at).toLocaleString()}
       >
-        {/* Whose work this is, said twice on purpose — a rule you read at a
-            glance down the column, and a name you read when you stop on one. */}
-        <span
-          aria-hidden
-          className="mt-0.5 h-8 w-[3px] shrink-0 rounded-full"
-          style={{ background: tint, opacity: row.status === 'quiet' ? 0.35 : 1 }}
-        />
-        {worker && <WorkerAvatar worker={worker} size="xs" live={live} />}
-
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span
-              className={
-                'truncate text-[13px] ' +
-                (row.status === 'quiet' || row.status === 'orphaned' ? 'text-ink-muted' : 'text-ink')
-              }
-            >
-              {row.title}
-            </span>
-            <span className="shrink-0 text-[11px] text-ink-faint">{row.workerName}</span>
-          </span>
-          <span className="mt-1 flex items-center gap-2 text-[11px] text-ink-faint">
-            {row.flowName && <span className="shrink-0 truncate max-w-[9rem]">{row.flowName}</span>}
-            {row.flowName && <Dot />}
-            {row.steps.length > 0 && row.status !== 'done' && row.status !== 'orphaned' ? (
-              <StepTrack steps={row.steps} tint={tint} />
-            ) : (
-              <StatusWord row={row} />
-            )}
-          </span>
-          {row.note && row.status === 'failed' && (
-            <span className="mt-1 block truncate text-[11px] text-red-700 dark:text-red-300/80">
-              {row.note}
-            </span>
-          )}
-        </span>
-
-      </button>
-
-      {/* A sibling of the link, never a child of it: a button inside a button
-          is invalid, and the click would have opened the run on its way to
-          rejecting it. */}
-      {row.status === 'paused' && row.runId && <PausedActions row={row} />}
-
-      {/* Fixed columns, and the stamp is a sibling of the row rather than its
-          last child. Inside the button its x-position was set by whatever the
-          job happened to file next to it, so a column of times that should
-          read straight down the page zig-zagged by the width of a filename. */}
-      {onOpenFile && (
-        <div className="flex w-[13rem] shrink-0 justify-end pt-2">
-          {filed && (
-            <button
-              onClick={() => onOpenFile(filed.path)}
-              title={`Open ${baseName(filed.name)}`}
-              className={
-                'flex min-w-0 items-center gap-1 rounded-md border border-card-strong px-2 py-1 ' +
-                'text-[11px] text-ink-muted hover:bg-card-strong hover:text-ink ' +
-                'focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
-              }
-            >
-              <span className="truncate">{baseName(filed.name)}</span>
-              <span aria-hidden className="text-ink-faint">
-                ↗
-              </span>
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Three phrasings, because they are three different questions. Live
-          work is timed from when it started — "6m ago" against a running job
-          reads as a job that has stalled, and against one running for fifteen
-          hours it reads as a bug, which is exactly what it was hiding. A
-          finished row under a day heading gives the clock time: "14:32" sorts
-          by eye, shows the gaps and the bursts, and doesn't drift under you.
-          Only an ungrouped past row still counts backwards. */}
-      <span className="w-16 shrink-0 pt-2.5 text-right text-[11px] tabular-nums text-ink-faint">
-        {live ? elapsed(row.at, now) : clock ? clockTime(row.at) : relativeTime(row.at, now)}
+        {clockTime(row.at)}
       </span>
 
+      {/* The rule and the face, the way the roster and the calendar already
+          draw this worker. Colour is who — the one encoding the old row got
+          right and the table dropped for a 5px dot. */}
       <span
         aria-hidden
-        className={
-          'w-3 shrink-0 pt-2.5 text-[11px] text-ink-faint transition-opacity ' +
-          (answers ? '' : 'opacity-0 group-hover:opacity-100')
-        }
+        className="mt-[1px] h-[30px] w-[3px] shrink-0 rounded-full"
+        style={{ background: state === 'failed' ? 'var(--c-diff-remove-ink)' : tint, opacity: quiet ? 0.35 : 1 }}
+      />
+      {worker && <WorkerAvatar worker={worker} size="xs" live={live} />}
+
+      <button
+        onClick={() => onOpen(row)}
+        className="min-w-0 flex-1 text-left focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
       >
-        {answers ? (unfolded ? '▾' : '▸') : '→'}
+        <span className="block truncate text-[13px] leading-[1.35] text-ink" title={row.title}>
+          {row.title}
+        </span>
+        <span className="mt-[3px] flex items-center gap-1.5 text-[11.5px]">
+          <span style={{ color: tint, opacity: 0.92 }}>{row.workerName}</span>
+          {flow && (
+            <>
+              <span className="text-ink-faint/50">·</span>
+              <span className="truncate text-ink-muted">{flow}</span>
+            </>
+          )}
+          {live && row.steps.length > 0 && (
+            <>
+              <span className="text-ink-faint/50">·</span>
+              <StepTrack steps={row.steps} tint={tint} />
+            </>
+          )}
+        </span>
+      </button>
+
+      <span className="flex w-[15rem] shrink-0 items-start justify-end gap-2.5 pt-[1px]">
+        <Result row={row} filed={filed} onOpenFile={onOpenFile} />
+        {live && (
+          <span className="shrink-0 text-[11.5px] tabular-nums text-ink-muted">
+            {relativeTime(row.at, now)}
+          </span>
+        )}
       </span>
     </div>
-    {answers && unfolded && (
-      <div className="mb-1 ml-[3.4rem] mr-1 border-l border-card-strong pl-3">
-        {answers.map((answer) => (
-          <button
-            key={answer.key}
-            onClick={() =>
-              onOpen({
-                ...row,
-                key: answer.key,
-                title: answer.title,
-                at: answer.at,
-                orchestrationId: answer.orchestrationId,
-                answers: undefined,
-              })
-            }
-            className={
-              'flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left ' +
-              'hover:bg-card/70 focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50'
-            }
-          >
-            <span className="min-w-0 flex-1 truncate text-[12px] text-ink-muted">{answer.title}</span>
-            <span className="shrink-0 text-[11px] tabular-nums text-ink-faint">
-              {clockTime(answer.at)}
-            </span>
-          </button>
-        ))}
-      </div>
-    )}
-    </>
   );
 }
 
-/// The two choices a paused run is actually waiting on, at row density.
-///
-/// Resume is one round trip and needs no confirmation — it does what the row
-/// already says it will do, and the run pane is where you go if you want to
-/// read first. Reject confirms in place, because it deletes the run and its
-/// worktree and is journaled so the idea stays gone; the confirm replaces the
-/// pair rather than sitting beside it, so there is never a "resume" a hand
-/// aiming for "cancel" can hit.
-function PausedActions({ row }: { row: QueueRow }) {
-  const runId = row.runId!;
-  const reason = row.pausedReason ?? 'preStep';
-  const pendingContinue = useFlowsStore((s) => !!s.runs[runId]?.pendingContinue);
-  const removeRun = useFlowsStore((s) => s.removeRun);
-  const [resuming, setResuming] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [rejecting, setRejecting] = useState(false);
-
-  // The store's own flag is the truth once main has taken the resume; the
-  // local one only covers the round trip before that lands. Clearing on the
-  // flag's change is what stops a row that came back paused again — a second
-  // checkpoint one step later — from being stuck showing "resuming…".
-  useEffect(() => {
-    setResuming(false);
-  }, [pendingContinue, reason]);
-
-  const inFlight = resuming || pendingContinue;
-
-  const resume = () => {
-    if (inFlight) return;
-    setResuming(true);
-    void window.overcli.invoke('flows:resumeRun', { runId }).then((res) => {
-      if (!res || res.ok === false) setResuming(false);
-    });
-  };
-
-  // Order matters and is the desk's order: the run and its worktree go first,
-  // through the same dirty-worktree confirm every other delete uses, so
-  // declining THAT prompt leaves the item exactly as it was. Only once the run
-  // is gone does the item settle to rejected, which is what writes the journal
-  // entry that keeps the idea from being proposed again.
-  const reject = async () => {
-    if (rejecting) return;
-    setRejecting(true);
-    const res = await deleteFlowRunWithDirtyGuard(runId);
-    if (res.deleted) {
-      removeRun(runId);
-      if (row.orchestrationId && row.candidateId) {
-        const r = await window.overcli.invoke('orchestrator:rejectItem', {
-          id: row.orchestrationId,
-          candidateId: row.candidateId,
-        });
-        if (r && r.ok === false) window.alert(`Couldn't decline this item: ${r.error}`);
-      }
-    }
-    setRejecting(false);
-    setConfirming(false);
-  };
-
-  if (confirming) {
-    return (
-      <span className="flex shrink-0 items-center gap-1.5 pt-2">
-        <span className="max-w-[16rem] text-[10px] text-ink-muted">{REJECT_CONFIRM}</span>
-        <button
-          onClick={() => void reject()}
-          disabled={rejecting}
-          className="shrink-0 rounded bg-red-500/80 px-1.5 py-[1px] text-[10px] text-white focus:outline-none disabled:opacity-50"
-        >
-          {rejecting ? 'rejecting…' : 'Reject'}
-        </button>
-        <button
-          onClick={() => setConfirming(false)}
-          className="shrink-0 text-[10px] text-ink-faint hover:text-ink focus:outline-none"
-        >
-          Cancel
-        </button>
-      </span>
-    );
-  }
-
+/// The flow's steps with the live one marked and pulsing — the same words the
+/// Flows rail and the Today spine use, so "review" means one thing everywhere.
+function StepTrack({ steps, tint }: { steps: QueueRow['steps']; tint: string }) {
   return (
-    <span className="flex shrink-0 items-center gap-1.5 pt-2">
-      <button
-        onClick={resume}
-        disabled={inFlight}
-        title={PAUSE_HINT[reason]}
-        className="shrink-0 rounded border border-amber-500/40 px-1.5 py-[1px] text-[10px] text-amber-600 hover:bg-amber-500/10 focus:outline-none disabled:opacity-50 dark:text-amber-300"
-      >
-        {inFlight ? 'resuming…' : PAUSE_ACTION[reason]}
-      </button>
-      <button
-        onClick={() => setConfirming(true)}
-        disabled={inFlight}
-        title={REJECT_HINT}
-        className="shrink-0 rounded border border-red-500/40 px-1.5 py-[1px] text-[10px] text-red-500 hover:bg-red-500/10 focus:outline-none disabled:opacity-50 dark:text-red-400"
-      >
-        reject
-      </button>
-    </span>
-  );
-}
-
-/// "6m" / "2h 10m" / "3d" — how long this has been going, which is a
-/// different question from when it started and the only one a live row is
-/// ever asked.
-function elapsed(from: number, now: number): string {
-  const mins = Math.max(0, Math.round((now - from) / 60_000));
-  if (mins < 1) return 'just started';
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return mins % 60 === 0 ? `${hours}h` : `${hours}h ${mins % 60}m`;
-  return `${Math.round(hours / 24)}d`;
-}
-
-/// The signature. Named steps in flow order, dimmed behind and ahead of where
-/// the run actually is — the same word for a step the Flows tab's own rail
-/// uses, so the two screens agree on what "review" means.
-function StepTrack({ steps, tint }: { steps: QueueStep[]; tint: string }) {
-  return (
-    <span className="flex min-w-0 items-center gap-1 overflow-hidden">
+    <span className="flex min-w-0 items-center gap-1.5 overflow-hidden">
       {steps.map((step, i) => (
-        <span key={step.id} className="flex shrink-0 items-center gap-1">
+        <span key={step.id} className="flex shrink-0 items-center gap-1.5">
           {i > 0 && <span className="text-ink-faint/50">›</span>}
           {step.state === 'current' && (
-            <span
-              aria-hidden
-              className="h-1.5 w-1.5 animate-pulse rounded-full"
-              style={{ background: tint }}
-            />
+            <span aria-hidden className="h-[5px] w-[5px] animate-pulse rounded-full" style={{ background: tint }} />
           )}
           <span
             className={
@@ -591,82 +577,62 @@ function StepTrack({ steps, tint }: { steps: QueueStep[]; tint: string }) {
   );
 }
 
-/// What a row says when there is no track to draw: it hasn't started, it
-/// isn't a job, or it's over.
-function StatusWord({ row }: { row: QueueRow }) {
-  if (row.status === 'planning') {
+function Result({
+  row,
+  filed,
+  onOpenFile,
+}: {
+  row: QueueRow;
+  filed?: WorkerFile | null;
+  onOpenFile: (path: string, a?: undefined, mode?: 'preview') => void;
+}) {
+  if (row.status === 'paused' && row.runId) return <PausedActions row={row} />;
+  if (row.status === 'proposed') {
+    return <span className="text-[11.5px] text-amber-500">Wants your go-ahead</span>;
+  }
+  if (filed) {
     return (
-      <span className="flex items-center gap-1.5">
-        <span className="animate-pulse">Working out what to do</span>
-        {row.note && <span className="text-ink-faint/70">· {row.note}</span>}
+      <button
+        onClick={() => onOpenFile(filed.path, undefined, 'preview')}
+        title={`Open ${baseName(filed.name)}`}
+        className="flex min-w-0 items-center gap-1.5 rounded-md border border-card-strong bg-card px-2 py-1 text-[11.5px] text-ink-muted hover:bg-card-strong hover:text-ink focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
+      >
+        <span className="truncate">{baseName(filed.name)}</span>
+        <span aria-hidden className="text-ink-faint">↗</span>
+      </button>
+    );
+  }
+  if (row.status === 'failed') {
+    return (
+      <span className="truncate text-[11.5px] text-red-700 dark:text-red-300/80" title={row.note}>
+        {row.note ?? 'Failed'}
       </span>
     );
   }
-  if (row.status === 'queued') return <span>Waiting for a free slot</span>;
-  if (row.status === 'proposed') return <span className="text-ink-muted">Wants your go-ahead</span>;
-  if (row.status === 'paused') {
-    return <span className="text-ink-muted">{PAUSE_TEXT[row.pausedReason ?? 'preStep']}</span>;
+  if (row.status === 'orphaned') {
+    return <span className="text-[11.5px] text-ink-faint">Its run is gone</span>;
   }
-  // Past tense on purpose: it is not waiting for anything, it stopped.
-  if (row.status === 'orphaned') return <span>Ended — its run is gone</span>;
-  if (row.status === 'failed') return <span className="text-red-700 dark:text-red-300/80">Failed</span>;
   if (row.status === 'quiet') {
-    return <span>{row.task === 'errand' ? 'Answered without launching work' : 'Looked, found nothing to do'}</span>;
+    return (
+      <span className="truncate text-[11.5px] text-ink-faint">
+        {row.task === 'errand' ? 'Answered in chat' : 'Found nothing to do'}
+      </span>
+    );
   }
-  return <span>Done</span>;
-}
-
-/// "at 09:00" for today, "tomorrow at 09:00", "Thu at 09:00" — enough to know
-/// whether waiting is worth it, and no more.
-function whenNext(at: number): string {
-  const days = Math.round((startOfDay(at) - startOfDay(Date.now())) / 86_400_000);
-  if (days <= 0) return `at ${clockTime(at)}`;
-  if (days === 1) return `tomorrow at ${clockTime(at)}`;
-  return `${new Date(at).toLocaleDateString([], { weekday: 'short' })} at ${clockTime(at)}`;
-}
-
-function Dot() {
-  return <span className="shrink-0 text-ink-faint/50">·</span>;
-}
-
-/// An idle crew is the system working, not a blank page — so this says what
-/// is next rather than that there is nothing. It only ever reads "nothing is
-/// scheduled" when that is literally true of every worker on the roster.
-function EmptyQueue({
-  nextShiftAt,
-  workers,
-}: {
-  nextShiftAt: Record<string, number | null>;
-  workers: Record<string, { id: string; name: string }>;
-}) {
-  const next = Object.entries(nextShiftAt)
-    .filter(([id, at]) => at != null && workers[id])
-    .sort((a, b) => (a[1] as number) - (b[1] as number))[0];
-
-  return (
-    <div>
-      <h2 className="text-sm font-semibold text-ink">Work queue</h2>
-      <div className="mt-5 rounded-xl border border-card-strong bg-card/30 p-5 shadow-sm">
-      <p className="text-[20px] leading-[1.5] text-ink-muted">
-        Nothing in flight, and nothing waiting on you.
-      </p>
-      <p className="mt-2 text-[13px] text-ink-faint">
-        {next
-          ? `${workers[next[0]].name} is on next, ${whenNext(next[1] as number)}. Whatever a shift or an errand starts shows up here first.`
-          : 'No shifts are scheduled. Give a worker a cadence, or send one an errand, and its work shows up on this page.'}
-      </p>
-      </div>
-    </div>
-  );
-}
-
-function QueueMetric({ label, value, attention = false }: { label: string; value: number; attention?: boolean }) {
-  return (
-    <div className="px-5 first:pl-0 last:pr-0">
-      <div className="text-[10px] uppercase tracking-wider text-ink-faint">{label}</div>
-      <div className={'mt-1 text-2xl font-semibold tabular-nums ' + (attention ? 'text-amber-500' : 'text-ink')}>
-        {value}
-      </div>
-    </div>
-  );
+  if (row.status === 'responding') {
+    return <span className="animate-pulse text-[11.5px] text-ink-muted">Answering you</span>;
+  }
+  if (row.status === 'queued') return <span className="text-[11.5px] text-ink-faint">Queued</span>;
+  if (row.status === 'planning') {
+    return <span className="animate-pulse text-[11.5px] text-ink-faint">Working out what to do</span>;
+  }
+  if (row.status === 'running') {
+    const current = row.steps.find((s) => s.state === 'current');
+    return (
+      <span className="truncate text-[11.5px] text-ink-muted">
+        {current ? current.id : 'Running'}
+      </span>
+    );
+  }
+  return <span className="text-[11.5px] text-ink-faint/60">—</span>;
 }

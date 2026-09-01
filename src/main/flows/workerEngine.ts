@@ -55,6 +55,7 @@ import {
   parseHandoffs,
   parseWorkerSubject,
   resolveHandoffTarget,
+  parseDirectRun,
   rosterLine,
   stripHandoffs,
   stripWorkerSubject,
@@ -177,6 +178,22 @@ export interface WorkerParker {
         sessionId?: string;
       }
     | { ok: false; error: string }
+  >;
+  /// Park a batch with no producer turn — the caller's words become the one
+  /// candidate. Backs the desk's direct run; see orchestrator.parkDirect.
+  parkDirect(args: {
+    origin?: Orchestration['origin'];
+    projectPath: string;
+    prompt: string;
+    title: string;
+    flowId: string;
+    runIn: 'cwd' | 'worktree';
+    baseBranch?: string;
+    maxConcurrent: number;
+    autoLaunch?: boolean;
+    note?: string;
+  }): Promise<
+    { ok: true; orchestrationId: UUID; count: number; queued: number } | { ok: false; error: string }
   >;
   get(id: UUID): Orchestration | null;
   list(): Orchestration[];
@@ -1094,13 +1111,17 @@ export class WorkerEngine {
     if (!w) return { ok: false, error: 'Worker not found.' };
     const errand = instruction.trim();
     if (!errand) return { ok: false, error: 'Type what you want this worker to do.' };
+    // `/run <work>` means the manager has already made the call the planning
+    // turn would have made. Everything else about the turn is unchanged: same
+    // queue, same busy guard, same budget gate, same desk row.
+    const direct = parseDirectRun(errand);
     // Behind whatever this worker is already doing, and behind any errand sent
     // before it — a desk you can leave a note on, in the order the notes were
     // left. `this.workers.get` is re-read inside, because the wait can be
     // minutes and the worker may have been edited meanwhile.
     const res = await this.fire(w, {
       manual: true,
-      errand,
+      ...(direct ? { direct } : { errand }),
       attachments,
     });
     this.arm();
@@ -1262,6 +1283,8 @@ export class WorkerEngine {
     opts: {
       manual?: boolean;
       errand?: string;
+      /// A `/run` line: the work itself, already stripped of its prefix.
+      direct?: string;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string };
     },
@@ -1284,6 +1307,8 @@ export class WorkerEngine {
     opts: {
       manual?: boolean;
       errand?: string;
+      /// A `/run` line: the work itself, already stripped of its prefix.
+      direct?: string;
       attachments?: Attachment[];
       from?: { workerId: UUID; workerName: string };
     },
@@ -1339,6 +1364,11 @@ export class WorkerEngine {
       this.persistAndEmit(w);
       return { ok: true };
     }
+
+    // A direct run is not a shift either — same guard, same budget gate, no
+    // cadence bookkeeping. Checked before the errand branch because a `/run`
+    // line arrives carrying both.
+    if (opts.direct) return await this.dispatchDirect(w, opts.direct, opts.attachments);
 
     // Errands share the firing guard and budget gate, but they are not shifts:
     // never stamp cadence bookkeeping before their planning turn.
@@ -1458,6 +1488,94 @@ export class WorkerEngine {
       // free choice would be an unattended launch into unvetted machinery.
       allowedFlowIds: w.flowIds,
     });
+  }
+
+  /// A desk line that carries no judgment call left to make: the manager named
+  /// the work and the worker's own flow runs it, verbatim, with no planning
+  /// turn in between.
+  ///
+  /// The planning turn is what this exists to skip. It holds every tool the
+  /// flow holds, so for a worker whose job description describes the work, it
+  /// answers the ask itself and proposes nothing — you pay for a full research
+  /// turn and the flow, with its review and fact-check steps, never runs. No
+  /// wording fixed that reliably; naming the intent does.
+  ///
+  /// It still PARKS rather than launching. `/run` is unambiguous about what to
+  /// do, not about spending a worker's month unattended, and the desk already
+  /// carries a one-click approval card for exactly this.
+  private async dispatchDirect(
+    w: Worker,
+    work: string,
+    attachments?: Attachment[],
+  ): Promise<{ ok: true; errand: WorkerErrandResult } | { ok: false; error: string }> {
+    if (attachments && attachments.length > 0) {
+      return {
+        ok: false,
+        error: 'A direct run takes no attachments — send it as an ordinary message instead.',
+      };
+    }
+    const flowId = w.flowIds[0];
+    if (!flowId) return { ok: false, error: `${w.name} has no flow to run.` };
+
+    const at = this.now();
+    const entryId = this.errandEntryId(w.id, at);
+    const title = errandLabel(work);
+    const res = await this.deps.parker.parkDirect({
+      origin: workerOrigin(w, 'errand', work),
+      projectPath: w.projectPath,
+      prompt: this.buildDirectPrompt(w, work),
+      title,
+      flowId,
+      runIn: this.effectiveRunIn(w),
+      // One run: a direct line names one piece of work. The items-per-shift
+      // cap bounds what a PLANNER may propose, and there is no planner here.
+      maxConcurrent: 1,
+      note: 'Sent straight to the flow — no planning turn.',
+    });
+
+    const fresh = this.workers.get(w.id) ?? w;
+    if (!res.ok) {
+      this.journal.append({
+        id: entryId,
+        workerId: w.id,
+        kind: 'errand',
+        at,
+        title,
+        note: `Failed: ${res.error}`,
+      });
+      this.emitWorker(fresh);
+      this.deps.notify({
+        title: `${fresh.name} could not run that`,
+        body: res.error,
+        kind: 'failure',
+      });
+      return { ok: false, error: res.error };
+    }
+
+    this.journal.append({
+      id: entryId,
+      workerId: w.id,
+      kind: 'errand',
+      at,
+      title,
+      note: describeShift(res.count, res.queued, 0),
+      orchestrationId: res.orchestrationId,
+    });
+    this.emitWorker(fresh);
+    this.deps.notify({
+      title: `${fresh.name} queued that up`,
+      body: describeShiftNotification(res.count, res.queued, 0),
+    });
+    return {
+      ok: true,
+      errand: {
+        orchestrationId: res.orchestrationId,
+        count: res.count,
+        queued: res.queued,
+        launchedNothing: false,
+        reply: '',
+      },
+    };
   }
 
   private async fireErrand(
@@ -1691,6 +1809,54 @@ export class WorkerEngine {
   /// The planning turn's user request (the producer system prompt rides in
   /// front of it — see orchestrator.propose). Rebuilt from the journal every
   /// shift: this is the difference between a worker and a saved prompt.
+  /// What a direct run carries into the flow besides the work itself.
+  ///
+  /// Skipping the planning turn skipped everything the planning turn knew —
+  /// who the worker is, what it has already done, where it keeps its files —
+  /// and the first report it produced said "no prior review found" while the
+  /// baseline sat in the worker's own directory. So the briefing travels with
+  /// the work instead of with the turn.
+  ///
+  /// It is BACKGROUND, and says so. A job description written for a planner
+  /// ("you produce a complete report") would otherwise talk step 1 of a
+  /// four-step flow into writing conclusions it is explicitly not supposed to
+  /// draw, so the precedence is stated where it cannot be missed.
+  ///
+  /// Deliberately NOT the shift prompt's `filesBlock`: that one is written for
+  /// something that LAUNCHES flows ("candidate instructions must use relative
+  /// paths"), and this is the flow.
+  private buildDirectPrompt(w: Worker, work: string): string {
+    const digest = this.journal.digest(w.id);
+    return [
+      'WHO YOU ARE (background)',
+      `You are running as "${w.name}", a standing worker on this project. Its job`,
+      'description follows so you know what this work is FOR and what it must never',
+      'do. It is context, not instructions: where it differs from the instructions',
+      'for the step you are running, THE STEP WINS. Do not take a later step\u2019s job',
+      'just because the description mentions it.',
+      '',
+      w.jobDescription,
+      '',
+      'WHAT THIS WORKER HAS ALREADY DONE (newest first)',
+      digest || '(nothing yet — this is its first piece of work)',
+      '',
+      'YOUR FILES',
+      `This worker has a directory of its own at: ${workerFilesDir(w.id)}`,
+      'It persists across runs and nobody else writes to it. READ IT BEFORE YOU',
+      'START: a prior review, a baseline, or notes on what was already checked are',
+      'there if they exist, and they are how you know what has changed rather than',
+      'reporting everything as new. Write anything a future run will need. Use',
+      'ordinary absolute paths — it is outside the project, so nothing you put there',
+      'touches the repository. Create it if it does not exist.',
+      `If \`cursor.json\` is there, cover only what is new since the mark it holds; if`,
+      `it is not, this is the first pass — cover the last ${WORKER_FIRST_RUN_WINDOW_DAYS} days. Write the new mark`,
+      'LAST, once the work has actually succeeded.',
+      '',
+      'THE WORK',
+      work,
+    ].join('\n');
+  }
+
   private buildShiftPrompt(w: Worker, sequence: number, rejected: string[], previousPlannedAt?: number): string {
     const digest = this.journal.digest(w.id);
     const parts = [
@@ -2145,10 +2311,17 @@ export class WorkerEngine {
       '   a question about this project, a lookup you can do with the tools you have —',
       '   just answer it in prose. Emit an empty candidates list. An answered question',
       '   is a finished errand, not a failure. Do not manufacture work to look busy.',
+      '   A QUESTION is not the same as THE WORK: if the errand asks you to DO the',
+      '   thing your flows exist to do, that is path 2, even when you could grind it',
+      '   out yourself in this one turn.',
       '',
       '2. USE YOUR EXISTING FLOWS. If the errand is work of a kind you already have a',
       `   flow for, propose at most ${w.caps.maxItemsPerShift} candidates, best first,`,
-      '   each a self-contained ask. This is the normal path for work in your remit.',
+      '   each a self-contained ask. This is the normal path for work in your remit,',
+      '   and it WINS THE TIE against path 1 whenever a flow on your contract covers',
+      '   the ask. Your planning turn is for dispatching work, not performing it: a',
+      '   flow has review, fact-check and report steps you cannot reproduce inline,',
+      '   so answering in prose instead quietly ships the weaker deliverable.',
       '',
       '3. ASK FOR A NEW FLOW. If answering properly needs real investigation — several',
       '   steps, reading a lot of the codebase, correlating things you cannot hold in',

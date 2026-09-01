@@ -83,6 +83,7 @@ function makeHarness(
 ) {
   let now = opts.startAt ?? local(2026, 3, 2, 8, 0);
   const parked: Array<Parameters<WorkerParker['parkProposal']>[0]> = [];
+  const direct: Array<Parameters<WorkerParker['parkDirect']>[0]> = [];
   const deleted: string[] = [];
   const notifications: Array<{ title: string; body: string }> = [];
   const emitted: any[] = [];
@@ -99,6 +100,12 @@ function makeHarness(
     queued: 0,
     excluded: 0,
   };
+  let directResult: Awaited<ReturnType<WorkerParker['parkDirect']>> = {
+    ok: true,
+    orchestrationId: 'orch-direct',
+    count: 1,
+    queued: 0,
+  };
   let parkGate: Promise<void> | null = null;
 
   let pending: { at: number; fn: () => void } | null = null;
@@ -112,6 +119,10 @@ function makeHarness(
       parked.push(args);
       if (parkGate) await parkGate;
       return parkResult;
+    },
+    async parkDirect(args) {
+      direct.push(args);
+      return directResult;
     },
     get: (id) => orchestrations.get(id) ?? null,
     list: () => [...orchestrations.values()],
@@ -222,6 +233,7 @@ function makeHarness(
   return {
     engine,
     parked,
+    direct,
     deleted,
     notifications,
     emitted,
@@ -240,6 +252,9 @@ function makeHarness(
     treasury: () => treasury,
     setParkResult: (r: typeof parkResult) => {
       parkResult = r;
+    },
+    setDirectResult: (r: typeof directResult) => {
+      directResult = r;
     },
     holdPark: () => {
       let release!: () => void;
@@ -346,6 +361,94 @@ describe('WorkerEngine on-demand workers', () => {
     const res = await h.engine.runErrand('worker-1', 'Break the search epic down with me.');
     expect(res.ok).toBe(true);
     expect(parkedWorkerIds(h.parked)).toEqual(['worker-1']);
+  });
+
+  describe('a direct run', () => {
+    it('sends the work straight to the flow, with no planning turn', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      h.engine.start();
+      const res = await h.engine.runErrand('worker-1', '/run LG Partner Club Thailand');
+      expect(res.ok).toBe(true);
+      // The producer never ran — that is the whole point of the path.
+      expect(h.parked).toEqual([]);
+      expect(h.direct).toHaveLength(1);
+      expect(h.direct[0]).toMatchObject({
+        projectPath: '/repo',
+        flowId: 'fix-it',
+        runIn: 'worktree',
+        origin: { kind: 'worker', workerId: 'worker-1', task: 'errand' },
+      });
+      // The work itself, verbatim and last, under its own heading.
+      expect(h.direct[0].prompt).toContain('THE WORK\nLG Partner Club Thailand');
+      // Parked, not launched: `/run` is unambiguous about WHAT, not about
+      // spending the month unattended.
+      expect(h.direct[0].autoLaunch).toBeFalsy();
+    });
+
+    it('carries the worker\u2019s whole briefing into the run', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      h.engine.start();
+      h.journal.push({
+        id: 'e-1',
+        workerId: 'worker-1',
+        kind: 'shift',
+        at: local(2026, 3, 1, 9, 0),
+        title: 'Reviewed LG Thailand',
+        note: 'One report filed.',
+      });
+      await h.engine.runErrand('worker-1', '/run LG Electronics USA');
+      const prompt = h.direct[0].prompt;
+      // Skipping the planning turn skipped what the planning turn knew. All
+      // three pieces travel with the work instead.
+      expect(prompt).toContain('Find the most valuable maintenance work');
+      expect(prompt).toContain('Reviewed LG Thailand');
+      expect(prompt).toContain('worker-files');
+      // And the job description cannot outrank the step it lands in — a
+      // description saying "produce the report" would otherwise talk step 1 of
+      // a four-step flow into drawing conclusions it must not draw.
+      expect(prompt).toContain('THE STEP WINS');
+    });
+
+    it('lands on the desk as a turn with its batch attached', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      h.engine.start();
+      await h.engine.runErrand('worker-1', '/run Review LG Thailand');
+      const entry = h.journal.at(-1);
+      expect(entry).toMatchObject({
+        kind: 'errand',
+        title: 'Review LG Thailand',
+        orchestrationId: 'orch-direct',
+      });
+      expect(entry?.note).not.toContain('Nothing launched');
+    });
+
+    it('leaves an ordinary message on the planning path', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null })] });
+      h.engine.start();
+      await h.engine.runErrand('worker-1', 'did you review the documents?');
+      expect(h.direct).toEqual([]);
+      expect(h.parked).toHaveLength(1);
+    });
+
+    it('refuses when the worker has no flow to run', async () => {
+      const h = makeHarness({ seed: [seedWorker({ cadence: null, flowIds: [] })] });
+      h.engine.start();
+      const res = await h.engine.runErrand('worker-1', '/run anything');
+      expect(res).toEqual({ ok: false, error: 'Scout has no flow to run.' });
+      expect(h.direct).toEqual([]);
+    });
+
+    it('is still gated on funding, like every other turn', async () => {
+      const h = makeHarness({
+        seed: [seedWorker({ cadence: null, budgetUSDPerMonth: 5 })],
+        pool: 20,
+        spend: 6,
+      });
+      h.engine.start();
+      const res = await h.engine.runErrand('worker-1', '/run Review LG Thailand');
+      expect(res.ok).toBe(false);
+      expect(h.direct).toEqual([]);
+    });
   });
 
   it('works a shift on demand when asked', async () => {
@@ -1103,6 +1206,10 @@ describe('WorkerEngine errands', () => {
     expect(h.parked[0].prompt).toContain('USE YOUR EXISTING FLOWS');
     expect(h.parked[0].prompt).toContain('<flow_request>');
     expect(h.parked[0].prompt).toContain('outside your job description');
+    // A worker whose own job description describes the work reads path 1 as
+    // covering it and answers in prose, skipping the flow's review and
+    // fact-check steps. The tie-break is what stops that.
+    expect(h.parked[0].prompt).toContain('WINS THE TIE against path 1');
   });
 
   it('states context discipline in both the shift and the errand prompt', async () => {

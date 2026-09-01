@@ -29,7 +29,7 @@ export interface NavLocation {
   /// selection rather than part of it — the calendar and the funds waterfall
   /// have no worker to be the selection of — so Back out of Funds has to
   /// know to return to the calendar rather than to a desk.
-  workersView: 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
+  workersView: 'today' | 'queue' | 'worker' | 'calendar' | 'funds' | 'report';
 }
 
 /// Identity of a location — two locations with the same key are the same
@@ -253,7 +253,8 @@ function applyLocation(loc: NavLocation): void {
     // AFTER selectWorker too, which forces the desk: picking a worker means
     // "show me the desk", but a restored location already knows whether the
     // desk was what was on screen.
-    if (loc.workersView === 'queue') useWorkersStore.getState().showQueue();
+    if (loc.workersView === 'today') useWorkersStore.getState().showToday();
+    else if (loc.workersView === 'queue') useWorkersStore.getState().showQueue();
     else if (loc.workersView === 'calendar') useWorkersStore.getState().showCalendar();
     else if (loc.workersView === 'funds') useWorkersStore.getState().showFunds();
     else if (loc.workersView === 'report') useWorkersStore.getState().showReport();
@@ -326,6 +327,7 @@ export function navigateToTab(toRoot: () => void): void {
 export function describeLocation(loc: NavLocation): string {
   switch (loc.detailMode) {
     case 'workers':
+      if (loc.workersView === 'today') return "the crew's day";
       if (loc.workersView === 'queue') return 'the work queue';
       if (loc.workersView === 'calendar') return 'the shift calendar';
       if (loc.workersView === 'funds') return 'funds';

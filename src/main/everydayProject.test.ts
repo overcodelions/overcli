@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MAX_PROJECT_FILE_BYTES } from '../shared/fileLimits';
 import {
   copyIntoProject,
   createEverydayProject,
@@ -95,7 +96,7 @@ describe('copyIntoProject', () => {
       files: [{ name: 'brief.txt', dataBase64: b64('hello') }],
     });
 
-    expect(res).toEqual({ ok: true, written: 1 });
+    expect(res).toEqual({ ok: true, written: 1, rejections: [] });
     expect(fs.readFileSync(path.join(dir, 'brief.txt'), 'utf-8')).toBe('hello');
   });
 
@@ -119,6 +120,45 @@ describe('copyIntoProject', () => {
     // Reduced to its basename, so it lands inside the project either way.
     expect(fs.existsSync(path.join(dir, 'evil.txt'))).toBe(true);
     expect(fs.existsSync(path.join(path.dirname(dir), 'evil.txt'))).toBe(false);
+  });
+
+  it('copies from a source path without the bytes passing through IPC', () => {
+    const dir = tempProject();
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-src-')), 'deck.pptx');
+    fs.writeFileSync(src, 'slides');
+
+    const res = copyIntoProject({
+      projectPath: dir,
+      files: [{ name: 'deck.pptx', sourcePath: src }],
+    });
+
+    expect(res).toEqual({ ok: true, written: 1, rejections: [] });
+    expect(fs.readFileSync(path.join(dir, 'deck.pptx'), 'utf-8')).toBe('slides');
+    // The source is a copy, not a move: it is the user's own file.
+    expect(fs.existsSync(src)).toBe(true);
+  });
+
+  it('re-checks the size cap on a source path it was handed', () => {
+    const dir = tempProject();
+    const src = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-src-')), 'huge.bin');
+    fs.writeFileSync(src, Buffer.alloc(1024));
+    const realStat = fs.statSync;
+    const spy = vi.spyOn(fs, 'statSync').mockImplementation(((p: string, ...rest: unknown[]) => {
+      const stat = realStat(p as never, ...(rest as []));
+      if (p === src) Object.defineProperty(stat, 'size', { value: MAX_PROJECT_FILE_BYTES + 1 });
+      return stat;
+    }) as typeof fs.statSync);
+
+    const res = copyIntoProject({
+      projectPath: dir,
+      files: [{ name: 'ok.txt', dataBase64: b64('fine') }, { name: 'huge.bin', sourcePath: src }],
+    });
+    spy.mockRestore();
+
+    expect(res.ok).toBe(true);
+    expect(res.ok && res.written).toBe(1);
+    expect(res.ok && res.rejections[0]).toContain('max is 50 MB');
+    expect(fs.existsSync(path.join(dir, 'huge.bin'))).toBe(false);
   });
 
   it('reports when there is nothing usable to write', () => {
