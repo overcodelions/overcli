@@ -34,6 +34,7 @@ import {
   type Schedule,
   type ScheduleRunRecord,
 } from '../../shared/flows/schedule';
+import type { NotifyArgs } from '../host';
 import type { FlowLauncher } from './orchestrator';
 import { deleteSchedule, loadAllSchedules, saveSchedule } from './schedulesStore';
 
@@ -77,7 +78,7 @@ export interface SchedulerDeps {
   emit: (event: MainToRendererEvent) => void;
   /// Desktop notification. A scheduled run finishing with nobody watching is
   /// invisible otherwise — this is the only channel out.
-  notify: (args: { title: string; body: string }) => void;
+  notify: (args: NotifyArgs) => void;
   now?: () => number;
   timers?: {
     set: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
@@ -415,7 +416,7 @@ export class SchedulerEngine {
       if (!res.ok) {
         this.record(s, { at: this.now(), outcome: 'failed', note: res.error });
         this.persistAndEmit(s);
-        this.deps.notify({ title: `${s.name} failed`, body: res.error });
+        this.deps.notify({ title: `${s.name} failed`, body: res.error, kind: 'failure' });
         return;
       }
       this.record(s, {
@@ -453,7 +454,7 @@ export class SchedulerEngine {
     if (!res.ok) {
       this.record(s, { at: this.now(), outcome: 'failed', note: res.error });
       this.persistAndEmit(s);
-      this.deps.notify({ title: `${s.name} failed to start`, body: res.error });
+      this.deps.notify({ title: `${s.name} failed to start`, body: res.error, kind: 'failure' });
       return;
     }
     s.activeRunId = res.runId;
@@ -575,6 +576,9 @@ export class SchedulerEngine {
     this.deps.notify({
       title: ok ? `${s.name} finished` : `${s.name} did not finish`,
       body: `${run.flowSnapshot.name} · ${describeTrigger(s.trigger)}`,
+      // The one site where the kind depends on the outcome rather than the
+      // call site: this is both the success and the failure notification.
+      kind: ok ? 'progress' : 'failure',
     });
 
     // A deferred firing has been waiting for exactly this moment.
