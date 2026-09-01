@@ -12,6 +12,7 @@ import { app, Notification, safeStorage } from 'electron';
 
 import { log } from './diagnostics';
 import { setHost, type HostEnv, type HostSecrets } from './host';
+import { withWebhookNotify } from './webhookNotify';
 
 function authFilePath(): string {
   return path.join(app.getPath('userData'), 'flows-registry-auth.json');
@@ -71,7 +72,10 @@ export function electronHost(onNotifyClick?: () => void): HostEnv {
   return {
     dataDir: () => app.getPath('userData'),
     secrets: electronSecrets,
-    notify(args) {
+    // Wrapped, not inlined into `showDesktopNotification` (index.ts): this is
+    // the seam the watch loop reaches too, and it is the only one that also
+    // has a headless twin. See the header of webhookNotify.ts.
+    notify: withWebhookNotify((args) => {
       try {
         if (!Notification.isSupported()) return;
         const n = new Notification({ title: args.title, body: args.body });
@@ -80,7 +84,7 @@ export function electronHost(onNotifyClick?: () => void): HostEnv {
       } catch (err) {
         log('warn', 'host.notify', `Notification failed: ${String(err)}`);
       }
-    },
+    }),
   };
 }
 

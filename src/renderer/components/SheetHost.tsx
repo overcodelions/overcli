@@ -88,6 +88,12 @@ export function SheetHost() {
   // truncates into uselessness. Height is fixed so the frame doesn't jump
   // as results narrow while typing.
   const isPalette = sheet.type === 'quickSwitcher';
+  // Settings outgrew the default 680px shell: a 160px nav rail plus a label
+  // column left the controls around 360px, which wrapped every help line and
+  // truncated URL and path fields into uselessness. Height is fixed rather
+  // than max-h so the frame doesn't jump between a two-row pane and a long
+  // one as you move down the rail.
+  const isSettings = sheet.type === 'settings';
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
@@ -107,9 +113,11 @@ export function SheetHost() {
               : 'max-w-[1240px] h-[88vh]'
             : isAbout
               ? 'max-w-[1040px] max-h-[90vh]'
-              : isPalette
-                ? 'max-w-[760px] h-[560px] max-h-[78vh]'
-                : 'max-w-[680px] max-h-[80vh]')
+              : isSettings
+                ? 'max-w-[940px] max-h-[88vh]'
+                : isPalette
+                  ? 'max-w-[760px] h-[560px] max-h-[78vh]'
+                  : 'max-w-[680px] max-h-[80vh]')
         }
         onClick={(e) => e.stopPropagation()}
       >
