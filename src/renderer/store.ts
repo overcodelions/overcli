@@ -14,6 +14,8 @@ import { create } from 'zustand';
 import {
   AppSettings,
   Attachment,
+  AwsAuthOverview,
+  AwsSsoLoginResult,
   BackendHealth,
   CapabilitiesReport,
   Colosseum,
@@ -130,6 +132,17 @@ export type ActiveSheet =
   /// rather than the turn itself: a sheet holding a copy of an orchestration
   /// would keep rendering it after the desk deleted it.
   | { type: 'shiftReader'; workerId: UUID; orchestrationId: string }
+  /// The code a finished orchestration item left behind, addressed by commit
+  /// because the run and its worktree are usually gone by the time anyone
+  /// looks. Carries plain values, not ids: there is no live record left to
+  /// re-resolve them from.
+  | {
+      type: 'shiftWork';
+      projectPath: string;
+      headSha: string;
+      title: string;
+      baseBranch?: string;
+    }
   | { type: 'shortcutsHelp' }
   | { type: 'whatsNew' };
 
@@ -513,6 +526,12 @@ interface StoreState {
     | { ok: true; output: string }
     | { ok: false; error: string; output?: string }
   >;
+  listAwsSsoTargets(): Promise<AwsAuthOverview>;
+  awsSsoLogin(
+    target: string,
+    kind: 'profile' | 'sso-session',
+    mode?: 'app' | 'terminal',
+  ): Promise<AwsSsoLoginResult>;
   addMcpServer(
     name: string,
     config: Record<string, unknown>,
@@ -3444,6 +3463,16 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async loginMcpServer(cli, name) {
     return window.overcli.invoke('mcp:login', { cli, name });
+  },
+
+  // Not cached in the store: the panel is short-lived and `~/.aws/config`
+  // can change under us between openings.
+  async listAwsSsoTargets() {
+    return window.overcli.invoke('aws:listSsoTargets');
+  },
+
+  async awsSsoLogin(target, kind, mode) {
+    return window.overcli.invoke('aws:ssoLogin', { target, kind, ...(mode ? { mode } : {}) });
   },
 
   /// Save a version at a boundary — a kept rewrite, documents arriving, a

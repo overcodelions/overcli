@@ -793,19 +793,58 @@ describe('WorkerEngine shifts', () => {
     expect(h.journal.some((e) => e.note?.startsWith('Missed a shift'))).toBe(false);
   });
 
-  it('journals a missed shift instead of replaying it after a long sleep', async () => {
+  it('journals a missed shift when overcli was not open for it', async () => {
+    const h = makeHarness({
+      seed: [seedWorker()],
+      // The engine only starts at 8pm: the 9:00 occurrence came and went with
+      // the app shut, which is the one case nobody could have fired.
+      startAt: local(2026, 3, 2, 20, 0),
+    });
+    h.engine.start();
+    // A host wake is what brings the engine round to look — and it must not
+    // talk the verdict into "slept through". The app genuinely was not here.
+    h.setNow(local(2026, 3, 2, 21, 0));
+    h.engine.onHostResume();
+    for (let i = 0; i < 5; i++) await h.flush();
+
+    expect(h.parked).toHaveLength(0);
+    const missed = h.journal.find((e) => e.note?.startsWith('Missed a shift'));
+    expect(missed?.note).toMatch(/closed/i);
+  });
+
+  it('works the shift the host slept through, rather than losing it', async () => {
+    // Vantage's 2026-08-31: overcli open since the night before, the Mac
+    // asleep across the 9:00 slot, awake again the same morning. The slot is
+    // still the current one, so it is late, not missed.
     const h = makeHarness({
       seed: [seedWorker()],
       startAt: local(2026, 3, 2, 8, 0),
     });
     h.engine.start();
-    // Jump straight past the 9:00 occurrence by more than the grace window,
-    // as a laptop shut overnight would.
-    h.setNow(local(2026, 3, 2, 20, 0));
-    await h.advanceTo(local(2026, 3, 2, 20, 0));
+    h.setNow(local(2026, 3, 2, 9, 13));
+    h.engine.onHostResume();
+    for (let i = 0; i < 5; i++) await h.flush();
+
+    expect(parkedWorkerIds(h.parked)).toEqual(['worker-1']);
+    expect(h.journal.some((e) => e.note?.startsWith('Missed a shift'))).toBe(false);
+  });
+
+  it('gives up on a slot only once the next one has come due, and says why', async () => {
+    // Open the whole time, asleep from Monday morning to Wednesday afternoon.
+    // Tuesday's and Wednesday's 9am slots have passed, so Monday's is no
+    // longer current and replaying it would mean two runs for one slot.
+    const h = makeHarness({
+      seed: [seedWorker()],
+      startAt: local(2026, 3, 2, 8, 0),
+    });
+    h.engine.start();
+    h.setNow(local(2026, 3, 4, 14, 0));
+    h.engine.onHostResume();
+    for (let i = 0; i < 5; i++) await h.flush();
 
     expect(h.parked).toHaveLength(0);
-    expect(h.journal.some((e) => e.note?.startsWith('Missed a shift'))).toBe(true);
+    const missed = h.journal.find((e) => e.note?.startsWith('Missed a shift'));
+    expect(missed?.note).toMatch(/asleep/i);
   });
 });
 

@@ -1465,6 +1465,53 @@ describe('FlowRuntimeImpl — prune keeps runs with unreviewed work', () => {
     // Exactly one victim: `overflow = 50 - 50 + 1`.
     expect(runtime.getRun('run-01')).not.toBeNull();
   });
+
+  /// Worker runs are retained in their OWN bucket, at a much higher cap, so
+  /// a standing worker's output can neither push out the runs a person
+  /// launched nor age out from under the user before they get back to it —
+  /// which for an evicted run is permanent (the checkpoint is deleted and
+  /// its hidden step conversations are orphaned).
+  ///
+  /// Five of the fifty are a worker's. That leaves 45 in the user bucket —
+  /// under the cap — so with the buckets split, nothing is evicted at all.
+  /// Before the split this launch evicted run-00.
+  it('counts worker runs in their own bucket, not against the user cap', async () => {
+    const runs = seedFifty(false).map((run, i) =>
+      i < 5 ? { ...run, workerId: 'worker-1' } : run,
+    );
+    const runtime = runtimeWith(runs);
+    vi.mocked(deleteRunFromDisk).mockClear();
+
+    await launch(runtime);
+
+    expect(vi.mocked(deleteRunFromDisk)).not.toHaveBeenCalled();
+    expect(runtime.getRun('run-00')).not.toBeNull();
+  });
+
+  /// The other half of the split: the user bucket still evicts on its own
+  /// schedule, and reaching its cap must not reach across into a worker's
+  /// runs — even though those are OLDER, which is the order a single pooled
+  /// bucket would have evicted them in.
+  it('evicts within the user bucket without touching older worker runs', async () => {
+    const workerRuns = Array.from({ length: 3 }, (_, i) =>
+      seedRun({
+        id: `worker-run-${i}`,
+        // Older than every run in seedFifty (which start at createdAt 1).
+        createdAt: -10 + i,
+        workerId: 'worker-1',
+        worktreePath: `/tmp/wt/clean-worktree-worker-${i}`,
+      }),
+    );
+    const runtime = runtimeWith([...workerRuns, ...seedFifty(false)]);
+    vi.mocked(deleteRunFromDisk).mockClear();
+
+    await launch(runtime);
+
+    const evicted = vi.mocked(deleteRunFromDisk).mock.calls.flat();
+    expect(evicted).toContain('run-00');
+    expect(evicted).not.toContain('worker-run-0');
+    expect(runtime.getRun('worker-run-0')).not.toBeNull();
+  });
 });
 
 /// The data-loss case a `git status`-only check waved straight through: a run

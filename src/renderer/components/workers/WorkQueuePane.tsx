@@ -18,11 +18,18 @@
 // are in, plus the word. Only a failure earns red, because it is the only one
 // of these that is wrong.
 //
-// Every row is a link, not a control. Approving a batch and continuing a
-// paused run are real decisions with real context around them, and that
-// context lives on the worker's desk and in the run pane — a second Launch
-// button here would be the same act with less to read before you commit to
-// it. A row takes you to where the decision is properly made.
+// Every row is a link first. Approving a batch is a real decision with real
+// context around it, and that context lives on the worker's desk — a second
+// Launch button here would be the same act with less to read before you
+// commit to it. A row takes you to where the decision is properly made.
+//
+// The exception is a paused run, and it earns it: the band it sits in exists
+// to say something is waiting on you, and a band that can only point at the
+// decision makes you travel to press the button it already described. So a
+// paused row carries the same two choices the desk offers — the resume worded
+// for why it stopped, and reject — from the same copy, so the two screens
+// cannot come to mean different things. Reject still confirms in place: it
+// takes out a real run and a real worktree.
 
 import { useEffect, useMemo, useState } from 'react';
 
@@ -30,6 +37,8 @@ import { useFlowsStore } from '../../flowsStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
+import { deleteFlowRunWithDirtyGuard } from '../flows/deleteRun';
+import { PAUSE_ACTION, PAUSE_HINT, PAUSE_TEXT, REJECT_CONFIRM, REJECT_HINT } from './pauseCopy';
 import { WorkerAvatar, useWorkerColors } from './WorkerAvatar';
 import { clockTime } from './workerCalendar';
 import { relativeTime, startOfDay } from './workerDeskSelectors';
@@ -351,6 +360,11 @@ function QueueRowView({
 
       </button>
 
+      {/* A sibling of the link, never a child of it: a button inside a button
+          is invalid, and the click would have opened the run on its way to
+          rejecting it. */}
+      {row.status === 'paused' && row.runId && <PausedActions row={row} />}
+
       {/* Fixed columns, and the stamp is a sibling of the row rather than its
           last child. Inside the button its x-position was set by whatever the
           job happened to file next to it, so a column of times that should
@@ -429,6 +443,107 @@ function QueueRowView({
   );
 }
 
+/// The two choices a paused run is actually waiting on, at row density.
+///
+/// Resume is one round trip and needs no confirmation — it does what the row
+/// already says it will do, and the run pane is where you go if you want to
+/// read first. Reject confirms in place, because it deletes the run and its
+/// worktree and is journaled so the idea stays gone; the confirm replaces the
+/// pair rather than sitting beside it, so there is never a "resume" a hand
+/// aiming for "cancel" can hit.
+function PausedActions({ row }: { row: QueueRow }) {
+  const runId = row.runId!;
+  const reason = row.pausedReason ?? 'preStep';
+  const pendingContinue = useFlowsStore((s) => !!s.runs[runId]?.pendingContinue);
+  const removeRun = useFlowsStore((s) => s.removeRun);
+  const [resuming, setResuming] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+
+  // The store's own flag is the truth once main has taken the resume; the
+  // local one only covers the round trip before that lands. Clearing on the
+  // flag's change is what stops a row that came back paused again — a second
+  // checkpoint one step later — from being stuck showing "resuming…".
+  useEffect(() => {
+    setResuming(false);
+  }, [pendingContinue, reason]);
+
+  const inFlight = resuming || pendingContinue;
+
+  const resume = () => {
+    if (inFlight) return;
+    setResuming(true);
+    void window.overcli.invoke('flows:resumeRun', { runId }).then((res) => {
+      if (!res || res.ok === false) setResuming(false);
+    });
+  };
+
+  // Order matters and is the desk's order: the run and its worktree go first,
+  // through the same dirty-worktree confirm every other delete uses, so
+  // declining THAT prompt leaves the item exactly as it was. Only once the run
+  // is gone does the item settle to rejected, which is what writes the journal
+  // entry that keeps the idea from being proposed again.
+  const reject = async () => {
+    if (rejecting) return;
+    setRejecting(true);
+    const res = await deleteFlowRunWithDirtyGuard(runId);
+    if (res.deleted) {
+      removeRun(runId);
+      if (row.orchestrationId && row.candidateId) {
+        const r = await window.overcli.invoke('orchestrator:rejectItem', {
+          id: row.orchestrationId,
+          candidateId: row.candidateId,
+        });
+        if (r && r.ok === false) window.alert(`Couldn't decline this item: ${r.error}`);
+      }
+    }
+    setRejecting(false);
+    setConfirming(false);
+  };
+
+  if (confirming) {
+    return (
+      <span className="flex shrink-0 items-center gap-1.5 pt-2">
+        <span className="max-w-[16rem] text-[10px] text-ink-muted">{REJECT_CONFIRM}</span>
+        <button
+          onClick={() => void reject()}
+          disabled={rejecting}
+          className="shrink-0 rounded bg-red-500/80 px-1.5 py-[1px] text-[10px] text-white focus:outline-none disabled:opacity-50"
+        >
+          {rejecting ? 'rejecting…' : 'Reject'}
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          className="shrink-0 text-[10px] text-ink-faint hover:text-ink focus:outline-none"
+        >
+          Cancel
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 pt-2">
+      <button
+        onClick={resume}
+        disabled={inFlight}
+        title={PAUSE_HINT[reason]}
+        className="shrink-0 rounded border border-amber-500/40 px-1.5 py-[1px] text-[10px] text-amber-600 hover:bg-amber-500/10 focus:outline-none disabled:opacity-50 dark:text-amber-300"
+      >
+        {inFlight ? 'resuming…' : PAUSE_ACTION[reason]}
+      </button>
+      <button
+        onClick={() => setConfirming(true)}
+        disabled={inFlight}
+        title={REJECT_HINT}
+        className="shrink-0 rounded border border-red-500/40 px-1.5 py-[1px] text-[10px] text-red-500 hover:bg-red-500/10 focus:outline-none disabled:opacity-50 dark:text-red-400"
+      >
+        reject
+      </button>
+    </span>
+  );
+}
+
 /// "6m" / "2h 10m" / "3d" — how long this has been going, which is a
 /// different question from when it started and the only one a live row is
 /// ever asked.
@@ -500,15 +615,6 @@ function StatusWord({ row }: { row: QueueRow }) {
   }
   return <span>Done</span>;
 }
-
-const PAUSE_TEXT: Record<NonNullable<QueueRow['pausedReason']>, string> = {
-  preStep: 'Stopped at a checkpoint',
-  externalAction: 'Wants to act outside the repo',
-  riskyStep: 'Step instructions look risky',
-  needsInput: 'Asked you a question',
-  failure: 'Stopped after a failure',
-  interrupted: 'Interrupted when the app closed',
-};
 
 /// "at 09:00" for today, "tomorrow at 09:00", "Thu at 09:00" — enough to know
 /// whether waiting is worth it, and no more.

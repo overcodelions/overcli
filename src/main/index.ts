@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { app, BrowserWindow, dialog, ipcMain, session, shell, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, session, shell, Menu, nativeTheme } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -68,6 +68,8 @@ import { scanCapabilities } from './capabilities';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import { listMcpCatalog, installMcpCatalogEntry, uninstallMcpCatalogEntry } from './mcpCatalog';
 import { loginCodexMcp } from './mcpLogin';
+import { isSafeAwsName, readAwsAuthOverview } from './awsProfiles';
+import { awsEnv, awsSsoLoginCommand, resolveAwsBinary, runAwsSsoLogin } from './awsSsoLogin';
 import { backendNeedsShell, buildBackendEnv } from './backendPaths';
 import { resolveFilePath as resolveFilePathIn, resolveWriteTarget } from './resolveFilePath';
 import { listFileEntriesAsync, listFileEntriesSync } from './fileWalk';
@@ -561,6 +563,17 @@ export function registerIpc(): void {
   });
   flowRuntime.setWorkerSupervisor((request) => workerEngine!.answerFlowQuestion(request));
   workerEngine.start();
+  // A sleeping Mac runs no timers. Both engines arm a `setTimeout` for the
+  // next due moment, and a host that sleeps across it wakes with the alarm
+  // already in the past and no promise about when the runtime will service
+  // it. Telling them the moment the host is back turns "some minutes after
+  // the lid opens, and we'll call it missed while overcli was closed" into
+  // "now, and we know why it was late". Registered once, after both engines
+  // exist, because a resume concerns both.
+  powerMonitor.on('resume', () => {
+    scheduler?.onHostResume();
+    workerEngine?.onHostResume();
+  });
   // Symbol lookup resolves its backend per call rather than capturing one:
   // the user can change the preferred backend in Settings mid-session, and
   // a lookup is short-lived enough that there's nothing to migrate.
@@ -707,6 +720,49 @@ export function registerIpc(): void {
         if (isSafeExternalUrl(url)) shell.openExternal(url);
       },
     });
+  });
+
+  // Config-file reads and an existsSync probe only — deliberately no
+  // `aws --version`, which costs ~800ms of blocked main thread for a string
+  // the panel doesn't show.
+  ipcMain.handle('aws:listSsoTargets', () => readAwsAuthOverview({ cliPath: resolveAwsBinary() }));
+
+  ipcMain.handle('aws:ssoLogin', async (_e, { target, kind, mode }) => {
+    // This handler is the trust boundary: `target` reaches both `spawn`
+    // argv and — in terminal mode — an AppleScript `do script`. Validate
+    // here, not only in the renderer.
+    if (typeof target !== 'string' || !isSafeAwsName(target)) {
+      return { ok: false as const, error: 'That profile name has characters overcli won\'t pass to a command.' };
+    }
+    if (kind !== 'profile' && kind !== 'sso-session') {
+      return { ok: false as const, error: 'Unknown login target.' };
+    }
+    const binary = resolveAwsBinary();
+    if (!binary) {
+      return {
+        ok: false as const,
+        error: 'AWS CLI not found. Install aws-cli v2, then reopen this panel.',
+      };
+    }
+    const command = awsSsoLoginCommand(binary, target, kind);
+    if (mode === 'terminal') {
+      const launched = await runInTerminal(command, 'aws-sso-login');
+      return launched.ok
+        ? { ok: true as const, output: `Running \`${command}\` in Terminal.` }
+        : { ok: false as const, error: launched.error, command };
+    }
+    const res = await runAwsSsoLogin({
+      binary,
+      target,
+      kind,
+      env: awsEnv(),
+      onUrl: (url) => {
+        if (isSafeExternalUrl(url)) shell.openExternal(url);
+      },
+    });
+    // A failure carries the command so the panel can offer it as a copyable
+    // block — same convention as TerminalLaunchResult.
+    return res.ok ? res : { ...res, command };
   });
 
   ipcMain.handle('fs:pickDirectory', async () => {

@@ -27,6 +27,7 @@ export type TerminalOrigin =
   | 'backend-update'
   | 'git-install'
   | 'agent-launch'
+  | 'aws-sso-login'
   | 'workspace-command'
   | 'file-tree'
   | 'unknown';

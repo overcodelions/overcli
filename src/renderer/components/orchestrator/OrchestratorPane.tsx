@@ -1762,6 +1762,15 @@ function ProposalDetailModal({
 }) {
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const setDetailMode = useStore((s) => s.setDetailMode);
+  const openSheet = useStore((s) => s.openSheet);
+  // Read through `batch.items[index]` rather than the `item` const below:
+  // that one is declared after an early return, and a hook can't live there.
+  // `runId` outlives the run itself — retention evicts finished runs — so
+  // this is the difference between a door and a dead pointer.
+  const run = useFlowsStore((s) => {
+    const runId = batch.items[index]?.runId;
+    return runId ? s.runs[runId] : undefined;
+  });
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1783,6 +1792,21 @@ function ProposalDetailModal({
     if (!item.runId) return;
     setActiveRun(item.runId);
     setDetailMode('flows');
+    onClose();
+  };
+
+  /// Where the item's code went, for when the run is gone. `branchName` is
+  /// shown beside this but is not the pointer — a flow that lands its work on
+  /// another branch and deletes its scratch one leaves that string dead.
+  const openWork = () => {
+    if (!item.headSha) return;
+    openSheet({
+      type: 'shiftWork',
+      projectPath: batch.projectPath,
+      headSha: item.headSha,
+      title: item.candidate.title,
+      baseBranch: item.baseBranch ?? batch.baseBranch,
+    });
     onClose();
   };
 
@@ -1903,12 +1927,23 @@ function ProposalDetailModal({
           ) : (
             <>
               <div className="flex-1" />
+              {/* The run is the better door — it can be read and resumed —
+                but it is the one that expires. Fall through to the commit
+                the item landed rather than offering an enabled button that
+                resolves to nothing. */}
               <button
-                onClick={openRun}
-                disabled={!item.runId}
+                onClick={run ? openRun : openWork}
+                disabled={!run && !item.headSha}
+                title={
+                  run
+                    ? undefined
+                    : item.headSha
+                      ? 'The run has aged out — open the work it committed'
+                      : 'Nothing left to open: the run is gone and no commit was recorded'
+                }
                 className="text-[11px] px-2.5 py-1 rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-40"
               >
-                Open run →
+                {run ? 'Open run →' : 'Open work →'}
               </button>
             </>
           )}

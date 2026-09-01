@@ -86,6 +86,12 @@ import { ActivityStrip } from "../ActivityStrip";
 import { FlowMonogram } from "../flows/FlowMonogram";
 import { FlowRunPane } from "../flows/FlowRunPane";
 import { deleteFlowRunWithDirtyGuard } from "../flows/deleteRun";
+import {
+  PAUSE_ACTION,
+  PAUSE_HINT,
+  REJECT_CONFIRM,
+  REJECT_HINT,
+} from "./pauseCopy";
 import { WorkerErrandComposer } from "./WorkerDesk";
 import { WorkerAvatar } from "./WorkerAvatar";
 import { ShiftCalendar } from "./ShiftCalendar";
@@ -3921,6 +3927,7 @@ function PlanItemRow({
   );
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
   const openFile = useStore((s) => s.openFile);
+  const openSheet = useStore((s) => s.openSheet);
   // Optimistic, same as PauseBanner: the resume lands in the main process and
   // comes back as a state change, so without this the row looks dead for a
   // round trip. Cleared by the effect when the run actually moves.
@@ -3992,6 +3999,20 @@ function PlanItemRow({
   // a return trip across the app.
   const openRun = () => {
     if (item.runId) setActiveRun(item.runId);
+  };
+
+  /// The fallback door, for when the run is gone. Reads the batch's project
+  /// and base off the orchestration rather than the run — which is precisely
+  /// the record that no longer exists by the time this is the live path.
+  const openWork = () => {
+    if (!item.headSha) return;
+    openSheet({
+      type: 'shiftWork',
+      projectPath: orchestration.projectPath,
+      headSha: item.headSha,
+      title: item.candidate.title,
+      baseBranch: item.baseBranch ?? orchestration.baseBranch,
+    });
   };
 
   const inFlight = resuming || continuing;
@@ -4070,13 +4091,25 @@ function PlanItemRow({
             )}
             {PLAN_STATUS[item.status]?.text ?? item.status}
           </span>
-          {/* A door only while there is a room: a rejected item keeps its
-            runId for the record, but the run behind it is deleted, and a
-            click that opens nothing reads as broken. */}
+          {/* A door only while there is a room — but a finished item has two
+            rooms, and they don't expire together. The run is the better one
+            (it can be read and talked to), and it goes first; when eviction
+            has taken it, the commit the item landed is still there, so fall
+            through to that rather than back to dead text. Only an item with
+            neither — rejected, or finished before `headSha` was recorded —
+            is inert, because a click that opens nothing reads as broken. */}
           {run ? (
             <button
               onClick={openRun}
               title="Open the run"
+              className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink hover:underline focus:outline-none"
+            >
+              {item.candidate.title}
+            </button>
+          ) : item.headSha ? (
+            <button
+              onClick={openWork}
+              title="The run has aged out — open the work it committed"
               className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-ink hover:underline focus:outline-none"
             >
               {item.candidate.title}
@@ -4116,10 +4149,7 @@ function PlanItemRow({
             item.runId &&
             (confirmingReject ? (
               <span className="flex shrink-0 items-center gap-1.5">
-                <span className="text-[10px] text-ink-muted">
-                  Deletes the run and its worktree. The worker won&apos;t
-                  propose it again.
-                </span>
+                <span className="text-[10px] text-ink-muted">{REJECT_CONFIRM}</span>
                 <button
                   onClick={() => void reject()}
                   disabled={rejecting}
@@ -4138,7 +4168,7 @@ function PlanItemRow({
               <button
                 onClick={() => setConfirmingReject(true)}
                 disabled={inFlight}
-                title="Turn this work down — deletes the run and drops its worktree, and the rejection is journaled so it stays gone"
+                title={REJECT_HINT}
                 className="shrink-0 rounded border border-red-500/40 px-1.5 py-[1px] text-[10px] text-red-500 hover:bg-red-500/10 focus:outline-none disabled:opacity-50 dark:text-red-400"
               >
                 reject
@@ -4271,31 +4301,6 @@ function StepStrip({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
     </button>
   );
 }
-
-/// What a plain resume DOES depends on why the run stopped, so the button says
-/// so rather than offering one word for three different acts. The escape hatch
-/// on a failure pause — Override, accept this result and roll forward — stays
-/// in the run pane, where the artifact it would accept is readable.
-const PAUSE_ACTION: Record<string, string> = {
-  preStep: "continue",
-  externalAction: "approve & run",
-  riskyStep: "review & run",
-  needsInput: "answer & resume",
-  failure: "re-run step",
-  interrupted: "resume",
-};
-
-const PAUSE_HINT: Record<string, string> = {
-  preStep: "Hand the prior step\u2019s output to the next step and keep going",
-  externalAction: "Approve the external effect, then run this step",
-  riskyStep: "The step's own prompt tripped the risk scan — read it, then run",
-  needsInput:
-    "Open the run, read the Worker exchange, answer, and resume the step",
-  failure:
-    "Run the failed step again. To accept its result instead, open the run and Override.",
-  interrupted:
-    "The app closed mid-step \u2014 run that step again and roll forward",
-};
 
 const PLAN_STATUS: Record<string, { text: string; cls: string; pill: string }> =
   {

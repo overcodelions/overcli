@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { host } from '../host';
 import { log } from '../diagnostics';
-import type { FlowRun } from '../../shared/flows/schema';
+import { flowRunOwnerPath, type FlowRun } from '../../shared/flows/schema';
 
 export interface RunSummary {
   id: string;
@@ -33,6 +33,12 @@ export interface RunSummary {
   /// Set when a Worker shift launched the run — the key the per-worker
   /// budget rollup groups by.
   workerId?: string;
+  /// The project/workspace root the run logically belongs to, per
+  /// `flowRunOwnerPath`. A worktree/coordinator run's own `projectPath`
+  /// is a throwaway directory, so without this the stats rollup can't
+  /// attribute an evicted run to the project that launched it. Absent on
+  /// lines written before this field existed.
+  ownerPath?: string;
 }
 
 const COMPACT_BYTES = 1024 * 1024;
@@ -100,6 +106,7 @@ export function summarizeRun(run: FlowRun): RunSummary | null {
     wallClockMs,
     terminalAt,
     workerId: run.workerId,
+    ownerPath: flowRunOwnerPath(run),
   };
 }
 
