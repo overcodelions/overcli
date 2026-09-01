@@ -10,11 +10,33 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const settings = vi.hoisted(() => ({ current: {} as { notificationWebhookUrl?: string } }));
+const settings = vi.hoisted(
+  () =>
+    ({ current: {} }) as {
+      current: { notificationWebhookUrl?: string; notificationWebhookAuthHeader?: string };
+    },
+);
 const logged = vi.hoisted(() => ({ entries: [] as Array<{ level: string; message: string }> }));
+
+/// The secret store, swappable per-test. `throws` stands in for a locked or
+/// corrupt keychain — the case that must degrade to an unauthenticated POST
+/// rather than take the notification path down.
+const secrets = vi.hoisted(() => ({ token: null as string | null, throws: false }));
 
 vi.mock('./store', () => ({
   Store: { load: () => ({ settings: settings.current }) },
+}));
+
+vi.mock('./host', () => ({
+  host: () => ({
+    secrets: {
+      get: () => {
+        if (secrets.throws) throw new Error('keychain locked');
+        return secrets.token;
+      },
+      set: () => true,
+    },
+  }),
 }));
 
 vi.mock('./diagnostics', () => ({
@@ -24,11 +46,16 @@ vi.mock('./diagnostics', () => ({
 }));
 
 import {
+  configuredWebhookAuth,
+  configuredWebhookAuthHeader,
+  configuredWebhookToken,
   configuredWebhookUrl,
   postWebhookNotification,
   sendWebhookNotification,
+  transportRefusal,
   validateWebhookUrl,
   WEBHOOK_TIMEOUT_MS,
+  WEBHOOK_TOKEN_ENV,
   withWebhookNotify,
 } from './webhookNotify';
 
@@ -43,13 +70,22 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   settings.current = {};
   logged.entries = [];
+  secrets.token = null;
+  secrets.throws = false;
+  delete process.env[WEBHOOK_TOKEN_ENV];
   fetchMock = vi.fn().mockResolvedValue(okResponse());
   vi.stubGlobal('fetch', fetchMock);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env[WEBHOOK_TOKEN_ENV];
 });
+
+/// Headers of the Nth fetch call, as a plain object.
+function headersOf(call = 0): Record<string, string> {
+  return fetchMock.mock.calls[call][1].headers as Record<string, string>;
+}
 
 /// `postWebhookNotification` returns before its request settles, by design.
 /// Give the unawaited promise chain a turn to run.
@@ -224,5 +260,169 @@ describe('withWebhookNotify', () => {
     expect(() => wrapped({ title: 'local still fires', body: 'x' })).not.toThrow();
     await flush();
     expect(seen).toEqual(['local still fires']);
+  });
+});
+
+// ---------- auth ----------
+//
+// The load-bearing assertions here are about what does NOT happen: no header
+// when nothing is configured, no `Bearer ` the user did not type, no fetch at
+// all when the transport is refused, and no throw when the keychain is broken.
+
+describe('configuredWebhookToken', () => {
+  it('is null when neither the env var nor the store has one', () => {
+    expect(configuredWebhookToken()).toBeNull();
+  });
+
+  it('reads the keychain when there is no env var', () => {
+    secrets.token = 'from-keychain';
+    expect(configuredWebhookToken()).toBe('from-keychain');
+  });
+
+  it('lets the env var win over the keychain', () => {
+    secrets.token = 'from-keychain';
+    process.env[WEBHOOK_TOKEN_ENV] = '  from-env  ';
+    expect(configuredWebhookToken()).toBe('from-env');
+  });
+
+  it('warns and returns null when the secret store throws, rather than propagating', () => {
+    secrets.throws = true;
+    expect(() => configuredWebhookToken()).not.toThrow();
+    expect(configuredWebhookToken()).toBeNull();
+    expect(logged.entries.some((e) => e.level === 'warn' && /auth token/.test(e.message))).toBe(
+      true,
+    );
+  });
+});
+
+describe('configuredWebhookAuthHeader', () => {
+  it('defaults to Authorization when unset or blank', () => {
+    expect(configuredWebhookAuthHeader()).toBe('Authorization');
+    settings.current = { notificationWebhookAuthHeader: '   ' };
+    expect(configuredWebhookAuthHeader()).toBe('Authorization');
+  });
+
+  it('trims and uses a custom header name', () => {
+    settings.current = { notificationWebhookAuthHeader: '  X-API-Key ' };
+    expect(configuredWebhookAuthHeader()).toBe('X-API-Key');
+  });
+});
+
+describe('configuredWebhookAuth', () => {
+  it('is null without a token, even when a header name is set', () => {
+    settings.current = { notificationWebhookAuthHeader: 'X-API-Key' };
+    expect(configuredWebhookAuth()).toBeNull();
+  });
+
+  it('pairs the token with the configured header', () => {
+    secrets.token = 'tok';
+    settings.current = { notificationWebhookAuthHeader: 'X-API-Key' };
+    expect(configuredWebhookAuth()).toEqual({ header: 'X-API-Key', token: 'tok' });
+  });
+});
+
+describe('transportRefusal', () => {
+  it('allows plain http when there is no token at all (the shipped behaviour)', () => {
+    expect(transportRefusal('http://intranet.example.test/hook', false)).toBeNull();
+  });
+
+  it('refuses http + token to a remote host', () => {
+    const refusal = transportRefusal('http://intranet.example.test/hook', true);
+    expect(refusal).toMatch(/Refusing to send an auth token over plain http/);
+    expect(refusal).toMatch(/intranet\.example\.test/);
+  });
+
+  it('allows https + token', () => {
+    expect(transportRefusal('https://intranet.example.test/hook', true)).toBeNull();
+  });
+
+  it('allows http + token to loopback in all three spellings', () => {
+    expect(transportRefusal('http://localhost:8080/hook', true)).toBeNull();
+    expect(transportRefusal('http://127.0.0.1:8080/hook', true)).toBeNull();
+    expect(transportRefusal('http://[::1]:8080/hook', true)).toBeNull();
+  });
+});
+
+describe('sendWebhookNotification auth', () => {
+  it('sends no auth header when none is passed', async () => {
+    await sendWebhookNotification(URL_OK, { title: 't', body: 'b' });
+    expect(headersOf()).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('sends the token under the given header name', async () => {
+    await sendWebhookNotification(URL_OK, { title: 't', body: 'b' }, {
+      header: 'X-API-Key',
+      token: 'abc123',
+    });
+    expect(headersOf()['X-API-Key']).toBe('abc123');
+    expect(headersOf()['Content-Type']).toBe('application/json');
+  });
+
+  it('sends the token VERBATIM — no Bearer is invented, and one already there is kept', async () => {
+    await sendWebhookNotification(URL_OK, { title: 't', body: 'b' }, {
+      header: 'Authorization',
+      token: 'tk_raw_opaque',
+    });
+    expect(headersOf()['Authorization']).toBe('tk_raw_opaque');
+    fetchMock.mockClear();
+    await sendWebhookNotification(URL_OK, { title: 't', body: 'b' }, {
+      header: 'Authorization',
+      token: 'Bearer tk_already_prefixed',
+    });
+    expect(headersOf()['Authorization']).toBe('Bearer tk_already_prefixed');
+  });
+
+  it('makes ZERO fetch calls when the transport is refused', async () => {
+    const res = await sendWebhookNotification(
+      'http://intranet.example.test/hook',
+      { title: 't', body: 'b' },
+      { header: 'Authorization', token: 'tok' },
+    );
+    expect(res).toEqual({
+      ok: false,
+      error: expect.stringMatching(/Refusing to send an auth token over plain http/),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('postWebhookNotification auth', () => {
+  it('attaches the keychain token as Authorization by default', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    secrets.token = 'from-keychain';
+    postWebhookNotification({ title: 't', body: 'b' });
+    await flush();
+    expect(headersOf()['Authorization']).toBe('from-keychain');
+  });
+
+  it('uses the custom header name from settings', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK, notificationWebhookAuthHeader: 'X-API-Key' };
+    secrets.token = 'from-keychain';
+    postWebhookNotification({ title: 't', body: 'b' });
+    await flush();
+    expect(headersOf()['X-API-Key']).toBe('from-keychain');
+    expect(headersOf()['Authorization']).toBeUndefined();
+  });
+
+  it('still posts, unauthenticated, when the secret store is broken', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    secrets.throws = true;
+    expect(() => postWebhookNotification({ title: 't', body: 'b' })).not.toThrow();
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(headersOf()).toEqual({ 'Content-Type': 'application/json' });
+  });
+
+  it('warns and drops — does not throw, does not post — when the transport is refused', async () => {
+    settings.current = { notificationWebhookUrl: 'http://intranet.example.test/hook' };
+    secrets.token = 'tok';
+    expect(() => postWebhookNotification({ title: 't', body: 'b' })).not.toThrow();
+    await flush();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      logged.entries.some(
+        (e) => e.level === 'warn' && /Refusing to send an auth token over plain http/.test(e.message),
+      ),
+    ).toBe(true);
   });
 });

@@ -104,7 +104,15 @@ import { initAutoUpdater, refreshUpdateChannel, quitAndInstall } from './updater
 import { getWhatsNew, markWhatsNewSeen, seedWhatsNewBaseline } from './whatsNew';
 import { host } from './host';
 import { installElectronHost } from './hostElectron';
-import { configuredWebhookUrl, sendWebhookNotification, validateWebhookUrl } from './webhookNotify';
+import {
+  configuredWebhookAuthHeader,
+  configuredWebhookToken,
+  configuredWebhookUrl,
+  sendWebhookNotification,
+  validateWebhookUrl,
+  WEBHOOK_TOKEN_ENV,
+  WEBHOOK_TOKEN_KEY,
+} from './webhookNotify';
 import { loadAllFlows, saveFlow, deleteFlow, validateFlowYaml } from './flows/storage';
 import { buildWorkerShare, describeImport, importWorkerYaml } from './flows/workerShare';
 import { buildCiDeploy, buildFlowCiDeploy, type CiWorkspace } from '../shared/flows/ciDeploy';
@@ -603,14 +611,39 @@ export function registerIpc(): void {
   ipcMain.handle('store:saveSelection', (_e, id) => Store.saveSelection(id));
   ipcMain.handle('store:saveView', (_e, view) => Store.saveView(view));
   ipcMain.handle('store:saveFileTabs', (_e, tabs) => Store.saveFileTabs(tabs));
-  ipcMain.handle('notify:testWebhook', async (_e, url) => {
-    const raw = url ?? configuredWebhookUrl() ?? '';
+  ipcMain.handle('notify:testWebhook', async (_e, input) => {
+    const raw = input?.url ?? configuredWebhookUrl() ?? '';
     const checked = validateWebhookUrl(raw);
     if (!checked.ok) return { ok: false, error: checked.error };
-    return await sendWebhookNotification(checked.url, {
-      title: 'overcli test notification',
-      body: 'If you can read this, overcli can reach you when you are away from the desktop.',
-    });
+    // `token` is three-valued: absent means "use what is saved", while an
+    // explicit null/'' means "test with no auth at all". `??` alone would
+    // collapse those two, making an unauthenticated test impossible while a
+    // token is stored — which is exactly the comparison a user needs when
+    // the authenticated call is the one failing.
+    const token =
+      input && 'token' in input ? (input.token?.trim() || null) : configuredWebhookToken();
+    const header = input?.header?.trim() || configuredWebhookAuthHeader();
+    return await sendWebhookNotification(
+      checked.url,
+      {
+        title: 'overcli test notification',
+        body: 'If you can read this, overcli can reach you when you are away from the desktop.',
+      },
+      token ? { header, token } : null,
+    );
+  });
+  ipcMain.handle('notify:webhookTokenStatus', () => ({
+    configured: configuredWebhookToken() !== null,
+    fromEnv: Boolean(process.env[WEBHOOK_TOKEN_ENV]?.trim()),
+  }));
+  ipcMain.handle('notify:setWebhookToken', (_e, token) => {
+    const trimmed = token?.trim();
+    try {
+      return { ok: host().secrets.set(WEBHOOK_TOKEN_KEY, trimmed ? trimmed : null) };
+    } catch (err) {
+      log('warn', 'webhook.notify', `Could not store the webhook auth token: ${String(err)}`);
+      return { ok: false };
+    }
   });
   ipcMain.handle('update:quitAndInstall', () => quitAndInstall());
   ipcMain.handle('app:whatsNew', () => getWhatsNew());

@@ -965,6 +965,16 @@ export interface AppSettings {
   /// unreadable to the headless host, which has no keychain at all.
   /// See `src/main/webhookNotify.ts`.
   notificationWebhookUrl?: string;
+  /// Header name the notification webhook's auth token is sent under.
+  /// Defaults to `Authorization` when empty or unset. Configurable because
+  /// receivers disagree: ntfy and PagerDuty want `Authorization`, plenty of
+  /// bespoke endpoints want `X-API-Key` or a vendor-specific name.
+  ///
+  /// The header NAME is a plain setting; the TOKEN is not, and never appears
+  /// in this type. It lives in `host().secrets` under `WEBHOOK_TOKEN_KEY`, or
+  /// in `$OVERCLI_NOTIFY_WEBHOOK_TOKEN` headless. `AppSettings` is written to
+  /// `overcli.json` in the clear — a credential does not belong here.
+  notificationWebhookAuthHeader?: string;
   /// Theme preference. 'system' follows the OS's dark-mode setting via
   /// the `prefers-color-scheme` media query.
   theme: ThemePreference;
@@ -1118,11 +1128,33 @@ export interface IPCInvokeMap {
   'store:saveView': (view: PersistedView) => void;
   'store:saveFileTabs': (tabs: PersistedFileTabs) => void;
   /// Send a canned notification to a webhook URL and report whether it
-  /// landed. Takes the URL as an argument rather than reading the saved
+  /// landed. Takes the values as arguments rather than reading the saved
   /// setting so Settings can test what is currently TYPED, before Save —
-  /// otherwise the button could only ever test the previous value. Omit it
-  /// to test the saved one.
-  'notify:testWebhook': (url?: string) => { ok: boolean; error?: string };
+  /// otherwise the button could only ever test the previous value. Omit a
+  /// field to fall back to the configured one.
+  ///
+  /// `token` is three-valued and all three are meaningful:
+  ///   - `undefined` — use whatever is saved (or the env var).
+  ///   - `null` or `''` — test with NO auth. This has to stay expressible so
+  ///     a user can isolate whether the token is what is breaking the call;
+  ///     collapsing it into "use the saved one" would make an unauthenticated
+  ///     test impossible while a token is stored.
+  ///   - a string — test this exact token, which may never have been saved.
+  'notify:testWebhook': (input?: { url?: string; token?: string | null; header?: string }) => {
+    ok: boolean;
+    error?: string;
+  };
+  /// Whether an auth token is configured, and whether it came from the
+  /// environment (in which case the UI cannot clear it — only the operator
+  /// who set the variable can). Deliberately never returns the token itself:
+  /// secrets do not travel back to the renderer, which is why the Settings
+  /// field shows a placeholder instead of a prefilled value.
+  'notify:webhookTokenStatus': () => { configured: boolean; fromEnv: boolean };
+  /// Store the webhook auth token, or clear it with `null`/empty. Returns
+  /// `ok: false` when the host cannot persist secrets — headless, where the
+  /// environment is the store — so the UI can say where to put it instead of
+  /// reporting a save that did not happen.
+  'notify:setWebhookToken': (token: string | null) => { ok: boolean };
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
   /// Release notes the user hasn't seen yet, parsed from the bundled
