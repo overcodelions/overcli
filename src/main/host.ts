@@ -46,7 +46,24 @@ export interface HostEnv {
   /// Tell the user something finished. A desktop notification under
   /// Electron, a log line headless — never a blocking dialog, because the
   /// callers are the scheduler and the worker engine and nobody is there.
-  notify(args: { title: string; body: string }): void;
+  notify(args: NotifyArgs): void;
+}
+
+/// What sort of thing happened. Local delivery ignores this — every
+/// notification is worth one desktop toast — but the outbound webhook filters
+/// on it, because a channel that also carries "worker X finished a shift" is a
+/// channel people mute, and a muted channel delivers nothing at all.
+///
+/// Optional on `NotifyArgs`, and absent means `progress`. That keeps every
+/// existing caller and test compiling, and it fails in the safe direction: a
+/// site that forgets to mark itself is under-delivered on the failures-only
+/// setting rather than being mistaken for an incident.
+export type NotifyKind = 'failure' | 'progress' | 'watch';
+
+export interface NotifyArgs {
+  title: string;
+  body: string;
+  kind?: NotifyKind;
 }
 
 export interface HostSecrets {

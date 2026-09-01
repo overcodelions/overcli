@@ -17,6 +17,7 @@ import { currentBranch } from '../main/git';
 import { healthyBackends } from '../main/health';
 import { setHost } from '../main/host';
 import { nodeHost } from '../main/hostNode';
+import { withWebhookNotify } from '../main/webhookNotify';
 import { Store } from '../main/store';
 import { RunnerManager } from '../main/runner';
 import { FlowRuntimeImpl } from '../main/flows/runtime';
@@ -115,7 +116,12 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     parker: orchestrator,
     isGitRepo,
     emit,
-    notify: options.onNotify ?? (() => {}),
+    // Wrapped here rather than relying on the host: this notify goes to the
+    // engine DIRECTLY and never passes through `host().notify`, so without
+    // the wrap a headless worker's approval pause reaches nobody. The host's
+    // own wrap (hostNode.ts) covers the paths that do go through it; no
+    // notification passes through both, so nothing double-posts.
+    notify: withWebhookNotify(options.onNotify ?? (() => {})),
     // Copied from index.ts:360. The worker asks its supervisor a question
     // mid-flow; without this the engine declines every escalation, which
     // headless reads as "the worker refused to answer" rather than "nobody

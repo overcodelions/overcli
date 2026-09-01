@@ -15,10 +15,10 @@ export function Group({
   children: React.ReactNode;
 }) {
   return (
-    <section className="mb-5">
-      <div className="text-[10px] uppercase tracking-wider text-ink-faint mb-1">{title}</div>
-      {description && <div className="text-xs text-ink-faint mb-2">{description}</div>}
-      <div className="flex flex-col gap-2 rounded-lg bg-card border border-card p-3">
+    <section className="mb-6">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-ink-muted mb-1">{title}</div>
+      {description && <div className="text-xs text-ink-muted mb-2">{description}</div>}
+      <div className="flex flex-col gap-3 rounded-lg bg-card border border-card p-4">
         {children}
       </div>
     </section>

@@ -10,5 +10,5 @@
 import { host } from '../../host';
 
 export function notifyWatch(title: string, body: string): void {
-  host().notify({ title, body });
+  host().notify({ title, body, kind: 'watch' });
 }

@@ -33,6 +33,7 @@ import {
   CONCISE_RESPONSE_DIRECTIVE,
   EFFICIENT_TOOL_DIRECTIVE,
 } from '../../shared/responseDirectives';
+import type { NotifyArgs } from '../host';
 import type { Attachment, Backend, MainToRendererEvent, UUID } from '../../shared/types';
 import type { Orchestration, OrchestrationItem } from '../../shared/flows/orchestration';
 import {
@@ -185,7 +186,7 @@ export interface WorkerEngineDeps {
   parker: WorkerParker;
   isGitRepo: (projectPath: string) => boolean;
   emit: (event: MainToRendererEvent) => void;
-  notify: (args: { title: string; body: string }) => void;
+  notify: (args: NotifyArgs) => void;
   now?: () => number;
   timers?: {
     set: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
@@ -1324,12 +1325,14 @@ export class WorkerEngine {
               starved.length === 1
                 ? `${w.name} has no funds left this month. Raise the pool or reprioritize the roster.`
                 : `${starved.length} workers have no funds left this month, starting with ${w.name}. Raise the pool or reprioritize the roster.`,
+            kind: 'failure',
           });
         }
       } else if (wrote) {
         this.deps.notify({
           title: `${w.name} is out of budget`,
           body: message,
+          kind: 'failure',
         });
       }
       w.lastShiftAt = now;
@@ -1397,6 +1400,7 @@ export class WorkerEngine {
       this.deps.notify({
         title: `${fresh.name}'s shift failed`,
         body: res.error,
+        kind: 'failure',
       });
       return { ok: false, error: res.error };
     }
@@ -1566,6 +1570,7 @@ export class WorkerEngine {
       this.deps.notify({
         title: `${fresh.name}'s errand failed`,
         body: res.error,
+        kind: 'failure',
       });
       return { ok: false, error: res.error };
     }
@@ -1643,6 +1648,7 @@ export class WorkerEngine {
       this.deps.notify({
         title: `${fresh.name} could not build a flow`,
         body: built.error,
+        kind: 'failure',
       });
       return { ok: false, error: built.error };
     }
@@ -2042,6 +2048,7 @@ export class WorkerEngine {
         this.deps.notify({
           title: `${target.name} could not take ${sender.name}'s handoff`,
           body: error,
+          kind: 'failure',
         });
       });
 
@@ -2413,6 +2420,7 @@ export class WorkerEngine {
     this.deps.notify({
       title: `${w.name} was demoted`,
       body: `${from} → ${w.trust} after ${WORKER_DEMOTE_REJECTION_STREAK} rejections in a row.`,
+      kind: 'failure',
     });
   }
 
