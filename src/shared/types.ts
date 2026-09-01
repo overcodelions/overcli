@@ -1014,6 +1014,12 @@ export interface AppSettings {
   /// in `$OVERCLI_NOTIFY_WEBHOOK_TOKEN` headless. `AppSettings` is written to
   /// `overcli.json` in the clear — a credential does not belong here.
   notificationWebhookAuthHeader?: string;
+  /// Which notifications reach the webhook. 'all' (the default) forwards
+  /// everything; 'failures' forwards only the ones that report something
+  /// went wrong. The point of the narrow setting is that a channel carrying
+  /// every finished shift gets muted, and a muted channel is the same as no
+  /// webhook — see `src/main/webhookNotify.ts`.
+  notificationWebhookFilter?: 'all' | 'failures';
   /// Theme preference. 'system' follows the OS's dark-mode setting via
   /// the `prefers-color-scheme` media query.
   theme: ThemePreference;
@@ -1194,6 +1200,16 @@ export interface IPCInvokeMap {
   /// environment is the store — so the UI can say where to put it instead of
   /// reporting a save that did not happen.
   'notify:setWebhookToken': (token: string | null) => { ok: boolean };
+  /// The last outbound webhook attempt, so Settings can say the webhook is
+  /// configured but not arriving. Null when nothing has been sent since the
+  /// app started. In-memory and desktop-only: a headless run's failures go to
+  /// its own diagnostics log, not here.
+  'notify:webhookDelivery': () => {
+    at: number;
+    ok: boolean;
+    error?: string;
+    consecutiveFailures: number;
+  } | null;
   /// Quit and install a downloaded update now (triggered from UpdateToast).
   'update:quitAndInstall': () => void;
   /// Release notes the user hasn't seen yet, parsed from the bundled

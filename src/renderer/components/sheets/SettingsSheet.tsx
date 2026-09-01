@@ -648,6 +648,17 @@ function AgentsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
   );
 }
 
+/// Coarse relative time for the delivery line. Coarse on purpose: the
+/// question it answers is "is this working", not "exactly when".
+function describeAgo(at: number): string {
+  const mins = Math.round((Date.now() - at) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 /// The outbound-webhook control. Its own component because the "Send test"
 /// button needs local state for the result, and `AdvancedPane` is otherwise
 /// a pure render of `local`.
@@ -674,6 +685,15 @@ function WebhookField({
   const header = local.notificationWebhookAuthHeader ?? '';
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  // The answer to "is this actually working?". Nothing else can tell you: a
+  // webhook that silently stopped delivering looks exactly like a quiet week,
+  // and you are by definition not at the machine to notice.
+  const [delivery, setDelivery] = useState<{
+    at: number;
+    ok: boolean;
+    error?: string;
+    consecutiveFailures: number;
+  } | null>(null);
   /// What the user has typed this session. `''` means "typed nothing", which
   /// is NOT the same as "no token" — one may already be stored.
   const [token, setToken] = useState('');
@@ -685,6 +705,10 @@ function WebhookField({
       .invoke('notify:webhookTokenStatus')
       .then(setStatus)
       .catch(() => setStatus(null));
+    void window.overcli
+      .invoke('notify:webhookDelivery')
+      .then(setDelivery)
+      .catch(() => setDelivery(null));
   }, []);
 
   const saveToken = (value: string | null) => {
@@ -710,7 +734,7 @@ function WebhookField({
     <>
     <Row
       label="Webhook URL"
-      help="Optional. overcli POSTs {text, title, body} as JSON here whenever it would otherwise only raise a desktop notification — scheduled-run failures, worker pauses waiting on your approval, watch hits. The text key alone renders in a Slack incoming webhook with no extra setup; title/body keep it usable for any generic receiver. Leave blank to turn it off."
+      help="Optional. overcli POSTs {text, title, body} as JSON here whenever it would otherwise only raise a desktop notification — a scheduled run that failed or finished, a worker's shift or errand, a budget exhaustion, a watch hit. The text key alone renders in a Slack incoming webhook with no extra setup; title/body keep it usable for any generic receiver. Leave blank to turn it off."
     >
       <div className="flex gap-2">
         <input
@@ -746,6 +770,15 @@ function WebhookField({
           {testing ? 'Sending…' : 'Send test'}
         </button>
       </div>
+      {delivery && (
+        <div className={'text-[10px] ' + (delivery.ok ? 'text-ink-faint' : 'text-red-300')}>
+          {delivery.ok
+            ? `Last notification delivered ${describeAgo(delivery.at)}.`
+            : `${delivery.consecutiveFailures} notification${
+                delivery.consecutiveFailures === 1 ? '' : 's'
+              } failed to deliver, most recently ${describeAgo(delivery.at)} — ${delivery.error}`}
+        </div>
+      )}
       {result && (
         <div className={'text-[10px] ' + (result.ok ? 'text-ink-muted' : 'text-red-300')}>
           {result.ok ? 'Sent — check the receiver.' : `Failed: ${result.error}`}
@@ -814,6 +847,19 @@ function WebhookField({
         />
       </Row>
     )}
+    <Row
+      label="Forward"
+      help="Which notifications leave the machine. A channel that also carries every finished shift is a channel you end up muting — and a muted channel delivers the one message that mattered exactly as well as no webhook at all."
+    >
+      <select
+        value={local.notificationWebhookFilter ?? 'all'}
+        onChange={(e) => patch({ notificationWebhookFilter: e.target.value as 'all' | 'failures' })}
+        className="field px-2 py-1 text-xs"
+      >
+        <option value="all">Everything</option>
+        <option value="failures">Only failures</option>
+      </select>
+    </Row>
     </>
   );
 }
@@ -848,7 +894,7 @@ function AdvancedPane({ local, patch }: { local: AppSettings; patch: (p: Partial
       </Group>
       <Group
         title="Notifications"
-        description="Where overcli tells you a scheduled run failed or a worker is waiting on you."
+        description="Where overcli tells you a scheduled run failed or a worker finished a shift."
       >
         <WebhookField local={local} patch={patch} />
       </Group>

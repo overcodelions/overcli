@@ -110,6 +110,7 @@ import {
   configuredWebhookAuthHeader,
   configuredWebhookToken,
   configuredWebhookUrl,
+  lastWebhookDelivery,
   sendWebhookNotification,
   validateWebhookUrl,
   WEBHOOK_TOKEN_ENV,
@@ -645,6 +646,7 @@ export function registerIpc(): void {
       token ? { header, token } : null,
     );
   });
+  ipcMain.handle('notify:webhookDelivery', () => lastWebhookDelivery());
   ipcMain.handle('notify:webhookTokenStatus', () => ({
     configured: configuredWebhookToken() !== null,
     fromEnv: Boolean(process.env[WEBHOOK_TOKEN_ENV]?.trim()),

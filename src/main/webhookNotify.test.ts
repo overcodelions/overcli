@@ -13,7 +13,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const settings = vi.hoisted(
   () =>
     ({ current: {} }) as {
-      current: { notificationWebhookUrl?: string; notificationWebhookAuthHeader?: string };
+      current: {
+        notificationWebhookUrl?: string;
+        notificationWebhookAuthHeader?: string;
+        notificationWebhookFilter?: 'all' | 'failures';
+      };
     },
 );
 const logged = vi.hoisted(() => ({ entries: [] as Array<{ level: string; message: string }> }));
@@ -48,6 +52,10 @@ vi.mock('./diagnostics', () => ({
 import {
   configuredWebhookAuth,
   configuredWebhookAuthHeader,
+  configuredWebhookFilter,
+  lastWebhookDelivery,
+  resetWebhookDelivery,
+  shouldPostKind,
   configuredWebhookToken,
   configuredWebhookUrl,
   postWebhookNotification,
@@ -70,6 +78,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 beforeEach(() => {
   settings.current = {};
   logged.entries = [];
+  resetWebhookDelivery();
   secrets.token = null;
   secrets.throws = false;
   delete process.env[WEBHOOK_TOKEN_ENV];
@@ -424,5 +433,108 @@ describe('postWebhookNotification auth', () => {
         (e) => e.level === 'warn' && /Refusing to send an auth token over plain http/.test(e.message),
       ),
     ).toBe(true);
+  });
+});
+
+// ---------- filtering ----------
+//
+// The failure mode being defended against is not noise, it is silence: a
+// channel that also carries "worker X finished a shift" gets muted, and a
+// muted channel delivers the one message that mattered no better than no
+// webhook at all.
+
+describe('configuredWebhookFilter', () => {
+  it('defaults to forwarding everything, and treats junk as the default', () => {
+    expect(configuredWebhookFilter()).toBe('all');
+    settings.current = { notificationWebhookFilter: 'failures' };
+    expect(configuredWebhookFilter()).toBe('failures');
+    settings.current = { notificationWebhookFilter: 'nonsense' as 'all' };
+    expect(configuredWebhookFilter()).toBe('all');
+  });
+});
+
+describe('shouldPostKind', () => {
+  it('lets every kind through on "all"', () => {
+    for (const kind of ['failure', 'progress', 'watch', undefined] as const) {
+      expect(shouldPostKind(kind, 'all')).toBe(true);
+    }
+  });
+
+  it('lets only failures through on "failures"', () => {
+    expect(shouldPostKind('failure', 'failures')).toBe(true);
+    expect(shouldPostKind('progress', 'failures')).toBe(false);
+    expect(shouldPostKind('watch', 'failures')).toBe(false);
+    // An unmarked call site reads as progress, so a site that forgets to
+    // classify itself under-delivers rather than crying wolf.
+    expect(shouldPostKind(undefined, 'failures')).toBe(false);
+  });
+});
+
+describe('postWebhookNotification, filtered', () => {
+  it('drops a filtered kind and posts an unfiltered one', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK, notificationWebhookFilter: 'failures' };
+    postWebhookNotification({ title: 'T', body: 'B', kind: 'progress' });
+    await flush();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    postWebhookNotification({ title: 'T', body: 'B', kind: 'failure' });
+    await flush();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still shows the LOCAL notification for a filtered kind', async () => {
+    // Filtering is about what leaves the machine. The desktop toast is not
+    // negotiable — the user is at the desk in that case.
+    settings.current = { notificationWebhookUrl: URL_OK, notificationWebhookFilter: 'failures' };
+    const seen: string[] = [];
+    const wrapped = withWebhookNotify((a) => seen.push(a.title));
+    wrapped({ title: 'local only', body: 'x', kind: 'progress' });
+    await flush();
+    expect(seen).toEqual(['local only']);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------- delivery status ----------
+//
+// The gap this closes: a webhook that has silently stopped delivering is
+// indistinguishable from a quiet week, and the user is by definition not at
+// the machine to notice.
+
+describe('lastWebhookDelivery', () => {
+  it('is null until something is actually sent', () => {
+    expect(lastWebhookDelivery()).toBeNull();
+  });
+
+  it('counts consecutive failures and clears the streak on success', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    fetchMock.mockRejectedValue(new Error('down'));
+    postWebhookNotification({ title: 'T', body: 'B' });
+    await flush();
+    postWebhookNotification({ title: 'T', body: 'B' });
+    await flush();
+    expect(lastWebhookDelivery()).toMatchObject({ ok: false, consecutiveFailures: 2 });
+
+    fetchMock.mockResolvedValue(okResponse());
+    postWebhookNotification({ title: 'T', body: 'B' });
+    await flush();
+    expect(lastWebhookDelivery()).toMatchObject({ ok: true, consecutiveFailures: 0 });
+  });
+
+  it('carries the reason the delivery failed', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    fetchMock.mockResolvedValue({ ok: false, status: 404 } as unknown as Response);
+    postWebhookNotification({ title: 'T', body: 'B' });
+    await flush();
+    expect(lastWebhookDelivery()?.error).toContain('404');
+  });
+
+  it('does not record a filtered notification as a delivery', async () => {
+    // The trap: recording a deliberate skip as a success would mask a
+    // webhook that has genuinely stopped working.
+    settings.current = { notificationWebhookUrl: URL_OK, notificationWebhookFilter: 'failures' };
+    postWebhookNotification({ title: 'T', body: 'B', kind: 'progress' });
+    await flush();
+    expect(lastWebhookDelivery()).toBeNull();
   });
 });

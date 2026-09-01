@@ -36,12 +36,31 @@
 // caller that has a human waiting for the answer.
 
 import { log } from './diagnostics';
-import { host } from './host';
+import { host, type NotifyArgs, type NotifyKind } from './host';
 import { Store } from './store';
 
-export interface WebhookNotifyArgs {
-  title: string;
-  body: string;
+export type WebhookNotifyArgs = NotifyArgs;
+
+/// Which notifications leave the machine.
+///
+/// `all` is the shipped behaviour and stays the default. `failures` exists
+/// because the failure mode of a chatty channel is not noise, it is silence:
+/// people mute a channel that reports every finished shift, and a muted
+/// channel delivers the one message that mattered exactly as well as no
+/// webhook at all.
+export type WebhookFilter = 'all' | 'failures';
+
+/// What the last outbound attempt did. Held in memory rather than persisted:
+/// it exists so the desktop app can say "this is not working", and a process
+/// that just started has nothing to report yet anyway.
+export interface WebhookDelivery {
+  at: number;
+  ok: boolean;
+  error?: string;
+  /// Reset to 0 by any success. Non-zero is the signal that the webhook is
+  /// configured but not arriving — the state this feature is otherwise
+  /// incapable of telling you about, since you are by definition away.
+  consecutiveFailures: number;
 }
 
 export type WebhookSendResult = { ok: true } | { ok: false; error: string };
@@ -235,13 +254,56 @@ export async function sendWebhookNotification(
   }
 }
 
+/// Which notifications the user asked to forward. Anything unrecognised
+/// reads as `all`, matching the pre-filter behaviour.
+export function configuredWebhookFilter(): WebhookFilter {
+  try {
+    return Store.load().settings.notificationWebhookFilter === 'failures' ? 'failures' : 'all';
+  } catch {
+    return 'all';
+  }
+}
+
+/// Whether a notification of this kind should leave the machine.
+/// An unmarked notification counts as `progress`; see `NotifyKind`.
+export function shouldPostKind(kind: NotifyKind | undefined, filter: WebhookFilter): boolean {
+  if (filter === 'all') return true;
+  return kind === 'failure';
+}
+
+let lastDelivery: WebhookDelivery | null = null;
+
+/// The last outbound attempt, or null if none has been made this process.
+export function lastWebhookDelivery(): WebhookDelivery | null {
+  return lastDelivery;
+}
+
+/// Tests only — the counter is process-global by design.
+export function resetWebhookDelivery(): void {
+  lastDelivery = null;
+}
+
+function recordDelivery(ok: boolean, error?: string): void {
+  lastDelivery = {
+    at: Date.now(),
+    ok,
+    error,
+    consecutiveFailures: ok ? 0 : (lastDelivery?.consecutiveFailures ?? 0) + 1,
+  };
+}
+
 /// Fire-and-forget POST of one notification to the configured webhook.
 /// Returns immediately; the request runs unawaited and reports only to the
 /// diagnostics log. This is what the hosts call.
 export function postWebhookNotification(args: WebhookNotifyArgs): void {
   const url = configuredWebhookUrl();
   if (!url) return;
+  // Filtered before the delivery record is touched: a notification the user
+  // asked us not to forward is not a delivery, and counting it as a success
+  // would paper over a webhook that has actually stopped working.
+  if (!shouldPostKind(args.kind, configuredWebhookFilter())) return;
   void sendWebhookNotification(url, args, configuredWebhookAuth()).then((res) => {
+    recordDelivery(res.ok, res.ok ? undefined : res.error);
     if (!res.ok) log('warn', 'webhook.notify', `Notification webhook failed: ${res.error}`);
   });
 }
