@@ -73,7 +73,7 @@ export function SettingsSheet() {
   );
 
   return (
-    <div className="flex flex-col w-full h-[min(640px,80vh)]">
+    <div className="flex flex-col w-full h-[min(780px,88vh)]">
       <div className="flex items-center px-5 pt-4 pb-3 border-b border-card">
         <div className="text-lg font-semibold">Settings</div>
       </div>
@@ -89,7 +89,7 @@ export function SettingsSheet() {
           <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
-        <div className="flex-1 min-w-0 overflow-y-auto p-5">
+        <div className="flex-1 min-w-0 overflow-y-auto px-6 py-5">
           {section === 'general' && <GeneralPane local={local} patch={patch} />}
           {section === 'backends' && (
             <BackendsPane
@@ -152,12 +152,22 @@ function NavItem({ label, active, onClick }: { label: string; active: boolean; o
 
 function Row({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
   return (
-    <div className="grid grid-cols-[136px_1fr] items-start gap-3">
+    // Help sits in its own grid row rather than inside the control column.
+    // Inside it, the label could only ever be wrong: `items-center` centred it
+    // against control-plus-help, so a long help line pushed it down, and
+    // `items-start` left it a few pixels ABOVE the control — visibly so next
+    // to a native select, which renders taller than a text input. As its own
+    // row the label centres against the control alone, and the help still
+    // lines up under the control, with no per-control padding to re-tune.
+    <div className="grid grid-cols-[168px_1fr] items-center gap-x-4 gap-y-1">
       <div className="text-xs text-ink-muted">{label}</div>
-      <div className="flex flex-col gap-1">
-        {children}
-        {help && <div className="text-[10px] text-ink-faint">{help}</div>}
-      </div>
+      <div className="min-w-0">{children}</div>
+      {help && (
+        <>
+          <div />
+          <div className="text-[11px] text-ink-faint">{help}</div>
+        </>
+      )}
     </div>
   );
 }
@@ -203,7 +213,7 @@ function Toggle({
       </div>
       <div className="flex flex-col">
         <span className="text-xs text-ink">{label}</span>
-        {help && <span className="text-[10px] text-ink-faint">{help}</span>}
+        {help && <span className="text-[11px] text-ink-faint">{help}</span>}
       </div>
     </label>
   );
