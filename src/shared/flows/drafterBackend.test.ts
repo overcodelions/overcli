@@ -63,7 +63,7 @@ describe('pickDrafterBackend', () => {
 describe('drafterModelFor', () => {
   it('returns the strongest premium model per backend', () => {
     // claude defaults to opus-5 (first entry, the newest thinking model);
-    // fable-5 is the frontier opt-in, not the drafter default.
+    // fable-5.1 is the frontier opt-in, not the drafter default.
     expect(drafterModelFor('claude')).toBe('claude-opus-5');
     expect(drafterModelFor('codex')).toBe('gpt-5.6-sol');
     expect(drafterModelFor('gemini')).toBe('gemini-3.1-pro');
@@ -72,7 +72,7 @@ describe('drafterModelFor', () => {
 
 describe('drafterModelHints', () => {
   it('maps a model to each speed tier for a backend', () => {
-    // fable-5 is 'frontier' (not 'thinking'), so the thinking hint is the
+    // fable-5.1 is 'frontier' (not 'thinking'), so the thinking hint is the
     // first thinking model — opus-5. sonnet is classified 'fast', so claude
     // has no 'standard' model — standard degrades DOWN to the fast pick
     // (sonnet-5), keeping "cheaper steps" actually cheaper.
@@ -196,7 +196,7 @@ describe('resolveProducerModel', () => {
   });
 
   it('maps a frontier pin to the strongest model the backend has', () => {
-    expect(resolveProducerModel('codex', 'claude-fable-5')).toBe('gpt-5.6-sol');
+    expect(resolveProducerModel('codex', 'claude-fable-5-1')).toBe('gpt-5.6-sol');
   });
 
   it('leaves local ollama ids alone', () => {

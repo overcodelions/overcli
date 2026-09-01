@@ -20,6 +20,7 @@ import {
   workerOrigin,
   canDelegate,
   delegationTargets,
+  parseDirectRun,
   parseHandoffs,
   resolveHandoffTarget,
   rosterLine,
@@ -770,5 +771,28 @@ describe('cron cadence', () => {
       time: '09:00',
       days: [1, 2, 3, 4, 5],
     });
+  });
+});
+
+describe('parseDirectRun', () => {
+  it('takes the work from a /run line', () => {
+    expect(parseDirectRun('/run LG Partner Club Thailand')).toBe('LG Partner Club Thailand');
+    expect(parseDirectRun('  /RUN  review LG  ')).toBe('review LG');
+    expect(parseDirectRun('/run\nreview LG')).toBe('review LG');
+  });
+
+  it('leaves ordinary messages alone', () => {
+    expect(parseDirectRun('did you review the documents?')).toBeNull();
+    expect(parseDirectRun('tell me how to /run this')).toBeNull();
+  });
+
+  it('is a whole word, not a prefix match', () => {
+    // Otherwise "/running late" dispatches a flow run named "ning late".
+    expect(parseDirectRun('/running late on the LG review')).toBeNull();
+  });
+
+  it('needs work to run', () => {
+    expect(parseDirectRun('/run')).toBeNull();
+    expect(parseDirectRun('/run   ')).toBeNull();
   });
 });

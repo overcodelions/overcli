@@ -5,6 +5,7 @@
 import { useStore } from '../../store';
 import { useWorkersStore } from '../../workersStore';
 import type { Worker } from '@shared/flows/worker';
+import { DIRECT_RUN_PREFIX, parseDirectRun } from '@shared/flows/worker';
 import { Composer } from '../Composer';
 
 /// The shared one-off task channel. An errand is deliberately directed to a
@@ -23,6 +24,13 @@ export function WorkerErrandComposer({ worker }: { worker: Worker }) {
   const setDraft = useStore((s) => s.setDraft);
   const removeAttachment = useStore((s) => s.removeAttachment);
   const draftKey = `worker-errand:${worker.id}`;
+  // What the box is about to do, echoed back while you type. The triage
+  // between answering and dispatching is normally the worker's call and
+  // invisible until the reply lands; `/run` is you taking that call, so the
+  // desk says out loud which of the two you are about to get.
+  const draft = useStore((s) => s.conversationDrafts[draftKey] ?? '');
+  const directWork = parseDirectRun(draft);
+  const flow = worker.flowIds[0];
   // Never disabled. A worker mid-shift can be handed an errand the same way a
   // person can: it waits its turn (the engine queues it behind the turn in
   // flight) instead of the box refusing your typing. Disabling it meant the
@@ -57,6 +65,18 @@ export function WorkerErrandComposer({ worker }: { worker: Worker }) {
           void runErrand(worker.id, prompt, attachments);
         }}
       />
+      {directWork ? (
+        <div className="mt-1.5 rounded border border-accent/40 bg-accent/10 px-2 py-1 text-[11px] text-ink-muted">
+          Straight to <span className="text-ink">{flow ?? 'this worker\u2019s flow'}</span> — no
+          planning turn. It parks for one click.
+        </div>
+      ) : (
+        flow && (
+          <div className="mt-1.5 px-0.5 text-[10px] text-ink-faint">
+            {DIRECT_RUN_PREFIX} &lt;the work&gt; sends it straight to {flow}, skipping triage.
+          </div>
+        )
+      )}
       {error && (
         <div className="mt-1.5 flex items-start gap-1.5 rounded border border-red-400/40 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-700 dark:text-red-300">
           <span className="min-w-0 flex-1">{error}</span>

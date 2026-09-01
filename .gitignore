@@ -22,3 +22,6 @@ Thumbs.db
 
 # Local scratch registry for hand-testing flow installs.
 example-registry/
+
+# Design canvas working files (seeded into the published canvas, not app source)
+.design-wq/

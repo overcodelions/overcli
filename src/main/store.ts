@@ -9,6 +9,7 @@ import path from 'node:path';
 import { host } from './host';
 import { log } from './diagnostics';
 import {
+  Backend,
   Project,
   Workspace,
   Colosseum,
@@ -21,10 +22,14 @@ import {
   PersistedView,
   UUID,
 } from '../shared/types';
-import { isSupportedPremiumModel } from '../shared/modelCatalog';
+import { isSupportedPremiumModel, liftMissingModel } from '../shared/modelCatalog';
 import { trimContextNotices } from '../shared/contextNotices';
 
-const DEPRECATED_CODEX_MODELS = ['gpt-5.3-codex', 'gpt-5.2'];
+/// Retired ids with no successor inside their own model family, so
+/// `liftMissingModel` has nowhere to move them (`gpt-5.3-codex`'s whole
+/// `gpt-*-codex` line is gone). Everything else that falls out of the
+/// catalog lifts instead — see `liftPersistedModel`.
+const RETIRED_MODELS = ['gpt-5.3-codex'];
 
 interface StoreState {
   projects: Project[];
@@ -60,36 +65,67 @@ function emptyState(): StoreState {
   };
 }
 
-function stripDeprecatedCodexModel(model: string | null | undefined): string | undefined {
+/// Move a persisted conversation model forward when the catalog has moved
+/// on. Flows get this for free — `parseFlowYaml` lifts every model
+/// reference on load — but a conversation's pinned model is stored raw, so
+/// a superseded id used to survive until the next send failed the catalog
+/// check with `Model "X" is not supported for backend "Y"` and the user had
+/// to repick by hand.
+///
+///   - A superseded id lifts to the next-highest version in its own family
+///     (`claude-fable-5` → `claude-fable-5-1`, `gpt-5.2` → `gpt-5.4`).
+///   - One that can't be lifted to anything we still ship is dropped, so
+///     the send falls back to the backend's configured default instead of
+///     erroring.
+///   - Ollama models are local pulls, never catalog ids, so they pass
+///     through untouched — as does anything whose backend we can't name
+///     (a legacy conversation with no `primaryBackend`), since guessing
+///     one risks rewriting a local tag.
+function liftPersistedModel(
+  backend: Backend | null | undefined,
+  model: string | null | undefined,
+): string | undefined {
   const trimmed = model?.trim();
-  if (!trimmed || DEPRECATED_CODEX_MODELS.includes(trimmed)) return undefined;
-  return trimmed;
+  if (!trimmed || RETIRED_MODELS.includes(trimmed)) return undefined;
+  if (!backend || backend === 'ollama') return trimmed;
+  const lifted = liftMissingModel(backend, trimmed);
+  return isSupportedPremiumModel(backend, lifted) ? lifted : undefined;
 }
 
 function sanitizeConversation(conv: Conversation): Conversation {
   const next = { ...conv };
-  next.currentModel = stripDeprecatedCodexModel(next.currentModel) ?? '';
+  // `currentModel` is the active pick for whichever backend the
+  // conversation is on, so it lifts against `primaryBackend`; the
+  // per-backend fields below each know their own.
+  next.currentModel = liftPersistedModel(next.primaryBackend, next.currentModel) ?? '';
 
-  const claudeModel = stripDeprecatedCodexModel(next.claudeModel);
+  const claudeModel = liftPersistedModel('claude', next.claudeModel);
   if (claudeModel) next.claudeModel = claudeModel;
   else delete next.claudeModel;
 
-  const codexModel = stripDeprecatedCodexModel(next.codexModel);
+  const codexModel = liftPersistedModel('codex', next.codexModel);
   if (codexModel) next.codexModel = codexModel;
   else delete next.codexModel;
 
-  const geminiModel = stripDeprecatedCodexModel(next.geminiModel);
+  const geminiModel = liftPersistedModel('gemini', next.geminiModel);
   if (geminiModel) next.geminiModel = geminiModel;
   else delete next.geminiModel;
 
-  const ollamaModel = stripDeprecatedCodexModel(next.ollamaModel);
+  const copilotModel = liftPersistedModel('copilot', next.copilotModel);
+  if (copilotModel) next.copilotModel = copilotModel;
+  else delete next.copilotModel;
+
+  const ollamaModel = liftPersistedModel('ollama', next.ollamaModel);
   if (ollamaModel) next.ollamaModel = ollamaModel;
   else delete next.ollamaModel;
 
-  const reviewModel = stripDeprecatedCodexModel(next.reviewModel ?? undefined);
+  // The reviewer runs on its own backend when one is set, falling back to
+  // the conversation's — the same resolution the review send does.
+  const reviewBackend = (next.reviewBackend ?? next.primaryBackend) as Backend | null | undefined;
+  const reviewModel = liftPersistedModel(reviewBackend, next.reviewModel ?? undefined);
   next.reviewModel = reviewModel ?? null;
 
-  const reviewOllamaModel = stripDeprecatedCodexModel(next.reviewOllamaModel ?? undefined);
+  const reviewOllamaModel = liftPersistedModel('ollama', next.reviewOllamaModel ?? undefined);
   if (reviewOllamaModel) next.reviewOllamaModel = reviewOllamaModel;
   else delete next.reviewOllamaModel;
 
@@ -119,15 +155,19 @@ function sanitizeWorkspaces(workspaces: Workspace[]): Workspace[] {
 }
 
 function sanitizeSettings(settings: AppSettings): AppSettings {
+  // Same lift-or-drop the conversations get: a pin on a superseded model
+  // moves to its successor, keeping the user's explicit choice, and is only
+  // dropped when the family has nothing left to move to.
   const backendDefaultModels = { ...settings.backendDefaultModels };
   for (const backend of ['claude', 'codex', 'gemini', 'copilot'] as const) {
     const model = backendDefaultModels[backend];
-    if (model && !isSupportedPremiumModel(backend, model)) {
-      delete backendDefaultModels[backend];
-    }
+    if (!model) continue;
+    const lifted = liftPersistedModel(backend, model);
+    if (lifted) backendDefaultModels[backend] = lifted;
+    else delete backendDefaultModels[backend];
   }
   // Same treatment for the per-tier flow pins. `tierDefault` already ignores
-  // an unsupported pin at read time, but dropping it here keeps the Settings
+  // an unsupported pin at read time, but resolving it here keeps the Settings
   // select from rendering a value that isn't in its option list — a retired
   // model would otherwise show as a blank row the user can't interpret.
   const flowModelDefaults = { ...(settings.flowModelDefaults ?? {}) };
@@ -136,9 +176,10 @@ function sanitizeSettings(settings: AppSettings): AppSettings {
     if (!tiers) continue;
     const kept = { ...tiers };
     for (const [tier, model] of Object.entries(kept)) {
-      if (model && !isSupportedPremiumModel(backend, model)) {
-        delete kept[tier as keyof typeof kept];
-      }
+      if (!model) continue;
+      const lifted = liftPersistedModel(backend, model);
+      if (lifted) kept[tier as keyof typeof kept] = lifted;
+      else delete kept[tier as keyof typeof kept];
     }
     flowModelDefaults[backend] = kept;
   }
