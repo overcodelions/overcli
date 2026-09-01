@@ -109,7 +109,7 @@ export function SheetHost() {
               ? 'max-w-[1040px] max-h-[90vh]'
               : isPalette
                 ? 'max-w-[760px] h-[560px] max-h-[78vh]'
-                : 'max-w-[680px] max-h-[80vh]')
+                : 'max-w-[760px] max-h-[84vh]')
         }
         onClick={(e) => e.stopPropagation()}
       >

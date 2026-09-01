@@ -78,7 +78,7 @@ export function SettingsSheet() {
         <div className="text-lg font-semibold">Settings</div>
       </div>
       <div className="flex flex-1 min-h-0">
-        <nav className="w-[160px] flex-shrink-0 border-r border-card py-3 px-2 flex flex-col gap-0.5">
+        <nav className="w-[176px] flex-shrink-0 border-r border-card py-3 px-2 flex flex-col gap-0.5">
           <NavItem label="General" active={section === 'general'} onClick={() => setSection('general')} />
           <NavItem label="Backends" active={section === 'backends'} onClick={() => setSection('backends')} />
           <NavItem label="Models" active={section === 'models'} onClick={() => setSection('models')} />
@@ -152,7 +152,7 @@ function NavItem({ label, active, onClick }: { label: string; active: boolean; o
 
 function Row({ label, children, help }: { label: string; children: React.ReactNode; help?: string }) {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+    <div className="grid grid-cols-[136px_1fr] items-start gap-3">
       <div className="text-xs text-ink-muted">{label}</div>
       <div className="flex flex-col gap-1">
         {children}
@@ -642,8 +642,17 @@ function AgentsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<A
 /// button needs local state for the result, and `AdvancedPane` is otherwise
 /// a pure render of `local`.
 ///
-/// The test posts the URL currently TYPED, not the saved one — testing a
-/// value you have to Save first is a button that lies on its first use.
+/// The test posts the values currently TYPED, not the saved ones — testing a
+/// value you have to Save first is a button that lies on its first use. That
+/// applies doubly to the token, which the Save button never writes at all.
+///
+/// WHY THE TOKEN IS NOT PART OF `local`. Every other field here funnels into
+/// `patch()`, which the sheet's Save button commits to `AppSettings` and hence
+/// to `overcli.json` in the clear. A credential does not belong in that file,
+/// so the token takes its own path: `notify:setWebhookToken` on blur, straight
+/// into the keychain. The consequence is that it never comes BACK either — the
+/// renderer is told only WHETHER one is configured, so the field shows a
+/// placeholder and an explicit Clear button rather than a prefilled value.
 function WebhookField({
   local,
   patch,
@@ -652,10 +661,43 @@ function WebhookField({
   patch: (p: Partial<AppSettings>) => void;
 }) {
   const url = local.notificationWebhookUrl ?? '';
+  const header = local.notificationWebhookAuthHeader ?? '';
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  /// What the user has typed this session. `''` means "typed nothing", which
+  /// is NOT the same as "no token" — one may already be stored.
+  const [token, setToken] = useState('');
+  const [status, setStatus] = useState<{ configured: boolean; fromEnv: boolean } | null>(null);
+  const [tokenError, setTokenError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void window.overcli
+      .invoke('notify:webhookTokenStatus')
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, []);
+
+  const saveToken = (value: string | null) => {
+    setTokenError(null);
+    void window.overcli
+      .invoke('notify:setWebhookToken', value)
+      .then((res) => {
+        if (!res.ok) {
+          setTokenError(
+            'Could not store the token — this host cannot persist secrets. Set $OVERCLI_NOTIFY_WEBHOOK_TOKEN instead.',
+          );
+          return;
+        }
+        setToken('');
+        return window.overcli.invoke('notify:webhookTokenStatus').then(setStatus);
+      })
+      .catch((err: unknown) => setTokenError(String(err)));
+  };
+
+  const hasToken = token.trim() !== '' || status?.configured === true;
 
   return (
+    <>
     <Row
       label="Webhook URL"
       help="Optional. overcli POSTs {text, title, body} as JSON here whenever it would otherwise only raise a desktop notification — scheduled-run failures, worker pauses waiting on your approval, watch hits. The text key alone renders in a Slack incoming webhook with no extra setup; title/body keep it usable for any generic receiver. Leave blank to turn it off."
@@ -677,7 +719,14 @@ function WebhookField({
             setTesting(true);
             setResult(null);
             void window.overcli
-              .invoke('notify:testWebhook', url)
+              .invoke('notify:testWebhook', {
+                url,
+                // A typed token wins; otherwise omit the key entirely so the
+                // main process falls back to what is stored. `undefined` is
+                // the "use what is saved" case — null would mean "no auth".
+                token: token.trim() ? token.trim() : undefined,
+                header: header.trim() ? header.trim() : undefined,
+              })
               .then(setResult)
               .catch((err: unknown) => setResult({ ok: false, error: String(err) }))
               .finally(() => setTesting(false));
@@ -693,6 +742,69 @@ function WebhookField({
         </div>
       )}
     </Row>
+    <Row
+      label="Auth token"
+      help="Optional. Sent verbatim as a request header, for receivers where the URL alone is not the credential — PagerDuty, an ntfy topic with access control, anything behind an API gateway. Stored in the OS keychain, never in overcli.json, and never shown back here. Type Bearer yourself if your receiver expects it: overcli sends exactly what you paste, because guessing breaks the receivers that want a raw token."
+    >
+      <div className="flex gap-2">
+        <input
+          type="password"
+          placeholder={
+            status?.fromEnv
+              ? 'set by $OVERCLI_NOTIFY_WEBHOOK_TOKEN'
+              : status?.configured
+                ? 'configured — type to replace'
+                : 'none'
+          }
+          value={token}
+          disabled={status?.fromEnv === true}
+          onChange={(e) => {
+            setResult(null);
+            setToken(e.target.value);
+          }}
+          onBlur={() => {
+            if (token.trim()) saveToken(token.trim());
+          }}
+          className="field flex-1 px-2 py-1 text-xs font-mono disabled:opacity-40"
+        />
+        <button
+          disabled={status?.fromEnv === true || (!status?.configured && !token.trim())}
+          onClick={() => {
+            setToken('');
+            setResult(null);
+            saveToken(null);
+          }}
+          className="text-xs px-2 py-1 rounded text-ink-muted hover:text-ink hover:bg-card-strong border border-card flex-shrink-0 disabled:opacity-40 disabled:hover:bg-transparent"
+        >
+          Clear
+        </button>
+      </div>
+      {status?.fromEnv && (
+        <div className="text-[10px] text-ink-faint">
+          The environment variable wins over anything stored here. Unset it to edit the token from
+          Settings.
+        </div>
+      )}
+      {tokenError && <div className="text-[10px] text-red-300">{tokenError}</div>}
+    </Row>
+    {hasToken && (
+      <Row
+        label="Auth header"
+        help="Header name the token is sent under. Defaults to Authorization, which is what ntfy and PagerDuty want; use X-API-Key or a vendor-specific name if your receiver expects one."
+      >
+        <input
+          type="text"
+          placeholder="Authorization"
+          value={header}
+          onChange={(e) => {
+            setResult(null);
+            patch({ notificationWebhookAuthHeader: e.target.value });
+          }}
+          className="field w-full px-2 py-1 text-xs font-mono"
+        />
+      </Row>
+    )}
+    </>
   );
 }
 
