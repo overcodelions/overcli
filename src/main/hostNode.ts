@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import type { HostEnv, HostSecrets } from './host';
+import { withWebhookNotify } from './webhookNotify';
 
 /// Where a headless install keeps its state when nobody said otherwise.
 /// `~/.overcli` has precedent — `diagnostics.ts` already writes its log there,
@@ -69,6 +70,12 @@ export function nodeHost(options: NodeHostOptions = {}): HostEnv {
       return root;
     },
     secrets: options.secrets ?? envSecrets,
-    notify: options.onNotify ?? ((args) => process.stderr.write(`${args.title}: ${args.body}\n`)),
+    // The wrap goes OUTSIDE the `??`, not on the default: `overcli run`
+    // supplies its own `onNotify` (cli/run.ts routes it into the reporter),
+    // so wrapping only the stderr fallback would leave every real headless
+    // run with no webhook at all.
+    notify: withWebhookNotify(
+      options.onNotify ?? ((args) => process.stderr.write(`${args.title}: ${args.body}\n`)),
+    ),
   };
 }
