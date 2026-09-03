@@ -46,6 +46,23 @@ function isDeletedStatus(status: string): boolean {
   return code.includes('D') && !code.includes('U');
 }
 
+/// Label for the branch chip in the bar's header. A worktree run shows its
+/// own branch bare; the main checkout is prefixed `local/` so the two read
+/// differently at a glance — the whole point of the chip is knowing whether
+/// the changes below are landing in an isolated tree or in the checkout the
+/// user has open in their editor. Returns null when there's no branch to
+/// show: a detached HEAD, a non-repo, or a workspace whose members disagree.
+export function branchLabel(
+  branch: string | null | undefined,
+  worktree: boolean,
+): { label: string; title: string } | null {
+  const name = (branch ?? '').trim();
+  if (!name) return null;
+  return worktree
+    ? { label: name, title: `Worktree on branch ${name} — isolated from your main checkout` }
+    : { label: `local/${name}`, title: `Your main checkout, on branch ${name}` };
+}
+
 /// Collapsible bar above the composer. Numbers come straight from a
 /// `git diff --numstat` pass (plus line counts for untracked files). The
 /// main chat feeds it `HEAD`-relative counts (`git:commitStatus`, matching
@@ -55,6 +72,8 @@ function isDeletedStatus(status: string): boolean {
 export function ChangesBar({
   files,
   baseRef,
+  branch,
+  worktree = false,
   plain = false,
 }: {
   files: FileChangeSummary[];
@@ -63,6 +82,11 @@ export function ChangesBar({
   /// work has landed upstream legitimately has zero files, and silently
   /// showing nothing reads as a broken probe.
   baseRef?: string | null;
+  /// Branch the changes below belong to, and whether they live in a worktree
+  /// rather than the project's main checkout. Rendered as a chip in the
+  /// header so a run's tree is identifiable without opening the review sheet.
+  branch?: string | null;
+  worktree?: boolean;
   /// Speak in document terms rather than git terms. Passed per render, NOT
   /// read from settings: this is a property of the project you are looking
   /// at, and a global flag meant that trying one everyday project silently
@@ -71,11 +95,16 @@ export function ChangesBar({
 }) {
   const openFile = useStore((s) => s.openFile);
   const [expanded, setExpanded] = useState(false);
+  // Everyday projects don't speak git, so the chip stays out of plain mode.
+  const branchChip = plain ? null : branchLabel(branch, worktree);
   if (files.length === 0) {
     if (!baseRef) return null;
     return (
-      <div className="rounded-xl border border-card bg-card px-3 py-2 text-xs text-ink-faint">
-        No changes vs <code className="text-ink">{baseRef}</code> — nothing left to merge.
+      <div className="rounded-xl border border-card bg-card px-3 py-2 text-xs text-ink-faint flex items-center gap-2">
+        <span>
+          No changes vs <code className="text-ink">{baseRef}</code> — nothing left to merge.
+        </span>
+        {branchChip && <BranchChip {...branchChip} />}
       </div>
     );
   }
@@ -99,6 +128,7 @@ export function ChangesBar({
         </span>
         <span className="diff-add-ink">+{totals.additions}</span>
         <span className="diff-remove-ink">-{totals.deletions}</span>
+        {branchChip && <BranchChip {...branchChip} />}
         {baseRef && <span className="ml-auto text-ink-faint">vs {baseRef}</span>}
       </button>
       {expanded && (
@@ -144,5 +174,18 @@ export function ChangesBar({
         </div>
       )}
     </div>
+  );
+}
+
+/// Branch chip shared by the bar's populated and empty states. Mono, muted,
+/// and truncating — long branch names must not push the +/- counts around.
+function BranchChip({ label, title }: { label: string; title: string }) {
+  return (
+    <span
+      title={title}
+      className="shrink min-w-0 truncate rounded bg-card-strong px-1.5 py-0.5 font-mono text-[10px] text-ink-faint"
+    >
+      ⎇ {label}
+    </span>
   );
 }
