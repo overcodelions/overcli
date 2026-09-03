@@ -5,11 +5,20 @@
 //   1. The browser TOOLS do work under `-p`. Launching with `--chrome`
 //      attaches the extension and exposes ~22 `mcp__claude-in-chrome__*`
 //      tools (navigate, computer, read_page, form_input, javascript_tool,
-//      read_console_messages, browser_batch, …). They are absent from the
-//      `init` message because the extension's MCP connection completes
-//      after init is emitted — so the tool list is NOT a way to detect
-//      this. They also survive `--strict-mcp-config`, meaning turbo and
-//      `skipGlobalMcp` don't strip them: the server is injected
+//      read_console_messages, browser_batch, …). On CLI 2.1.258 they ARE
+//      present in the `init` message's `tools` array, alongside an
+//      `mcp_servers` entry `{name: "claude-in-chrome", status: "connected"}`
+//      — confirmed by diffing `init` with and without `--chrome` (54 vs 32
+//      tools). An earlier version of this comment claimed the tools were
+//      absent from `init` because the extension's MCP connection completes
+//      after init is emitted; that was wrong on this CLI version, and was
+//      also not actually why the Capabilities sheet omitted Chrome — see
+//      GitHub #268. The sheet's MCP tab comes from a filesystem scan (see
+//      src/main/capabilities.ts) that can't see this server because it's
+//      injected internally rather than written to a config file; the fix
+//      there folds in `lastInit.tools`/`lastInit.mcpServers` instead
+//      (see liveMcp.ts). They also survive `--strict-mcp-config`, meaning
+//      turbo and `skipGlobalMcp` don't strip them: the server is injected
 //      internally rather than through `--mcp-config`.
 //
 //   2. The `/chrome` SLASH COMMAND does not work under `-p` at all. It is
