@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   countApplyPatchLines,
   countCodexFunctionCallLines,
@@ -261,13 +264,121 @@ describe('countCodexFunctionCallLines', () => {
 });
 
 describe('computeStats invariants', () => {
-  // Scans the real ~/.claude / ~/.codex history on the dev machine, which can
-  // be large — give it headroom past the 5s default. On CI there's no history,
-  // so byBackend is empty and the assertion is a fast no-op.
-  it('sessionsToday per backend never exceeds that backend\'s sessions', () => {
-    const report = computeStats();
+  // Issue #269: this suite used to call computeStats() with no arguments,
+  // which scans the real ~/.claude and ~/.codex trees. Cost then tracks
+  // however much agent history the machine holds — one dev machine took
+  // 13s under full-suite load and 36s (past the 30s timeout) at a
+  // realistic multiple of that history, while CI, which has no history,
+  // ran it as a 2ms no-op. Passing `homeDir` points every scanner at a
+  // small fixture instead, so the assertions below run against fixed,
+  // known-size data and the runtime can no longer depend on this
+  // machine's history — see buildFixtureHome().
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /// A `$HOME` containing a handful of hand-written session files: enough
+  /// to exercise the claude and codex scanners' "session today" vs. "total
+  /// sessions" bookkeeping without touching any real history.
+  ///
+  ///   claude: 3 sessions total (2 top-level transcripts today in one
+  ///           project, 1 ten days ago in another) → sessionsToday = 2
+  ///   codex:  2 sessions total (1 rollout today, 1 ten days ago)
+  ///           → sessionsToday = 1
+  function buildFixtureHome(): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'overcli-stats-fixture-home-'));
+    const now = Date.now();
+    const today = new Date(now).toISOString();
+    const tenDaysAgo = new Date(now - 10 * 86400 * 1000).toISOString();
+
+    const claudeAssistantLine = (ts: string): string =>
+      JSON.stringify({
+        type: 'assistant',
+        timestamp: ts,
+        message: {
+          model: 'claude-fixture',
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        },
+      });
+
+    const projectA = path.join(home, '.claude', 'projects', '-fixture-project-a');
+    fs.mkdirSync(projectA, { recursive: true });
+    // Two top-level transcripts today: one session-per-file, so this is 2
+    // sessions, both counted in sessionsToday.
+    fs.writeFileSync(path.join(projectA, 'session-today-1.jsonl'), claudeAssistantLine(today));
+    fs.writeFileSync(path.join(projectA, 'session-today-2.jsonl'), claudeAssistantLine(today));
+
+    const projectB = path.join(home, '.claude', 'projects', '-fixture-project-b');
+    fs.mkdirSync(projectB, { recursive: true });
+    fs.writeFileSync(path.join(projectB, 'session-old.jsonl'), claudeAssistantLine(tenDaysAgo));
+
+    const codexRollout = (ts: string): string =>
+      [
+        JSON.stringify({ type: 'session_meta', timestamp: ts, payload: { cwd: '/fixture/codex-project' } }),
+        JSON.stringify({ type: 'turn_context', timestamp: ts, payload: { model: 'codex-fixture' } }),
+        JSON.stringify({
+          type: 'event_msg',
+          timestamp: ts,
+          payload: {
+            type: 'token_count',
+            info: { last_token_usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 5 } },
+          },
+        }),
+      ].join('\n');
+
+    const codexDay = path.join(home, '.codex', 'sessions', '2026', '01', '01');
+    fs.mkdirSync(codexDay, { recursive: true });
+    fs.writeFileSync(path.join(codexDay, 'rollout-today.jsonl'), codexRollout(today));
+    fs.writeFileSync(path.join(codexDay, 'rollout-old.jsonl'), codexRollout(tenDaysAgo));
+
+    return home;
+  }
+
+  it("sessionsToday per backend never exceeds that backend's sessions", () => {
+    const report = computeStats({ homeDir: buildFixtureHome() });
+
+    // The fixture's counts are fixed and known, so assert the exact
+    // numbers, not just the inequality — a leak back to real history would
+    // fail this immediately instead of silently inflating both sides.
+    const claude = report.byBackend.find((b) => b.backend === 'claude');
+    const codex = report.byBackend.find((b) => b.backend === 'codex');
+    expect(claude?.sessions).toBe(3);
+    expect(claude?.sessionsToday).toBe(2);
+    expect(codex?.sessions).toBe(2);
+    expect(codex?.sessionsToday).toBe(1);
+
     for (const b of report.byBackend) {
       expect(b.sessionsToday).toBeLessThanOrEqual(b.sessions);
     }
-  }, 30_000);
+  });
+
+  it('runtime is bounded by the fixture, not by however much real session history this machine holds', () => {
+    const home = buildFixtureHome();
+    const start = performance.now();
+    computeStats({ homeDir: home });
+    const elapsed = performance.now() - start;
+
+    // The fixture is five small files. If the scan fell back to the real
+    // ~/.claude / ~/.codex — this machine held 2.15GB across 2,785 files
+    // when #269 was filed — this would take seconds, not milliseconds, and
+    // the bound below is generous enough that it never flakes on a fast
+    // fixture while still catching a regression back to the unbounded scan.
+    expect(elapsed).toBeLessThan(2_000);
+  });
+
+  it('never reads the real home directory when a fixture homeDir is given', () => {
+    // The durable form of the previous test: instead of trusting a
+    // wall-clock bound, prove the scan physically cannot reach real
+    // history — os.homedir() is the only way any scanner locates
+    // ~/.claude, ~/.codex or ~/.gemini, so if it's never called, none of
+    // them can have been read.
+    const homedirSpy = vi.spyOn(os, 'homedir');
+    computeStats({ homeDir: buildFixtureHome() });
+    expect(homedirSpy).not.toHaveBeenCalled();
+  });
 });
