@@ -431,6 +431,49 @@ export function workerFileLabel(name: string): string {
   return name.replace(/^\d{4}-\d{2}-\d{2}-\d{4}-/, '').replace(/^(errand|shift)-/, '');
 }
 
+/// Which worker a path on disk belongs to, and what the file is called under
+/// that worker's root.
+///
+/// Exists because the side file pane is reachable from anywhere: you open a
+/// worker's briefing from its desk, then click through to the Queue, and the
+/// pane is still holding a document whose only label was an absolute path
+/// with a UUID in the middle of it. On the desk the surrounding screen said
+/// whose it was; two clicks later nothing did, and an unlabelled panel reads
+/// as leftover rather than as something you chose to keep open.
+///
+/// Longest root wins, and a root only matches on a SEPARATOR boundary — two
+/// workers rooted at `.../files` and `.../files-2` must not claim each
+/// other's documents.
+export function workerFileOrigin(
+  filesRoot: Record<string, string>,
+  path: string,
+): { workerId: string; name: string } | null {
+  let best: { workerId: string; name: string } | null = null;
+  for (const [workerId, root] of Object.entries(filesRoot)) {
+    if (!root || !path.startsWith(root)) continue;
+    const rest = path.slice(root.length);
+    if (!rest.startsWith('/')) continue;
+    const name = rest.slice(1);
+    if (!name) continue;
+    if (!best || root.length > filesRoot[best.workerId].length) {
+      best = { workerId, name };
+    }
+  }
+  return best;
+}
+
+/// What to call a worker file in a header that has room for one line.
+///
+/// A file inside a job folder is named by the JOB — that is the thing you
+/// went looking for — with the document after it, because a job can produce
+/// several and "Daily Briefing" alone would name three different files.
+export function workerFileTitle(name: string): string {
+  const cut = name.indexOf('/');
+  if (cut === -1) return workerFileLabel(name);
+  const leaf = name.slice(name.lastIndexOf('/') + 1);
+  return `${workerFileLabel(name.slice(0, cut))} · ${leaf}`;
+}
+
 /// Absolute date, because these are an archive. "3h ago" is the right answer
 /// for a message and the wrong one for a report you are trying to find again
 /// three weeks later; the relative form stays in the row's tooltip.

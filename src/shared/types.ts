@@ -1726,6 +1726,8 @@ export interface IPCInvokeMap {
     }>;
   }) => {
     isRepo: boolean;
+    /// Set only when every member is on the same branch (a worktree workspace
+    /// run puts them all on the run's branch); empty when they diverge.
     currentBranch: string;
     changes: Array<{
       path: string;

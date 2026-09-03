@@ -619,10 +619,14 @@ function FlowWorkspaceReview({
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  /// Each project's status lands on its own card the moment it resolves.
+  /// Collecting them with a single `Promise.all` meant the whole sheet sat
+  /// on "Loading…" until the slowest repo answered — on a run spanning a
+  /// dozen projects that reads as a hang.
   const refreshAll = async () => {
     if (members.length === 0) return;
     setLoading(true);
-    const entries = await Promise.all(
+    await Promise.all(
       members.map(async (m) => {
         const stat = await window.overcli.invoke('git:worktreeStatus', {
           projectPath: m.projectPath,
@@ -632,12 +636,9 @@ function FlowWorkspaceReview({
           baseBranch,
           baselineCommit: memberBaselineCommit(run, m.name),
         });
-        return [m.name, stat] as const;
+        setStatuses((prev) => ({ ...prev, [m.name]: stat }));
       }),
     );
-    const next: Record<string, WorktreeStatus | null> = {};
-    for (const [name, stat] of entries) next[name] = stat;
-    setStatuses(next);
     setLoading(false);
   };
 

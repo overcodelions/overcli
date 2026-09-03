@@ -1871,6 +1871,10 @@ function HijackComposer({
   // read zero, it has to say what it compared against — otherwise an empty
   // bar is indistinguishable from a probe that failed.
   const [baseRef, setBaseRef] = useState<string | null>(null);
+  // Branch the probed tree is on. Every probe reports it, including the
+  // workspace aggregate (empty there when members disagree), so the bar can
+  // say which branch the counts below belong to.
+  const [branch, setBranch] = useState<string>('');
 
   // A flow's cwd can be one of three things — a project path, a fresh
   // worktree, or a workspace's symlink root that fans out to multiple
@@ -1950,9 +1954,11 @@ function HijackComposer({
         if (!res.isRepo) {
           setChanges([]);
           setBaseRef(null);
+          setBranch('');
           return;
         }
         setChanges(res.changes ?? []);
+        setBranch(res.currentBranch ?? '');
         // `git:commitStatus` (the in-place/non-worktree probe) has no base
         // ref to report — its counts are HEAD-relative.
         setBaseRef('baseRef' in res ? ((res.baseRef as string | null) ?? null) : null);
@@ -1961,6 +1967,7 @@ function HijackComposer({
         if (!cancelled) {
           setChanges([]);
           setBaseRef(null);
+          setBranch('');
         }
       });
     return () => {
@@ -2099,7 +2106,15 @@ function HijackComposer({
           directly (not via ConversationPane), so without this the live
           Thinking/Working/Reading… cue never shows while a step runs. */}
       {convId && <RunningIndicator conversationId={convId} />}
-      <ChangesBar files={changes} baseRef={baseRef} />
+      <ChangesBar
+        files={changes}
+        baseRef={baseRef}
+        branch={branch}
+        // A workspace run's changes live in the per-member minted worktrees
+        // when `workspaceWorktrees` is set; otherwise the run works in the
+        // project's own checkout and the chip says so.
+        worktree={!!run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0}
+      />
       {run.pendingSteer && (
         <div className="flex items-center gap-2 text-[11px] min-w-0 rounded-md border border-violet-500/35 bg-violet-500/10 px-2 py-1">
           <span aria-hidden className="shrink-0 text-violet-600 dark:text-violet-300">↯</span>

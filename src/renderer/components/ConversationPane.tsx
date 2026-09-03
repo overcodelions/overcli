@@ -131,7 +131,15 @@ export function ConversationPane() {
         <ChatView conversationId={convId} />
         <div className="px-4 pb-3 pt-1 flex flex-col gap-1.5">
           <RunningIndicator conversationId={convId} />
-          <ChangesBar files={gitStatus?.changes ?? []} plain={plainLanguage} />
+          <ChangesBar
+            files={gitStatus?.changes ?? []}
+            branch={gitStatus?.currentBranch}
+            // `isAgentConversation` keys off the same field: a conversation
+            // with a worktree path is running in its own tree, borrowed or
+            // minted, not in the project's checkout.
+            worktree={!!conv?.worktreePath}
+            plain={plainLanguage}
+          />
           <InputBar conversationId={convId} />
           <StatsFooter conversationId={convId} />
         </div>
