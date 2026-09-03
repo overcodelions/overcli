@@ -11,6 +11,11 @@ import {
 import { useStore } from '../store';
 import type { FileTab } from '../uiSlice';
 import { useFlowsStore } from '../flowsStore';
+import { useWorkersStore } from '../workersStore';
+import {
+  workerFileOrigin,
+  workerFileTitle,
+} from './workers/workerDeskSelectors';
 import { useConversation, useConversationRoot } from '../hooks';
 import { workspaceSymlinkNames } from '@shared/workspaceNames';
 import type { ArtifactPreviewResult, FileInfoResult, SymbolCandidate } from '@shared/types';
@@ -150,6 +155,20 @@ export const FileEditorPane = memo(function FileEditorPane({
   const flowSingleBase = flowSingle?.baseBranch ?? null;
   const flowSingleBaseline = flowSingle?.baselineCommit ?? null;
   const path = useStore((s) => s.openFilePath);
+  // Whose document this is, when it is a worker's. The pane outlives the
+  // screen it was opened from — you can be reading a briefing on the Queue
+  // tab, with nothing else on screen relating to it — so the header names it
+  // rather than showing the absolute path it lives at. The path is still one
+  // hover away, and Copy still copies the real thing.
+  const workersById = useWorkersStore((s) => s.workers);
+  const workerFilesRoot = useWorkersStore((s) => s.filesRoot);
+  const workerFileHeading = useMemo(() => {
+    if (!path) return null;
+    const origin = workerFileOrigin(workerFilesRoot, path);
+    const owner = origin && workersById[origin.workerId];
+    if (!origin || !owner) return null;
+    return `${owner.name} · ${workerFileTitle(origin.name)}`;
+  }, [path, workerFilesRoot, workersById]);
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
   const setMode = useStore((s) => s.setOpenFileMode);
@@ -827,7 +846,7 @@ export const FileEditorPane = memo(function FileEditorPane({
               title={path}
               onMouseDown={(e) => e.stopPropagation()}
             >
-              {path}
+              {workerFileHeading ?? path}
             </div>
             <button
               onClick={async () => {

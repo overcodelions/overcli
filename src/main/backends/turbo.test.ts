@@ -28,9 +28,19 @@ describe('withBatchingDirective', () => {
   // there is no `turbo` argument to forget to pass. Batching costs nothing
   // in answer quality, unlike the effort half `resolveTurboEffort` still
   // guards.
-  it('prepends the directive and keeps the prompt intact', () => {
+  it('appends the directive and keeps the prompt intact', () => {
     const out = withBatchingDirective('do the thing');
-    expect(out.startsWith(BATCHING_DIRECTIVE)).toBe(true);
-    expect(out.endsWith('do the thing')).toBe(true);
+    expect(out.endsWith(BATCHING_DIRECTIVE)).toBe(true);
+    expect(out).toContain('do the thing');
+  });
+
+  // Load-bearing, not cosmetic: codex app-server turns show up as
+  // conversations in the ChatGPT client, which titles each one from the
+  // first line of the first message. Prepending the directive made every
+  // conversation identically titled and unfindable.
+  it('leaves the user prompt as the first line so titles stay distinct', () => {
+    const out = withBatchingDirective('do the thing');
+    expect(out.split('\n')[0]).toBe('do the thing');
+    expect(out.startsWith(BATCHING_DIRECTIVE)).toBe(false);
   });
 });

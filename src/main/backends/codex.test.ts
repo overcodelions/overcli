@@ -93,12 +93,13 @@ describe('codexBackend.buildArgs', () => {
 describe('codexBackend.buildEnvelope', () => {
   // Codex has no `--append-system-prompt`, so the batching directive rides in
   // the envelope on every turn — the counterpart to the flag claude passes on
-  // every spawn. The prompt itself must still come through untouched, which
-  // is what these two pin.
+  // every spawn. The prompt itself must still come through untouched, and
+  // must still lead the envelope so ChatGPT-side conversation titles stay
+  // distinct, which is what these pin.
   it('carries only the directive and the prompt when there is no prior transcript', () => {
     const env = codexBackend.buildEnvelope(baseArgs, noTranscriptCtx);
     expect(env).toBe(withBatchingDirective('do the thing'));
-    expect(env.endsWith('do the thing')).toBe(true);
+    expect(env.split('\n')[0]).toBe('do the thing');
   });
 
   it('carries only the directive and the prompt when transcript is empty', () => {
