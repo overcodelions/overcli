@@ -75,6 +75,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
     setReviewPreset,
     setReviewOllamaModel,
     setReviewYolo,
+    setChrome,
     promoteReviewAgent,
     checkoutReviewBranchLocally,
     removeAgent,
@@ -105,6 +106,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
       setReviewPreset: s.setReviewPreset,
       setReviewOllamaModel: s.setReviewOllamaModel,
       setReviewYolo: s.setReviewYolo,
+      setChrome: s.setChrome,
       promoteReviewAgent: s.promoteReviewAgent,
       checkoutReviewBranchLocally: s.checkoutReviewBranchLocally,
       removeAgent: s.removeAgent,
@@ -363,6 +365,31 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
               leading: <ResponseModeIcon mode={item.value} />,
             }))}
             onPick={(v) => void setResponseMode(conversationId, backend, v as ResponseMode)}
+          />
+        )}
+
+        {backend === 'claude' && !compact && (
+          <IconPicker
+            icon={<ChromeIcon active={conv.chrome ?? settings.claudeChrome ?? false} />}
+            label={
+              conv.chrome === undefined
+                ? `Chrome — default (${settings.claudeChrome ? 'on' : 'off'})`
+                : conv.chrome
+                  ? 'Chrome — on'
+                  : 'Chrome — off'
+            }
+            iconOnly={iconsOnly}
+            items={[
+              {
+                value: 'inherit',
+                label: `Default — follow Settings (${settings.claudeChrome ? 'on' : 'off'})`,
+              },
+              { value: 'on', label: 'On — let this chat drive Chrome' },
+              { value: 'off', label: 'Off — no browser tools here' },
+            ]}
+            onPick={(v) =>
+              void setChrome(conversationId, v === 'inherit' ? undefined : v === 'on')
+            }
           />
         )}
 
@@ -768,6 +795,19 @@ function EyeOffIcon() {
       <path d="M1 8s2.5-5 7-5c1.3 0 2.4.4 3.3.9" stroke="currentColor" strokeWidth="1.2" />
       <path d="M15 8s-2.5 5-7 5c-1.3 0-2.4-.4-3.3-.9" stroke="currentColor" strokeWidth="1.2" />
       <line x1="1" y1="15" x2="15" y2="1" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  );
+}
+
+/// Claude in Chrome. Filled ring when the browser tools are live for this
+/// conversation, hollow when they aren't — the picker's label carries the
+/// inherit-vs-pinned distinction, which an icon can't say.
+function ChromeIcon({ active }: { active?: boolean }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden>
+      <circle cx="8" cy="8" r="6.25" stroke="currentColor" strokeWidth="1.5" />
+      <circle cx="8" cy="8" r="2.4" stroke="currentColor" strokeWidth="1.5" fill={active ? 'currentColor' : 'none'} />
+      {active && <path d="M10.1 6.2L14 4.6M8 10.4L6.1 14M5.9 6.2L2 4.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />}
     </svg>
   );
 }

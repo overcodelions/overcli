@@ -49,6 +49,11 @@ export const claudeBackend: BackendSpec = {
     // a crowded config. `--debug mcp` is the current form; `--mcp-debug` is
     // deprecated.
     if (args.mcpDebug) a.push('--debug', 'mcp');
+    // Claude in Chrome. Gated on the `claudeChrome` setting rather than set
+    // unconditionally — see the note on that field. Varies with the setting,
+    // so flipping it makes `paramsChanged` respawn the subprocess, which is
+    // what we want: the extension attaches at startup, not mid-session.
+    if (args.chrome) a.push('--chrome');
     // In bypassPermissions mode Claude Code auto-allows everything
     // without prompting — wiring our permission-prompt-tool would force
     // it to route tool checks through us anyway, defeating the mode.
