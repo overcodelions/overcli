@@ -169,6 +169,16 @@ describe('claudeBackend.buildArgs', () => {
     expect(a[i + 1]).toBe('mcp');
   });
 
+  it('omits --chrome by default', () => {
+    const a = claudeBackend.buildArgs(baseArgs, noMcpCtx);
+    expect(a).not.toContain('--chrome');
+  });
+
+  it('emits --chrome when chrome is set', () => {
+    const a = claudeBackend.buildArgs({ ...baseArgs, chrome: true }, noMcpCtx);
+    expect(a).toContain('--chrome');
+  });
+
   it('appends --add-dir for each normalized allowed dir', () => {
     const a = claudeBackend.buildArgs(
       { ...baseArgs, allowedDirs: ['/opt/shared', '/tmp/project', '/tmp/other'] },

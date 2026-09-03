@@ -45,6 +45,12 @@ export interface ClaudeSdkStartOptions {
   /// `process.env`, so a caller that sets it must spread process.env itself
   /// or the child loses PATH along with everything else.
   env?: Record<string, string | undefined>;
+  /// Attach the session to the Claude in Chrome extension. The SDK has no
+  /// typed option for it, so it rides `extraArgs`, whose contract is
+  /// "keys are argument names without `--`, `null` for boolean flags" —
+  /// this spawns the binary with `--chrome`, exactly as the cli transport
+  /// does in `backends/claude.ts`.
+  chrome?: boolean;
 }
 
 export interface ClaudeSdkTurnInput {
@@ -107,6 +113,7 @@ export class ClaudeSdkClient extends EventEmitter {
       ...(o.effortLevel ? { effort: o.effortLevel as Options['effort'] } : {}),
       ...(o.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
       ...(o.env ? { env: o.env } : {}),
+      ...(o.chrome ? { extraArgs: { chrome: null } } : {}),
     };
     this.q = query({ prompt: this.iterableInput(), options });
     void this.consume();

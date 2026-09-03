@@ -456,6 +456,17 @@ export interface Conversation {
   /// Claude CLI also uses this to suppress global MCP startup. The SDK
   /// transport honors the low-effort half but has no CLI argv to tighten.
   turbo?: boolean;
+  /// Per-conversation Claude in Chrome override. Undefined inherits the
+  /// global `claudeChrome` setting; true/false pin it for this conversation
+  /// regardless. Unlike `turbo` there IS a global default, because the
+  /// browser connection is a standing capability rather than a per-task
+  /// judgement — but the override exists so one conversation can drive the
+  /// browser without handing the same power to every scheduled shift, and
+  /// so conversations that never touch the web don't carry ~22 extra tool
+  /// definitions in context. Spawn-time, so changing it respawns the
+  /// process (`paramsChanged` on cli, a fresh client on sdk) — which is
+  /// what we want, since the extension attaches at startup.
+  chrome?: boolean;
   colosseumId?: UUID;
   workspaceAgentMemberIds?: UUID[];
   workspaceAgentCoordinatorId?: UUID;
@@ -1068,6 +1079,16 @@ export interface AppSettings {
   /// claude.ai, and it leans on an undocumented env var (see
   /// shared/claudeArtifacts.ts) that can move in any CLI release.
   claudeArtifacts?: boolean;
+  /// Launches Claude with `--chrome`, connecting the session to the Claude
+  /// in Chrome extension so it can drive a real browser tab. Off by default
+  /// and deliberately opt-in: it hands every conversation — including the
+  /// unattended ones a scheduled shift or a worker errand runs — control of
+  /// the user's signed-in browser, which is a far wider blast radius than
+  /// the repo tree a normal turn touches. Browser actions do route through
+  /// the usual permission checks (the broker on the cli transport,
+  /// `canUseTool` on the sdk one), so prompts still land in overcli's
+  /// approval UI; this only decides whether the tools exist at all.
+  claudeChrome?: boolean;
   /// Flow keys (`${source}:${id}`) the user has starred. Starred flows
   /// sort first in the welcome pane's "Or run a flow" row.
   starredFlows?: string[];
@@ -1233,6 +1254,9 @@ export interface IPCInvokeMap {
     sessionId?: string;
     effortLevel?: EffortLevel;
     turbo?: boolean;
+    /// Per-conversation Claude in Chrome override. Undefined defers to the
+    /// global `claudeChrome` setting.
+    chrome?: boolean;
     codexRolloutPaths?: string[];
     attachments?: Attachment[];
     /// Reviewer ("rebound") config for this turn. When `reviewBackend` is
@@ -1281,6 +1305,9 @@ export interface IPCInvokeMap {
     sessionId?: string;
     effortLevel?: EffortLevel;
     turbo?: boolean;
+    /// Must match what the eventual send will ask for: `--chrome` is argv,
+    /// so a mismatch makes `paramsChanged` discard the warm process.
+    chrome?: boolean;
     allowedDirs?: string[];
     claudeTransport?: 'cli' | 'sdk';
   }) => void;
@@ -3160,6 +3187,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   claudeTransport: 'cli',
   claudeMcpDebug: false,
   claudeArtifacts: false,
+  claudeChrome: false,
   starredFlows: [],
   defaultFlowRunIn: 'cwd',
   flowRegistries: [
