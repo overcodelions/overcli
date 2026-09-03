@@ -9,9 +9,9 @@
 // So the directive is now unconditional, on both backends. Claude carries
 // it in `--append-system-prompt`: argv is fixed at spawn, but a value that
 // never varies never forces a respawn, and the system-prompt slot outranks
-// anything prepended to a user message. Codex has no equivalent flag, so it
-// keeps prepending to the envelope — same wording, weaker placement, which
-// is the best that backend allows.
+// anything mixed into a user message. Codex has no equivalent flag, so it
+// rides in the envelope — same wording, weaker placement, which is the best
+// that backend allows.
 
 import type { EffortLevel } from '../../shared/types';
 import { BATCHING_DIRECTIVE } from '../../shared/turbo';
@@ -34,7 +34,7 @@ export function resolveTurboEffort(
   return turbo ? 'low' : effortLevel;
 }
 
-/// Prepend the directive to a prompt, for backends with no system-prompt
+/// Attach the directive to a prompt, for backends with no system-prompt
 /// flag to put it in. Codex only — claude passes it as argv instead.
 ///
 /// Applies unconditionally, like claude's flag: this is the "free half" of
@@ -42,6 +42,15 @@ export function resolveTurboEffort(
 /// cost in a real session (16-21 requests per turn, each re-reading the
 /// whole prefix), and unlike low effort, asking for consolidation does not
 /// make the answer worse. The caveat sentence is what keeps that true.
+///
+/// Appended, not prepended, and behind a rule so it doesn't read as part of
+/// what the user said. Placement matters for a reason that has nothing to do
+/// with the model: codex app-server turns surface as conversations in the
+/// ChatGPT client, which titles each one from the opening line of the first
+/// message. A prepended directive made every conversation identically titled
+/// "Prefer fewer, larger tool calls…" and unfindable. Trailing placement puts
+/// the user's own words back at the top, and costs nothing in adherence —
+/// instructions at the end of a prompt are followed at least as well.
 export function withBatchingDirective(prompt: string): string {
-  return `${BATCHING_DIRECTIVE}\n\n${prompt}`;
+  return `${prompt}\n\n---\n\n${BATCHING_DIRECTIVE}`;
 }

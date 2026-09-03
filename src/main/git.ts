@@ -1576,8 +1576,10 @@ export function openPR(args: {
 /// Compute everything the diff/merge sheet needs in one shell-out pass:
 /// file counts, commits ahead, dirty state, project branch, remote kind,
 /// merged status, and whether the *main* project checkout has dirty files
-/// that belong in the worktree. Individual git calls are cheap enough that
-/// batching via `--numstat` + a few shortstat queries keeps this sub-100ms.
+/// that belong in the worktree. Runs in two parallel rounds (base-independent
+/// reads alongside the base resolution, then the base-relative ones) — the
+/// review sheets call this once per project and the serial version made a
+/// many-project run feel like it had hung.
 export async function worktreeStatus(args: {
   projectPath: string;
   worktreePath: string;
@@ -1592,15 +1594,54 @@ export async function worktreeStatus(args: {
   // work has actually landed upstream, which disables the merge button.
   // That's the honest answer — there is nothing left to merge.
   const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
-  const { commit: base } = await resolveDiffBase({
-    cwd: args.worktreePath,
-    preferredBranch,
-    fallbackCommit,
-  });
+
+  // Round 1: the base resolution plus every query that doesn't depend on
+  // the base it produces. These used to run one after another — six git
+  // spawns of 40-250ms each, per member — and the workspace review sheet
+  // fans this out over every project in a run, so the wait was mostly
+  // round-trips queueing behind each other rather than git being slow.
+  const [resolvedBase, untracked, status, projectBranch, remoteKind, mainStatus] =
+    await Promise.all([
+      resolveDiffBase({
+        cwd: args.worktreePath,
+        preferredBranch,
+        fallbackCommit,
+      }),
+      // numstat below omits untracked files, so a net-new file the agent
+      // wrote but never staged wouldn't be counted — leaving the badge
+      // ("1 file +3") out of sync with the diff sheet, which does include
+      // those files. Tally the same `--exclude-standard` set the diff uses.
+      runGitAsync(['ls-files', '--others', '--exclude-standard'], args.worktreePath),
+      runGitAsync(['status', '--porcelain'], args.worktreePath),
+      runGitAsync(['branch', '--show-current'], args.projectPath),
+      detectRemoteKind(args.worktreePath),
+      // "agent wrote to the wrong tree" detector: count dirty files in the
+      // main project checkout. This is noisy (the user may have their own
+      // WIP) but is the only signal we have without spelunking into the
+      // runner's event stream.
+      runGitAsync(['status', '--porcelain'], args.projectPath),
+    ]);
+  const base = resolvedBase.commit;
+
+  // Round 2: the three base-relative reads, which can only start once the
+  // base is known, but need nothing from each other.
+  //
+  // Every number below is measured from the live divergence point, not the
+  // frozen fork point — otherwise the counts here contradict the file list
+  // in the same sheet (which comes from `worktreeDiff`). One consequence
+  // worth knowing: `isMergedIntoBase` now goes true for a worktree whose
+  // work has actually landed upstream, which disables the merge button.
+  // That's the honest answer — there is nothing left to merge.
+  //
   // `git diff --numstat <base>` (working-tree-vs-base) rolls committed +
   // uncommitted divergence into a single pass, so every file the agent
   // has touched shows up exactly once — no double-counting.
-  const numstat = await runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath);
+  const [numstat, ahead, isAncestor] = await Promise.all([
+    runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath),
+    runGitAsync(['rev-list', '--count', `${base}..HEAD`], args.worktreePath),
+    runGitAsync(['merge-base', '--is-ancestor', 'HEAD', base], args.worktreePath),
+  ]);
+
   let filesChanged = 0;
   let insertions = 0;
   let deletions = 0;
@@ -1617,37 +1658,23 @@ export async function worktreeStatus(args: {
     }
   }
 
-  // numstat omits untracked files, so a net-new file the agent wrote but
-  // never staged wouldn't be counted — leaving the badge ("1 file +3") out
-  // of sync with the diff sheet, which now includes those files. Tally the
-  // same `--exclude-standard` set the diff uses, counting added lines from
-  // disk (untracked files are pure additions).
-  const untracked = await runGitAsync(
-    ['ls-files', '--others', '--exclude-standard'],
-    args.worktreePath,
-  );
+  // Untracked files are pure additions, so their line count comes off disk.
+  // One read per file, all in flight together.
   if (untracked.exitCode === 0) {
-    for (const line of untracked.stdout.split('\n')) {
-      const p = line.trim();
-      if (!p) continue;
-      filesChanged += 1;
-      insertions += await countLinesOnDiskAsync(path.join(args.worktreePath, p));
-    }
+    const paths = untracked.stdout
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+    const lineCounts = await Promise.all(
+      paths.map((p) => countLinesOnDiskAsync(path.join(args.worktreePath, p))),
+    );
+    filesChanged += paths.length;
+    for (const n of lineCounts) insertions += n;
   }
 
-  const ahead = await runGitAsync(
-    ['rev-list', '--count', `${base}..HEAD`],
-    args.worktreePath,
-  );
   const commitsAhead = ahead.exitCode === 0 ? parseInt(ahead.stdout.trim(), 10) || 0 : 0;
-
-  const status = await runGitAsync(['status', '--porcelain'], args.worktreePath);
   const hasUncommittedChanges = status.exitCode === 0 && !!status.stdout.trim();
 
-  const isAncestor = await runGitAsync(
-    ['merge-base', '--is-ancestor', 'HEAD', base],
-    args.worktreePath,
-  );
   // exit 0 = HEAD is already in base, 1 = diverged. Treat errors (2) as
   // "not merged" so we don't wrongly disable the merge button.
   //
@@ -1663,19 +1690,11 @@ export async function worktreeStatus(args: {
     !hasUncommittedChanges &&
     filesChanged === 0;
 
-  const projectBranch = await runGitAsync(['branch', '--show-current'], args.projectPath);
   const currentProjectBranch =
     projectBranch.exitCode === 0 && projectBranch.stdout.trim()
       ? projectBranch.stdout.trim()
       : null;
 
-  const remoteKind = await detectRemoteKind(args.worktreePath);
-
-  // "agent wrote to the wrong tree" detector: count dirty files in the
-  // main project checkout. This is noisy (the user may have their own
-  // WIP) but is the only signal we have without spelunking into the
-  // runner's event stream.
-  const mainStatus = await runGitAsync(['status', '--porcelain'], args.projectPath);
   const mainTreeDirtyFiles =
     mainStatus.exitCode === 0
       ? mainStatus.stdout.split('\n').filter((l) => l.trim()).length
@@ -1922,17 +1941,33 @@ export async function worktreeChanges(args: {
     baseRef: null,
   };
   if (!args.worktreePath || (!args.baseBranch && !args.baselineCommit)) return empty;
-  const check = await runGitAsync(['rev-parse', '--is-inside-work-tree'], args.worktreePath);
-  if (check.exitCode !== 0 || check.stdout.trim() !== 'true') return empty;
-
-  const branch = await runGitAsync(['branch', '--show-current'], args.worktreePath);
   const { preferredBranch, fallbackCommit } = splitBaseArg(args.baseBranch, args.baselineCommit);
-  const resolved = await resolveDiffBase({
-    cwd: args.worktreePath,
-    preferredBranch,
-    fallbackCommit,
-  });
+
+  // Round 1: the repo check, the base resolution, and the two reads that
+  // don't depend on the base. `workspaceCommitStatus` calls this once per
+  // project, so a serial chain here multiplies across the whole workspace.
+  // A non-repo path wastes the extra spawns, but they all fail immediately.
+  const [check, branch, resolved, untracked, porcelain] = await Promise.all([
+    runGitAsync(['rev-parse', '--is-inside-work-tree'], args.worktreePath),
+    runGitAsync(['branch', '--show-current'], args.worktreePath),
+    resolveDiffBase({
+      cwd: args.worktreePath,
+      preferredBranch,
+      fallbackCommit,
+    }),
+    runGitAsync(['ls-files', '--others', '--exclude-standard'], args.worktreePath),
+    runGitAsync(['status', '--porcelain=v1', '--untracked-files=all'], args.worktreePath),
+  ]);
+  if (check.exitCode !== 0 || check.stdout.trim() !== 'true') return empty;
   const base = resolved.commit;
+
+  // Round 2: the three base-relative diffs, which need `base` but not each
+  // other.
+  const [numstat, nameStatus, nameStatusHead] = await Promise.all([
+    runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath),
+    runGitAsync(['diff', '--name-status', base, '--'], args.worktreePath),
+    runGitAsync(['diff', '--name-status', base, 'HEAD', '--'], args.worktreePath),
+  ]);
 
   // `git diff --numstat <base>` rolls committed + uncommitted divergence into
   // one pass — the exact tracked-file set the review badge counts. Tab
@@ -1941,7 +1976,6 @@ export async function worktreeChanges(args: {
   const deletionsByPath = new Map<string, number>();
   let insertions = 0;
   let deletions = 0;
-  const numstat = await runGitAsync(['diff', '--numstat', base, '--'], args.worktreePath);
   if (numstat.exitCode === 0) {
     for (const line of numstat.stdout.split('\n')) {
       if (!line.trim()) continue;
@@ -1965,10 +1999,6 @@ export async function worktreeChanges(args: {
   // Per-file status letter (A/M/D/R/…) for the left-column indicator. Keyed
   // by the final path so a modified file lines up with its numstat row.
   const statusByPath = new Map<string, string>();
-  const nameStatus = await runGitAsync(
-    ['diff', '--name-status', base, '--'],
-    args.worktreePath,
-  );
   if (nameStatus.exitCode === 0) {
     for (const line of nameStatus.stdout.split('\n')) {
       if (!line.trim()) continue;
@@ -1985,10 +2015,6 @@ export async function worktreeChanges(args: {
   // what's uncommitted in the working tree (staged + unstaged + untracked).
   // A file can be in both — committed once, then edited again.
   const committedPaths = new Set<string>();
-  const nameStatusHead = await runGitAsync(
-    ['diff', '--name-status', base, 'HEAD', '--'],
-    args.worktreePath,
-  );
   if (nameStatusHead.exitCode === 0) {
     for (const line of nameStatusHead.stdout.split('\n')) {
       if (!line.trim()) continue;
@@ -1998,10 +2024,6 @@ export async function worktreeChanges(args: {
     }
   }
   const uncommittedPaths = new Set<string>();
-  const porcelain = await runGitAsync(
-    ['status', '--porcelain=v1', '--untracked-files=all'],
-    args.worktreePath,
-  );
   if (porcelain.exitCode === 0) {
     for (const line of porcelain.stdout.split('\n')) {
       if (line.length < 3) continue;
@@ -2043,19 +2065,23 @@ export async function worktreeChanges(args: {
 
   // Untracked files: numstat omits them, but the review diff includes them
   // as pure additions — count them off disk so the bar matches the diff.
-  const untracked = await runGitAsync(
-    ['ls-files', '--others', '--exclude-standard'],
-    args.worktreePath,
-  );
   if (untracked.exitCode === 0) {
+    const paths: string[] = [];
     for (const line of untracked.stdout.split('\n')) {
       const p = line.trim();
       if (!p || seen.has(p)) continue;
       seen.add(p);
-      const lines = await countLinesOnDiskAsync(path.join(args.worktreePath, p));
+      paths.push(p);
+    }
+    // One read per file, all in flight together rather than one at a time.
+    const lineCounts = await Promise.all(
+      paths.map((p) => countLinesOnDiskAsync(path.join(args.worktreePath, p))),
+    );
+    paths.forEach((p, i) => {
+      const lines = lineCounts[i];
       insertions += lines;
       changes.push({ path: p, status: '??', additions: lines, deletions: 0, commitState: 'uncommitted' });
-    }
+    });
   }
 
   changes.sort((a, b) => a.path.localeCompare(b.path));
@@ -2096,28 +2122,47 @@ export async function workspaceCommitStatus(
   const changes: FileChange[] = [];
   let anyRepo = false;
   const baseRefs = new Set<string | null>();
+  // Members of a worktree workspace run all sit on the run's branch, so the
+  // aggregate has one honest branch to report. In-place runs can have members
+  // on different branches — same rule as `baseRef`: say nothing rather than
+  // pick one repo's branch and call it the workspace's.
+  const branches = new Set<string>();
   // Names come pre-assigned by the caller (workspace members use the
   // shared basename-dedup rule; coordinator members use the project
   // name), so `name` is used verbatim as the path prefix.
-  for (const { name, path: projPath, baseBranch, baselineCommit } of members) {
-    if (!name || !projPath) continue;
-    // A worktree workspace run captures a per-member fork point; count
-    // against it (committed + uncommitted) so the bar matches the review
-    // sheet. In-place workspace runs have no baseline — fall back to the
-    // HEAD-relative probe.
-    const res =
-      baseBranch || baselineCommit
-        ? await worktreeChanges({
-            worktreePath: projPath,
-            baseBranch: baseBranch ?? '',
-            baselineCommit,
-          })
-        : // In-place workspace run: no fork point to measure from, so this
-          // stays HEAD-relative and contributes no base ref.
-          { ...(await commitStatus(projPath)), baseRef: null as string | null };
+  //
+  // Every member is probed at once. Serially this was the whole delay
+  // before the ChangesBar appeared on a workspace run: each member costs
+  // several git spawns, so a run spanning a dozen-plus projects spent
+  // tens of seconds walking them one at a time. The results are merged in
+  // the caller's member order, so the output is unchanged.
+  const probed = await Promise.all(
+    members.map(async ({ name, path: projPath, baseBranch, baselineCommit }) => {
+      if (!name || !projPath) return null;
+      // A worktree workspace run captures a per-member fork point; count
+      // against it (committed + uncommitted) so the bar matches the review
+      // sheet. In-place workspace runs have no baseline — fall back to the
+      // HEAD-relative probe.
+      const res =
+        baseBranch || baselineCommit
+          ? await worktreeChanges({
+              worktreePath: projPath,
+              baseBranch: baseBranch ?? '',
+              baselineCommit,
+            })
+          : // In-place workspace run: no fork point to measure from, so this
+            // stays HEAD-relative and contributes no base ref.
+            { ...(await commitStatus(projPath)), baseRef: null as string | null };
+      return { name, res };
+    }),
+  );
+  for (const entry of probed) {
+    if (!entry) continue;
+    const { name, res } = entry;
     if (!res.isRepo) continue;
     anyRepo = true;
     baseRefs.add(res.baseRef);
+    branches.add(res.currentBranch);
     insertions += res.insertions;
     deletions += res.deletions;
     for (const c of res.changes) {
@@ -2126,9 +2171,10 @@ export async function workspaceCommitStatus(
   }
   changes.sort((a, b) => a.path.localeCompare(b.path));
   const [onlyRef] = baseRefs;
+  const [onlyBranch] = branches;
   return {
     isRepo: anyRepo,
-    currentBranch: '',
+    currentBranch: branches.size === 1 ? onlyBranch ?? '' : '',
     changes,
     insertions,
     deletions,

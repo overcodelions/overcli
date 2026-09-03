@@ -14,8 +14,16 @@ export function visibleUserPrompt(text: string, attachmentsRendered = false): st
     rest = rest.slice(match[0].length);
   }
   rest = rest.trimStart();
+  // The directive is appended now, but conversations recorded before that
+  // change carry it in front, so both ends stay strippable. The trailing form
+  // arrives behind a `---` rule; drop that too, or every codex bubble ends in
+  // a stray horizontal line.
   if (rest.startsWith(BATCHING_DIRECTIVE)) {
     rest = rest.slice(BATCHING_DIRECTIVE.length).trimStart();
+  }
+  if (rest.endsWith(BATCHING_DIRECTIVE)) {
+    rest = rest.slice(0, -BATCHING_DIRECTIVE.length).trimEnd();
+    if (rest.endsWith('---')) rest = rest.slice(0, -3).trimEnd();
   }
   const attachmentSummary = attachmentsRendered
     ? ''

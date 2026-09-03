@@ -79,7 +79,10 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
         m.member.baseBranch,
     );
     setLoadingIds(new Set(queryable.map((m) => m.member.id)));
-    const entries = await Promise.all(
+    // Clear each member's spinner as its own status arrives rather than
+    // waiting on the whole set — one slow repo used to hold every card on
+    // "Loading…".
+    await Promise.all(
       queryable.map(async (m) => {
         const stat = await window.overcli.invoke('git:worktreeStatus', {
           projectPath: m.projectPath,
@@ -87,13 +90,15 @@ export function WorkspaceAgentReviewSheet({ coordinatorId }: { coordinatorId: UU
           branchName: m.member.branchName!,
           baseBranch: m.member.baseBranch!,
         });
-        return [m.member.id, stat] as const;
+        setMemberStatuses((prev) => ({ ...prev, [m.member.id]: stat }));
+        setLoadingIds((prev) => {
+          if (!prev.has(m.member.id)) return prev;
+          const next = new Set(prev);
+          next.delete(m.member.id);
+          return next;
+        });
       }),
     );
-    const next: Record<UUID, WorktreeStatus | null> = {};
-    for (const [id, status] of entries) next[id] = status;
-    setMemberStatuses(next);
-    setLoadingIds(new Set());
   };
 
   useEffect(() => {
