@@ -68,7 +68,19 @@ interface ProjectAgg {
   linesDeleted: number;
 }
 
-export function computeStats(): StatsReport {
+export interface ComputeStatsOptions {
+  /// Root directory to treat as `$HOME` when locating `.claude`, `.codex`
+  /// and `.gemini` history. Exists solely so tests can point the scan at a
+  /// small fixture tree instead of whatever real history this machine
+  /// happens to hold — see the "sessionsToday never exceeds sessions"
+  /// invariant in stats.test.ts, which used to scan the developer's actual
+  /// `~/.claude` / `~/.codex` and could take 10s+ (issue #269). Production
+  /// never sets this and falls back to `os.homedir()`.
+  homeDir?: string;
+}
+
+export function computeStats(opts: ComputeStatsOptions = {}): StatsReport {
+  const homeDir = opts.homeDir ?? os.homedir();
   const now = Date.now();
   const byModel = new Map<
     string,
@@ -81,9 +93,9 @@ export function computeStats(): StatsReport {
   const ollamaAgg = newBackendAgg('ollama');
   const byProject = new Map<string, ProjectAgg>();
 
-  scanClaude(byProject, claudeAgg, byModel, daily, now);
-  scanCodex(byProject, codexAgg, byModel, daily, now);
-  scanGemini(byProject, geminiAgg, byModel, daily, now);
+  scanClaude(byProject, claudeAgg, byModel, daily, now, homeDir);
+  scanCodex(byProject, codexAgg, byModel, daily, now, homeDir);
+  scanGemini(byProject, geminiAgg, byModel, daily, now, homeDir);
   scanOllama(byProject, ollamaAgg, byModel, daily, now);
 
   const byBackend: BackendStats[] = [
@@ -97,7 +109,7 @@ export function computeStats(): StatsReport {
   // every flow run, and loadAllRuns() parses every run file on disk.
   const flowRuns = safeLoadFlowRuns();
   const runSummaries = safeLoadRunSummaries();
-  const groupCtx = buildGroupingContext(flowRuns, runSummaries);
+  const groupCtx = buildGroupingContext(flowRuns, runSummaries, homeDir);
   const projectRows: ProjectStats[] = Array.from(byProject.values())
     .map((p) => ({
       id: p.slug,
@@ -194,7 +206,7 @@ export function computeStats(): StatsReport {
     projectGroups: groupProjects(projectRows),
     byModel: modelRows,
     byTier,
-    quotas: buildQuotas(byBackend),
+    quotas: buildQuotas(byBackend, undefined, homeDir),
     flowImpact: computeFlowImpact(flowRuns, runSummaries),
     daily: filledDaily,
   };
@@ -280,8 +292,9 @@ function scanClaude(
   byModel: Map<string, any>,
   daily: Map<string, DailyBucket>,
   now: number,
+  homeDir: string,
 ): void {
-  const root = path.join(os.homedir(), '.claude', 'projects');
+  const root = path.join(homeDir, '.claude', 'projects');
   if (!fs.existsSync(root)) return;
   let slugs: string[] = [];
   try {
@@ -521,8 +534,9 @@ function scanCodex(
   byModel: Map<string, any>,
   daily: Map<string, DailyBucket>,
   now: number,
+  homeDir: string,
 ): void {
-  const root = path.join(os.homedir(), '.codex', 'sessions');
+  const root = path.join(homeDir, '.codex', 'sessions');
   if (!fs.existsSync(root)) return;
   const files = walkCodexRollouts(root);
   for (const filePath of files) {
@@ -629,11 +643,12 @@ function scanGemini(
   byModel: Map<string, any>,
   daily: Map<string, DailyBucket>,
   now: number,
+  homeDir: string,
 ): void {
-  const tmpRoot = path.join(os.homedir(), '.gemini', 'tmp');
+  const tmpRoot = path.join(homeDir, '.gemini', 'tmp');
   if (!fs.existsSync(tmpRoot)) return;
 
-  const hashToCwd = loadGeminiHashMap();
+  const hashToCwd = loadGeminiHashMap(homeDir);
 
   let hashes: string[] = [];
   try {
@@ -975,6 +990,7 @@ function safeLoadFlowRuns(): import('../shared/flows/schema').FlowRun[] {
 function buildGroupingContext(
   flowRuns: import('../shared/flows/schema').FlowRun[],
   summaries: RunSummary[],
+  homeDir: string,
 ): GroupingContext {
   let projects: Array<{ name: string; path: string }> = [];
   let workspaces: Array<{ id: string; name: string }> = [];
@@ -997,7 +1013,7 @@ function buildGroupingContext(
       ownerPath: flowRunOwnerPath(run),
     });
   }
-  return { homeDir: os.homedir(), projects, workspaces, coordinators };
+  return { homeDir, projects, workspaces, coordinators };
 }
 
 function safeLoadRunSummaries(): RunSummary[] {
@@ -1027,9 +1043,9 @@ function overcliStorePath(): string | null {
   }
 }
 
-function loadGeminiHashMap(): Record<string, string> {
+function loadGeminiHashMap(homeDir: string): Record<string, string> {
   const out: Record<string, string> = {};
-  const p = path.join(os.homedir(), '.gemini', 'projects.json');
+  const p = path.join(homeDir, '.gemini', 'projects.json');
   if (!fs.existsSync(p)) return out;
   const raw = readFileSafe(p);
   if (!raw) return out;
@@ -1473,8 +1489,8 @@ export function parseCodexRateLimitLine(line: string): CodexQuotaSnapshot | null
 /// per file, which is more work than the old plain read but is what makes
 /// the result reusable without retaining any file's raw text (see
 /// `CodexParsedFile.lastRateLimit`).
-export function readCodexQuota(): CodexQuotaSnapshot | null {
-  const root = path.join(os.homedir(), '.codex', 'sessions');
+export function readCodexQuota(homeDir: string = os.homedir()): CodexQuotaSnapshot | null {
+  const root = path.join(homeDir, '.codex', 'sessions');
   if (!fs.existsSync(root)) return null;
   const files = walkCodexRollouts(root).sort();
   for (let i = files.length - 1; i >= 0 && i >= files.length - 20; i--) {
@@ -1488,8 +1504,12 @@ export function readCodexQuota(): CodexQuotaSnapshot | null {
 /// estimate — but flagged, since the percentages have probably moved.
 const QUOTA_STALE_MS = 30 * 60 * 1000;
 
-export function buildQuotas(byBackend: BackendStats[], now = Date.now()): BackendQuota[] {
-  const codexSnap = readCodexQuota();
+export function buildQuotas(
+  byBackend: BackendStats[],
+  now = Date.now(),
+  homeDir: string = os.homedir(),
+): BackendQuota[] {
+  const codexSnap = readCodexQuota(homeDir);
   const claudeSnap = readClaudeUsage();
   return byBackend.map((b) => {
     if (b.backend === 'claude' && claudeSnap) {
