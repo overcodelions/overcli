@@ -22,6 +22,8 @@ import {
   groupIntoJobs,
   groupWorkerFiles,
   workerFileLabel,
+  workerFileOrigin,
+  workerFileTitle,
   runDeliverable,
   toWorkerActivity,
   workerActivity,
@@ -166,6 +168,30 @@ describe('worker desk selectors', () => {
     ).toBe(true);
     expect(anyDeskLive([first], {}, {}, {}, { 'worker-1': {} })).toBe(true);
     expect(anyDeskLive([first], {}, {}, {}, {})).toBe(false);
+  });
+});
+
+describe('naming a worker file away from its desk', () => {
+  const roots = { 'worker-1': '/files/one', 'worker-2': '/files/one-archive' };
+
+  it('claims a path only on a separator boundary', () => {
+    expect(workerFileOrigin(roots, '/files/one/2026-09-03-0800-shift-brief.md')).toEqual({
+      workerId: 'worker-1',
+      name: '2026-09-03-0800-shift-brief.md',
+    });
+    // `/files/one` is a string prefix of `/files/one-archive`, and without the
+    // boundary check worker-1 would claim worker-2's whole archive.
+    expect(workerFileOrigin(roots, '/files/one-archive/notes.md')?.workerId).toBe('worker-2');
+    expect(workerFileOrigin(roots, '/elsewhere/notes.md')).toBeNull();
+    // The root itself is not a file in it.
+    expect(workerFileOrigin(roots, '/files/one')).toBeNull();
+  });
+
+  it('names a loose file by itself and a job file by its job', () => {
+    expect(workerFileTitle('2026-09-03-0800-shift-daily-briefing.md')).toBe('daily-briefing.md');
+    expect(workerFileTitle('2026-09-03-0800-errand-rca/verification.md')).toBe(
+      'rca · verification.md',
+    );
   });
 });
 
