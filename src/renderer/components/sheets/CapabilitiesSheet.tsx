@@ -2,11 +2,15 @@
 // / Plugins / MCP sheets, which were either empty placeholders or only
 // populated after the CLI emitted its init block. This sheet reads from
 // a filesystem scan in main (see src/main/capabilities.ts) so it is
-// populated on cold-open, and folds in live `lastInit.slashCommands`
-// from the current conversation when present.
+// populated on cold-open, and folds in live data from the current
+// conversation's `lastInit` when present: slash commands, and (see
+// liveMcp.ts) MCP servers the CLI injects internally and that therefore
+// never show up in the on-disk scan — Claude in Chrome is the first of
+// these with a user-facing toggle.
 
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
+import { liveMcpServers } from './liveMcp';
 import type {
   AwsAuthOverview,
   AwsSsoTarget,
@@ -99,8 +103,9 @@ export function CapabilitiesSheet() {
 
   const entries = useMemo(() => {
     const scanned = capabilities?.entries ?? [];
-    const live = liveSlashCommands(lastInit?.slashCommands ?? [], scanned);
-    return [...scanned, ...live];
+    const liveCommands = liveSlashCommands(lastInit?.slashCommands ?? [], scanned);
+    const liveMcp = liveMcpServers(lastInit, scanned);
+    return [...scanned, ...liveCommands, ...liveMcp];
   }, [capabilities, lastInit]);
 
   const counts = useMemo(() => countByKind(entries), [entries]);
