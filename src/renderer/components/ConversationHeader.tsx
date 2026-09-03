@@ -368,7 +368,7 @@ export function ConversationHeader({ conversationId }: { conversationId: UUID })
           />
         )}
 
-        {backend === 'claude' && !compact && (
+        {backend === 'claude' && (
           <IconPicker
             icon={<ChromeIcon active={conv.chrome ?? settings.claudeChrome ?? false} />}
             label={
