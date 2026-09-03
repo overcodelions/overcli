@@ -96,6 +96,11 @@ import { collapsePartialAssistants } from './streamSnapshot';
 import { getBackendSpec } from './backends';
 import { codexExecSnapshotText } from './backends/codex';
 import { withBatchingDirective, resolveTurboEffort } from './backends/turbo';
+import {
+  BROKER_LAUNCH_PARAM_KEYS,
+  LaunchParams,
+  launchParamsChanged,
+} from './launchParams';
 import type { BackendCtx, BackendSendArgs } from './backends';
 import { resolveSymlinkWritableRoots } from './workspace';
 import { buildClaudeMcpConfigArg } from './mcpConfig';
@@ -785,6 +790,17 @@ interface ActiveProcess {
   /// `shouldReapIdle`.
   lastActivityAt: number;
 }
+
+/// Compile-time twin of the runtime guard in `launchParams.test.ts`: every
+/// `launch*` field stamped on an ActiveProcess has to be one the reuse check
+/// reads. Adding a field to ActiveProcess without adding it to LaunchParams
+/// makes this alias resolve to a non-`never` union and stops typechecking,
+/// so the next argv-shaping field cannot be forgotten the way `launchChrome`
+/// was (#265).
+type _AssertNever<T extends never> = T;
+type _AllLaunchFieldsCompared = _AssertNever<
+  Exclude<Extract<keyof ActiveProcess, `launch${string}`>, keyof LaunchParams>
+>;
 
 interface GeminiAcpSession {
   client: GeminiAcpClient;
@@ -1563,15 +1579,14 @@ export class RunnerManager {
     const convId = args.conversationId;
     const existing = this.procs.get(convId);
     const selected = selectedClaudeMcpConfig(args);
-    const fingerprint = claudeMcpLaunchFingerprint(args, selected);
     const paramsMatch =
       !!existing &&
       existing.backend === 'claude' &&
-      existing.launchPermissionMode === args.permissionMode &&
-      existing.launchAllowedTools === (args.enabledTools ?? []).join(' ') &&
-      existing.launchMcpFingerprint === fingerprint &&
-      existing.launchModel === args.model &&
-      existing.cwd === args.cwd;
+      !launchParamsChanged(
+        existing,
+        this.launchParamsFor(args, args.effortLevel, selected),
+        BROKER_LAUNCH_PARAM_KEYS,
+      );
     if (paramsMatch && this.claudeMcpByConv.has(convId)) return;
     const helperScript = path.join(__dirname, 'claudePermissionHelper.js');
     // Claude spawns this helper itself (via the mcp-config `command`). We hand
@@ -1616,16 +1631,13 @@ export class RunnerManager {
 
     try {
       const existing = this.procs.get(convId);
+      // The shared field comparison lives in launchParamsChanged so this
+      // path and the cli one below cannot drift — they already had, and
+      // this site was the one missing launchMcpFingerprint. The transport
+      // check is sdk-only and stays here.
       const paramsChanged =
         !!existing &&
-        (existing.launchPermissionMode !== args.permissionMode ||
-          existing.launchAllowedTools !== (args.enabledTools ?? []).join(' ') ||
-          existing.launchModel !== args.model ||
-          existing.launchTurbo !== (args.turbo ?? false) ||
-          existing.launchArtifacts !== this.artifactsFor(args.backend) ||
-          existing.launchChrome !== this.chromeFor(args) ||
-          existing.launchEffort !== args.effortLevel ||
-          existing.cwd !== args.cwd ||
+        (launchParamsChanged(existing, this.launchParamsFor(args, args.effortLevel)) ||
           existing.claudeTransport !== 'sdk');
       if (paramsChanged) {
         // killProc discards the live sessionId; carry it into the respawn
@@ -1693,13 +1705,7 @@ export class RunnerManager {
       backend: 'claude',
       lastActivityAt: Date.now(),
       sessionId: args.sessionId,
-      launchModel: args.model,
-      launchTurbo: args.turbo ?? false,
-      launchArtifacts: this.artifactsFor(args.backend),
-      launchChrome: this.chromeFor(args),
-      launchPermissionMode: args.permissionMode,
-      launchAllowedTools: (args.enabledTools ?? []).join(' '),
-      launchEffort: args.effortLevel,
+      ...this.launchParamsFor(args, args.effortLevel),
       stdoutBuffer: '',
       stderrBuffer: '',
       recentStderr: '',
@@ -1721,7 +1727,6 @@ export class RunnerManager {
       reviewYolo: !!args.reviewYolo,
       collabBurst: 0,
       collabRoundsInBurst: 0,
-      cwd: args.cwd,
       allowedDirs,
       sessionAllowedTools: new Set(),
       parserState: getBackendSpec('claude').makeParserState?.(),
@@ -2271,19 +2276,8 @@ export class RunnerManager {
       // caller might substitute, so `paramsChanged` and the launch stamp
       // always compare against what the user actually chose.
       const configuredEffort = args.effortLevel ?? '';
-      const requestedMcpConfig = selectedClaudeMcpConfig(args);
-      const requestedMcpFingerprint = claudeMcpLaunchFingerprint(args, requestedMcpConfig);
       const paramsChanged =
-        !!existing &&
-        (existing.launchPermissionMode !== args.permissionMode ||
-          existing.launchAllowedTools !== (args.enabledTools ?? []).join(' ') ||
-          existing.launchMcpFingerprint !== requestedMcpFingerprint ||
-          existing.launchModel !== args.model ||
-          existing.launchTurbo !== (args.turbo ?? false) ||
-          existing.launchArtifacts !== this.artifactsFor(args.backend) ||
-          existing.launchChrome !== this.chromeFor(args) ||
-          existing.launchEffort !== configuredEffort ||
-          existing.cwd !== args.cwd);
+        !!existing && launchParamsChanged(existing, this.launchParamsFor(args, configuredEffort));
       // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
       // per turn via turn/start params, so a permission-mode (or model/cwd) change
       // should NOT kill the thread — that would lose conversation history.
@@ -3589,19 +3583,11 @@ export class RunnerManager {
       shell,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    const selectedMcpConfig = selectedClaudeMcpConfig(args);
     const active: ActiveProcess = {
       proc,
       backend: args.backend,
       sessionId: args.sessionId,
-      launchModel: args.model,
-      launchTurbo: args.turbo ?? false,
-      launchArtifacts: this.artifactsFor(args.backend),
-      launchChrome: this.chromeFor(args),
-      launchPermissionMode: args.permissionMode,
-      launchAllowedTools: (args.enabledTools ?? []).join(' '),
-      launchMcpFingerprint: claudeMcpLaunchFingerprint(args, selectedMcpConfig),
-      launchEffort: args.effortLevel,
+      ...this.launchParamsFor(args, args.effortLevel),
       stdoutBuffer: '',
       stderrBuffer: '',
       recentStderr: '',
@@ -3624,7 +3610,6 @@ export class RunnerManager {
       reviewYolo: !!args.reviewYolo,
       collabBurst: 0,
       collabRoundsInBurst: 0,
-      cwd: args.cwd,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
       lastActivityAt: Date.now(),
@@ -4199,13 +4184,7 @@ export class RunnerManager {
       backend: args.backend,
       lastActivityAt: Date.now(),
       sessionId: args.sessionId,
-      launchModel: args.model,
-      launchTurbo: args.turbo ?? false,
-      launchArtifacts: this.artifactsFor(args.backend),
-      launchChrome: this.chromeFor(args),
-      launchPermissionMode: args.permissionMode,
-      launchAllowedTools: (args.enabledTools ?? []).join(' '),
-      launchEffort: args.effortLevel,
+      ...this.launchParamsFor(args, args.effortLevel),
       stdoutBuffer: '',
       stderrBuffer: '',
       recentStderr: '',
@@ -4230,7 +4209,6 @@ export class RunnerManager {
       reviewYolo: !!args.reviewYolo,
       collabBurst: 0,
       collabRoundsInBurst: 0,
-      cwd: args.cwd,
       allowedDirs: normalizeAllowedDirs(args.cwd, args.allowedDirs),
       sessionAllowedTools: new Set(),
       // app-server takes its own transport; parserState exists only for
@@ -4570,6 +4548,36 @@ export class RunnerManager {
         this.emit({ type: 'running', conversationId: convId, isRunning: false });
       }
     }
+  }
+
+  /// The launch identity this send would spawn with. One builder feeds both
+  /// the stamp on a new active record and the reuse check in
+  /// `launchParamsChanged`, so a field can no longer be compared but never
+  /// stamped (which read as "changed" forever) or stamped but never compared
+  /// (which changed the UI and nothing else — #265's `launchChrome`).
+  ///
+  /// `effortLevel` is passed in rather than read off `args` because the two
+  /// send paths normalize it differently: the cli path compares the user's
+  /// configured tier, not the tier auto-effort picked for this turn.
+  ///
+  /// `selectedMcpConfig` is a parameter only so callers that already built it
+  /// (the broker prep) don't pay for a second read of the user's mcp files.
+  private launchParamsFor(
+    args: SendArgs,
+    effortLevel: EffortLevel | undefined,
+    selectedMcpConfig: string = selectedClaudeMcpConfig(args),
+  ): LaunchParams {
+    return {
+      launchPermissionMode: args.permissionMode,
+      launchAllowedTools: (args.enabledTools ?? []).join(' '),
+      launchMcpFingerprint: claudeMcpLaunchFingerprint(args, selectedMcpConfig),
+      launchModel: args.model,
+      launchTurbo: args.turbo ?? false,
+      launchArtifacts: this.artifactsFor(args.backend),
+      launchChrome: this.chromeFor(args),
+      launchEffort: effortLevel,
+      cwd: args.cwd,
+    };
   }
 
   /// Whether this spawn opens the artifact gate. Backend-scoped so toggling
