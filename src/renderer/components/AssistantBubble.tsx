@@ -7,6 +7,8 @@ import { openPathWithHighlight, useOpenFile } from '../openFile';
 import { ToolUseCard } from './ToolUseCard';
 import { parseOutputHandoff } from './flows/outputPointer';
 import { isDesignUnavailableNotice } from '@shared/claudeArtifacts';
+import { isChromeUnavailableNotice } from '@shared/claudeChrome';
+import { useConversation } from '../hooks';
 
 /// Tool names that must stay visible when tool activity is hidden,
 /// because they block the conversation on user input.
@@ -152,6 +154,7 @@ export function AssistantBubble({
               <Markdown source={displayText} onOpenPath={(p) => openPathWithHighlight(p, openFile)} />
             )}
             <DesignGatedNotice text={displayText} />
+            <ChromeNotice text={displayText} conversationId={conversationId} />
           </div>
           <div className="absolute top-1.5 right-2.5 flex items-center gap-2">
             <button
@@ -247,6 +250,65 @@ function askUserQuestionKey(inputJSON: string): string {
 ///
 /// Only shown while the setting is off: once it's on, the same usage line
 /// means the account itself is gated and flipping a toggle won't help.
+/// `/chrome` answers with a bare "isn't available in this environment" line
+/// in every headless session, because it is an interactive-only picker — so
+/// unlike `DesignGatedNotice` this is NOT a gate signal and the copy can't
+/// just say "switched off". What the user actually wants to know splits on
+/// whether the browser tools are live for this conversation:
+///
+///   off → the command failed AND the capability is missing; offer the switch.
+///   on  → the capability is already there; the command simply has no
+///         headless form, so tell them to ask in prose instead of hunting
+///         for a setting that is already flipped.
+///
+/// Enabling here writes the per-conversation override rather than the global
+/// setting: the user asked for a browser in THIS chat, which is not a reason
+/// to hand every scheduled shift the same browser.
+function ChromeNotice({ text, conversationId }: { text: string; conversationId?: UUID }) {
+  const globalOn = useStore((s) => s.settings.claudeChrome ?? false);
+  const convOn = useConversation(conversationId)?.chrome;
+  const setChrome = useStore((s) => s.setChrome);
+  const [busy, setBusy] = useState(false);
+  if (!isChromeUnavailableNotice(text)) return null;
+  const enabled = convOn ?? globalOn;
+  if (enabled) {
+    return (
+      <div className="mt-2 rounded border border-white/15 bg-white/5 px-2.5 py-2 text-[11px]">
+        <span className="font-medium text-ink">/chrome has no headless form.</span>{' '}
+        <span className="text-ink-muted">
+          It&apos;s an interactive picker, so it can&apos;t run here. Chrome is switched on for
+          this conversation — ask for what you want in the browser in plain prose. If Claude says
+          it has no browser tools, the extension didn&apos;t attach: check that Chrome is running
+          and that the extension is enabled in the profile you actually browse in.
+        </span>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-[11px]">
+      <div className="text-amber-700 dark:text-amber-200">
+        <span className="font-medium">Claude in Chrome is off for this conversation.</span> The
+        `/chrome` picker never runs headless, but the browser tools do — overcli just leaves them
+        off by default so unattended runs don&apos;t get your signed-in browser.
+      </div>
+      <button
+        disabled={busy || !conversationId}
+        onClick={() => {
+          if (!conversationId) return;
+          setBusy(true);
+          void setChrome(conversationId, true).finally(() => setBusy(false));
+        }}
+        className="mt-1.5 px-2 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-200 hover:bg-amber-500/30 border border-amber-500/40 disabled:opacity-50"
+      >
+        Enable for this conversation
+      </button>
+      <span className="ml-2 text-ink-faint">
+        Takes effect on the next turn. Needs the extension in the Chrome profile you browse in.
+      </span>
+    </div>
+  );
+}
+
 function DesignGatedNotice({ text }: { text: string }) {
   const enabled = useStore((s) => s.settings.claudeArtifacts ?? false);
   const settings = useStore((s) => s.settings);

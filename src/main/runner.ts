@@ -596,6 +596,9 @@ interface SendArgs {
   /// Per-send turbo override. Undefined defers to the global setting;
   /// flow steps set it explicitly from `step.turbo`.
   turbo?: boolean;
+  /// Per-send Claude in Chrome override. Undefined defers to the global
+  /// `claudeChrome` setting; the renderer sets it from `conversation.chrome`.
+  chrome?: boolean;
   /// See the note on `oneShot`'s `skipGlobalMcp`.
   skipGlobalMcp?: boolean;
   /// See the note on `oneShot`'s `mcpAllowlist`.
@@ -656,6 +659,12 @@ interface ActiveProcess {
   /// var is read once at spawn, so a mid-conversation toggle has to force a
   /// respawn or the setting silently applies only to new conversations.
   launchArtifacts: boolean;
+  /// Whether this process was launched with `--chrome`. The extension
+  /// attaches at startup, so like `launchArtifacts` a mid-conversation
+  /// toggle has to force a respawn — without this in the change check the
+  /// header picker flips, the next turn reuses the resident process, and
+  /// the browser tools never appear even though the UI says they should.
+  launchChrome: boolean;
   launchPermissionMode: PermissionMode;
   launchAllowedTools: string;
   launchMcpFingerprint?: string;
@@ -1450,6 +1459,7 @@ export class RunnerManager {
       allowedDirs: args.allowedDirs,
       allowedTools: args.backend === 'ollama' ? undefined : args.enabledTools,
       mcpDebug: this.settingsProvider().claudeMcpDebug ?? false,
+      chrome: this.chromeFor(args),
       turbo: args.turbo ?? false,
       ...resolveMcpScope(args),
     };
@@ -1613,6 +1623,7 @@ export class RunnerManager {
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
           existing.launchArtifacts !== this.artifactsFor(args.backend) ||
+          existing.launchChrome !== this.chromeFor(args) ||
           existing.launchEffort !== args.effortLevel ||
           existing.cwd !== args.cwd ||
           existing.claudeTransport !== 'sdk');
@@ -1685,6 +1696,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchArtifacts: this.artifactsFor(args.backend),
+      launchChrome: this.chromeFor(args),
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
@@ -1723,6 +1735,10 @@ export class RunnerManager {
       resumeSessionId: args.sessionId,
       effortLevel: args.effortLevel,
       canUseTool: this.buildClaudeSdkCanUseTool(convId),
+      // Same resolution the cli transport does in `toBackendArgs`. Both
+      // paths spawn the same binary, so the gate has to be opened on each
+      // or Claude in Chrome works on one transport and not the other.
+      chrome: this.chromeFor(args),
       // The SDK spawns the same binary the cli transport does, so the
       // artifact gate has to be opened on both paths or `/design` works in
       // one transport and not the other.
@@ -2265,6 +2281,7 @@ export class RunnerManager {
           existing.launchModel !== args.model ||
           existing.launchTurbo !== (args.turbo ?? false) ||
           existing.launchArtifacts !== this.artifactsFor(args.backend) ||
+          existing.launchChrome !== this.chromeFor(args) ||
           existing.launchEffort !== configuredEffort ||
           existing.cwd !== args.cwd);
       // Codex app-server lets us override approvalPolicy/sandboxPolicy/model/cwd
@@ -3580,6 +3597,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchArtifacts: this.artifactsFor(args.backend),
+      launchChrome: this.chromeFor(args),
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchMcpFingerprint: claudeMcpLaunchFingerprint(args, selectedMcpConfig),
@@ -4184,6 +4202,7 @@ export class RunnerManager {
       launchModel: args.model,
       launchTurbo: args.turbo ?? false,
       launchArtifacts: this.artifactsFor(args.backend),
+      launchChrome: this.chromeFor(args),
       launchPermissionMode: args.permissionMode,
       launchAllowedTools: (args.enabledTools ?? []).join(' '),
       launchEffort: args.effortLevel,
@@ -4557,6 +4576,15 @@ export class RunnerManager {
   /// the setting doesn't respawn codex/gemini processes that never read it.
   private artifactsFor(backend: Backend): boolean {
     return backend === 'claude' && (this.settingsProvider().claudeArtifacts ?? false);
+  }
+
+  /// Whether this spawn attaches Claude in Chrome. The per-conversation
+  /// override wins over the global setting; backend-scoped for the same
+  /// reason as `artifactsFor`, since only claude takes `--chrome`.
+  private chromeFor(args: { backend: Backend; chrome?: boolean }): boolean {
+    return (
+      args.backend === 'claude' && (args.chrome ?? this.settingsProvider().claudeChrome ?? false)
+    );
   }
 
   /// Environment for a spawned backend. `backend` is optional because the
