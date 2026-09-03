@@ -30,6 +30,9 @@ export interface BackendSendArgs {
   /// Surfaces MCP server startup/registration diagnostics on stderr, which the
   /// runner forwards to the Debug viewer. Honored by the claude backend.
   mcpDebug?: boolean;
+  /// When true, launch the CLI with `--chrome` so the session attaches to
+  /// the Claude in Chrome extension. Honored by the claude backend.
+  chrome?: boolean;
   /// Speed-over-capability launch mode. Honored by the claude backend:
   /// forces `--effort low` and `--strict-mcp-config`.
   turbo?: boolean;
