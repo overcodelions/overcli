@@ -444,6 +444,9 @@ interface StoreState {
   setBackendModel(id: UUID, backend: Backend, model: string): Promise<void>;
   setEffortLevel(id: UUID, effort: EffortLevel): Promise<void>;
   setTurbo(id: UUID, turbo: boolean | undefined): Promise<void>;
+  /// Per-conversation Claude in Chrome override. `undefined` clears it back
+  /// to inheriting the global `claudeChrome` setting.
+  setChrome(id: UUID, chrome: boolean | undefined): Promise<void>;
   setResponseStyle(id: UUID, style: ResponseStyle): Promise<void>;
   setResponseMode(id: UUID, backend: Backend, mode: ResponseMode): Promise<void>;
   applyClaudeFastPreset(id: UUID): Promise<void>;
@@ -2698,6 +2701,10 @@ export const useStore = create<StoreState>((set, get) => ({
     );
     await saveConversationState(get);
   },
+  async setChrome(id, chrome) {
+    mutateConversation(set, get, id, (c) => ({ ...c, chrome }));
+  },
+
   async setTurbo(id, turbo) {
     mutateConversation(set, get, id, (c) => ({ ...c, turbo, responseMode: undefined }));
     await saveConversationState(get);
@@ -2851,6 +2858,10 @@ export const useStore = create<StoreState>((set, get) => ({
       sessionId: conv.sessionId,
       effortLevel: conv.effortLevel ?? effortForBackend(state.settings, backend),
       turbo: conv.turbo,
+      // Load-bearing for the same reason as sessionId above: `--chrome` is
+      // argv, so a prewarm that disagrees with the send is a spawn we throw
+      // away and respawn on the first turn.
+      chrome: conv.chrome,
       allowedDirs: backend === 'claude' ? computeAllowedDirs(state, conversationId) : undefined,
       claudeTransport: backend === 'claude' ? state.settings.claudeTransport ?? 'cli' : undefined,
     });
@@ -3060,6 +3071,9 @@ export const useStore = create<StoreState>((set, get) => ({
       // Undefined defers to the global setting in the runner, so an
       // untouched conversation follows Settings the way it always has.
       turbo: conv.turbo,
+      // Undefined defers to the global setting in the runner, so an
+      // untouched conversation follows Settings.
+      chrome: conv.chrome,
       codexRolloutPaths: conv.codexRolloutPaths,
       attachments: attachments.length ? attachments : undefined,
       reviewBackend: conv.reviewBackend ?? null,
