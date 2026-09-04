@@ -20,6 +20,7 @@
 //      (see `moveWithinGroup`) — the same bargain the old active/bench split
 //      already made, extended to five groups instead of two.
 
+import type { FlowRun } from '@shared/flows/schema';
 import type { Worker } from '@shared/flows/worker';
 import { describeActivity, startOfDay, type WorkerActivity } from './workerDeskSelectors';
 
@@ -37,6 +38,15 @@ export interface BoardEntry {
   review: number;
   /// Runs stopped mid-flight, waiting for a person.
   pausedRuns: number;
+  /// What the worker's project or workspace is called — or empty when every
+  /// worker on the board shares one, where the label would be the same word
+  /// under every name. See `boardLine`, which spends it last.
+  home: string;
+  /// This worker's runs, newest first. The row draws the ones that are
+  /// blocked or in flight (see `railRuns`); the count above is what the
+  /// grouping reads, and stays because a group must not have to walk a list
+  /// to learn one bit.
+  runs: FlowRun[];
   /// The pay queue ran dry above this worker.
   starved: boolean;
   /// Mid-turn right now — a shift in progress, or a run still going.
@@ -117,6 +127,7 @@ export function boardLine(
   if (last) return last.task === 'errand' ? last.title : describeActivity(last);
   return tagline || null;
 }
+
 
 // ---- The day strip -------------------------------------------------------
 
