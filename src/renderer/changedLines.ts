@@ -118,3 +118,23 @@ export function changedLinesKey(marks: ChangedLines | null): string {
   if (!marks) return '';
   return `${marks.changed.map((c) => `${c.line}${c.kind[0]}`).join(',')}|${marks.deletedAt.join(',')}`;
 }
+
+/// One tick per touched line, ascending, deduped and clamped to a document
+/// of `lines` lines. The two halves of `ChangedLines` interleave by line
+/// number, so the readers that walk the file top-to-bottom — the overview
+/// ruler, the next/previous-change jumps — want them merged.
+export function markPoints(
+  marks: ChangedLines | null,
+  lines: number,
+): { line: number; kind: ChangeKind | 'deleted' }[] {
+  if (!marks || lines < 1) return [];
+  const points: { line: number; kind: ChangeKind | 'deleted' }[] = [
+    ...marks.changed.map((c) => ({ line: c.line, kind: c.kind as ChangeKind | 'deleted' })),
+    ...marks.deletedAt.map((line) => ({ line, kind: 'deleted' as const })),
+  ]
+    .filter((p) => p.line >= 1 && p.line <= lines)
+    .sort((a, b) => a.line - b.line);
+  // `deletedAt` already excludes lines that carry a change mark, so a
+  // duplicate here can only come from a hand-built or stale mark set.
+  return points.filter((p, i) => i === 0 || p.line !== points[i - 1].line);
+}

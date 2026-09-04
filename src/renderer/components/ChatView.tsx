@@ -23,6 +23,7 @@ import { useConversation } from '../hooks';
 export function ChatView({
   conversationId,
   renderAfterEvent,
+  timelineHeader,
   timelineFooter,
   timelineContentKey,
 }: {
@@ -32,6 +33,12 @@ export function ChatView({
   /// participant question; keeping the hook generic avoids teaching the chat
   /// renderer about FlowRun storage.
   renderAfterEvent?: (event: StreamEvent) => ReactNode;
+  /// Drawn above the first event. For content that belongs BEFORE the
+  /// transcript rather than after it — a replayed history is a tail (see
+  /// `HISTORY_TAIL_BUDGET_BYTES`), so a caller can hold something that
+  /// happened earlier than anything on screen, and the bottom of the pane is
+  /// the one place it does not belong.
+  timelineHeader?: ReactNode;
   /// Fallback for timeline content whose originating event is unavailable
   /// (for example, an older run whose CLI history has already been pruned).
   timelineFooter?: ReactNode;
@@ -166,6 +173,7 @@ export function ChatView({
     return (
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+          {timelineHeader && <div className="mb-3">{timelineHeader}</div>}
           <div className="text-xs text-ink-faint">Loading history…</div>
           {timelineFooter && <div className="mt-3">{timelineFooter}</div>}
         </div>
@@ -177,6 +185,7 @@ export function ChatView({
     return (
       <div className="flex-1 min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 overflow-y-auto px-5 py-4">
+          {timelineHeader && <div className="mb-3">{timelineHeader}</div>}
           <NewAgentIntro conversationId={conversationId} />
           {timelineFooter && <div className="mt-3">{timelineFooter}</div>}
         </div>
@@ -290,6 +299,9 @@ export function ChatView({
           );
         }}
         components={{
+          Header: timelineHeader
+            ? () => <div className="px-5 pt-3 space-y-3">{timelineHeader}</div>
+            : undefined,
           Footer: () => (
             <div className="px-5 pb-10 pt-1.5 space-y-3">
               {currentReveal && (

@@ -22,14 +22,30 @@
 //   4. ONE LIST UNDER A WORKER, NOT THREE. "Errands" / "Shifts" / "Flows"
 //      captions repeated per worker were structure describing itself. Turns
 //      now sit in a single newest-first list — an errand is your words behind
-//      a speech bubble, a shift names itself ("Shift 12") behind a clock — and
-//      a turn's flows live where the turn does, on the desk. The runs that
-//      still need a person are precisely the ones "Needs you" already lists.
+//      a speech bubble, a shift names itself ("Shift 12") behind a clock —
+//      and above them, the runs that are BLOCKED. Those used to be left to
+//      the desk on the grounds that "Needs you" already lists them, but the
+//      group lists the WORKER: an amber dot saying "2 flows paused" costs a
+//      click into the desk and a scan down the chat before you learn which
+//      ticket stopped and where. A blocked run names itself and its step, and
+//      opens the run rather than the desk. An opened worker adds what is
+//      running and what landed in the last hour — a job that finished while
+//      you were elsewhere should not need a click to find — and the rest of a
+//      run's life is still the desk's business.
 //   5. IDLE WORKERS SAY NOTHING. "no work yet" on four of six rows is not
 //      status, it is noise. An absent line is the correct rendering of nothing
 //      happening — and the workers that did nothing at all fold into a single
 //      row with their faces stacked on it, because four quiet workers are one
-//      fact, not four.
+//      fact, not four. The project a worker was hired into follows the same
+//      rule from the other side: it is drawn only when the crew spans more
+//      than one, since the same word under every name annotates nothing. When
+//      it IS drawn it LEADS the second line, a tone brighter than the status
+//      behind it — it is scanned, not read, so it holds one position and
+//      survives truncation. It is not tinted: colour here means STATE (violet
+//      waiting, amber stopped, emerald running), and an identity wearing a
+//      state's hue is a misread, not a decoration. The search box matches it
+//      too, which is how you narrow nineteen workers to one crew without a
+//      filter to forget you left on.
 //   6. THE WHOLE-CREW VIEWS ARE A HEADER, NOT A LIST. Today, the queue, the
 //      calendar, the pot and the report are five destinations, and drawn as
 //      five full rows they spent ~160px above the roster — the thing the tab
@@ -71,6 +87,7 @@ import {
   startOfDay,
   workerDeskOrchestrations,
   workerDeskRuns,
+  workerHomeName,
   type WorkerActivity,
 } from "./workerDeskSelectors";
 import {
@@ -83,6 +100,13 @@ import {
   type DayTick,
 } from "./workerBoard";
 import { buildWorkQueue } from "./workQueue";
+import {
+  pauseReasonLabel,
+  railRuns,
+  railStepPosition,
+} from "./deskRunRail";
+import { FlowMonogram } from "../flows/FlowMonogram";
+import { flowRunActivityAt, flowRunTitle, type FlowRun } from "@shared/flows/schema";
 
 /// How many turns hang under an open worker, errands and shifts together. Five:
 /// a busy morning is visible without one worker pushing the rest of the roster
@@ -147,14 +171,33 @@ export function WorkersSidebar({
 
   // Search matches a worker's own runs too, not just its name — you look for a
   // worker by what it did at least as often as by what it is called.
+  // What each worker's project or workspace is called, resolved once for the
+  // whole roster: the row shows it, and the search box matches it, so "ocli"
+  // or "zift" narrows a nineteen-worker board to one crew.
+  const homeByWorkerId = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const worker of Object.values(workers)) {
+      out[worker.id] = workerHomeName(worker, projects, workspaces);
+    }
+    return out;
+  }, [workers, projects, workspaces]);
+  // Only worth drawing when the crew spans more than one home. On a
+  // single-project board the label annotates nothing — it would be the same
+  // word under every name, which is the noise rule 5 exists for.
+  const showHome = useMemo(
+    () => new Set(Object.values(homeByWorkerId).filter(Boolean)).size > 1,
+    [homeByWorkerId],
+  );
   const roster = useMemo(
     () =>
       sortRoster(
         Object.values(workers).filter((w) =>
-          query ? deskMatchesQuery(w, workerDeskRuns(runs, w.id), query) : true,
+          query
+            ? deskMatchesQuery(w, workerDeskRuns(runs, w.id), query, homeByWorkerId[w.id])
+            : true,
         ),
       ),
-    [workers, query, runs],
+    [workers, query, runs, homeByWorkerId],
   );
   const dropWorker = useWorkersStore((s) => s.dropWorker);
   // A nudge moves the worker within the group it is DRAWN in. Resolved
@@ -221,6 +264,8 @@ export function WorkersSidebar({
         worker,
         review,
         pausedRuns: pausedRuns.length,
+        home: showHome ? homeByWorkerId[worker.id] ?? "" : "",
+        runs: claimed,
         starved: starved.has(worker.id),
         live: summary.live,
         today,
@@ -231,7 +276,16 @@ export function WorkersSidebar({
       };
     });
     return { now, groups: groupBoard(entries), entries };
-  }, [roster, orchestrations, runs, runners, shiftProgress, allocation]);
+  }, [
+    roster,
+    orchestrations,
+    runs,
+    runners,
+    shiftProgress,
+    allocation,
+    homeByWorkerId,
+    showHome,
+  ]);
 
   // The quiet workers and the bench each fold to a single row. Local rather
   // than in the Sidebar's persisted set, which holds worker ids: these are two
@@ -1090,6 +1144,12 @@ function RosterRow({
     return [...errands, ...shifts].sort((a, b) => b.at - a.at);
   }, [recent]);
   const turns = turnsAll.slice(0, NESTED_TURNS);
+  // Blocked runs whether or not the worker is open; what is running only once
+  // it is. A bench row has neither — that is what being benched means.
+  const rail = useMemo(
+    () => (compact ? [] : railRuns(entry.runs, expanded, now)),
+    [entry.runs, expanded, compact, now],
+  );
   const overflow = turnsAll.length - turns.length;
   const openTurn = (orchestrationId: string, at: number) =>
     openWorkerActivity(worker.id, orchestrationId, at);
@@ -1126,9 +1186,9 @@ function RosterRow({
             "focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
             (selected ? "sidebar-row-selected text-ink" : "text-ink-muted")
           }
-          title={`${worker.name}${tagline ? ` — ${tagline}` : ""} · ${TRUST_LABEL[worker.trust].text}${
-            reasons ? ` · ${reasons}` : ""
-          }`}
+          title={`${worker.name}${tagline ? ` — ${tagline}` : ""} · ${
+            TRUST_LABEL[worker.trust].text
+          }${entry.home ? ` · ${entry.home}` : ""}${reasons ? ` · ${reasons}` : ""}`}
         >
           {compact ? (
             // Spacer, so a bench face lines up with the faces above it.
@@ -1170,12 +1230,31 @@ function RosterRow({
             <span className="block truncate text-[13px] font-medium leading-tight">
               {worker.name}
             </span>
-            {/* One second line, chosen by `boardLine`: what is perishable
-                first, then the last turn's outcome, then the tagline as a
-                floor. */}
-            {!compact && line && (
-              <span className="block truncate text-[10px] font-normal leading-4 text-ink-faint">
-                {line}
+            {/* One second line: the project first, then `boardLine` — what is
+                perishable, then the last turn's outcome, then the tagline as a
+                floor.
+
+                The project leads because it is the one thing on the row you
+                SCAN for rather than read: finding every zift worker among
+                nineteen means the label holds the same place on every row and
+                survives truncation, which the status text does not need to.
+
+                It separates by TONE, not by colour or a dot. Colour on this
+                board is spoken for — violet is waiting on you, amber is
+                stopped, emerald is running — so tinting an identity in those
+                same hues would have a project called Ledger reading as a
+                worker that is paused. One step of brightness does the same job
+                and spends nothing. The label also carries its own width cap:
+                sharing one `truncate` with the status let a long project name
+                eat the thing the row is actually reporting. */}
+            {!compact && (entry.home || line) && (
+              <span className="flex items-baseline gap-1 text-[10px] font-normal leading-4">
+                {entry.home && (
+                  <span className="max-w-[45%] shrink-0 truncate text-ink-muted">
+                    {entry.home}
+                  </span>
+                )}
+                {line && <span className="min-w-0 truncate text-ink-faint">{line}</span>}
               </span>
             )}
           </span>
@@ -1242,17 +1321,21 @@ function RosterRow({
       </div>
 
       {/* A rail, so the work reads as belonging to the worker above it rather
-          than floating between two of them. Turns only: a turn's flows live
-          where the turn does — click through to the desk — and the runs that
-          still need a person are exactly the ones "Needs you" already lists,
-          so putting a Flows group here listed the same work twice at the same
-          level. */}
-      {!compact && expanded && (sending?.length || turns.length > 0) && (
+          than floating between two of them. Runs first and turns under them:
+          a stopped run is the only thing here that is waiting on YOU, and a
+          list you read top-down should put the decision above the history. */}
+      {!compact && (rail.length > 0 || (expanded && (sending?.length || turns.length > 0))) && (
         <div className="ml-[13px] border-l border-card pl-2">
+          {/* Drawn folded as well as open. The disclosure hides what a worker
+              HAS DONE — and a run holding a Continue button is not history,
+              it is the reason this row is in "Needs you" at all. */}
+          {rail.map((run) => (
+            <RunRow key={run.id} run={run} />
+          ))}
           {/* The errand you just sent, before any batch exists to represent it
               — the planning turn can take minutes, and a sidebar that shows
               nothing until it finishes reads as a message that went nowhere. */}
-          {sending?.map((pending) => (
+          {expanded && sending?.map((pending) => (
             <button
               key={pending.id}
               onClick={onSelect}
@@ -1266,7 +1349,7 @@ function RosterRow({
               <span className="shrink-0 text-[10px] text-ink-faint">…</span>
             </button>
           ))}
-          {turns.map((item) => (
+          {expanded && turns.map((item) => (
             <TurnRow
               key={item.orchestration.id}
               item={item}
@@ -1276,7 +1359,7 @@ function RosterRow({
           {/* The count says what was thinned away, because a rail that quietly
               drops four errands reads as a worker that only ran one. Clicking
               it opens the desk, which shows the whole day. */}
-          {overflow > 0 && (
+          {expanded && overflow > 0 && (
             <button
               onClick={onSelect}
               className="mt-0.5 w-full rounded px-2 py-0.5 text-left text-[10px] text-ink-faint hover:bg-card-strong hover:text-ink-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50"
@@ -1288,6 +1371,89 @@ function RosterRow({
         </div>
       )}
     </div>
+  );
+}
+
+/// One run under a worker: what it is, where it stopped, and a click that
+/// lands ON the run rather than on the desk that contains it.
+///
+/// The step is the payload. "paused" on a nine-step flow says only that
+/// something is wrong; "ship 9/9" says the work is done and one approval
+/// stands between you and the push — a different decision, made from the
+/// roster instead of after two clicks and a scroll.
+function RunRow({ run }: { run: FlowRun }) {
+  const activeRunId = useFlowsStore((s) => s.activeRunId);
+  const setActiveRun = useFlowsStore((s) => s.setActiveRun);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
+  const setDetailMode = useStore((s) => s.setDetailMode);
+  const detailMode = useStore((s) => s.detailMode);
+  const paused = run.state.kind === "paused";
+  const at = railStepPosition(run);
+  const reason = pauseReasonLabel(run);
+  // A finished run has no step to name, so it says WHEN instead — the one
+  // thing you want from a row that is only here because it landed recently.
+  const finishedAt = at ? null : flowRunActivityAt(run);
+  const failed = run.state.kind === "aborted" || (run.state.kind === "done" && !run.state.success);
+  // Selected only while you are actually looking at the pane this row opens
+  // — a highlight that survives a trip to Chat is claiming a selection the
+  // screen isn't showing.
+  const selected = activeRunId === run.id && detailMode === "workers";
+  const open = () => {
+    // Order matters, and for the same reason it does in FlowRunSidebarRow:
+    // selecting a worker clears the active run, so pointing at the run has
+    // to come second.
+    if (run.workerId) {
+      selectWorker(run.workerId);
+      setDetailMode("workers");
+    }
+    setActiveRun(run.id);
+  };
+  return (
+    <button
+      onClick={open}
+      className={
+        "group mt-0.5 flex w-full items-center gap-2 rounded px-2 py-1 text-left " +
+        "text-xs focus:outline-none focus-visible:ring-1 focus-visible:ring-accent/50 " +
+        (selected
+          ? "sidebar-row sidebar-row-selected text-ink"
+          : "hover:bg-card-strong")
+      }
+      title={`${flowRunTitle(run)} — ${run.flowSnapshot.name}${
+        at
+          ? ` · ${paused ? "waiting at" : "running"} ${at.step} (step ${at.position} of ${at.total})`
+          : ` · ${failed ? "stopped" : "finished"} ${relativeTime(finishedAt ?? run.createdAt)}`
+      }${reason ? ` · ${reason}` : ""} — opens the run`}
+    >
+      <FlowMonogram
+        name={run.flowSnapshot.name}
+        size="sm"
+        live={run.state.kind === "running"}
+      />
+      <span className="min-w-0 flex-1 truncate text-ink-muted group-hover:text-ink">
+        {flowRunTitle(run)}
+      </span>
+      {/* Amber for stopped, the same amber the worker row's dot and the Funds
+          tab wear: this needs a person. A running step is just information,
+          so it stays quiet. */}
+      {at ? (
+        <span
+          className={
+            "shrink-0 truncate text-[10px] tabular-nums " +
+            (paused ? "text-amber-500 dark:text-amber-300" : "text-ink-faint")
+          }
+          title={`${paused ? "Waiting at" : "Current step"} ${at.step} · step ${at.position} of ${at.total}`}
+        >
+          {at.step} {at.position}/{at.total}
+        </span>
+      ) : (
+        <span
+          className="shrink-0 text-[10px] tabular-nums text-ink-faint"
+          title={`${failed ? "Stopped" : "Finished"} ${relativeTime(finishedAt ?? run.createdAt)}`}
+        >
+          {failed ? "✗" : "✓"} {relativeTime(finishedAt ?? run.createdAt)}
+        </span>
+      )}
+    </button>
   );
 }
 

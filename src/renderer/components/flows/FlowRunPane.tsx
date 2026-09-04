@@ -58,7 +58,7 @@ import {
 } from '@shared/flows/schema';
 import { modelSpeed, friendlyModelLabel, PREMIUM_MODELS } from '@shared/modelCatalog';
 import { FlowMonogram } from './FlowMonogram';
-import { matchWorkerExchangesToEvents } from './workerExchangeTimeline';
+import { placeWorkerExchanges } from './workerExchangeTimeline';
 import { useWorkersStore } from '../../workersStore';
 import { useOrchestratorStore } from '../../orchestratorStore';
 import { orchestrationForRun } from '../workers/workerDeskSelectors';
@@ -1271,26 +1271,20 @@ function ParticipantBody({
   }, [convId, loadHistoryIfNeeded]);
 
   // A worker answer is part of the conversation that asked for it, not run
-  // metadata. Match each persisted exchange to its assistant question so the
-  // reply can render directly beneath that bubble. The small unmatched
-  // fallback preserves older runs whose CLI transcript has been pruned: their
-  // recorded answer still appears at the end of the chat instead of vanishing.
+  // metadata. Each persisted exchange is matched to its assistant question so
+  // the reply renders directly beneath that bubble, and anything that fails to
+  // match is dropped in at the moment it was asked rather than pinned to the
+  // bottom of the pane — see `placeWorkerExchanges`. An exchange older than
+  // the whole replayed tail goes ABOVE the transcript, which is where it
+  // happened.
   const participantExchanges = useMemo(
     () =>
       (run.workerExchanges ?? []).filter((exchange) => exchange.participantId === participant.id),
     [run.workerExchanges, participant.id],
   );
-  const exchangeByEventId = useMemo(
-    () => matchWorkerExchangesToEvents(participantRunner?.events ?? [], participantExchanges),
+  const placement = useMemo(
+    () => placeWorkerExchanges(participantRunner?.events ?? [], participantExchanges),
     [participantRunner?.events, participantExchanges],
-  );
-  const matchedExchangeIds = useMemo(
-    () => new Set([...exchangeByEventId.values()].map((exchange) => exchange.id)),
-    [exchangeByEventId],
-  );
-  const unmatchedExchanges = useMemo(
-    () => participantExchanges.filter((exchange) => !matchedExchangeIds.has(exchange.id)),
-    [participantExchanges, matchedExchangeIds],
   );
   const exchangeContentKey = participantExchanges
     .map((exchange) =>
@@ -1370,23 +1364,30 @@ function ParticipantBody({
             <ChatView
               conversationId={convId}
               renderAfterEvent={(event) => {
-                const exchange = exchangeByEventId.get(event.id);
-                return exchange ? (
-                  <WorkerExchangeBubble
-                    exchange={exchange}
-                    workerName={run.workerName ?? 'Worker'}
-                  />
-                ) : null;
-              }}
-              timelineFooter={
-                unmatchedExchanges.length > 0 ? (
+                const here = placement.byEventId.get(event.id);
+                if (!here?.length) return null;
+                return (
                   <div className="space-y-2">
-                    {unmatchedExchanges.map((exchange) => (
+                    {here.map((exchange) => (
                       <WorkerExchangeBubble
                         key={exchange.id}
                         exchange={exchange}
                         workerName={run.workerName ?? 'Worker'}
-                        transcriptUnavailable
+                        showQuestion={!placement.anchored.has(exchange.id)}
+                      />
+                    ))}
+                  </div>
+                );
+              }}
+              timelineHeader={
+                placement.leading.length > 0 ? (
+                  <div className="space-y-2">
+                    {placement.leading.map((exchange) => (
+                      <WorkerExchangeBubble
+                        key={exchange.id}
+                        exchange={exchange}
+                        workerName={run.workerName ?? 'Worker'}
+                        showQuestion
                       />
                     ))}
                   </div>
@@ -1418,11 +1419,14 @@ function ParticipantBody({
 function WorkerExchangeBubble({
   exchange,
   workerName,
-  transcriptUnavailable = false,
+  showQuestion = false,
 }: {
   exchange: FlowWorkerExchange;
   workerName: string;
-  transcriptUnavailable?: boolean;
+  /// Repeat what was asked. Set whenever the bubble could not be matched to
+  /// the turn that asked it — placed by time, or trailing a pruned transcript
+  /// — because then the question is not necessarily the message above.
+  showQuestion?: boolean;
 }) {
   const status =
     exchange.status === 'asking'
@@ -1443,7 +1447,7 @@ function WorkerExchangeBubble({
           <div className="mt-1 text-amber-600 dark:text-amber-300">{exchange.note}</div>
         )}
         <div className="mt-1 text-right text-[10px] text-ink-faint">{status}</div>
-        {transcriptUnavailable && (
+        {showQuestion && (
           <div className="mt-1 text-[10px] text-ink-faint">
             Original question: {exchange.question}
           </div>
