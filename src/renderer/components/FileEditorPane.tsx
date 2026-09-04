@@ -1074,6 +1074,7 @@ export const FileEditorPane = memo(function FileEditorPane({
                   highlightRange={null}
                   language={detectLanguage(path)}
                   changedLines={changedLines}
+                  revealKey={path}
                   onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
                   onSelectionChange={setSelection}
                 />
@@ -1112,6 +1113,7 @@ export const FileEditorPane = memo(function FileEditorPane({
               highlightRange={highlight ? [highlight.startLine, highlight.endLine] : null}
               language={detectLanguage(path)}
               changedLines={changedLines}
+              revealKey={path}
               onSymbolNavigate={(args) => void handleSymbolNavigate(args)}
               onSelectionChange={setSelection}
             />
