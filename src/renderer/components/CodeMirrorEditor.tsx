@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   Compartment,
   EditorState,
@@ -30,7 +30,7 @@ import {
 } from '@codemirror/language';
 import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
 import { tags as t } from '@lezer/highlight';
-import { changedLinesKey, type ChangedLines } from '../changedLines';
+import { changedLinesKey, markPoints, type ChangedLines } from '../changedLines';
 
 // Tier 1: dedicated language packages (full Lezer parsers).
 import { cpp } from '@codemirror/lang-cpp';
@@ -537,6 +537,97 @@ const changeGutter = gutter({
   markers: (v) => v.state.field(changeGutterField),
 });
 
+/// Put `line` on screen, centred. `moveCaret` for the deliberate jumps
+/// (ruler click, keyboard) so the next jump continues from where you
+/// landed; off for the automatic reveal on open, which should scroll the
+/// view without touching a caret the user never placed.
+function revealLine(view: EditorView, line: number, moveCaret: boolean) {
+  const doc = view.state.doc;
+  const target = doc.line(Math.min(Math.max(1, line), doc.lines));
+  view.dispatch({
+    ...(moveCaret ? { selection: { anchor: target.from } } : {}),
+    effects: EditorView.scrollIntoView(target.from, { y: 'center' }),
+    scrollIntoView: false,
+  });
+}
+
+/// Jump to the next/previous changed line, wrapping at the ends — the
+/// file view's answer to "where else did this run touch?" without having
+/// to eyeball the ruler.
+function jumpToChange(
+  view: EditorView,
+  marks: ChangedLines | null,
+  dir: 1 | -1,
+): boolean {
+  const points = markPoints(marks, view.state.doc.lines);
+  if (!points.length) return false;
+  const here = view.state.doc.lineAt(view.state.selection.main.head).number;
+  const found =
+    dir === 1
+      ? points.find((p) => p.line > here)
+      : [...points].reverse().find((p) => p.line < here);
+  revealLine(view, (found ?? (dir === 1 ? points[0] : points[points.length - 1])).line, true);
+  return true;
+}
+
+const RULER_TICK_COLOR: Record<'added' | 'modified' | 'deleted', string> = {
+  added: 'var(--c-diff-add-ink)',
+  modified: 'rgba(245, 158, 11, 0.9)',
+  deleted: 'var(--c-diff-remove-ink)',
+};
+
+/// Overview ruler: the whole file squashed into a 10px column, with a tick
+/// wherever the run touched it. Opening a file used to tell you nothing
+/// about where its changes were — the gutter bars only exist for the lines
+/// already on screen, so a change 900 lines down was invisible until you
+/// found it. Clicking snaps to the nearest change rather than to the exact
+/// pixel: at one document per ten pixels, the tick is what you were aiming
+/// at, not the line beside it.
+function ChangeRuler({
+  marks,
+  lineCount,
+  viewRef,
+}: {
+  marks: ChangedLines | null;
+  lineCount: number;
+  viewRef: React.RefObject<EditorView | null>;
+}) {
+  const points = useMemo(() => markPoints(marks, lineCount), [marks, lineCount]);
+  if (!points.length) return null;
+  const jump = (e: React.MouseEvent<HTMLDivElement>) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const box = e.currentTarget.getBoundingClientRect();
+    if (box.height <= 0) return;
+    const wanted = ((e.clientY - box.top) / box.height) * lineCount;
+    let nearest = points[0];
+    for (const p of points) {
+      if (Math.abs(p.line - wanted) < Math.abs(nearest.line - wanted)) nearest = p;
+    }
+    revealLine(view, nearest.line, true);
+  };
+  return (
+    <div
+      className="relative w-[10px] shrink-0 cursor-pointer py-2"
+      onMouseDown={jump}
+      title={`${points.length} changed ${points.length === 1 ? 'line' : 'lines'} — click to jump (⌘⌥↑/↓)`}
+    >
+      <div className="relative h-full w-full">
+        {points.map((p) => (
+          <div
+            key={p.line}
+            className="absolute left-[2px] right-[2px] h-[2px] rounded-[1px]"
+            style={{
+              top: `${((p.line - 0.5) / lineCount) * 100}%`,
+              backgroundColor: RULER_TICK_COLOR[p.kind],
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /// Hovered-symbol underline. Carries the word range under the pointer
 /// while the go-to-definition modifier is held, or null.
 const setHoverSymbol = StateEffect.define<{ from: number; to: number } | null>();
@@ -617,6 +708,7 @@ export function CodeMirrorEditor({
   highlightRange,
   language,
   changedLines = null,
+  revealKey = null,
   onSymbolNavigate,
   onSelectionChange,
 }: {
@@ -628,6 +720,11 @@ export function CodeMirrorEditor({
   /// change gutter; null (the default) leaves the gutter empty, which is
   /// what a clean file or a non-git folder wants.
   changedLines?: ChangedLines | null;
+  /// Identity of the document on screen (the host passes the file path).
+  /// When it changes, the first change in the new file is scrolled into
+  /// view once — a re-fetched diff for the same file never re-scrolls, so
+  /// saving can't yank you away from what you were reading.
+  revealKey?: string | null;
   /// Cmd-click (Ctrl-click off macOS) on an identifier. The host resolves
   /// it to a definition site and opens it; this component only reports
   /// which word was clicked and on what line.
@@ -660,6 +757,11 @@ export function CodeMirrorEditor({
   // owns every update after that.
   const changedLinesRef = useRef(changedLines);
   changedLinesRef.current = changedLines;
+  // The reveal is armed by opening a file and disarmed by the first thing
+  // that makes the scroll position the user's rather than ours: the reveal
+  // itself, or an edit (which means they found the code without us).
+  const pendingRevealRef = useRef(false);
+  const revealedKeyRef = useRef<string | null>(null);
 
   // Mount once. Subsequent prop changes are handled by the focused
   // effects below; rebuilding the EditorView on every keystroke would
@@ -720,6 +822,17 @@ export function CodeMirrorEditor({
         // does the save.
         keymap.of([
           { key: 'Mod-Enter', run: () => true },
+          // Next/previous change. Cmd-Alt rather than the bare Alt-Arrow
+          // an IDE would use, because defaultKeymap already spends
+          // Alt-Arrow and Shift-Alt-Arrow on move/copy line.
+          {
+            key: 'Mod-Alt-ArrowDown',
+            run: (v) => jumpToChange(v, changedLinesRef.current, 1),
+          },
+          {
+            key: 'Mod-Alt-ArrowUp',
+            run: (v) => jumpToChange(v, changedLinesRef.current, -1),
+          },
           { key: 'Mod-s', run: () => true },
           ...closeBracketsKeymap,
           ...defaultKeymap,
@@ -775,7 +888,10 @@ export function CodeMirrorEditor({
           buildRangeDecorations(highlightRange, s.doc, (flashParity ^= 1) ? 'a' : 'b'),
         ),
         EditorView.updateListener.of((u) => {
-          if (u.docChanged) onChangeRef.current(u.state.doc.toString());
+          if (u.docChanged) {
+            pendingRevealRef.current = false;
+            onChangeRef.current(u.state.doc.toString());
+          }
           if (!u.selectionSet && !u.docChanged) return;
           const report = onSelectionChangeRef.current;
           if (!report) return;
@@ -885,7 +1001,32 @@ export function CodeMirrorEditor({
         changeGutterCompartment.current.reconfigure(hasChanges(marks) ? changeGutter : []),
       ],
     });
-  }, [marksKey]);
+    // The diff lands a beat after the file does, so the reveal has to
+    // happen here rather than on open: this is the first moment we know
+    // where the changes are. An explicit range (a chat link to :42) is the
+    // user's own destination and wins.
+    if (!pendingRevealRef.current || rangeStart != null) return;
+    const first = markPoints(marks, view.state.doc.lines)[0];
+    if (!first) return;
+    pendingRevealRef.current = false;
+    revealLine(view, first.line, false);
+  }, [marksKey, rangeStart]);
 
-  return <div ref={containerRef} className="h-full w-full overflow-hidden" />;
+  // Arm the reveal for each newly opened document. Held apart from the
+  // effect above so re-fetching the same file's diff — which is what a
+  // save does — leaves the scroll position alone.
+  useEffect(() => {
+    if (!revealKey || revealedKeyRef.current === revealKey) return;
+    revealedKeyRef.current = revealKey;
+    pendingRevealRef.current = true;
+  }, [revealKey]);
+
+  const lineCount = useMemo(() => content.split('\n').length, [content]);
+
+  return (
+    <div className="flex h-full w-full overflow-hidden">
+      <div ref={containerRef} className="h-full min-w-0 flex-1 overflow-hidden" />
+      <ChangeRuler marks={changedLines} lineCount={lineCount} viewRef={viewRef} />
+    </div>
+  );
 }

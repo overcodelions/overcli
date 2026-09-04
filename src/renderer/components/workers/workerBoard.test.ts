@@ -75,6 +75,8 @@ function entry(overrides: Partial<BoardEntry> = {}): BoardEntry {
     worker: worker(),
     review: 0,
     pausedRuns: 0,
+    home: '',
+    runs: [],
     starved: false,
     live: false,
     today: [],
@@ -189,5 +191,14 @@ describe('the day strip', () => {
     expect(tickKind(activity('3', NOON, ['proposed']))).toBe('review');
     expect(tickKind(activity('4', NOON, ['done'], { task: 'errand' }))).toBe('errand');
     expect(tickKind(activity('5', NOON, ['done']))).toBe('shift');
+  });
+});
+
+describe('project labels', () => {
+  it('keeps the line about status, so the row can draw the project itself', () => {
+    // The project is not in `boardLine`: the row draws it ahead of this text
+    // in its own tone, and colour on this board is reserved for state.
+    expect(boardLine(entry({ review: 3 }), 'running', 'tagline')).toBe('3 to review · running');
+    expect(boardLine(entry(), null, '')).toBeNull();
   });
 });

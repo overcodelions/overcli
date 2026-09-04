@@ -125,6 +125,7 @@ import { TRUST_LABEL, WorkerPendingProposal } from "./WorkerRowParts";
 import { TodayPane } from "./TodayPane";
 import { WorkQueuePane } from "./WorkQueuePane";
 import { pinnedToBottom, shouldFollowLive } from "./deskFollow";
+import { runStepPosition } from "./deskRunRail";
 import { fetchDeliverables } from "../../deliverablesCache";
 
 // Zustand selectors are consumed through React's useSyncExternalStore. Returning
@@ -4244,31 +4245,25 @@ function PlanItemRow({
 /// and an unmistakable route into the run.
 function StepStrip({ run, onOpen }: { run: FlowRun; onOpen: () => void }) {
   const steps = run.flowSnapshot.steps;
-  if (steps.length === 0) return null;
+  // Shared with the sidebar's run rows, so the step this card names and the
+  // step the roster names can't drift apart.
+  const at = runStepPosition(run);
+  if (!at) return null;
   const st = run.state;
-  const liveId =
-    st.kind === "running"
-      ? st.currentStepId
-      : st.kind === "paused"
-        ? st.nextStepId
-        : null;
-  const liveIndex = Math.max(
-    0,
-    steps.findIndex((step) => step.id === liveId),
-  );
+  const liveIndex = at.index;
   const completed = steps.filter((step) => {
     const attempts = run.attempts.filter(
       (attempt) => attempt.stepId === step.id,
     );
     return attempts[attempts.length - 1]?.outcome === "success";
   }).length;
-  const position = Math.min(steps.length, liveIndex + 1);
+  const position = at.position;
   const progress = Math.max(
     completed,
     st.kind === "running" ? Math.max(0.35, liveIndex + 0.35) : liveIndex,
   );
   const progressPercent = Math.min(100, (progress / steps.length) * 100);
-  const currentStep = steps[liveIndex]?.id ?? liveId ?? "Starting";
+  const currentStep = at.step;
   const paused = st.kind === "paused";
   return (
     <button

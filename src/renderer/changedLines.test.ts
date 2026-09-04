@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { changedLinesKey, parseChangedLines } from './changedLines';
+import { changedLinesKey, markPoints, parseChangedLines } from './changedLines';
 
 const diff = (...lines: string[]) => lines.join('\n');
 
@@ -133,5 +133,33 @@ describe('changedLinesKey', () => {
   it('matches for equal marks', () => {
     const marks = { changed: [{ line: 1, kind: 'added' as const }], deletedAt: [4] };
     expect(changedLinesKey(marks)).toBe(changedLinesKey({ ...marks }));
+  });
+});
+
+describe('markPoints', () => {
+  it('merges changed lines and deletion seams in line order', () => {
+    const marks = {
+      changed: [
+        { line: 2, kind: 'added' as const },
+        { line: 9, kind: 'modified' as const },
+      ],
+      deletedAt: [5],
+    };
+    expect(markPoints(marks, 20)).toEqual([
+      { line: 2, kind: 'added' },
+      { line: 5, kind: 'deleted' },
+      { line: 9, kind: 'modified' },
+    ]);
+  });
+
+  it('drops marks past the end of the document', () => {
+    const marks = { changed: [{ line: 40, kind: 'added' as const }], deletedAt: [3] };
+    expect(markPoints(marks, 10)).toEqual([{ line: 3, kind: 'deleted' }]);
+  });
+
+  it('is empty for no marks, no document, or null', () => {
+    expect(markPoints(null, 10)).toEqual([]);
+    expect(markPoints({ changed: [], deletedAt: [] }, 10)).toEqual([]);
+    expect(markPoints({ changed: [{ line: 1, kind: 'added' }], deletedAt: [] }, 0)).toEqual([]);
   });
 });
