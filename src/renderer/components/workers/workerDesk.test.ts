@@ -30,6 +30,7 @@ import {
   orchestrationForRun,
   orchestrationTask,
   deskMatchesQuery,
+  workerHomeName,
   summarizeDesk,
   workerDeskOrchestrations,
   workerDeskRuns,
@@ -157,6 +158,30 @@ describe('worker desk selectors', () => {
     expect(deskMatchesQuery(w, [run('r')], 'spec hygiene')).toBe(true);
     expect(deskMatchesQuery(w, [run('r')], 'flaky')).toBe(true);
     expect(deskMatchesQuery(w, [], '')).toBe(true);
+  });
+
+  it('searches by the project a worker was hired into', () => {
+    // On a board spanning several repos, "which crew is this" is the search
+    // people actually run, and the roster used to match only names and runs.
+    const w = worker();
+    expect(deskMatchesQuery(w, [], 'overc', 'Overcli')).toBe(true);
+    expect(deskMatchesQuery(w, [], 'overc')).toBe(false);
+    expect(deskMatchesQuery(w, [], 'zift', 'Overcli')).toBe(false);
+  });
+
+  it('names a worker home by its project, its workspace, then its folder', () => {
+    const projects = [{ name: 'Overcli', path: '/workspace' }];
+    const workspaces = [{ name: 'Zift', rootPath: '/spaces/zift' }];
+    expect(workerHomeName(worker(), projects, workspaces)).toBe('Overcli');
+    expect(
+      workerHomeName(worker('w2', { projectPath: '/spaces/zift' }), projects, workspaces),
+    ).toBe('Zift');
+    // A project removed from the sidebar leaves its workers behind; the
+    // folder is still a better answer than nothing.
+    expect(
+      workerHomeName(worker('w3', { projectPath: '/git/zift-cypress' }), projects, workspaces),
+    ).toBe('zift-cypress');
+    expect(workerHomeName(worker('w4', { projectPath: '' }), projects, workspaces)).toBe('');
   });
 
   it('finds workers where hired and reports group liveness', () => {

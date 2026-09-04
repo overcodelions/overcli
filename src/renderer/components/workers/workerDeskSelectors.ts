@@ -71,9 +71,43 @@ export function workersForPath(workers: Record<string, Worker>, path: string): W
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
-export function deskMatchesQuery(worker: Worker, runs: FlowRun[], query: string): boolean {
+export function deskMatchesQuery(
+  worker: Worker,
+  runs: FlowRun[],
+  query: string,
+  /// What the worker's project or workspace is CALLED (see `workerHomeName`).
+  /// Optional so callers without the project list keep working; passing it is
+  /// what lets `zift` or `ocli` narrow the roster to one crew, which on a
+  /// nineteen-worker board is the search people actually want to run.
+  homeName?: string,
+): boolean {
   if (!query) return true;
-  return worker.name.toLowerCase().includes(query) || runs.some((run) => flowRunMatchesQuery(run, query));
+  return (
+    worker.name.toLowerCase().includes(query) ||
+    (!!homeName && homeName.toLowerCase().includes(query)) ||
+    runs.some((run) => flowRunMatchesQuery(run, query))
+  );
+}
+
+/// What to CALL a worker's home — the project or workspace it was hired into.
+///
+/// The roster never said this anywhere: two workers on two repos are drawn
+/// identically, and `projectPath` is a filesystem path, not a name. Prefers
+/// the name the user gave the project or workspace, and falls back to the
+/// folder for a path that no longer matches either (a project removed from
+/// the sidebar leaves its workers behind).
+export function workerHomeName(
+  worker: Worker,
+  projects: Array<{ name: string; path: string }>,
+  workspaces: Array<{ name: string; rootPath: string }>,
+): string {
+  const path = worker.projectPath?.trim();
+  if (!path) return '';
+  const project = projects.find((p) => p.path === path);
+  if (project) return project.name;
+  const workspace = workspaces.find((w) => w.rootPath === path);
+  if (workspace) return workspace.name;
+  return path.split('/').filter(Boolean).pop() ?? '';
 }
 
 // ---- Activity ------------------------------------------------------------
