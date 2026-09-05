@@ -15,7 +15,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # macOS is pinned rather than `macos-latest`: the macos-26 image that
+        # rolled on 2026-08-31 (20260831.0337) fails signing at
+        # `security set-key-partition-list` with "SecKeychainUnlock: the user
+        # name or passphrase you entered is not correct" — the temp keychain
+        # electron-builder creates no longer unlocks with the password it was
+        # created with. Nothing in the certificate or the Apple secrets changed:
+        # the same secrets signed 0.17.0 on the previous image (20260728.0273),
+        # and the import step still succeeds on the new one. electron-builder is
+        # already on its latest stable (26.15.3), so there is no version to bump
+        # to. Revisit when a later macos-26 image or electron-builder release
+        # fixes it; until then this builds on the last image that works.
+        os: [macos-15, windows-latest, ubuntu-latest]
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
