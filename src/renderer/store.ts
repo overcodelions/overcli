@@ -1186,60 +1186,20 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async init() {
     const state = await window.overcli.invoke('store:load');
-    // Reconcile every workspace's symlink root: backfills `rootPath` for
-    // workspaces saved before this existed, and refreshes the symlink set
-    // when a member project has been added/removed/renamed since launch.
-    let workspacesChanged = false;
-    const workspaces: Workspace[] = [];
-    for (const ws of state.workspaces) {
-      const rootPath = await ensureWorkspaceRoot(state.projects, ws.id, ws.projectIds);
-      // Backfill coordinator symlink roots for agents saved before the
-      // per-coordinator root existed. Without this, existing workspace
-      // agents keep writing via workspace-level symlinks into the main
-      // tree. We also reconcile links in case a member's worktree moved.
-      const reconciledConvs: Conversation[] = [];
-      let convsChanged = false;
-      for (const conv of ws.conversations ?? []) {
-        const memberIds = conv.workspaceAgentMemberIds;
-        if (!memberIds?.length) {
-          reconciledConvs.push(conv);
-          continue;
-        }
-        const members = collectCoordinatorMembers(state.projects, memberIds);
-        if (members.length === 0) {
-          reconciledConvs.push(conv);
-          continue;
-        }
-        const res = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
-          coordinatorId: conv.id,
-          members,
-        });
-        if (res.ok && res.rootPath !== conv.coordinatorRootPath) {
-          reconciledConvs.push({ ...conv, coordinatorRootPath: res.rootPath });
-          convsChanged = true;
-        } else {
-          reconciledConvs.push(conv);
-        }
-      }
-      const nextWs: Workspace = { ...ws };
-      if (convsChanged) nextWs.conversations = reconciledConvs;
-      if (rootPath && rootPath !== ws.rootPath) nextWs.rootPath = rootPath;
-      if (convsChanged || (rootPath && rootPath !== ws.rootPath)) {
-        workspacesChanged = true;
-        workspaces.push(nextWs);
-      } else {
-        workspaces.push(ws);
-      }
-    }
     // Restore the non-conversation part of the last view (detail mode, focused
     // project/workspace) so a renderer reload — e.g. after a long macOS sleep
     // discards and reloads the render process — lands the user back where they
     // were instead of resetting to the default conversation view. The sibling
     // stores (flow run, orchestration) are restored just below.
+    //
+    // This `set` comes FIRST, before any of the reconcile/probe work below.
+    // Everything the first paint needs is already in the persisted store, so
+    // making the window wait on symlink reconciliation, git probes and CLI
+    // health spawns only bought a blank app for several seconds on startup.
     const view = state.view;
     set({
       projects: state.projects,
-      workspaces,
+      workspaces: state.workspaces,
       colosseums: state.colosseums,
       settings: state.settings,
       lastInit: state.lastInit,
@@ -1261,6 +1221,29 @@ export const useStore = create<StoreState>((set, get) => ({
       // fields above land.
       fileTabsByScope: hydrateFileTabs(state.fileTabs),
     });
+
+    // The restored conversation's transcript is the one thing the user is
+    // actually looking at, so it goes out before every other startup chore.
+    // Reading it costs ~70ms; it used to land last, behind ~200 git
+    // subprocesses and a round of CLI health spawns, which is what made
+    // opening the app sit on "Loading history…" for seconds.
+    //
+    // One exception: a workspace coordinator's cwd is its
+    // `coordinatorRootPath`, which the reconcile below can still backfill or
+    // move. Loading that one early would read the wrong (or no) transcript,
+    // so it waits for its root — see the matching call after the reconcile.
+    const selectedId = state.selectedConversationId ?? null;
+    const selectedIsCoordinator =
+      !!selectedId &&
+      state.workspaces.some((ws) =>
+        (ws.conversations ?? []).some(
+          (c) => c.id === selectedId && !!c.workspaceAgentMemberIds?.length,
+        ),
+      );
+    if (selectedId && !selectedIsCoordinator) {
+      void get().loadHistoryIfNeeded(selectedId);
+    }
+
     if (view?.activeRunId) {
       const { useFlowsStore } = await import('./flowsStore');
       useFlowsStore.getState().setActiveRun(view.activeRunId);
@@ -1277,11 +1260,64 @@ export const useStore = create<StoreState>((set, get) => ({
         useOrchestratorStore.getState().restoreDefaults(view.orchestrator);
       }
     }
-    if (workspacesChanged) await get().saveWorkspaces();
+
+    // Reconcile every workspace's symlink root: backfills `rootPath` for
+    // workspaces saved before this existed, and refreshes the symlink set
+    // when a member project has been added/removed/renamed since launch.
+    // Workspaces reconcile in parallel — each is an independent tree, and
+    // done one at a time the coordinator round trips added up to a visible
+    // stall (every coordinator ever created is reconciled on every launch).
+    let workspacesChanged = false;
+    const workspaces: Workspace[] = await Promise.all(
+      state.workspaces.map(async (ws) => {
+        const rootPath = await ensureWorkspaceRoot(state.projects, ws.id, ws.projectIds);
+        // Backfill coordinator symlink roots for agents saved before the
+        // per-coordinator root existed. Without this, existing workspace
+        // agents keep writing via workspace-level symlinks into the main
+        // tree. We also reconcile links in case a member's worktree moved.
+        let convsChanged = false;
+        const reconciledConvs: Conversation[] = await Promise.all(
+          (ws.conversations ?? []).map(async (conv) => {
+            const memberIds = conv.workspaceAgentMemberIds;
+            if (!memberIds?.length) return conv;
+            const members = collectCoordinatorMembers(state.projects, memberIds);
+            if (members.length === 0) return conv;
+            const res = await window.overcli.invoke('workspace:ensureCoordinatorSymlinkRoot', {
+              coordinatorId: conv.id,
+              members,
+            });
+            if (res.ok && res.rootPath !== conv.coordinatorRootPath) {
+              convsChanged = true;
+              return { ...conv, coordinatorRootPath: res.rootPath };
+            }
+            return conv;
+          }),
+        );
+        const nextWs: Workspace = { ...ws };
+        if (convsChanged) nextWs.conversations = reconciledConvs;
+        if (rootPath && rootPath !== ws.rootPath) nextWs.rootPath = rootPath;
+        if (convsChanged || (rootPath && rootPath !== ws.rootPath)) {
+          workspacesChanged = true;
+          return nextWs;
+        }
+        return ws;
+      }),
+    );
+    if (workspacesChanged) {
+      set({ workspaces });
+      await get().saveWorkspaces();
+    }
+    if (selectedId && selectedIsCoordinator) {
+      void get().loadHistoryIfNeeded(selectedId);
+    }
+
     get().refreshEverydayRoots();
     void get().syncProjectMarkers();
-    await get().refreshBackendHealth();
-    await get().refreshInstalledReviewers();
+    // Not awaited: nothing later in `init` reads backend health, and probing
+    // means spawning every CLI (`--version`, then an auth check) — up to a
+    // second of startup that used to sit in front of the conversation load.
+    void get().refreshBackendHealth();
+    void get().refreshInstalledReviewers();
     void get().refreshCapabilities();
     void get().refreshMarketplaceSkills();
     void get().refreshMcpCatalog();
@@ -1293,11 +1329,6 @@ export const useStore = create<StoreState>((set, get) => ({
       .invoke('ollama:serverStatus')
       .then((res) => set({ ollamaServerStatus: res.status }))
       .catch(() => {});
-    // Preload history for the currently-selected conversation so switching
-    // back to it is instant.
-    if (state.selectedConversationId) {
-      await get().loadHistoryIfNeeded(state.selectedConversationId);
-    }
   },
 
   selectConversation(id) {
@@ -3777,7 +3808,14 @@ export const useStore = create<StoreState>((set, get) => ({
     const project = get().projects.find((p) => p.id === projectId);
     if (!project?.path) return;
     try {
-      const res = await window.overcli.invoke('git:commitStatus', { cwd: project.path });
+      // `projectIsGitRepo` is a boolean and nothing here reads the diff, so
+      // this asks the one-subprocess branch probe rather than
+      // `git:commitStatus` (four git invocations plus a line count of every
+      // untracked file). `init` fires this for EVERY project at startup —
+      // with a few dozen projects the expensive version was a couple of
+      // hundred git processes saturating the machine while the window was
+      // still trying to paint its first conversation.
+      const res = await window.overcli.invoke('git:currentBranch', { cwd: project.path });
       set((s) => ({
         projectIsGitRepo: { ...s.projectIsGitRepo, [projectId]: !!res.isRepo },
       }));
