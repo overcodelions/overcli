@@ -331,6 +331,11 @@ interface StoreState {
   removeWorkspace(id: UUID): Promise<void>;
   pickProject(): Promise<void>;
   newConversation(projectId: UUID): Promise<Conversation>;
+  /// Fill in a conversation's `baseBranch` — the branch its project was on
+  /// when it opened, which the header uses to warn about later drift. Runs
+  /// off the creation path on purpose (see `newConversation`) and only ever
+  /// fills a blank, so it is safe to call late.
+  captureBaseBranch(conversationId: UUID, cwd: string): Promise<void>;
   newConversationInWorkspace(workspaceId: UUID): Promise<Conversation | null>;
   /// Open a fresh conversation inside an EXISTING worktree owned by
   /// something else — today a flow run's, so you can keep working in
@@ -468,6 +473,10 @@ interface StoreState {
   // Runner
   send(conversationId: UUID, prompt: string): Promise<void>;
   prewarmConversation(conversationId: UUID): void;
+  /// Warm a backend process for the conversation the start page is about to
+  /// create. Reads the target registered by `setPendingNewConversation`; a
+  /// no-op when there is none, or when the target isn't prewarm-eligible.
+  prewarmNewConversation(): void;
   stop(conversationId: UUID): Promise<void>;
   resetConversation(conversationId: UUID): Promise<void>;
   respondPermission(
@@ -1048,6 +1057,106 @@ const PREWARM_FLEET_CAP = 3;
 const PREWARM_MIN_CHARS = 8;
 const prewarmed = new Set<string>();
 
+/// What the start page WOULD create if the user hit enter right now.
+///
+/// Every other composer in the app warms a backend process while you type
+/// (`setDraft` → `prewarmConversation`), which is what hides CLI boot and MCP
+/// registration behind the seconds you spend typing. The start page couldn't:
+/// its draft lives under a `__`-prefixed sentinel key and there is no
+/// conversation to warm until `handleSend` mints one — so a chat started from
+/// the start page paid the whole cold start AFTER enter, while every
+/// continued conversation paid none. That asymmetry is the lag.
+///
+/// The fix is to mint the conversation's id up front. `WelcomePane` registers
+/// its current target here, `setDraft` warms a process against
+/// `conversationId`, and `newConversation` then creates the conversation with
+/// that same id — so the process warmed during typing is the one the first
+/// turn lands on.
+interface PendingNewConversation {
+  /// The composer key this target belongs to, so `setDraft` only acts on
+  /// keystrokes from the start page's own composer.
+  draftKey: string;
+  projectId?: UUID;
+  workspaceId?: UUID;
+  backend: Backend;
+  model: string;
+  permissionMode: PermissionMode;
+  effortLevel: EffortLevel;
+  conversationId: UUID;
+  /// True once `runner:prewarm` has actually gone out for `conversationId`.
+  /// Only then is the id worth handing to `newConversation` — without a warm
+  /// process behind it, it is just a uuid.
+  warmed: boolean;
+}
+
+let pendingNewConversation: PendingNewConversation | null = null;
+
+/// Register (or clear) the start page's current target. Called from a
+/// `WelcomePane` effect rather than during render, so it costs nothing per
+/// keystroke.
+///
+/// The minted id survives pill edits — model, effort and permission mode are
+/// argv the runner can respawn for, and it already treats a mismatched warm
+/// process as one wasted spawn. Only a change of container invalidates the
+/// warm outright, since `cwd` is what the process is actually bound to, so
+/// that is the one case that re-mints.
+export function setPendingNewConversation(
+  next: Omit<PendingNewConversation, 'conversationId' | 'warmed'> | null,
+): void {
+  if (!next) {
+    pendingNewConversation = null;
+    return;
+  }
+  const prev = pendingNewConversation;
+  const sameContainer =
+    !!prev && prev.projectId === next.projectId && prev.workspaceId === next.workspaceId;
+  pendingNewConversation = {
+    ...next,
+    conversationId: sameContainer ? prev.conversationId : uuid(),
+    warmed: sameContainer ? prev.warmed : false,
+  };
+}
+
+/// The id `newConversation` should use so the first turn inherits the warm
+/// process. Null unless a process was actually warmed for this exact
+/// container — an unwarmed id buys nothing and would only complicate the
+/// caller. Consumed on read: an id can only be spent on one conversation.
+function takeWarmedConversationId(target: {
+  projectId?: UUID;
+  workspaceId?: UUID;
+}): UUID | null {
+  const pending = pendingNewConversation;
+  if (!pending?.warmed) return null;
+  if (pending.projectId !== target.projectId) return null;
+  if (pending.workspaceId !== target.workspaceId) return null;
+  pendingNewConversation = null;
+  return pending.conversationId;
+}
+
+/// `computeAllowedDirs` for a conversation that doesn't exist yet. Mirrors
+/// the fresh-conversation branches there (no worktree, no user-approved
+/// dirs); keep the two in step. Load-bearing for the workspace case:
+/// `allowedDirs` becomes `--add-dir` argv but is NOT part of `LaunchParams`,
+/// so a warm process spawned without the member repos would be reused by the
+/// send rather than respawned, and the agent would silently lack them.
+function allowedDirsForNewConversation(
+  state: StoreState,
+  target: { projectId?: UUID; workspaceId?: UUID },
+): string[] {
+  if (target.projectId) {
+    const project = state.projects.find((p) => p.id === target.projectId);
+    return project ? [project.path] : [];
+  }
+  const ws = state.workspaces.find((w) => w.id === target.workspaceId);
+  if (!ws) return [];
+  const dirs = [ws.rootPath];
+  for (const pid of ws.projectIds) {
+    const proj = state.projects.find((p) => p.id === pid);
+    if (proj) dirs.push(proj.path);
+  }
+  return dirs;
+}
+
 export const useStore = create<StoreState>((set, get) => ({
   projects: [],
   workspaces: [],
@@ -1343,19 +1452,22 @@ export const useStore = create<StoreState>((set, get) => ({
     // `Set` iterates in insertion order, so the oldest id is evicted to make
     // room rather than prewarm going permanently dead after the fleet cap is
     // first reached.
-    if (
-      text.length >= PREWARM_MIN_CHARS &&
-      !prewarmed.has(id) &&
-      !id.startsWith('__') &&
-      !id.includes(':')
-    ) {
-      if (prewarmed.size >= PREWARM_FLEET_CAP) {
-        const oldest = prewarmed.values().next().value;
-        if (oldest !== undefined) prewarmed.delete(oldest);
-      }
-      prewarmed.add(id);
-      get().prewarmConversation(id);
+    if (text.length < PREWARM_MIN_CHARS) return;
+    // The start page is the exception to the `__`-prefix rule: it has no
+    // conversation to warm, so it registers the one it is about to create and
+    // we warm that id instead. See `setPendingNewConversation`.
+    const pending =
+      pendingNewConversation?.draftKey === id ? pendingNewConversation : null;
+    if (!pending && (id.startsWith('__') || id.includes(':'))) return;
+    const warmId = pending ? pending.conversationId : id;
+    if (prewarmed.has(warmId)) return;
+    if (prewarmed.size >= PREWARM_FLEET_CAP) {
+      const oldest = prewarmed.values().next().value;
+      if (oldest !== undefined) prewarmed.delete(oldest);
     }
+    prewarmed.add(warmId);
+    if (pending) get().prewarmNewConversation();
+    else get().prewarmConversation(warmId);
   },
 
   addAttachment(key, attachment) {
@@ -1670,21 +1782,11 @@ export const useStore = create<StoreState>((set, get) => ({
 
   async newConversation(projectId) {
     const preferred = pickDefaultBackend(get().settings, get().backendHealth);
-    // Capture the project's current branch so the conversation header can
-    // warn if the working tree drifts onto a different branch later. Best
-    // effort — a non-git project just leaves it undefined.
-    let baseBranch: string | undefined;
     const project = get().projects.find((p) => p.id === projectId);
-    if (project?.path) {
-      try {
-        const status = await window.overcli.invoke('git:commitStatus', { cwd: project.path });
-        if (status.isRepo && status.currentBranch) baseBranch = status.currentBranch;
-      } catch {
-        /* leave baseBranch undefined */
-      }
-    }
     const conv: Conversation = {
-      id: uuid(),
+      // Adopts the id the start page already warmed a process against, when
+      // there is one — that is what lets the first turn skip CLI boot.
+      id: takeWarmedConversationId({ projectId }) ?? uuid(),
       name: 'New conversation',
       createdAt: Date.now(),
       totalCostUSD: 0,
@@ -1692,7 +1794,6 @@ export const useStore = create<StoreState>((set, get) => ({
       currentModel: '',
       permissionMode: get().settings.defaultPermissionMode,
       primaryBackend: preferred,
-      baseBranch,
     };
     set((s) => ({
       projects: s.projects.map((p) =>
@@ -1701,9 +1802,38 @@ export const useStore = create<StoreState>((set, get) => ({
           : p,
       ),
     }));
-    await get().saveProjects();
+    // Deliberately NOT awaited. `coalescedSave` resolves on a 250ms timer, so
+    // awaiting it inserted a quarter second of dead time between "user hit
+    // enter" and the send going out — for a write nothing downstream reads.
+    // In-memory state is already correct, and the coalescer folds this into
+    // whatever save is in flight rather than dropping it.
+    void get().saveProjects();
     get().selectConversation(conv.id);
+    // Stamp the branch AFTER the pane has switched. This used to run first,
+    // and awaited `git:commitStatus` — four git subprocesses plus a
+    // line-count read of every untracked file — for the one string it wanted.
+    // On a cold repo that was the whole 1-2s gap between hitting enter and
+    // the conversation appearing. `baseBranch` only feeds the header's
+    // drift warning, which nothing renders on the first frame, so it lands a
+    // moment later on a conversation that is already open.
+    if (project?.path) void get().captureBaseBranch(conv.id, project.path);
     return conv;
+  },
+
+  async captureBaseBranch(conversationId, cwd) {
+    try {
+      const res = await window.overcli.invoke('git:currentBranch', { cwd });
+      if (!res.isRepo || !res.branch) return;
+      // Only ever fills a blank. A conversation that already knows its base
+      // branch — an agent on its own worktree, or a re-entrant call — must
+      // not be re-stamped with whatever the project happens to be on now.
+      mutateConversation(set, get, conversationId, (c) =>
+        c.baseBranch ? c : { ...c, baseBranch: res.branch },
+      );
+      void get().saveProjects();
+    } catch {
+      /* best effort: a non-git project just leaves baseBranch undefined */
+    }
   },
 
   async newConversationInWorktree(args) {
@@ -1735,7 +1865,8 @@ export const useStore = create<StoreState>((set, get) => ({
           : p,
       ),
     }));
-    await get().saveProjects();
+    // Not awaited, for the reason spelled out in `newConversation`.
+    void get().saveProjects();
     get().selectConversation(conv.id);
     return conv;
   },
@@ -1852,7 +1983,8 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!ws) return null;
     const preferred = pickDefaultBackend(get().settings, get().backendHealth);
     const conv: Conversation = {
-      id: uuid(),
+      // See `newConversation` — adopts the start page's warmed id.
+      id: takeWarmedConversationId({ workspaceId }) ?? uuid(),
       name: 'New conversation',
       createdAt: Date.now(),
       totalCostUSD: 0,
@@ -1868,7 +2000,8 @@ export const useStore = create<StoreState>((set, get) => ({
           : w,
       ),
     }));
-    await get().saveWorkspaces();
+    // Not awaited, for the reason spelled out in `newConversation`.
+    void get().saveWorkspaces();
     get().selectConversation(conv.id);
     return conv;
   },
@@ -2864,6 +2997,46 @@ export const useStore = create<StoreState>((set, get) => ({
       chrome: conv.chrome,
       allowedDirs: backend === 'claude' ? computeAllowedDirs(state, conversationId) : undefined,
       claudeTransport: backend === 'claude' ? state.settings.claudeTransport ?? 'cli' : undefined,
+    });
+  },
+
+  prewarmNewConversation() {
+    const pending = pendingNewConversation;
+    if (!pending) return;
+    const state = get();
+    // canPrewarm in the runner rejects everything else anyway; bailing here
+    // saves the IPC hop.
+    if (pending.backend !== 'claude' && pending.backend !== 'codex') return;
+    if (!isBackendEnabled(state.settings, pending.backend)) return;
+    const cwd = pending.projectId
+      ? state.projects.find((p) => p.id === pending.projectId)?.path
+      : state.workspaces.find((w) => w.id === pending.workspaceId)?.rootPath;
+    if (!cwd) return;
+    // Same resolution `send` does for an unset model, so the warm process
+    // launches on the model the first turn will ask for.
+    const model =
+      pending.model ||
+      state.settings.backendDefaultModels?.[pending.backend] ||
+      premiumModelsForBackend(pending.backend)[0] ||
+      '';
+    // Only now is the id worth handing to `newConversation`.
+    pending.warmed = true;
+    void window.overcli.invoke('runner:prewarm', {
+      conversationId: pending.conversationId,
+      backend: pending.backend,
+      cwd,
+      model,
+      permissionMode: pending.permissionMode,
+      effortLevel: pending.effortLevel,
+      // A brand-new conversation has no session to resume and no per-conv
+      // turbo/chrome override, so the send ships these unset too — leaving
+      // them off here is what keeps `paramsChanged` quiet.
+      allowedDirs:
+        pending.backend === 'claude'
+          ? allowedDirsForNewConversation(state, pending)
+          : undefined,
+      claudeTransport:
+        pending.backend === 'claude' ? state.settings.claudeTransport ?? 'cli' : undefined,
     });
   },
 

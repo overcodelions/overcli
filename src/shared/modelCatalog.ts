@@ -23,7 +23,11 @@ import type { Backend } from './types';
 /// see `liftMissingModel`.
 export const PREMIUM_MODELS: Record<Exclude<Backend, 'ollama'>, string[]> = {
   claude: ['claude-opus-5', 'claude-opus-4-8', 'claude-fable-5-1', 'claude-sonnet-5', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
-  codex: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
+  // `gpt-6-astra` is OpenAI's frontier model (Sept 2026) — the GPT-6
+  // generation's flagship, priced well above the 5.6 line. It sits second
+  // for the same reason `claude-fable-5-1` does: the frontier tier is
+  // opt-in, so `gpt-5.6-sol` stays the auto-pick default.
+  codex: ['gpt-5.6-sol', 'gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'],
   // Gemini's Flash line iterates far faster than its Pro line — 3.7 Flash
   // shipped while 3.1 Pro is still the newest Pro id. Pro leads the list so
   // it stays the auto-pick + drafter default (first entry = strongest).
@@ -144,7 +148,8 @@ export function liftMissingModel(backend: Exclude<Backend, 'ollama'>, model: str
 ///   - 'standard': mid tier; balanced cost vs. quality
 ///   - 'thinking': premium reasoning models, slower + more expensive
 ///   - 'frontier': the most advanced + most expensive tier (Fable 5.1,
-///     ~2x Opus). Kept distinct from 'thinking' so the template resolver
+///     ~2x Opus; GPT-6 Astra on codex). Kept distinct from 'thinking' so
+///     the template resolver
 ///     only assigns it to steps that explicitly ask for it (e.g.
 ///     planning) instead of substituting it for any thinking step.
 export type ModelSpeed = 'fast' | 'standard' | 'thinking' | 'frontier';
@@ -173,6 +178,11 @@ const MODEL_SPEED: Record<string, ModelSpeed> = {
   // Filing terra as the middle tier and luna as the cheap one fixes both
   // ends at once, and matches how reboundPresets already splits the family
   // (luna = cheap, sol = smart).
+  //
+  // GPT-6 Astra is the frontier entry: a full generation up from the 5.6
+  // line and priced to match, so like Fable it only lands on steps that
+  // ask for 'frontier' outright.
+  'gpt-6-astra': 'frontier',
   'gpt-5.6-sol': 'thinking',
   'gpt-5.6-terra': 'standard',
   'gpt-5.6-luna': 'fast',
@@ -208,9 +218,9 @@ export function modelSpeed(model: string): ModelSpeed {
 ///   - Claude: "Claude Opus 4.7" — title-cased name, dot version
 ///   - Codex (GPT): "GPT-5.4 mini" / "GPT-5.6 Sol" — keep "GPT" as a
 ///     literal initialism; dot version. Descriptor qualifiers stay
-///     lowercase ("mini") since "MINI" looked shouty; the GPT-5.6
-///     codenames (Sol/Terra/Luna) are proper names, so they're
-///     title-cased like the Gemini qualifiers.
+///     lowercase ("mini") since "MINI" looked shouty; the release
+///     codenames (Sol/Terra/Luna, and GPT-6's Astra) are proper names, so
+///     they're title-cased like the Gemini qualifiers.
 ///   - Gemini: "Gemini 2.5 Pro" — title-cased qualifier
 ///   - Copilot: "{underlying model} (Copilot)" — render the underlying
 ///     model's nice form, suffix with the gateway in parens
@@ -265,8 +275,8 @@ function formatGptId(model: string): string {
   if (!m) return model;
   const [, version, qualifier] = m;
   if (!qualifier) return `GPT-${version}`;
-  // "mini" is a size descriptor and stays lowercase; the GPT-5.6
-  // codenames (sol/terra/luna) are proper names, so title-case them.
+  // "mini" is a size descriptor and stays lowercase; the release
+  // codenames (sol/terra/luna, astra) are proper names, so title-case them.
   const lower = qualifier.toLowerCase();
   const nice = lower === 'mini' ? 'mini' : (lower[0]?.toUpperCase() ?? '') + lower.slice(1);
   return `GPT-${version} ${nice}`;

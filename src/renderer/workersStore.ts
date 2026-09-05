@@ -57,6 +57,51 @@ export interface WorkerDraft {
   mcpServers?: string[];
 }
 
+/// A hire that finished drafting and was never saved.
+///
+/// A hire is two full CLI turns and lands minutes after you asked for it, by
+/// which time you are somewhere else — and every route out of the editor
+/// (Cancel, "← Workers", clicking any name in the roster) threw the whole
+/// thing away without asking. Losing it means describing the job and waiting
+/// out both turns again, so the draft is PARKED instead of dropped, and
+/// written to storage so a reload doesn't finish the job the roster started.
+export interface PendingHire {
+  draft: WorkerDraft;
+  /// The flow drafted alongside the contract, which is the expensive half.
+  flow: Flow | null;
+  /// The drafter's prose read on the job, so the review screen comes back
+  /// whole rather than as a bare form.
+  summary: string | null;
+  flowError: string | null;
+  /// When the draft landed, so the notice can say how long it has waited.
+  at: number;
+}
+
+const PENDING_HIRE_KEY = 'overcli.workers.pendingHire';
+
+/// Storage is best-effort on both sides: a parked hire is a convenience, and
+/// a private window or a wiped profile must not be the thing that stops the
+/// tab from rendering.
+function readPendingHire(): PendingHire | null {
+  try {
+    const raw = localStorage.getItem(PENDING_HIRE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as PendingHire;
+    return parsed?.draft?.name ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingHire(pending: PendingHire | null): void {
+  try {
+    if (pending) localStorage.setItem(PENDING_HIRE_KEY, JSON.stringify(pending));
+    else localStorage.removeItem(PENDING_HIRE_KEY);
+  } catch {
+    // Nothing to do — the draft is still on the store for this session.
+  }
+}
+
 interface WorkersState {
   loaded: boolean;
   workers: Record<string, Worker>;
@@ -88,6 +133,17 @@ interface WorkersState {
   errandError: Record<string, string>;
   errandResult: Record<string, WorkerErrandResult>;
   draft: WorkerDraft | null;
+  /// Whether the open editor is showing a hire draft that has never been
+  /// saved — the one draft that is parked rather than dropped when the editor
+  /// closes. An import is unsaved too, but it can be re-read off the file it
+  /// came from; a hire cannot be re-read from anywhere.
+  draftFromHire: boolean;
+  /// A finished hire waiting to be reviewed, parked because the editor closed
+  /// before it was saved. Restored from storage on load, so it also survives a
+  /// reload. Set while the editor is open too — that is what makes a reload
+  /// mid-review survivable — so anything asking "is something waiting on the
+  /// user" reads it together with `draftFromHire`.
+  pendingHire: PendingHire | null;
   /// A flow riding along with the draft: hire-drafted (new), or AI-revised
   /// (an existing flow with unsaved changes). Persisted only when the worker
   /// itself saves — cancelling the editor discards both together.
@@ -284,6 +340,9 @@ interface WorkersActions {
       draftedFlow?: Flow;
       hireSummary?: string;
       hireFlowError?: string;
+      /// This draft came from a hire and has never been saved, so closing the
+      /// editor parks it instead of dropping it.
+      fromHire?: boolean;
     },
   ): void;
   closeEditor(): void;
@@ -299,6 +358,11 @@ interface WorkersActions {
   startHire(): Promise<void>;
   /// Clear a hire draft stuck mid-turn so the user can start a fresh one.
   cancelHire(): void;
+  /// Put a parked hire back in the editor, exactly as it was drafted.
+  resumeHire(): void;
+  /// Throw a parked hire away — the explicit "no thanks" that closing the
+  /// editor deliberately is not.
+  discardPendingHire(): void;
   /// Scan the open draft for details that belong to whoever shared it. Safe
   /// to call for any draft; only import calls it, because only an imported
   /// worker was written for somebody else.
@@ -615,6 +679,21 @@ export function selectRevise(s: WorkersState): ReviseState {
   return (key ? s.revise[key] : undefined) ?? IDLE_REVISE;
 }
 
+/// The parked form of whatever hire draft is currently open, or null when the
+/// editor is showing something else — an existing worker, an import, a
+/// blank one. A hire that has already been saved once has an id and is a
+/// worker now, so it is not parked either.
+function pendingFromDraft(st: WorkersState): PendingHire | null {
+  if (!st.draftFromHire || !st.draft || st.draft.id) return null;
+  return {
+    draft: st.draft,
+    flow: st.draftedFlow,
+    summary: st.hireSummary,
+    flowError: st.hireFlowError,
+    at: st.pendingHire?.at ?? Date.now(),
+  };
+}
+
 /// Every sidebar destination is a NAVIGATION, so it has to LEAVE whatever is
 /// filling the pane — not just set `view`. The Workers tab draws the editor,
 /// the hire screen and a worker's flow run in place of its own screens and
@@ -624,7 +703,9 @@ export function selectRevise(s: WorkersState): ReviseState {
 ///
 /// Closing the editor discards the draft, which is the same bargain every
 /// other route out of it already made — the roster is a navigation bar, and a
-/// navigation bar that refuses to navigate is the worse failure.
+/// navigation bar that refuses to navigate is the worse failure. The one
+/// exception is an unsaved hire: `closeEditor` parks that rather than
+/// dropping it, because the roster cannot draft it again.
 function leavePane(get: () => WorkersState & WorkersActions): void {
   useFlowsStore.getState().setActiveRun(null);
   const st = get();
@@ -645,6 +726,8 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
   errandError: {},
   errandResult: {},
   draft: null,
+  draftFromHire: false,
+  pendingHire: readPendingHire(),
   draftedFlow: null,
   hireSummary: null,
   hireFlowError: null,
@@ -872,6 +955,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       const held = st.revise[key]?.pending ?? null;
       return {
         draft: held?.jobDescription ? { ...draft, jobDescription: held.jobDescription } : draft,
+        draftFromHire: extras?.fromHire ?? false,
         draftedFlow: held?.flow ?? extras?.draftedFlow ?? null,
         hireSummary: extras?.hireSummary ?? null,
         hireFlowError: held?.flow ? null : (extras?.hireFlowError ?? null),
@@ -897,11 +981,26 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           : st.revise,
       };
     });
+    // An unsaved hire draft is parked from the moment it reaches the editor,
+    // not only when the editor closes: the review screen can sit open for an
+    // hour, and a reload under it used to take both drafting turns with it.
+    const landed = pendingFromDraft(get());
+    if (landed) {
+      writePendingHire(landed);
+      set({ pendingHire: landed });
+    }
   },
 
   closeEditor() {
+    // An unsaved hire is parked, not dropped: it cost two CLI turns and the
+    // user is closing a screen, not turning the worker down. Re-parked on the
+    // way out so the edits made in the editor come back with it.
+    const parked = pendingFromDraft(get());
+    if (parked) writePendingHire(parked);
     set((st) => ({
       draft: null,
+      draftFromHire: false,
+      ...(parked ? { pendingHire: parked } : {}),
       draftedFlow: null,
       hireSummary: null,
       hireFlowError: null,
@@ -910,6 +1009,27 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       // A revision still running (or one holding a result) keeps its entry so
       // it has somewhere to land; a finished, read box is forgotten.
       revise: forgetIdleRevision(st),
+    }));
+  },
+
+  resumeHire() {
+    const parked = get().pendingHire;
+    if (!parked) return;
+    get().openEditor(parked.draft, {
+      draftedFlow: parked.flow ?? undefined,
+      hireSummary: parked.summary ?? undefined,
+      hireFlowError: parked.flowError ?? undefined,
+      fromHire: true,
+    });
+  },
+
+  discardPendingHire() {
+    writePendingHire(null);
+    set((st) => ({
+      pendingHire: null,
+      // Only the OPEN editor is showing it — if it is, it stops being a hire
+      // draft rather than closing under the user mid-read.
+      ...(st.draftFromHire ? { draftFromHire: false } : {}),
     }));
   },
 
@@ -984,6 +1104,7 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
           draftedFlow: result.draftedFlow,
           hireSummary: result.summary || undefined,
           hireFlowError: result.flowError,
+          fromHire: true,
       });
       // The hire's own form is done with; other workers' revisions are not
       // this hire's business and keep running.
@@ -1302,9 +1423,14 @@ export const useWorkersStore = create<WorkersState & WorkersActions>((set, get) 
       }
       // The `workerUpdate` push has already landed the record; just close.
       // A revision held against this worker is on disk now, so it stops being
-      // something that needs putting back.
+      // something that needs putting back — and a parked hire that just
+      // BECAME a worker has nothing left to wait for.
+      const wasHire = get().draftFromHire;
+      if (wasHire) writePendingHire(null);
       set((st) => ({
         draft: null,
+        draftFromHire: false,
+        ...(wasHire ? { pendingHire: null } : {}),
         draftedFlow: null,
         hireSummary: null,
         hireFlowError: null,

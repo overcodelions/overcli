@@ -31,7 +31,43 @@ function isSyntheticPrompt(text: string, syntheticHashes: Set<string>): boolean 
 /// its source line — across IPC and into renderer memory, which is what made
 /// the "Loading history…" spinner drag. We keep only the most recent slice,
 /// since the tail is what the user wants on open.
-const HISTORY_TAIL_BUDGET_BYTES = 1_500_000;
+///
+/// 6MB rather than the 1.5MB this started at. The old figure was chosen when
+/// reaching the tail meant reading and parsing the WHOLE transcript, so the
+/// budget bought nothing on the expensive half of the job and every megabyte
+/// of it cost IPC. Now that `readTailLines` seeks, the cost scales with what
+/// we keep — and measured against the real transcripts on this machine, 6MB
+/// loads all but the largest of them in full (1300-2200 events, ~1-2MB over
+/// IPC, 30-80ms) while STILL beating what 1.5MB used to cost on the same
+/// files. The chat list is virtualized, so the renderer pays for what is on
+/// screen, not for the length of the array.
+const HISTORY_TAIL_BUDGET_BYTES = 6_000_000;
+
+/// How much more of the file `readTailLines` pulls than the replay budget
+/// asks for.
+///
+/// The budget is spent on PARSED bytes — the `raw` of each event that
+/// survives — while a read window is measured in file bytes, and the two are
+/// not the same size. Lines that parse to nothing (compact summaries, empty
+/// user turns, whitespace) cost file bytes and no budget, so a window of
+/// exactly one budget's worth of file lands well short: on a real 3.6MB
+/// transcript it kept 270 events where the budget allows 575. Over-reading
+/// lets `trimHistoryForReplay` stay the thing that decides, so the tail we
+/// show is the same one we showed before this became a seek. 4x clears the
+/// ~1.5x ratio seen on real transcripts with room to spare, and still reads a
+/// fraction of a large file. If even that falls short the result is a
+/// slightly shorter tail, never a wrong one.
+const TAIL_READ_SLACK = 4;
+
+/// What a loader found, plus whether it stopped short of the start of the
+/// transcript. `truncated` exists because the line-oriented backends now seek
+/// to the tail instead of reading the whole file (see `readTailLines`): they
+/// know they left older turns behind, but not how many, so the "older turns
+/// are hidden" notice can't quote a count on that path.
+interface LoadedHistory {
+  events: StreamEvent[];
+  truncated: boolean;
+}
 
 export function loadHistory(args: {
   backend: Backend;
@@ -41,18 +77,25 @@ export function loadHistory(args: {
   conversationCreatedAt?: number;
   conversationLastActiveAt?: number;
   syntheticPrompts?: string[];
+  /// How much of the tail to replay, in source bytes. Defaults to
+  /// `HISTORY_TAIL_BUDGET_BYTES`; callers wanting more of a long transcript
+  /// pass a bigger number and pay a proportionally bigger read.
+  budgetBytes?: number;
 }): StreamEvent[] {
   const synthetic = new Set(args.syntheticPrompts ?? []);
-  return trimHistoryForReplay(loadFullHistory(args, synthetic), HISTORY_TAIL_BUDGET_BYTES);
+  const budget = Math.max(1, args.budgetBytes ?? HISTORY_TAIL_BUDGET_BYTES);
+  const loaded = loadFullHistory(args, synthetic, budget);
+  return trimHistoryForReplay(loaded.events, budget, loaded.truncated);
 }
 
 function loadFullHistory(
   args: { backend: Backend; projectPath: string; sessionId?: string; codexRolloutPaths?: string[]; conversationCreatedAt?: number; conversationLastActiveAt?: number },
   synthetic: Set<string>,
-): StreamEvent[] {
+  budgetBytes: number,
+): LoadedHistory {
   switch (args.backend) {
     case 'claude':
-      return loadClaudeHistory(args.sessionId, args.projectPath, synthetic);
+      return loadClaudeHistory(args.sessionId, args.projectPath, synthetic, budgetBytes);
     case 'codex':
       return loadCodexHistory(
         args.codexRolloutPaths ?? [],
@@ -61,13 +104,60 @@ function loadFullHistory(
         args.conversationCreatedAt,
         args.conversationLastActiveAt,
         synthetic,
+        budgetBytes,
       );
     case 'gemini':
-      return loadGeminiHistory(args.sessionId, args.projectPath, synthetic);
+      return { events: loadGeminiHistory(args.sessionId, args.projectPath, synthetic), truncated: false };
     case 'ollama':
-      return loadOllamaHistory(args.sessionId, synthetic);
+      return { events: loadOllamaHistory(args.sessionId, synthetic), truncated: false };
     case 'copilot':
-      return loadCopilotHistory(args.sessionId, synthetic);
+      return { events: loadCopilotHistory(args.sessionId, synthetic), truncated: false };
+  }
+}
+
+/// Read only the last `budgetBytes` of a JSONL transcript, as whole lines.
+///
+/// The replay budget throws away everything past the tail anyway, but we used
+/// to reach it by reading and `JSON.parse`-ing the entire file first — 28MB
+/// read and parsed to keep 1.5MB, synchronously, on the main process thread
+/// (so the window couldn't paint). Seeking to the tail does the same job in
+/// proportion to what we keep rather than to what the file has accumulated.
+///
+/// Only safe for line-oriented transcripts whose parser is a pure function of
+/// one line — true of `parseClaudeHistoryLine` and `parseCodexHistoryLine`,
+/// NOT of copilot's, which threads a parser state across lines and so has to
+/// start from the beginning.
+function readTailLines(
+  file: string,
+  budgetBytes: number,
+): { lines: string[]; truncated: boolean } {
+  let fd: number;
+  try {
+    fd = fs.openSync(file, 'r');
+  } catch {
+    return { lines: [], truncated: false };
+  }
+  try {
+    const size = fs.fstatSync(fd).size;
+    const window = budgetBytes * TAIL_READ_SLACK;
+    if (size <= window) {
+      return { lines: fs.readFileSync(file, 'utf-8').split('\n'), truncated: false };
+    }
+    const buf = Buffer.alloc(window);
+    // `readSync` may come up short; whatever it returns still ends at EOF,
+    // which is the end we care about.
+    const read = fs.readSync(fd, buf, 0, window, size - window);
+    const text = buf.subarray(0, read).toString('utf-8');
+    // The window almost certainly opens mid-line, and mid-UTF8-sequence with
+    // it. Discarding through the first newline fixes both at once: a
+    // continuation byte can never be `\n`, so everything after it is whole
+    // lines of valid text.
+    const nl = text.indexOf('\n');
+    return { lines: nl === -1 ? [] : text.slice(nl + 1).split('\n'), truncated: true };
+  } catch {
+    return { lines: [], truncated: false };
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -80,7 +170,11 @@ function loadFullHistory(
 ///     transcript can't dump tens of MB across the IPC boundary at once.
 /// When anything is dropped we prepend a `systemNotice` so the user knows
 /// older turns exist but were elided to keep the open fast.
-function trimHistoryForReplay(events: StreamEvent[], budgetBytes: number): StreamEvent[] {
+function trimHistoryForReplay(
+  events: StreamEvent[],
+  budgetBytes: number,
+  truncatedAtSource = false,
+): StreamEvent[] {
   let total = 0;
   let startIdx = 0;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -91,16 +185,15 @@ function trimHistoryForReplay(events: StreamEvent[], budgetBytes: number): Strea
     }
   }
   const kept = events.slice(startIdx).map((e) => (e.raw ? { ...e, raw: '' } : e));
-  if (startIdx > 0) {
+  if (startIdx > 0 || truncatedAtSource) {
+    // A count is only honest when we saw the whole transcript. `readTailLines`
+    // never read the older turns, so on that path we say what happened
+    // without inventing a number for it.
+    const text = truncatedAtSource
+      ? 'Showing the most recent part of a long transcript — earlier turns are hidden so this loads faster.'
+      : `Showing the most recent part of a long transcript — ${startIdx} earlier event${startIdx === 1 ? '' : 's'} hidden so this loads faster.`;
     kept.unshift(
-      event(
-        {
-          type: 'systemNotice',
-          text: `Showing the most recent part of a long transcript — ${startIdx} earlier event${startIdx === 1 ? '' : 's'} hidden so this loads faster.`,
-        },
-        '',
-        events[startIdx]?.timestamp ?? Date.now(),
-      ),
+      event({ type: 'systemNotice', text }, '', events[startIdx]?.timestamp ?? Date.now()),
     );
   }
   return kept;
@@ -119,6 +212,9 @@ function loadCopilotHistory(
   const file = path.join(os.homedir(), '.copilot', 'session-state', sessionId, 'events.jsonl');
   if (!fs.existsSync(file)) return [];
   try {
+    // Read whole, deliberately: `parseCopilotLine` threads `state` across
+    // lines, so it cannot start partway in the way claude/codex can. See
+    // `readTailLines`.
     const lines = fs.readFileSync(file, 'utf-8').split('\n');
     const state = makeCopilotParserState();
     const out: StreamEvent[] = [];
@@ -294,13 +390,14 @@ function loadClaudeHistory(
   sessionId: string | undefined,
   projectPath: string,
   syntheticPrompts: Set<string>,
-): StreamEvent[] {
-  if (!sessionId) return [];
+  budgetBytes: number,
+): LoadedHistory {
+  if (!sessionId) return { events: [], truncated: false };
   const slug = claudeProjectSlug(projectPath);
   const dir = resolveClaudeProjectDir(slug);
   const file = path.join(dir, `${sessionId}.jsonl`);
-  if (!fs.existsSync(file)) return [];
-  const lines = fs.readFileSync(file, 'utf-8').split('\n');
+  if (!fs.existsSync(file)) return { events: [], truncated: false };
+  const { lines, truncated } = readTailLines(file, budgetBytes);
   const out: StreamEvent[] = [];
   for (const line of lines) {
     const evs = parseClaudeHistoryLine(line);
@@ -311,7 +408,7 @@ function loadClaudeHistory(
       out.push(ev);
     }
   }
-  return out;
+  return { events: out, truncated };
 }
 
 export function parseClaudeHistoryLine(line: string): StreamEvent[] {
@@ -496,16 +593,22 @@ function loadCodexHistory(
   conversationCreatedAt: number | undefined,
   conversationLastActiveAt: number | undefined,
   syntheticPrompts: Set<string>,
-): StreamEvent[] {
+  budgetBytes: number,
+): LoadedHistory {
   const allPaths = paths.length
     ? paths
     : findCodexRolloutPaths(sessionId, projectPath, conversationCreatedAt, conversationLastActiveAt);
-  if (!allPaths.length) return [];
+  if (!allPaths.length) return { events: [], truncated: false };
   const merged: StreamEvent[] = [];
+  let truncated = false;
   for (const p of allPaths) {
     if (!fs.existsSync(p)) continue;
-    const lines = fs.readFileSync(p, 'utf-8').split('\n');
-    for (const line of lines) {
+    // Budget-sized tail PER FILE. The union of those tails is a superset of
+    // the merged tail the final trim keeps, so the result is the same as
+    // reading every file whole — see `readTailLines`.
+    const tail = readTailLines(p, budgetBytes);
+    truncated ||= tail.truncated;
+    for (const line of tail.lines) {
       const ev = parseCodexHistoryLine(line);
       if (!ev) continue;
       if (ev.kind.type === 'localUser' && isSyntheticPrompt(ev.kind.text, syntheticPrompts)) {
@@ -515,7 +618,7 @@ function loadCodexHistory(
     }
   }
   merged.sort((a, b) => a.timestamp - b.timestamp);
-  return dedupeCodexEvents(merged);
+  return { events: dedupeCodexEvents(merged), truncated };
 }
 
 function findCodexRolloutPaths(
