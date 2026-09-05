@@ -28,6 +28,7 @@ import {
 } from '../filePreview';
 import { dropBuffer, readBuffer, stashBuffer } from '../fileBuffers';
 import { dirName, fileName, tabLabels } from '../tabLabels';
+import { revealLabel } from '../platform';
 import { FilePreview } from './FilePreview';
 import { UnifiedDiffBody } from './sheets/WorktreeDiffSheet';
 import { CodeMirrorEditor } from './CodeMirrorEditor';
@@ -55,6 +56,18 @@ const AUTO_SAVE_IDLE_MS = 5000;
 /// marks "you stopped working on this", and one per keystroke-burst would be
 /// a history nobody can read.
 const CHECKPOINT_IDLE_MS = 120_000;
+
+/// Which browser "Open in browser" will use, probed once per app session —
+/// the answer is an `existsSync` in main and cannot change while the app runs.
+/// Cached as the promise, so several panes opening at once share one call.
+let browserNamePromise: Promise<string | null> | null = null;
+function browserName(): Promise<string | null> {
+  browserNamePromise ??= window.overcli
+    .invoke('fs:browserName')
+    .then((r) => r?.name ?? null)
+    .catch(() => null);
+  return browserNamePromise;
+}
 
 type FileInfoState = FileInfoResult & { requestedPath: string };
 /// Cmd-click go-to-definition state. `loading` shows a inline chip (a
@@ -169,6 +182,10 @@ export const FileEditorPane = memo(function FileEditorPane({
     if (!origin || !owner) return null;
     return `${owner.name} · ${workerFileTitle(origin.name)}`;
   }, [path, workerFilesRoot, workersById]);
+  // The header shows the basename; the full path moves to its tooltip and to
+  // the menu's Copy path. At 320px a path renders as an ellipsis and three
+  // characters, which identifies nothing.
+  const headerFileName = path ? path.slice(path.lastIndexOf('/') + 1) : '';
   const highlight = useStore((s) => s.openFileHighlight);
   const mode = useStore((s) => s.openFileMode);
   const setMode = useStore((s) => s.setOpenFileMode);
@@ -191,9 +208,18 @@ export const FileEditorPane = memo(function FileEditorPane({
   const [copiedPath, setCopiedPath] = useState(false);
   const [downloadState, setDownloadState] = useState<'idle' | 'saved' | 'failed'>('idle');
   const [reverting, setReverting] = useState(false);
+  // The header's file menu — Copy/Open/Download/Revert live in here rather
+  // than as four chips in the bar. See the header's own comment for why.
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const fileMenuRef = useRef<HTMLDivElement>(null);
+  const [browser, setBrowser] = useState<string | null>(null);
   // True when the diff is a brand-new untracked file — it has no HEAD
   // version to revert to, so we hide the Revert action for it.
   const [diffUntracked, setDiffUntracked] = useState(false);
+  // Whether this file has uncommitted changes — the precise question Revert
+  // answers, since it is a `git checkout HEAD -- <file>`. Starts true: when
+  // the diff is already measured from HEAD, a non-empty diff IS the proof.
+  const [revertable, setRevertable] = useState(true);
   // Bumped to force a re-read of the file + diff after a revert, so the
   // view reflects the restored-to-HEAD content.
   const [refreshToken, setRefreshToken] = useState(0);
@@ -458,6 +484,10 @@ export const FileEditorPane = memo(function FileEditorPane({
   // change gutter — but only as decoration. `quiet` keeps that fetch out of
   // the loading spinner and the error panel: a folder that isn't a git repo
   // must not replace the file you asked for with a git error.
+  // Whether this file has a diff at all — known synchronously, from the path
+  // alone (see resolveDiffTarget). The Diff tab is hidden when it doesn't, so
+  // the tab is never a click that leads to a git error.
+  const diffable = !!diffTarget;
   const quiet = mode !== 'diff' && !missingFile;
   useEffect(() => {
     // A missing file has no readable content, so we fetch its diff whatever
@@ -509,6 +539,32 @@ export const FileEditorPane = memo(function FileEditorPane({
         });
         baseRef = resolved.commit;
       }
+      // Does this file have uncommitted changes? That — not "was a base
+      // branch recorded" — is what Revert needs to know, because Revert is a
+      // checkout of HEAD and uncommitted changes are exactly what a checkout
+      // discards. The old test keyed off the base branch and so hid Revert
+      // for every conversation started "from master", including ones sitting
+      // on master with nothing but working-tree edits.
+      //
+      // Asking git directly also survives the case comparing commits would
+      // not: with local commits not yet pushed, the base resolves to
+      // origin's tip rather than HEAD, and a base-vs-HEAD comparison would
+      // still wrongly hide Revert even though the file has uncommitted work.
+      //
+      // Free in the common case: when the diff is already measured from
+      // HEAD, `diffText` proves it and there is nothing more to ask.
+      let canRevertThis = true;
+      if (baseRef !== 'HEAD') {
+        // `--quiet` exits 1 when the file differs from HEAD, 0 when clean.
+        // Anything else is an error, and leaves Revert hidden — the safe way
+        // to be wrong about a destructive action.
+        const vsHead = await window.overcli.invoke('git:run', {
+          args: ['diff', '--quiet', 'HEAD', '--', diffTarget.path],
+          cwd: diffTarget.cwd,
+        });
+        canRevertThis = vsHead.exitCode === 1;
+      }
+      setRevertable(canRevertThis);
       const tracked = await window.overcli.invoke('git:run', {
         args: ['diff', baseRef, '--', diffTarget.path],
         cwd: diffTarget.cwd,
@@ -782,6 +838,7 @@ export const FileEditorPane = memo(function FileEditorPane({
       if ((e.key === 'd' || e.key === 'D') && e.shiftKey) {
         e.preventDefault();
         if (missingFile) return; // nothing to toggle to — the file is gone
+        if (!diffable) return; // this file has no diff to toggle to
         setMode(mode === 'diff' ? 'edit' : 'diff');
         return;
       }
@@ -801,7 +858,43 @@ export const FileEditorPane = memo(function FileEditorPane({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [path, mode, save, setMode, missingFile, tabs, selectTab, selectAdjacentTab]);
+  }, [path, mode, save, setMode, missingFile, diffable, tabs, selectTab, selectAdjacentTab]);
+
+  // Dismiss the file menu on an outside click or Escape, matching the tab
+  // strip's overflow menu below.
+  useEffect(() => {
+    if (!fileMenuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!fileMenuRef.current?.contains(e.target as Node)) setFileMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setFileMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [fileMenuOpen]);
+
+  // A new file closes the menu: it names the file it was opened on.
+  useEffect(() => {
+    setFileMenuOpen(false);
+  }, [path]);
+
+  // Probed the first time the menu opens on a page, not on mount: most files
+  // are not HTML and never need the answer.
+  useEffect(() => {
+    if (!fileMenuOpen || previewKind !== 'html' || browser) return;
+    let live = true;
+    void browserName().then((name) => {
+      if (live) setBrowser(name);
+    });
+    return () => {
+      live = false;
+    };
+  }, [fileMenuOpen, previewKind, browser]);
 
   // The folder icon (conversation header) and the project/workspace
   // Explore buttons now route through ExplorerPane, which owns its
@@ -814,11 +907,13 @@ export const FileEditorPane = memo(function FileEditorPane({
       </div>
     );
   }
-  // Offer Revert only on a HEAD-based diff with real changes to a tracked
-  // file — that's where "discard uncommitted changes" is unambiguous.
-  // Agent/flow views diff against a base branch (baseBranch set) and can
-  // include committed work, so reverting there would mean something riskier
-  // than a checkout; we leave those out.
+  // Offer Revert whenever the file has uncommitted changes to a tracked path
+  // — `revertable`, asked of git directly. It used to be gated on the
+  // conversation having no base branch, which hid the action for anything
+  // started "from master" even while sitting on master with nothing but
+  // working-tree edits. An agent run whose file is fully committed still
+  // resolves to false and keeps the action away, which is the case the old
+  // gate was reaching for.
   const canRevert =
     (mode === 'diff' || missingFile) &&
     !loading &&
@@ -826,7 +921,7 @@ export const FileEditorPane = memo(function FileEditorPane({
     !!diffText.trim() &&
     !diffUntracked &&
     !!diffTarget &&
-    diffTarget.baseBranch == null;
+    revertable;
   return (
     <div className="flex flex-col h-full">
       <div className="flex flex-col flex-1 min-h-0">
@@ -839,80 +934,184 @@ export const FileEditorPane = memo(function FileEditorPane({
             onClose={requestCloseTab}
           />
         )}
-        <div className="flex items-center justify-between px-3 py-2 border-b border-card">
+        {/* The bar lives in a pane that is 320-540px wide (EDITOR_MIN and the
+            default in ConversationPane) — never more. Two rules follow from
+            that, and they are the whole design:
+
+            1. NOTHING OPTIONAL SITS ON THE RIGHT. The right run is the mode
+               group and the close button, forever, so the control you aim at
+               most (and the only one with a shortcut) is at a constant x. It
+               used to share that run with Revert and Save, which appear
+               exactly when you switch to Diff — so the group moved out from
+               under the cursor at the moment you were reaching for it.
+            2. THE FILENAME IS THE MENU. Copy, Open, Download and Revert were
+               four chips competing with the path for a left run that had no
+               room for any of them. As a menu hung off the title they cost
+               zero width, because the bar was already spending that space
+               printing the path. A chevron after a name reads as "menu" in a
+               way a lone ⋯ does not. */}
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-card">
           <div className="min-w-0 flex items-center gap-2">
-            <div
-              className="text-xs truncate text-ink-muted select-text cursor-text"
-              title={path}
-              onMouseDown={(e) => e.stopPropagation()}
-            >
-              {workerFileHeading ?? path}
-            </div>
-            <button
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(path);
-                  setCopiedPath(true);
-                  window.setTimeout(() => setCopiedPath(false), 1200);
-                } catch {
-                  setCopiedPath(false);
+            <div ref={fileMenuRef} className="relative min-w-0">
+              <button
+                onClick={() => setFileMenuOpen((o) => !o)}
+                title={path}
+                aria-haspopup="menu"
+                aria-expanded={fileMenuOpen}
+                // Tinted with `ink`, not with a surface or card token. The
+                // card tints (2-6% white) and even `surface-elevated`
+                // (#2a2a33) stay dark on a #1c1c21 bar — the affordance has
+                // to be visible before the pointer arrives, and those were
+                // not. `ink` is the theme's contrast color, so `bg-ink/10` is
+                // a pale wash in dark and a gray one in light: it reads as a
+                // raised control in both without hardcoding a white tint that
+                // would vanish on the light surface.
+                className={
+                  'flex items-center gap-1.5 min-w-0 -ml-1.5 px-1.5 py-0.5 rounded border shadow-sm text-xs text-ink ' +
+                  (fileMenuOpen
+                    ? 'bg-ink/[0.16] border-ink-faint'
+                    : 'bg-ink/10 border-card-strong hover:bg-ink/[0.16] hover:border-ink-faint')
                 }
-              }}
-              className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
-              title="Copy file path"
-            >
-              {copiedPath ? 'Copied' : 'Copy'}
-            </button>
-            {!missingFile && (
-              <button
-                onClick={async () => {
-                  const res = await window.overcli.invoke('fs:openPath', path);
-                  if (!res.ok) setError(res.error);
-                }}
-                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
-                title="Open in default app (e.g. VS Code)"
               >
-                Open
-              </button>
-            )}
-            {!missingFile && (
-              <button
-                onClick={async () => {
-                  if (dirty) { await save(); }
-                  const res = await window.overcli.invoke('fs:saveToDownloads', path);
-                  if (!res.ok) {
-                    setDownloadState('failed');
-                    window.setTimeout(() => setDownloadState('idle'), 2400);
-                    return;
+                <span className="truncate">{workerFileHeading ?? headerFileName}</span>
+                <svg
+                  viewBox="0 0 16 16"
+                  aria-hidden="true"
+                  className={
+                    'shrink-0 w-3.5 h-3.5 text-ink-muted transition-transform ' +
+                    (fileMenuOpen ? 'rotate-180' : '')
                   }
-                  setDownloadState('saved');
-                  window.setTimeout(() => setDownloadState('idle'), 1600);
-                }}
-                className="shrink-0 text-[10px] px-1.5 py-0.5 rounded border border-card text-ink-faint hover:text-ink hover:bg-card-strong"
-                title="Copy this file into your Downloads folder"
-              >
-                {downloadState === 'saved'
-                  ? 'Saved'
-                  : downloadState === 'failed'
-                    ? 'Failed'
-                    : 'Download'}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M4.5 6.5 8 10l3.5-3.5" />
+                </svg>
               </button>
-            )}
-            {autoSaves && !missingFile && (
-              // Wording, not decoration: the Download button beside this one
-              // already flashes "Saved" to mean "copied to your Downloads
-              // folder", so this has to say something that cannot be read as
-              // that. Persistent rather than a flash — the reassurance a
-              // non-engineer needs is "I don't have to save this", which is
-              // true all the time, not only in the second after a write.
-              <span className="shrink-0 text-[10px] text-ink-faint">
-                {reviewPending
-                  ? 'Waiting for you'
-                  : dirty
-                    ? 'Saving…'
-                    : 'All changes saved'}
-              </span>
-            )}
+              {fileMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute left-0 top-full mt-1 min-w-[190px] bg-surface-elevated border border-card-strong rounded-lg shadow-xl z-50 py-1 text-xs"
+                >
+                  <FileMenuItem
+                    label={copiedPath ? 'Copied' : 'Copy path'}
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(path);
+                        setCopiedPath(true);
+                        // Held open so the confirmation is actually seen —
+                        // closing on click would flash it for one frame.
+                        window.setTimeout(() => {
+                          setCopiedPath(false);
+                          setFileMenuOpen(false);
+                        }, 900);
+                      } catch {
+                        setCopiedPath(false);
+                        setFileMenuOpen(false);
+                      }
+                    }}
+                  />
+                  {!missingFile && previewKind === 'html' && browser && (
+                    // A page's own reason for existing is being rendered, and
+                    // "default app" is a coin flip that lands on an editor
+                    // whenever one has registered for .html. Named after the
+                    // browser we actually found, so the row can't mislead.
+                    <FileMenuItem
+                      label={`Open in ${browser}`}
+                      onClick={async () => {
+                        setFileMenuOpen(false);
+                        const res = await window.overcli.invoke('fs:openInBrowser', path);
+                        if (!res.ok) setError(res.error);
+                      }}
+                    />
+                  )}
+                  {!missingFile && (
+                    // No "e.g. VS Code" hint: which app this opens is the
+                    // system's business and we would only be guessing.
+                    <FileMenuItem
+                      label="Open in default app"
+                      onClick={async () => {
+                        setFileMenuOpen(false);
+                        const res = await window.overcli.invoke('fs:openPath', path);
+                        if (!res.ok) setError(res.error);
+                      }}
+                    />
+                  )}
+                  {!missingFile && (
+                    // Where every real share starts — drag into Slack, AirDrop,
+                    // attach to mail. `revealLabel()` because the OS supplies
+                    // the noun (Finder, Explorer, folder); the IPC behind it is
+                    // already cross-platform.
+                    <FileMenuItem
+                      label={revealLabel()}
+                      onClick={() => {
+                        setFileMenuOpen(false);
+                        void window.overcli.invoke('fs:openInFinder', path);
+                      }}
+                    />
+                  )}
+                  {!missingFile && (
+                    <FileMenuItem
+                      label={
+                        downloadState === 'saved'
+                          ? 'Saved to Downloads'
+                          : downloadState === 'failed'
+                            ? "Couldn't save it"
+                            : 'Download a copy'
+                      }
+                      onClick={async () => {
+                        if (dirty) await save();
+                        const res = await window.overcli.invoke('fs:saveToDownloads', path);
+                        if (!res.ok) {
+                          setDownloadState('failed');
+                          window.setTimeout(() => {
+                            setDownloadState('idle');
+                            setFileMenuOpen(false);
+                          }, 2400);
+                          return;
+                        }
+                        setDownloadState('saved');
+                        window.setTimeout(() => {
+                          setDownloadState('idle');
+                          setFileMenuOpen(false);
+                        }, 1600);
+                      }}
+                    />
+                  )}
+                  {canRevert && (
+                    <>
+                      <div className="h-px bg-card my-1 mx-1.5" />
+                      <FileMenuItem
+                        danger
+                        disabled={reverting}
+                        label={
+                          missingFile
+                            ? reverting
+                              ? 'Restoring…'
+                              : 'Restore from HEAD'
+                            : reverting
+                              ? 'Reverting…'
+                              : 'Revert to HEAD'
+                        }
+                        hint={
+                          missingFile
+                            ? 'bring this deleted file back'
+                            : 'discard uncommitted changes'
+                        }
+                        onClick={() => {
+                          // Closed before the confirm: the dialog is modal and
+                          // an open menu behind it just sits there stale.
+                          setFileMenuOpen(false);
+                          void revertFile();
+                        }}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
             {missingFile && (
               <span
                 title="This file is no longer on disk"
@@ -921,33 +1120,55 @@ export const FileEditorPane = memo(function FileEditorPane({
                 deleted
               </span>
             )}
-          </div>
-          {/* `shrink-0`: without it both halves of the bar shrink together and
-              the mode buttons ride up over Download in a narrow pane. The left
-              half is the side that can afford to give — its path truncates. */}
-          <div className="flex items-center gap-2 shrink-0">
-            <div className="flex items-center text-xs font-medium uppercase tracking-wider rounded border border-card-strong overflow-hidden">
+            {dirty && (
+              // Save is transient, so it belongs on the left, where new items
+              // append rightward and the title absorbs the change by
+              // truncating. On the right it would shove the mode group.
               <button
-                onClick={() => setMode('diff')}
-                title="Toggle Diff/File (⌘⇧D)"
-                className={
-                  'px-2.5 py-1 ' +
-                  (mode === 'diff'
-                    ? 'bg-accent text-surface'
-                    : 'text-ink hover:bg-card-strong')
-                }
+                onClick={() => void save()}
+                title="Save (⌘S or ⌘↵)"
+                className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent text-surface hover:bg-accent-600"
               >
-                Diff
+                Save
               </button>
+            )}
+            {autoSaves && !missingFile && (
+              // Wording, not decoration: "Saved" alone would read as the
+              // menu's "Saved to Downloads". Persistent rather than a flash —
+              // the reassurance a non-engineer needs is "I don't have to save
+              // this", which is true all the time, not only after a write.
+              <span className="shrink-0 text-[10px] text-ink-faint">
+                {reviewPending ? 'Waiting for you' : dirty ? 'Saving…' : 'All changes saved'}
+              </span>
+            )}
+          </div>
+          {/* `shrink-0`: without it both halves shrink together and the mode
+              buttons ride up over the title. The left half is the side that
+              can afford to give — its filename truncates. */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Sentence case at 11.5px, not `text-xs uppercase tracking-wider`:
+                the letter-spacing alone cost ~70px of a 540px bar, which is
+                more than the four chips this header just retired. */}
+            <div className="flex items-center text-[11.5px] font-medium rounded border border-card-strong overflow-hidden">
+              {diffable && (
+                <button
+                  onClick={() => setMode('diff')}
+                  title="Toggle Diff/File (⌘⇧D)"
+                  className={
+                    'px-2 py-1 ' +
+                    (mode === 'diff' ? 'bg-accent text-surface' : 'text-ink hover:bg-card-strong')
+                  }
+                >
+                  Diff
+                </button>
+              )}
               {previewable && !missingFile && !binaryPreview && (
                 <button
                   onClick={() => setMode('split')}
                   title="Write on the left, see it rendered on the right"
                   className={
-                    'px-2.5 py-1 ' +
-                    (mode === 'split'
-                      ? 'bg-accent text-surface'
-                      : 'text-ink hover:bg-card-strong')
+                    'px-2 py-1 ' +
+                    (mode === 'split' ? 'bg-accent text-surface' : 'text-ink hover:bg-card-strong')
                   }
                 >
                   Split
@@ -957,7 +1178,7 @@ export const FileEditorPane = memo(function FileEditorPane({
                 <button
                   onClick={() => setMode('preview')}
                   className={
-                    'px-2.5 py-1 ' +
+                    'px-2 py-1 ' +
                     (mode === 'preview'
                       ? 'bg-accent text-surface'
                       : 'text-ink hover:bg-card-strong')
@@ -975,8 +1196,10 @@ export const FileEditorPane = memo(function FileEditorPane({
                     : 'Toggle Diff/File (⌘⇧D)'
                 }
                 className={
-                  'px-2.5 py-1 disabled:opacity-40 disabled:cursor-not-allowed ' +
-                  (mode === 'edit' && !missingFile
+                  'px-2 py-1 disabled:opacity-40 disabled:cursor-not-allowed ' +
+                  // A tab remembered as 'diff' on a file with no diff renders
+                  // its source, so File is what's actually on screen.
+                  ((mode === 'edit' || (mode === 'diff' && !diffable)) && !missingFile
                     ? 'bg-accent text-surface'
                     : 'text-ink hover:bg-card-strong')
                 }
@@ -984,40 +1207,6 @@ export const FileEditorPane = memo(function FileEditorPane({
                 File
               </button>
             </div>
-            {canRevert && (
-              <button
-                onClick={() => void revertFile()}
-                disabled={reverting}
-                title={
-                  missingFile
-                    ? 'Bring this deleted file back (git checkout HEAD)'
-                    : 'Discard all uncommitted changes to this file (git checkout HEAD)'
-                }
-                className={
-                  'text-xs font-medium px-2.5 py-1 rounded border border-card disabled:opacity-40 ' +
-                  (missingFile
-                    ? 'text-emerald-300 hover:text-emerald-200 hover:bg-emerald-500/10'
-                    : 'text-red-300 hover:text-red-200 hover:bg-red-500/10')
-                }
-              >
-                {missingFile
-                  ? reverting
-                    ? 'Restoring…'
-                    : 'Restore'
-                  : reverting
-                    ? 'Reverting…'
-                    : 'Revert'}
-              </button>
-            )}
-            {dirty && (
-              <button
-                onClick={() => void save()}
-                title="Save (⌘S or ⌘↵)"
-                className="text-xs font-medium px-2.5 py-1 rounded bg-accent text-surface hover:bg-accent-600"
-              >
-                Save
-              </button>
-            )}
             <button
               onClick={closeFile}
               title={tabs.length > 1 ? 'Close the editor (all tabs)' : 'Close the editor'}
@@ -1056,7 +1245,7 @@ export const FileEditorPane = memo(function FileEditorPane({
             ) : (
               <MissingFilePanel path={path} />
             )
-          ) : mode === 'diff' ? (
+          ) : mode === 'diff' && diffable ? (
             diffText.trim() ? (
               <UnifiedDiffBody text={diffText} />
             ) : (
@@ -1520,6 +1709,40 @@ function AskToEditBar({
 /// is unreachable by mouse (the scrollbar is hidden). Two things keep every
 /// file in reach: the active tab is scrolled back into view whenever it
 /// changes, and the count button on the right opens the full list.
+/// One row of the header's file menu. Rows rather than buttons because the
+/// hint sits under the label — "Revert to HEAD" has room to say what it does
+/// here in a way a 62px button in the bar never did.
+function FileMenuItem({
+  label,
+  hint,
+  onClick,
+  danger,
+  disabled,
+}: {
+  label: string;
+  hint?: string;
+  onClick: () => void;
+  danger?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      role="menuitem"
+      disabled={disabled}
+      onClick={onClick}
+      className={
+        'w-full text-left px-2.5 py-1.5 disabled:opacity-40 disabled:cursor-not-allowed ' +
+        (danger
+          ? 'text-red-600 dark:text-red-300 hover:bg-red-500/10'
+          : 'text-ink hover:bg-card-strong')
+      }
+    >
+      <span className="block truncate">{label}</span>
+      {hint && <span className="block truncate text-[10px] text-ink-faint">{hint}</span>}
+    </button>
+  );
+}
+
 function FileTabStrip({
   tabs,
   activePath,
@@ -2142,9 +2365,17 @@ export function resolveDiffTarget(
       }
     }
   }
-  // Git wants a repo-relative path; absolute paths get treated as
-  // unknown and fall through to the --no-index branch above, which
-  // makes every file render as a fresh add.
+  // An ABSOLUTE path that matched no member and doesn't live under the root
+  // has no diff to show: git would be run in `rootPath` against a file
+  // outside it and answer `fatal: … is outside repository`, which we then
+  // rendered as if it were the diff. Scratchpad artifacts, /tmp files and
+  // anything opened from another project all land here. Returning null is
+  // what hides the Diff tab — and it costs nothing, because this is a string
+  // comparison on data we already have, not a git call.
+  //
+  // Only absolute paths can be judged this way. A RELATIVE path is already
+  // repo-relative (that's the form git wants) and stays on the happy path.
+  if (path.startsWith('/') && !isPathAtOrUnder(path, rootPath)) return null;
   const rel =
     path === rootPath ? '.' : isPathUnder(path, rootPath) ? path.slice(rootPath.length + 1) : path;
   return {

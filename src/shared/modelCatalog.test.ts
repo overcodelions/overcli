@@ -130,8 +130,15 @@ describe('friendlyModelLabel — codex (OpenAI GPT)', () => {
     expect(friendlyModelLabel('codex', 'gpt-5.6-luna')).toBe('GPT-5.6 Luna (Codex)');
   });
 
+  it('title-cases the GPT-6 codename', () => {
+    expect(friendlyModelLabel('codex', 'gpt-6-astra')).toBe('GPT-6 Astra (Codex)');
+  });
+
   it('lists gpt-5.6-sol first so it is the codex default', () => {
+    // Astra is the stronger model but sits at the opt-in frontier tier, so
+    // it must not take the auto-pick slot.
     expect(PREMIUM_MODELS.codex[0]).toBe('gpt-5.6-sol');
+    expect(PREMIUM_MODELS.codex).toContain('gpt-6-astra');
   });
 
   it('lists gemini-3.1-pro first so it is the gemini default', () => {
@@ -229,6 +236,7 @@ describe('modelSpeed', () => {
     ['claude-sonnet-5', 'fast'],
     ['claude-sonnet-4-6', 'fast'],
     ['claude-haiku-4-5', 'fast'],
+    ['gpt-6-astra', 'frontier'],
     ['gpt-5.6-sol', 'thinking'],
     ['gpt-5.6-terra', 'standard'],
     ['gpt-5.6-luna', 'fast'],
@@ -303,13 +311,13 @@ describe('latestAtTier', () => {
     expect(latestAtTier('claude', 'frontier')).toBe('claude-fable-5-1');
     expect(latestAtTier('codex', 'thinking')).toBe('gpt-5.6-sol');
     expect(latestAtTier('codex', 'fast')).toBe('gpt-5.6-luna');
+    expect(latestAtTier('codex', 'frontier')).toBe('gpt-6-astra');
     expect(latestAtTier('gemini', 'standard')).toBe('gemini-3.7-flash');
   });
 
   it('returns undefined for a tier the backend has no model at', () => {
     // Claude ships no middle-tier model; callers degrade rather than guess.
     expect(latestAtTier('claude', 'standard')).toBeUndefined();
-    expect(latestAtTier('codex', 'frontier')).toBeUndefined();
   });
 
   it('keeps the leading family rather than jumping to a newer sibling line', () => {

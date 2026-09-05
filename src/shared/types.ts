@@ -1475,6 +1475,11 @@ export interface IPCInvokeMap {
   'fs:unwatchTree': (root: string) => void;
   'fs:openInFinder': (path: string) => void;
   'fs:openPath': (path: string) => { ok: true } | { ok: false; error: string };
+  /// Null browser = none installed (or not macOS); the caller hides the action.
+  'fs:browserName': () => { name: string } | null;
+  'fs:openInBrowser': (
+    path: string,
+  ) => { ok: true; browser: string } | { ok: false; error: string };
   /// Copy a previewed file into the OS Downloads folder (macOS/Windows/Linux
   /// via Electron's `app.getPath('downloads')`). Never overwrites: a name
   /// clash gets ` (2)`, ` (3)`, … before the extension. `savedPath` is the

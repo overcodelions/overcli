@@ -121,6 +121,8 @@ afterEach(() => {
     errandError: {},
     errandResult: {},
     draft: null,
+    draftFromHire: false,
+    pendingHire: null,
     draftedFlow: null,
     hireSummary: null,
     treasury: null,
@@ -1198,5 +1200,114 @@ describe('navigating away from what fills the pane', () => {
     useWorkersStore.getState().selectWorker('worker-2');
     useWorkersStore.getState().selectWorker('worker-2');
     expect(useWorkersStore.getState().selectSeq).toBe(before + 2);
+  });
+});
+
+describe('a hire that finished while the user was elsewhere', () => {
+  /// The store reaches for localStorage directly; the Node test env has none.
+  function stubStorage(): Map<string, string> {
+    const box = new Map<string, string>();
+    (globalThis as unknown as Record<string, unknown>).localStorage = {
+      getItem: (k: string) => box.get(k) ?? null,
+      setItem: (k: string, v: string) => void box.set(k, v),
+      removeItem: (k: string) => void box.delete(k),
+    };
+    return box;
+  }
+
+  afterEach(() => {
+    delete (globalThis as unknown as Record<string, unknown>).localStorage;
+  });
+
+  function landAHire() {
+    useWorkersStore.getState().openEditor(
+      { ...newWorkerDraft('/repo'), name: 'Scout', jobDescription: 'x'.repeat(30) },
+      { draftedFlow: makeFlow(), hireSummary: 'My read on the job', fromHire: true },
+    );
+  }
+
+  it('parks the draft when the editor closes instead of dropping it', () => {
+    landAHire();
+    useWorkersStore.getState().closeEditor();
+    const { draft, pendingHire } = useWorkersStore.getState();
+    expect(draft).toBeNull();
+    // The expensive halves both survive: the contract and the drafted flow.
+    expect(pendingHire?.draft.name).toBe('Scout');
+    expect(pendingHire?.flow?.id).toBe('drafted-flow');
+    expect(pendingHire?.summary).toBe('My read on the job');
+  });
+
+  it('parks the edits made in the editor, not the draft as it landed', () => {
+    landAHire();
+    useWorkersStore.getState().patchDraft({ name: 'Scout II' });
+    useWorkersStore.getState().closeEditor();
+    expect(useWorkersStore.getState().pendingHire?.draft.name).toBe('Scout II');
+  });
+
+  it('puts a parked hire back in the editor, flow and summary included', () => {
+    landAHire();
+    useWorkersStore.getState().closeEditor();
+    useWorkersStore.getState().resumeHire();
+    const st = useWorkersStore.getState();
+    expect(st.draft?.name).toBe('Scout');
+    expect(st.draftedFlow?.id).toBe('drafted-flow');
+    expect(st.hireSummary).toBe('My read on the job');
+    // Still a hire, so closing it a second time parks it again rather than
+    // losing it on the second exit.
+    expect(st.draftFromHire).toBe(true);
+  });
+
+  it('leaves an existing worker\'s editor unparked', () => {
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'w1', name: 'Nanny' });
+    useWorkersStore.getState().closeEditor();
+    expect(useWorkersStore.getState().pendingHire).toBeNull();
+  });
+
+  it('stops waiting once the worker is actually hired', async () => {
+    landAHire();
+    mockInvoke
+      .mockResolvedValueOnce({ ok: true }) // flows:save
+      .mockResolvedValueOnce([]) // flows:list
+      .mockResolvedValueOnce({ ok: true, worker: makeWorker() }); // workers:save
+    await useWorkersStore.getState().save(['/repo']);
+    expect(useWorkersStore.getState().pendingHire).toBeNull();
+    expect(useWorkersStore.getState().draftFromHire).toBe(false);
+  });
+
+  it('keeps someone else\'s parked hire when a different worker is saved', async () => {
+    landAHire();
+    useWorkersStore.getState().closeEditor();
+    useWorkersStore.getState().openEditor({ ...newWorkerDraft('/repo'), id: 'w1', name: 'Nanny' });
+    mockInvoke.mockResolvedValueOnce({ ok: true, worker: makeWorker() });
+    await useWorkersStore.getState().save(['/repo']);
+    expect(useWorkersStore.getState().pendingHire?.draft.name).toBe('Scout');
+  });
+
+  it('writes the parked hire to storage, so a reload is survivable too', () => {
+    const box = stubStorage();
+    landAHire();
+    // Parked the moment the editor opens on it, not only when it closes: the
+    // review screen is where a reload actually catches you.
+    expect(JSON.parse(box.get('overcli.workers.pendingHire')!).draft.name).toBe('Scout');
+    useWorkersStore.getState().discardPendingHire();
+    expect(box.has('overcli.workers.pendingHire')).toBe(false);
+  });
+
+  it('reads a parked hire back when the store is created fresh', async () => {
+    const box = stubStorage();
+    landAHire();
+    useWorkersStore.getState().closeEditor();
+    const stored = box.get('overcli.workers.pendingHire')!;
+    vi.resetModules();
+    stubStorage().set('overcli.workers.pendingHire', stored);
+    const reloaded = await import('./workersStore');
+    expect(reloaded.useWorkersStore.getState().pendingHire?.draft.name).toBe('Scout');
+  });
+
+  it('discards on request — the explicit no closing the editor is not', () => {
+    landAHire();
+    useWorkersStore.getState().closeEditor();
+    useWorkersStore.getState().discardPendingHire();
+    expect(useWorkersStore.getState().pendingHire).toBeNull();
   });
 });

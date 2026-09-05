@@ -53,7 +53,10 @@ describe('resolveTemplateForUser — build-feature template', () => {
     expect(buildParticipant.model).toBe('qwen2.5-coder:32b');
   });
 
-  it('codex-only user: thinking→gpt-5.6-sol, fast→gpt-5.6-luna', () => {
+  // The design step asks for 'frontier', which codex now has a model for
+  // (gpt-6-astra) — before Astra shipped it fell down the ladder to the
+  // thinking tier and landed on gpt-5.6-sol.
+  it('codex-only user: frontier→gpt-6-astra, fast→gpt-5.6-luna', () => {
     const flow = loadTemplate('build-feature');
     const resolved = resolveTemplateForUser(flow, {
       healthyBackends: ['codex'],
@@ -61,7 +64,7 @@ describe('resolveTemplateForUser — build-feature template', () => {
     });
     const byStep = new Map(resolved.steps.map((s) => [s.id, s.participantId]));
     const byParticipant = new Map(resolved.participants.map((p) => [p.id, p]));
-    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-5.6-sol');
+    expect(byParticipant.get(byStep.get('design')!)?.model).toBe('gpt-6-astra');
     expect(byParticipant.get(byStep.get('build')!)?.model).toBe('gpt-5.6-luna');
   });
 
