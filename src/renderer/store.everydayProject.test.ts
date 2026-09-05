@@ -12,7 +12,7 @@ const initRepoResult = { current: { ok: true, branch: 'main' } as InvokeResult }
 const createEverydayProjectResult = {
   current: { ok: true, path: '/Users/x/Documents/Overcli Projects/Marketing copy review', historyOn: true } as InvokeResult,
 };
-const commitStatusResult = { current: { isRepo: true } as { isRepo: boolean } };
+const currentBranchResult = { current: { isRepo: true, branch: 'main' } as { isRepo: boolean; branch: string } };
 const setMarkerResult = { current: { ok: true } as InvokeResult };
 const invoked: Array<{ channel: string; args: unknown }> = [];
 
@@ -21,7 +21,7 @@ function stubBridge(): void {
     invoked.push({ channel, args });
     if (channel === 'git:initRepo') return initRepoResult.current;
     if (channel === 'fs:createEverydayProject') return createEverydayProjectResult.current;
-    if (channel === 'git:commitStatus') return commitStatusResult.current;
+    if (channel === 'git:currentBranch') return currentBranchResult.current;
     if (channel === 'fs:setEverydayMarker') return setMarkerResult.current;
     if (channel === 'store:saveProjects' || channel === 'store:saveSettings' || channel === 'store:saveSelection') {
       return undefined;
@@ -57,7 +57,7 @@ beforeEach(() => {
     path: '/Users/x/Documents/Overcli Projects/Marketing copy review',
     historyOn: true,
   };
-  commitStatusResult.current = { isRepo: true };
+  currentBranchResult.current = { isRepo: true, branch: 'main' };
   setMarkerResult.current = { ok: true };
   useStore.setState({
     projects: [],
@@ -80,7 +80,7 @@ describe('protectProject', () => {
 
     expect(res).toEqual({ ok: true, branch: 'main' });
     expect(invoked).toContainEqual({ channel: 'git:initRepo', args: { projectPath: '/Users/x/git/proj' } });
-    expect(invoked.some((c) => c.channel === 'git:commitStatus')).toBe(true);
+    expect(invoked.some((c) => c.channel === 'git:currentBranch')).toBe(true);
     expect(useStore.getState().projectIsGitRepo['proj-1']).toBe(true);
   });
 
@@ -92,7 +92,7 @@ describe('protectProject', () => {
 
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('already has a history.');
-    expect(invoked.some((c) => c.channel === 'git:commitStatus')).toBe(false);
+    expect(invoked.some((c) => c.channel === 'git:currentBranch')).toBe(false);
   });
 });
 
