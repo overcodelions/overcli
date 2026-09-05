@@ -66,6 +66,7 @@ import { scanWorktrees, sweepWorktrees, conversationWorktreeStates } from './wor
 import { computeStats } from './stats';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
+import { findBrowser, openInBrowser } from './openInBrowser';
 import { addMcpServerToTargets, isMcpCli, readMcpServer, writeMcpServer } from './mcpConfig';
 import { listMcpCatalog, installMcpCatalogEntry, uninstallMcpCatalogEntry } from './mcpCatalog';
 import { loginCodexMcp } from './mcpLogin';
@@ -931,6 +932,22 @@ export function registerIpc(): void {
     }
     const error = await shell.openPath(resolved);
     return error ? { ok: false, error } : { ok: true };
+  });
+  ipcMain.handle('fs:browserName', () => {
+    const browser = findBrowser();
+    return browser ? { name: browser.name } : null;
+  });
+  ipcMain.handle('fs:openInBrowser', async (_e, p: string) => {
+    const resolved = resolveFilePath(p);
+    if (!resolved || !isReadablePath(resolved)) {
+      return {
+        ok: false,
+        error: 'File is outside any registered project, workspace, or worktree.',
+      };
+    }
+    const browser = findBrowser();
+    if (!browser) return { ok: false, error: 'No browser found to open this with.' };
+    return openInBrowser(resolved, browser);
   });
   ipcMain.handle('fs:saveToDownloads', async (_e, p: string) => {
     const resolved = resolveFilePath(p);
