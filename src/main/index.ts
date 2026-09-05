@@ -46,6 +46,7 @@ import {
   worktreeChanges,
   resolveDiffBase,
   currentBranch,
+  currentBranchAsync,
   restoreFileToHead,
   workspaceCommitStatus,
   commitAll,
@@ -1121,7 +1122,7 @@ export function registerIpc(): void {
   ipcMain.handle('git:commitStatus', (_e, { cwd }) => commitStatus(cwd));
   ipcMain.handle('git:worktreeChanges', (_e, args) => worktreeChanges(args));
   ipcMain.handle('git:resolveDiffBase', (_e, args) => resolveDiffBase(args));
-  ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranch(cwd));
+  ipcMain.handle('git:currentBranch', (_e, { cwd }) => currentBranchAsync(cwd));
   ipcMain.handle('git:restoreFile', (_e, { cwd, path }) => {
     // Destructive git write — re-validate the cwd here rather than trusting
     // the renderer, mirroring the `git:run` allowlist gate.

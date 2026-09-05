@@ -1,5 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { backendHealthLoaded, noBackendReady, useStore } from '../store';
+import {
+  backendHealthLoaded,
+  noBackendReady,
+  setPendingNewConversation,
+  useStore,
+} from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
 import { createBranchedAgent, createDetachedAgent } from './sheets/NewAgentSheet';
@@ -263,6 +268,32 @@ export function WelcomePane() {
     };
   }, [selectedProject]);
 
+  // Tell the store what a send from here would create, so typing warms a
+  // backend process against the id this conversation will be born with (see
+  // `setPendingNewConversation`). Registered from an effect rather than read
+  // during render, so the composer's per-keystroke draft writes cost nothing
+  // here. Only 'local' runs are eligible: the agent/review/docs modes chat in
+  // a worktree that doesn't exist yet, so there is no cwd to warm against.
+  useEffect(() => {
+    if (runMode !== 'local' || (!focusedWorkspace && !selectedProject)) {
+      setPendingNewConversation(null);
+      return;
+    }
+    setPendingNewConversation({
+      draftKey: WELCOME_KEY,
+      projectId: focusedWorkspace ? undefined : selectedProject!.id,
+      workspaceId: focusedWorkspace?.id,
+      backend,
+      model,
+      permissionMode,
+      effortLevel: effort,
+    });
+    // No cleanup: unregistering on every dep change would re-mint the id and
+    // orphan the warm process each time a pill moves. A target left behind on
+    // unmount is harmless — `newConversation` only adopts an id that was
+    // actually warmed for that same container.
+  }, [runMode, focusedWorkspace, selectedProject, backend, model, permissionMode, effort]);
+
   /// Hand a freshly-minted agent conversation the composer's pill
   /// selections + attachments, then fire the opening turn. Shared by the
   /// build-agent and review/docs paths, which differ only in what prompt
@@ -284,7 +315,9 @@ export function WelcomePane() {
     if (reviewPreset !== 'off') void setReviewPreset(convId, reviewPreset);
     setDraft(WELCOME_KEY, '');
     clearAttachments(WELCOME_KEY);
-    await saveProjects();
+    // Not awaited: `coalescedSave` resolves on a 250ms timer, and nothing
+    // below reads the persisted copy — see `newConversation` in the store.
+    void saveProjects();
     selectConversation(convId);
     await send(convId, prompt);
   };
