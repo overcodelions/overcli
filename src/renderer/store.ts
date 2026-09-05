@@ -1057,6 +1057,22 @@ const PREWARM_FLEET_CAP = 3;
 const PREWARM_MIN_CHARS = 8;
 const prewarmed = new Set<string>();
 
+/// Record an id as warmed, evicting the oldest when the fleet is full.
+///
+/// An LRU, not a one-shot allowance: `Set` iterates in insertion order, so
+/// the oldest id is dropped to make room rather than prewarm going
+/// permanently dead once the cap is first reached. Callers check
+/// `prewarmed.has` themselves — marking is deliberately separate, so the
+/// startup warm can claim an id and have the first keystrokes in that same
+/// conversation skip a second, identical spawn.
+function markPrewarmed(id: string): void {
+  if (prewarmed.size >= PREWARM_FLEET_CAP) {
+    const oldest = prewarmed.values().next().value;
+    if (oldest !== undefined) prewarmed.delete(oldest);
+  }
+  prewarmed.add(id);
+}
+
 /// What the start page WOULD create if the user hit enter right now.
 ///
 /// Every other composer in the app warms a backend process while you type
@@ -1240,8 +1256,29 @@ export const useStore = create<StoreState>((set, get) => ({
           (c) => c.id === selectedId && !!c.workspaceAgentMemberIds?.length,
         ),
       );
+    // Warming the restored conversation is the difference between the first
+    // message of a session paying for CLI boot, MCP registration and session
+    // resume and paying for none of it. `setDraft` only warms once a draft
+    // reaches PREWARM_MIN_CHARS, which covers a paragraph but not a short
+    // first message — "you there?" trips the threshold two keystrokes before
+    // Enter, so the spawn happened after the send either way. The process is
+    // reaped if it goes unused, so the cost of being wrong is one idle CLI.
+    //
+    // Only conversations with an explicit backend qualify: health has not
+    // been probed at this point, so letting `pickDefaultBackend` guess here
+    // could spawn a CLI that isn't installed.
+    const warmSelected = () => {
+      if (!selectedId) return;
+      const conv = findConversation(get(), selectedId);
+      if (!conv?.primaryBackend) return;
+      if (prewarmed.has(selectedId)) return;
+      markPrewarmed(selectedId);
+      get().prewarmConversation(selectedId);
+    };
+
     if (selectedId && !selectedIsCoordinator) {
       void get().loadHistoryIfNeeded(selectedId);
+      warmSelected();
     }
 
     if (view?.activeRunId) {
@@ -1309,6 +1346,9 @@ export const useStore = create<StoreState>((set, get) => ({
     }
     if (selectedId && selectedIsCoordinator) {
       void get().loadHistoryIfNeeded(selectedId);
+      // Same warm as above, held until here for the same reason the history
+      // load is: a coordinator's cwd is the root the reconcile just settled.
+      warmSelected();
     }
 
     get().refreshEverydayRoots();
@@ -1477,12 +1517,9 @@ export const useStore = create<StoreState>((set, get) => ({
     // Empty → non-empty is the earliest honest signal that a turn is coming.
     // Warming here hides CLI boot, MCP registration and session resume behind
     // the seconds the user spends typing. Synthetic draft keys (flow hijack,
-    // `__`-prefixed panes) are not conversations. Capped and delayed past the
-    // first couple keystrokes so a whole fleet of idle drafts doesn't spawn a
-    // CLI process each — and the cap is an LRU, not a one-shot allowance:
-    // `Set` iterates in insertion order, so the oldest id is evicted to make
-    // room rather than prewarm going permanently dead after the fleet cap is
-    // first reached.
+    // `__`-prefixed panes) are not conversations. Delayed past the first
+    // couple keystrokes, and capped by `markPrewarmed`, so a whole fleet of
+    // idle drafts doesn't spawn a CLI process each.
     if (text.length < PREWARM_MIN_CHARS) return;
     // The start page is the exception to the `__`-prefix rule: it has no
     // conversation to warm, so it registers the one it is about to create and
@@ -1492,11 +1529,7 @@ export const useStore = create<StoreState>((set, get) => ({
     if (!pending && (id.startsWith('__') || id.includes(':'))) return;
     const warmId = pending ? pending.conversationId : id;
     if (prewarmed.has(warmId)) return;
-    if (prewarmed.size >= PREWARM_FLEET_CAP) {
-      const oldest = prewarmed.values().next().value;
-      if (oldest !== undefined) prewarmed.delete(oldest);
-    }
-    prewarmed.add(warmId);
+    markPrewarmed(warmId);
     if (pending) get().prewarmNewConversation();
     else get().prewarmConversation(warmId);
   },
