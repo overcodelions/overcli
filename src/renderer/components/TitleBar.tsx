@@ -47,9 +47,22 @@ export function TitleBar() {
   const workers = useWorkersStore((s) => s.workers);
   const nextShiftAt = useWorkersStore((s) => s.nextShiftAt);
   const shiftProgress = useWorkersStore((s) => s.shiftProgress);
+  const pendingHire = useWorkersStore((s) => s.pendingHire);
+  const hireRunning = useWorkersStore((s) => s.hire.startedAt !== null);
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
 
   const flowsBadge = useMemo(() => runAttentionBadge(flowRuns), [flowRuns]);
+
+  // Workers carries the same kind of count, for the one thing on that tab
+  // that happens while you are somewhere else: a hire. It drafts for minutes
+  // and then sits on a review screen you cannot see from here, which read as
+  // the hire having quietly failed. Violet once it is drafted and waiting on
+  // you, sky while it is still being written.
+  const workersBadge: { count: number; tone: 'waiting' | 'running' } | undefined = pendingHire
+    ? { count: 1, tone: 'waiting' }
+    : hireRunning
+      ? { count: 1, tone: 'running' }
+      : undefined;
 
   // The idle state shows a countdown, which is a lie the moment it's painted
   // unless something re-renders it. One 30s tick, and only while something is
@@ -206,6 +219,7 @@ export function TitleBar() {
           label="Workers"
           active={detailMode === 'workers'}
           onClick={() => navigateToTab(workersRoot)}
+          badge={workersBadge}
         />
       </div>
       <div className="flex-1" />

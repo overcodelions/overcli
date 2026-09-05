@@ -67,7 +67,18 @@ export function ToolUseCard({
     return <WorkflowCard use={use} args={args} result={result} conversationId={conversationId} />;
   }
   if (use.name === 'Artifact') {
-    return <ArtifactCard use={use} args={args} result={result} onOpen={(p) => openFile(p)} />;
+    // An artifact is a finished page, not source. It opens rendered no matter
+    // what `fileViewModeByExt` remembers for .html — that memory is recorded
+    // from files the user was *editing*, and applying it here lands the one
+    // click that means "show me the thing you made" on a wall of markup.
+    return (
+      <ArtifactCard
+        use={use}
+        args={args}
+        result={result}
+        onOpen={(p) => openFile(p, undefined, 'preview')}
+      />
+    );
   }
   if (use.name === 'Task' || use.name === 'Agent') {
     return <SubagentCard use={use} args={args} result={result} conversationId={conversationId} />;
