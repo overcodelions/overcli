@@ -14,6 +14,7 @@ import { FlowCard, RunPanel } from './flows/FlowLaunch';
 import { BrowseLibraryModal } from './flows/BrowseLibraryModal';
 import { CopyButton } from './ManualCommand';
 import { ProjectFilesBubble } from './ProjectFilesBubble';
+import { ResumeRow } from './ResumeRow';
 import { isEverydayProject } from '@shared/everydayProjects';
 import {
   flowTagCounts,
@@ -820,6 +821,13 @@ export function WelcomePane() {
         {agentError && (
           <div className="mt-2 text-[11px] text-red-400 text-center">{agentError}</div>
         )}
+        <ResumeRow
+          conversations={
+            focusedWorkspace
+              ? focusedWorkspace.conversations ?? []
+              : selectedProject?.conversations ?? []
+          }
+        />
         <WelcomeFlowsRow
           projectPath={selectedProject?.path}
           workspaceRootPath={focusedWorkspace?.rootPath}

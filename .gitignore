@@ -25,4 +25,4 @@ Thumbs.db
 example-registry/
 
 # Design canvas working files (seeded into the published canvas, not app source)
-.design-wq/
+.design-*/
