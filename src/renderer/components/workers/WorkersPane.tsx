@@ -157,6 +157,9 @@ export function WorkersPane() {
   const hiring = useWorkersStore((st) => st.hire.open);
   const hireRunning = useWorkersStore((st) => st.hire.startedAt !== null);
   const openHire = useWorkersStore((st) => st.openHire);
+  const pendingHire = useWorkersStore((st) => st.pendingHire);
+  const resumeHire = useWorkersStore((st) => st.resumeHire);
+  const discardPendingHire = useWorkersStore((st) => st.discardPendingHire);
   const revisions = useWorkersStore((st) => st.revise);
 
   useEffect(() => {
@@ -213,7 +216,8 @@ export function WorkersPane() {
       done: revision.pending != null,
     }))
     .filter((row): row is { worker: Worker; done: boolean } => !!row.worker);
-  const showProgressNotices = hireRunning || revisionNotices.length > 0;
+  const showProgressNotices =
+    hireRunning || pendingHire !== null || revisionNotices.length > 0;
 
   // The editor wins over everything below it: it is the one screen on this
   // tab the user asked for outright. A worker's run outranking it meant that
@@ -312,6 +316,38 @@ export function WorkersPane() {
               </span>
               <span className="ml-auto shrink-0 text-ink-faint">Show me →</span>
             </button>
+          )}
+
+          {/* The other half of the same problem, and the one that actually
+            lost work: the turn LANDS while you are elsewhere, into an editor
+            nothing on screen mentions. Nothing is saved until it is accepted,
+            so without this line a finished hire is indistinguishable from a
+            hire that failed — which is exactly how it was read. */}
+          {pendingHire && (
+            <div className="mb-3 flex items-center gap-2 rounded-md border border-violet-400/40 bg-violet-400/5 px-3 py-2 text-[11px]">
+              <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-400" />
+              <button
+                onClick={() => resumeHire()}
+                className="flex flex-1 items-center gap-2 text-left"
+              >
+                <span className="text-ink-muted">
+                  {pendingHire.draft.name} is drafted and waiting on you —
+                  nothing is hired until you say so.
+                </span>
+                <span className="ml-auto shrink-0 text-ink-faint">
+                  Review and hire &rarr;
+                </span>
+              </button>
+              {/* Closing the editor parks the draft rather than dropping it,
+                so turning the hire down needs a control of its own. */}
+              <button
+                onClick={() => discardPendingHire()}
+                title="Throw the drafted contract away"
+                className="shrink-0 rounded border border-card-strong px-2 py-0.5 text-ink-faint hover:text-ink"
+              >
+                Discard
+              </button>
+            </div>
           )}
 
           {/* Same for a revision, which is easier to lose track of: clicking
@@ -4635,6 +4671,8 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
   const patchHire = useWorkersStore((s) => s.patchHire);
   const startHire = useWorkersStore((s) => s.startHire);
   const closeHire = useWorkersStore((s) => s.closeHire);
+  const pendingHire = useWorkersStore((s) => s.pendingHire);
+  const resumeHire = useWorkersStore((s) => s.resumeHire);
   const jobDescription = hire.jobDescription;
   const projectPath = hire.projectPath || defaultProjectPath;
   const loading = hire.startedAt !== null;
@@ -4670,6 +4708,24 @@ function HireWorker({ defaultProjectPath }: { defaultProjectPath: string }) {
         configuration — persona, cadence, caps, budget, and the flow it runs.
         You review everything before anything is saved.
       </div>
+
+      {/* The most expensive place to not know a hire is already waiting: this
+        is the screen you come to in order to describe the job a second time. */}
+      {pendingHire && (
+        <button
+          onClick={() => resumeHire()}
+          className="mb-5 flex w-full items-center gap-2 rounded-md border border-violet-400/40 bg-violet-400/5 px-3 py-2 text-left text-[11px] hover:bg-violet-400/10"
+        >
+          <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-violet-400" />
+          <span className="text-ink-muted">
+            You already have {pendingHire.draft.name} drafted and unhired — you
+            don&apos;t have to describe the job again.
+          </span>
+          <span className="ml-auto shrink-0 text-ink-faint">
+            Review and hire &rarr;
+          </span>
+        </button>
+      )}
 
       <div className="space-y-5">
         {/* What am I actually hiring? The lifecycle, before any form. */}

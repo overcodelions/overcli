@@ -1787,9 +1787,25 @@ export function restoreFileToHead(args: {
 /// called on every conversation focus.
 export function currentBranch(cwd: string): { isRepo: boolean; branch: string } {
   if (!cwd) return { isRepo: false, branch: '' };
-  const res = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
+  return readCurrentBranch(runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd));
+}
+
+/// Async sibling of `currentBranch`, for the renderer. `runGit` is
+/// `spawnSync`, which stalls the single main-process thread for the whole
+/// invocation — including the `runner:send` IPC queued behind it. Cheap as
+/// this probe is, it sits on the path between the user hitting enter and the
+/// conversation appearing, so it does not get to block anything.
+export async function currentBranchAsync(
+  cwd: string,
+): Promise<{ isRepo: boolean; branch: string }> {
+  if (!cwd) return { isRepo: false, branch: '' };
+  return readCurrentBranch(await runGitAsync(['rev-parse', '--abbrev-ref', 'HEAD'], cwd));
+}
+
+function readCurrentBranch(res: GitResult): { isRepo: boolean; branch: string } {
   if (res.exitCode !== 0) return { isRepo: false, branch: '' };
   const branch = res.stdout.trim();
+  // Detached HEAD: in a repo, but on no branch.
   if (!branch || branch === 'HEAD') return { isRepo: !!branch, branch: '' };
   return { isRepo: true, branch };
 }

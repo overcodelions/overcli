@@ -76,6 +76,23 @@ describe('resolveDiffTarget', () => {
     });
   });
 
+  it('has no target for an absolute path outside the repo', () => {
+    // The scratchpad artifact case: git would run in /repo against a file
+    // outside it and answer `fatal: … is outside repository`, which the pane
+    // then rendered as the diff. Null is what hides the Diff tab.
+    expect(resolveDiffTarget('/private/tmp/scratch/page.html', '/repo', null, null)).toBeNull();
+    expect(resolveDiffTarget('/other/project/src/a.ts', '/repo', MEMBERS, null)).toBeNull();
+  });
+
+  it('keeps a repo-relative path even though it is not under the root', () => {
+    // Only ABSOLUTE paths can be judged by prefix. A relative one is already
+    // in the form git wants and must survive the check above.
+    expect(resolveDiffTarget('src/a.ts', '/repo', null, null)).toMatchObject({
+      cwd: '/repo',
+      path: 'src/a.ts',
+    });
+  });
+
   it('does not partial-match a member name that is a prefix of another', () => {
     const members = [
       { name: 'app', path: '/wt/app', projectPath: '/p/app', baseBranch: null },
