@@ -1611,14 +1611,7 @@ export function registerIpc(): void {
   ipcMain.handle('flows:startRun', (_e, args) =>
     flowRuntime ? flowRuntime.startRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
-  ipcMain.handle('flows:listRuns', async () =>
-    flowRuntime
-      ? {
-          runs: flowRuntime.listRuns(),
-          unreviewedRunIds: await flowRuntime.unreviewedDoneRunIds(),
-        }
-      : { runs: [], unreviewedRunIds: [] },
-  );
+  ipcMain.handle('flows:listRuns', () => ({ runs: flowRuntime ? flowRuntime.listRuns() : [] }));
   ipcMain.handle('flows:listUnreviewedRuns', async () => (flowRuntime ? await flowRuntime.unreviewedDoneRunIds() : []));
   ipcMain.handle('flows:getRun', (_e, { runId }) => (flowRuntime ? flowRuntime.getRun(runId) : null));
   ipcMain.handle('flows:resumeRun', (_e, args) =>

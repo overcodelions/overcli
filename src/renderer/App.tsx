@@ -159,14 +159,29 @@ export function App() {
   // finished run.
   useEffect(() => {
     let last = 0;
+    // A scan already running is the stronger guard of the two. The time
+    // throttle assumes a scan is over long before the next focus; on an
+    // install with hundreds of worktrees one takes many seconds, so
+    // alt-tabbing during it used to stack a second full round of `git`
+    // subprocesses on top of the first — each one making the other slower.
+    let inFlight = false;
     const MIN_GAP_MS = 5_000;
     const refresh = () => {
       const now = Date.now();
-      if (now - last < MIN_GAP_MS) return;
+      if (inFlight || now - last < MIN_GAP_MS) return;
       last = now;
+      inFlight = true;
       void window.overcli
         .invoke('flows:listUnreviewedRuns')
-        .then((ids) => useFlowsStore.getState().applyUnreviewedRuns(ids));
+        .then((ids) => useFlowsStore.getState().applyUnreviewedRuns(ids))
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+          // Stamp the END, not the start: the gap is meant to keep scans
+          // apart, and measuring from the start lets a slow one be followed
+          // immediately by the next.
+          last = Date.now();
+        });
     };
     window.addEventListener('focus', refresh);
     return () => window.removeEventListener('focus', refresh);
@@ -176,32 +191,75 @@ export function App() {
   // "Flows" sections populate immediately. Without this, runs only
   // appeared after the user visited the Flows tab (which is where
   // the original IPC call lived).
+  //
+  // ORDER MATTERS, and it is the whole point of the shape below. Main is one
+  // process with one event loop, so anything expensive dispatched alongside
+  // this holds the sidebar's own data behind it. Two things used to:
+  //
+  //   - the unreviewed-run scan, which `flows:listRuns` awaited inline. It
+  //     costs a `git status` per worktree per finished run, and a workspace
+  //     run forks one worktree per member — on a real install that was ~900
+  //     worktrees and tens of seconds before the runs themselves came back.
+  //     It is a DECORATION (a dot on reviewed-vs-not), so it now rides its
+  //     own call, fired after the roster lands.
+  //   - the transcript warm, which reads up to sixty whole transcripts and
+  //     clones them back across the boundary. Also deferred, below.
+  //
+  // What is left here is what the sidebar needs to DRAW, all of it already in
+  // main's memory. Everything else waits its turn.
   useEffect(() => {
-    void window.overcli.invoke('flows:listRuns').then(({ runs, unreviewedRunIds }) => {
-      useFlowsStore.getState().applyRunsBulk(runs);
-      useFlowsStore.getState().applyUnreviewedRuns(unreviewedRunIds);
-      // Warm each run's transcript + markdown in the background (idle-paced)
-      // so the first click into a run paints instantly.
-      void useStore.getState().prefetchFlowRunHistories();
-    });
-    // Hydrate orchestrations too, so an in-progress batch's ledger survives a
-    // window refresh even if the user lands on a different tab — the batch
-    // and its runs live in main and keep going regardless.
-    void import('./orchestratorStore').then(({ useOrchestratorStore }) => {
-      void useOrchestratorStore.getState().reload();
-    });
-    // Schedules hydrate at startup rather than with the Flows pane, because
-    // the title bar's indicator has to be right from the first paint — the
-    // whole point of it is telling you something is running before you've
-    // thought to go looking.
-    void import('./schedulesStore').then(({ useSchedulesStore }) => {
-      void useSchedulesStore.getState().reload();
-    });
-    // Workers hydrate at startup for the same reason: a shift can fire (and a
-    // scorecard change) before the user ever opens the Workers tab.
-    void import('./workersStore').then(({ useWorkersStore }) => {
-      void useWorkersStore.getState().reload();
-    });
+    const startedAt = performance.now();
+    const roster = Promise.all([
+      window.overcli.invoke('flows:listRuns').then(({ runs }) => {
+        useFlowsStore.getState().applyRunsBulk(runs);
+      }),
+      // Orchestrations, so an in-progress batch's ledger survives a window
+      // refresh even if the user lands on a different tab — the batch and its
+      // runs live in main and keep going regardless. This is also what draws
+      // the work UNDER each worker in the sidebar, so it is roster data, not
+      // Flows-tab data.
+      import('./orchestratorStore').then(({ useOrchestratorStore }) =>
+        useOrchestratorStore.getState().reload(),
+      ),
+      // Schedules hydrate at startup rather than with the Flows pane, because
+      // the title bar's indicator has to be right from the first paint — the
+      // whole point of it is telling you something is running before you've
+      // thought to go looking.
+      import('./schedulesStore').then(({ useSchedulesStore }) =>
+        useSchedulesStore.getState().reload(),
+      ),
+      // Workers for the same reason: a shift can fire (and a scorecard
+      // change) before the user ever opens the Workers tab.
+      import('./workersStore').then(({ useWorkersStore }) =>
+        useWorkersStore.getState().reload(),
+      ),
+    ]);
+    // The review dots, then the transcript warm — both after the sidebar can
+    // draw itself, and in that order: the dots are one bounded scan, the warm
+    // is an open-ended crawl.
+    void roster
+      .catch(() => {})
+      .then(() => {
+        void window.overcli
+          .invoke('flows:listUnreviewedRuns')
+          .then((ids) => useFlowsStore.getState().applyUnreviewedRuns(ids))
+          .catch(() => {});
+      })
+      .then(() => {
+        // Logged, not just measured: how long the sidebar spends empty is the
+        // symptom users report ("I thought it was broken"), and it depends
+        // entirely on how much history this install has accumulated — so it
+        // has to be answerable from a session log rather than from a profile
+        // on a developer's machine.
+        void window.overcli
+          .invoke('diagnostics:log', {
+            level: 'info',
+            scope: 'startup.hydrate',
+            message: `roster hydrated in ${Math.round(performance.now() - startedAt)}ms; warming transcripts`,
+          })
+          .catch(() => {});
+        return useStore.getState().prefetchFlowRunHistories();
+      });
   }, []);
 
   // Surface release notes on the first launch after an update. The install is
