@@ -391,7 +391,7 @@ export function useRunnerCodexFlags(id: UUID | null | undefined) {
 /// subscribing here re-renders at the full streaming rate (~60Hz while any
 /// agent is working) no matter how little of the map it reads. That is fine
 /// for sheets, which are mounted only while open and walk every runner
-/// anyway (BulkConversationActionsSheet, QuickSwitcher's "running" filter).
+/// anyway (CleanupSheet, QuickSwitcher's "running" filter).
 /// It is NOT fine for always-mounted chrome like the sidebar — use
 /// `useRunningMap` there instead.
 export function useAllRunners(): Record<UUID, RunnerState> {

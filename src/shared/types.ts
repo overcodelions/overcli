@@ -23,6 +23,7 @@ import type { ChangelogRelease } from './changelog';
 // Type-only, so the types ⇄ modelCatalog cycle is erased at compile time.
 import type { FlowModelDefaults } from './modelCatalog';
 import type { CiDeployBlock, CiDeployFile, CiTarget, WorkerCiPermissionPolicy } from './flows/ciDeploy';
+import { DEFAULT_CLEANUP_RULES, type CleanupRules } from './cleanupRules';
 
 export type UUID = string;
 export type Backend = 'claude' | 'codex' | 'gemini' | 'ollama' | 'copilot';
@@ -599,13 +600,55 @@ export interface WorktreeStatus {
 /// `classifyWorktree` for the precedence rules.
 ///   foreign     — outside `~/.overcli/worktrees`; another tool's or the
 ///                 user's own. Reported for honest accounting, never offered.
-///   live        — a conversation or flow run still claims it. Left alone;
-///                 releasing one of these is Settings → Conversations' job,
-///                 because it means deleting the conversation, not disk.
-///   has-work    — unreferenced, but holds uncommitted or unmerged changes.
+///   live        — in use RIGHT NOW: a turn is streaming, or the flow run
+///                 that owns it hasn't reached a terminal state. Never
+///                 offered; the work would be pulled out from under it.
+///   has-work    — idle, but holds uncommitted or unmerged changes.
 ///                 Offered, never pre-selected.
-///   reclaimable — nothing claims it, clean, nothing unmerged. Safe.
+///   reclaimable — idle, clean, nothing unmerged. Safe.
+///
+/// Note what `live` deliberately no longer means: merely being CLAIMED by a
+/// conversation or run. A worker that ran 42 shifts leaves 42 claimed trees,
+/// every one of them finished — treating those as untouchable is what forced
+/// the old split between a disk pane (orphans only) and a conversation
+/// modal, and left no surface that could clear a finished shift outright.
 export type WorktreeSweepBucket = 'foreign' | 'live' | 'has-work' | 'reclaimable';
+
+/// What app state says about a worktree: who made it, what it was for, and
+/// whether that thing is still going. The renderer supplies the claims its
+/// conversations make; main adds the flow runtime's (a run knows the worker
+/// or schedule behind it, which nothing in the renderer's conversation list
+/// records). A tree nothing claims is an orphan and carries no claim at all.
+export interface WorktreeClaim {
+  worktreePath: string;
+  kind: 'conversation' | 'run';
+  /// The conversation that owns the tree.
+  convId?: UUID;
+  runId?: UUID;
+  /// What to call this unit in a cleanup list — the conversation name, or
+  /// the run's title.
+  title: string;
+  /// Producer attribution, when there is one. A worker's shift carries both
+  /// worker and flow; a schedule carries `scheduleName`; a chat you opened
+  /// yourself carries none of them.
+  workerId?: UUID;
+  workerName?: string;
+  flowId?: string;
+  flowName?: string;
+  scheduleName?: string;
+  /// Working right now — a streaming turn, or a run in a non-terminal state.
+  /// The one condition that makes a tree untouchable.
+  busy?: boolean;
+  /// The conversation is archived, or the run reached a terminal state.
+  finished?: boolean;
+  /// When this unit last did anything. Ages a row that has no commits to be
+  /// dated by.
+  activeAt?: number;
+  /// Conversations that BORROWED this tree (`adoptedWorktree`) rather than
+  /// owning it. Removing the tree has to take these rows with it, or they're
+  /// left pointing at a directory that no longer exists.
+  adoptedConvIds?: UUID[];
+}
 
 export interface WorktreeSweepEntry {
   worktreePath: string;
@@ -617,6 +660,10 @@ export interface WorktreeSweepEntry {
   bucket: WorktreeSweepBucket;
   /// Which bit of app state still claims this tree, if any.
   referenced: 'conversation' | 'run' | null;
+  /// The claim itself, when there is one — who made the tree and whether
+  /// that work is still going. Absent on an orphan, which is exactly what
+  /// makes it an orphan.
+  claim?: WorktreeClaim;
   /// Timestamp of the last commit in the worktree. An orphan has no
   /// conversation left to date it by, so this is what the pane's age filter
   /// runs on. Absent when the branch has no commits or the tree is gone.
@@ -632,9 +679,27 @@ export interface WorktreeSweepEntry {
   prunable: boolean;
 }
 
+/// A Claude transcript folder whose worktree is gone. Deleting a conversation
+/// never removed these — Claude wrote them, keyed by the directory the session
+/// ran in, and once that worktree is deleted nothing in the app can reach the
+/// folder again. See `main/transcriptSweep.ts`.
+export interface OrphanTranscriptEntry {
+  /// Absolute path of the folder under `~/.claude/projects`.
+  dirPath: string;
+  sizeKb: number;
+  fileCount: number;
+  /// Newest file mtime in the folder, when there is one.
+  modifiedAt?: number;
+}
+
 export interface WorktreeSweepResult {
   entries: WorktreeSweepEntry[];
   scannedAt: number;
+  /// Whether this scan measured disk usage. False when it was skipped —
+  /// either asked for, or because the candidate set was too big to be worth
+  /// the walk. The UI has to say so rather than showing every size as "—"
+  /// and letting it read as "empty".
+  measuredSizes: boolean;
 }
 
 /// How long a conversation can sit untouched before Settings → Conversations
@@ -1057,6 +1122,9 @@ export interface AppSettings {
   /// doesn't come back every launch — a highlight that never retires is one
   /// the eye learns to skip.
   seenSchedules?: boolean;
+  /// Auto-tidy: which finished worktrees retire on their own, and when a
+  /// producer holding too many should say so. See `shared/cleanupRules.ts`.
+  cleanup?: CleanupRules;
   /// When true, the sidebar footer shows a "Debug" button that opens the
   /// DebugSheet. Off by default to keep the footer lean; developers can
   /// flip it on in Settings → Advanced.
@@ -1585,7 +1653,14 @@ export interface IPCInvokeMap {
   /// `removeAgent`, since that deletes history rather than reclaiming space.
   'git:scanWorktrees': (args: {
     projects: Array<{ path: string; name: string }>;
-    conversationPaths: string[];
+    /// Claims from the renderer's conversations. Main adds the flow
+    /// runtime's run claims before scanning.
+    claims: WorktreeClaim[];
+    /// `'auto'` (the default) measures disk only on installs small enough
+    /// for it to be worth the wait; `true` forces it, `false` skips it. The
+    /// `du` per worktree is most of the scan's time and decides nothing —
+    /// the buckets are identical either way.
+    measureSizes?: boolean | 'auto';
   }) => WorktreeSweepResult;
   /// Cheap per-conversation worktree check for Settings → Conversations: is
   /// there uncommitted or unmerged work that deleting would destroy? No `du`
@@ -1606,6 +1681,18 @@ export interface IPCInvokeMap {
     commitsAhead: number;
     isMergedIntoBase: boolean;
   }>;
+  /// Claude transcript folders left behind by worktrees that are gone.
+  /// Read-only; `transcripts:removeOrphans` is the destructive half and
+  /// re-derives everything rather than trusting what this returned.
+  'transcripts:scanOrphans': () => {
+    entries: OrphanTranscriptEntry[];
+    scannedAt: number;
+  };
+  'transcripts:removeOrphans': (args: { dirPaths: string[] }) => {
+    removed: number;
+    freedKb: number;
+    failures: Array<{ dirPath: string; error: string }>;
+  };
   'git:sweepWorktrees': (args: {
     entries: Array<{
       projectPath: string;
@@ -1619,6 +1706,20 @@ export interface IPCInvokeMap {
     failures: Array<{ worktreePath: string; error: string }>;
     warnings: string[];
   };
+  /// Remove an agent's worktree while its CONVERSATION stays. Cleanup's
+  /// "release" verb: the tree is what takes up the disk, the transcript is
+  /// what people are afraid of losing. Keeps the branch unless told
+  /// otherwise, and re-homes the Claude session file so history replay and
+  /// `--resume` survive the conversation's cwd changing to the project root.
+  'git:releaseWorktree': (args: {
+    projectPath: string;
+    worktreePath: string;
+    branchName: string | null;
+    /// Default true. Deleting the branch as well is offered for the case
+    /// where the work is already merged and the branch is just noise.
+    keepBranch?: boolean;
+    sessionId?: string;
+  }) => { ok: boolean; error?: string; warning?: string };
   'git:checkoutAgentLocally': (args: {
     projectPath: string;
     worktreePath: string;
@@ -3078,7 +3179,7 @@ export type MainToRendererEvent =
       message: string;
     }
   | {
-      /// Progress of a Settings → Storage worktree scan. Inspecting a
+      /// Progress of a Clean up worktree scan. Inspecting a
       /// candidate means a `git status` walk plus a `du` over the tree, so a
       /// large install spends a minute or more here — the pane shows this
       /// rather than an unmoving spinner. `total` is the number of candidates
@@ -3211,6 +3312,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   sidebarLayout: 'stream',
   showActiveSidebarSection: true,
   showDebug: false,
+  cleanup: { ...DEFAULT_CLEANUP_RULES },
   claudeTransport: 'cli',
   claudeMcpDebug: false,
   claudeArtifacts: false,
