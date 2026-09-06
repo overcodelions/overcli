@@ -130,6 +130,7 @@ import {
   deleteWorkerFile,
   deliverableFiles,
 } from './flows/workerFiles';
+import { filedByWorker } from './flows/workerPublish';
 import { listToolCatalog } from './flows/toolCatalog';
 import { FlowRuntime } from './flows/runtime';
 import { OrchestratorImpl } from './flows/orchestrator';
@@ -1212,6 +1213,20 @@ export function registerIpc(): void {
       };
     }
     return listDocuments(args);
+  });
+  ipcMain.handle('everyday:filedBy', (_e, args) => {
+    // An empty map, not a refusal: this decorates a grid that has already
+    // painted, and a caption is never worth an error state.
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) return {};
+    if (!workerEngine) return {};
+    // `workerIds` + `get`, deliberately not `list()` — the latter builds a
+    // scorecard per worker (two whole-file log reads each) and nothing here
+    // reads one.
+    const workers = workerEngine
+      .workerIds()
+      .map((id) => workerEngine?.get(id))
+      .filter((w): w is NonNullable<typeof w> => w !== null && w !== undefined);
+    return filedByWorker(workers, args.projectPath);
   });
   ipcMain.handle('versions:checkpoint', (_e, args) => {
     if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {

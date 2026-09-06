@@ -1781,6 +1781,10 @@ export interface IPCInvokeMap {
   'fs:listDocuments': (args: {
     dirPath: string;
   }) => { ok: true; entries: DocumentEntry[] } | { ok: false; error: string };
+  /// Which documents in this everyday project a worker put there, and which
+  /// worker. Separate from `fs:listDocuments` because it reads every worker's
+  /// publish ledger, and the grid must paint before that lands.
+  'everyday:filedBy': (args: { projectPath: string }) => FiledByMap;
   'versions:checkpoint': (args: { projectPath: string; message: string }) => {
     ok: boolean;
     skipped?: 'nothing-to-save' | 'too-large';
@@ -2693,6 +2697,10 @@ export interface ProjectVersion {
   subject: string;
   files: ProjectVersionFile[];
 }
+
+/// Who filed a document, for the documents grid's attribution line. Keyed by
+/// basename; a document nobody's worker filed is simply absent.
+export type FiledByMap = Record<string, { workerId: UUID; workerName: string }>;
 
 export interface DocumentEntry {
   name: string;
