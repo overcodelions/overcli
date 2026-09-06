@@ -353,3 +353,47 @@ function writeLedger(workerId: string, ledger: Ledger): void {
     log('error', 'worker-publish', 'could not record publication', err);
   }
 }
+
+/// Which documents in a project were put there by a worker, and by which one.
+///
+/// There is no provenance field on a document — a filed deliverable is an
+/// ordinary file, deliberately, because the folder has to keep working when
+/// Overcli isn't running. So provenance is reconstructed from the two things
+/// that are recorded: a worker files only into its own `projectPath`, and its
+/// ledger already remembers every filename it landed there (it has to, or a
+/// revision would overwrite somebody else's document).
+///
+/// Keyed by BASENAME, which is what the documents grid has in hand. A name
+/// claimed by two workers is left to the first — the grid is captioning a
+/// file, and "one of these two filed it" is not worth a second line.
+export function filedByWorker(
+  workers: ReadonlyArray<{ id: string; name: string; projectPath: string }>,
+  projectPath: string,
+): Record<string, { workerId: string; workerName: string }> {
+  const out: Record<string, { workerId: string; workerName: string }> = {};
+  if (!projectPath) return out;
+  const target = normalizeDir(projectPath);
+  for (const worker of workers) {
+    if (!worker.projectPath || normalizeDir(worker.projectPath) !== target) continue;
+    for (const entry of Object.values(readLedger(worker.id))) {
+      // `landed` is the modern mapping (original name -> the name it got);
+      // `written` is the pre-0.17.0 array, already uniquified. Both hold
+      // names as they exist on disk, which is the half we want.
+      const names = [...Object.values(entry.landed ?? {}), ...(entry.written ?? [])];
+      for (const name of names) {
+        const base = safeBase(name);
+        if (!base || out[base]) continue;
+        out[base] = { workerId: worker.id, workerName: worker.name };
+      }
+    }
+  }
+  return out;
+}
+
+/// Compared the way `samePath` in workspace.ts does, and for the same reason:
+/// the stored worker path and the project path can differ in case or in a
+/// trailing separator while naming one directory.
+function normalizeDir(p: string): string {
+  const resolved = path.resolve(p);
+  return process.platform === 'linux' ? resolved : resolved.toLowerCase();
+}
