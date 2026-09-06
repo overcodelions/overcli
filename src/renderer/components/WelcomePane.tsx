@@ -494,6 +494,15 @@ export function WelcomePane() {
   // path used to read as the engineer's screen with softer wording.
   const startHere = (
     <>
+      {/* Above the composer here, below it on the welcome layout — the one
+          place the two screens deliberately differ. This footer is pinned to
+          the bottom of the documents, so the page reads down as what is here,
+          what you were doing, what you want next, and the composer stays on
+          the edge where a composer belongs. Below it, Resume would sit in the
+          window's last 34 pixels. */}
+      {isEverydayFolder && selectedProject && (
+        <ResumeRow compact conversations={selectedProject.conversations ?? []} />
+      )}
       {/* Kept with the composer rather than left behind on the welcome
           layout: these exist for exactly the person an everyday project is
           for, and "I don't know what to type" is the moment they answer. */}
