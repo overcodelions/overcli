@@ -483,6 +483,7 @@ export function App() {
               <DocumentsPane
                 rootPath={everydayExplorerProject.path}
                 projectName={everydayExplorerProject.name}
+                onClose={() => useStore.getState().closeExplorer()}
               />
             ) : (
               <ExplorerPane />

@@ -92,7 +92,23 @@ export function sortEntries(entries: readonly DocumentEntry[], key: SortKey): Do
   });
 }
 
-export function DocumentsPane({ rootPath, projectName }: { rootPath: string; projectName: string }) {
+export function DocumentsPane({
+  rootPath,
+  projectName,
+  footer,
+  onClose,
+}: {
+  rootPath: string;
+  projectName: string;
+  /// Rendered under the grid, and ONLY there — never over an open document,
+  /// where the file's own composer and version rail are the screen. This is
+  /// how the everyday project's front page carries its composer without the
+  /// two components having to know about each other's state.
+  footer?: React.ReactNode;
+  /// Absent when this pane IS the screen rather than an explorer opened over
+  /// one — an everyday project's front page has nothing to close back to.
+  onClose?: () => void;
+}) {
   const openFile = useStore((s) => s.openFile);
   const openFilePath = useStore((s) => s.openFilePath);
   const closeFile = useStore((s) => s.closeFile);
@@ -101,7 +117,6 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
   // the documents, every time.
   const [viewingFile, setViewingFile] = useState(false);
   const openSheet = useStore((s) => s.openSheet);
-  const closeExplorer = useStore((s) => s.closeExplorer);
   const checkpointProject = useStore((s) => s.checkpointProject);
   const [dir, setDir] = useState(rootPath);
   const [entries, setEntries] = useState<DocumentEntry[]>([]);
@@ -314,13 +329,15 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
           >
             {revealLabel()}
           </button>
-          <button
-            onClick={closeExplorer}
-            className="rounded-md px-2 py-1.5 text-xs text-ink-faint hover:text-ink"
-            title="Close"
-          >
-            ✕
-          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="rounded-md px-2 py-1.5 text-xs text-ink-faint hover:text-ink"
+              title="Close"
+            >
+              ✕
+            </button>
+          )}
         </div>
       </div>
 
@@ -497,6 +514,8 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
           </div>
         )}
       </div>
+
+      {footer && <div className="shrink-0 px-6 pb-5 pt-1">{footer}</div>}
 
       {(dragging || busy) && (
         <div className="absolute inset-0 flex items-center justify-center accent-dropzone border-2 border-dashed rounded-lg m-2 pointer-events-none">
