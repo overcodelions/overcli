@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildStream, bucketFor, groupIntoLanes } from './sidebarStream';
+import { buildStream, bucketFor, groupIntoLanes, ownerDestination } from './sidebarStream';
 import { ownerPathFor } from './components/SidebarStream';
 
 const HOUR = 60 * 60 * 1000;
@@ -147,5 +147,45 @@ describe('ownerPathFor', () => {
   it('gives a worker lane nowhere to go', () => {
     expect(ownerPathFor('worker:abc', projects, workspaces)).toBeUndefined();
     expect(ownerPathFor('gone', projects, workspaces)).toBeUndefined();
+  });
+});
+
+describe('ownerDestination', () => {
+  it('opens a project on its own front page, not its files', () => {
+    expect(ownerDestination({ ownerId: 'p1', ownerKind: 'project' }, '/some/path')).toEqual({
+      kind: 'project',
+      projectId: 'p1',
+    });
+  });
+
+  it('opens a workspace on its front page', () => {
+    expect(ownerDestination({ ownerId: 'w1', ownerKind: 'workspace' }, '/some/path')).toEqual({
+      kind: 'workspace',
+      workspaceId: 'w1',
+    });
+  });
+
+  it('opens a worker desk, stripping the lane prefix off the id', () => {
+    expect(ownerDestination({ ownerId: 'worker:abc-123', ownerKind: 'worker' }, undefined)).toEqual({
+      kind: 'worker',
+      workerId: 'abc-123',
+    });
+  });
+
+  it('gives a worker a door even though no path resolves for one', () => {
+    // The bug this replaced: `ownerPathFor` returns undefined for workers, so
+    // the label rendered as plain text with nothing to click.
+    expect(ownerDestination({ ownerId: 'worker:abc', ownerKind: 'worker' }, undefined)).not.toBeNull();
+  });
+
+  it('falls back to files for a bare folder with no project behind it', () => {
+    expect(ownerDestination({ ownerId: 'path:/tmp/x', ownerKind: 'unknown' }, '/tmp/x')).toEqual({
+      kind: 'files',
+      path: '/tmp/x',
+    });
+  });
+
+  it('has no door when nothing resolves', () => {
+    expect(ownerDestination({ ownerId: 'path:', ownerKind: 'unknown' }, undefined)).toBeNull();
   });
 });

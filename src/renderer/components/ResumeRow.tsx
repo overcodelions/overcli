@@ -25,7 +25,13 @@ import {
   type ResumeItem,
 } from './resumeItems';
 
-export function ResumeRow({ conversations }: { conversations: readonly Conversation[] }) {
+export function ResumeRow({
+  conversations,
+  compact = false,
+}: {
+  conversations: readonly Conversation[];
+  compact?: boolean;
+}) {
   const running = useRunningMap();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const selectConversation = useStore((s) => s.selectConversation);
@@ -37,7 +43,7 @@ export function ResumeRow({ conversations }: { conversations: readonly Conversat
   // the state you come back to with no other way into a conversation.
   const [override, setOverride] = useState<boolean | null>(null);
   useEffect(() => setOverride(null), [sidebarVisible]);
-  const expanded = override ?? !sidebarVisible;
+  const expanded = !compact && (override ?? !sidebarVisible);
 
   // `useRunningMap` is referentially stable across the event flood, so this
   // only re-sorts when a conversation actually starts, stops, or is touched.
@@ -63,11 +69,11 @@ export function ResumeRow({ conversations }: { conversations: readonly Conversat
           ))}
         </div>
         <button
-          onClick={() => setOverride(true)}
+          onClick={compact ? openAll : () => setOverride(true)}
           className="flex-shrink-0 flex items-center gap-1 rounded-full border border-dashed border-card-strong px-2.5 py-1 text-[10.5px] text-ink-faint hover:text-ink hover:border-card-strong"
         >
           {rest > 0 ? `${rest} more` : 'More'}
-          <Chevron down />
+          {compact ? null : <Chevron down />}
         </button>
       </div>
     );

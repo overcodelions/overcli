@@ -10,6 +10,8 @@ import { selectActiveEntries } from '../activeSection';
 import { conversationActivityAt } from '../conversationLookup';
 import { partitionSleeping } from '../sidebarSleep';
 import { useFlowsStore } from '../flowsStore';
+import { DEFAULT_CLEANUP_RULES } from '@shared/cleanupRules';
+import { estimateTidyCandidates } from './sheets/cleanupNudge';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
 import {
@@ -135,6 +137,21 @@ export function Sidebar() {
   }, []);
   const runners = useRunningMap();
   const flowRuns = useFlowsStore((s) => s.runs);
+  const cleanupRules = useStore((s) => s.settings.cleanup) ?? DEFAULT_CLEANUP_RULES;
+  // State-only estimate — no git, no disk. See `estimateTidyCandidates`.
+  const tidyCandidates = useMemo(
+    () =>
+      estimateTidyCandidates({
+        owners: [...projects, ...workspaces],
+        runs: Object.values(flowRuns),
+        runningById: Object.fromEntries(
+          Object.entries(runners).map(([id, r]) => [id, !!r?.isRunning]),
+        ),
+        rules: cleanupRules,
+        now: Date.now(),
+      }),
+    [projects, workspaces, flowRuns, runners, cleanupRules],
+  );
   const workers = useWorkersStore((s) => s.workers);
   const selectWorker = useWorkersStore((s) => s.selectWorker);
   const setActiveRun = useFlowsStore((s) => s.setActiveRun);
@@ -754,8 +771,14 @@ export function Sidebar() {
         <div className="flex items-center gap-1 mt-1">
           <SidebarIconButton label="Extensions" onClick={() => openSheet({ type: 'capabilities' })} />
           <SidebarIconButton
-            label="Cleanup"
-            onClick={() => openSheet({ type: 'bulkConversationActions' })}
+            label="Clean up"
+            onClick={() => openSheet({ type: 'cleanup' })}
+            badge={tidyCandidates}
+            title={
+              tidyCandidates
+                ? `${tidyCandidates} finished worktrees are worth a look`
+                : 'Clean up worktrees, workers, flows and chats'
+            }
           />
           {showDebug && (
             <SidebarIconButton label="Debug" onClick={() => openSheet({ type: 'debug' })} />
@@ -816,13 +839,34 @@ function ExpandAllIcon() {
   );
 }
 
-function SidebarIconButton({ label, onClick }: { label: string; onClick: () => void }) {
+function SidebarIconButton({
+  label,
+  onClick,
+  badge,
+  title,
+}: {
+  label: string;
+  onClick: () => void;
+  /// Count of worktrees worth looking at. Shown only when there is a pile —
+  /// a badge that is always lit is one the eye learns to skip.
+  badge?: number;
+  title?: string;
+}) {
   return (
     <button
       onClick={onClick}
-      className="flex-1 text-[10px] py-1 text-ink-faint hover:text-ink-muted rounded hover:bg-card-strong"
+      title={title}
+      className={
+        'flex-1 text-[10px] py-1 rounded hover:bg-card-strong flex items-center justify-center gap-1 ' +
+        (badge ? 'text-ink-muted hover:text-ink' : 'text-ink-faint hover:text-ink-muted')
+      }
     >
       {label}
+      {!!badge && (
+        <span className="text-[9px] text-amber-700 dark:text-amber-300 bg-amber-500/15 rounded px-1 leading-[13px]">
+          {badge}
+        </span>
+      )}
     </button>
   );
 }
@@ -1101,7 +1145,7 @@ function ProjectGroup({
         </button>
         <button
           onClick={() => setConfirmRemove(true)}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-700 dark:text-red-300 hover:bg-card-strong"
           title="Remove project from Overcli"
           aria-label={`Remove project ${projectLabel(project)}`}
         >
@@ -1307,7 +1351,7 @@ function ColosseumSidebarGroup({
                   {conv.currentModel ? ` · ${conv.currentModel}` : ''}
                 </span>
                 {isWinner ? (
-                  <span className="text-amber-300/80">
+                  <span className="text-amber-700 dark:text-amber-300/80">
                     <CrownIcon />
                   </span>
                 ) : null}
@@ -1548,7 +1592,7 @@ function WorkspaceGroup({
         </button>
         <button
           onClick={() => setConfirmRemove(true)}
-          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-300 hover:bg-card-strong"
+          className="w-6 h-6 flex items-center justify-center rounded text-ink-faint opacity-85 hover:opacity-100 hover:text-red-700 dark:text-red-300 hover:bg-card-strong"
           title="Remove workspace from Overcli"
           aria-label={`Remove workspace ${workspace.name}`}
         >
@@ -1739,10 +1783,10 @@ function ArchivedGroup() {
         <button
           onClick={(e) => {
             e.stopPropagation();
-            openSheet({ type: 'bulkConversationActions' });
+            openSheet({ type: 'cleanup' });
           }}
           className="text-[10px] text-ink-faint hover:text-ink px-1 py-0.5 rounded hover:bg-card-strong opacity-0 group-hover:opacity-100 focus:opacity-100"
-          title="Bulk cleanup conversations"
+          title="Clean up worktrees and conversations"
         >
           Cleanup
         </button>
