@@ -17,9 +17,10 @@ import { useMemo, useState } from 'react';
 
 import { useFlowsStore } from '../flowsStore';
 import { useStore } from '../store';
+import { useWorkersStore } from '../workersStore';
 
 
-import { buildStream, groupIntoLanes, type Lane } from '../sidebarStream';
+import { buildStream, groupIntoLanes, ownerDestination, type Lane } from '../sidebarStream';
 import { partitionSleeping } from '../sidebarSleep';
 import type { StreamEntry } from './sidebarItems';
 import { ConversationRow } from './ConversationRow';
@@ -151,8 +152,41 @@ function StreamLane({
   // live in was reachable only from Places — you could read the project's
   // name all day with no way to open it. The label is the door: it is already
   // the one place in this layout that names the owner.
+  //
+  // WHERE that door leads is the owner's own front page, not its file
+  // browser. It used to open the explorer for everything, which answered a
+  // question ("what files are in here?") narrower than the one being asked by
+  // clicking a name — and it left workers with no door at all, because
+  // `ownerPathFor` has no path for one, so their label rendered as plain text.
   const ownerPath = useStore((s) => ownerPathFor(lane.ownerId, s.projects, s.workspaces));
   const openExplorer = useStore((s) => s.openExplorer);
+  const setDetailMode = useStore((s) => s.setDetailMode);
+  const startNewConversation = useStore((s) => s.startNewConversation);
+  const startNewConversationInWorkspace = useStore((s) => s.startNewConversationInWorkspace);
+  const selectWorker = useWorkersStore((s) => s.selectWorker);
+
+  const destination = ownerDestination(lane, ownerPath);
+  const openOwner = destination
+    ? () => {
+        switch (destination.kind) {
+          case 'project':
+            return startNewConversation(destination.projectId);
+          case 'workspace':
+            return startNewConversationInWorkspace(destination.workspaceId);
+          case 'worker':
+            setDetailMode('workers');
+            return selectWorker(destination.workerId);
+          case 'files':
+            return openExplorer(destination.path);
+        }
+      }
+    : null;
+  const openLabel =
+    lane.ownerKind === 'worker'
+      ? `Open ${lane.ownerName}'s desk`
+      : lane.ownerKind === 'unknown'
+        ? `Browse the files in ${lane.ownerName}`
+        : `Open ${lane.ownerName}`;
   return (
     <div className="mt-1.5">
       <div
@@ -161,10 +195,10 @@ function StreamLane({
           (here ? 'text-accent' : 'text-ink-faint')
         }
       >
-        {ownerPath ? (
+        {openOwner ? (
           <button
-            onClick={() => openExplorer(ownerPath)}
-            title={`Browse the files in ${lane.ownerName}`}
+            onClick={openOwner}
+            title={openLabel}
             className="min-w-0 truncate uppercase tracking-wider hover:text-ink hover:underline"
           >
             {lane.ownerName}

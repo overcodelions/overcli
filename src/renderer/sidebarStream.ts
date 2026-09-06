@@ -107,3 +107,39 @@ export function buildStream<T>(
   }
   return sections;
 }
+
+/// Where clicking a lane's owner name should take you.
+///
+/// The label is the only place in Recent that names the owner, so it is the
+/// door to it — and a door should lead to the thing's own front page, not to
+/// a view of its files. That distinction used to be lost: every owner opened
+/// the explorer, which answered a narrower question than the one being asked,
+/// and workers got no door at all because there is no path to open for one.
+///
+/// `null` means "no door": a bare `path:` owner with no folder resolved is
+/// not something the app can open.
+export type OwnerDestination =
+  | { kind: 'project'; projectId: string }
+  | { kind: 'workspace'; workspaceId: string }
+  | { kind: 'worker'; workerId: string }
+  | { kind: 'files'; path: string }
+  | null;
+
+export function ownerDestination(
+  lane: { ownerId: string; ownerKind: Lane<unknown>['ownerKind'] },
+  /// Resolved by `ownerPathFor`; only consulted for owners with no front page.
+  ownerPath: string | undefined,
+): OwnerDestination {
+  switch (lane.ownerKind) {
+    case 'project':
+      return { kind: 'project', projectId: lane.ownerId };
+    case 'workspace':
+      return { kind: 'workspace', workspaceId: lane.ownerId };
+    case 'worker':
+      return { kind: 'worker', workerId: lane.ownerId.replace(/^worker:/, '') };
+    default:
+      // A `path:` owner is a folder with no project behind it. There is no
+      // front page to open, so its files stay the answer.
+      return ownerPath ? { kind: 'files', path: ownerPath } : null;
+  }
+}
