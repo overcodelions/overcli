@@ -4,6 +4,7 @@ import * as path from 'path';
 import {
   parseWorktreeList,
   classifyWorktree,
+  indexClaims,
   managedWorktreeRoot,
   isProtectedBranch,
 } from './worktreeSweep';
@@ -66,17 +67,17 @@ describe('parseWorktreeList', () => {
 describe('classifyWorktree', () => {
   const clean = { dirtyFiles: 0, commitsAhead: 0, isMergedIntoBase: true };
 
-  it('marks a clean, unreferenced, managed worktree reclaimable', () => {
-    expect(
-      classifyWorktree({ worktreePath: managed('done'), referenced: null, ...clean }),
-    ).toBe('reclaimable');
+  it('marks a clean, idle, managed worktree reclaimable', () => {
+    expect(classifyWorktree({ worktreePath: managed('done'), busy: false, ...clean })).toBe(
+      'reclaimable',
+    );
   });
 
   it('marks a merged branch reclaimable even with commits ahead of base', () => {
     expect(
       classifyWorktree({
         worktreePath: managed('merged'),
-        referenced: null,
+        busy: false,
         dirtyFiles: 0,
         commitsAhead: 4,
         isMergedIntoBase: true,
@@ -84,40 +85,40 @@ describe('classifyWorktree', () => {
     ).toBe('reclaimable');
   });
 
+  it('offers a finished shift whose conversation still exists', () => {
+    // The whole point of the cleanup surface: a worker's finished shift is
+    // claimed by a conversation and is still safe to clear. Under the old
+    // `referenced` rule this answered `live` and nothing could ever release it.
+    expect(classifyWorktree({ worktreePath: managed('shift-18'), busy: false, ...clean })).toBe(
+      'reclaimable',
+    );
+  });
+
   it('refuses to touch anything outside the managed root', () => {
     expect(
       classifyWorktree({
         worktreePath: path.join(os.homedir(), 'git-worktrees', 'other', 'branch'),
-        referenced: null,
+        busy: false,
         ...clean,
       }),
     ).toBe('foreign');
   });
 
-  it('treats foreign as foreign even when a conversation references it', () => {
+  it('treats foreign as foreign even while it is busy', () => {
     expect(
-      classifyWorktree({
-        worktreePath: '/somewhere/else',
-        referenced: 'conversation',
-        ...clean,
-      }),
+      classifyWorktree({ worktreePath: '/somewhere/else', busy: true, ...clean }),
     ).toBe('foreign');
   });
 
-  it('protects worktrees a conversation or run still points at', () => {
-    expect(
-      classifyWorktree({ worktreePath: managed('a'), referenced: 'conversation', ...clean }),
-    ).toBe('live');
-    expect(classifyWorktree({ worktreePath: managed('b'), referenced: 'run', ...clean })).toBe(
-      'live',
-    );
+  it('protects a worktree that is working right now', () => {
+    expect(classifyWorktree({ worktreePath: managed('a'), busy: true, ...clean })).toBe('live');
   });
 
   it('keeps a live classification ahead of dirty state', () => {
     expect(
       classifyWorktree({
         worktreePath: managed('busy'),
-        referenced: 'run',
+        busy: true,
         dirtyFiles: 12,
         commitsAhead: 3,
         isMergedIntoBase: false,
@@ -125,11 +126,11 @@ describe('classifyWorktree', () => {
     ).toBe('live');
   });
 
-  it('never calls an orphan with uncommitted changes reclaimable', () => {
+  it('never calls an idle worktree with uncommitted changes reclaimable', () => {
     expect(
       classifyWorktree({
         worktreePath: managed('dirty'),
-        referenced: null,
+        busy: false,
         dirtyFiles: 2,
         commitsAhead: 0,
         isMergedIntoBase: true,
@@ -137,11 +138,11 @@ describe('classifyWorktree', () => {
     ).toBe('has-work');
   });
 
-  it('never calls an orphan with unmerged commits reclaimable', () => {
+  it('never calls an idle worktree with unmerged commits reclaimable', () => {
     expect(
       classifyWorktree({
         worktreePath: managed('unmerged'),
-        referenced: null,
+        busy: false,
         dirtyFiles: 0,
         commitsAhead: 3,
         isMergedIntoBase: false,
@@ -151,7 +152,7 @@ describe('classifyWorktree', () => {
 
   it('does not treat the managed root itself as a managed worktree', () => {
     expect(
-      classifyWorktree({ worktreePath: managedWorktreeRoot(), referenced: null, ...clean }),
+      classifyWorktree({ worktreePath: managedWorktreeRoot(), busy: false, ...clean }),
     ).toBe('foreign');
   });
 
@@ -159,18 +160,62 @@ describe('classifyWorktree', () => {
     expect(
       classifyWorktree({
         worktreePath: managedWorktreeRoot() + '-backup/proj/x',
-        referenced: null,
+        busy: false,
         ...clean,
       }),
     ).toBe('foreign');
   });
+});
 
-  it('leaves a claimed worktree live however old the conversation is', () => {
-    // Ageing a conversation out means deleting the conversation, which is
-    // Settings → Conversations' job. A disk sweep must never do it.
-    expect(
-      classifyWorktree({ worktreePath: managed('ancient'), referenced: 'conversation', ...clean }),
-    ).toBe('live');
+describe('readProjectRefFacts parsing', () => {
+  // The parsing lives inside `readProjectRefFacts`, which shells out. What is
+  // worth pinning here is the decoration `git branch` puts in front of names:
+  // `+ ` marks a branch checked out in ANOTHER worktree, which on a cleanup
+  // install is nearly every branch — miss it and every merged branch reads as
+  // unmerged, so nothing is ever offered as safe.
+  it('strips the current and other-worktree markers', () => {
+    const lines = ['* master', '+ feature/one', '  feature/two', 'feature/three'];
+    const parsed = lines.map((l) => l.replace(/^[*+]?\s+/, '').trim());
+    expect(parsed).toEqual(['master', 'feature/one', 'feature/two', 'feature/three']);
+  });
+});
+
+describe('indexClaims', () => {
+  const wt = managed('shared');
+
+  it('keeps one claim per path', () => {
+    const index = indexClaims([
+      { worktreePath: wt, kind: 'conversation', convId: 'c1', title: 'One' },
+    ]);
+    expect(index.size).toBe(1);
+    expect(index.get(path.resolve(wt))?.convId).toBe('c1');
+  });
+
+  it('resolves two spellings of the same directory to one claim', () => {
+    const index = indexClaims([
+      { worktreePath: wt, kind: 'conversation', convId: 'c1', title: 'One' },
+      { worktreePath: path.join(wt, '.', ''), kind: 'conversation', convId: 'c1', title: 'One' },
+    ]);
+    expect(index.size).toBe(1);
+  });
+
+  it('lets the run own a tree a conversation borrowed, whatever the order', () => {
+    const conv = { worktreePath: wt, kind: 'conversation' as const, convId: 'c1', title: 'Chat' };
+    const run = { worktreePath: wt, kind: 'run' as const, runId: 'r1', title: 'Run' };
+    for (const claims of [[conv, run], [run, conv]]) {
+      const hit = indexClaims(claims).get(path.resolve(wt));
+      expect(hit?.kind).toBe('run');
+      expect(hit?.runId).toBe('r1');
+      expect(hit?.adoptedConvIds).toEqual(['c1']);
+    }
+  });
+
+  it('makes the merged claim busy when any claimant is busy', () => {
+    const hit = indexClaims([
+      { worktreePath: wt, kind: 'run', runId: 'r1', title: 'Run', busy: false },
+      { worktreePath: wt, kind: 'conversation', convId: 'c1', title: 'Chat', busy: true },
+    ]).get(path.resolve(wt));
+    expect(hit?.busy).toBe(true);
   });
 });
 

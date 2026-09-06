@@ -959,6 +959,50 @@ export async function restoreProjectVersion(
   return { ok: true, sha: done.sha };
 }
 
+/// Put ONE document back to how it was at `sha`, leaving everything else in
+/// the folder alone.
+///
+/// The sibling of `restoreProjectVersion`, and deliberately not a thin
+/// wrapper on it: that one resets the whole tree, which is right when the
+/// question is "put the folder back to Tuesday" and wrong when it is "undo
+/// what this got done to it". A document view offering a button that quietly
+/// reverts every other file would be the worst kind of surprise.
+///
+/// Same safety shape as the whole-folder restore: commit whatever is loose
+/// first, so the state being replaced is itself recoverable, and commit the
+/// result so the restore is a version you can come forward from.
+export async function restoreProjectFileVersion(
+  args: { cwd: string; sha: string; relPath: string; label: string },
+): Promise<{ ok: true; sha: string } | { ok: false; error: string }> {
+  const verify = await runGitAsync(['rev-parse', '--verify', `${args.sha}^{commit}`], args.cwd);
+  if (verify.exitCode !== 0) return { ok: false, error: 'That version no longer exists.' };
+
+  // Ask whether the path existed in that commit before touching anything. A
+  // failed `checkout` after the guard commit would leave a "Before restoring"
+  // version behind for a restore that never happened.
+  const known = await runGitAsync(['cat-file', '-e', `${args.sha}:${args.relPath}`], args.cwd);
+  if (known.exitCode !== 0) {
+    return { ok: false, error: "That version doesn't have this document." };
+  }
+
+  const guard = await commitAllAsync({ cwd: args.cwd, message: 'Before restoring' });
+  if (!guard.ok && !guard.nothingToCommit) return { ok: false, error: guard.error };
+
+  // `--` so a path that looks like a revision can never be read as one.
+  const checkout = await runGitAsync(['checkout', args.sha, '--', args.relPath], args.cwd);
+  if (checkout.exitCode !== 0) {
+    return { ok: false, error: checkout.stderr.trim() || checkout.stdout.trim() };
+  }
+  const done = await commitAllAsync({ cwd: args.cwd, message: `Restored ${args.label}` });
+  if (!done.ok) {
+    if (done.nothingToCommit) {
+      return { ok: false, error: 'That version of this document is the same as what you have now.' };
+    }
+    return { ok: false, error: done.error };
+  }
+  return { ok: true, sha: done.sha };
+}
+
 /// Is `agentName` already used by a worktree dir or branch in this repo?
 /// Lets callers pick a clean, human-meaningful name (e.g. `WOW-1234`) and
 /// only fall back to a numbered suffix when there's an actual collision,

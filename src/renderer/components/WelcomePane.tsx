@@ -7,6 +7,7 @@ import {
 } from '../store';
 import { useFlowsStore } from '../flowsStore';
 import { Composer } from './Composer';
+import { DocumentsPane } from './DocumentsPane';
 import { createBranchedAgent, createDetachedAgent } from './sheets/NewAgentSheet';
 import { BranchCombobox } from './sheets/BranchCombobox';
 import { useProjectBranches } from './sheets/useProjectBranches';
@@ -484,6 +485,284 @@ export function WelcomePane() {
     ? `Review data, draft a report, investigate — ask ${backendName(backend)} anything. @ to reference files · / for commands`
     : `Ask ${backendName(backend)} anything. @ to reference files · / for commands`;
 
+  // Hoisted out of the layout because two screens need it and only one of
+  // them is this one. An everyday project's front page is its DOCUMENTS —
+  // see the everyday branch below — and the composer belongs at the foot of
+  // that page, without the run-mode, branch and flows apparatus around it:
+  // agent worktrees and review branches are the code project's vocabulary,
+  // and offering them over a folder of Word documents is how the everyday
+  // path used to read as the engineer's screen with softer wording.
+  const startHere = (
+    <>
+      {/* Above the composer here, below it on the welcome layout — the one
+          place the two screens deliberately differ. This footer is pinned to
+          the bottom of the documents, so the page reads down as what is here,
+          what you were doing, what you want next, and the composer stays on
+          the edge where a composer belongs. Below it, Resume would sit in the
+          window's last 34 pixels. */}
+      {isEverydayFolder && selectedProject && (
+        <ResumeRow compact conversations={selectedProject.conversations ?? []} />
+      )}
+      {/* Kept with the composer rather than left behind on the welcome
+          layout: these exist for exactly the person an everyday project is
+          for, and "I don't know what to type" is the moment they answer. */}
+      {isEverydayFolder && selectedProject && (
+        <StarterPrompts
+          project={selectedProject}
+          onPick={(text) => {
+            setDraft(WELCOME_KEY, text);
+            setComposerFocusNudge((n) => n + 1);
+          }}
+        />
+      )}
+    <Composer
+      draftKey={WELCOME_KEY}
+      autoFocus
+      disabled={noBackendReady(backendHealth)}
+      focusSignal={welcomeFocusToken + composerFocusNudge}
+      variant="welcome"
+      rootPath={selectedProject?.path}
+      slashCommands={slashCommands}
+      placeholder={placeholder}
+      onSend={handleSend}
+      footer={
+        <>
+          <Pill
+            label={modeLabel(permissionMode)}
+            color={permissionTone(permissionMode)}
+            items={(['plan', 'default', 'auto', 'acceptEdits', 'bypassPermissions'] as PermissionMode[])
+              .filter((m) => m !== 'auto' || backend === 'claude')
+              .map((m) => ({
+                value: m,
+                label: modeLabel(m),
+              }))}
+            onPick={(v) => setLocalPermissionMode(v as PermissionMode)}
+          />
+          <Pill
+            label={backendName(backend)}
+            color={backendColor(backend)}
+            items={enabledBackends(settings).map((b) => ({
+              value: b,
+              label: backendName(b),
+              // Say so before they pick it, not after the send fails.
+              note:
+                backendHealth[b]?.kind === 'unauthenticated'
+                  ? 'Installed, signed out'
+                  : backendHealth[b] && backendHealth[b].kind !== 'ready'
+                  ? 'Not installed'
+                  : undefined,
+            }))}
+            onPick={(v) => {
+              const next = v as Backend;
+              setBackend(next);
+              setBackendPicked(true);
+              // Backends disagree on what their default effort is, so an
+              // untouched picker re-seeds rather than carrying the old
+              // backend's default across.
+              if (!effortPicked) setEffort(effortForBackend(settings, next));
+              // `auto` is Claude-only; demote to default when leaving Claude
+              // so the picker label and the eventual mapped behaviour agree.
+              if (next !== 'claude' && permissionMode === 'auto') {
+                setLocalPermissionMode('default');
+              }
+              // Old model belonged to the previous CLI and almost
+              // certainly isn't a valid model id for the new one
+              // (e.g. `sonnet-4-6` is not a Codex model). Re-pick:
+              // if a tier-shifting preset is active, snap to that
+              // preset's primary tier on the new CLI; otherwise
+              // fall back to the first supported model for the new
+              // backend.
+              if (reviewPreset === 'cheap-paranoid') {
+                const cheap = TIERS[next]?.cheap;
+                const allowed = modelOptionsFor(next, ollamaPulledModels);
+                setModel(cheap ?? allowed[0] ?? '');
+              } else {
+                const allowed = modelOptionsFor(next, ollamaPulledModels);
+                setModel(allowed[0] ?? '');
+              }
+            }}
+          />
+          <Pill
+            label={model ? shortModel(model) : 'Model'}
+            items={modelOptionsFor(
+              backend,
+              ollamaPulledModels,
+            ).map((m) => ({
+              value: m,
+              label: shortModel(m),
+            }))}
+            onPick={(v) => setModel(v)}
+          />
+          {(backend === 'claude' || backend === 'codex') && (
+            <Pill
+              label={effortLabel(effort)}
+              items={([
+                { value: '' as EffortLevel, label: 'Auto (model default)' },
+                { value: 'low' as EffortLevel, label: 'Low' },
+                { value: 'medium' as EffortLevel, label: 'Medium' },
+                { value: 'high' as EffortLevel, label: 'High' },
+                { value: 'max' as EffortLevel, label: 'Max' },
+              ]).map((o) => ({ value: o.value, label: o.label }))}
+              onPick={(v) => {
+                setEffort(v as EffortLevel);
+                setEffortPicked(true);
+              }}
+            />
+          )}
+          <Pill
+            label={
+              reviewPreset === 'off'
+                ? 'Rebound'
+                : PRESETS.find((p) => p.key === reviewPreset)?.label ?? 'Custom'
+            }
+            color={reviewPreset === 'off' ? undefined : '#c29bff'}
+            items={[
+              { value: 'off', label: 'No rebound' },
+              ...PRESETS.map((p) => {
+                // Independent needs at least one non-primary CLI
+                // installed. Disable + explain if there's no other
+                // CLI available — same gating logic the rebound
+                // popover uses on the conversation header.
+                if (p.key === 'independent') {
+                  const others = (['claude', 'codex', 'gemini', 'ollama'] as const).filter(
+                    (b) => b !== backend && installedReviewers[b],
+                  );
+                  if (others.length === 0) {
+                    return {
+                      value: p.key,
+                      label: p.label,
+                      note: 'Install another CLI to enable',
+                      disabled: true,
+                    };
+                  }
+                }
+                return { value: p.key, label: p.label };
+              }),
+            ]}
+            onPick={(v) => {
+              const next = v as ReviewPreset | 'off';
+              const prev = reviewPreset;
+              setLocalReviewPreset(next);
+              // Cheap-and-paranoid only delivers value when primary
+              // is on the cheap tier. Auto-flip the primary model
+              // when entering it; auto-restore to the user's
+              // configured default when leaving so we don't silently
+              // strand them on Sonnet after they switch presets.
+              if (next === 'cheap-paranoid') {
+                const cheap = TIERS[backend]?.cheap;
+                if (cheap) setModel(cheap);
+              } else if (prev === 'cheap-paranoid') {
+                setModel(settings.backendDefaultModels[backend] ?? '');
+              }
+            }}
+          />
+        </>
+      }
+    />
+    {(() => {
+      // Mismatch warning for cheap-paranoid: the preset's value is
+      // "cheap primary, smart reviewer" — leaving primary on the smart
+      // tier defeats the purpose. We don't auto-fix the model so users
+      // stay in control; just surface the conflict here.
+      if (reviewPreset !== 'cheap-paranoid') return null;
+      const effectiveModel = model || settings.backendDefaultModels[backend] || '';
+      if (modelTier(backend, effectiveModel) !== 'smart') return null;
+      return (
+        <div className="mt-2 text-[11px] text-amber-400 text-center">
+          Cheap-and-paranoid expects a cheap primary; you're on{' '}
+          <span className="font-mono">{shortModel(effectiveModel)}</span>. Switch to the
+          cheap tier to actually save tokens.
+        </div>
+      );
+    })()}
+    {reviewPreset !== 'off' && (() => {
+      const spec = PRESETS.find((p) => p.key === reviewPreset);
+      const resolved = resolvePreset(reviewPreset, backend);
+      if (!spec || !resolved) return null;
+      // Cost dots: 1 = low, 2 = medium, 3 = high. Lets users see at a
+      // glance whether a preset is cheap or pricey before opting in.
+      const costDots = spec.relativeCost === 'low' ? 1 : spec.relativeCost === 'medium' ? 2 : 3;
+      const costColor =
+        spec.relativeCost === 'low'
+          ? 'text-emerald-400'
+          : spec.relativeCost === 'medium'
+          ? 'text-amber-400'
+          : 'text-rose-400';
+      return (
+        <div className="mt-3 rounded-lg border border-card-strong bg-card/40 p-3 text-xs">
+          <div className="flex items-baseline justify-between gap-3 mb-1">
+            <div className="font-medium" style={{ color: '#c29bff' }}>
+              Rebound: {spec.label}
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className={'text-[10px] tracking-widest ' + costColor}
+                title={`Relative cost per review: ${spec.relativeCost}`}
+              >
+                {'•'.repeat(costDots)}
+                <span className="opacity-30">{'•'.repeat(3 - costDots)}</span>
+              </span>
+              <span className="text-[10px] uppercase tracking-wider text-ink-faint">
+                {spec.mode === 'collab' ? 'Collab' : 'Review'}
+              </span>
+            </div>
+          </div>
+          <div className="text-ink-muted mb-1">{spec.description}</div>
+          <div className="text-[11px] text-ink-faint mb-2">
+            <span className="text-ink-muted">Best for:</span> {spec.bestFor}
+          </div>
+          {resolved.reviewPersona && (
+            PERSONA_REQUIRES_CODE_CHANGES[resolved.reviewPersona] ? (
+              <div className="text-[11px] text-amber-400/80 mb-2">
+                Fires only on turns that change code (Edit, Write, Patch). Skipped on
+                text-only / Q&amp;A turns.
+              </div>
+            ) : (
+              <div className="text-[11px] text-ink-muted mb-2">
+                Fires every turn — including text-only / Q&amp;A turns.
+              </div>
+            )
+          )}
+          <div className="text-[11px] text-ink-faint flex flex-wrap gap-x-3 gap-y-0.5">
+            <span>
+              Reviewer:{' '}
+              <span className="text-ink" style={{ color: backendColor(resolved.reviewBackend) }}>
+                {backendName(resolved.reviewBackend)}
+              </span>
+            </span>
+            {resolved.reviewModel && (
+              <span>
+                Model: <span className="font-mono text-ink">{shortModel(resolved.reviewModel)}</span>
+              </span>
+            )}
+            {resolved.reviewPersona && (
+              <span>
+                Persona: <span className="text-ink">{resolved.reviewPersona}</span>
+              </span>
+            )}
+          </div>
+        </div>
+      );
+    })()}
+    </>
+  );
+
+  // An everyday project's front page is the folder itself. The centred
+  // "what should we build?" screen below is the code project's, and routing
+  // everyday folders through it meant a business user's first sight of their
+  // own documents was a link in the corner — while the middle of the screen
+  // offered agent worktrees and review branches. Same composer, put where the
+  // work is.
+  if (isEverydayFolder && selectedProject) {
+    return (
+      <DocumentsPane
+        rootPath={selectedProject.path}
+        projectName={selectedProject.name}
+        footer={startHere}
+      />
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-y-auto relative">
       {(focusedWorkspace || selectedProject) && (
@@ -500,6 +779,8 @@ export function WelcomePane() {
       )}
       <div className="w-full max-w-[680px]">
         <div className="text-center text-2xl font-semibold mb-5">{headline}</div>
+        {/* Everyday folders return above with these attached to the composer;
+            this is the remaining non-git case. */}
         {isNonGitProject && selectedProject && (
           <StarterPrompts
             project={selectedProject}
@@ -526,235 +807,7 @@ export function WelcomePane() {
               and Overcli will show your documents, save as you type, and keep an undo history.
             </div>
           )}
-        <Composer
-          draftKey={WELCOME_KEY}
-          autoFocus
-          disabled={noBackendReady(backendHealth)}
-          focusSignal={welcomeFocusToken + composerFocusNudge}
-          variant="welcome"
-          rootPath={selectedProject?.path}
-          slashCommands={slashCommands}
-          placeholder={placeholder}
-          onSend={handleSend}
-          footer={
-            <>
-              <Pill
-                label={modeLabel(permissionMode)}
-                color={permissionTone(permissionMode)}
-                items={(['plan', 'default', 'auto', 'acceptEdits', 'bypassPermissions'] as PermissionMode[])
-                  .filter((m) => m !== 'auto' || backend === 'claude')
-                  .map((m) => ({
-                    value: m,
-                    label: modeLabel(m),
-                  }))}
-                onPick={(v) => setLocalPermissionMode(v as PermissionMode)}
-              />
-              <Pill
-                label={backendName(backend)}
-                color={backendColor(backend)}
-                items={enabledBackends(settings).map((b) => ({
-                  value: b,
-                  label: backendName(b),
-                  // Say so before they pick it, not after the send fails.
-                  note:
-                    backendHealth[b]?.kind === 'unauthenticated'
-                      ? 'Installed, signed out'
-                      : backendHealth[b] && backendHealth[b].kind !== 'ready'
-                      ? 'Not installed'
-                      : undefined,
-                }))}
-                onPick={(v) => {
-                  const next = v as Backend;
-                  setBackend(next);
-                  setBackendPicked(true);
-                  // Backends disagree on what their default effort is, so an
-                  // untouched picker re-seeds rather than carrying the old
-                  // backend's default across.
-                  if (!effortPicked) setEffort(effortForBackend(settings, next));
-                  // `auto` is Claude-only; demote to default when leaving Claude
-                  // so the picker label and the eventual mapped behaviour agree.
-                  if (next !== 'claude' && permissionMode === 'auto') {
-                    setLocalPermissionMode('default');
-                  }
-                  // Old model belonged to the previous CLI and almost
-                  // certainly isn't a valid model id for the new one
-                  // (e.g. `sonnet-4-6` is not a Codex model). Re-pick:
-                  // if a tier-shifting preset is active, snap to that
-                  // preset's primary tier on the new CLI; otherwise
-                  // fall back to the first supported model for the new
-                  // backend.
-                  if (reviewPreset === 'cheap-paranoid') {
-                    const cheap = TIERS[next]?.cheap;
-                    const allowed = modelOptionsFor(next, ollamaPulledModels);
-                    setModel(cheap ?? allowed[0] ?? '');
-                  } else {
-                    const allowed = modelOptionsFor(next, ollamaPulledModels);
-                    setModel(allowed[0] ?? '');
-                  }
-                }}
-              />
-              <Pill
-                label={model ? shortModel(model) : 'Model'}
-                items={modelOptionsFor(
-                  backend,
-                  ollamaPulledModels,
-                ).map((m) => ({
-                  value: m,
-                  label: shortModel(m),
-                }))}
-                onPick={(v) => setModel(v)}
-              />
-              {(backend === 'claude' || backend === 'codex') && (
-                <Pill
-                  label={effortLabel(effort)}
-                  items={([
-                    { value: '' as EffortLevel, label: 'Auto (model default)' },
-                    { value: 'low' as EffortLevel, label: 'Low' },
-                    { value: 'medium' as EffortLevel, label: 'Medium' },
-                    { value: 'high' as EffortLevel, label: 'High' },
-                    { value: 'max' as EffortLevel, label: 'Max' },
-                  ]).map((o) => ({ value: o.value, label: o.label }))}
-                  onPick={(v) => {
-                    setEffort(v as EffortLevel);
-                    setEffortPicked(true);
-                  }}
-                />
-              )}
-              <Pill
-                label={
-                  reviewPreset === 'off'
-                    ? 'Rebound'
-                    : PRESETS.find((p) => p.key === reviewPreset)?.label ?? 'Custom'
-                }
-                color={reviewPreset === 'off' ? undefined : '#c29bff'}
-                items={[
-                  { value: 'off', label: 'No rebound' },
-                  ...PRESETS.map((p) => {
-                    // Independent needs at least one non-primary CLI
-                    // installed. Disable + explain if there's no other
-                    // CLI available — same gating logic the rebound
-                    // popover uses on the conversation header.
-                    if (p.key === 'independent') {
-                      const others = (['claude', 'codex', 'gemini', 'ollama'] as const).filter(
-                        (b) => b !== backend && installedReviewers[b],
-                      );
-                      if (others.length === 0) {
-                        return {
-                          value: p.key,
-                          label: p.label,
-                          note: 'Install another CLI to enable',
-                          disabled: true,
-                        };
-                      }
-                    }
-                    return { value: p.key, label: p.label };
-                  }),
-                ]}
-                onPick={(v) => {
-                  const next = v as ReviewPreset | 'off';
-                  const prev = reviewPreset;
-                  setLocalReviewPreset(next);
-                  // Cheap-and-paranoid only delivers value when primary
-                  // is on the cheap tier. Auto-flip the primary model
-                  // when entering it; auto-restore to the user's
-                  // configured default when leaving so we don't silently
-                  // strand them on Sonnet after they switch presets.
-                  if (next === 'cheap-paranoid') {
-                    const cheap = TIERS[backend]?.cheap;
-                    if (cheap) setModel(cheap);
-                  } else if (prev === 'cheap-paranoid') {
-                    setModel(settings.backendDefaultModels[backend] ?? '');
-                  }
-                }}
-              />
-            </>
-          }
-        />
-        {(() => {
-          // Mismatch warning for cheap-paranoid: the preset's value is
-          // "cheap primary, smart reviewer" — leaving primary on the smart
-          // tier defeats the purpose. We don't auto-fix the model so users
-          // stay in control; just surface the conflict here.
-          if (reviewPreset !== 'cheap-paranoid') return null;
-          const effectiveModel = model || settings.backendDefaultModels[backend] || '';
-          if (modelTier(backend, effectiveModel) !== 'smart') return null;
-          return (
-            <div className="mt-2 text-[11px] text-amber-400 text-center">
-              Cheap-and-paranoid expects a cheap primary; you're on{' '}
-              <span className="font-mono">{shortModel(effectiveModel)}</span>. Switch to the
-              cheap tier to actually save tokens.
-            </div>
-          );
-        })()}
-        {reviewPreset !== 'off' && (() => {
-          const spec = PRESETS.find((p) => p.key === reviewPreset);
-          const resolved = resolvePreset(reviewPreset, backend);
-          if (!spec || !resolved) return null;
-          // Cost dots: 1 = low, 2 = medium, 3 = high. Lets users see at a
-          // glance whether a preset is cheap or pricey before opting in.
-          const costDots = spec.relativeCost === 'low' ? 1 : spec.relativeCost === 'medium' ? 2 : 3;
-          const costColor =
-            spec.relativeCost === 'low'
-              ? 'text-emerald-400'
-              : spec.relativeCost === 'medium'
-              ? 'text-amber-400'
-              : 'text-rose-400';
-          return (
-            <div className="mt-3 rounded-lg border border-card-strong bg-card/40 p-3 text-xs">
-              <div className="flex items-baseline justify-between gap-3 mb-1">
-                <div className="font-medium" style={{ color: '#c29bff' }}>
-                  Rebound: {spec.label}
-                </div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={'text-[10px] tracking-widest ' + costColor}
-                    title={`Relative cost per review: ${spec.relativeCost}`}
-                  >
-                    {'•'.repeat(costDots)}
-                    <span className="opacity-30">{'•'.repeat(3 - costDots)}</span>
-                  </span>
-                  <span className="text-[10px] uppercase tracking-wider text-ink-faint">
-                    {spec.mode === 'collab' ? 'Collab' : 'Review'}
-                  </span>
-                </div>
-              </div>
-              <div className="text-ink-muted mb-1">{spec.description}</div>
-              <div className="text-[11px] text-ink-faint mb-2">
-                <span className="text-ink-muted">Best for:</span> {spec.bestFor}
-              </div>
-              {resolved.reviewPersona && (
-                PERSONA_REQUIRES_CODE_CHANGES[resolved.reviewPersona] ? (
-                  <div className="text-[11px] text-amber-400/80 mb-2">
-                    Fires only on turns that change code (Edit, Write, Patch). Skipped on
-                    text-only / Q&amp;A turns.
-                  </div>
-                ) : (
-                  <div className="text-[11px] text-ink-muted mb-2">
-                    Fires every turn — including text-only / Q&amp;A turns.
-                  </div>
-                )
-              )}
-              <div className="text-[11px] text-ink-faint flex flex-wrap gap-x-3 gap-y-0.5">
-                <span>
-                  Reviewer:{' '}
-                  <span className="text-ink" style={{ color: backendColor(resolved.reviewBackend) }}>
-                    {backendName(resolved.reviewBackend)}
-                  </span>
-                </span>
-                {resolved.reviewModel && (
-                  <span>
-                    Model: <span className="font-mono text-ink">{shortModel(resolved.reviewModel)}</span>
-                  </span>
-                )}
-                {resolved.reviewPersona && (
-                  <span>
-                    Persona: <span className="text-ink">{resolved.reviewPersona}</span>
-                  </span>
-                )}
-              </div>
-            </div>
-          );
-        })()}
+        {startHere}
         <div className="mt-3 flex items-center gap-2 text-xs text-ink-muted justify-center flex-wrap">
           <ContextPill
             label={focusedWorkspace?.name ?? selectedProject?.name ?? 'Pick project'}

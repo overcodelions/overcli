@@ -10,7 +10,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { commitAllAsync, initRepo, readProjectLog, removeRepoHistory, restoreProjectVersion } from './git';
+import {
+  commitAllAsync,
+  initRepo,
+  readProjectLog,
+  removeRepoHistory,
+  restoreProjectFileVersion,
+  restoreProjectVersion,
+} from './git';
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
@@ -185,5 +192,110 @@ describe('version history', () => {
     await initRepo({ projectPath: dir });
     const res = await restoreProjectVersion({ cwd: dir, sha: 'deadbeef', label: 'x' });
     expect(res.ok).toBe(false);
+  });
+});
+
+describe('restoreProjectFileVersion', () => {
+  /// Two documents and two versions, so every test below can prove the
+  /// untouched one stayed untouched. Returns the sha of the first version.
+  async function twoDocuments(): Promise<string> {
+    await initRepo({ projectPath: dir });
+    fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'original\n');
+    fs.writeFileSync(path.join(dir, 'NOTES.md'), 'notes v1\n');
+    await commitAllAsync({ cwd: dir, message: 'Created both' });
+    const log = await readProjectLog({ cwd: dir });
+    const target = log.ok ? log.versions[0].sha : '';
+
+    fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'mangled\n');
+    fs.writeFileSync(path.join(dir, 'NOTES.md'), 'notes v2\n');
+    await commitAllAsync({ cwd: dir, message: 'Rewrote both' });
+    return target;
+  }
+
+  it('puts one document back and leaves the rest of the folder alone', async () => {
+    const target = await twoDocuments();
+
+    const res = await restoreProjectFileVersion({
+      cwd: dir,
+      sha: target,
+      relPath: 'BRIEF.md',
+      label: 'Today 4:12pm',
+    });
+
+    expect(res.ok).toBe(true);
+    expect(fs.readFileSync(path.join(dir, 'BRIEF.md'), 'utf-8')).toBe('original\n');
+    // The whole point of not reusing restoreProjectVersion.
+    expect(fs.readFileSync(path.join(dir, 'NOTES.md'), 'utf-8')).toBe('notes v2\n');
+  });
+
+  it('leaves the restore itself in the history, so it can be undone too', async () => {
+    const target = await twoDocuments();
+    await restoreProjectFileVersion({ cwd: dir, sha: target, relPath: 'BRIEF.md', label: 'Today 4:12pm' });
+
+    const after = await readProjectLog({ cwd: dir });
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.versions[0].subject).toBe('Restored Today 4:12pm');
+    expect(after.versions.map((v) => v.subject)).toContain('Rewrote both');
+  });
+
+  it('commits loose edits first, so what it replaces is recoverable', async () => {
+    const target = await twoDocuments();
+    fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'unsaved work\n');
+
+    await restoreProjectFileVersion({ cwd: dir, sha: target, relPath: 'BRIEF.md', label: 'Today 4:12pm' });
+
+    const after = await readProjectLog({ cwd: dir });
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.versions.map((v) => v.subject)).toContain('Before restoring');
+  });
+
+  it('refuses a document that version never had, without leaving a guard commit', async () => {
+    const target = await twoDocuments();
+    fs.writeFileSync(path.join(dir, 'LATER.md'), 'added afterwards\n');
+    await commitAllAsync({ cwd: dir, message: 'Added LATER.md' });
+
+    const res = await restoreProjectFileVersion({
+      cwd: dir,
+      sha: target,
+      relPath: 'LATER.md',
+      label: 'Today 4:12pm',
+    });
+
+    expect(res).toEqual({ ok: false, error: "That version doesn't have this document." });
+    expect(fs.readFileSync(path.join(dir, 'LATER.md'), 'utf-8')).toBe('added afterwards\n');
+    // The check happens before the guard commit: a refused restore must not
+    // leave "Before restoring" in a history nothing was restored in.
+    const after = await readProjectLog({ cwd: dir });
+    expect(after.ok).toBe(true);
+    if (!after.ok) return;
+    expect(after.versions.map((v) => v.subject)).not.toContain('Before restoring');
+  });
+
+  it('says so when the document already looks like that', async () => {
+    await initRepo({ projectPath: dir });
+    fs.writeFileSync(path.join(dir, 'BRIEF.md'), 'original\n');
+    await commitAllAsync({ cwd: dir, message: 'Created BRIEF.md' });
+    const log = await readProjectLog({ cwd: dir });
+    const target = log.ok ? log.versions[0].sha : '';
+
+    const res = await restoreProjectFileVersion({ cwd: dir, sha: target, relPath: 'BRIEF.md', label: 'x' });
+
+    expect(res).toEqual({
+      ok: false,
+      error: 'That version of this document is the same as what you have now.',
+    });
+  });
+
+  it('refuses a version that does not exist', async () => {
+    await initRepo({ projectPath: dir });
+    const res = await restoreProjectFileVersion({
+      cwd: dir,
+      sha: 'deadbeef',
+      relPath: 'BRIEF.md',
+      label: 'x',
+    });
+    expect(res).toEqual({ ok: false, error: 'That version no longer exists.' });
   });
 });

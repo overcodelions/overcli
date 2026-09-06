@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../store';
 import { intakeProjectFiles } from '../attachmentIntake';
-import type { DocumentEntry } from '@shared/types';
+import type { DocumentEntry, FiledByMap } from '@shared/types';
 import { FileEditorPane } from './FileEditorPane';
+import { DocumentVersionsRail } from './DocumentVersionsRail';
 import { revealLabel } from '../platform';
+import { versionTimestamp } from './sheets/VersionsSheet';
 
 /// The documents view: what a non-engineer sees when they open their files.
 ///
@@ -51,21 +53,81 @@ export function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function DocumentsPane({ rootPath, projectName }: { rootPath: string; projectName: string }) {
+/// How long a filed document stays on the "recently filed" shelf.
+///
+/// A week, because the shelf answers "what landed while I wasn't looking"
+/// and a worker on a weekly cadence is the common case. Anything older is
+/// still in the grid below with the same attribution — it has just stopped
+/// being news.
+const RECENTLY_FILED_MS = 7 * 24 * 60 * 60 * 1000;
+
+/// At most this many on the shelf. It is a heads-up, not a second grid: past
+/// three it stops being scannable and starts competing with the documents.
+const RECENTLY_FILED_LIMIT = 3;
+
+type SortKey = 'recent' | 'name' | 'kind';
+
+const SORTS: ReadonlyArray<{ key: SortKey; label: string }> = [
+  { key: 'recent', label: 'Recent' },
+  { key: 'name', label: 'Name' },
+  { key: 'kind', label: 'Kind' },
+];
+
+/// Folders first in every order — they are containers, not documents, and a
+/// folder sorted into the middle of a page of files by date reads as a file
+/// you cannot open. Beyond that: newest first, name, or grouped by kind and
+/// then named (a "Kind" sort that leaves each group in arbitrary order is
+/// only half a sort).
+export function sortEntries(entries: readonly DocumentEntry[], key: SortKey): DocumentEntry[] {
+  const byName = (a: DocumentEntry, b: DocumentEntry) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  return [...entries].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    if (key === 'name') return byName(a, b);
+    if (key === 'kind') {
+      const kindCmp = KIND_STYLES[kindOf(a.name)].label.localeCompare(KIND_STYLES[kindOf(b.name)].label);
+      return kindCmp !== 0 ? kindCmp : byName(a, b);
+    }
+    return b.mtimeMs - a.mtimeMs || byName(a, b);
+  });
+}
+
+export function DocumentsPane({
+  rootPath,
+  projectName,
+  footer,
+  onClose,
+}: {
+  rootPath: string;
+  projectName: string;
+  /// Rendered under the grid, and ONLY there — never over an open document,
+  /// where the file's own composer and version rail are the screen. This is
+  /// how the everyday project's front page carries its composer without the
+  /// two components having to know about each other's state.
+  footer?: React.ReactNode;
+  /// Absent when this pane IS the screen rather than an explorer opened over
+  /// one — an everyday project's front page has nothing to close back to.
+  onClose?: () => void;
+}) {
   const openFile = useStore((s) => s.openFile);
+  const openFilePath = useStore((s) => s.openFilePath);
   const closeFile = useStore((s) => s.closeFile);
   // Local, not `openFilePath`: a file left open from a previous visit should
   // not decide what this one opens on. Coming into your documents lands on
   // the documents, every time.
   const [viewingFile, setViewingFile] = useState(false);
   const openSheet = useStore((s) => s.openSheet);
-  const closeExplorer = useStore((s) => s.closeExplorer);
   const checkpointProject = useStore((s) => s.checkpointProject);
   const [dir, setDir] = useState(rootPath);
   const [entries, setEntries] = useState<DocumentEntry[]>([]);
   const [dragging, setDragging] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sort, setSort] = useState<SortKey>('recent');
+  /// Who filed what, for the attribution line. Loaded separately from the
+  /// entries and allowed to arrive late: it reads every worker's publish
+  /// ledger, and a caption is not worth making the grid wait.
+  const [filedBy, setFiledBy] = useState<FiledByMap>({});
 
   const refresh = useCallback(async () => {
     const res = await window.overcli.invoke('fs:listDocuments', { dirPath: dir });
@@ -86,6 +148,23 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
     void refresh();
   }, [refresh]);
 
+  // Keyed on the PROJECT, not the folder being browsed: workers file into the
+  // project root, and the ledger records basenames. Re-read whenever the
+  // listing does, so a document filed while this pane is open gets its
+  // caption without a revisit.
+  useEffect(() => {
+    let live = true;
+    void window.overcli
+      .invoke('everyday:filedBy', { projectPath: rootPath })
+      .then((map) => {
+        if (live) setFiledBy(map);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [rootPath, entries]);
+
   // Re-list when the sheet that creates documents closes, so a freshly
   // written file is on screen without the user hunting for a refresh.
   const activeSheet = useStore((s) => s.activeSheet);
@@ -95,6 +174,19 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
 
   const crumbs = dir.slice(rootPath.length).split('/').filter(Boolean);
   const now = Date.now();
+  const atRoot = crumbs.length === 0;
+  const shown = sortEntries(entries, sort);
+  const documents = entries.filter((e) => !e.isDir);
+  const lastChangeMs = documents.reduce((newest, e) => Math.max(newest, e.mtimeMs), 0);
+  // Only at the root, and only for documents a worker actually filed. In a
+  // subfolder the shelf would be answering a question nobody asked — you
+  // navigated there deliberately.
+  const recentlyFiled = atRoot
+    ? documents
+        .filter((e) => filedBy[e.name] && now - e.mtimeMs < RECENTLY_FILED_MS)
+        .sort((a, b) => b.mtimeMs - a.mtimeMs)
+        .slice(0, RECENTLY_FILED_LIMIT)
+    : [];
 
   const addFiles = async (fileList: FileList) => {
     setBusy(true);
@@ -138,21 +230,39 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
   };
 
   if (viewingFile) {
+    const openName = openFilePath?.slice(openFilePath.lastIndexOf('/') + 1) ?? '';
+    const openFiled = openFilePath ? filedBy[openName] : undefined;
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="shrink-0 flex items-center gap-2 px-6 py-3 border-b border-card">
+        <div className="shrink-0 flex items-center gap-3 px-6 py-3 border-b border-card">
           <button
             onClick={() => {
               setViewingFile(false);
               closeFile();
             }}
-            className="rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
+            className="shrink-0 rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
           >
             ← All documents
           </button>
+          {openName && (
+            <div className="min-w-0 flex flex-col gap-0.5">
+              <div className="text-sm font-medium text-ink truncate">{openName}</div>
+              {openFiled && (
+                <div className="text-[11px] text-ink-faint truncate">
+                  Filed by {openFiled.workerName}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        <div className="flex-1 min-h-0 flex flex-col">
-          <FileEditorPane rootPathOverride={rootPath} />
+        <div className="flex-1 min-h-0 flex">
+          <div className="flex-1 min-w-0 flex flex-col">
+            <FileEditorPane rootPathOverride={rootPath} />
+          </div>
+          {/* The document's own history, beside it. `openFilePath` is the
+              file the editor actually has open, which is not necessarily the
+              one this pane last clicked — the editor has tabs. */}
+          {openFilePath && <DocumentVersionsRail rootPath={rootPath} filePath={openFilePath} />}
         </div>
       </div>
     );
@@ -176,12 +286,64 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
         if (e.dataTransfer.files.length) void addFiles(e.dataTransfer.files);
       }}
     >
-      <div className="shrink-0 flex items-center gap-2 px-6 py-4 border-b border-card">
-        <div className="flex items-center gap-1.5 text-sm flex-1 min-w-0">
+      {/* The project, not a path. The old header led with a breadcrumb, which
+          is chrome for getting somewhere else — but you are already where you
+          meant to be, and the folder's own name and state were nowhere on the
+          screen. Crumbs still appear, below, once there is somewhere to go
+          back from. */}
+      <div className="shrink-0 flex items-start gap-4 px-6 py-5 border-b border-card">
+        <div
+          className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0"
+          style={{
+            background: 'color-mix(in srgb, var(--c-accent) 16%, transparent)',
+            color: 'var(--c-accent)',
+          }}
+        >
+          <FolderGlyph />
+        </div>
+        <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+          <div className="text-xl font-semibold text-ink truncate tracking-[-0.01em]">{projectName}</div>
+          <div className="text-xs text-ink-faint truncate">
+            Everyday project
+            {documents.length > 0 && ` · ${documents.length} document${documents.length === 1 ? '' : 's'}`}
+            {lastChangeMs > 0 && ` · last change ${versionTimestamp(new Date(lastChangeMs).toISOString(), new Date(now))}`}
+          </div>
+        </div>
+        <div className="shrink-0 flex items-center gap-2">
           <button
-            onClick={() => setDir(rootPath)}
-            className={crumbs.length ? 'text-ink-muted hover:text-ink' : 'text-ink font-medium'}
+            onClick={() => openSheet({ type: 'versions', projectPath: rootPath })}
+            title="Go back to how this folder was earlier"
+            className="rounded-md border border-card bg-surface-elevated px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong hover:border-card-strong transition-colors"
           >
+            Earlier versions
+          </button>
+          <button
+            onClick={() => openSheet({ type: 'newDocument', dirPath: dir })}
+            className="accent-soft rounded-md border px-3 py-1.5 text-xs text-accent transition-colors"
+          >
+            + New document
+          </button>
+          <button
+            onClick={() => window.overcli.invoke('fs:openInFinder', dir)}
+            className="rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
+          >
+            {revealLabel()}
+          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="rounded-md px-2 py-1.5 text-xs text-ink-faint hover:text-ink"
+              title="Close"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      </div>
+
+      {!atRoot && (
+        <div className="shrink-0 flex items-center gap-1.5 px-6 py-2.5 text-xs border-b border-card">
+          <button onClick={() => setDir(rootPath)} className="text-ink-muted hover:text-ink">
             {projectName}
           </button>
           {crumbs.map((c, i) => (
@@ -199,39 +361,89 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
             </span>
           ))}
         </div>
-        <button
-          onClick={() => openSheet({ type: 'newDocument', dirPath: dir })}
-          className="shrink-0 accent-soft rounded-md border px-3 py-1.5 text-xs text-accent transition-colors"
-        >
-          + New document
-        </button>
-        <button
-          onClick={() => openSheet({ type: 'versions', projectPath: rootPath })}
-          title="Go back to how this folder was earlier"
-          className="shrink-0 rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
-        >
-          Undo or restore
-        </button>
-        <button
-          onClick={() => window.overcli.invoke('fs:openInFinder', dir)}
-          className="shrink-0 rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
-        >
-          {revealLabel()}
-        </button>
-        <button
-          onClick={closeExplorer}
-          className="shrink-0 rounded-md px-2 py-1.5 text-xs text-ink-faint hover:text-ink"
-          title="Close"
-        >
-          ✕
-        </button>
-      </div>
+      )}
 
       {error && <div className="shrink-0 px-6 py-2 text-xs text-red-400">{error}</div>}
 
-      <div className="flex-1 min-h-0 overflow-y-auto p-6">
+      <div className="flex-1 min-h-0 overflow-y-auto p-6 flex flex-col gap-6">
+        {recentlyFiled.length > 0 && (
+          <div className="flex flex-col gap-2.5 shrink-0">
+            <div className="flex items-baseline gap-2.5">
+              <div className="text-[13px] font-semibold text-ink">Recently filed</div>
+              <div className="text-[11px] text-ink-faint">Everything below can be undone.</div>
+            </div>
+            <div className="flex flex-col gap-2">
+              {recentlyFiled.map((e) => (
+                <div
+                  key={e.path}
+                  className="flex items-center gap-3 rounded-lg border accent-invite px-3 py-2.5"
+                >
+                  <div
+                    className="w-7 h-7 rounded-md flex items-center justify-center shrink-0 text-[11px] font-semibold"
+                    style={{
+                      background: 'color-mix(in srgb, var(--c-accent) 18%, transparent)',
+                      color: 'var(--c-accent)',
+                    }}
+                  >
+                    {initialsOf(filedBy[e.name]?.workerName ?? '')}
+                  </div>
+                  <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                    <div className="text-[13px] text-ink truncate">{e.name}</div>
+                    <div className="text-[11px] text-ink-faint truncate">
+                      {filedBy[e.name]?.workerName} filed it · {relativeTime(e.mtimeMs, now)}
+                    </div>
+                  </div>
+                  <div className="shrink-0 flex items-center gap-2">
+                    <button
+                      onClick={() => openSheet({ type: 'versions', projectPath: rootPath })}
+                      title="Go back to how this folder was earlier"
+                      className="rounded border border-card-strong px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink hover:bg-card-strong"
+                    >
+                      Undo this
+                    </button>
+                    <button
+                      onClick={() => {
+                        openFile(e.path);
+                        setViewingFile(true);
+                      }}
+                      className="accent-soft rounded border px-2.5 py-1 text-[11px] text-accent"
+                    >
+                      Open
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {entries.length > 0 && (
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="text-[13px] font-semibold text-ink">
+              {atRoot ? 'Your documents' : crumbs[crumbs.length - 1]}
+            </div>
+            <div className="flex-1" />
+            <div className="flex items-center gap-1 p-0.5 rounded-md border border-card bg-card">
+              {SORTS.map((option) => (
+                <button
+                  key={option.key}
+                  onClick={() => setSort(option.key)}
+                  className={
+                    'rounded px-2.5 py-1 text-[11px] transition-colors ' +
+                    (sort === option.key
+                      ? 'bg-card-strong text-ink'
+                      : 'text-ink-faint hover:text-ink-muted')
+                  }
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {entries.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center gap-2">
+          <div className="flex-1 flex flex-col items-center justify-center text-center gap-2">
             <div
               className="w-12 h-12 rounded-lg flex items-center justify-center"
               style={{
@@ -249,9 +461,10 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
             </div>
           </div>
         ) : (
-          <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(168px,1fr))]">
-            {entries.map((e) => {
+          <div className="grid gap-3 content-start [grid-template-columns:repeat(auto-fill,minmax(168px,1fr))]">
+            {shown.map((e) => {
               const kind = kindOf(e.name);
+              const filed = filedBy[e.name];
               const style = KIND_STYLES[kind];
               return (
                 <button
@@ -286,12 +499,23 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
                   <div className="text-[11px] text-ink-faint truncate">
                     {relativeTime(e.mtimeMs, now)}
                   </div>
+                  {filed && !e.isDir && (
+                    <div
+                      className="text-[11px] truncate"
+                      style={{ color: 'var(--c-accent)' }}
+                      title={`Filed by ${filed.workerName}`}
+                    >
+                      by {filed.workerName}
+                    </div>
+                  )}
                 </button>
               );
             })}
           </div>
         )}
       </div>
+
+      {footer && <div className="shrink-0 px-6 pb-5 pt-1">{footer}</div>}
 
       {(dragging || busy) && (
         <div className="absolute inset-0 flex items-center justify-center accent-dropzone border-2 border-dashed rounded-lg m-2 pointer-events-none">
@@ -319,4 +543,13 @@ function FileGlyph({ size = 18 }: { size?: number }) {
       <path d="M9.25 1.75v3.5h3.5" strokeLinejoin="round" />
     </svg>
   );
+}
+
+/// Up to two initials for a worker's tile — "Release Warden" is RW, one-word
+/// names keep a single letter. Purely a stand-in for a face; the name itself
+/// is always spelled out on the line beside it.
+export function initialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  return words.slice(0, 2).map((w) => w[0]!.toUpperCase()).join('');
 }

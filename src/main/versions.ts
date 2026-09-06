@@ -1,6 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { commitAllAsync, readProjectLog, restoreProjectVersion, runGitAsync } from './git';
+import {
+  commitAllAsync,
+  readProjectLog,
+  restoreProjectFileVersion,
+  restoreProjectVersion,
+  runGitAsync,
+} from './git';
 import type { ProjectVersion } from './git';
 
 /// Checkpointing for everyday projects.
@@ -117,6 +123,26 @@ export async function restoreVersion(
   const res = await restoreProjectVersion({
     cwd: args.projectPath,
     sha: args.sha,
+    label: args.label,
+  });
+  return res.ok ? { ok: true } : res;
+}
+
+/// Put one document back, rather than the whole folder. `filePath` is
+/// absolute (it is what the documents grid holds); the repo-relative form is
+/// derived here so no caller can hand git a path outside the project.
+export async function restoreVersionFile(
+  args: { projectPath: string; sha: string; filePath: string; label: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const rel = path.relative(args.projectPath, args.filePath);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return { ok: false, error: 'Refused: that document is not in this project.' };
+  }
+  const res = await restoreProjectFileVersion({
+    cwd: args.projectPath,
+    sha: args.sha,
+    // git wants forward slashes on every platform.
+    relPath: rel.split(path.sep).join('/'),
     label: args.label,
   });
   return res.ok ? { ok: true } : res;

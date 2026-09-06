@@ -172,7 +172,7 @@ export function ArchiveConversationSheet({ convId }: { convId: UUID }) {
             `Couldn't remove the worktree: ${res.error}\n\n` +
               'The conversation was kept so the worktree stays reachable. ' +
               'Close anything holding files open in it and try again, or use ' +
-              'Settings → Storage to clean up.',
+              'Clean up in the sidebar footer.',
           );
           setWorking(false);
           return;

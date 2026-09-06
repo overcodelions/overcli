@@ -118,7 +118,7 @@ export type ActiveSheet =
   | { type: 'archiveConversation'; convId: UUID }
   | { type: 'archiveAllInProject'; projectId: UUID }
   | { type: 'archiveAllInWorkspace'; workspaceId: UUID }
-  | { type: 'bulkConversationActions' }
+  | { type: 'cleanup' }
   | { type: 'fileFinder'; rootPath: string }
   /// `scope` preselects a filter chip. The compose button opens it on
   /// Places when it cannot tell which project the user means; ⌘K opens it
@@ -394,7 +394,26 @@ interface StoreState {
   /// Agent-specific teardown: git worktree remove (including branch),
   /// then remove the conversation entry. For workspace-agent
   /// coordinators, removes every member's worktree too.
-  removeAgent(id: UUID): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  removeAgent(
+    id: UUID,
+    opts?: {
+      /// Leave the branch behind. Cleanup offers this because a merged
+      /// branch is free to keep and a deleted one is only recoverable
+      /// through the reflog — the tree is the thing taking up the disk.
+      keepBranch?: boolean;
+    },
+  ): Promise<{ ok: boolean; error?: string; warning?: string }>;
+  /// Drop an agent conversation's worktree while KEEPING the conversation.
+  ///
+  /// The missing verb before Cleanup existed: reclaiming a tree a chat owned
+  /// meant deleting the chat, so people either kept gigabytes of finished
+  /// worktrees or lost the transcripts with them. The row survives as a
+  /// normal project conversation — history intact, worktree fields cleared —
+  /// and the next turn runs in the project checkout.
+  releaseWorktree(
+    id: UUID,
+    opts?: { keepBranch?: boolean },
+  ): Promise<{ ok: boolean; error?: string; warning?: string }>;
   /// Auto-commit the dirty worktree, stash any project-side changes,
   /// remove the worktree (keeping the branch), switch the project repo
   /// onto that branch, and demote the conversation from agent to a normal
@@ -2387,7 +2406,7 @@ export const useStore = create<StoreState>((set, get) => ({
     }
   },
 
-  async removeAgent(id) {
+  async removeAgent(id, opts) {
     const state = get();
     // Resolve the agent conversation and any workspace-member children.
     const hit = findConvWithProjectPath(state, id);
@@ -2445,16 +2464,19 @@ export const useStore = create<StoreState>((set, get) => ({
     if (ownsWorktree(conv) && ownerProjectPath) {
       const res = await window.overcli.invoke('git:removeWorktree', {
         projectPath: ownerProjectPath,
+        // An empty branch name is how `removeWorktree` is told to skip the
+        // branch delete — it's the same path review agents take, since they
+        // live on a detached HEAD with no branch to delete.
+        branchName: opts?.keepBranch ? '' : (conv.branchName ?? ''),
         worktreePath: conv.worktreePath,
-        branchName: conv.branchName ?? '',
       });
       if (res.warning) warnings.push(res.warning);
       // Removal failed — a locked worktree, a file the OS won't release, a
       // submodule git refuses to blow away. Dropping the row here would
       // strand the tree: nothing else in the app records that path, so no
-      // code path could ever reach it again (that leak is why Settings →
-      // Storage exists). Keep the conversation instead and flag it so the
-      // user can see what happened and retry.
+      // code path could ever reach it again (that leak is why Clean up's
+      // orphan group exists). Keep the conversation instead and flag it so
+      // the user can see what happened and retry.
       if (!res.ok) {
         mutateConversation(set, get, id, (c) => ({ ...c, orphaned: true }));
         await releaseRuntime(id);
@@ -2494,6 +2516,53 @@ export const useStore = create<StoreState>((set, get) => ({
       error: errors.join('; ') || undefined,
       warning: warnings.join('\n') || undefined,
     };
+  },
+
+  async releaseWorktree(id, opts) {
+    const hit = findConvWithProjectPath(get(), id);
+    if (!hit?.ownerProjectPath) return { ok: false, error: 'conversation not found' };
+    const { conv, ownerProjectPath } = hit;
+    // A borrowed tree belongs to the flow run that made it — the run still
+    // needs it for Review & merge, so releasing here would break the run to
+    // tidy a row that owns nothing. Detaching the row is `removeConversation`.
+    if (!ownsWorktree(conv)) {
+      return { ok: false, error: 'this conversation does not own a worktree' };
+    }
+    // A coordinator's disk lives in its members' trees, not its own. Releasing
+    // it would leave the members behind and the coordinator pointing at a
+    // symlink root with nothing under it.
+    if (conv.workspaceAgentMemberIds && conv.workspaceAgentMemberIds.length > 0) {
+      return { ok: false, error: 'release a workspace agent from its own review sheet' };
+    }
+    const keepBranch = opts?.keepBranch ?? true;
+    const res = await window.overcli.invoke('git:releaseWorktree', {
+      projectPath: ownerProjectPath,
+      worktreePath: conv.worktreePath,
+      branchName: conv.branchName ?? null,
+      keepBranch,
+      sessionId: conv.sessionId,
+    });
+    if (!res.ok) {
+      // Same reasoning as `removeAgent`: a tree we failed to remove must stay
+      // reachable, so the row keeps its worktree fields and is flagged.
+      mutateConversation(set, get, id, (c) => ({ ...c, orphaned: true }));
+      await saveConversationState(get);
+      return res;
+    }
+    // The runtime was spawned in a directory that no longer exists; the next
+    // turn has to start in the project checkout.
+    await releaseRuntime(id);
+    mutateConversation(set, get, id, (c) => {
+      const { worktreePath: _wt, orphaned: _or, ...rest } = c;
+      // The branch is where the work went. Keep the pointer when the branch
+      // survived, drop it when we deleted it so nothing claims a branch that
+      // is gone.
+      if (keepBranch) return rest;
+      const { branchName: _br, ...noBranch } = rest;
+      return noBranch;
+    });
+    await saveConversationState(get);
+    return res;
   },
 
   async checkoutAgentLocally(id, commitSubject, commitBody) {

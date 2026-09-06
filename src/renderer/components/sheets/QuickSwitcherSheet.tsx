@@ -833,10 +833,10 @@ function usePaletteCommands({ showDebug }: { showDebug: boolean }): PaletteComma
       },
       {
         id: 'app.cleanup',
-        title: 'Cleanup conversations…',
-        subtitle: 'Bulk archive or delete',
-        keywords: ['bulk', 'archive all', 'prune', 'delete'],
-        run: () => state().openSheet({ type: 'bulkConversationActions' }),
+        title: 'Clean up…',
+        subtitle: 'Worktrees, workers, flows and chats taking up disk',
+        keywords: ['bulk', 'archive all', 'prune', 'delete', 'worktree', 'disk', 'storage'],
+        run: () => state().openSheet({ type: 'cleanup' }),
       },
       {
         id: 'app.settings',
