@@ -2027,16 +2027,17 @@ export interface IPCInvokeMap {
           problems: Array<{ path: string; message: string; hint?: string }>;
         };
       };
-  /// Every retained run, plus the ids of the `done` ones whose worktree still
-  /// holds uncommitted work. The dirty ids ride alongside the runs rather than
-  /// on them: `flowRunUpdate` echoes runs back wholesale and `saveRun` persists
-  /// them, so a field on FlowRun would be clobbered on the next update and
-  /// reload stale. Computed at fetch time; see `unreviewedDoneRunIds`.
-  'flows:listRuns': () => { runs: FlowRun[]; unreviewedRunIds: UUID[] };
-  /// Just the dirty ids, recomputed. The renderer calls this on window focus:
-  /// the user may have committed or cleaned a worktree in another app, and a
-  /// stale "unreviewed" dot outlives its truth otherwise. Separate from
-  /// `flows:listRuns` so a refresh doesn't re-ship every run.
+  /// Every retained run, straight out of main's memory. Deliberately does NOT
+  /// carry the unreviewed-run ids: those cost a `git status` per worktree and
+  /// this call is on the startup path, where the runs themselves are wanted
+  /// immediately and the review dot is a decoration that can land a moment
+  /// later. Ask for it with `flows:listUnreviewedRuns`.
+  'flows:listRuns': () => { runs: FlowRun[] };
+  /// Just the dirty ids. The renderer calls this after hydration and again on
+  /// window focus: the user may have committed or cleaned a worktree in
+  /// another app, and a stale "unreviewed" dot outlives its truth otherwise.
+  /// Separate from `flows:listRuns` because it is orders of magnitude more
+  /// expensive — see `unreviewedDoneRunIds`.
   'flows:listUnreviewedRuns': () => UUID[];
   'flows:getRun': (args: { runId: UUID }) => FlowRun | null;
   'flows:resumeRun': (args: {
