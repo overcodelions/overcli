@@ -128,10 +128,16 @@ export function FlowsLibraryPane() {
   // sections light up immediately after an app restart instead of only
   // showing runs started this session.
   useEffect(() => {
-    void window.overcli.invoke('flows:listRuns').then(({ runs, unreviewedRunIds }) => {
+    void window.overcli.invoke('flows:listRuns').then(({ runs }) => {
       useFlowsStore.getState().applyRunsBulk(runs);
-      useFlowsStore.getState().applyUnreviewedRuns(unreviewedRunIds);
     });
+    // The review dots are a second, much more expensive call (a `git status`
+    // per worktree of every finished run) — so the list paints first and the
+    // dots arrive on it, rather than the pane waiting on the scan.
+    void window.overcli
+      .invoke('flows:listUnreviewedRuns')
+      .then((ids) => useFlowsStore.getState().applyUnreviewedRuns(ids))
+      .catch(() => {});
   }, []);
 
   // Key on the run id so switching flows mounts a fresh FlowRunPane

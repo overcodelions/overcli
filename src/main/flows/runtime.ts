@@ -1288,7 +1288,18 @@ export class FlowRuntimeImpl {
   /// reload stale from disk. The renderer keeps this as a parallel map.
   async unreviewedDoneRunIds(): Promise<UUID[]> {
     const done = Array.from(this.runs.values()).filter((r) => r.state.kind === 'done');
-    const dirty = await Promise.all(done.map((run) => this.runIsDirtyAsync(run)));
+    // Bounded fan-out, NOT `Promise.all` over the whole list. The comment
+    // above used to say this was "bounded by MAX_RETAINED_RUNS (50) git
+    // invocations", and that was true when a run meant one worktree. A
+    // WORKSPACE run forks one worktree per member, so on a real install the
+    // fifty retained runs came to 892 worktrees and up to ~1,800 concurrent
+    // `git` spawns — a process storm that took tens of seconds to drain and
+    // starved every other IPC (including the sidebar's) while it did.
+    // Spawning them a few at a time is slower per call and far faster in
+    // total, because the machine is no longer fighting itself.
+    const dirty = await mapWithConcurrency(done, UNREVIEWED_SCAN_CONCURRENCY, (run) =>
+      this.runIsDirtyAsync(run),
+    );
     return done.filter((_, i) => dirty[i]).map((run) => run.id);
   }
 
@@ -4723,6 +4734,34 @@ export function extractOutput(text: string, outputName: string): string | null {
   const cleaned = bodies.map((b) => b.replace(noiseRe, '').trim()).filter(Boolean);
   if (cleaned.length === 0) return null;
   return cleaned.join('\n').trim();
+}
+
+/// How many runs the unreviewed-run scan probes at once. Each run costs one
+/// `git status` PER WORKTREE it forked, and a workspace run forks one per
+/// member, so the unit of work behind a single slot is already several
+/// subprocesses. Eight keeps the machine busy without turning a scan into a
+/// process storm that starves the rest of the main process.
+const UNREVIEWED_SCAN_CONCURRENCY = 8;
+
+/// `Promise.all(xs.map(fn))` with a ceiling on how many are in flight, and
+/// results in input order. Workers pull from a shared cursor rather than
+/// being handed fixed slices, so one slow item can't leave the others idle.
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 /// Hard cap on a filesystem-sourced artifact. Larger than the 256 KB
