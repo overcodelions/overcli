@@ -25,7 +25,7 @@ import { WorkspaceAgentReviewSheet } from './sheets/WorkspaceAgentReviewSheet';
 import { FlowRunReviewSheet } from './sheets/FlowRunReviewSheet';
 import { ArchiveConversationSheet } from './sheets/ArchiveConversationSheet';
 import { ArchiveAllSheet } from './sheets/ArchiveAllSheet';
-import { BulkConversationActionsSheet } from './sheets/BulkConversationActionsSheet';
+import { CleanupSheet } from './sheets/CleanupSheet';
 import { ShiftReaderSheet } from './workers/ShiftReaderSheet';
 import { ShiftWorkSheet } from './sheets/ShiftWorkSheet';
 
@@ -43,7 +43,9 @@ const WIDE_SHEETS = new Set<string>([
   'workspaceAgentReview',
   'flowRunReview',
   'colosseumCompare',
-  'bulkConversationActions',
+  // Cleanup lists grouped worktrees with branch, path, age and size on one
+  // line; the default 680px shell truncates the path into uselessness.
+  'cleanup',
   'capabilities',
   // A planning turn is a document. The whole point of opening it here is the
   // room the desk could not give it.
@@ -169,7 +171,7 @@ export function SheetHost() {
         {sheet.type === 'archiveAllInWorkspace' && (
           <ArchiveAllSheet workspaceId={sheet.workspaceId} />
         )}
-        {sheet.type === 'bulkConversationActions' && <BulkConversationActionsSheet />}
+        {sheet.type === 'cleanup' && <CleanupSheet />}
         {sheet.type === 'fileFinder' && <FileFinderSheet rootPath={sheet.rootPath} />}
         {sheet.type === 'quickSwitcher' && <QuickSwitcherSheet initialScope={sheet.scope} />}
         {sheet.type === 'shortcutsHelp' && <ShortcutsHelpSheet />}

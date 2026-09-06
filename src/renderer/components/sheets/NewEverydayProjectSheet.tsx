@@ -75,8 +75,21 @@ export function NewEverydayProjectSheet() {
             className="field mt-1 w-full px-3 py-1.5 text-sm resize-y"
           />
         </div>
-        <div className="text-[10px] text-ink-faint">
-          Overcli keeps a history of this folder so you can undo anything it changes.
+        {/* Replaces a 10px line of the same claim. "We keep a history" is a
+            promise about a mechanism; what someone deciding whether to click
+            Create needs is what they end up WITH — a folder they can open in
+            Finder, an undo that covers everything, and somewhere their
+            workers can put finished work. */}
+        <div className="mt-auto rounded-lg border border-card bg-card p-3 flex flex-col gap-1.5">
+          <div className="text-xs font-semibold text-ink">What you get</div>
+          <Assurance>
+            A folder in <span className="text-ink">Documents › Overcli Projects</span> you can
+            open in Finder like any other.
+          </Assurance>
+          <Assurance>
+            A version saved every time something finishes, so any change can be put back.
+          </Assurance>
+          <Assurance>Somewhere for your workers to file what they finish.</Assurance>
         </div>
         {error && <div className="text-xs text-red-500">{error}</div>}
         {(madeWithoutHistory === 'no-git' || madeWithoutHistory === 'needs-xcode-tools') && (
@@ -101,6 +114,22 @@ export function NewEverydayProjectSheet() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/// One line of the "what you get" block: a tick and a sentence. Its own
+/// component only so the three read as a set at the call site rather than as
+/// thirty lines of repeated flex markup.
+function Assurance({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex items-start gap-2 text-[11.5px] leading-relaxed text-ink-muted">
+      <span className="shrink-0 pt-[1px] text-accent">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <path d="M4 8.5 6.75 11.25 12 5.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+      <span>{children}</span>
     </div>
   );
 }

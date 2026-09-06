@@ -18,8 +18,8 @@ import {
 import { EFFORT_BACKENDS } from '@shared/effort';
 import type { UserProfile } from '@shared/flows/personalize';
 import { Group, SheetActionButton } from './settingsChrome';
-import { StoragePane } from './StoragePane';
 import { ConversationsPane } from './ConversationsPane';
+import { AutoTidyPane } from './AutoTidyPane';
 
 // Re-exported so the several sheets that already import it from here keep
 // working now that the definition lives in ./settingsChrome.
@@ -32,8 +32,8 @@ type Section =
   | 'local'
   | 'agents'
   | 'flows'
-  | 'storage'
   | 'conversations'
+  | 'autoTidy'
   | 'advanced';
 
 // Hoisted out of the panes so they aren't reallocated on every keystroke
@@ -85,8 +85,8 @@ export function SettingsSheet() {
           <NavItem label="Local models" active={section === 'local'} onClick={() => setSection('local')} />
           <NavItem label="Agents" active={section === 'agents'} onClick={() => setSection('agents')} />
           <NavItem label="Flows" active={section === 'flows'} onClick={() => setSection('flows')} />
-          <NavItem label="Storage" active={section === 'storage'} onClick={() => setSection('storage')} />
           <NavItem label="Conversations" active={section === 'conversations'} onClick={() => setSection('conversations')} />
+          <NavItem label="Auto-tidy" active={section === 'autoTidy'} onClick={() => setSection('autoTidy')} />
           <NavItem label="Advanced" active={section === 'advanced'} onClick={() => setSection('advanced')} />
         </nav>
         <div className="flex-1 min-w-0 overflow-y-auto px-6 py-5">
@@ -103,8 +103,8 @@ export function SettingsSheet() {
           {section === 'local' && <OllamaPane local={local} patch={patch} />}
           {section === 'agents' && <AgentsPane local={local} patch={patch} />}
           {section === 'flows' && <FlowsPane local={local} patch={patch} />}
-          {section === 'storage' && <StoragePane />}
           {section === 'conversations' && <ConversationsPane />}
+          {section === 'autoTidy' && <AutoTidyPane />}
           {section === 'advanced' && <AdvancedPane local={local} patch={patch} />}
         </div>
       </div>

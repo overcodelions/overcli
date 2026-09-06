@@ -1,11 +1,12 @@
 // Settings → Conversations. Tidies up conversations you've stopped using.
 //
-// The counterpart to Settings → Storage, and deliberately separate from it.
-// Storage reclaims disk; this deletes history. They looked similar enough to
-// merge — both are "cleanup", both key off worktrees — but the trade is
-// opposite: the conversations here are typically kilobytes each, so bundling
-// them into a disk pane meant offering to destroy hundreds of chats in
-// exchange for no measurable space.
+// The counterpart to Clean up, and deliberately separate from it. Clean up is
+// about worktrees — what a worker or flow left on disk, grouped by who made
+// it. This is about HISTORY: chats you stopped using, most of which never had
+// a worktree at all. They look similar enough to merge, but the trade is
+// opposite — the conversations here are typically kilobytes each, so folding
+// them into a disk surface would mean offering to destroy hundreds of chats
+// in exchange for no measurable space.
 //
 // Archive is therefore the default action and delete is the opt-in. Archiving
 // is reversible and already the app's idiom for "done with this for now"; it
@@ -295,7 +296,7 @@ export function ConversationsPane() {
                   'text-xs px-2.5 py-1 rounded disabled:opacity-40 ' +
                   (mode === m
                     ? m === 'delete'
-                      ? 'bg-red-500/25 text-red-200'
+                      ? 'bg-red-500/25 text-red-800 dark:text-red-200'
                       : 'bg-accent/30 text-accent'
                     : 'text-ink-muted hover:text-ink')
                 }
@@ -321,7 +322,7 @@ export function ConversationsPane() {
       )}
 
       {mode === 'delete' && !checking && withWorktreeCount > 0 && (
-        <div className="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
+        <div className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2">
           Deleting removes each agent's worktree and branch as well as the
           conversation. Rows holding uncommitted or unmerged work are marked and
           left out of “Select all”.
@@ -329,12 +330,12 @@ export function ConversationsPane() {
       )}
 
       {result && (
-        <div className="text-xs text-green-300 bg-green-500/10 border border-green-500/30 rounded px-3 py-2">
+        <div className="text-xs text-green-700 dark:text-green-300 bg-green-500/10 border border-green-500/30 rounded px-3 py-2">
           {result}
         </div>
       )}
       {error && (
-        <div className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 whitespace-pre-wrap max-h-40 overflow-y-auto">
+        <div className="text-xs text-red-700 dark:text-red-300 bg-red-500/10 border border-red-500/30 rounded px-3 py-2 whitespace-pre-wrap max-h-40 overflow-y-auto">
           {error}
         </div>
       )}
@@ -378,7 +379,7 @@ export function ConversationsPane() {
                   className={
                     'px-3 py-1 rounded text-xs border disabled:opacity-40 ' +
                     (mode === 'delete'
-                      ? 'bg-red-500/30 border-red-500/60 text-red-200 hover:bg-red-500/40'
+                      ? 'bg-red-500/30 border-red-500/60 text-red-800 dark:text-red-200 hover:bg-red-500/40'
                       : 'bg-accent/30 border-accent/60 text-accent hover:bg-accent/40')
                   }
                 >
@@ -398,7 +399,7 @@ export function ConversationsPane() {
             )}
           </div>
           {mode === 'delete' && selectedWithWork.length > 0 && (
-            <div className="text-[11px] text-red-300 mt-1">
+            <div className="text-[11px] text-red-700 dark:text-red-300 mt-1">
               {selectedWithWork.length} hold uncommitted or unmerged work that will be
               destroyed.
             </div>
@@ -525,7 +526,7 @@ function CandidateRow({
 function Tag({ children, tone }: { children: React.ReactNode; tone: 'amber' | 'neutral' }) {
   const cls =
     tone === 'amber'
-      ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+      ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30'
       : 'bg-accent/5 text-ink-muted border-accent/30';
   return (
     <span

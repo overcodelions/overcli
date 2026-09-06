@@ -12,7 +12,7 @@ const { mockGetPath } = vi.hoisted(() => ({
 
 useTestHost(mockGetPath);
 
-import { publishDeliverableToProject, PUBLISH_RETRY_WINDOW_MS } from './workerPublish';
+import { filedByWorker, publishDeliverableToProject, PUBLISH_RETRY_WINDOW_MS } from './workerPublish';
 import { workerFilesDir } from './workerFiles';
 import { writeEverydayMarker } from '../everydayProject';
 
@@ -265,5 +265,69 @@ describe('publishDeliverableToProject', () => {
     const res = publish([{ name: '../escaped.md', body: 'nope' }]);
     expect(res.written).toEqual(['escaped.md']);
     expect(fs.existsSync(path.join(path.dirname(projectDir), 'escaped.md'))).toBe(false);
+  });
+});
+
+describe('filedByWorker', () => {
+  const worker = (over: Partial<{ id: string; name: string; projectPath: string }> = {}) => ({
+    id: WORKER,
+    name: 'Cassandra',
+    projectPath: projectDir,
+    ...over,
+  });
+
+  it('names the worker that filed each document', () => {
+    writeEverydayMarker(projectDir);
+    publish([{ name: 'Summary.md', body: 'hello' }]);
+
+    expect(filedByWorker([worker()], projectDir)).toEqual({
+      'Summary.md': { workerId: WORKER, workerName: 'Cassandra' },
+    });
+  });
+
+  it('reports the name the document actually landed as, not the one asked for', () => {
+    writeEverydayMarker(projectDir);
+    fs.writeFileSync(path.join(projectDir, 'Summary.md'), 'a document the user put there', 'utf-8');
+    publish([{ name: 'Summary.md', body: 'hello' }]);
+
+    // The worker's copy was uniquified around the existing file; attribution
+    // has to follow it, or the grid captions the user's own document.
+    const filed = filedByWorker([worker()], projectDir);
+    expect(filed['Summary.md']).toBeUndefined();
+    expect(filed['Summary 2.md']).toEqual({ workerId: WORKER, workerName: 'Cassandra' });
+  });
+
+  it('ignores workers pointed at a different project', () => {
+    writeEverydayMarker(projectDir);
+    publish([{ name: 'Summary.md', body: 'hello' }]);
+    const elsewhere = worker({ projectPath: path.join(os.tmpdir(), 'somewhere-else') });
+
+    expect(filedByWorker([elsewhere], projectDir)).toEqual({});
+  });
+
+  it('matches a project path that differs only by trailing separator', () => {
+    writeEverydayMarker(projectDir);
+    publish([{ name: 'Summary.md', body: 'hello' }]);
+
+    expect(Object.keys(filedByWorker([worker()], `${projectDir}/`))).toEqual(['Summary.md']);
+  });
+
+  it('reads a pre-0.17.0 ledger, whose filenames are already the landed ones', () => {
+    writeEverydayMarker(projectDir);
+    fs.mkdirSync(workerFilesDir(WORKER), { recursive: true });
+    fs.writeFileSync(
+      path.join(workerFilesDir(WORKER), '.published.json'),
+      JSON.stringify({ 'run-old': ['Report 2.md'] }),
+      'utf-8',
+    );
+
+    expect(filedByWorker([worker()], projectDir)).toEqual({
+      'Report 2.md': { workerId: WORKER, workerName: 'Cassandra' },
+    });
+  });
+
+  it('is empty when no worker has filed anything', () => {
+    writeEverydayMarker(projectDir);
+    expect(filedByWorker([worker()], projectDir)).toEqual({});
   });
 });
