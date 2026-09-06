@@ -22,6 +22,7 @@ describe('DEFAULT_SETTINGS', () => {
       sidebarLayout: 'stream',
       showActiveSidebarSection: true,
       showDebug: false,
+      cleanup: { retireAfterDays: 7, keepPerProducer: 3, warnAtCount: 25 },
       claudeTransport: 'cli',
       claudeMcpDebug: false,
       claudeArtifacts: false,

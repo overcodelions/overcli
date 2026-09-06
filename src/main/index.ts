@@ -69,6 +69,8 @@ import {
 } from './versions';
 import { commitAllAsync, readVersionDiff } from './git';
 import { scanWorktrees, sweepWorktrees, conversationWorktreeStates } from './worktreeSweep';
+import { flowRunClaims } from './flowRunClaims';
+import { scanOrphanTranscripts, removeOrphanTranscripts } from './transcriptSweep';
 import { computeStats } from './stats';
 import { refreshClaudeUsage } from './claudeUsage';
 import { scanCapabilities } from './capabilities';
@@ -190,6 +192,7 @@ import {
   ProjectPreviewHintsResult,
   StreamEventKind,
   StreamEvent,
+  WorktreeClaim,
 } from '../shared/types';
 
 // Dev vs prod: we go to the Vite dev server ONLY when VITE_DEV_SERVER_URL
@@ -1104,19 +1107,44 @@ export function registerIpc(): void {
   ipcMain.handle('git:switchProjectToBranch', (_e, args) => switchProjectToBranch(args));
   ipcMain.handle('git:switchBranch', (_e, args) => switchBranch(args));
   ipcMain.handle('git:removeWorktree', (_e, args) => removeWorktree(args));
-  // The renderer supplies conversation worktrees (it owns that state); the
-  // flow runtime is asked here so a run's tree is never reported as an
-  // orphan just because the renderer doesn't track runs.
+  // The renderer supplies conversation claims (it owns that state); the flow
+  // runtime is asked here so a run's tree is never reported as an orphan just
+  // because the renderer doesn't track runs — and because the run is the only
+  // record of WHICH worker or schedule made the tree, which is what cleanup
+  // groups by.
   ipcMain.handle('git:scanWorktrees', (_e, args) => {
-    const runPaths: string[] = [];
-    for (const run of flowRuntime ? flowRuntime.listRuns() : []) {
-      if (run.worktreePath) runPaths.push(run.worktreePath);
-      for (const m of run.workspaceWorktrees ?? []) runPaths.push(m.worktreePath);
-    }
-    return scanWorktrees({ ...args, runPaths }, (p) => emitToRenderer({ type: 'worktreeScanProgress', ...p }));
+    const claims: WorktreeClaim[] = [
+      ...(args.claims ?? []),
+      ...flowRunClaims(flowRuntime ? flowRuntime.listRuns() : []),
+    ];
+    return scanWorktrees({ projects: args.projects, claims, measureSizes: args.measureSizes }, (p) =>
+      emitToRenderer({ type: 'worktreeScanProgress', ...p }),
+    );
   });
   ipcMain.handle('git:sweepWorktrees', (_e, args) => sweepWorktrees(args));
+  ipcMain.handle('transcripts:scanOrphans', () => scanOrphanTranscripts());
+  ipcMain.handle('transcripts:removeOrphans', (_e, args) => removeOrphanTranscripts(args));
   ipcMain.handle('git:conversationWorktreeStates', (_e, args) => conversationWorktreeStates(args));
+  // Release: drop the tree, keep the conversation. The session re-homing is
+  // the same move `git:checkoutAgentLocally` makes and for the same reason —
+  // the conversation's cwd becomes the project root, and a Claude session
+  // file left under the worktree's slug would be unreachable from there.
+  ipcMain.handle('git:releaseWorktree', (_e, args) => {
+    const res = removeWorktree({
+      projectPath: args.projectPath,
+      worktreePath: args.worktreePath,
+      branchName: args.keepBranch === false ? (args.branchName ?? '') : '',
+    });
+    if (!res.ok) return res;
+    if (args.sessionId) {
+      migrateClaudeSessionCwd({
+        worktreePath: args.worktreePath,
+        projectPath: args.projectPath,
+        sessionId: args.sessionId,
+      });
+    }
+    return res;
+  });
   ipcMain.handle('git:checkoutAgentLocally', (_e, args) => {
     const res = checkoutAgentLocally(args);
     if (!res.ok) return res;

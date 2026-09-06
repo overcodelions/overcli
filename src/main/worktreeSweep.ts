@@ -19,6 +19,7 @@ import { execFile } from 'child_process';
 import { runGitAsync, detectBaseBranchAsync, removeWorktreeAsync } from './git';
 import { log } from './diagnostics';
 import type {
+  WorktreeClaim,
   WorktreeSweepEntry,
   WorktreeSweepBucket,
   WorktreeSweepResult,
@@ -84,31 +85,69 @@ export function parseWorktreeList(porcelain: string): ParsedWorktree[] {
   return out;
 }
 
-/// Decide what a worktree is, given git's view of it plus whether app state
-/// still points at it. Precedence matters and is deliberately conservative —
-/// each rule can only ever move an entry to a LESS deletable bucket than the
-/// one below it:
+/// Decide what a worktree is, given git's view of it plus whether the thing
+/// that made it is still working. Precedence matters and is deliberately
+/// conservative — each rule can only ever move an entry to a LESS deletable
+/// bucket than the one below it:
 ///   foreign      — outside the managed root; not ours to touch
-///   live         — a conversation or flow run still references it
-///   has-work     — unreferenced, but holds changes that would be destroyed
-///   reclaimable  — unreferenced, clean, and nothing unmerged. Safe.
-/// "Unreferenced" alone never makes something reclaimable: an orphan with
-/// uncommitted work still lands in `has-work` so the sweep can't quietly
-/// discard it. And anything still referenced is `live` however old it is —
-/// ageing a conversation out means deleting the conversation, which is
-/// Settings → Conversations' job, not a disk sweep's.
+///   live         — busy right now (streaming turn, or a run mid-flight)
+///   has-work     — idle, but holds changes that would be destroyed
+///   reclaimable  — idle, clean, and nothing unmerged. Safe.
+/// Being idle alone never makes something reclaimable: a finished shift with
+/// uncommitted work still lands in `has-work` so cleanup can't quietly
+/// discard it.
+///
+/// `busy` replaced an older `referenced` rule that made any CLAIMED tree
+/// untouchable. That rule was why a worker's forty finished shifts read as
+/// forty live worktrees nothing was allowed to clear.
 export function classifyWorktree(args: {
   worktreePath: string;
-  referenced: 'conversation' | 'run' | null;
+  busy: boolean;
   dirtyFiles: number;
   commitsAhead: number;
   isMergedIntoBase: boolean;
 }): WorktreeSweepBucket {
   if (!isUnderManagedRoot(args.worktreePath)) return 'foreign';
-  if (args.referenced) return 'live';
+  if (args.busy) return 'live';
   if (args.dirtyFiles > 0) return 'has-work';
   if (args.commitsAhead > 0 && !args.isMergedIntoBase) return 'has-work';
   return 'reclaimable';
+}
+
+/// Fold claims into one per worktree path, resolved so two spellings of the
+/// same directory can't both claim it.
+///
+/// A run and a conversation can claim the SAME tree: "New chat here" on a run
+/// pane attaches a fresh conversation to the run's worktree (`adoptedWorktree`).
+/// The run owns it, so the run's claim wins and the borrowing conversations
+/// ride along in `adoptedConvIds` — removing the tree has to take those rows
+/// too, or they are left pointing at a directory that no longer exists.
+///
+/// `busy` is a union across everything claiming the tree: one live turn in a
+/// borrowed chat is enough to make the whole tree untouchable.
+export function indexClaims(claims: WorktreeClaim[]): Map<string, WorktreeClaim> {
+  const out = new Map<string, WorktreeClaim>();
+  for (const claim of claims) {
+    const key = path.resolve(claim.worktreePath);
+    const prior = out.get(key);
+    if (!prior) {
+      out.set(key, { ...claim });
+      continue;
+    }
+    const [owner, other] =
+      prior.kind === 'run' || claim.kind !== 'run' ? [prior, claim] : [claim, prior];
+    const adopted = [
+      ...(owner.adoptedConvIds ?? []),
+      ...(other.adoptedConvIds ?? []),
+      ...(other.convId && other.convId !== owner.convId ? [other.convId] : []),
+    ];
+    out.set(key, {
+      ...owner,
+      busy: !!owner.busy || !!other.busy,
+      adoptedConvIds: adopted.length > 0 ? [...new Set(adopted)] : undefined,
+    });
+  }
+  return out;
 }
 
 /// Run `tasks` with at most `limit` in flight. The scan fans out four cheap
@@ -140,6 +179,56 @@ function duKb(target: string): Promise<number> {
   });
 }
 
+/// Facts that are the same for every worktree in a project, read once.
+///
+/// Three of the five probes per worktree never needed the worktree at all —
+/// "is this branch merged into base", "how far ahead is it", "when was its
+/// last commit" are all questions about REFS, answerable for every branch in
+/// the repo in a single call each. Asking them per worktree meant ~4,500 git
+/// processes on a 1,500-worktree install (measured: ~21s of pure subprocess
+/// overhead) all contending on one repo's ref cache.
+export interface ProjectRefFacts {
+  /// Branches already merged into the base branch.
+  merged: Set<string>;
+  /// Branch → last commit time in ms.
+  committedAt: Map<string, number>;
+}
+
+/// Strip `git branch`'s decoration: `* ` for the current branch, `+ ` for one
+/// checked out in another worktree — which, here, is nearly all of them.
+function bareBranchName(line: string): string {
+  return line.replace(/^[*+]?\s+/, '').trim();
+}
+
+export async function readProjectRefFacts(
+  projectPath: string,
+  baseBranch: string,
+): Promise<ProjectRefFacts> {
+  const [merged, dated] = await Promise.all([
+    runGitAsync(['branch', '--merged', baseBranch, '--format=%(refname:short)'], projectPath),
+    runGitAsync(
+      ['for-each-ref', '--format=%(refname:short)%09%(committerdate:unix)', 'refs/heads/'],
+      projectPath,
+    ),
+  ]);
+  const mergedSet = new Set<string>();
+  if (merged.exitCode === 0) {
+    for (const line of merged.stdout.split('\n')) {
+      const name = bareBranchName(line);
+      if (name) mergedSet.add(name);
+    }
+  }
+  const committedAt = new Map<string, number>();
+  if (dated.exitCode === 0) {
+    for (const line of dated.stdout.split('\n')) {
+      const [name, seconds] = line.split('\t');
+      const at = Number.parseInt((seconds ?? '').trim(), 10);
+      if (name && Number.isFinite(at)) committedAt.set(name.trim(), at * 1000);
+    }
+  }
+  return { merged: mergedSet, committedAt };
+}
+
 /// Gather per-worktree detail. Each field degrades to a "looks like it has
 /// work" answer on git failure so an unreadable tree is never classified as
 /// safe to delete.
@@ -149,6 +238,12 @@ async function inspect(args: {
   branchName: string | null;
   baseBranch: string;
   prunable: boolean;
+  /// `du` walks the whole tree and dominates the scan — measured at ~91s of a
+  /// ~2-minute run over 1,519 worktrees, because a worktree carrying
+  /// node_modules can be gigabytes. Skipping it answers every safety question
+  /// — clean, merged, dated — and only loses the size column.
+  measureSizes: boolean;
+  facts: ProjectRefFacts;
 }): Promise<{
   dirtyFiles: number;
   commitsAhead: number;
@@ -161,23 +256,29 @@ async function inspect(args: {
   if (args.prunable) {
     return { dirtyFiles: 0, commitsAhead: 0, isMergedIntoBase: true, sizeKb: 0 };
   }
-  const [status, ahead, merged, sizeKb, lastCommit] = await Promise.all([
+  // A branch with no name is a detached review worktree: nothing in the ref
+  // tables can speak for it, so it keeps its own `git log`.
+  const isMergedIntoBase = args.branchName ? args.facts.merged.has(args.branchName) : true;
+  const datedFromRefs = args.branchName
+    ? args.facts.committedAt.get(args.branchName)
+    : undefined;
+
+  const [status, ahead, sizeKb, lastCommit] = await Promise.all([
     runGitAsync(['status', '--porcelain'], args.worktreePath),
-    args.branchName
+    // Only unmerged branches need counting: `classifyWorktree` reads
+    // `commitsAhead` solely to catch work that is ahead AND unmerged, so a
+    // merged branch's count changes no answer and is not worth a process.
+    args.branchName && !isMergedIntoBase
       ? runGitAsync(['rev-list', '--count', `${args.baseBranch}..${args.branchName}`], args.projectPath)
       : Promise.resolve({ stdout: '0', stderr: '', exitCode: 0 }),
-    args.branchName
-      ? runGitAsync(
-          ['merge-base', '--is-ancestor', args.branchName, args.baseBranch],
-          args.projectPath,
-        )
-      : Promise.resolve({ stdout: '', stderr: '', exitCode: 0 }),
-    duKb(args.worktreePath),
+    args.measureSizes ? duKb(args.worktreePath) : Promise.resolve(0),
     // Dates an orphan. Its conversation is gone, so there's no `lastActiveAt`
     // to age it by — but the last commit in the tree is a good proxy for when
     // work stopped, and it makes the date filter meaningful on every row
     // rather than only the ones a conversation still claims.
-    runGitAsync(['log', '-1', '--format=%ct'], args.worktreePath),
+    datedFromRefs === undefined
+      ? runGitAsync(['log', '-1', '--format=%ct'], args.worktreePath)
+      : Promise.resolve({ stdout: '', stderr: '', exitCode: 1 }),
   ]);
   // An unreadable status is treated as dirty: we'd rather leave a tree
   // behind than delete one we couldn't inspect.
@@ -192,37 +293,55 @@ async function inspect(args: {
   return {
     dirtyFiles,
     commitsAhead,
-    isMergedIntoBase: merged.exitCode === 0,
+    isMergedIntoBase,
     sizeKb,
-    lastCommitAt: Number.isFinite(commitSeconds) ? commitSeconds * 1000 : undefined,
+    lastCommitAt:
+      datedFromRefs ?? (Number.isFinite(commitSeconds) ? commitSeconds * 1000 : undefined),
   };
 }
 
 /// Scan every project for worktrees, classify each, and report totals.
-/// `runPaths`/`conversationPaths` are supplied by the caller: the renderer
-/// owns live conversation state and the flow runtime owns run state, so
-/// neither is re-derived from disk here (reading a stale `overcli.json` could
-/// report a live tree as an orphan).
+/// `claims` is supplied by the caller: the renderer owns conversation state
+/// and the flow runtime owns run state, so neither is re-derived from disk
+/// here (reading a stale `overcli.json` could report a live tree as an
+/// orphan, and offer to delete it).
 ///
 /// Two passes, because the expensive work is worth avoiding. Pass one needs
-/// nothing but `git worktree list` and the referenced-path sets, and that is
-/// already enough to settle `live` and `foreign` — which on a real install is
-/// most of them. Only what survives gets pass two (status, merge-base, `du`),
-/// which costs seconds per worktree and dominates the scan: measured over 867
-/// worktrees, inspecting everything took ~4 minutes, and `du` alone was 83s of
-/// it. Sizes for `live`/`foreign` entries would have cost most of that budget
-/// to display a number the user can't act on, so those report `sizeKb: 0` and
-/// the UI shows counts for them instead.
+/// nothing but `git worktree list` and the claim index, and that already
+/// settles `foreign` and `live`. Everything else gets pass two (status,
+/// merge-base, `du`), which costs seconds per worktree and dominates the
+/// scan: measured over 867 worktrees, inspecting everything took ~4 minutes,
+/// and `du` alone was 83s of it.
+///
+/// Pass two used to run only over UNCLAIMED trees. It now covers every idle
+/// one, claimed or not, because a finished worker shift is exactly the thing
+/// this scan exists to offer up — and offering it means standing behind
+/// "clean and merged", which only inspection can say. Busy and foreign trees
+/// still skip it and report `sizeKb: 0`; nothing can be done with them, so
+/// their size would cost most of the budget to display a number the user
+/// can't act on.
+/// Above this many candidates, `auto` stops measuring disk usage.
+///
+/// `du` walks every file in every tree and is the single most expensive thing
+/// the scan does — 83s of a 4-minute run over 867 worktrees, and it scales
+/// with repo size, not worktree count. Under a few hundred trees the wait is
+/// worth the size column; a 1,500-worktree install would spend minutes on a
+/// number that changes no decision, so it reports counts instead and offers
+/// the measurement as a deliberate second pass.
+export const SIZE_MEASURE_LIMIT = 300;
+
 export async function scanWorktrees(
   args: {
     projects: Array<{ path: string; name: string }>;
-    conversationPaths: string[];
-    runPaths: string[];
+    claims: WorktreeClaim[];
+    /// `'auto'` (the default) measures disk only when there are at most
+    /// `SIZE_MEASURE_LIMIT` candidates. `true` always measures, `false`
+    /// never does — same buckets either way, since size decides nothing.
+    measureSizes?: boolean | 'auto';
   },
   onProgress?: (p: { completed: number; total: number }) => void,
 ): Promise<WorktreeSweepResult> {
-  const convSet = new Set(args.conversationPaths.map((p) => path.resolve(p)));
-  const runSet = new Set(args.runPaths.map((p) => path.resolve(p)));
+  const claims = indexClaims(args.claims);
 
   const perProject = await pooled(
     args.projects.map((project) => async () => {
@@ -233,34 +352,36 @@ export async function scanWorktrees(
       if (listed.exitCode !== 0) {
         // Not a git repo, or the project directory is gone. Not an error
         // worth failing the whole scan over.
-        return { project, worktrees: [] as ParsedWorktree[], baseBranch: 'main' };
+        return {
+          project,
+          worktrees: [] as ParsedWorktree[],
+          baseBranch: 'main',
+          facts: { merged: new Set<string>(), committedAt: new Map<string, number>() },
+        };
       }
       const all = parseWorktreeList(listed.stdout);
       // Drop the main checkout — it's the repo itself, never a candidate.
       const mainPath = path.resolve(project.path);
       const worktrees = all.filter((w) => path.resolve(w.worktreePath) !== mainPath);
       const baseBranch = await detectBaseBranchAsync(project.path);
-      return { project, worktrees, baseBranch };
+      const facts = await readProjectRefFacts(project.path, baseBranch);
+      return { project, worktrees, baseBranch, facts };
     }),
     6,
   );
 
-  // Pass one: everything decidable from the path and the referenced sets.
-  const staged = perProject.flatMap(({ project, worktrees, baseBranch }) =>
+  // Pass one: everything decidable from the path and the claim index.
+  const staged = perProject.flatMap(({ project, worktrees, baseBranch, facts }) =>
     worktrees.map((wt) => {
-      const resolved = path.resolve(wt.worktreePath);
-      const referenced: 'conversation' | 'run' | null = convSet.has(resolved)
-        ? 'conversation'
-        : runSet.has(resolved)
-          ? 'run'
-          : null;
+      const claim = claims.get(path.resolve(wt.worktreePath));
       const base: WorktreeSweepEntry = {
         worktreePath: wt.worktreePath,
         projectPath: project.path,
         projectName: project.name,
         branchName: wt.branchName,
         baseBranch,
-        referenced,
+        referenced: claim ? claim.kind : null,
+        claim,
         locked: wt.locked,
         prunable: wt.prunable,
         dirtyFiles: 0,
@@ -272,31 +393,37 @@ export async function scanWorktrees(
         // what pass two must verify before we stand behind that answer.
         bucket: classifyWorktree({
           worktreePath: wt.worktreePath,
-          referenced,
+          busy: !!claim?.busy,
           dirtyFiles: 0,
           commitsAhead: 0,
           isMergedIntoBase: true,
         }),
       };
-      return { entry: base, project, baseBranch, wt };
+      return { entry: base, project, baseBranch, wt, facts };
     }),
   );
 
   const candidates = staged.filter((s) => s.entry.bucket === 'reclaimable');
   const settled = staged.filter((s) => s.entry.bucket !== 'reclaimable').map((s) => s.entry);
 
+  const sizePolicy = args.measureSizes ?? 'auto';
+  const measureSizes =
+    sizePolicy === 'auto' ? candidates.length <= SIZE_MEASURE_LIMIT : sizePolicy;
+
   // Pass two: the real inspection, only for entries that could be removed.
   let completed = 0;
   const total = candidates.length;
   onProgress?.({ completed: 0, total });
   const inspected = await pooled(
-    candidates.map(({ entry, project, baseBranch, wt }) => async () => {
+    candidates.map(({ entry, project, baseBranch, wt, facts }) => async () => {
       const detail = await inspect({
         worktreePath: wt.worktreePath,
         projectPath: project.path,
         branchName: wt.branchName,
         baseBranch,
         prunable: wt.prunable,
+        measureSizes,
+        facts,
       });
       completed++;
       onProgress?.({ completed, total });
@@ -305,14 +432,19 @@ export async function scanWorktrees(
         ...detail,
         bucket: classifyWorktree({
           worktreePath: wt.worktreePath,
-          referenced: entry.referenced,
+          busy: !!entry.claim?.busy,
           dirtyFiles: detail.dirtyFiles,
           commitsAhead: detail.commitsAhead,
           isMergedIntoBase: detail.isMergedIntoBase,
         }),
       };
     }),
-    6,
+    // Pass two is IO-bound (git plumbing and directory walks), so the old
+    // limit of 6 left the disk idle waiting on process startup. Measured on a
+    // 1,519-worktree install, `git status` throughput flattens out around 24
+    // in flight (24s at 6, 16s at 12, 14s at 24, no better at 48), so this is
+    // the knee of the curve rather than a guess.
+    24,
   );
 
   const entries = [...settled, ...inspected];
@@ -321,7 +453,7 @@ export async function scanWorktrees(
       a.projectName.localeCompare(b.projectName) ||
       a.worktreePath.localeCompare(b.worktreePath),
   );
-  return { entries, scannedAt: Date.now() };
+  return { entries, scannedAt: Date.now(), measuredSizes: measureSizes };
 }
 
 /// What deleting each conversation's worktree would cost. Settings →
