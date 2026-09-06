@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { intakeProjectFiles } from '../attachmentIntake';
 import type { DocumentEntry, FiledByMap } from '@shared/types';
 import { FileEditorPane } from './FileEditorPane';
+import { DocumentVersionsRail } from './DocumentVersionsRail';
 import { revealLabel } from '../platform';
 import { versionTimestamp } from './sheets/VersionsSheet';
 
@@ -93,6 +94,7 @@ export function sortEntries(entries: readonly DocumentEntry[], key: SortKey): Do
 
 export function DocumentsPane({ rootPath, projectName }: { rootPath: string; projectName: string }) {
   const openFile = useStore((s) => s.openFile);
+  const openFilePath = useStore((s) => s.openFilePath);
   const closeFile = useStore((s) => s.closeFile);
   // Local, not `openFilePath`: a file left open from a previous visit should
   // not decide what this one opens on. Coming into your documents lands on
@@ -213,21 +215,39 @@ export function DocumentsPane({ rootPath, projectName }: { rootPath: string; pro
   };
 
   if (viewingFile) {
+    const openName = openFilePath?.slice(openFilePath.lastIndexOf('/') + 1) ?? '';
+    const openFiled = openFilePath ? filedBy[openName] : undefined;
     return (
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="shrink-0 flex items-center gap-2 px-6 py-3 border-b border-card">
+        <div className="shrink-0 flex items-center gap-3 px-6 py-3 border-b border-card">
           <button
             onClick={() => {
               setViewingFile(false);
               closeFile();
             }}
-            className="rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
+            className="shrink-0 rounded-md border border-card px-3 py-1.5 text-xs text-ink-muted hover:text-ink hover:bg-card-strong"
           >
             ← All documents
           </button>
+          {openName && (
+            <div className="min-w-0 flex flex-col gap-0.5">
+              <div className="text-sm font-medium text-ink truncate">{openName}</div>
+              {openFiled && (
+                <div className="text-[11px] text-ink-faint truncate">
+                  Filed by {openFiled.workerName}
+                </div>
+              )}
+            </div>
+          )}
         </div>
-        <div className="flex-1 min-h-0 flex flex-col">
-          <FileEditorPane rootPathOverride={rootPath} />
+        <div className="flex-1 min-h-0 flex">
+          <div className="flex-1 min-w-0 flex flex-col">
+            <FileEditorPane rootPathOverride={rootPath} />
+          </div>
+          {/* The document's own history, beside it. `openFilePath` is the
+              file the editor actually has open, which is not necessarily the
+              one this pane last clicked — the editor has tabs. */}
+          {openFilePath && <DocumentVersionsRail rootPath={rootPath} filePath={openFilePath} />}
         </div>
       </div>
     );

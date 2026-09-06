@@ -1804,6 +1804,17 @@ export interface IPCInvokeMap {
     sha: string;
     label: string;
   }) => { ok: true } | { ok: false; error: string };
+  /// Put ONE document back, leaving the rest of the folder alone. Distinct
+  /// from `versions:restore`, which resets the whole tree — a document view
+  /// must not offer a button that quietly reverts every other file.
+  'versions:restoreFile': (args: {
+    projectPath: string;
+    sha: string;
+    /// Absolute, as the documents grid holds it. Main derives the
+    /// repo-relative form and refuses anything outside the project.
+    filePath: string;
+    label: string;
+  }) => { ok: true } | { ok: false; error: string };
   'fs:cancelRevise': (args: { requestId: string }) => { stopped: boolean };
   'fs:reviseDocument': (args: {
     path: string;

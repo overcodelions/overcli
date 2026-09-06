@@ -60,7 +60,13 @@ import {
 } from './git';
 import { copyIntoProject, createEverydayProject, setEverydayMarker, syncProjectMarkers } from './everydayProject';
 import { createBlankDocument, createDocumentFromPrompt, listDocuments, reviseDocument } from './documents';
-import { checkpointProject, checkpointStatusPorcelain, listVersions, restoreVersion } from './versions';
+import {
+  checkpointProject,
+  checkpointStatusPorcelain,
+  listVersions,
+  restoreVersion,
+  restoreVersionFile,
+} from './versions';
 import { commitAllAsync, readVersionDiff } from './git';
 import { scanWorktrees, sweepWorktrees, conversationWorktreeStates } from './worktreeSweep';
 import { computeStats } from './stats';
@@ -1273,6 +1279,28 @@ export function registerIpc(): void {
       };
     }
     return restoreVersion(args);
+  });
+  ipcMain.handle('versions:restoreFile', (_e, args) => {
+    // BOTH paths are checked. The project root is the repo git runs in, and
+    // the file is what it is told to overwrite — a caller that passed a
+    // legitimate root and a file somewhere else would otherwise get a write
+    // outside the project.
+    if (typeof args?.projectPath !== 'string' || !isPathUnderRegisteredRoot(args.projectPath)) {
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
+    }
+    if (typeof args?.filePath !== 'string' || !isPathUnderRegisteredRoot(args.filePath)) {
+      return {
+        ok: false as const,
+        error: 'Refused: path outside a registered project root.',
+      };
+    }
+    if (typeof args?.sha !== 'string' || !/^[0-9a-f]{7,40}$/i.test(args.sha)) {
+      return { ok: false as const, error: 'Refused: not a valid version id.' };
+    }
+    return restoreVersionFile(args);
   });
   ipcMain.handle('fs:cancelRevise', (_e, args) => {
     const requestId = typeof args?.requestId === 'string' ? args.requestId : '';
