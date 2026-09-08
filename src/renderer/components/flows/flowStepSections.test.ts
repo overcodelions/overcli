@@ -87,6 +87,14 @@ describe('parseFlowStepContent — reloaded (raw prompt)', () => {
     'Proceed with your task now. Remember to wrap your final deliverable in <output name="review.md">…</output>.',
   ].join('\n');
 
+  it('drops the leading thread-title line the runtime writes for CLI sidebars', () => {
+    const titled = `Overcli · Ticket to PR · review (reviewer) — Fix the breadcrumbs\n\n${raw}`;
+    const c = parseFlowStepContent(titled)!;
+    expect(c.title).toBe('reviewer step');
+    expect(c.instructions?.startsWith('You are the REVIEWER step')).toBe(true);
+    expect(c.instructions).not.toContain('Overcli ·');
+  });
+
   it('is recognized as a flow step turn', () => {
     expect(isFlowStepTurn(raw)).toBe(true);
     expect(isFlowStepTurn('just a normal user message')).toBe(false);
