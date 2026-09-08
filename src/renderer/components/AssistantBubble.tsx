@@ -9,6 +9,7 @@ import { parseOutputHandoff } from './flows/outputPointer';
 import { isDesignUnavailableNotice } from '@shared/claudeArtifacts';
 import { isChromeUnavailableNotice } from '@shared/claudeChrome';
 import { useConversation } from '../hooks';
+import { useRunForConversation } from '../flowsStore';
 
 /// Tool names that must stay visible when tool activity is hidden,
 /// because they block the conversation on user input.
@@ -267,10 +268,11 @@ function askUserQuestionKey(inputJSON: string): string {
 function ChromeNotice({ text, conversationId }: { text: string; conversationId?: UUID }) {
   const globalOn = useStore((s) => s.settings.claudeChrome ?? false);
   const convOn = useConversation(conversationId)?.chrome;
+  const flowRun = useRunForConversation(conversationId);
   const setChrome = useStore((s) => s.setChrome);
   const [busy, setBusy] = useState(false);
   if (!isChromeUnavailableNotice(text)) return null;
-  const enabled = convOn ?? globalOn;
+  const enabled = (flowRun ? flowRun.chrome : convOn) ?? globalOn;
   if (enabled) {
     return (
       <div className="mt-2 rounded border border-white/15 bg-white/5 px-2.5 py-2 text-[11px]">

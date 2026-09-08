@@ -1714,6 +1714,11 @@ export function registerIpc(): void {
       ? flowRuntime.setModelOverride(runId, participantId, model)
       : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );
+  ipcMain.handle('flows:setChrome', (_e, { runId, chrome }) =>
+    flowRuntime
+      ? flowRuntime.setChrome(runId, chrome)
+      : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
+  );
   ipcMain.handle('flows:renameRun', (_e, args) =>
     flowRuntime ? flowRuntime.renameRun(args) : ({ ok: false, error: 'Flow runtime not initialized.' } as const),
   );

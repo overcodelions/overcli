@@ -161,6 +161,9 @@ interface FlowsActions {
   /// it survives a restart. Optimistically patches the in-memory run so
   /// the UI reflects the change before the main-process round-trip lands.
   setParticipantModelOverride(runId: string, participantId: string, model: string | null): Promise<void>;
+  /// Set (or clear) Claude in Chrome for a run. `null` reverts to the
+  /// global setting. Optimistic, then reconciled by `flowRunUpdate`.
+  setRunChrome(runId: string, chrome: boolean | null): Promise<void>;
   /// Rename a run (display title only — see `flowRunTitle`). Allowed at
   /// any point, including while the run is mid-step: nothing in the
   /// runtime reads the title. Pass an empty string to drop back to the
@@ -673,6 +676,15 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     await window.overcli.invoke('flows:setModelOverride', { runId, participantId, model });
   },
 
+  async setRunChrome(runId, chrome) {
+    set((s) => {
+      const run = s.runs[runId];
+      if (!run) return {};
+      return { runs: { ...s.runs, [runId]: { ...run, chrome: chrome ?? undefined } } };
+    });
+    await window.overcli.invoke('flows:setChrome', { runId, chrome });
+  },
+
   async renameRun(runId, title) {
     const trimmed = title.trim().slice(0, MAX_RUN_TITLE_LENGTH);
     // Optimistic so the row settles instantly; the main process echoes an
@@ -758,3 +770,16 @@ export const useFlowsStore = create<FlowsStore>((set, get) => ({
     return { ok: true, risks: res.risks };
   },
 }));
+
+/// The run that owns this conversation id, if any. Flow participant
+/// conversations aren't in `projects[]`/`workspaces[]`, so callers that
+/// only have a conversation id need this to reach the run's settings.
+export function useRunForConversation(convId?: string | null): FlowRun | null {
+  return useFlowsStore((s) =>
+    convId
+      ? Object.values(s.runs).find((r) =>
+          Object.values(r.conversationIds).includes(convId),
+        ) ?? null
+      : null,
+  );
+}
