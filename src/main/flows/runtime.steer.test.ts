@@ -301,7 +301,11 @@ describe('steer integration', () => {
     await flush();
 
     expect(h.sends).toHaveLength(1);
-    expect(h.sends[0]!.prompt.startsWith('COURSE CORRECTION FROM YOUR OWNER')).toBe(true);
+    // The one-line thread title leads (buildStepPromptTitle); the steer is
+    // the first instruction the model reads after it.
+    const [titleLine, , ...rest] = h.sends[0]!.prompt.split('\n');
+    expect(titleLine).toMatch(/^Overcli · /);
+    expect(rest.join('\n').startsWith('COURSE CORRECTION FROM YOUR OWNER')).toBe(true);
     expect(h.sends[0]!.displayText).toContain('Course correction applied');
     expect(r.pendingSteer).toBeUndefined();
 
