@@ -36,6 +36,7 @@ import { Markdown } from '../Markdown';
 import { CopyActions } from '../CopyActions';
 import { openPathWithHighlight, useOpenFile } from '../../openFile';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { useChromeCommandGuard } from '../ChromeCommandGuard';
 import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
@@ -2101,6 +2102,19 @@ function HijackComposer({
   const handleSend = (prompt: string, attachments: Attachment[]) =>
     sendTurn(prompt, attachments, true);
 
+  // `/chrome <prose>` never reaches the model — rewrite it, or offer the
+  // switch when this run's browser tools aren't attached. Scoped to the run
+  // rather than the conversation: that's where a flow's override lives.
+  const setRunChrome = useFlowsStore((s) => s.setRunChrome);
+  const runChrome = useFlowsStore((s) => s.runs[run.id]?.chrome);
+  const globalChrome = useStore((s) => s.settings.claudeChrome ?? false);
+  const chromeGuard = useChromeCommandGuard({
+    backend: participant.backend,
+    chromeOn: runChrome ?? globalChrome,
+    enableChrome: () => setRunChrome(run.id, true),
+    send: handleSend,
+  });
+
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
   // ChangesBar + Composer + StatsFooter stack reads the same as the
@@ -2137,10 +2151,11 @@ function HijackComposer({
         </div>
       )}
       {steerError && <div className="text-[11px] text-amber-500 px-0.5">{steerError}</div>}
+      {chromeGuard.banner}
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
-        onSend={handleSend}
+        onSend={chromeGuard.send}
         onStop={() => {
           if (convId) void stop(convId);
         }}
