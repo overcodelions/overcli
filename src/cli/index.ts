@@ -17,6 +17,7 @@ import path from 'node:path';
 
 import { HELP, parseArgs } from './args';
 import { EXIT, makeReporter, runFile, writeArtifacts } from './run';
+import { serveCommand } from './serve';
 
 function version(): string {
   try {
@@ -34,7 +35,7 @@ export async function main(argv: string[]): Promise<number> {
     process.stderr.write(`${parsed.error}\n\nTry: overcli --help\n`);
     return EXIT.BAD_INPUT;
   }
-  const { command, run: opts, warnings } = parsed.args;
+  const { command, run: opts, serve: serveOpts, warnings } = parsed.args;
 
   if (command === 'help') {
     process.stdout.write(HELP);
@@ -43,6 +44,15 @@ export async function main(argv: string[]): Promise<number> {
   if (command === 'version') {
     process.stdout.write(`${version()}\n`);
     return EXIT.OK;
+  }
+  if (command === 'serve') {
+    if (!serveOpts) return EXIT.BAD_INPUT;
+    for (const w of warnings) process.stderr.write(`! ${w}\n`);
+    // Returns a promise that settles only from a signal handler. The
+    // `process.exit(code)` in the module guard below is still correct — by the
+    // time this resolves both engines are disposed and the exit is the last
+    // thing left to do.
+    return serveCommand(serveOpts, { out: (line) => process.stdout.write(`${line}\n`) });
   }
   if (!opts) return EXIT.BAD_INPUT;
 
