@@ -3893,6 +3893,7 @@ export class FlowRuntimeImpl {
     const preamble = preambleNotes.length > 0 ? `\n\nNOTE: ${preambleNotes.join(' ')}` : '';
 
     return (
+      `${buildStepPromptTitle(run, step)}` +
       `${steerBlock}${retryBlock}${workerAnswerBlock}${workerBoundary}${workerSupervision}${systemPrompt}${preamble}\n\n---\n\nINPUTS:\n\n${inputs}\n\n---\n\n` +
       `Proceed with your task now. Remember to wrap your final deliverable in ` +
       `<output name="${step.output}">…</output>.`
@@ -4416,6 +4417,37 @@ export function workerPromptWritesToPersistentRoot(prompt: string, sourceRoot: s
     );
     if (destination.test(before)) return true;
   }
+}
+
+/// First line of every step prompt: a short, human-readable name for the
+/// turn. Assistant CLIs that keep their own conversation list (Codex most
+/// visibly) title a thread from the opening line of its first message, and
+/// the runtime policy blocks that used to lead every prompt made every
+/// entry in that sidebar read "WORKER RUN FILE BOUNDARY — RUNTIME POLICY…".
+/// A one-line label costs nothing in the prompt and makes those lists
+/// legible: flow, step, and a gist of what the user actually asked for.
+export function buildStepPromptTitle(
+  run: Pick<FlowRun, 'flowSnapshot' | 'userPrompt'>,
+  step: Pick<FlowStep, 'id' | 'role'>,
+): string {
+  const flowName = run.flowSnapshot?.name?.trim() || run.flowSnapshot?.id?.trim() || 'flow';
+  const parts = [`Overcli · ${flowName} · ${step.id} (${step.role})`];
+  const gist = summarizeForTitle(run.userPrompt, 64);
+  if (gist) parts.push(gist);
+  return `${parts.join(' — ')}\n\n`;
+}
+
+/// Collapse a (possibly multi-paragraph) prompt to a single short phrase.
+/// Markdown headings/bullets and quoting lose their leading punctuation so
+/// the title reads as words rather than syntax.
+function summarizeForTitle(text: string | undefined, max: number): string {
+  const firstLine = (text ?? '')
+    .split('\n')
+    .map((l) => l.replace(/^[\s>#*\-–—`]+/, '').trim())
+    .find((l) => l.length > 0);
+  if (!firstLine) return '';
+  const flat = firstLine.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
 }
 
 /// Runtime policy prepended to every step of an isolated worker-owned run.
