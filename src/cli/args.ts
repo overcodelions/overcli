@@ -57,9 +57,25 @@ export interface RunOptions {
   timeoutSeconds: number;
 }
 
+/// `overcli serve`. Deliberately a different shape from `RunOptions` rather
+/// than `RunOptions` with an empty `file`: a daemon has no file, no cwd, no
+/// artifacts directory and no timeout, and a shared type would have to make
+/// all of those optional for one caller and then re-check them for the other.
+/// The three flags it does take mean exactly what they mean for `run`, and
+/// share the same parsing helpers below so they cannot drift.
+export interface ServeOptions {
+  /// Persistent state root. Unlike `run`, absent does NOT mean a throwaway
+  /// directory — it means `$OVERCLI_HOME` / `~/.overcli`, because a daemon
+  /// whose schedules and workers vanished on restart would be pointless.
+  stateDir?: string;
+  permissions: PermissionPolicy;
+  allowTools: string[];
+}
+
 export interface ParsedArgs {
-  command: 'run' | 'help' | 'version';
+  command: 'run' | 'serve' | 'help' | 'version';
   run?: RunOptions;
+  serve?: ServeOptions;
   /// Non-fatal complaints about the arguments themselves, printed before the
   /// run starts. A flag we accept but that cannot do anything in this context
   /// belongs here rather than in a failure.
@@ -94,6 +110,98 @@ export function defaultCwd(env: NodeJS.ProcessEnv, processCwd: string): string {
   return env.GITHUB_WORKSPACE?.trim() || env.WORKSPACE?.trim() || processCwd;
 }
 
+/// Shared by `run` and `serve` so the two can never disagree about what a
+/// policy name is.
+function parsePermissionPolicy(value: string): PermissionPolicy | ParseFailure {
+  if (!PERMISSION_POLICIES.includes(value as PermissionPolicy)) {
+    return {
+      ok: false,
+      error: `--permissions must be one of ${PERMISSION_POLICIES.join(', ')} (got "${value}").`,
+    };
+  }
+  return value as PermissionPolicy;
+}
+
+/// Repeatable, and also comma-splittable so one CI variable can carry the
+/// whole list.
+function pushAllowTools(into: string[], value: string): void {
+  into.push(...value.split(',').map((s) => s.trim()).filter(Boolean));
+}
+
+/// The two complaints about `--allow-tool` that are worth making but not
+/// worth failing over. Identical for `run` and `serve`.
+function allowToolWarnings(permissions: PermissionPolicy, allowTools: string[]): string[] {
+  const out: string[] = [];
+  if (allowTools.length > 0 && permissions !== 'allow-list') {
+    out.push(
+      `--allow-tool only applies under --permissions allow-list; ignoring ${allowTools.length} of them.`,
+    );
+  }
+  if (permissions === 'allow-list' && allowTools.length === 0) {
+    out.push(
+      '--permissions allow-list with no --allow-tool denies everything, same as --permissions deny.',
+    );
+  }
+  return out;
+}
+
+/// The flags `serve` accepts. Everything else `run` takes is about a single
+/// file-shaped run and has no meaning for a process that outlives every run
+/// it starts, so those are refused by name rather than silently ignored.
+const SERVE_FLAGS = new Set(['--state-dir', '--permissions', '--allow-tool']);
+
+function parseServe(rest: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
+  const opts: ServeOptions = { permissions: 'deny', allowTools: [] };
+
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (!arg.startsWith('--')) {
+      return { ok: false, error: `overcli serve takes no file arguments (got "${arg}").` };
+    }
+    let name = arg;
+    let inlineValue: string | undefined;
+    const eq = arg.indexOf('=');
+    if (eq !== -1) {
+      name = arg.slice(0, eq);
+      inlineValue = arg.slice(eq + 1);
+    }
+    if (!SERVE_FLAGS.has(name)) {
+      return {
+        ok: false,
+        error: FLAGS_WITH_VALUES.has(name) || name === '--json'
+          ? `${name} is a "run" option; overcli serve takes ${[...SERVE_FLAGS].join(', ')}.`
+          : `Unknown option "${name}".`,
+      };
+    }
+    const value = inlineValue ?? rest[++i];
+    if (value === undefined) return { ok: false, error: `${name} needs a value.` };
+
+    switch (name) {
+      case '--state-dir':
+        opts.stateDir = value;
+        break;
+      case '--permissions': {
+        const policy = parsePermissionPolicy(value);
+        if (typeof policy !== 'string') return policy;
+        opts.permissions = policy;
+        break;
+      }
+      case '--allow-tool':
+        pushAllowTools(opts.allowTools, value);
+        break;
+    }
+  }
+
+  return {
+    ok: true,
+    args: {
+      command: 'serve',
+      serve: opts,
+      warnings: allowToolWarnings(opts.permissions, opts.allowTools),
+    },
+  };
+}
+
 export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | ParseFailure {
   const warnings: string[] = [];
   if (argv.length === 0 || argv[0] === 'help' || argv[0] === '--help' || argv[0] === '-h') {
@@ -102,8 +210,12 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | Pars
   if (argv[0] === '--version' || argv[0] === '-v' || argv[0] === 'version') {
     return { ok: true, args: { command: 'version', warnings } };
   }
+  if (argv[0] === 'serve') return parseServe(argv.slice(1));
   if (argv[0] !== 'run') {
-    return { ok: false, error: `Unknown command "${argv[0]}". Try: overcli run <file.yaml>` };
+    return {
+      ok: false,
+      error: `Unknown command "${argv[0]}". Try: overcli run <file.yaml>, or overcli serve.`,
+    };
   }
 
   const rest = argv.slice(1);
@@ -152,19 +264,13 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | Pars
         opts.input = value;
         break;
       case '--permissions': {
-        if (!PERMISSION_POLICIES.includes(value as PermissionPolicy)) {
-          return {
-            ok: false,
-            error: `--permissions must be one of ${PERMISSION_POLICIES.join(', ')} (got "${value}").`,
-          };
-        }
-        opts.permissions = value as PermissionPolicy;
+        const policy = parsePermissionPolicy(value);
+        if (typeof policy !== 'string') return policy;
+        opts.permissions = policy;
         break;
       }
       case '--allow-tool':
-        // Repeatable, and also comma-splittable so one CI variable can carry
-        // the whole list.
-        opts.allowTools.push(...value.split(',').map((s) => s.trim()).filter(Boolean));
+        pushAllowTools(opts.allowTools, value);
         break;
       case '--state-dir':
         opts.stateDir = value;
@@ -214,16 +320,7 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | Pars
   }
   opts.file = positional[0];
 
-  if (opts.allowTools.length > 0 && opts.permissions !== 'allow-list') {
-    warnings.push(
-      `--allow-tool only applies under --permissions allow-list; ignoring ${opts.allowTools.length} of them.`,
-    );
-  }
-  if (opts.permissions === 'allow-list' && opts.allowTools.length === 0) {
-    warnings.push(
-      '--permissions allow-list with no --allow-tool denies everything, same as --permissions deny.',
-    );
-  }
+  warnings.push(...allowToolWarnings(opts.permissions, opts.allowTools));
 
   return { ok: true, args: { command: 'run', run: opts, warnings } };
 }
@@ -231,13 +328,17 @@ export function parseArgs(argv: string[]): { ok: true; args: ParsedArgs } | Pars
 export const HELP = `overcli — run a flow or a worker without the desktop app
 
 USAGE
-  overcli run <file.yaml> [options]
+  overcli run <file.yaml> [options]   One flow or worker, then exit.
+  overcli serve [options]             Stay up and run your saved schedules
+                                      and standing workers. No file: the
+                                      work comes from --state-dir.
 
-OPTIONS
+RUN OPTIONS
   --cwd DIR              Project to run in. Default: $GITHUB_WORKSPACE, then
                          $WORKSPACE, then the current directory.
   --input TEXT           The run's user_prompt. Optional for a worker.
-  --permissions POLICY   deny (default) | allow-list | auto-approve.
+  --permissions POLICY   deny (default) | allow-list | auto-approve. Same
+                         flag, same meaning, under serve.
                          There is no human here, so every tool request gets an
                          answer: deny says no to all of them, allow-list says
                          yes only to --allow-tool names, auto-approve says yes.
@@ -262,6 +363,21 @@ OPTIONS
   --timeout SECONDS      Abort the run after this long. Default: no limit.
   --json                 One JSON summary on stdout; progress on stderr.
 
+SERVE OPTIONS
+  --state-dir DIR        Which saved schedules and workers to run, and where
+                         the daemon keeps their journals. Default:
+                         $OVERCLI_HOME, then ~/.overcli — the same state the
+                         desktop app uses, NOT a throwaway directory.
+  --permissions POLICY   deny (default) | allow-list | auto-approve. Means
+                         exactly what it means for run, and matters more: a
+                         daemon fires unattended work for as long as it is
+                         up. deny is the safe default and keeps it that way.
+  --allow-tool NAME      Repeatable, comma-splittable. allow-list only.
+
+  Only one daemon may hold a --state-dir at a time; a second refuses rather
+  than double-firing every schedule. Ctrl-C or SIGTERM shuts it down and
+  exits 0; a second signal forces the exit.
+
 ENVIRONMENT
   OVERCLI_HOME           State root when --state-dir is absent.
                          Default: ~/.overcli
@@ -272,4 +388,7 @@ EXIT CODES
   0 the run finished and succeeded      3 preflight failed
   1 the run finished and failed         4 bad arguments or unreadable file
   2 the run needs a human (paused)      5 timed out
+
+  serve uses 0 when a signal shut it down cleanly, 1 if it could not start
+  (another daemon already holds the --state-dir), and 4 for bad arguments.
 `;
