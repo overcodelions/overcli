@@ -538,3 +538,125 @@ describe('lastWebhookDelivery', () => {
     expect(lastWebhookDelivery()).toBeNull();
   });
 });
+
+/// Secret scrubbing at the egress point.
+///
+/// These assert on the ACTUAL request body the mocked transport received, not
+/// on an internal call — the whole claim being tested is that nothing reaches
+/// the wire, so an assertion on an internal helper would prove nothing.
+///
+/// Every credential below is synthetic. `AKIAIOSFODNN7EXAMPLE` is AWS's own
+/// published documentation placeholder.
+describe('sendWebhookNotification — secret scrubbing', () => {
+  const AKIA = 'AKIAIOSFODNN7EXAMPLE';
+
+  /// The parsed JSON body of the Nth fetch call.
+  function bodyOf(call = 0): { text: string; title: string; body: string } {
+    const [, init] = fetchMock.mock.calls[call] as [string, RequestInit];
+    return JSON.parse(init.body as string);
+  }
+
+  it('redacts a credential in the body before the request is made', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    postWebhookNotification({
+      title: 'nightly failed',
+      body: `deploy step exited 1: The security token ${AKIA} is invalid`,
+      kind: 'failure',
+    });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const sent = bodyOf();
+    // All three fields, because `text` is composed from the other two.
+    expect(sent.body).toBe(
+      'deploy step exited 1: The security token [REDACTED:aws-access-key-id] is invalid',
+    );
+    expect(sent.text).toBe(
+      'nightly failed: deploy step exited 1: The security token [REDACTED:aws-access-key-id] is invalid',
+    );
+    expect(sent.title).toBe('nightly failed');
+    // The load-bearing assertion: the raw value is nowhere on the wire.
+    expect(init0Serialized()).not.toContain(AKIA);
+  });
+
+  /// The entire serialized request, for the "it is nowhere" assertions.
+  function init0Serialized(): string {
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return `${url}\n${JSON.stringify(init.headers)}\n${String(init.body)}`;
+  }
+
+  it('redacts a credential in the TITLE too', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    postWebhookNotification({ title: `run ${AKIA} failed`, body: 'see log' });
+    await flush();
+    expect(bodyOf().title).toBe('run [REDACTED:aws-access-key-id] failed');
+    expect(init0Serialized()).not.toContain(AKIA);
+  });
+
+  it('counts a secret once when it appears in both fields of the composed text', async () => {
+    // `text` is built from title and body, so scrubbing the composed string
+    // instead of the two fields would report double.
+    settings.current = { notificationWebhookUrl: URL_OK };
+    postWebhookNotification({ title: `run ${AKIA}`, body: `key ${AKIA}` });
+    await flush();
+    const warn = logged.entries.filter((e) => e.level === 'warn');
+    expect(warn).toHaveLength(1);
+    expect(warn[0].message).toContain('Redacted 2 suspected secret value(s)');
+  });
+
+  it('redacts the webhook auth token itself if a receiver echoes it back', async () => {
+    // A 401 body that quotes the offending header is the realistic way this
+    // happens. No pattern rule knows this token's shape — it is caught purely
+    // because it is the credential we hold.
+    const token = 'tk_shapeless-opaque-value-9271';
+    settings.current = { notificationWebhookUrl: URL_OK };
+    secrets.token = token;
+    postWebhookNotification({ title: 'webhook failed', body: `401 rejected: ${token}` });
+    await flush();
+
+    expect(bodyOf().body).toBe('401 rejected: [REDACTED:known-secret]');
+    // The header still carries the real token — that is the point of the
+    // header. Only the payload is scrubbed.
+    expect(headersOf()).toMatchObject({ Authorization: token });
+    expect(String(fetchMock.mock.calls[0][1].body)).not.toContain(token);
+  });
+
+  it('redacts a credential-shaped environment variable, whatever its format', async () => {
+    const value = 'shapeless-prod-db-pw-4471';
+    process.env.PROMETHEUS_TEST_DB_PASSWORD = value;
+    try {
+      settings.current = { notificationWebhookUrl: URL_OK };
+      postWebhookNotification({ title: 'shift failed', body: `connect refused using ${value}` });
+      await flush();
+      expect(bodyOf().body).toBe('connect refused using [REDACTED:known-secret]');
+    } finally {
+      delete process.env.PROMETHEUS_TEST_DB_PASSWORD;
+    }
+  });
+
+  it('warns at warn level and never puts the value in the log line', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    postWebhookNotification({ title: 'failed', body: `token is ${AKIA}` });
+    await flush();
+
+    const warn = logged.entries.filter((e) => e.level === 'warn');
+    expect(warn).toHaveLength(1);
+    expect(warn[0].message).toContain('Redacted 1 suspected secret value(s)');
+    expect(warn[0].message).not.toContain(AKIA);
+  });
+
+  it('redacts instead of blocking — the notification still goes and still succeeds', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    const res = await sendWebhookNotification(URL_OK, { title: 'a', body: `b ${AKIA}` });
+    expect(res).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('says nothing and changes nothing when there is no secret', async () => {
+    settings.current = { notificationWebhookUrl: URL_OK };
+    postWebhookNotification({ title: 'nightly', body: 'the API token was missing; 3 queued' });
+    await flush();
+    expect(bodyOf().body).toBe('the API token was missing; 3 queued');
+    expect(logged.entries.filter((e) => e.level === 'warn')).toHaveLength(0);
+  });
+});

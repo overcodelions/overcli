@@ -37,6 +37,7 @@
 
 import { log } from './diagnostics';
 import { host, type NotifyArgs, type NotifyKind } from './host';
+import { collectKnownSecretValues, redactSecrets } from './secretScrub';
 import { Store } from './store';
 
 export type WebhookNotifyArgs = NotifyArgs;
@@ -216,6 +217,11 @@ export function configuredWebhookUrl(): string | null {
 /// `Bearer tk_...` while a raw opaque token is equally legal elsewhere, so
 /// guessing silently breaks one of the two with an error the user cannot
 /// diagnose from the receiver's end. What you paste is what goes out.
+///
+/// Every field of the payload is scrubbed for credentials first — this is the
+/// single choke point both delivery routes converge on, so it is the only edit
+/// that covers `postWebhookNotification` and the Settings "Send test" button
+/// alike. Scrubbing never blocks or drops a notification.
 export async function sendWebhookNotification(
   url: string,
   args: WebhookNotifyArgs,
@@ -225,6 +231,40 @@ export async function sendWebhookNotification(
   // leaves no stray timer behind.
   const refusal = transportRefusal(url, Boolean(auth?.token));
   if (refusal) return { ok: false, error: refusal };
+
+  // The one place a notification leaves the machine, so the one place worth
+  // inspecting what is in it. The callers hand this function raw text —
+  // `scheduler.ts:419` and `:457` pass `body: res.error` straight through, and
+  // a dozen `workerEngine.ts` sites do the same — so a credential printed by a
+  // failing build or echoed by a git command reaches an arbitrary URL unless
+  // it is caught here. See `secretScrub.ts`.
+  //
+  // The token is taken from `auth` rather than re-read from the keychain: it is
+  // already in hand, and threading it this way keeps the scrub a function of
+  // this call's own arguments. It matters because a receiver that answers 401
+  // with the offending header quoted back would otherwise have us POST our own
+  // credential to it on the next notification.
+  //
+  // Scrubbed field by field, BEFORE `text` is composed. Composing first would
+  // count every secret twice, since `text` is built from these same two
+  // strings — and the count is the only thing the warning below can honestly
+  // report.
+  const knownSecrets = collectKnownSecretValues(process.env, [auth?.token]);
+  const title = redactSecrets(args.title, knownSecrets);
+  const body = redactSecrets(args.body, knownSecrets);
+  const redactedCount = title.redactedCount + body.redactedCount;
+  if (redactedCount > 0) {
+    // Redact, don't fail: the notification still goes, unchanged in every other
+    // respect. The count is deliberately all that is said — naming the value,
+    // or quoting its context, would re-leak it into the diagnostics log this
+    // line exists to keep clean.
+    log(
+      'warn',
+      'webhook.notify',
+      `Redacted ${redactedCount} suspected secret value(s) from a webhook notification before sending.`,
+    );
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
   // A pending timer keeps a headless `overcli run` alive past its own exit.
@@ -239,9 +279,9 @@ export async function sendWebhookNotification(
         ...(auth ? { [auth.header]: auth.token } : {}),
       },
       body: JSON.stringify({
-        text: `${args.title}: ${args.body}`,
-        title: args.title,
-        body: args.body,
+        text: `${title.text}: ${body.text}`,
+        title: title.text,
+        body: body.text,
       }),
       signal: controller.signal,
     });
