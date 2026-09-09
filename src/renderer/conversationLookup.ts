@@ -116,6 +116,7 @@ function synthesizeFlowConversation(
     turnCount: 0,
     currentModel: model,
     permissionMode: 'bypassPermissions',
+    chrome: run.chrome,
     hidden: true,
     primaryBackend: backend,
     ...(backend === 'claude' ? { claudeModel: model } : {}),
