@@ -2232,6 +2232,9 @@ export interface IPCInvokeMap {
     participantId: string;
     model: string | null;
   }) => { ok: true } | { ok: false; error: string };
+  /// Set (or clear) Claude in Chrome on a live run. Pass `null` to fall
+  /// back to the global `claudeChrome` setting.
+  'flows:setChrome': (args: { runId: UUID; chrome: boolean | null }) => { ok: true } | { ok: false; error: string };
   /// Give a run its own display title (sidebar + library rows). Works at
   /// any point in a run's life — including mid-flight, which is when a
   /// user most wants to label what's in the list. Pass an empty string to
