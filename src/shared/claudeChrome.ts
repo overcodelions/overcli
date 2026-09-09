@@ -41,3 +41,45 @@ const CHROME_UNAVAILABLE_RE = /^\s*\/chrome\s+isn't\s+available\s+in\s+this\s+en
 export function isChromeUnavailableNotice(text: string): boolean {
   return CHROME_UNAVAILABLE_RE.test(text);
 }
+
+/// What to do with a composer submission that starts with `/chrome`.
+///
+/// `/chrome` is intercepted by the CLI before the model is ever invoked —
+/// the reply comes back as local command output, not a turn — and the
+/// picker ignores whatever follows it. So `/chrome navigate to cnn` is a
+/// guaranteed no-op: it costs a round trip, answers with the constant line
+/// matched above, and does this with the setting on or off. The browser
+/// TOOLS are what actually does the work, and they take plain prose.
+///
+/// Hence: rewrite the submission to its prose when the tools are attached,
+/// and when they aren't, hold it and offer the switch — sending the prose
+/// into a session with no browser tools just relocates the dead end, and
+/// silently dropping the `/chrome` there would also drop the one prompt
+/// the user gets to turn it on.
+export type ChromeCommandVerdict =
+  | { kind: 'pass' }
+  /// Send `prose` in place of what was typed; the tools are attached.
+  | { kind: 'rewrite'; prose: string }
+  /// Don't send. Offer to enable Chrome and then send `prose`.
+  | { kind: 'blocked'; prose: string };
+
+/// Case-sensitive, and requiring whitespace before the prose, so this
+/// matches exactly what the CLI itself intercepts. `/CHROME foo` and
+/// `/chromecast` are NOT slash commands to it — they reach the model as
+/// ordinary prompts, and rewriting them here would corrupt a real message.
+const CHROME_COMMAND_RE = /^\s*\/chrome[ \t]+([\s\S]*\S)\s*$/;
+
+export function chromeCommandVerdict(
+  text: string,
+  opts: { backend?: string; chromeOn: boolean },
+): ChromeCommandVerdict {
+  // Only claude has this command; every other backend takes `/chrome …`
+  // as prose already.
+  if (opts.backend !== 'claude') return { kind: 'pass' };
+  // A bare `/chrome` is a real request for the picker, not a misdirected
+  // instruction. Leave it alone — the CLI's reply plus `ChromeNotice`
+  // already explain that case correctly.
+  const prose = CHROME_COMMAND_RE.exec(text)?.[1];
+  if (!prose) return { kind: 'pass' };
+  return opts.chromeOn ? { kind: 'rewrite', prose } : { kind: 'blocked', prose };
+}
