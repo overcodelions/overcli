@@ -53,6 +53,10 @@ const RAW_PROMPT_SIGNATURE = /wrap your final deliverable in <output name=/;
 // Boundary strings that must stay in sync with buildStepPrompt /
 // artifactInstruction in the main process.
 const OUTPUT_CONTRACT_HEADING = 'IMPORTANT — output contract:';
+// Opening line buildStepPromptTitle writes so assistant CLIs that name a
+// thread from its first message get a legible name. It's a label for those
+// sidebars, not something the user asked for, so it's dropped here.
+const RAW_TITLE_LINE = /^Overcli · [^\n]*\n+/;
 const INPUTS_DELIMITER = '\n\n---\n\nINPUTS:\n\n';
 const PROCEED_DELIMITER = '\n\n---\n\nProceed with your task now.';
 
@@ -133,7 +137,8 @@ function fromMarkers(body: string): FlowStepContent {
   };
 }
 
-function fromRawPrompt(raw: string): FlowStepContent {
+function fromRawPrompt(rawWithTitle: string): FlowStepContent {
+  const raw = rawWithTitle.replace(RAW_TITLE_LINE, '');
   // Split system-prompt portion from the inputs block.
   const inputsAt = raw.indexOf(INPUTS_DELIMITER);
   const sysPart = inputsAt >= 0 ? raw.slice(0, inputsAt) : raw;
