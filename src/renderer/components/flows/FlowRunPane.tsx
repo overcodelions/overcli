@@ -36,6 +36,7 @@ import { Markdown } from '../Markdown';
 import { CopyActions } from '../CopyActions';
 import { openPathWithHighlight, useOpenFile } from '../../openFile';
 import { ChangesBar, type FileChangeSummary } from '../ChangesBar';
+import { useChromeCommandGuard } from '../ChromeCommandGuard';
 import { CompactButton } from '../CompactButton';
 import { ContextMeter } from '../ContextMeter';
 import { FileTree } from '../FileTree';
@@ -251,6 +252,7 @@ export function FlowRunPane({ runId }: { runId: string }) {
                 participant={activeParticipant}
               />
             )}
+            {activeParticipant?.backend === 'claude' && <RunChromeToggle runId={run.id} />}
             {(run.worktreePath || (run.workspaceWorktrees?.length ?? 0) > 0) && (
               <button
                 onClick={() => setFilesOpen((v) => !v)}
@@ -2084,6 +2086,7 @@ function HijackComposer({
       // otherwise. The user can be more conservative by adjusting
       // settings; runtime's preflight already gated the run.
       permissionMode: 'bypassPermissions',
+      chrome: run.chrome,
       attachments,
     });
     // Tell the run the user just drove it. Both kinds of turn count — a
@@ -2098,6 +2101,19 @@ function HijackComposer({
 
   const handleSend = (prompt: string, attachments: Attachment[]) =>
     sendTurn(prompt, attachments, true);
+
+  // `/chrome <prose>` never reaches the model — rewrite it, or offer the
+  // switch when this run's browser tools aren't attached. Scoped to the run
+  // rather than the conversation: that's where a flow's override lives.
+  const setRunChrome = useFlowsStore((s) => s.setRunChrome);
+  const runChrome = useFlowsStore((s) => s.runs[run.id]?.chrome);
+  const globalChrome = useStore((s) => s.settings.claudeChrome ?? false);
+  const chromeGuard = useChromeCommandGuard({
+    backend: participant.backend,
+    chromeOn: runChrome ?? globalChrome,
+    enableChrome: () => setRunChrome(run.id, true),
+    send: handleSend,
+  });
 
   // Padding + chrome mirror ConversationPane's composer wrapper
   // (`px-4 pb-3 pt-1 flex flex-col gap-1.5`, no top border) so the
@@ -2135,10 +2151,11 @@ function HijackComposer({
         </div>
       )}
       {steerError && <div className="text-[11px] text-amber-500 px-0.5">{steerError}</div>}
+      {chromeGuard.banner}
       <Composer
         draftKey={draftKey}
         historyConvId={convId}
-        onSend={handleSend}
+        onSend={chromeGuard.send}
         onStop={() => {
           if (convId) void stop(convId);
         }}
@@ -2182,6 +2199,36 @@ function HijackComposer({
         isRunning={isRunning}
       />
     </div>
+  );
+}
+
+/// Claude in Chrome for this run. Two states only: the button reports the
+/// effective setting and flips it, so the run always ends up explicitly
+/// on or off rather than silently inheriting. Claude-only — no other
+/// backend takes `--chrome`.
+function RunChromeToggle({ runId }: { runId: string }) {
+  const setRunChrome = useFlowsStore((s) => s.setRunChrome);
+  const runChrome = useFlowsStore((s) => s.runs[runId]?.chrome);
+  const globalOn = useStore((s) => s.settings.claudeChrome ?? false);
+  const on = runChrome ?? globalOn;
+  return (
+    <button
+      onClick={() => void setRunChrome(runId, !on)}
+      className={
+        'flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] transition ' +
+        (on
+          ? 'border-accent/25 bg-accent/[0.08] text-ink hover:bg-accent/[0.14]'
+          : 'border-card/60 bg-card/20 text-ink-muted hover:bg-card/40 hover:text-ink')
+      }
+      title={
+        on
+          ? 'Claude in Chrome is on for this run — turns can drive your browser. Takes effect on the next turn.'
+          : 'Claude in Chrome is off for this run. Turn it on to give this run browser tools.'
+      }
+    >
+      <span className="text-[10px] uppercase tracking-wider text-ink-faint">Chrome</span>
+      <span>{on ? 'on' : 'off'}</span>
+    </button>
   );
 }
 

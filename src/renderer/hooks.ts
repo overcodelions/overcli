@@ -53,6 +53,16 @@ export function useSlashCommands(
       if (byName.has(name)) continue;
       byName.set(name, { name });
     }
+    // `/chrome` arrives from the live init list with no description, so the
+    // menu offered it as if it worked. Headless it never runs: the CLI
+    // answers it locally with a constant line and the model is never
+    // invoked. Annotate rather than hide it — a bare `/chrome` is still a
+    // legitimate thing to type, and `chromeCommandVerdict` catches the
+    // `/chrome <instruction>` case at submit.
+    const chrome = byName.get('chrome');
+    if (backend === 'claude' && chrome && !chrome.description) {
+      byName.set('chrome', { ...chrome, description: 'interactive only — ask in prose instead' });
+    }
     return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [capabilities, events, backend, lastInit]);
 }

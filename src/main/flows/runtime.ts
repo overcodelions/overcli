@@ -1847,6 +1847,7 @@ export class FlowRuntimeImpl {
       model: effectiveParticipantModel(run, prior.participantId),
       permissionMode: 'default',
       flowStep: true,
+      chrome: run.chrome,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -2742,6 +2743,20 @@ export class FlowRuntimeImpl {
     return { ok: true };
   }
 
+  /// Set (or clear) Claude in Chrome for this run. Spawn-time on the CLI,
+  /// so the next turn respawns with `--chrome` — which is what we want,
+  /// since the extension attaches at startup.
+  setChrome(runId: UUID, chrome: boolean | null): { ok: true } | { ok: false; error: string } {
+    const run = this.runs.get(runId);
+    if (!run) return { ok: false, error: `Run ${runId} not found.` };
+    const next = chrome ?? undefined;
+    if (run.chrome === next) return { ok: true };
+    run.chrome = next;
+    this.checkpoint(run);
+    this.emitRunUpdate(run);
+    return { ok: true };
+  }
+
   /// Give a run its own display title. Purely cosmetic — nothing in the
   /// runtime reads it — so it's safe at any point in a run's life,
   /// including mid-step. An empty/blank title clears the override and the
@@ -2952,6 +2967,7 @@ export class FlowRuntimeImpl {
       permissionMode: this.resolvePermissionMode(run, step),
       // Runtime-driven, not a user hijack — see SendArgs.flowStep.
       flowStep: true,
+      chrome: run.chrome,
       turbo: step.turbo,
       reviewBackend: step.rebound?.critic.backend ?? null,
       reviewMode: step.rebound?.mode ?? null,
@@ -3072,6 +3088,7 @@ export class FlowRuntimeImpl {
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, next),
       turbo: next.turbo,
+      chrome: run.chrome,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,
@@ -3539,6 +3556,7 @@ export class FlowRuntimeImpl {
       model: stepModel.model,
       permissionMode: this.resolvePermissionMode(run, step),
       flowStep: true,
+      chrome: run.chrome,
       reviewBackend: null,
       reviewMode: null,
       reviewModel: null,

@@ -2968,7 +2968,15 @@ export const useStore = create<StoreState>((set, get) => ({
     await saveConversationState(get);
   },
   async setChrome(id, chrome) {
+    // Flow-run conversations are synthesized, so `mutateConversation` is a
+    // no-op for them — the override lives on the run instead.
+    const hit = findConvLocation(lookupSource(get()), id);
+    if (hit?.kind === 'flow') {
+      await useFlowsStore.getState().setRunChrome(hit.run.id, chrome ?? null);
+      return;
+    }
     mutateConversation(set, get, id, (c) => ({ ...c, chrome }));
+    await saveConversationState(get);
   },
 
   async setTurbo(id, turbo) {

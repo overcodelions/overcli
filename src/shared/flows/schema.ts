@@ -394,6 +394,11 @@ export interface FlowRun {
   /// Persisted with the run, so the upgrade survives an app restart.
   /// `resolveRunStepModel` / `effectiveParticipantModel` are the readers.
   modelOverrides?: Record<string, string>;
+  /// Claude in Chrome for this run, set after launch from the run pane.
+  /// Undefined inherits the global `claudeChrome` setting. Applies to every
+  /// claude turn the run drives — steps, the finalize turn, output re-asks
+  /// and hijack chat — and persists with the run.
+  chrome?: boolean;
   artifacts: Record<string, FlowArtifact>;
   /// Launched with no human present, by a launcher enforcing its own
   /// permission policy (the `overcli` CLI). Clamps `resolvePermissionMode` so
