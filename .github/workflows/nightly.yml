@@ -58,7 +58,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # macOS is pinned rather than `macos-latest`, for the same reason as
+        # release.yml: the macos-26 image (provisioner 20260828.587) fails
+        # signing at `security set-key-partition-list` with "SecKeychainUnlock:
+        # the user name or passphrase you entered is not correct". Nightly was
+        # failing intermittently because `macos-latest` landed on the old image
+        # (20260707.563) some nights and the new one others. Revisit when a
+        # later image or electron-builder release fixes it.
+        os: [macos-15, windows-latest, ubuntu-latest]
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
