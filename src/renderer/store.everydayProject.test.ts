@@ -12,7 +12,9 @@ const initRepoResult = { current: { ok: true, branch: 'main' } as InvokeResult }
 const createEverydayProjectResult = {
   current: { ok: true, path: '/Users/x/Documents/Overcli Projects/Marketing copy review', historyOn: true } as InvokeResult,
 };
-const currentBranchResult = { current: { isRepo: true, branch: 'main' } as { isRepo: boolean; branch: string } };
+const currentBranchResult = {
+  current: { isRepo: true, branch: 'main' } as { isRepo: boolean; branch: string; probeFailed?: boolean },
+};
 const setMarkerResult = { current: { ok: true } as InvokeResult };
 const invoked: Array<{ channel: string; args: unknown }> = [];
 
@@ -93,6 +95,37 @@ describe('protectProject', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toBe('already has a history.');
     expect(invoked.some((c) => c.channel === 'git:currentBranch')).toBe(false);
+  });
+});
+
+describe('refreshProjectGitStatus', () => {
+  it('records the answer when git actually ran', async () => {
+    currentBranchResult.current = { isRepo: false, branch: '' };
+    useStore.setState({ projects: [project()] } as never);
+
+    await useStore.getState().refreshProjectGitStatus('proj-1' as never);
+
+    expect(useStore.getState().projectIsGitRepo['proj-1']).toBe(false);
+  });
+
+  it('leaves the entry alone when the probe never ran', async () => {
+    // A spawn failure reports `isRepo: false` too. Latching onto it framed
+    // real repos as non-code folders for the life of the window.
+    currentBranchResult.current = { isRepo: false, branch: '', probeFailed: true };
+    useStore.setState({ projects: [project()], projectIsGitRepo: { 'proj-1': true } } as never);
+
+    await useStore.getState().refreshProjectGitStatus('proj-1' as never);
+
+    expect(useStore.getState().projectIsGitRepo['proj-1']).toBe(true);
+  });
+
+  it('leaves the entry unknown when a failed probe is the first answer', async () => {
+    currentBranchResult.current = { isRepo: false, branch: '', probeFailed: true };
+    useStore.setState({ projects: [project()] } as never);
+
+    await useStore.getState().refreshProjectGitStatus('proj-1' as never);
+
+    expect(useStore.getState().projectIsGitRepo['proj-1']).toBeUndefined();
   });
 });
 

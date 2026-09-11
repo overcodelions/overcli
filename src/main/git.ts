@@ -1829,25 +1829,36 @@ export function restoreFileToHead(args: {
 /// invocation, no diff math, no file walks. Used by the
 /// base-branch-mismatch banner which only needs the branch name and is
 /// called on every conversation focus.
-export function currentBranch(cwd: string): { isRepo: boolean; branch: string } {
+export function currentBranch(cwd: string): BranchProbe {
   if (!cwd) return { isRepo: false, branch: '' };
   return readCurrentBranch(runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd));
 }
+
+/// Result of the cheap branch probe. `probeFailed` separates "we asked git
+/// and it said this isn't a repo" from "we never got an answer" — a spawn
+/// failure, a timeout, git missing. Both used to arrive as `isRepo: false`,
+/// and callers that treat that as "not a code project" then latch onto a
+/// transient failure (the startup burst spawns one git per project) and
+/// mis-frame a real repo until the window is restarted.
+export type BranchProbe = { isRepo: boolean; branch: string; probeFailed?: boolean };
 
 /// Async sibling of `currentBranch`, for the renderer. `runGit` is
 /// `spawnSync`, which stalls the single main-process thread for the whole
 /// invocation — including the `runner:send` IPC queued behind it. Cheap as
 /// this probe is, it sits on the path between the user hitting enter and the
 /// conversation appearing, so it does not get to block anything.
-export async function currentBranchAsync(
-  cwd: string,
-): Promise<{ isRepo: boolean; branch: string }> {
+export async function currentBranchAsync(cwd: string): Promise<BranchProbe> {
   if (!cwd) return { isRepo: false, branch: '' };
   return readCurrentBranch(await runGitAsync(['rev-parse', '--abbrev-ref', 'HEAD'], cwd));
 }
 
-function readCurrentBranch(res: GitResult): { isRepo: boolean; branch: string } {
-  if (res.exitCode !== 0) return { isRepo: false, branch: '' };
+function readCurrentBranch(res: GitResult): BranchProbe {
+  if (res.exitCode !== 0) {
+    // 128 is git's own "not a git repository" — a real answer. Anything
+    // else (notably -1, `runGitAsync`'s spawn-failure code) means the probe
+    // never ran, and saying "not a repo" would be a guess.
+    return { isRepo: false, branch: '', ...(res.exitCode === 128 ? {} : { probeFailed: true }) };
+  }
   const branch = res.stdout.trim();
   // Detached HEAD: in a repo, but on no branch.
   if (!branch || branch === 'HEAD') return { isRepo: !!branch, branch: '' };

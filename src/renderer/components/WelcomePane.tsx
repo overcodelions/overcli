@@ -202,6 +202,14 @@ export function WelcomePane() {
   // reports, investigate — rather than the build/code framing that fits a
   // git project. `true`/`undefined` keep the default coding framing.
   const projectIsGitRepo = useStore((s) => s.projectIsGitRepo);
+  const refreshProjectGitStatus = useStore((s) => s.refreshProjectGitStatus);
+  // Re-probe the project we're actually about to frame. `init` probes every
+  // project in one burst at startup and never again, so a single spawn
+  // failure there used to leave a real repo stuck on the non-code screen
+  // until the window was restarted. One git call on selection, and it heals.
+  useEffect(() => {
+    if (selectedProjectId) void refreshProjectGitStatus(selectedProjectId);
+  }, [selectedProjectId]);
   // "Not a git repo" was the app's only proxy for "not a code project", and
   // everyday projects invalidated it: they are git repos precisely so undo
   // works, which used to route the most non-technical folders in the app into
