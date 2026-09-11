@@ -1822,6 +1822,9 @@ export interface IPCInvokeMap {
   'git:currentBranch': (args: { cwd: string }) => {
     isRepo: boolean;
     branch: string;
+    /// The probe never ran (spawn failure, git missing). `isRepo: false`
+    /// here means "unknown", not "not a repo" — don't record it as fact.
+    probeFailed?: boolean;
   };
   'git:workspaceCommitStatus': (args: {
     projects: Array<{

@@ -3926,13 +3926,19 @@ export const useStore = create<StoreState>((set, get) => ({
       // hundred git processes saturating the machine while the window was
       // still trying to paint its first conversation.
       const res = await window.overcli.invoke('git:currentBranch', { cwd: project.path });
+      // A probe that never ran tells us nothing. Recording its `false` as
+      // fact is how a real repo ends up wearing the non-code framing
+      // ("What can we dig into in overdb?", the everyday-project offer) for
+      // the life of the window: `init` fires this for every project at once,
+      // one spawn each, and nothing re-probes afterwards. Leave the entry
+      // untouched — `undefined` already means "assume code project".
+      if (res.probeFailed) return;
       set((s) => ({
         projectIsGitRepo: { ...s.projectIsGitRepo, [projectId]: !!res.isRepo },
       }));
     } catch {
-      set((s) => ({
-        projectIsGitRepo: { ...s.projectIsGitRepo, [projectId]: false },
-      }));
+      /* Same reasoning: an IPC that threw is an unanswered probe, not a
+         verdict. Leave whatever we knew before. */
     }
   },
 
