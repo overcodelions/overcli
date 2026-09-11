@@ -1001,6 +1001,35 @@ function FlowsPane({ local, patch }: { local: AppSettings; patch: (p: Partial<Ap
           value={(local.defaultFlowRunIn ?? 'cwd') === 'worktree'}
           onChange={(v) => patch({ defaultFlowRunIn: v ? 'worktree' : 'cwd' })}
         />
+        <Row
+          label="Cost ceiling per run"
+          help="Stop a single run once it has spent this much, and notify. Leave empty for no ceiling. This is a stop-loss rather than a hard cap — cost is only known once a turn reports, so one very expensive turn can overshoot. Separate from the workers' monthly treasury, which only decides whether a new shift may start."
+        >
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-ink-faint">$</span>
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              placeholder="No ceiling"
+              value={local.maxRunCostUSD ?? ''}
+              onChange={(e) => {
+                // An empty field means "no ceiling", which is `undefined` and
+                // NOT 0 — storing 0 would read identically to the runtime but
+                // render as a literal `0` in the box, which looks like a
+                // ceiling of nothing rather than no ceiling at all.
+                const raw = e.target.value.trim();
+                if (raw === '') {
+                  patch({ maxRunCostUSD: undefined });
+                  return;
+                }
+                const parsed = Number(raw);
+                if (Number.isFinite(parsed) && parsed >= 0) patch({ maxRunCostUSD: parsed });
+              }}
+              className="field w-28 px-2 py-1 text-xs"
+            />
+          </div>
+        </Row>
       </Group>
       <FlowModelDefaultsPane local={local} patch={patch} />
       <FlowsRegistriesPane />

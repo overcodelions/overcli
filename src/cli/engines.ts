@@ -118,6 +118,13 @@ export function buildEngines(options: EngineOptions): HeadlessEngines {
     () => Store.load().projects,
     () => Store.load().settings,
     () => Store.load().workspaces,
+    // A cost-ceiling abort is the one notification a headless run cannot
+    // afford to lose — under `overcli serve` there is nobody at the machine
+    // by definition. Wrapped here for the same reason the worker engine's
+    // notify below is: this goes to the runtime DIRECTLY and never passes
+    // through `host().notify`, so without the wrap it reaches nobody. No
+    // notification passes through two wraps, so nothing double-posts.
+    withWebhookNotify(options.onNotify ?? (() => {})),
   );
 
   const orchestrator = new OrchestratorImpl(
