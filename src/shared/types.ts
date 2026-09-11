@@ -1096,6 +1096,25 @@ export interface AppSettings {
   /// every finished shift gets muted, and a muted channel is the same as no
   /// webhook — see `src/main/webhookNotify.ts`.
   notificationWebhookFilter?: 'all' | 'failures';
+  /// Hard USD ceiling for a SINGLE flow run. When a run's accumulated spend
+  /// (`FlowRun.costUSD`) crosses this, the runtime aborts it mid-execution
+  /// and fires a notification naming the flow, the cost and the ceiling.
+  /// Unset, zero, negative or NaN all mean off — which is the behaviour that
+  /// predates this field, and the default.
+  ///
+  /// Distinct from the treasury (`src/shared/flows/treasury.ts`): that is a
+  /// MONTHLY pool, drawn per worker, consulted before a new turn is allowed
+  /// to start. It never looks at a turn already in flight, so it cannot stop
+  /// one run looping overnight under `overcli serve`. This can.
+  ///
+  /// It is a stop-loss, not a hard cap. overcli drives backend CLIs as
+  /// subprocesses and only learns cost from their `result` events, so the
+  /// ceiling is checked AFTER a turn reports — a single very expensive turn
+  /// can overshoot it before anything can intervene.
+  ///
+  /// Deliberately absent from `DEFAULT_SETTINGS`: `undefined` already means
+  /// off, and every optional setting here follows that shape.
+  maxRunCostUSD?: number;
   /// Theme preference. 'system' follows the OS's dark-mode setting via
   /// the `prefers-color-scheme` media query.
   theme: ThemePreference;
