@@ -29,3 +29,24 @@ export function fileEditorRootFor(input: {
   if (input.detailMode === 'workers') return input.workerFilesRoot;
   return null;
 }
+
+/// Where ⌘P indexes. The finder answers the same question as the editor —
+/// "the place I'm looking at" — so it shares this precedence rather than
+/// keeping a second one that disagrees. The explorer wins when it's open
+/// (its pane replaces the editor's), then the run or worker's desk on
+/// screen, then the conversation.
+///
+/// Resolving from the conversation alone indexed the wrong repo inside a
+/// flow: the Flows and Workers views leave a conversation selected
+/// underneath, so a run out of a workspace symlink root (or its own
+/// worktree) listed whichever project that stale conversation belonged to.
+export function fileFinderRootFor(input: {
+  detailMode: string;
+  explorerRootPath: string | null;
+  runProjectPath: string | null;
+  workerFilesRoot: string | null;
+  conversationRoot: string | null;
+}): string | null {
+  if (input.explorerRootPath) return input.explorerRootPath;
+  return fileEditorRootFor(input) ?? input.conversationRoot;
+}

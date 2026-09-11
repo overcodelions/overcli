@@ -1,4 +1,7 @@
 import { useStore } from './store';
+import { useFlowsStore } from './flowsStore';
+import { useWorkersStore } from './workersStore';
+import { fileFinderRootFor } from './fileEditorRoot';
 import { isMac } from './platform';
 import { findContainerPath } from './conversationLookup';
 import { resolveNewConversationTarget } from './newConversationTarget';
@@ -75,9 +78,21 @@ function displayKey(key: string, mac: boolean): string {
 
 function resolveFileFinderRoot(): string | null {
   const state = useStore.getState();
+  const flows = useFlowsStore.getState();
+  const workers = useWorkersStore.getState();
+  const activeRun = flows.activeRunId ? flows.runs[flows.activeRunId] : undefined;
   const convId = state.selectedConversationId;
-  if (!convId) return null;
-  return findContainerPath(state, convId);
+  return fileFinderRootFor({
+    detailMode: state.detailMode,
+    explorerRootPath: state.explorerRootPath,
+    runProjectPath: activeRun?.projectPath ?? null,
+    workerFilesRoot: workers.selectedWorkerId
+      ? (workers.filesRoot[workers.selectedWorkerId] ?? null)
+      : null,
+    // Flow participants aren't in the plain conversation index; without the
+    // runs they resolve to nothing and ⌘P silently does nothing.
+    conversationRoot: convId ? findContainerPath({ ...state, flowRuns: flows.runs }, convId) : null,
+  });
 }
 
 /// Start a chat in the place the user is plainly in, and ask when there is no
