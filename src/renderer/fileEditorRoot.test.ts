@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fileEditorRootFor, flowRunPaneIsOnScreen } from './fileEditorRoot';
+import { fileEditorRootFor, fileFinderRootFor, flowRunPaneIsOnScreen } from './fileEditorRoot';
 
 const WORKER_ROOT = '/Users/x/Library/Application Support/overcli/workers/w1';
 const RUN_ROOT = '/Users/x/Library/Application Support/overcli/workspaces/abc';
@@ -55,5 +55,69 @@ describe('flowRunPaneIsOnScreen', () => {
   it('excludes views that do not', () => {
     expect(flowRunPaneIsOnScreen('conversation')).toBe(false);
     expect(flowRunPaneIsOnScreen('explorer')).toBe(false);
+  });
+});
+
+describe('fileFinderRootFor', () => {
+  const CONV_ROOT = '/Users/x/git/overcli';
+
+  it('indexes the run, not the conversation left selected underneath', () => {
+    expect(
+      fileFinderRootFor({
+        detailMode: 'flows',
+        explorerRootPath: null,
+        runProjectPath: RUN_ROOT,
+        workerFilesRoot: null,
+        conversationRoot: CONV_ROOT,
+      }),
+    ).toBe(RUN_ROOT);
+  });
+
+  it('indexes the worker desk with no run open', () => {
+    expect(
+      fileFinderRootFor({
+        detailMode: 'workers',
+        explorerRootPath: null,
+        runProjectPath: null,
+        workerFilesRoot: WORKER_ROOT,
+        conversationRoot: CONV_ROOT,
+      }),
+    ).toBe(WORKER_ROOT);
+  });
+
+  it('lets an open explorer win over everything', () => {
+    expect(
+      fileFinderRootFor({
+        detailMode: 'flows',
+        explorerRootPath: '/Users/x/git/other',
+        runProjectPath: RUN_ROOT,
+        workerFilesRoot: WORKER_ROOT,
+        conversationRoot: CONV_ROOT,
+      }),
+    ).toBe('/Users/x/git/other');
+  });
+
+  it('falls back to the conversation root in a chat', () => {
+    expect(
+      fileFinderRootFor({
+        detailMode: 'conversation',
+        explorerRootPath: null,
+        runProjectPath: RUN_ROOT,
+        workerFilesRoot: WORKER_ROOT,
+        conversationRoot: CONV_ROOT,
+      }),
+    ).toBe(CONV_ROOT);
+  });
+
+  it('has nothing to index with no place on screen', () => {
+    expect(
+      fileFinderRootFor({
+        detailMode: 'stats',
+        explorerRootPath: null,
+        runProjectPath: null,
+        workerFilesRoot: null,
+        conversationRoot: null,
+      }),
+    ).toBeNull();
   });
 });
