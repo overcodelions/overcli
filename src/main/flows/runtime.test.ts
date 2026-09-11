@@ -1809,3 +1809,146 @@ describe('FlowRuntimeImpl — chain provenance', () => {
     expect(run.chainParentRunId).toBeUndefined();
   });
 });
+
+describe('FlowRuntimeImpl — per-run cost ceiling', () => {
+  /// What these guard: `AppSettings.maxRunCostUSD` stops a run mid-execution
+  /// once it has spent too much, and says so. The interesting part is not the
+  /// comparison — it is WHAT is compared. `totalCostUSD` arrives cumulative
+  /// per conversation, and the runtime's step buffer resets at every step, so
+  /// the two obvious readings (sum the reports; diff against the buffer) both
+  /// produce a number that is not the run's spend. These drive the real event
+  /// path — `observeEvent` with a `stream` event carrying a `result` — rather
+  /// than poking the private total, so a regression in the accrual shows up
+  /// here and not only in production.
+
+  /// One `result` event reporting a conversation's cumulative spend.
+  function costEvent(conversationId: string, totalCostUSD: number) {
+    return {
+      type: 'stream' as const,
+      conversationId: conversationId as never,
+      events: [
+        {
+          id: `ev-${totalCostUSD}`,
+          timestamp: Date.now(),
+          raw: '',
+          revision: 0,
+          kind: {
+            type: 'result' as const,
+            info: {
+              subtype: 'success',
+              isError: false,
+              durationMs: 10,
+              totalCostUSD,
+              modelUsage: {},
+            },
+          },
+        },
+      ],
+    };
+  }
+
+  async function startRunWith(maxRunCostUSD: number | undefined) {
+    const notify = vi.fn();
+    const rt = new FlowRuntimeImpl(
+      { send: () => ({ ok: true as const }), prewarm: () => {}, dropIfPrewarmed: () => {}, stop: () => {} } as never,
+      () => {},
+      () => [],
+      () => ({ backends: {}, maxRunCostUSD }) as never,
+      () => [],
+      notify,
+    );
+    const result = await rt.startRun({
+      flowId: 'diff-flow',
+      projectPath: '/tmp/project',
+      userPrompt: 'Burn some money.',
+      allowExternalActions: true,
+    });
+    if (!result.ok) throw new Error(result.error);
+    const run = rt.getRun(result.runId)!;
+    // The conversation the runtime actually opened for the running step.
+    const convId = Object.values(run.conversationIds)[0] as string;
+    expect(run.state.kind).toBe('running');
+    return { rt, notify, runId: result.runId, convId };
+  }
+
+  afterEach(() => {
+    seeded.runs = [];
+  });
+
+  it('aborts the run and notifies when reported cost crosses the ceiling', async () => {
+    const { rt, notify, runId, convId } = await startRunWith(1);
+
+    rt.observeEvent(costEvent(convId, 2.5));
+
+    expect(rt.getRun(runId)!.state.kind).toBe('aborted');
+    expect(rt.getRun(runId)!.costUSD).toBeCloseTo(2.5, 6);
+    expect(notify).toHaveBeenCalledTimes(1);
+    const { title, body } = notify.mock.calls[0][0];
+    expect(title).toMatch(/cost ceiling/i);
+    // Naming the flow and both numbers is the whole point: this message is
+    // read on a phone at 3am with no other context available.
+    expect(body).toContain('Diff flow');
+    expect(body).toContain('$2.50');
+    expect(body).toContain('$1.00');
+  });
+
+  it('does not abort when no ceiling is configured', async () => {
+    const { rt, notify, runId, convId } = await startRunWith(undefined);
+
+    rt.observeEvent(costEvent(convId, 999));
+
+    expect(rt.getRun(runId)!.state.kind).toBe('running');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('treats a zero ceiling as off, not as "abort immediately"', async () => {
+    // The difference matters: 0 is what an emptied number input can round-trip
+    // to, and reading it as a real ceiling would kill every run on the machine.
+    const { rt, notify, runId, convId } = await startRunWith(0);
+
+    rt.observeEvent(costEvent(convId, 5));
+
+    expect(rt.getRun(runId)!.state.kind).toBe('running');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('ignores a negative or NaN ceiling rather than bricking the run', async () => {
+    // There is no settings sanitiser in the app — settings are written
+    // wholesale and read back — so a junk value has to fail safe HERE.
+    for (const junk of [-5, Number.NaN]) {
+      const { rt, notify, runId, convId } = await startRunWith(junk);
+      rt.observeEvent(costEvent(convId, 12));
+      expect(rt.getRun(runId)!.state.kind).toBe('running');
+      expect(notify).not.toHaveBeenCalled();
+    }
+  });
+
+  it('charges the increment, not the cumulative figure, on repeated reports', async () => {
+    // The discriminating case. `totalCostUSD` is cumulative for the conv, so
+    // a naive `run.costUSD += reported` reaches $1.50 across these two events
+    // and trips the $1.20 ceiling spuriously. The real spend is $0.90.
+    const { rt, notify, runId, convId } = await startRunWith(1.2);
+
+    rt.observeEvent(costEvent(convId, 0.6));
+    expect(rt.getRun(runId)!.costUSD).toBeCloseTo(0.6, 6);
+
+    rt.observeEvent(costEvent(convId, 0.9));
+
+    expect(rt.getRun(runId)!.costUSD).toBeCloseTo(0.9, 6);
+    expect(rt.getRun(runId)!.state.kind).toBe('running');
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('fires once, even though more result events arrive after the abort', async () => {
+    // A subprocess being torn down keeps emitting. Without the state guard the
+    // user gets a notification per straggler event.
+    const { rt, notify, runId, convId } = await startRunWith(1);
+
+    rt.observeEvent(costEvent(convId, 2));
+    rt.observeEvent(costEvent(convId, 3));
+    rt.observeEvent(costEvent(convId, 4));
+
+    expect(rt.getRun(runId)!.state.kind).toBe('aborted');
+    expect(notify).toHaveBeenCalledTimes(1);
+  });
+});
