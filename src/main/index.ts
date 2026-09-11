@@ -365,6 +365,11 @@ export function registerIpc(): void {
     () => Store.load().projects,
     () => Store.load().settings,
     () => Store.load().workspaces,
+    // Cost-ceiling aborts announce themselves through the same notifier the
+    // scheduler and worker engine use below. It already routes through the
+    // host's `withWebhookNotify` wrap, so the desktop toast and the outbound
+    // webhook both fire; wrapping it again here would double-post.
+    showDesktopNotification,
   );
   // The orchestrator drives the runtime (launching child runs) and listens
   // to it (pumping the queue when a child finishes). Wire the observer AFTER
