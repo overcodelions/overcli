@@ -318,6 +318,12 @@ export class FlowRuntimeImpl {
   /// transcripts from previous steps. Keyed by run id (not conv id)
   /// because participants' convs are shared across steps.
   private stepBuffers = new Map<UUID, StepStreamBuffer>();
+  /// Highest cumulative `totalCostUSD` seen for each conversation, so
+  /// `accrueRunCost` can charge the RUN only the increment. Keyed by conv id
+  /// (not run id) deliberately: a run has one of these per participant, and
+  /// summing them is what makes `FlowRun.costUSD` a whole-run figure rather
+  /// than one participant's. Dropped with the run's conversation routing.
+  private lastConvCostUSD = new Map<UUID, number>();
   /// Completion can await an asynchronous cumulative diff. Keep duplicate
   /// terminal events from finalizing the same step twice while it is pending.
   private completingSteps = new Set<string>();
@@ -522,6 +528,18 @@ export class FlowRuntimeImpl {
     private getProjects: () => Project[],
     private getSettings: () => AppSettings,
     private getWorkspaces: () => Workspace[] = () => [],
+    /// Where a cost-ceiling abort announces itself. Optional with a no-op
+    /// default for the same reason `getWorkspaces` is: this class is
+    /// constructed POSITIONALLY in 20+ test files, several of which pass
+    /// only four arguments. A required 6th parameter would touch every one
+    /// of them for no test-relevant reason.
+    ///
+    /// Live callers hand in a notifier that is ALREADY webhook-wrapped
+    /// (`showDesktopNotification` in main; `withWebhookNotify(...)` in the
+    /// CLI), so a ceiling breach reaches a desktop toast and the outbound
+    /// webhook without this class knowing either exists. Do not wrap it
+    /// again here — see the one-wrap-per-path rule at `cli/engines.ts`.
+    private notify: (args: { title: string; body: string }) => void = () => {},
   ) {
     // Restore checkpointed runs from prior sessions. `loadAllRuns` demotes
     // any `running` entry to 'aborted' (it died mid-step, its subprocess is
@@ -763,6 +781,7 @@ export class FlowRuntimeImpl {
           // the latest reported value rather than summing.
           if (typeof ev.kind.info.totalCostUSD === 'number') {
             buf.costUSD = ev.kind.info.totalCostUSD;
+            this.accrueRunCost(run, event.conversationId, ev.kind.info.totalCostUSD);
           }
         }
       }
@@ -1229,6 +1248,7 @@ export class FlowRuntimeImpl {
       this.runs.delete(victim.id);
       for (const convId of Object.values(victim.conversationIds)) {
         this.convIdToRun.delete(convId);
+        this.lastConvCostUSD.delete(convId);
       }
       this.stepBuffers.delete(victim.id);
       this.diffSnapshots.delete(victim.id);
@@ -2074,6 +2094,7 @@ export class FlowRuntimeImpl {
     for (const convId of Object.values(run.conversationIds)) {
       this.dropPrewarmed(convId);
       this.convIdToRun.delete(convId);
+      this.lastConvCostUSD.delete(convId);
     }
     this.stepBuffers.delete(args.runId);
     this.diffSnapshots.delete(args.runId);
@@ -2124,6 +2145,67 @@ export class FlowRuntimeImpl {
       log('error', 'flows.deleteRun', 'worktree teardown failed', err);
     });
     return { ok: true };
+  }
+
+  /// Fold one conversation's newly-reported cumulative cost into the RUN's
+  /// running total, then test the total against the ceiling.
+  ///
+  /// The bookkeeping is per CONVERSATION, and that is the whole subtlety.
+  /// `totalCostUSD` arrives cumulative for its conversation, so summing the
+  /// reported values would charge the same dollars once per turn. But the
+  /// obvious fix — diffing against the step buffer — is also wrong: the
+  /// buffer resets to 0 at every step (`executeStep`) while a warm-resumed
+  /// conversation keeps counting from where it left off, so step 2's first
+  /// report would be re-charged in full. Only a per-conversation high-water
+  /// mark gets both cases right, and it is also what makes the total span
+  /// PARTICIPANTS: each has its own conversation, so a three-participant run
+  /// at $9 each reaches $27 here where any single buffer would read $9.
+  ///
+  /// Clamped at zero because a re-reported lower figure (a conversation
+  /// re-created under the same id, a backend correcting itself) is a reset,
+  /// not a refund.
+  private accrueRunCost(run: FlowRun, convId: UUID, cumulative: number): void {
+    if (!Number.isFinite(cumulative)) return;
+    const seen = this.lastConvCostUSD.get(convId) ?? 0;
+    const delta = cumulative - seen;
+    this.lastConvCostUSD.set(convId, cumulative);
+    if (delta > 0) run.costUSD = (run.costUSD ?? 0) + delta;
+    this.enforceCostCeiling(run);
+  }
+
+  /// Stop a run that has spent past `AppSettings.maxRunCostUSD`, and say so.
+  ///
+  /// Called on every priced `result` event, so it must be cheap and it must
+  /// be safe to call repeatedly. Both come from the state check: `abortRun`
+  /// sets `{ kind: 'aborted' }`, so the `kind === 'running'` requirement is
+  /// itself the fire-once guard — a second `result` event arriving on the
+  /// same conversation (they do, from a subprocess already being torn down)
+  /// finds a run that is no longer running and returns without notifying.
+  /// No per-run boolean is needed and none is kept.
+  ///
+  /// The ceiling is validated HERE rather than on the way into settings
+  /// because there is no settings sanitiser to validate it in: settings are
+  /// written wholesale and read back with `Store.load().settings`. So a
+  /// negative, zero or NaN value must be treated as "off" at the point of
+  /// use, or a typo in one field silently kills every run on the machine.
+  private enforceCostCeiling(run: FlowRun): void {
+    if (run.state.kind !== 'running') return;
+    const ceiling = this.getSettings().maxRunCostUSD;
+    if (typeof ceiling !== 'number' || !Number.isFinite(ceiling) || ceiling <= 0) return;
+    const spent = run.costUSD ?? 0;
+    if (spent < ceiling) return;
+    this.abortRun({ runId: run.id });
+    log(
+      'warn',
+      'flows.costCeiling',
+      `aborted run ${run.id} at $${spent.toFixed(2)} (ceiling $${ceiling.toFixed(2)})`,
+    );
+    this.notify({
+      title: 'Flow run stopped — cost ceiling reached',
+      body:
+        `“${run.flowSnapshot.name}” spent $${spent.toFixed(2)}, past the $${ceiling.toFixed(2)} ` +
+        `per-run ceiling, and was aborted mid-run.`,
+    });
   }
 
   abortRun(args: { runId: UUID }): { ok: true } | { ok: false; error: string } {

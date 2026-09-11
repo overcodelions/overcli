@@ -410,6 +410,21 @@ export interface FlowRun {
   unattendedAllowedTools?: string[];
   state: FlowRunState;
   createdAt: number;
+  /// Total USD this run has spent so far, accumulated live as each turn's
+  /// `result` event streams in. THE ONLY run-level cost total in the app —
+  /// `FlowStepAttempt.costUSD` is per attempt, and the runtime's own
+  /// per-step buffer holds the CONVERSATION's cumulative cost, which resets
+  /// at every step and is separate per participant. This field is what
+  /// `AppSettings.maxRunCostUSD` is checked against; without it a ceiling
+  /// would only ever see one participant's spend.
+  ///
+  /// Accumulated by delta, not by summing reported values: the backends
+  /// report `totalCostUSD` cumulatively per conversation, so `+=` on each
+  /// event would count the same dollars once per turn.
+  ///
+  /// Absent on runs that predate the field, and on backends that don't
+  /// price (Ollama) or don't report cost.
+  costUSD?: number;
   /// Per-step attempts, in order. A step that ran twice via `on_fail.goto`
   /// has two entries.
   attempts: Array<{ stepId: string } & FlowStepAttempt>;
