@@ -50,6 +50,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "security:aws-account-ids": "node scripts/check-no-aws-account-ids.mjs",
+    "security:identities": "node scripts/check-no-forbidden-identities.mjs --all",
     "prepublishOnly": "npm run build:main"
   },
   "build": {
