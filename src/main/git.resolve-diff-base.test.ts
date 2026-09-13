@@ -57,7 +57,7 @@ describe('resolveDiffBase', () => {
   });
 
   it('collapses to nothing once the branch work has landed upstream', async () => {
-    // The RED-6644 case: the PR merged, then the worktree pulled master
+    // The XYZ-6644 case: the PR merged, then the worktree pulled master
     // back in, so merge-base(origin/master, HEAD) IS HEAD.
     const head = 'c'.repeat(40);
     routeGit({

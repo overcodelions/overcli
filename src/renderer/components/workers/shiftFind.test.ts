@@ -4,7 +4,7 @@ import { matchOffsets, stepMatch } from './shiftFind';
 
 describe('matchOffsets', () => {
   it('finds every match, case insensitively', () => {
-    expect(matchOffsets('RED-6787 and red-6786 and RED-6787', 'red-6787')).toEqual([
+    expect(matchOffsets('XYZ-6787 and xyz-6786 and XYZ-6787', 'xyz-6787')).toEqual([
       [0, 8],
       [26, 34],
     ]);

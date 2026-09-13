@@ -550,21 +550,21 @@ describe('a worker scoped to a workspace', () => {
     // A workspace root is the symlink farm under Overcli's data directory, not
     // a checkout. Writing a pipeline file there puts it somewhere that is
     // never committed and is rebuilt on the next launch.
-    const p = plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
+    const p = plan({ name: 'acme', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
     expect(p.block).toBeDefined();
-    expect(p.block?.reason).toContain('unifyr');
+    expect(p.block?.reason).toContain('acme');
     expect(p.block?.reason).toContain('symlink farm');
   });
 
   it('says what to do instead rather than just refusing', () => {
-    const p = plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
+    const p = plan({ name: 'acme', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
     expect(p.block?.remedy).toContain('Copy or save');
     // And is honest that the multi-repo half is not built.
     expect(p.block?.remedy).toContain('2 member repositories side by side');
   });
 
   it('leads with the block, so it is read before the pipeline is', () => {
-    const p = plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
+    const p = plan({ name: 'acme', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] });
     expect(p.warnings).toContain(p.block!.reason);
     expect(p.warnings).toContain(p.block!.remedy);
   });
@@ -574,16 +574,16 @@ describe('a worker scoped to a workspace', () => {
   });
 
   it('still generates the files — they are the thing you copy out', () => {
-    expect(plan({ name: 'unifyr', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] }).files).toHaveLength(2);
+    expect(plan({ name: 'acme', members: [{ name: 'api', dir: 'api', remote: 'https://github.com/o/api.git' }, { name: 'web', dir: 'web', remote: 'https://github.com/o/web.git' }], unreachable: [] }).files).toHaveLength(2);
   });
 });
 
 describe('a workspace becomes checkout steps', () => {
   const ws = {
-    name: 'unifyr',
+    name: 'acme',
     members: [
-      { name: 'api', dir: 'api', remote: 'https://github.com/unifyr/api.git' },
-      { name: 'web', dir: 'web', remote: 'git@github.com:unifyr/web.git' },
+      { name: 'api', dir: 'api', remote: 'https://github.com/acme/api.git' },
+      { name: 'web', dir: 'web', remote: 'git@github.com:acme/web.git' },
     ],
     unreachable: [] as string[],
   };
@@ -605,16 +605,16 @@ describe('a workspace becomes checkout steps', () => {
 
   it('converts a remote URL to the owner/repo actions/checkout wants', () => {
     const gh = plan('github').files[1].contents;
-    expect(gh).toContain('repository: unifyr/api');
+    expect(gh).toContain('repository: acme/api');
     // ssh remotes too — the same repo reached a different way
-    expect(gh).toContain('repository: unifyr/web');
+    expect(gh).toContain('repository: acme/web');
     expect(gh).not.toContain('git@github.com');
   });
 
   it('clones each member on Jenkins, which has no checkout action', () => {
     const j = plan('jenkins').files[1].contents;
     expect(j).toContain("stage('Assemble workspace')");
-    expect(j).toContain('git clone --depth 1 https://github.com/unifyr/api.git workspace/api');
+    expect(j).toContain('git clone --depth 1 https://github.com/acme/api.git workspace/api');
     expect(j).toContain('--cwd workspace');
   });
 

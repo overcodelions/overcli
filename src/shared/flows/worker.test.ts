@@ -268,18 +268,18 @@ describe('parseWorkerContract', () => {
     const block = (projectPath: string) =>
       `<worker>${JSON.stringify({
         name: 'Scout',
-        jobDescription: 'Watch the unifyr workspace for drift and propose fixes.',
+        jobDescription: 'Watch the acme workspace for drift and propose fixes.',
         projectPath,
       })}</worker>`;
-    const withProjects = { ...opts, knownProjectPaths: ['/repos/unifyr'] };
-    expect(parseWorkerContract(block('/repos/unifyr'), withProjects)!.projectPath).toBe(
-      '/repos/unifyr',
+    const withProjects = { ...opts, knownProjectPaths: ['/repos/acme'] };
+    expect(parseWorkerContract(block('/repos/acme'), withProjects)!.projectPath).toBe(
+      '/repos/acme',
     );
     expect(
       parseWorkerContract(block('/made/up/path'), withProjects)!.projectPath,
     ).toBeUndefined();
     // Without a known list, every suggestion is dropped rather than trusted.
-    expect(parseWorkerContract(block('/repos/unifyr'), opts)!.projectPath).toBeUndefined();
+    expect(parseWorkerContract(block('/repos/acme'), opts)!.projectPath).toBeUndefined();
   });
 });
 
@@ -590,11 +590,11 @@ describe('delegation', () => {
   it('parses handoff blocks and strips them from the prose', () => {
     const reply = [
       'I found two things that are not mine.',
-      '<handoff to="Triage">RED-6814 bundles six issues. Split it.</handoff>',
+      '<handoff to="Triage">XYZ-6814 bundles six issues. Split it.</handoff>',
       "<handoff to='Warden'>Check the release.</handoff>",
     ].join('\n');
     expect(parseHandoffs(reply)).toEqual([
-      { to: 'Triage', instruction: 'RED-6814 bundles six issues. Split it.' },
+      { to: 'Triage', instruction: 'XYZ-6814 bundles six issues. Split it.' },
       { to: 'Warden', instruction: 'Check the release.' },
     ]);
     expect(stripHandoffs(reply)).toBe('I found two things that are not mine.');

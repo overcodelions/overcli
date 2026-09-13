@@ -225,10 +225,14 @@ export function RunPanel({
 /// which project you meant.
 export function FlowRunLauncher({
   flow,
+  initialTarget,
   onClose,
   onLaunched,
 }: {
   flow: Flow;
+  /// Preselected target, for a host that knows where the work is — the
+  /// Services pane launching against the service's project.
+  initialTarget?: string;
   onClose: () => void;
   /// Fired after a successful launch, with the new run's id. The library
   /// is already showing the run, so it omits this; hosts that live
@@ -245,7 +249,7 @@ export function FlowRunLauncher({
   const clearAttachments = useStore((s) => s.clearAttachments);
 
   /// `target` is `project:<path>` | `workspace:<rootPath>` | ''.
-  const [target, setTarget] = useState('');
+  const [target, setTarget] = useState(initialTarget ?? '');
   // Which side the run-in toggle starts on comes from Settings → Flows, so
   // a worktree-first user doesn't re-flip it on every launch. The toggle
   // still wins for this run; flipping the setting re-seeds the launcher.

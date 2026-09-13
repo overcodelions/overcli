@@ -142,7 +142,7 @@ describe('workspaceCommitStatus base-relative routing', () => {
     });
 
     const res = await workspaceCommitStatus([
-      { name: 'unifyr-r', path: '/wt/unifyr-r', baseBranch: 'base-sha' },
+      { name: 'acme-r', path: '/wt/acme-r', baseBranch: 'base-sha' },
     ]);
 
     // A base-relative member routes through worktreeChanges (`diff --numstat
@@ -150,7 +150,7 @@ describe('workspaceCommitStatus base-relative routing', () => {
     const calls = mockExecFile.mock.calls.map((c) => (c[1] as string[]).join(' '));
     expect(calls).toContain('diff --numstat base-sha --');
     expect(calls).not.toContain('diff HEAD --numstat');
-    expect(res.changes.map((c) => c.path)).toEqual(['unifyr-r/src/a.ts', 'unifyr-r/src/b.ts']);
+    expect(res.changes.map((c) => c.path)).toEqual(['acme-r/src/a.ts', 'acme-r/src/b.ts']);
     expect(res.insertions).toBe(5);
     expect(res.deletions).toBe(1);
   });

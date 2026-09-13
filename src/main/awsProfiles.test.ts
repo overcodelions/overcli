@@ -19,9 +19,9 @@ const CONFIG = [
   'sso_start_url=https://d-90676d998c.awsapps.com/start',
   'sso_region=us-east-1',
   '',
-  '[profile AWSAdministratorAccess-803597461034]',
+  '[profile AWSAdministratorAccess-123456789012]',
   'sso_session = aws-infra-local',
-  'sso_account_id = 803597461034',
+  'sso_account_id = 123456789012',
   'sso_role_name = AWSAdministratorAccess',
   'region = us-east-1',
   '',
@@ -50,8 +50,8 @@ const CREDENTIALS = [
   'aws_access_key_id = AKIAEXAMPLE',
   'aws_secret_access_key = SUPERSECRET',
   '',
-  '[Zift]',
-  'aws_access_key_id = AKIAZIFT',
+  '[Acme]',
+  'aws_access_key_id = AKIAACME',
   'aws_secret_access_key = ANOTHERSECRET',
 ].join('\n');
 
@@ -65,7 +65,7 @@ const build = (configText = CONFIG, credentialsText = CREDENTIALS) =>
 
 describe('isSafeAwsName', () => {
   it('accepts the names AWS profiles actually use', () => {
-    for (const n of ['default', 'Zift', 'AWSAdministratorAccess-803597461034', 'a.b_c-1']) {
+    for (const n of ['default', 'Acme', 'AWSAdministratorAccess-123456789012', 'a.b_c-1']) {
       expect(isSafeAwsName(n), n).toBe(true);
     }
   });
@@ -125,7 +125,7 @@ describe('buildAwsAuthOverview', () => {
   it('lists SSO profiles first, then orphan sessions only', () => {
     const o = build();
     expect(o.ssoTargets.map((t) => `${t.kind}:${t.name}`)).toEqual([
-      'profile:AWSAdministratorAccess-803597461034',
+      'profile:AWSAdministratorAccess-123456789012',
       'profile:OldSchool',
       // aws-infra-local is referenced by the profile above, so it gets no
       // row of its own; these two are referenced by nothing.
@@ -137,7 +137,7 @@ describe('buildAwsAuthOverview', () => {
   it('resolves a profile\'s display fields through its sso_session block', () => {
     const t = build().ssoTargets[0];
     expect(t).toMatchObject({
-      name: 'AWSAdministratorAccess-803597461034',
+      name: 'AWSAdministratorAccess-123456789012',
       kind: 'profile',
       ssoSession: 'aws-infra-local',
       startUrl: 'https://d-9067c44074.awsapps.com/start/#',
@@ -181,7 +181,7 @@ describe('buildAwsAuthOverview', () => {
 
   it('lists credentials section names and nothing else from that file', () => {
     const o = build();
-    expect(o.staticProfiles).toEqual(['default', 'Zift']);
+    expect(o.staticProfiles).toEqual(['default', 'Acme']);
     const serialized = JSON.stringify(o);
     expect(serialized).not.toContain('SUPERSECRET');
     expect(serialized).not.toContain('ANOTHERSECRET');

@@ -1,0 +1,709 @@
+// Live service state for the pane, in its own store.
+//
+// Separate from the main projects/workspaces store for the same reason
+// `runnersStore` is: output streams in continuously and statuses flip on
+// every start and rebind, and folding that into the store that also holds
+// settings and sheet flags means every unrelated component re-evaluates its
+// selectors on every log line.
+//
+// It is also a third kind of state, distinct from both existing stores.
+// `runnersStore` is per-CONVERSATION and ephemeral; the main store is
+// persisted configuration. Services are long-lived RUNTIME: they outlive the
+// conversation that started them, are shared by every conversation in the
+// workspace, and die with the app. Nothing else in the renderer is shaped
+// like that, which is why it gets its own store rather than a corner of one.
+
+import { create } from 'zustand';
+import type { WorktreeChoice } from '@shared/worktrees';
+import { planBulkRebind } from './servicesRebindPlan';
+import type {
+  LeaseDecision,
+  MachineEntry,
+  MachineValueNeed,
+  ReadinessProbe,
+  RemovedServices,
+  ServiceFinding,
+  ServiceOption,
+  ServiceRuntime,
+  StackView,
+} from '@shared/services';
+
+/// One option as it will actually be passed, and where it came from.
+export interface ResolvedOption {
+  key: string;
+  value?: string;
+  origin: 'shared' | 'own';
+  overrides?: boolean;
+}
+
+/// Lines kept per service in the renderer. The main process keeps more; this
+/// is what the pane can usefully scroll.
+const LOG_LIMIT = 2_000;
+
+interface ServicesState {
+  /// Keyed by workspace id. A workspace nobody has opened is simply absent —
+  /// loading one must not create anything.
+  stacks: Record<string, StackView>;
+  logs: Record<string, string[]>;
+  /// Which service the log pane is showing, per workspace.
+  selected: Record<string, string | undefined>;
+  /// A clash waiting on the user: another stack holds the port. Parked here
+  /// rather than resolved, because taking a port from a flow nobody was
+  /// watching is not a decision the app gets to make.
+  pendingLease: Record<string, { serviceId: string; lease: LeaseDecision } | undefined>;
+  /// Values shared by every service on this machine, filled into `${NAME}`.
+  /// Secrets arrive without their values.
+  machine: MachineEntry[];
+  /// Whether secrets can be encrypted here at all.
+  secureStorage: boolean;
+  /// The Machine values sheet, when open. `needs` are values services refer
+  /// to that are not set yet — present when the sheet was opened to fill them
+  /// in, after adding services or from a "missing machine values" failure.
+  machineSheet?: { needs: MachineValueNeed[] };
+  openMachineSheet(needs?: MachineValueNeed[]): void;
+  closeMachineSheet(): void;
+  /// Open the sheet for whatever these stacks still need. False when nothing
+  /// is missing, so a caller can carry on.
+  promptMachineNeeds(workspaceIds: string[]): Promise<boolean>;
+  /// The service the user just pressed start on. A failure that arrives for
+  /// THIS one takes them to its output; a background service dying while they
+  /// read something else does not steal the pane.
+  awaiting?: { workspaceId: string; serviceId: string };
+  /// Bumped whenever a start the user was waiting on fails, so the detail pane
+  /// can land on Output without guessing.
+  failedAt?: number;
+  /// Why the last failure happened, keyed like the logs. Fetched when a
+  /// service fails rather than on every render: the rules read the repo.
+  findings: Record<string, ServiceFinding[]>;
+  /// What a model made of a failure the rules could not explain, keyed like
+  /// the logs. Never fetched on its own: the user asks for it, because it
+  /// costs a subprocess and a model call and its answer is a guess.
+  suggestions: Record<string, { status: 'asking' } | { status: 'answered'; backend: string; text: string; command?: string } | { status: 'failed'; error: string }>;
+  /// What each service will actually start with, keyed like the logs. Fetched
+  /// on selection, because it depends on the base's options and the machine
+  /// values as much as on the service itself.
+  resolved: Record<string, ResolvedOption[]>;
+  /// Rows ticked for a bulk action, keyed like the logs. Separate from
+  /// `selected`, which is the one service the detail pane shows: ticking five
+  /// rows is not asking to read five logs.
+  checked: Record<string, true>;
+  /// Where a shift-click range starts: the last row clicked or ticked.
+  anchor?: string;
+  /// Group and module headers folded shut, by their list key. For the session.
+  collapsed: Record<string, boolean>;
+  /// The last removal, held for its undo.
+  removed?: {
+    entries: { workspaceId: string; removed: RemovedServices }[];
+    count: number;
+    /// Names of what was running and got stopped on the way out.
+    stopped: string[];
+  };
+
+  load(workspaceId: string): Promise<void>;
+  /// Every workspace's services at once. What the pane actually opens with —
+  /// a stack running in another workspace is still holding ports, and making
+  /// the user go and find it is how two copies of one service happen.
+  loadAll(workspaceIds: string[]): Promise<void>;
+  select(workspaceId: string, serviceId: string): Promise<void>;
+  start(workspaceId: string, serviceId: string, offset?: number, ignoreHeld?: boolean): Promise<void>;
+  stop(workspaceId: string, serviceId: string): Promise<void>;
+  restart(workspaceId: string, serviceId: string): Promise<void>;
+  rebind(workspaceId: string, serviceId: string, ref: string, path: string): Promise<void>;
+  rebindAll(
+    workspaceId: string,
+    targets: { serviceId: string; ref: string; path: string }[],
+  ): Promise<string[]>;
+  setPinned(workspaceId: string, serviceId: string, pinnedRef?: string): Promise<void>;
+  setChecked(keys: string[], on: boolean): void;
+  clearChecked(): void;
+  setAnchor(key: string | undefined): void;
+  toggleCollapsed(key: string): void;
+  /// Start rows by key, one after another — a later one may depend on an
+  /// earlier one. Unlike `start`, this does not select each in turn.
+  startMany(keys: string[]): Promise<void>;
+  stopMany(keys: string[]): Promise<void>;
+  /// Gone from the list at once, stopped if running, and undoable.
+  removeMany(keys: string[]): Promise<void>;
+  undoRemove(): Promise<void>;
+  dismissRemoved(): void;
+  /// Worktree choices per service id, as the pane last fetched them — one
+  /// answer every switch control reads, whether on a workspace, a group or a
+  /// selection.
+  choices: Record<string, WorktreeChoice[]>;
+  setChoices(choices: Record<string, WorktreeChoice[]>): void;
+  /// Move rows by key onto a branch, each in its own repository. Services whose
+  /// repo has no such branch, or that are pinned, stay put and are counted.
+  switchKeys(keys: string[], ref: string): Promise<void>;
+  /// What the last switch did, in a line.
+  notice?: { text: string; sub?: string };
+  dismissNotice(): void;
+  setGroup(workspaceId: string, serviceId: string, group?: string): Promise<void>;
+  setOptions(workspaceId: string, serviceId: string, options: ServiceOption[]): Promise<void>;
+  setCommand(workspaceId: string, serviceId: string, command: string[]): Promise<void>;
+  setDebug(workspaceId: string, serviceId: string, enabled: boolean): Promise<void>;
+  setReady(
+    workspaceId: string,
+    serviceId: string,
+    ready: ReadinessProbe,
+    readyTimeoutSec?: number,
+  ): Promise<void>;
+  setTask(workspaceId: string, serviceId: string, task: boolean): Promise<void>;
+  setDeps(workspaceId: string, serviceId: string, deps: string[]): Promise<void>;
+  addTask(
+    workspaceId: string,
+    serviceId: string,
+    args: { name: string; command: string[]; subpath?: string; runBefore: boolean },
+  ): Promise<string | null>;
+  duplicate(
+    workspaceId: string,
+    serviceId: string,
+    args: { name: string; group?: string; options?: ServiceOption[] },
+  ): Promise<string | null>;
+  loadMachine(): Promise<void>;
+  saveMachine(entries: MachineEntry[]): Promise<void>;
+  revealConfig(workspaceId: string, serviceId: string): Promise<void>;
+  explain(workspaceId: string, serviceId: string): Promise<void>;
+  askAi(workspaceId: string, serviceId: string): Promise<void>;
+  cancelAskAi(workspaceId: string, serviceId: string): Promise<void>;
+  checkoutRef(
+    workspaceId: string,
+    serviceId: string,
+    ref: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }>;
+  /// Stop whatever holds a port, then start the service that wanted it.
+  freePortAndStart(workspaceId: string, serviceId: string, port: number): Promise<void>;
+  dismissLease(workspaceId: string): void;
+  /// Ask the port again while a banner says it is taken by something outside
+  /// overcli: clear the banner once it is free, and name the holder once it
+  /// can be named.
+  recheckLease(workspaceId: string): Promise<void>;
+
+  ingestStatus(workspaceId: string, runtime: ServiceRuntime): void;
+  ingestLine(workspaceId: string, serviceId: string, line: string): void;
+  /// Empties a service's output here and in the engine, so reselecting it
+  /// does not bring the old lines back.
+  clearLog(workspaceId: string, serviceId: string): Promise<void>;
+  ingestRebound(workspaceId: string, serviceId: string, from: string, to: string): void;
+}
+
+/// One key per service's log, so a workspace's services never collide.
+export function logKey(workspaceId: string, serviceId: string): string {
+  return `${workspaceId}/${serviceId}`;
+}
+
+export const useServicesStore = create<ServicesState>((set, get) => ({
+  stacks: {},
+  logs: {},
+  selected: {},
+  pendingLease: {},
+  machine: [],
+  secureStorage: false,
+  machineSheet: undefined,
+
+  openMachineSheet(needs = []) {
+    set({ machineSheet: { needs } });
+  },
+
+  closeMachineSheet() {
+    set({ machineSheet: undefined });
+  },
+
+  async promptMachineNeeds(workspaceIds) {
+    const needs = await window.overcli.invoke('services:machineValueNeeds', workspaceIds);
+    if (needs.length === 0) return false;
+    await get().loadMachine();
+    set({ machineSheet: { needs } });
+    return true;
+  },
+  resolved: {},
+  checked: {},
+  anchor: undefined,
+  collapsed: {},
+  removed: undefined,
+  choices: {},
+  notice: undefined,
+  awaiting: undefined,
+  failedAt: undefined,
+  findings: {},
+  suggestions: {},
+
+  async load(workspaceId) {
+    const view = await window.overcli.invoke('services:view', workspaceId);
+    set((s) => ({ stacks: { ...s.stacks, [workspaceId]: view } }));
+    // Land on something rather than an empty pane.
+    if (!get().selected[workspaceId] && view.services[0]) {
+      await get().select(workspaceId, view.services[0].id);
+    }
+  },
+
+  async loadAll(workspaceIds) {
+    const views = await window.overcli.invoke('services:viewAll', workspaceIds);
+    set((s) => ({
+      stacks: { ...s.stacks, ...Object.fromEntries(views.map((v) => [v.workspaceId, v])) },
+    }));
+  },
+
+  async select(workspaceId, serviceId) {
+    // One selection across every workspace: picking in one group replaces the
+    // pick in another, because there is one detail pane.
+    set((s) => ({ selected: { ...blank(s.selected), [workspaceId]: serviceId } }));
+    const [lines, resolved] = await Promise.all([
+      window.overcli.invoke('services:log', { workspaceId, serviceId }),
+      window.overcli.invoke('services:resolvedOptions', { workspaceId, serviceId }),
+    ]);
+    set((s) => ({
+      logs: { ...s.logs, [logKey(workspaceId, serviceId)]: lines },
+      resolved: { ...s.resolved, [logKey(workspaceId, serviceId)]: resolved },
+    }));
+  },
+
+  async setGroup(workspaceId, serviceId, group) {
+    await window.overcli.invoke('services:setGroup', { workspaceId, serviceId, group });
+    await get().load(workspaceId);
+  },
+
+  async setOptions(workspaceId, serviceId, options) {
+    await window.overcli.invoke('services:setOptions', { workspaceId, serviceId, options });
+    await get().load(workspaceId);
+    await get().select(workspaceId, serviceId);
+  },
+
+  async setCommand(workspaceId, serviceId, command) {
+    await window.overcli.invoke('services:setCommand', { workspaceId, serviceId, command });
+    await get().load(workspaceId);
+  },
+
+  async setReady(workspaceId, serviceId, ready, readyTimeoutSec) {
+    await window.overcli.invoke('services:setReady', { workspaceId, serviceId, ready, readyTimeoutSec });
+    await get().load(workspaceId);
+  },
+
+  async setTask(workspaceId, serviceId, task) {
+    await window.overcli.invoke('services:setTask', { workspaceId, serviceId, task });
+    await get().load(workspaceId);
+  },
+
+  async setDeps(workspaceId, serviceId, deps) {
+    await window.overcli.invoke('services:setDeps', { workspaceId, serviceId, deps });
+    await get().load(workspaceId);
+  },
+
+  async addTask(workspaceId, serviceId, args) {
+    const id = await window.overcli.invoke('services:addTask', { workspaceId, serviceId, ...args });
+    await get().load(workspaceId);
+    return id;
+  },
+
+  async setDebug(workspaceId, serviceId, enabled) {
+    await window.overcli.invoke('services:setDebug', { workspaceId, serviceId, enabled });
+    await get().load(workspaceId);
+  },
+
+  async duplicate(workspaceId, serviceId, args) {
+    const id = await window.overcli.invoke('services:duplicate', {
+      workspaceId,
+      serviceId,
+      ...args,
+    });
+    await get().load(workspaceId);
+    if (id) await get().select(workspaceId, id);
+    return id;
+  },
+
+  async loadMachine() {
+    const view = await window.overcli.invoke('services:machineValues');
+    set({ machine: view.entries, secureStorage: view.secureStorage });
+  },
+
+  async saveMachine(entries) {
+    await window.overcli.invoke('services:saveMachineValues', entries);
+    // Re-read rather than keep what was sent: what was typed into a secret
+    // must not linger in renderer state once it is in the keychain.
+    await get().loadMachine();
+  },
+
+  async start(workspaceId, serviceId, offset, ignoreHeld) {
+    // Remember what was asked for, so a failure that lands a second later can
+    // be told apart from one that had nothing to do with this click.
+    set({ awaiting: { workspaceId, serviceId } });
+    // Starting something is asking to watch it. Select it now rather than
+    // only when it goes wrong — the output is the point of pressing play.
+    await get().select(workspaceId, serviceId);
+    const result = await window.overcli.invoke('services:start', { workspaceId, serviceId, offset, ignoreHeld });
+    if (!result.started && result.lease) {
+      // Pressing play on a row that was not selected put the explanation on a
+      // page the user could not see, so nothing appeared to happen at all.
+      // Select the service that refused, so the reason is on screen next to
+      // the row that just went amber.
+      await get().select(workspaceId, serviceId);
+      set((s) => ({
+        pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
+      }));
+      return;
+    }
+    // A start that worked clears any complaint left from the last attempt.
+    set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
+    await get().load(workspaceId);
+  },
+
+  async stop(workspaceId, serviceId) {
+    await window.overcli.invoke('services:stop', { workspaceId, serviceId });
+  },
+
+  async restart(workspaceId, serviceId) {
+    await window.overcli.invoke('services:restart', { workspaceId, serviceId });
+  },
+
+  async rebind(workspaceId, serviceId, ref, path) {
+    await window.overcli.invoke('services:rebind', { workspaceId, serviceId, ref, path });
+    await get().load(workspaceId);
+  },
+
+  async rebindAll(workspaceId, targets) {
+    const moved = await window.overcli.invoke('services:rebindAll', { workspaceId, targets });
+    await get().load(workspaceId);
+    return moved;
+  },
+
+  async setPinned(workspaceId, serviceId, pinnedRef) {
+    await window.overcli.invoke('services:setPinned', { workspaceId, serviceId, pinnedRef });
+    await get().load(workspaceId);
+  },
+
+  setChecked(keys, on) {
+    set((s) => {
+      const checked = { ...s.checked };
+      for (const key of keys) {
+        if (on) checked[key] = true;
+        else delete checked[key];
+      }
+      return { checked, anchor: keys[keys.length - 1] ?? s.anchor };
+    });
+  },
+
+  clearChecked() {
+    set({ checked: {} });
+  },
+
+  setAnchor(key) {
+    set({ anchor: key });
+  },
+
+  toggleCollapsed(key) {
+    set((s) => ({ collapsed: { ...s.collapsed, [key]: !s.collapsed[key] } }));
+  },
+
+  async startMany(keys) {
+    for (const key of keys) {
+      const { workspaceId, serviceId } = splitKey(key);
+      const runtime = get().stacks[workspaceId]?.runtimes.find((r) => r.serviceId === serviceId);
+      if (runtime && isServiceLive(runtime.status)) continue;
+      const result = await window.overcli.invoke('services:start', { workspaceId, serviceId });
+      if (!result.started && result.lease) {
+        set((s) => ({
+          pendingLease: { ...s.pendingLease, [workspaceId]: { serviceId, lease: result.lease! } },
+        }));
+      }
+    }
+  },
+
+  async stopMany(keys) {
+    await Promise.all(
+      keys.map((key) => window.overcli.invoke('services:stop', splitKey(key))),
+    );
+  },
+
+  async removeMany(keys) {
+    const byStack = new Map<string, string[]>();
+    for (const key of keys) {
+      const { workspaceId, serviceId } = splitKey(key);
+      byStack.set(workspaceId, [...(byStack.get(workspaceId) ?? []), serviceId]);
+    }
+    const stopped: string[] = [];
+    for (const [workspaceId, ids] of byStack) {
+      const stack = get().stacks[workspaceId];
+      for (const id of ids) {
+        const runtime = stack?.runtimes.find((r) => r.serviceId === id);
+        const spec = stack?.services.find((s) => s.id === id);
+        if (spec && runtime && isServiceLive(runtime.status)) stopped.push(spec.name);
+      }
+    }
+
+    // Off the list now, not after the engine answers. Waiting on it is what
+    // made removing feel broken: the row sat there after the menu closed.
+    set((s) => {
+      const stacks = { ...s.stacks };
+      const selected = { ...s.selected };
+      for (const [workspaceId, ids] of byStack) {
+        const stack = stacks[workspaceId];
+        if (!stack) continue;
+        const gone = new Set(ids);
+        stacks[workspaceId] = {
+          ...stack,
+          services: stack.services.filter((x) => !gone.has(x.id)),
+          bindings: stack.bindings.filter((b) => !gone.has(b.serviceId)),
+          runtimes: stack.runtimes.filter((r) => !gone.has(r.serviceId)),
+        };
+        if (selected[workspaceId] && gone.has(selected[workspaceId]!)) selected[workspaceId] = undefined;
+      }
+      return { stacks, selected, checked: {}, anchor: undefined };
+    });
+
+    const entries = await Promise.all(
+      [...byStack].map(async ([workspaceId, serviceIds]) => ({
+        workspaceId,
+        removed: await window.overcli.invoke('services:removeMany', { workspaceId, serviceIds }),
+      })),
+    );
+    const count = entries.reduce((n, e) => n + e.removed.services.length, 0);
+    if (count > 0) set({ removed: { entries, count, stopped } });
+  },
+
+  async undoRemove() {
+    const removed = get().removed;
+    if (!removed) return;
+    set({ removed: undefined });
+    await Promise.all(
+      removed.entries.map((entry) => window.overcli.invoke('services:restore', entry)),
+    );
+    await Promise.all(removed.entries.map((entry) => get().load(entry.workspaceId)));
+  },
+
+  dismissRemoved() {
+    set({ removed: undefined });
+  },
+
+  setChoices(choices) {
+    set({ choices });
+  },
+
+  async switchKeys(keys, ref) {
+    const { stacks, choices } = get();
+    const byStack = new Map<string, Set<string>>();
+    for (const key of keys) {
+      const { workspaceId, serviceId } = splitKey(key);
+      byStack.set(workspaceId, (byStack.get(workspaceId) ?? new Set()).add(serviceId));
+    }
+
+    let moved = 0;
+    const skipped = { 'no-such-ref': 0, pinned: 0, 'already-there': 0 };
+    for (const [workspaceId, ids] of byStack) {
+      const stack = stacks[workspaceId];
+      if (!stack) continue;
+      const plan = planBulkRebind(
+        stack.services.filter((s) => ids.has(s.id)),
+        choices,
+        Object.fromEntries(stack.bindings.map((b) => [b.serviceId, b.ref])),
+        ref,
+      );
+      for (const s of plan.skipped) skipped[s.reason] += 1;
+      if (plan.targets.length > 0) moved += (await get().rebindAll(workspaceId, plan.targets)).length;
+    }
+
+    // Saying what stayed matters as much as what moved: in a workspace of
+    // twenty repos, most will not have the branch, and silence reads as broken.
+    const sub = [
+      skipped['no-such-ref'] > 0 && `${skipped['no-such-ref']} don't have that branch`,
+      skipped.pinned > 0 && `${skipped.pinned} pinned`,
+      skipped['already-there'] > 0 && `${skipped['already-there']} already on it`,
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    set({
+      notice: {
+        text: moved > 0 ? `Moved ${moved} to ${ref}` : `Nothing moved to ${ref}`,
+        sub: sub || undefined,
+      },
+    });
+  },
+
+  dismissNotice() {
+    set({ notice: undefined });
+  },
+
+  async freePortAndStart(workspaceId, serviceId, port) {
+    await window.overcli.invoke('services:freePort', port);
+    set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
+    await get().start(workspaceId, serviceId);
+  },
+
+  /// Ask why it failed. The answers come from rules over the output and the
+  /// repo, so this runs once per failure rather than on every render.
+  async explain(workspaceId, serviceId) {
+    const findings = await window.overcli.invoke('services:explainFailure', {
+      workspaceId,
+      serviceId,
+    });
+    set((s) => ({ findings: { ...s.findings, [logKey(workspaceId, serviceId)]: findings } }));
+  },
+
+  /// Ask a model, once, because the rules had nothing. Separate from
+  /// `explain` on purpose: those answers are free and arrive unbidden, this
+  /// one spends a subprocess and comes back labelled as a guess.
+  async askAi(workspaceId, serviceId) {
+    const key = logKey(workspaceId, serviceId);
+    set((s) => ({ suggestions: { ...s.suggestions, [key]: { status: 'asking' } } }));
+    const result = await window.overcli.invoke('services:askAi', { workspaceId, serviceId });
+    set((s) => ({
+      suggestions: {
+        ...s.suggestions,
+        [key]: result.ok
+          ? { status: 'answered', backend: result.backend, text: result.text, command: result.command }
+          : { status: 'failed', error: result.error },
+      },
+    }));
+  },
+
+  async cancelAskAi(workspaceId, serviceId) {
+    await window.overcli.invoke('services:cancelAskAi', { workspaceId, serviceId });
+    set((s) => {
+      const next = { ...s.suggestions };
+      delete next[logKey(workspaceId, serviceId)];
+      return { suggestions: next };
+    });
+  },
+
+  async checkoutRef(workspaceId, serviceId, ref) {
+    const outcome = await window.overcli.invoke('services:checkoutRef', {
+      workspaceId,
+      serviceId,
+      ref,
+    });
+    if (outcome.ok) await get().load(workspaceId);
+    return outcome;
+  },
+
+  async revealConfig(workspaceId, serviceId) {
+    await window.overcli.invoke('services:revealConfigDir', { workspaceId, serviceId });
+  },
+
+  dismissLease(workspaceId) {
+    set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
+  },
+
+  async recheckLease(workspaceId) {
+    const pending = get().pendingLease[workspaceId];
+    // Only an outside holder can be re-asked. A port another overcli stack
+    // holds may not be bound yet while that service starts, so "closed" there
+    // does not mean free.
+    if (!pending || pending.lease.kind !== 'held' || pending.lease.claim.stackId !== 'external') return;
+    const status = await window.overcli.invoke('services:portStatus', pending.lease.claim.port, {
+      workspaceId,
+      serviceId: pending.serviceId,
+    });
+    // Another start may have replaced the complaint while we were asking.
+    if (get().pendingLease[workspaceId] !== pending) return;
+    if (!status.open) {
+      set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: undefined } }));
+      return;
+    }
+    const { claim } = pending.lease;
+    if (status.holder === claim.holder && status.holderKind === claim.holderKind) return;
+    const lease = {
+      ...pending.lease,
+      claim: { ...claim, holder: status.holder, holderKind: status.holderKind },
+    };
+    set((s) => ({ pendingLease: { ...s.pendingLease, [workspaceId]: { ...pending, lease } } }));
+  },
+
+  ingestStatus(workspaceId, runtime) {
+    // A start that fails should land you on the output that says why — the
+    // same rule as a start that is refused outright, and for the same reason:
+    // the explanation is useless on a page nobody is looking at.
+    // Explain EVERY failure, not only one the user is still waiting on. A
+    // service whose readiness is "as soon as it starts" is already running by
+    // the time it dies — AcmeProcessor fails thirty seconds in — so tying the
+    // rules to the wait meant they never ran for exactly the failures that
+    // need them most. A fresh start clears the old findings first, so a
+    // stale explanation never sits over new output.
+    if (runtime.status === 'starting') {
+      set((s) => {
+        const key = logKey(workspaceId, runtime.serviceId);
+        if (!s.findings[key] && !s.suggestions[key]) return {};
+        const findings = { ...s.findings };
+        const suggestions = { ...s.suggestions };
+        delete findings[key];
+        delete suggestions[key];
+        return { findings, suggestions };
+      });
+    }
+    if (runtime.status === 'failed') void get().explain(workspaceId, runtime.serviceId);
+
+    const awaiting = get().awaiting;
+    if (
+      runtime.status === 'failed' &&
+      awaiting?.workspaceId === workspaceId &&
+      awaiting.serviceId === runtime.serviceId
+    ) {
+      set({ awaiting: undefined, failedAt: Date.now() });
+      void get().select(workspaceId, runtime.serviceId);
+    } else if (
+      (runtime.status === 'ready' || runtime.status === 'done') &&
+      awaiting?.serviceId === runtime.serviceId
+    ) {
+      set({ awaiting: undefined });
+    }
+
+    set((s) => {
+      const stack = s.stacks[workspaceId];
+      if (!stack) return s;
+      const runtimes = stack.runtimes.some((r) => r.serviceId === runtime.serviceId)
+        ? stack.runtimes.map((r) => (r.serviceId === runtime.serviceId ? runtime : r))
+        : [...stack.runtimes, runtime];
+      return { stacks: { ...s.stacks, [workspaceId]: { ...stack, runtimes } } };
+    });
+  },
+
+  async clearLog(workspaceId, serviceId) {
+    const key = logKey(workspaceId, serviceId);
+    set((s) => ({ logs: { ...s.logs, [key]: [] } }));
+    await window.overcli.invoke('services:clearLog', { workspaceId, serviceId });
+  },
+
+  ingestLine(workspaceId, serviceId, line) {
+    set((s) => {
+      const key = logKey(workspaceId, serviceId);
+      const lines = [...(s.logs[key] ?? []), line];
+      // Trim from the front so the newest output is always what survives.
+      if (lines.length > LOG_LIMIT) lines.splice(0, lines.length - LOG_LIMIT);
+      return { logs: { ...s.logs, [key]: lines } };
+    });
+  },
+
+  ingestRebound(workspaceId, serviceId, from, to) {
+    // The engine already wrote a marker into its own buffer; mirror it here so
+    // a pane that was open when the rebind happened shows the same break in
+    // the stream rather than a silent jump to different output.
+    get().ingestLine(workspaceId, serviceId, `── rebound ${from || '(unbound)'} → ${to} ──`);
+  },
+}));
+
+/// The other half of `logKey`. Workspace ids never contain a slash; service
+/// ids might, so split on the first.
+export function splitKey(key: string): { workspaceId: string; serviceId: string } {
+  const at = key.indexOf('/');
+  return { workspaceId: key.slice(0, at), serviceId: key.slice(at + 1) };
+}
+
+/// Every workspace's selection cleared. There is one detail pane, so there is
+/// one selection.
+function blank(selected: Record<string, string | undefined>): Record<string, undefined> {
+  return Object.fromEntries(Object.keys(selected).map((k) => [k, undefined]));
+}
+
+/// Why a service will not start, for the row that just refused. Distinct from
+/// a runtime status: nothing was spawned, so there is no process to have a
+/// state — what there is, is a reason.
+export function blockedReason(
+  pending: { serviceId: string; lease: LeaseDecision } | undefined,
+  serviceId: string,
+): string | null {
+  if (!pending || pending.serviceId !== serviceId) return null;
+  if (pending.lease.kind !== 'held') return null;
+  return `port ${pending.lease.claim.port} taken`;
+}
+
+/// Whether a status should read as live in the sidebar and the tab count.
+export function isServiceLive(status: ServiceRuntime['status']): boolean {
+  return status === 'ready' || status === 'starting' || status === 'unready';
+}

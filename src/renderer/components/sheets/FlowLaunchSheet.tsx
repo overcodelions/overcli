@@ -10,7 +10,7 @@ import { useStore } from '../../store';
 import { useFlowsStore } from '../../flowsStore';
 import { FlowRunLauncher } from '../flows/FlowLaunch';
 
-export function FlowLaunchSheet({ flowId }: { flowId: string }) {
+export function FlowLaunchSheet({ flowId, target }: { flowId: string; target?: string }) {
   const flows = useFlowsStore((s) => s.flows);
   const openSheet = useStore((s) => s.openSheet);
   const setDetailMode = useStore((s) => s.setDetailMode);
@@ -23,6 +23,7 @@ export function FlowLaunchSheet({ flowId }: { flowId: string }) {
   return (
     <FlowRunLauncher
       flow={flow}
+      initialTarget={target}
       onClose={() => openSheet(null)}
       onLaunched={() => {
         openSheet(null);

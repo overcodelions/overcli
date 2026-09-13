@@ -558,6 +558,48 @@ export interface CreateWorktreeArgs {
   branchPrefix: string;
 }
 
+function numberedWorktreeName(base: string, ordinal: number): string {
+  return ordinal === 1 ? base : `${base}-${ordinal}`;
+}
+
+/// Resolve a requested human-readable name to a free worktree path AND
+/// branch. A prompt-derived agent name is intentionally repeatable, so an
+/// older agent (or a preserved orphan directory) must make the new one
+/// `name-2`, not turn an internal storage collision into a user-facing error.
+function availableWorktreeIdentity(
+  projectPath: string,
+  root: string,
+  requestedName: string,
+  branchPrefix: string,
+): { worktreePath: string; branchName: string } {
+  for (let ordinal = 1; ; ordinal += 1) {
+    const name = numberedWorktreeName(requestedName, ordinal);
+    const worktreePath = path.join(root, name);
+    const branchName = `${branchPrefix}${name}`;
+    if (fs.existsSync(worktreePath)) continue;
+    if (runGit(['rev-parse', '--verify', branchName], projectPath).exitCode === 0) continue;
+    return { worktreePath, branchName };
+  }
+}
+
+async function availableWorktreeIdentityAsync(
+  projectPath: string,
+  root: string,
+  requestedName: string,
+  branchPrefix: string,
+): Promise<{ worktreePath: string; branchName: string }> {
+  for (let ordinal = 1; ; ordinal += 1) {
+    const name = numberedWorktreeName(requestedName, ordinal);
+    const worktreePath = path.join(root, name);
+    const branchName = `${branchPrefix}${name}`;
+    if (fs.existsSync(worktreePath)) continue;
+    if ((await runGitAsync(['rev-parse', '--verify', branchName], projectPath)).exitCode === 0) {
+      continue;
+    }
+    return { worktreePath, branchName };
+  }
+}
+
 /// Creates `~/.overcli/worktrees/<project-slug>/<agent-name>/` with a new
 /// branch off `baseBranch`. Matches the layout the Swift app used so a
 /// user migrating between builds reuses the same on-disk worktrees.
@@ -585,24 +627,14 @@ export function createWorktree(
   const slug = path.basename(args.projectPath);
   const root = path.join(os.homedir(), '.overcli', 'worktrees', slug);
   fs.mkdirSync(root, { recursive: true });
-  const worktreePath = path.join(root, args.agentName);
-  const branchName = `${args.branchPrefix}${args.agentName}`;
+  const { worktreePath, branchName } = availableWorktreeIdentity(
+    args.projectPath,
+    root,
+    args.agentName,
+    args.branchPrefix,
+  );
 
-  // If the destination already has a worktree, fail loudly instead of
-  // silently reusing — the conversation it's attached to is gone by the
-  // time the user hits this code path.
-  if (fs.existsSync(worktreePath)) {
-    return {
-      ok: false,
-      error: `A worktree already exists at ${worktreePath}. Remove it first or pick a different name.`,
-    };
-  }
-
-  const existsBranch = runGit(['rev-parse', '--verify', branchName], args.projectPath);
-  const gitArgs =
-    existsBranch.exitCode === 0
-      ? ['worktree', 'add', worktreePath, branchName]
-      : ['worktree', 'add', '-b', branchName, worktreePath, startPoint];
+  const gitArgs = ['worktree', 'add', '-b', branchName, worktreePath, startPoint];
   const res = runGit(gitArgs, args.projectPath);
   if (res.exitCode !== 0) {
     return {
@@ -640,21 +672,14 @@ export async function createWorktreeAsync(
   const slug = path.basename(args.projectPath);
   const root = path.join(os.homedir(), '.overcli', 'worktrees', slug);
   fs.mkdirSync(root, { recursive: true });
-  const worktreePath = path.join(root, args.agentName);
-  const branchName = `${args.branchPrefix}${args.agentName}`;
+  const { worktreePath, branchName } = await availableWorktreeIdentityAsync(
+    args.projectPath,
+    root,
+    args.agentName,
+    args.branchPrefix,
+  );
 
-  if (fs.existsSync(worktreePath)) {
-    return {
-      ok: false,
-      error: `A worktree already exists at ${worktreePath}. Remove it first or pick a different name.`,
-    };
-  }
-
-  const existsBranch = await runGitAsync(['rev-parse', '--verify', branchName], args.projectPath);
-  const gitArgs =
-    existsBranch.exitCode === 0
-      ? ['worktree', 'add', worktreePath, branchName]
-      : ['worktree', 'add', '-b', branchName, worktreePath, startPoint];
+  const gitArgs = ['worktree', 'add', '-b', branchName, worktreePath, startPoint];
   const res = await runGitAsync(gitArgs, args.projectPath);
   if (res.exitCode !== 0) {
     return {
@@ -1004,7 +1029,7 @@ export async function restoreProjectFileVersion(
 }
 
 /// Is `agentName` already used by a worktree dir or branch in this repo?
-/// Lets callers pick a clean, human-meaningful name (e.g. `WOW-1234`) and
+/// Lets callers pick a clean, human-meaningful name (e.g. `ABC-1234`) and
 /// only fall back to a numbered suffix when there's an actual collision,
 /// instead of pre-emptively appending a uuid to every name.
 export function worktreeNameTaken(

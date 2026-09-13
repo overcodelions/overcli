@@ -166,21 +166,21 @@ describe('worker desk selectors', () => {
     const w = worker();
     expect(deskMatchesQuery(w, [], 'overc', 'Overcli')).toBe(true);
     expect(deskMatchesQuery(w, [], 'overc')).toBe(false);
-    expect(deskMatchesQuery(w, [], 'zift', 'Overcli')).toBe(false);
+    expect(deskMatchesQuery(w, [], 'acme', 'Overcli')).toBe(false);
   });
 
   it('names a worker home by its project, its workspace, then its folder', () => {
     const projects = [{ name: 'Overcli', path: '/workspace' }];
-    const workspaces = [{ name: 'Zift', rootPath: '/spaces/zift' }];
+    const workspaces = [{ name: 'Acme', rootPath: '/spaces/acme' }];
     expect(workerHomeName(worker(), projects, workspaces)).toBe('Overcli');
     expect(
-      workerHomeName(worker('w2', { projectPath: '/spaces/zift' }), projects, workspaces),
-    ).toBe('Zift');
+      workerHomeName(worker('w2', { projectPath: '/spaces/acme' }), projects, workspaces),
+    ).toBe('Acme');
     // A project removed from the sidebar leaves its workers behind; the
     // folder is still a better answer than nothing.
     expect(
-      workerHomeName(worker('w3', { projectPath: '/git/zift-cypress' }), projects, workspaces),
-    ).toBe('zift-cypress');
+      workerHomeName(worker('w3', { projectPath: '/git/acme-cypress' }), projects, workspaces),
+    ).toBe('acme-cypress');
     expect(workerHomeName(worker('w4', { projectPath: '' }), projects, workspaces)).toBe('');
   });
 
@@ -263,7 +263,7 @@ describe('worker activity', () => {
       toWorkerActivity(
         batch('1', 'worker-1', [], {
           task: 'errand',
-          reply: 'Nothing for me.\n<handoff to="Triage">Split RED-6814.</handoff>',
+          reply: 'Nothing for me.\n<handoff to="Triage">Split XYZ-6814.</handoff>',
         }),
       ).reply,
     ).toBe('Nothing for me.');

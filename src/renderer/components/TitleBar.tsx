@@ -7,6 +7,7 @@ import { flowsLandingSegment, runAttentionBadge } from './flows/runTriage';
 import { useSchedulesStore } from '../schedulesStore';
 import { useOrchestratorStore } from '../orchestratorStore';
 import { useWorkersStore } from '../workersStore';
+import { isServiceLive, useServicesStore } from '../servicesStore';
 import {
   describeLocation,
   navigateBack,
@@ -52,6 +53,18 @@ export function TitleBar() {
   const orchestrations = useOrchestratorStore((s) => s.orchestrations);
 
   const flowsBadge = useMemo(() => runAttentionBadge(flowRuns), [flowRuns]);
+
+  // Services are the one thing on this bar that keeps running while you are
+  // somewhere else and costs a port the whole time. Without the count, a
+  // stack you left up is invisible from every other tab.
+  const serviceStacks = useServicesStore((s) => s.stacks);
+  const settings = useStore((s) => s.settings);
+  const servicesBadge: { count: number; tone: 'waiting' | 'running' } | undefined = useMemo(() => {
+    const live = Object.values(serviceStacks)
+      .flatMap((stack) => stack.runtimes)
+      .filter((r) => isServiceLive(r.status)).length;
+    return live > 0 ? { count: live, tone: 'running' } : undefined;
+  }, [serviceStacks]);
 
   // Workers carries the same kind of count, for the one thing on that tab
   // that happens while you are somewhere else: a hire. It drafts for minutes
@@ -221,6 +234,18 @@ export function TitleBar() {
           onClick={() => navigateToTab(workersRoot)}
           badge={workersBadge}
         />
+        {/* Hidden unless asked for. Most projects have nothing to run, and a
+            permanently empty tab is clutter for everyone it does not apply
+            to — but never hide it while something is actually running, or a
+            live service becomes unreachable. */}
+        {(settings.servicesEnabled || servicesBadge) && (
+          <NavButton
+            label="Services"
+            active={detailMode === 'services'}
+            onClick={() => navigateToTab(() => setDetailMode('services'))}
+            badge={servicesBadge}
+          />
+        )}
       </div>
       <div className="flex-1" />
       {/* Local + Usage are passive dashboards, not action surfaces, so

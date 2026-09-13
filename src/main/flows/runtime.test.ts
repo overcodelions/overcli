@@ -1074,7 +1074,7 @@ describe('stepParticipantKey', () => {
 
 describe('summarizeReviewRejection', () => {
   it('prefers an explicit verdict line', () => {
-    const body = `# Review — RED-6648\n\n**Verdict: CHANGES REQUESTED.** The diff compiles but…\n\nmore text`;
+    const body = `# Review — XYZ-6648\n\n**Verdict: CHANGES REQUESTED.** The diff compiles but…\n\nmore text`;
     expect(summarizeReviewRejection(body)).toBe(
       'Verdict: CHANGES REQUESTED. The diff compiles but…',
     );

@@ -90,7 +90,7 @@ const PROJECTS = [
 ] as unknown as Project[];
 
 const WORKSPACES = [
-  { id: 'w1', name: 'unifyr', rootPath: WS_ROOT, projectIds: ['p1', 'p2'] },
+  { id: 'w1', name: 'acme', rootPath: WS_ROOT, projectIds: ['p1', 'p2'] },
 ] as unknown as Workspace[];
 
 function harness() {

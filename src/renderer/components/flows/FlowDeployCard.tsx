@@ -40,7 +40,7 @@ export function homeProjectFor(flow: Flow, projects: Array<{ path: string }>): s
 /// One place a flow's CI job can cover: a project, or a whole workspace.
 ///
 /// A workspace is the more interesting target and the reason this is not just
-/// a project list. A flow is stateless, so "read across every repo in unifyr
+/// a project list. A flow is stateless, so "read across every repo in acme
 /// and report" is exactly the shape a runner suits — the job checks the
 /// members out side by side and the run's cwd is the directory holding them.
 export interface DeployScope {

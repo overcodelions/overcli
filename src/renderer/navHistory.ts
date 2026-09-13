@@ -346,6 +346,8 @@ export function describeLocation(loc: NavLocation): string {
       return 'usage';
     case 'local':
       return 'local models';
+    case 'services':
+      return 'services';
     case 'conversation': {
       if (!loc.selectedConversationId) return 'chat';
       const found = findConversation(useStore.getState(), loc.selectedConversationId);

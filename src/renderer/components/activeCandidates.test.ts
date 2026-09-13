@@ -248,28 +248,28 @@ describe('collectActiveCandidates', () => {
   });
 
   it('keeps a finished run you were just in after you switch to another', () => {
-    // Straight from the bug report: RED-6644 (done, last activity well
+    // Straight from the bug report: XYZ-6644 (done, last activity well
     // outside the liveness window) is open, you switch to another run, and
     // it vanished — five other things were active, so nothing was backfilled.
     const busyChats = Array.from({ length: 5 }, (_, i) =>
       conv(`busy-${i}`, { lastPromptAt: NOW - (40 + i) * MIN, lastActiveAt: NOW - MIN }),
     );
-    const done = run('red-6644', {
+    const done = run('xyz-6644', {
       state: { kind: 'done' },
       createdAt: NOW - 120 * MIN,
       attempts: [{ stepId: 's', startedAt: NOW - 100 * MIN, endedAt: NOW - 90 * MIN }],
     } as Partial<FlowRun>);
 
     const whileOpen = order([project('a', busyChats)], [done], {}, {
-      openedRunId: 'red-6644',
-      lastOpenedAtByRun: { 'red-6644': NOW - 30_000 },
+      openedRunId: 'xyz-6644',
+      lastOpenedAtByRun: { 'xyz-6644': NOW - 30_000 },
     });
-    expect(whileOpen).toContain('red-6644');
+    expect(whileOpen).toContain('xyz-6644');
 
     // Switched away — no longer open, still not "active". It must stay.
     const afterLeaving = order([project('a', busyChats)], [done], {}, {
       openedRunId: 'other-run',
-      lastOpenedAtByRun: { 'red-6644': NOW - 30_000 },
+      lastOpenedAtByRun: { 'xyz-6644': NOW - 30_000 },
     });
     expect(afterLeaving).toEqual(whileOpen);
   });
@@ -476,7 +476,7 @@ describe('a run the user is chatting with', () => {
   });
 });
 
-// Reported from the running app: the same "unifyr · workspace" header printed
+// Reported from the running app: the same "acme · workspace" header printed
 // three times in a row, once per row. Lanes are run-length groups keyed on
 // `owner.id`, and a flow run keyed itself on its PATH while the chats in the
 // same place were keyed on the project's id — so a run sitting between two

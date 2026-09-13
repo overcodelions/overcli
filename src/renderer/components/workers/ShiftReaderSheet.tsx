@@ -399,8 +399,8 @@ function highlightStore(): HighlightRegistry | null {
 
 /// Every match under `root`, as DOM Ranges. The text of every text node is
 /// concatenated first, so a match is found across element boundaries — the
-/// markdown renderer splits `**RED**-6787` into three nodes, and a reader
-/// searching for `RED-6787` does not care.
+/// markdown renderer splits `**XYZ**-6787` into three nodes, and a reader
+/// searching for `XYZ-6787` does not care.
 function findRanges(root: HTMLElement, query: string): Range[] {
   if (!query.trim()) return [];
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);

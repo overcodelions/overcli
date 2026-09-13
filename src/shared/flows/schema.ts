@@ -652,8 +652,8 @@ export function flowRunOwnerPath(run: FlowRun): string {
 ///
 /// Strict compares here failed silently and asymmetrically, which is what
 /// made the bug so odd to look at: `resolveOwner` already case-folded, so a
-/// run's row in "Working on" printed "workspace · unifyr" correctly — while
-/// the unifyr group itself, filtering with `===`, showed no Flows section at
+/// run's row in "Working on" printed "workspace · acme" correctly — while
+/// the acme group itself, filtering with `===`, showed no Flows section at
 /// all. The run named a workspace that appeared not to contain it.
 export function flowRunIsOwnedBy(run: FlowRun, path: string): boolean {
   return isSamePath(flowRunOwnerPath(run), path);

@@ -67,7 +67,7 @@ function run(id: string, opts: Partial<FlowRun> = {}): FlowRun {
     id,
     flowId: 'coverage',
     flowSnapshot: flow('coverage', 'Coverage gap report'),
-    projectPath: '/Users/me/git/unifyr',
+    projectPath: '/Users/me/git/acme',
     userPrompt: 'Analyze test coverage gaps',
     conversationIds: {},
     artifacts: {},
@@ -141,7 +141,7 @@ describe('buildPaletteItems', () => {
     const agent = conv('c2', 'agent chat', { worktreePath: '/wt/a', branchName: 'agent/x' });
     const items = buildPaletteItems({
       ...emptyInput(),
-      projects: [project('p1', 'unifyr', [chat, agent])],
+      projects: [project('p1', 'acme', [chat, agent])],
       workspaces: [workspace('w1', 'lions-nov')],
       runs: [run('r1')],
       flows: [flow('f1', 'Ship it')],
@@ -159,7 +159,7 @@ describe('buildPaletteItems', () => {
   it('marks hidden conversations and archived runs as archived', () => {
     const items = buildPaletteItems({
       ...emptyInput(),
-      projects: [project('p1', 'unifyr', [conv('c1', 'old thread', { hidden: true })])],
+      projects: [project('p1', 'acme', [conv('c1', 'old thread', { hidden: true })])],
       runs: [run('r1', { state: { kind: 'archived' } })],
     });
     expect(find(items, 'conv:c1').archived).toBe(true);
@@ -196,20 +196,20 @@ describe('buildPaletteItems', () => {
     const items = buildPaletteItems({
       ...emptyInput(),
       projects: [
-        project('p1', 'unifyr', [
-          conv('c1', 'nameless', { branchName: 'feature/WOW-4962', sessionId: 'sess-abc' }),
+        project('p1', 'acme', [
+          conv('c1', 'nameless', { branchName: 'feature/ABC-4962', sessionId: 'sess-abc' }),
         ]),
       ],
     });
     const item = find(items, 'conv:c1');
-    expect(item.keywords).toContain('feature/WOW-4962');
+    expect(item.keywords).toContain('feature/ABC-4962');
     expect(item.keywords).toContain('sess-abc');
   });
 
   it('lights a project or workspace up while one of its chats streams', () => {
     const items = buildPaletteItems({
       ...emptyInput(),
-      projects: [project('p1', 'unifyr', [conv('c1', 'chat')])],
+      projects: [project('p1', 'acme', [conv('c1', 'chat')])],
       workspaces: [workspace('w1', 'lions-nov', [conv('c2', 'chat')])],
       runningIds: new Set(['c2']),
     });
@@ -220,7 +220,7 @@ describe('buildPaletteItems', () => {
   it('uses the last selected time when it is newer than the conversation activity', () => {
     const items = buildPaletteItems({
       ...emptyInput(),
-      projects: [project('p1', 'unifyr', [conv('c1', 'chat', { lastPromptAt: NOW - 500_000 })])],
+      projects: [project('p1', 'acme', [conv('c1', 'chat', { lastPromptAt: NOW - 500_000 })])],
       lastSelectedAt: { c1: NOW },
     });
     expect(find(items, 'conv:c1').recency).toBe(NOW);
@@ -230,12 +230,12 @@ describe('buildPaletteItems', () => {
 describe('scoreItem', () => {
   const items = buildPaletteItems({
     ...emptyInput(),
-    projects: [project('p1', 'unifyr', [conv('c1', 'unifyr rollout notes')])],
+    projects: [project('p1', 'acme', [conv('c1', 'acme rollout notes')])],
   });
 
   it('puts an exact project-name match above a chat that merely contains it', () => {
-    const proj = scoreItem(find(items, 'project:p1'), 'unifyr', NOW)!;
-    const chat = scoreItem(find(items, 'conv:c1'), 'unifyr', NOW)!;
+    const proj = scoreItem(find(items, 'project:p1'), 'acme', NOW)!;
+    const chat = scoreItem(find(items, 'conv:c1'), 'acme', NOW)!;
     expect(proj.score).toBeGreaterThan(chat.score);
   });
 
@@ -254,7 +254,7 @@ describe('scoreItem', () => {
     const both = buildPaletteItems({
       ...emptyInput(),
       projects: [
-        project('p1', 'unifyr', [
+        project('p1', 'acme', [
           conv('live', 'release checklist'),
           conv('old', 'release checklist', { hidden: true }),
         ]),
@@ -269,7 +269,7 @@ describe('scoreItem', () => {
   it('boosts a running conversation over an identical idle one', () => {
     const two = buildPaletteItems({
       ...emptyInput(),
-      projects: [project('p1', 'unifyr', [conv('a', 'build the thing'), conv('b', 'build the thing')])],
+      projects: [project('p1', 'acme', [conv('a', 'build the thing'), conv('b', 'build the thing')])],
       runningIds: new Set(['a']),
     });
     const running = scoreItem(find(two, 'conv:a'), 'build', NOW)!;
@@ -329,7 +329,7 @@ describe('sectionFor', () => {
     const items = buildPaletteItems({
       ...emptyInput(),
       projects: [
-        project('p1', 'unifyr', [
+        project('p1', 'acme', [
           conv('a', 'busy'),
           conv('b', 'quiet'),
           conv('c', 'put away', { hidden: true }),
@@ -351,7 +351,7 @@ describe('sectionFor', () => {
 describe('matchesScope', () => {
   const items = buildPaletteItems({
     ...emptyInput(),
-    projects: [project('p1', 'unifyr', [conv('c1', 'chat'), conv('c2', 'agent', { worktreePath: '/wt' })])],
+    projects: [project('p1', 'acme', [conv('c1', 'chat'), conv('c2', 'agent', { worktreePath: '/wt' })])],
     runs: [run('r1')],
     flows: [flow('f1', 'Ship it')],
     commands: [command('settings', 'Settings')],
@@ -372,7 +372,7 @@ describe('buildPaletteGroups', () => {
   const items = buildPaletteItems({
     ...emptyInput(),
     projects: [
-      project('p1', 'unifyr', [
+      project('p1', 'acme', [
         conv('busy', 'shipping the release', { lastPromptAt: NOW - 1_000 }),
         conv('quiet', 'old notes', { lastPromptAt: NOW - 200_000 }),
         conv('gone', 'archived release notes', { hidden: true }),
@@ -431,7 +431,7 @@ describe('buildPaletteGroups', () => {
       projects: [
         project(
           'p1',
-          'unifyr',
+          'acme',
           Array.from({ length: 20 }, (_, i) => conv(`c${i}`, `thread ${i}`)),
         ),
       ],
@@ -445,7 +445,7 @@ describe('buildPaletteGroups', () => {
 describe('section jumping', () => {
   const items = buildPaletteItems({
     ...emptyInput(),
-    projects: [project('p1', 'unifyr', [conv('busy', 'shipping'), conv('quiet', 'notes')])],
+    projects: [project('p1', 'acme', [conv('busy', 'shipping'), conv('quiet', 'notes')])],
     commands: [command('settings', 'Settings'), command('about', 'About')],
     runningIds: new Set(['busy']),
   });
@@ -505,7 +505,7 @@ describe('scopeCounts', () => {
   it('counts what each chip would show, excluding archived rows at rest', () => {
     const items = buildPaletteItems({
       ...emptyInput(),
-      projects: [project('p1', 'unifyr', [conv('c1', 'chat'), conv('c2', 'gone', { hidden: true })])],
+      projects: [project('p1', 'acme', [conv('c1', 'chat'), conv('c2', 'gone', { hidden: true })])],
       commands: [command('settings', 'Settings')],
     });
     const resting = scopeCounts(items, '', NOW);

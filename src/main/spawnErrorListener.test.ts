@@ -26,6 +26,12 @@ const EXEMPT = new Set<string>([
   // Uses spawnSync only (synchronous; failures come back as a result object
   // with an `error` field rather than an emitted event).
   'backendPaths.ts',
+  // Calls no child_process API at all: `deps.spawn(...)` is an injected
+  // adapter, so the engine stays testable without spawning anything. The
+  // adapter that does call node's spawn is subject to this rule like every
+  // other caller, and the supervisor requires it to report failures through
+  // `onError`.
+  'services/supervisor.ts',
 ]);
 
 function tsFilesUnder(dir: string): string[] {

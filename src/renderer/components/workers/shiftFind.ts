@@ -7,7 +7,7 @@
 /// `aaaa` finds two, the way a reader would count them.
 ///
 /// Deliberately literal rather than regex: this box is opened by someone
-/// trying to find "RED-6787" in a wall of prose, and a stray `(` typed into a
+/// trying to find "XYZ-6787" in a wall of prose, and a stray `(` typed into a
 /// regex search either throws or silently matches nothing.
 export function matchOffsets(haystack: string, query: string): Array<[number, number]> {
   const needle = query.trim().toLowerCase();

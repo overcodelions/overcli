@@ -60,11 +60,11 @@ describe('groupIntoLanes', () => {
     // to do.
     const rows: Row[] = [
       { id: 'a', at: 5, owner: 'overcli' },
-      { id: 'b', at: 4, owner: 'unifyr' },
+      { id: 'b', at: 4, owner: 'acme' },
       { id: 'c', at: 3, owner: 'overcli' },
     ];
     const lanes = groupIntoLanes(rows, owner);
-    expect(lanes.map((l) => l.ownerId)).toEqual(['overcli', 'unifyr', 'overcli']);
+    expect(lanes.map((l) => l.ownerId)).toEqual(['overcli', 'acme', 'overcli']);
     expect(lanes.flatMap((l) => l.items.map((r) => r.id))).toEqual(['a', 'b', 'c']);
   });
 
@@ -95,7 +95,7 @@ describe('buildStream', () => {
     const rows: Row[] = [
       { id: 'now', at: NOON - HOUR, owner: 'overcli' },
       { id: 'today2', at: NOON - 3 * HOUR, owner: 'overcli' },
-      { id: 'wk', at: NOON - 2 * DAY, owner: 'unifyr' },
+      { id: 'wk', at: NOON - 2 * DAY, owner: 'acme' },
       { id: 'old', at: NOON - 30 * DAY, owner: 'overcli' },
     ];
     const sections = buildStream(rows, read, NOON);
@@ -103,7 +103,7 @@ describe('buildStream', () => {
     expect(sections[0].lanes).toHaveLength(1);
     expect(sections[0].lanes[0].items.map((r) => r.id)).toEqual(['now', 'today2']);
     expect(sections[0].count).toBe(2);
-    expect(sections[1].lanes[0].ownerName).toBe('unifyr');
+    expect(sections[1].lanes[0].ownerName).toBe('acme');
   });
 
   it('drops empty buckets rather than heading an absence', () => {
