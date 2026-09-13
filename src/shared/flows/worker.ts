@@ -380,7 +380,7 @@ export type WorkerJournalKind =
   | 'demoted'
   /// A note the USER wrote against a turn — the one journal kind nothing
   /// automatic ever writes. It is memory, not decoration: the digest fed
-  /// into every planning turn carries it, so "the Panasonic ticket is
+  /// into every planning turn carries it, so "the Globex ticket is
   /// blocked on their side, stop re-proposing it" reaches the worker the
   /// same way its own history does. Carries the orchestrationId of the turn
   /// it was written against, so the desk can show it where it was left.

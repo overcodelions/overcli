@@ -1451,16 +1451,16 @@ describe('WorkerEngine notes', () => {
     const h = makeHarness({ seed: [seedWorker()] });
     h.orchestrations.set('orch-1', workerBatch({ title: '[Shift 1] Scout' }));
     h.engine.start();
-    expect(h.engine.note('worker-1', 'orch-1', '  Panasonic is blocked their side.  ')).toEqual({
+    expect(h.engine.note('worker-1', 'orch-1', '  Globex is blocked their side.  ')).toEqual({
       ok: true,
     });
     const notes = h.journal.filter((e) => e.kind === 'note');
     expect(notes).toHaveLength(1);
-    expect(notes[0].note).toBe('Panasonic is blocked their side.');
+    expect(notes[0].note).toBe('Globex is blocked their side.');
     expect(notes[0].orchestrationId).toBe('orch-1');
     // The point of storing it as a journal entry rather than a UI annotation:
     // the digest is what the next planning turn reads.
-    expect(h.journal.map((e) => `${e.kind}: ${e.note}`)).toContain('note: Panasonic is blocked their side.');
+    expect(h.journal.map((e) => `${e.kind}: ${e.note}`)).toContain('note: Globex is blocked their side.');
   });
 
   it('takes two identical notes on one turn as two things the user said', () => {
