@@ -1,0 +1,2 @@
+#!/bin/sh
+node scripts/check-no-forbidden-identities.mjs --current
